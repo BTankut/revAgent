@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://dpe.local/revagent/bootstrap-prestage-evidence.schema.json",
+  "title": "revAgent bootstrap prestage evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "app",
+    "evidenceType",
+    "generatedAtUtc",
+    "generatedBySid",
+    "release",
+    "localBootstrapInstallerScript",
+    "localBootstrapInstallerModule",
+    "sources"
+  ],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "app": { "const": "revAgent" },
+    "evidenceType": { "const": "bootstrap-prestage" },
+    "generatedAtUtc": { "type": "string", "format": "date-time" },
+    "generatedBySid": { "type": "string", "pattern": "^S-[0-9-]+$" },
+    "release": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["root", "channel", "version", "channelManifestSha256", "releaseManifestSha256", "packageSha256", "signatureVerified"],
+      "properties": {
+        "root": { "type": "string", "minLength": 1 },
+        "channel": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "channelManifestSha256": { "$ref": "#/$defs/sha256" },
+        "releaseManifestSha256": { "$ref": "#/$defs/sha256" },
+        "packageSha256": { "$ref": "#/$defs/sha256" },
+        "signatureVerified": { "const": true }
+      }
+    },
+    "localBootstrapInstallerScript": { "$ref": "#/$defs/sha256" },
+    "localBootstrapInstallerModule": { "$ref": "#/$defs/sha256" },
+    "sources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bootstrap", "launcher", "updaterGui", "distributionIntegrity", "sourceFreeMigration", "trustedKeys"],
+      "properties": {
+        "bootstrap": { "$ref": "#/$defs/sha256" },
+        "launcher": { "$ref": "#/$defs/sha256" },
+        "updaterGui": { "$ref": "#/$defs/sha256" },
+        "distributionIntegrity": { "$ref": "#/$defs/sha256" },
+        "sourceFreeMigration": { "$ref": "#/$defs/sha256" },
+        "trustedKeys": { "$ref": "#/$defs/sha256" }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
+  }
+}

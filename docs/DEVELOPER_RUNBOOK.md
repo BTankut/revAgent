@@ -145,7 +145,7 @@ Required local tools for full development:
 - Git for Windows
 - Autodesk Revit 2022
 - Node.js 20 or newer
-- Codex Desktop app or another MCP/skill-capable host
+- ChatGPT desktop app with Codex enabled, or another MCP/skill-capable host
 - PowerShell 5.1 or newer
 - Visual Studio/MSBuild tooling if rebuilding the Revit add-in source
 - Access to `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy` for office
@@ -191,10 +191,10 @@ used. Production NAS releases should be published from a clean tree.
 10. Update local `main` with `git pull --ff-only`.
 11. Watch the signed source-free CD run that starts from the protected `main`
     update.
-12. Verify NAS `stable.json`, release manifest, ZIP path/hash, and at least one
-    real Revit workstation before broad or manual rollout. If scheduled auto
-    update remains enabled, workstations may consume the new stable channel at
-    the next 12:00 check even without a manual rollout instruction.
+12. After separately approved `publish_to_nas=true`, verify NAS `stable.json`,
+    release manifest, ZIP path/hash, and one approved pilot workstation before
+    broad rollout. The daily task is audit-only; payload installation remains
+    a manual GUI/UAC action.
 
 Useful baseline commands:
 
@@ -255,25 +255,18 @@ Notes:
 
 ## Production Rollout Hold
 
-The stable channel is consumed by the daily workstation updater. "Verify before
-rollout" only gates manual operator instructions unless scheduled update checks
-are held first.
+The daily `revAgent Auto Update` task is an audit/notification surface only. It
+must invoke `update-from-nas.ps1 -AuditOnly`; it does not grant install authority
+and therefore does not need to be disabled to hold a release. If an older task
+still performs writes, treat that workstation as legacy: disable or repair the
+task before publishing and do not count it as rollout-ready.
 
-If a release must not reach workstations until after manual verification, do one
-of these before updating protected `main` or publishing stable:
-
-- keep the change on a topic branch or a non-stable test channel
-- disable the workstation scheduled task on the affected machines
-
-```powershell
-Disable-ScheduledTask -TaskName "revAgent Auto Update"
-Enable-ScheduledTask -TaskName "revAgent Auto Update"
-```
-
-Use the legacy task name `Revit MCP Auto Update` only when maintaining an older
-pre-rename workstation. Re-enable the scheduled task only after the signed CD
-run, `channels\stable.json`, release manifest, package hash, and pilot
-workstation check are accepted.
+A rollout stays held until the protected PR is merged, signed source-free CD is
+green, production publish is explicitly dispatched, and the signed NAS
+version/hash is confirmed. Run the manual GUI on one approved pilot, verify
+both privilege phases and new-ChatGPT-task acceptance, then authorize manual
+GUI updates on the remaining online machines. Record powered-off machines as
+pending and skip them rather than retrying during the rollout window.
 
 ## Revit Add-In Development
 
@@ -614,6 +607,7 @@ compare file mtimes.
 | Distribution canonical JSON and detached signature fixtures stay deterministic | `scripts/test-distribution-integrity.ps1` | `Engineering gates` | Does not publish, sign a real stable channel, or enable updater enforcement. |
 | Publish-path detached signing writes verifiable signature files without real NAS or production keys | `scripts/test-publish-signing.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only. |
 | Signed stable readiness preflight rejects unsigned, partially signed, hash-mismatched, or private-key-bearing release roots | `scripts/test-signed-stable-readiness.ps1` | `Engineering gates` | Uses a temporary release root and ephemeral test key only; does not publish to NAS or enable enforcement. |
+| NAS release ACL seal/unseal is fail-closed, publisher-bounded, link-safe, and preserves the writable reports boundary | `scripts/test-nas-release-acl.ps1` | `Engineering gates` | Uses a disposable local NTFS fixture only; it never reads or mutates the live NAS. |
 | Rollout readiness audit classifies machine reports, source-free evidence, version fallback, and exclusions deterministically | `scripts/test-rollout-readiness.ps1` | `Engineering gates` | Uses temporary fixture reports only; does not read NAS, update machines, or connect over SSH. |
 | Updater integrity defaults fail-closed when trusted release keys are present and keeps keys-free legacy compatibility only for bootstrap/test paths | `scripts/test-distribution-integrity.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
 | Signed release anti-rollback and enforce-mode metadata stay valid | `scripts/test-distribution-integrity.ps1`, `scripts/test-publish-signing.ps1`, `scripts/test-installer-smoke.ps1` | `Engineering gates` | Does not publish to NAS or include production private keys. |
@@ -684,17 +678,13 @@ is actively selecting, saving, syncing, or editing, wait for user instruction.
 
 ## Local Install And Live Test
 
-For manual local install from the repo, close Revit first:
-
-```powershell
-$RepoRoot = (Resolve-Path .).Path
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
-```
-
-For office-style testing, prefer the NAS GUI updater:
+Never elevate `install-self-contained.ps1` or a bootstrap installer directly
+from the repo. Close Revit and use the protected local launcher; it verifies
+the signed canonical release, runs only the bounded machine phase under UAC,
+and resumes Codex integration in the original unelevated process:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
 Live smoke test after install:
@@ -784,8 +774,8 @@ protection allows one, the signed source-free CD workflow builds and validates
 the signed release root but does not publish production NAS stable. Treat
 manual `workflow_dispatch` with `publish_to_nas=true` as the production publish
 trigger. Verify the GitHub Actions CD run plus `channels\stable.json` before
-any manual rollout instruction, and use the rollout-hold process above if
-scheduled workstation updates must be paused before verification.
+any manual rollout instruction. Audit-only scheduled tasks do not need to be
+paused; repair any legacy task that still has payload-write behavior.
 
 Keep commits coherent:
 
@@ -1049,6 +1039,60 @@ previous `tools` payload and the replaced `releases\<version>` directory when
 channel backups and payload rollback backups are removed; operator recovery should use the
 versioned NAS `releases\` archive rather than relying on those promotion
 scratch files.
+
+The canonical `revAgent-deploy` NAS root is sealed outside the bounded publish
+window. `scripts/set-nas-release-acl.ps1 -Mode Seal` recursively removes every
+write-capable allow ACE from the root and the `tools`, `channels`, and
+`releases` trees. It validates that protected tree for reparse points and
+hardlinks before changing any ACL. The `reports` tree is excluded from source
+recursion; its root must still be link-free, is protected from parent
+inheritance, and preserves its existing evidence-writer ACL. The ACL controller
+reports the effective writers but does not claim or change the `reports` owner
+or decide which office evidence-writer principals are approved.
+The release-root owner SID is the default publisher. Before ACL recursion, a
+temporary publisher-only `Modify` directory under `reports` must prove that the
+active filesystem/SMB session maps to that SID, and the probe must be removed.
+Unseal must then pass a real `CreateNew` plus delete canary under the release
+root. `scripts/publish-signed-source-free-release-to-nas.ps1` always seals and
+previews the root again in `finally`; a failed reseal is a failed publish.
+Never leave the root manually unsealed or grant a different publisher without
+a successful session-mapping probe.
+The GUI, elevated updater, and updater-task installer do not trust ACL text
+alone: their pre-import sealed-source checks attempt a uniquely named
+`FileMode.CreateNew` canary in each source directory. Access denied is the only
+sealed outcome; a successful create is deleted immediately and the source is
+rejected. The writable `reports` subtree remains explicitly exempt.
+
+The first executable hop is local-only:
+`%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd`, which invokes
+the sibling protected `Start-revAgent-Update.ps1`. The production NAS `tools`
+tree contains no CMD launcher. A clean install, or an existing fleet
+machine without this protected root, fails closed until a coordinator/admin
+prestages an independently authenticated bootstrap and records exact source
+SHA-256 evidence in protected `bootstrap-state.json`. The bootstrap root and
+state are SYSTEM/Administrators-owned, standard-user read/execute only,
+link/hardlink guarded, and checked with effective directory and file-write
+probes. The local bootstrap, GUI, integrity verifier, and migration verifier
+must also match their current signed release-manifest components exactly;
+otherwise `bootstrap_refresh_required` requires a new authenticated prestage.
+The repository-side prestage installer must never itself be elevated. Its bytes
+must first be matched to the independent evidence and copied with OS/admin-only
+commands to
+`%ProgramData%\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`;
+only that protected canonical copy may run. The evidence binds both the staged
+installer (`localBootstrapInstallerScript`) and its imported module.
+The exact two-shell procedure is `docs/BOOTSTRAP_PRESTAGE.md`. Its unelevated
+producer verifies the signed release and emits schema-versioned evidence; the
+fresh elevated shell stages those bytes with built-in OS APIs and exact ACLs.
+The elevated consumer must never derive replacement evidence.
+Inspect the effective state without mutation with:
+
+```powershell
+.\scripts\set-nas-release-acl.ps1 `
+  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
+  -Mode Preview
+```
+
 Active-release scope checks the candidate release package and current `tools\` payload without
 blocking on historical legacy release ZIPs already present under the existing
 NAS `releases\` archive. Use the default full release-root readiness scan only
@@ -1169,7 +1213,8 @@ Signed release enforcement uses `releaseSequence` metadata in both
 `highestAcceptedReleaseSequence` in `installed.json` and rejects older signed
 channel replay during normal execution. Emergency signed rollback is available
 only through the explicit local updater flag `-AllowSignedReleaseRollback`; the
-scheduled updater does not pass that flag.
+scheduled audit has no rollback or install authority and does not pass that
+flag.
 
 License/seat verification is optional and disabled by default. The updater can
 load a signed `revagent-license.json` plus `revagent-license.sig.json` from the
@@ -1206,22 +1251,16 @@ Dependency restore note:
 
 ## Workstation Install And Update
 
-Stable workstation GUI:
+Stable workstation launcher:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater-GUI.cmd
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-Single-file desktop launchers:
-
-```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
-```
-
-Use the single-file launchers when copying a `.cmd` to a workstation desktop.
-The single-file launchers target the canonical `revAgent-deploy` root. The
-generic `Install-revAgent-Updater-GUI.cmd` is meant to run from the NAS
-`tools\` folder because it expects `Install-revAgent-Updater-GUI.ps1` beside it.
+Legacy `.cmd` aliases retained in the source checkout are not published to the
+production NAS `tools` tree. The protected local launcher is hash-bound in
+`bootstrap-state.json` and in the signed release manifest; the NAS channel is
+verified data, not executable trust.
 
 The GUI installs or refreshes the local updater and then runs an initial update.
 The updater writes:
@@ -1246,7 +1285,7 @@ Each install/update also publishes a per-machine support record to NAS:
 
 The NAS machine folder keeps the latest two copied operation logs. The JSON
 records include the operation method, such as GUI install, GUI update,
-scheduled update, or install/repair. `latest.json` is dashboard-ready: it
+scheduled audit, or install/repair. `latest.json` is dashboard-ready: it
 contains machine/user/time, operation type, release version/commit/package SHA,
 previous and installed versions, status, update diagnostics, the NAS log path,
 and a local install-state summary.
@@ -1282,23 +1321,56 @@ bootstrap creates a Startup-folder fallback:
 %APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\revAgent Auto Update.vbs
 ```
 
-The preferred updater registration is a per-user Scheduled Task. It runs once
-per day at 12:00 local time. If Scheduled Task registration is blocked, the
-Startup fallback launches a hidden `auto-update-loop.ps1` process for the user
-session and follows the same daily 12:00 schedule. New installs remove legacy
-`Revit MCP Auto Update.cmd` / `.vbs` fallback launchers. Manual update and
-install/repair remain available from the updater GUI and command launchers.
+The preferred updater registration is a per-user Scheduled Task. It runs
+`update-from-nas.ps1 -AuditOnly` once per day at 12:00 local time. If task
+registration is blocked, the Startup fallback follows the same audit-only
+schedule. Neither path installs dependencies or replaces payloads. New installs
+remove legacy `Revit MCP Auto Update.cmd` / `.vbs` fallbacks; manual update and
+install/repair remain available from the GUI and command launchers.
 
-The GUI requests admin rights immediately at startup. If Windows opens the GUI
-with different admin credentials, user-profile Codex integration may be written
-under that admin profile instead of the operator profile. Prefer approving UAC
-with the same Windows user when possible.
+### Split-Privilege Workstation Contract
 
-When user-profile Codex integration is enabled, install/update writes the
-standard Codex memory settings and normalizes `service_tier = "fast"` in
-`%USERPROFILE%\.codex\config.toml` idempotently. The helper reuses existing
-top-level keys plus `[features]` and `[memories]` sections, and must not append
-duplicate blocks on repeated runs.
+The GUI starts unelevated and captures the interactive account, SID, profile,
+and effective `CODEX_HOME`. It validates bootstrap paths against the canonical
+read-only `revAgent-deploy\tools`, `channels`, and selected signed `releases`
+roots. It then launches only the bounded machine phase through UAC. That phase
+must receive the captured user identity, run elevated, and never execute a
+binary from `%LOCALAPPDATA%`, `%APPDATA%`, npm shims, or another user-writable
+path. After it exits, the original GUI process runs `-UserPhaseOnly` without
+elevation. A different credential-provider identity, SID, or profile fails
+closed instead of redirecting integration into an administrator profile.
+
+`-NoProfile` does not disable PowerShell module auto-loading. Every phase
+therefore replaces inherited `PSModulePath` with canonical PSHOME/System32/
+Program Files roots and imports security, management, archive, CIM, and task
+modules by exact protected manifests before any trust probe. The elevated phase
+also replaces inherited `TEMP`/`TMP` with a new administrator/SYSTEM-only
+directory below canonical Windows Temp before importing modules that compile or
+load native helpers.
+
+The machine install root is administrator-owned. Standard users receive
+read/execute access to code, `package`, `runtime`, updater scripts/libraries and
+config, Revit payload, and the machine Codex source. Their write access is
+limited to updater `logs`, `user-state`, the product data `state` root, and
+declared add-on state roots. Never make an executable/config tree writable just
+to support the scheduled audit or user integration.
+
+The unelevated integration resolves an explicit target `CODEX_HOME`, then the
+target user's environment override, then `%USERPROFILE%\.codex`. Codex CLI and
+Node candidates are classified by origin, Authenticode signer, version, and
+capabilities; the persisted Node command must be a signed system runtime under
+Program Files. Config mutation uses an exclusive lock, expected SHA-256, and a
+same-directory atomic replace while retaining idempotent `service_tier =
+"fast"`, `[features]`, and `[memories]` normalization. Registration is accepted
+only after `codex mcp get <name> --json` matches and both servers answer MCP
+`initialize` plus `tools/list`.
+
+`managed-user-pack` copies the managed skill to the canonical
+`%USERPROFILE%\.agents\skills\revAgent` path and removes only hash-verified
+managed `.codex\skills` duplicates. User-root reparse components and unexpected
+hardlinks fail closed. `preserve-local` performs no instruction replacement;
+it reports `present`, `loaded`, safe path, and SHA-256 for skill and AGENTS
+surfaces while MCP/config work continues.
 It also writes a managed revAgent UTF-8 block to both Windows PowerShell and
 PowerShell 7 user profile files, and sets the current user's default console
 code page to UTF-8. This keeps Turkish text in `AGENTS.md`, `SKILL.md`, and
@@ -1306,16 +1378,38 @@ MCP/Revit output readable in Codex PowerShell terminals. Installer, updater,
 updater-task installer, and migration entrypoints also set UTF-8 in the current
 process before writing transcript/log output, because scheduled or remote
 automation commonly launches PowerShell with `-NoProfile`.
-Under `preserve-local`, install/update leaves the existing machine AGENTS file,
-machine skill directory, user AGENTS hardlink, and user skill junction/copy in
-place. Codex memory and UTF-8 config writes remain enabled unless
-`-SkipCodexUserIntegration` is explicitly passed.
+ChatGPT may be open or closed during the two-phase update, but an already-open
+task can retain stale MCP/skill descriptors. Acceptance must open a genuinely
+new ChatGPT task after user integration (restart ChatGPT if the new task still
+shows stale state) and verify revAgent MCP, AGENTS, and the expected managed or
+preserve-local skill attestation.
+
+Security/compatibility acceptance for updater changes includes:
+
+- unsigned/malicious Codex and Node candidates are not executed;
+- config, skill, AGENTS, and legacy-cleanup reparse/hardlink fixtures fail
+  closed without touching the target behind the link;
+- default and explicit `CODEX_HOME` work, while a different UAC/current-user SID
+  cannot receive the original user's integration;
+- ChatGPT-open and ChatGPT-closed runs complete, followed by new-task uptake;
+- config compare-and-swap rejects a changed expected hash, `mcp get` matches
+  both commands/arguments, and both `initialize`/`tools/list` handshakes pass.
+
+Deliver this risk path through the normal draft PR, protected engineering and
+review gates, merge, and automatic signed source-free build. Production NAS
+publish remains a separate approved `publish_to_nas=true` dispatch. Manually
+update one approved pilot from that exact signed stable artifact and verify
+ACLs, both phase reports, Revit behavior where applicable, and the new ChatGPT
+task before broad rollout. Update only online machines; record powered-off
+machines as pending normal uptake and close rollout only when canonical
+version/hash and rollout-audit evidence agree.
 
 Background updater notifications:
 
 - `deferred-revit-close-required`: user must save/sync, close Revit, and rerun
   the updater because Revit-loaded payload files changed.
-- `updated`: background update completed.
+- audit notifications report `update-available`, current, or guarded status;
+  they do not report a background payload install.
 - Notifications are throttled per version/status; default throttle is 240
   minutes.
 - For supervised rollouts where the normal notification path is unsuitable for
@@ -1368,11 +1462,17 @@ timestamped `.codex\AGENTS.md.backup-*`, `.codex\config.toml.backup-*`, or
 Uninstall command:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File ".\installer\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
+powershell -ExecutionPolicy Bypass -File ".\installer\install-self-contained.ps1" `
+  -RevitVersion 2022 `
+  -Uninstall `
+  -SkipCodexUserIntegration `
+  -SkipUserProfileCleanup `
+  -SkipLegacyCleanup
 ```
 
-Use `-RemoveAgents` only when global/workspace `AGENTS.md` should also be
-removed.
+Elevated machine-only uninstall also requires `-SkipCodexUserIntegration`,
+`-SkipUserProfileCleanup`, and `-SkipLegacyCleanup`. Remove user Codex
+instructions only through a separate, explicit unelevated cleanup workflow.
 
 ## Diagnostics
 

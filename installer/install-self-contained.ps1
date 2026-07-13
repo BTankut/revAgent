@@ -11,26 +11,534 @@ param(
     [string]$CodexInstructionPolicy = "",
     [switch]$SkipCodexSkillInstall,
     [switch]$SkipCodexUserIntegration,
+    [switch]$SkipUserProfileCleanup,
     [switch]$SkipLegacyCleanup,
     [switch]$SkipRevitPayloadInstall,
     [switch]$SkipRuntimePayloadInstall,
     [switch]$SuppressNextSteps,
     [switch]$Uninstall,
-    [switch]$RemoveAgents
+    [switch]$RemoveAgents,
+    [switch]$ModulePathSecuritySmokeTest,
+    [string]$AddinPathSecuritySmokeTest = ''
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:RevAgentOsSystemDirectory = [Environment]::SystemDirectory
+$script:RevAgentOsWindowsDirectory = [System.IO.Directory]::GetParent($script:RevAgentOsSystemDirectory).FullName
+$script:RevAgentOsProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$script:RevAgentOsCommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+$script:RevAgentOsUserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+$script:RevAgentOsAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+$script:RevAgentOsLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 
+function Initialize-RevAgentTrustedPowerShellModules {
+    # Standalone elevated repair/uninstall must not inherit user module roots.
+    $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    [void]$candidateRoots.Add([System.IO.Path]::Combine($PSHOME, 'Modules'))
+    [void]$candidateRoots.Add([System.IO.Path]::Combine($script:RevAgentOsSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
+    foreach ($programFilesRoot in @($script:RevAgentOsProgramFiles, [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86))) {
+        if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
+        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
+    }
+
+    $trustedRoots = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in $candidateRoots) {
+        $fullPath = [System.IO.Path]::GetFullPath($candidate).TrimEnd('\')
+        if (-not [System.IO.Directory]::Exists($fullPath) -or -not $seen.Add($fullPath)) { continue }
+        if (([System.IO.File]::GetAttributes($fullPath) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Trusted PowerShell module root is a reparse point: $fullPath"
+        }
+        [void]$trustedRoots.Add($fullPath)
+    }
+    if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
+    $env:PSModulePath = [string]::Join([System.IO.Path]::PathSeparator, $trustedRoots.ToArray())
+
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+        $manifestPath = [System.IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
+        if (-not [System.IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
+        Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
+    }
+    $scheduledTasksManifest = [System.IO.Path]::Combine($script:RevAgentOsSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules', 'ScheduledTasks', 'ScheduledTasks.psd1')
+    if (-not [System.IO.File]::Exists($scheduledTasksManifest)) { throw "Required ScheduledTasks module manifest was not found: $scheduledTasksManifest" }
+    Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksManifest -Force -ErrorAction Stop
+    return $env:PSModulePath
+}
+
+$script:RevAgentTrustedPowerShellModulePath = Initialize-RevAgentTrustedPowerShellModules
+if ($ModulePathSecuritySmokeTest) {
+    $getAclCommand = Microsoft.PowerShell.Core\Get-Command Get-Acl -CommandType Cmdlet -ErrorAction Stop
+    $expandArchiveCommand = Microsoft.PowerShell.Core\Get-Command Expand-Archive -CommandType Function -ErrorAction Stop
+    [pscustomobject][ordered]@{
+        success = $true
+        action = 'module-path-security-smoke-test'
+        psModulePath = $env:PSModulePath
+        getAclModulePath = [string]$getAclCommand.Module.Path
+        expandArchiveModulePath = [string]$expandArchiveCommand.Module.Path
+    } | ConvertTo-Json -Compress
+    return
+}
+
+# This script owns only machine-wide payload work. User Codex/config/profile
+# integration must always return to the original unelevated desktop process and
+# run through Invoke-revAgent-CodexUserIntegration.ps1. Keeping the historical
+# parameter is package-compatible, but omitting it now fails closed instead of
+# reaching legacy Set-Content/hardlink paths in a user profile.
+if (-not $SkipCodexUserIntegration -and [string]::IsNullOrWhiteSpace($AddinPathSecuritySmokeTest)) {
+    throw "install-self-contained.ps1 is machine-only and requires -SkipCodexUserIntegration. Run installer\nas\Invoke-revAgent-CodexUserIntegration.ps1 separately as the original unelevated interactive user."
+}
+
+function Assert-RevAgentCanonicalAddinPathLinkSafe {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $pathRoot = [System.IO.Path]::GetPathRoot($fullPath)
+    $cursor = $fullPath
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if (Microsoft.PowerShell.Management\Test-Path -LiteralPath $cursor) {
+            $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                -not [string]::IsNullOrWhiteSpace($linkType)) {
+                throw "Canonical Revit add-in path contains a reparse point or filesystem link: $($item.FullName) ($linkType)"
+            }
+        }
+        if ([string]::Equals($cursor, $pathRoot, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $parent = [System.IO.Directory]::GetParent($cursor)
+        if ($null -eq $parent) { break }
+        $next = $parent.FullName
+        if ([string]::Equals($next, $cursor, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = $next
+    }
+    return $fullPath
+}
+
+if (-not [string]::IsNullOrWhiteSpace($AddinPathSecuritySmokeTest)) {
+    $safePath = Assert-RevAgentCanonicalAddinPathLinkSafe -Path $AddinPathSecuritySmokeTest
+    [pscustomobject][ordered]@{ success = $true; action = 'addin-path-security-smoke-test'; path = $safePath } | ConvertTo-Json -Compress
+    return
+}
+
+# Normal machine installation is allowed only from the protected installed
+# package. Repo/Desktop copies are developer inputs and must never become an
+# elevated code origin merely because machine-only flags were supplied.
+$earlyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$earlyPrincipal = [Security.Principal.WindowsPrincipal]::new($earlyIdentity)
+if (-not $earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    throw "install-self-contained.ps1 requires the protected elevated machine phase. Start the protected revAgent GUI."
+}
+$protectedInstallRoot = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "DPE\revAgent")).TrimEnd("\")
+$expectedInstallerPath = [IO.Path]::GetFullPath((Join-Path $protectedInstallRoot "package\installer\install-self-contained.ps1"))
+$actualInstallerPath = [IO.Path]::GetFullPath($PSCommandPath)
+if (-not [string]::Equals($actualInstallerPath, $expectedInstallerPath, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Elevated self-contained installation must run from the protected installed package '$expectedInstallerPath'; refusing '$actualInstallerPath'."
+}
 $installerLibRoot = Join-Path $PSScriptRoot "lib"
-Import-Module (Join-Path $installerLibRoot "RevAgent.HiddenLauncher.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.ScheduledTask.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.RevitVersions.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.Permissions.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.LogRetention.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.CodexRegistration.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.ConfigSync.psm1") -Force
-Import-Module (Join-Path $installerLibRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
+$protectedInstallerModuleNames = @(
+    "RevAgent.SecureTemp.psm1",
+    "RevAgent.HiddenLauncher.psm1",
+    "RevAgent.ScheduledTask.psm1",
+    "RevAgent.RevitVersions.psm1",
+    "RevAgent.Permissions.psm1",
+    "RevAgent.LogRetention.psm1",
+    "RevAgent.CodexRegistration.psm1",
+    "RevAgent.ConfigSync.psm1",
+    "RevAgent.DesktopLauncherCleanup.psm1"
+)
+$protectedInstallerOriginFiles = @($actualInstallerPath) + @($protectedInstallerModuleNames | ForEach-Object { Join-Path $installerLibRoot $_ })
+
+function Assert-RevAgentProtectedInstallerOriginAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProtectedRoot
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $fullRoot = [IO.Path]::GetFullPath($ProtectedRoot).TrimEnd("\")
+    if (-not [string]::Equals($fullPath.TrimEnd("\"), $fullRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.StartsWith($fullRoot + "\", [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected installer origin escaped the canonical machine root. path=$fullPath root=$fullRoot"
+    }
+    [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $fullPath)
+
+    $trustedOwnerSids = @("S-1-5-18", "S-1-5-32-544")
+    $writeMask = [int64]([Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Modify -bor
+        [Security.AccessControl.FileSystemRights]::FullControl -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership)
+    $cursor = $fullPath
+    while (($cursor + "\").StartsWith($fullRoot + "\", [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $cursor)) {
+            throw "Protected installer origin component is missing: $cursor"
+        }
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+            throw "Protected installer origin contains a link/reparse component: $cursor"
+        }
+        $acl = Microsoft.PowerShell.Security\Get-Acl -LiteralPath $cursor -ErrorAction Stop
+        $ownerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($trustedOwnerSids -notcontains $ownerSid) {
+            throw "Protected installer origin owner must be SYSTEM or Administrators. path=$cursor owner=$ownerSid"
+        }
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [StringComparison]::OrdinalIgnoreCase) -and
+            -not $acl.AreAccessRulesProtected) {
+            throw "Protected installer root DACL must be protected from inherited parent writes: $cursor"
+        }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            $sid = [string]$rule.IdentityReference.Value
+            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                $trustedOwnerSids -notcontains $sid -and
+                (([int64]$rule.FileSystemRights -band $writeMask) -ne 0)) {
+                throw "Protected installer origin grants write-capable access to a foreign principal. path=$cursor principal=$sid rights=$($rule.FileSystemRights)"
+            }
+        }
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = Split-Path -Parent $cursor
+    }
+    return $fullPath
+}
+
+function New-RevAgentProtectedInstallerDirectorySecurity {
+    param([switch]$UsersReadAndExecute)
+
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner([Security.Principal.SecurityIdentifier]::new("S-1-5-32-544"))
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($entry in @(
+            [pscustomobject]@{ Sid = "S-1-5-18"; Rights = [Security.AccessControl.FileSystemRights]::FullControl },
+            [pscustomobject]@{ Sid = "S-1-5-32-544"; Rights = [Security.AccessControl.FileSystemRights]::FullControl }
+        )) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new([string]$entry.Sid),
+                [Security.AccessControl.FileSystemRights]$entry.Rights,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    if ($UsersReadAndExecute) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new("S-1-5-32-545"),
+                [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    return $security
+}
+
+function New-RevAgentProtectedInstallerSubdirectory {
+    param(
+        [Parameter(Mandatory = $true)][IO.DirectoryInfo]$Parent,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][Security.AccessControl.DirectorySecurity]$Security
+    )
+
+    $path = Join-Path $Parent.FullName $Name
+    $aclCreateOverload = @($Parent.GetType().GetMethods() | Where-Object {
+            $_.Name -eq "CreateSubdirectory" -and $_.GetParameters().Count -eq 2
+        } | Select-Object -First 1)
+    if ($aclCreateOverload.Count -gt 0) {
+        [void]$Parent.CreateSubdirectory($Name, $Security)
+    }
+    elseif ("System.IO.FileSystemAclExtensions" -as [type]) {
+        [void][IO.FileSystemAclExtensions]::CreateDirectory($Security, $path)
+    }
+    else {
+        throw "No ACL-at-create directory API is available for protected installer temp creation."
+    }
+    return [IO.DirectoryInfo]::new($path)
+}
+
+function Initialize-RevAgentProtectedInstallerCompileTemp {
+    param([Parameter(Mandatory = $true)][string]$ProtectedRoot)
+
+    $rootInfo = [IO.DirectoryInfo]::new([IO.Path]::GetFullPath($ProtectedRoot))
+    $machineTempPath = Join-Path $rootInfo.FullName "machine-temp"
+    if (-not [IO.Directory]::Exists($machineTempPath)) {
+        [void](New-RevAgentProtectedInstallerSubdirectory -Parent $rootInfo -Name "machine-temp" -Security (New-RevAgentProtectedInstallerDirectorySecurity -UsersReadAndExecute))
+    }
+    [void](Assert-RevAgentProtectedInstallerOriginAcl -Path $machineTempPath -ProtectedRoot $ProtectedRoot)
+    $machineTempInfo = [IO.DirectoryInfo]::new($machineTempPath)
+    $leafName = "preimport-" + [Guid]::NewGuid().ToString("N")
+    $leafInfo = New-RevAgentProtectedInstallerSubdirectory -Parent $machineTempInfo -Name $leafName -Security (New-RevAgentProtectedInstallerDirectorySecurity)
+    [void](Assert-RevAgentProtectedInstallerOriginAcl -Path $leafInfo.FullName -ProtectedRoot $ProtectedRoot)
+    $context = [pscustomobject]@{
+        Path = $leafInfo.FullName
+        PreviousTemp = [Environment]::GetEnvironmentVariable("TEMP", "Process")
+        PreviousTmp = [Environment]::GetEnvironmentVariable("TMP", "Process")
+    }
+    [Environment]::SetEnvironmentVariable("TEMP", $leafInfo.FullName, "Process")
+    [Environment]::SetEnvironmentVariable("TMP", $leafInfo.FullName, "Process")
+    return $context
+}
+
+function Complete-RevAgentProtectedInstallerCompileTemp {
+    param([Parameter(Mandatory = $true)][object]$Context)
+    [Environment]::SetEnvironmentVariable("TEMP", [string]$Context.PreviousTemp, "Process")
+    [Environment]::SetEnvironmentVariable("TMP", [string]$Context.PreviousTmp, "Process")
+    if ([IO.Directory]::Exists([string]$Context.Path)) {
+        [IO.Directory]::Delete([string]$Context.Path, $true)
+    }
+}
+
+# First validate ownership/DACL/link topology without loading product code. A
+# protected one-run compiler temp is then used for the native file-identity and
+# restricted-token effective-write probes, so Add-Type never uses inherited
+# user TEMP/TMP in the elevated process.
+foreach ($originFile in $protectedInstallerOriginFiles) {
+    [void](Assert-RevAgentProtectedInstallerOriginAcl -Path $originFile -ProtectedRoot $protectedInstallRoot)
+}
+$preImportCompileTemp = Initialize-RevAgentProtectedInstallerCompileTemp -ProtectedRoot $protectedInstallRoot
+try {
+    if (-not ("RevAgent.ProtectedInstallerOriginNative" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Diagnostics;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+namespace RevAgent
+{
+    public sealed class ProtectedInstallerWriteProbe
+    {
+        public bool CreateNewAllowed { get; internal set; }
+        public bool AppendAllowed { get; internal set; }
+    }
+
+    public static class ProtectedInstallerOriginNative
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME { public uint LowDateTime; public uint HighDateTime; }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BY_HANDLE_FILE_INFORMATION
+        {
+            public uint FileAttributes;
+            public FILETIME CreationTime;
+            public FILETIME LastAccessTime;
+            public FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SID_AND_ATTRIBUTES { public IntPtr Sid; public uint Attributes; }
+
+        private const uint TOKEN_DUPLICATE = 0x0002;
+        private const uint TOKEN_IMPERSONATE = 0x0004;
+        private const uint TOKEN_QUERY = 0x0008;
+        private const uint DISABLE_MAX_PRIVILEGE = 0x00000001;
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION information);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool OpenProcessToken(IntPtr processHandle, uint desiredAccess, out IntPtr tokenHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool ConvertStringSidToSid(string stringSid, out IntPtr sid);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool CreateRestrictedToken(
+            IntPtr existingTokenHandle,
+            uint flags,
+            uint disableSidCount,
+            [In] SID_AND_ATTRIBUTES[] sidsToDisable,
+            uint deletePrivilegeCount,
+            IntPtr privilegesToDelete,
+            uint restrictedSidCount,
+            IntPtr sidsToRestrict,
+            out IntPtr newTokenHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool ImpersonateLoggedOnUser(IntPtr tokenHandle);
+
+        [DllImport("advapi32.dll", SetLastError = true)]
+        private static extern bool RevertToSelf();
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
+
+        [DllImport("kernel32.dll")]
+        private static extern IntPtr LocalFree(IntPtr memory);
+
+        private static BY_HANDLE_FILE_INFORMATION Read(SafeFileHandle handle)
+        {
+            BY_HANDLE_FILE_INFORMATION information;
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.", "handle");
+            if (!GetFileInformationByHandle(handle, out information)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return information;
+        }
+
+        public static uint GetLinkCount(SafeFileHandle handle) { return Read(handle).NumberOfLinks; }
+
+        public static string GetIdentity(SafeFileHandle handle)
+        {
+            BY_HANDLE_FILE_INFORMATION information = Read(handle);
+            return String.Format("{0:X8}:{1:X8}{2:X8}", information.VolumeSerialNumber, information.FileIndexHigh, information.FileIndexLow);
+        }
+
+        private static bool IsAccessDenied(Exception exception)
+        {
+            return exception is UnauthorizedAccessException || ((Marshal.GetHRForException(exception) & 0xFFFF) == 5);
+        }
+
+        public static ProtectedInstallerWriteProbe ProbeRestrictedWrite(string directoryPath, string existingFilePath)
+        {
+            IntPtr processToken = IntPtr.Zero;
+            IntPtr restrictedToken = IntPtr.Zero;
+            IntPtr administratorsSid = IntPtr.Zero;
+            bool impersonating = false;
+            string createPath = Path.Combine(directoryPath, ".revagent-origin-probe-" + Guid.NewGuid().ToString("N") + ".tmp");
+            ProtectedInstallerWriteProbe result = new ProtectedInstallerWriteProbe();
+            try
+            {
+                if (!OpenProcessToken(Process.GetCurrentProcess().Handle, TOKEN_DUPLICATE | TOKEN_IMPERSONATE | TOKEN_QUERY, out processToken))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (!ConvertStringSidToSid("S-1-5-32-544", out administratorsSid))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                SID_AND_ATTRIBUTES[] disabled = new SID_AND_ATTRIBUTES[] {
+                    new SID_AND_ATTRIBUTES { Sid = administratorsSid, Attributes = 0 }
+                };
+                if (!CreateRestrictedToken(processToken, DISABLE_MAX_PRIVILEGE, 1, disabled, 0, IntPtr.Zero, 0, IntPtr.Zero, out restrictedToken))
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                if (!ImpersonateLoggedOnUser(restrictedToken)) throw new Win32Exception(Marshal.GetLastWin32Error());
+                impersonating = true;
+
+                try
+                {
+                    using (FileStream stream = new FileStream(createPath, FileMode.CreateNew, FileAccess.Write, FileShare.None)) { }
+                    result.CreateNewAllowed = true;
+                }
+                catch (Exception exception)
+                {
+                    if (!IsAccessDenied(exception)) throw;
+                }
+
+                try
+                {
+                    using (FileStream stream = new FileStream(existingFilePath, FileMode.Append, FileAccess.Write, FileShare.ReadWrite | FileShare.Delete)) { }
+                    result.AppendAllowed = true;
+                }
+                catch (Exception exception)
+                {
+                    if (!IsAccessDenied(exception)) throw;
+                }
+                return result;
+            }
+            finally
+            {
+                if (impersonating) RevertToSelf();
+                if (restrictedToken != IntPtr.Zero) CloseHandle(restrictedToken);
+                if (processToken != IntPtr.Zero) CloseHandle(processToken);
+                if (administratorsSid != IntPtr.Zero) LocalFree(administratorsSid);
+                if (File.Exists(createPath)) File.Delete(createPath);
+            }
+        }
+    }
+}
+'@
+    }
+}
+finally {
+    Complete-RevAgentProtectedInstallerCompileTemp -Context $preImportCompileTemp
+}
+
+function Read-RevAgentProtectedInstallerOriginEvidence {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $stream = $null
+    $algorithm = $null
+    try {
+        $stream = [IO.FileStream]::new($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $linkCount = [uint32][RevAgent.ProtectedInstallerOriginNative]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) {
+            throw "Protected installer origin file must have exactly one hardlink reference. path=$fullPath linkCount=$linkCount"
+        }
+        $identity = [RevAgent.ProtectedInstallerOriginNative]::GetIdentity($stream.SafeFileHandle)
+        $length = $stream.Length
+        $algorithm = [Security.Cryptography.SHA256]::Create()
+        $hash = ([BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace("-", "")
+        return [pscustomobject]@{ Path = $fullPath; Identity = $identity; LinkCount = $linkCount; Length = $length; Sha256 = $hash }
+    }
+    finally {
+        if ($null -ne $algorithm) { $algorithm.Dispose() }
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
+function Assert-RevAgentProtectedInstallerOriginFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$ProtectedRoot,
+        [object]$ExpectedEvidence = $null
+    )
+
+    $fullPath = Assert-RevAgentProtectedInstallerOriginAcl -Path $Path -ProtectedRoot $ProtectedRoot
+    $evidence = Read-RevAgentProtectedInstallerOriginEvidence -Path $fullPath
+    $probe = [RevAgent.ProtectedInstallerOriginNative]::ProbeRestrictedWrite((Split-Path -Parent $fullPath), $fullPath)
+    if ($probe.CreateNewAllowed) {
+        throw "Protected installer origin directory is effectively writable by the restricted interactive token (CreateNew succeeded): $(Split-Path -Parent $fullPath)"
+    }
+    if ($probe.AppendAllowed) {
+        throw "Protected installer origin file is effectively append-writable by the restricted interactive token: $fullPath"
+    }
+    if ($null -ne $ExpectedEvidence -and (
+            -not [string]::Equals([string]$evidence.Identity, [string]$ExpectedEvidence.Identity, [StringComparison]::Ordinal) -or
+            -not [string]::Equals([string]$evidence.Sha256, [string]$ExpectedEvidence.Sha256, [StringComparison]::OrdinalIgnoreCase) -or
+            [long]$evidence.Length -ne [long]$ExpectedEvidence.Length)) {
+        throw "Protected installer origin file changed identity or content before import: $fullPath"
+    }
+    return $evidence
+}
+
+$protectedInstallerOriginEvidence = @{}
+foreach ($originFile in $protectedInstallerOriginFiles) {
+    $evidence = Assert-RevAgentProtectedInstallerOriginFile -Path $originFile -ProtectedRoot $protectedInstallRoot
+    $protectedInstallerOriginEvidence[[IO.Path]::GetFullPath($originFile)] = $evidence
+}
+
+function Import-RevAgentProtectedInstallerModule {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not $protectedInstallerOriginEvidence.ContainsKey($fullPath)) {
+        throw "Protected installer module was not included in the pre-import evidence set: $fullPath"
+    }
+    [void](Assert-RevAgentProtectedInstallerOriginFile -Path $fullPath -ProtectedRoot $protectedInstallRoot -ExpectedEvidence $protectedInstallerOriginEvidence[$fullPath])
+    Microsoft.PowerShell.Core\Import-Module -Name $fullPath -Force -ErrorAction Stop
+}
+
+[void](Assert-RevAgentProtectedInstallerOriginFile -Path $actualInstallerPath -ProtectedRoot $protectedInstallRoot -ExpectedEvidence $protectedInstallerOriginEvidence[$actualInstallerPath])
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.SecureTemp.psm1")
+$script:RevAgentSecureMachineTempContext = $null
+$earlyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$earlyPrincipal = [Security.Principal.WindowsPrincipal]::new($earlyIdentity)
+if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    $script:RevAgentSecureMachineTempContext = Initialize-RevAgentSecureMachineTemp
+}
+try {
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.HiddenLauncher.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.ScheduledTask.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.RevitVersions.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.Permissions.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.LogRetention.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.CodexRegistration.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.ConfigSync.psm1")
+Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.DesktopLauncherCleanup.psm1")
 Set-RevAgentCurrentProcessUtf8Console | Out-Null
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
@@ -45,7 +553,7 @@ $codexUserSourceRoot = Join-Path $PSScriptRoot "codex-user"
 if (-not (Test-Path -LiteralPath (Join-Path $codexUserSourceRoot "SKILL.md") -PathType Leaf)) {
     $codexUserSourceRoot = $repoRoot
 }
-$programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+$programDataRoot = $script:RevAgentOsCommonAppData
 $defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
 $legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 $legacyUpdaterConfigPath = Join-Path $legacyInstallRoot "updater\updater-config.json"
@@ -58,8 +566,28 @@ if ([string]::IsNullOrWhiteSpace($ServerTarget)) {
 if ([string]::IsNullOrWhiteSpace($AllUsersAddinRoot)) {
     $AllUsersAddinRoot = Join-Path $programDataRoot "Autodesk\Revit\Addins\$RevitVersion"
 }
+$canonicalInstallRoot = Join-Path $script:RevAgentOsCommonAppData 'DPE\revAgent'
+$canonicalServerTarget = Join-Path $canonicalInstallRoot 'runtime'
+$canonicalAddinRoot = Join-Path $script:RevAgentOsCommonAppData ("Autodesk\Revit\Addins\{0}" -f $RevitVersion)
+if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    foreach ($entry in @(
+            [pscustomobject]@{ Name = 'InstallRoot'; Actual = $InstallRoot; Expected = $canonicalInstallRoot },
+            [pscustomobject]@{ Name = 'ServerTarget'; Actual = $ServerTarget; Expected = $canonicalServerTarget },
+            [pscustomobject]@{ Name = 'AllUsersAddinRoot'; Actual = $AllUsersAddinRoot; Expected = $canonicalAddinRoot }
+        )) {
+        if (-not [string]::Equals([IO.Path]::GetFullPath([string]$entry.Actual).TrimEnd('\'), [IO.Path]::GetFullPath([string]$entry.Expected).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Elevated self-contained $($entry.Name) must equal canonical managed path '$($entry.Expected)'; refusing '$($entry.Actual)'."
+        }
+    }
+    if (-not $SkipUserProfileCleanup -or -not $SkipLegacyCleanup -or $LegacyServerTargets.Count -gt 0) {
+        throw 'Elevated self-contained install requires -SkipUserProfileCleanup, -SkipLegacyCleanup, and no LegacyServerTargets.'
+    }
+}
 $addinRoot = $AllUsersAddinRoot
-$legacyUserAddinRoot = Join-Path $env:APPDATA "Autodesk\Revit\Addins\$RevitVersion"
+if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+    [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $addinRoot)
+}
+$legacyUserAddinRoot = Join-Path $script:RevAgentOsAppData "Autodesk\Revit\Addins\$RevitVersion"
 $pluginRoot = Join-Path $InstallRoot "revit-plugin"
 $pluginFolderName = "revAgentPlugin"
 $legacyPluginFolderName = "revit_mcp_plugin"
@@ -82,7 +610,7 @@ $codexMachineSkillTarget = Join-Path $codexMachineSkillsRoot $codexSkillName
 $legacyCodexMachineSkillTarget = Join-Path $codexMachineSkillsRoot $legacyCodexSkillName
 $legacyInstallRootMachineSkillTarget = Join-Path $legacyInstallRoot "codex\skills\$legacyCodexSkillName"
 $codexMachineAgentsTarget = Join-Path $codexMachineRoot "AGENTS.md"
-$codexRoot = Join-Path $env:USERPROFILE ".codex"
+$codexRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
 $codexSkillsRoot = Join-Path $codexRoot "skills"
 $codexSkillTarget = Join-Path $codexSkillsRoot $codexSkillName
 $legacyCodexSkillTarget = Join-Path $codexSkillsRoot $legacyCodexSkillName
@@ -134,6 +662,13 @@ function Resolve-CodexInstructionPolicy {
 
 $CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $CodexInstructionPolicy -ConfigPaths @($updaterConfigPath, $legacyUpdaterConfigPath)
 $preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
+
+if ((Test-RevAgentAdministrator) -and
+    ((-not $SkipCodexUserIntegration) -or
+        (-not $SkipUserProfileCleanup) -or
+        (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)))) {
+    throw "Elevated revAgent machine install must use -SkipCodexUserIntegration, -SkipUserProfileCleanup, and an empty -WorkspaceAgentsTarget. Run per-user Codex/instruction cleanup from the original unelevated user phase."
+}
 
 $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
 if ($runningRevit -and -not $SkipRevitPayloadInstall) {
@@ -485,7 +1020,7 @@ function Install-UpdaterToolsFromPackage {
     }
 
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         $source = Join-Path $SourceRoot $toolName
         Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:($toolName -ne "migrate-source-free-install.ps1")
     }
@@ -508,14 +1043,15 @@ function Install-UpdaterToolsFromPackage {
     if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
         @(
             "@echo off",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
+            "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
+            "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
             "pause"
         ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
         @(
             "@echo off",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
+            "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
         ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
     }
@@ -575,6 +1111,12 @@ if ($Uninstall -and [string]::IsNullOrWhiteSpace($RevitInstallRoot)) {
 }
 else {
     $revitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
+    if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        $canonicalRevitInstallRoot = Join-Path $script:RevAgentOsProgramFiles ("Autodesk\Revit {0}" -f $RevitVersion)
+        if (-not [string]::Equals([IO.Path]::GetFullPath($revitInstallRoot).TrimEnd('\'), [IO.Path]::GetFullPath($canonicalRevitInstallRoot).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Elevated self-contained RevitInstallRoot must equal canonical Autodesk path '$canonicalRevitInstallRoot'; refusing '$revitInstallRoot'."
+        }
+    }
 }
 
 function Assert-RevAgentCleanupPath {
@@ -592,16 +1134,16 @@ function Assert-RevAgentCleanupPath {
     $leaf = Split-Path -Leaf $fullPath
     $blockedRoots = @(
         $rootPath,
-        (Get-NormalizedPath -Path $env:USERPROFILE),
-        (Get-NormalizedPath -Path $env:APPDATA),
-        (Get-NormalizedPath -Path $env:LOCALAPPDATA),
-        (Get-NormalizedPath -Path $env:ProgramFiles),
+        (Get-NormalizedPath -Path $script:RevAgentOsUserProfile),
+        (Get-NormalizedPath -Path $script:RevAgentOsAppData),
+        (Get-NormalizedPath -Path $script:RevAgentOsLocalAppData),
+        (Get-NormalizedPath -Path $script:RevAgentOsProgramFiles),
         (Get-NormalizedPath -Path $programDataRoot),
         (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk")),
         (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk\Revit")),
         (Get-NormalizedPath -Path (Join-Path $programDataRoot "Autodesk\Revit\Addins")),
-        (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk")),
-        (Get-NormalizedPath -Path (Join-Path $env:APPDATA "Autodesk\Revit")),
+        (Get-NormalizedPath -Path (Join-Path $script:RevAgentOsAppData "Autodesk")),
+        (Get-NormalizedPath -Path (Join-Path $script:RevAgentOsAppData "Autodesk\Revit")),
         (Get-NormalizedPath -Path $addinRoot),
         (Get-NormalizedPath -Path $InstallRoot),
         (Get-NormalizedPath -Path $legacyInstallRoot),
@@ -978,6 +1520,9 @@ function Repair-RevAgentManagedInstallPermissions {
         -RevitVersion $RevitVersion `
         -IncludeExistingPayloadTrees:$IncludeExistingPayloadTrees
     Invoke-RevAgentManagedPermissionRepair -Targets $targets
+    if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $addinRoot)
+    }
 }
 
 function Invoke-RevAgentCleanup {
@@ -989,7 +1534,7 @@ function Invoke-RevAgentCleanup {
         Remove-RevAgentPath -Path (Join-Path $addinRoot $addinManifestFileName) -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
         Remove-RevAgentPath -Path (Join-Path $addinRoot $legacyAddinManifestFileName) -Label "legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
         Remove-RevAgentPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
-        if (-not $SkipLegacyCleanup) {
+        if ((-not $SkipLegacyCleanup) -and (-not $SkipUserProfileCleanup)) {
             Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $addinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
             Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot $legacyAddinManifestFileName) -Label "legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
             Remove-RevAgentPath -Path (Join-Path $legacyUserAddinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy user revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
@@ -999,8 +1544,8 @@ function Invoke-RevAgentCleanup {
         Remove-RevAgentPath -Path $pluginTarget -Label "revAgent add-in payload directory" -Recurse
         Remove-RevAgentPath -Path $legacyPluginTarget -Label "legacy revAgent add-in payload directory" -Recurse
         Remove-RevAgentPath -Path $commandSetRoot -Label "revAgent machine command directory" -Recurse -AllowedNamePattern "(?i)(^CommandSet$)"
-        if (-not $SkipLegacyCleanup) {
-            Remove-RevAgentPath -Path (Join-Path $env:LOCALAPPDATA "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
+        if ((-not $SkipLegacyCleanup) -and (-not $SkipUserProfileCleanup)) {
+            Remove-RevAgentPath -Path (Join-Path $script:RevAgentOsLocalAppData "revit-mcp-plugin") -Label "revAgent LocalAppData command directory" -Recurse
         }
     }
     else {
@@ -1026,22 +1571,26 @@ function Invoke-RevAgentCleanup {
     }
 
     if ($ForUninstall) {
-        Remove-RevAgentPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
-        Remove-RevAgentPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
+        if (-not $SkipUserProfileCleanup) {
+            Remove-RevAgentPath -Path $codexSkillTarget -Label "Codex revAgent skill directory" -Recurse
+            Remove-RevAgentPath -Path $legacyCodexSkillTarget -Label "legacy Codex revAgent skill directory" -Recurse
+        }
         Remove-RevAgentPath -Path $codexMachineSkillTarget -Label "machine Codex revAgent skill directory" -Recurse
         Remove-RevAgentPath -Path $legacyCodexMachineSkillTarget -Label "legacy machine Codex revAgent skill directory" -Recurse
         Remove-RevAgentPath -Path $legacyInstallRootMachineSkillTarget -Label "legacy install-root Codex skill directory" -Recurse
         if ($RemoveAgents) {
-            Remove-RevAgentPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            if (-not $SkipUserProfileCleanup) {
+                Remove-RevAgentPath -Path $codexAgentsTarget -Label "Codex global AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
+            }
             Remove-RevAgentPath -Path $codexMachineAgentsTarget -Label "machine AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
-            if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+            if ((-not $SkipUserProfileCleanup) -and (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget))) {
                 Remove-RevAgentPath -Path $WorkspaceAgentsTarget -Label "workspace AGENTS.md" -AllowedNamePattern "(?i)(^AGENTS\.md$)"
             }
         }
     }
     elseif (-not $SkipRevitPayloadInstall) {
         Disable-LegacyAddinManifest -Root $addinRoot
-        if (-not $SkipLegacyCleanup) {
+        if ((-not $SkipLegacyCleanup) -and (-not $SkipUserProfileCleanup)) {
             Disable-LegacyAddinManifest -Root $legacyUserAddinRoot
         }
     }
@@ -1063,6 +1612,9 @@ New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
 if (-not $SkipRevitPayloadInstall) {
     New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
+    if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $addinRoot)
+    }
     New-Item -ItemType Directory -Path $pluginRoot -Force | Out-Null
 
     if (Test-Path $pluginTarget) {
@@ -1132,10 +1684,10 @@ if ((-not $SkipRevitPayloadInstall) -and (Test-Path $customDllDir)) {
         $revitInstallRoot,
         (Join-Path $revitInstallRoot "AddIns\CoordinationModel"),
         (Join-Path $revitInstallRoot "AddIns\DynamoForRevit"),
-        (Join-Path ${env:ProgramFiles} "Autodesk\AECGenerativeDesign $RevitVersion\RestDynamoCore"),
-        (Join-Path ${env:ProgramFiles} "Autodesk\AECGenerativeDesign\RestDynamoCore"),
-        (Join-Path $env:WINDIR "Microsoft.NET\Framework64\v4.0.30319"),
-        (Join-Path $env:WINDIR "Microsoft.NET\Framework\v4.0.30319")
+        (Join-Path $script:RevAgentOsProgramFiles "Autodesk\AECGenerativeDesign $RevitVersion\RestDynamoCore"),
+        (Join-Path $script:RevAgentOsProgramFiles "Autodesk\AECGenerativeDesign\RestDynamoCore"),
+        (Join-Path $script:RevAgentOsWindowsDirectory "Microsoft.NET\Framework64\v4.0.30319"),
+        (Join-Path $script:RevAgentOsWindowsDirectory "Microsoft.NET\Framework\v4.0.30319")
     )
 
     $runtimeAssemblies = @(
@@ -1194,7 +1746,7 @@ if ($preserveLocalCodexInstructions) {
     if (-not $SkipCodexUserIntegration) {
         New-Item -ItemType Directory -Path $codexRoot -Force | Out-Null
         [void](Set-RevAgentCodexMemoryConfig -ConfigPath $codexConfigTarget)
-        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $script:RevAgentOsUserProfile -ConfigureConsoleRegistry)
         if ($utf8ProfilePaths.Count -gt 0) {
             Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
         }
@@ -1238,18 +1790,18 @@ else {
 
         New-HardLinkOrCopyFile -Source $codexMachineAgentsTarget -Destination $codexAgentsTarget
         [void](Set-RevAgentCodexMemoryConfig -ConfigPath $codexConfigTarget)
-        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $env:USERPROFILE -ConfigureConsoleRegistry)
+        $utf8ProfilePaths = @(Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $script:RevAgentOsUserProfile -ConfigureConsoleRegistry)
         if ($utf8ProfilePaths.Count -gt 0) {
             Write-Host "PowerShell UTF-8 console profiles: $($utf8ProfilePaths -join '; ')"
         }
     }
 
-    if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+    if ((-not $SkipUserProfileCleanup) -and (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget))) {
         $workspaceAgentsFullPath = [System.IO.Path]::GetFullPath($WorkspaceAgentsTarget)
         $machineAgentsFullPath = [System.IO.Path]::GetFullPath($codexMachineAgentsTarget)
     }
 
-    if ((-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
+    if ((-not $SkipUserProfileCleanup) -and (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) -and
         (-not [string]::Equals($workspaceAgentsFullPath, $machineAgentsFullPath, [System.StringComparison]::OrdinalIgnoreCase))) {
         $workspaceAgentsDir = Split-Path -Parent $workspaceAgentsFullPath
         if (-not [string]::IsNullOrWhiteSpace($workspaceAgentsDir)) {
@@ -1326,21 +1878,33 @@ function New-HiddenUpdaterScheduledTaskAction {
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
 Repair-RevAgentManagedInstallPermissions
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
-Invoke-RevAgentLogRetention -LogsRoot (Join-Path $updaterRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
-Repair-RevAgentManagedInstallPermissions
-Repair-RevAgentScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
-Remove-LegacyRevitMcpInstallRoot
-try {
-    $desktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
-    if ([int]$desktopLauncherCleanup.removedCount -gt 0) {
-        Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.removedCount) -ForegroundColor Green
-    }
-    if ([int]$desktopLauncherCleanup.failedCount -gt 0) {
-        Write-Warning ("Desktop launchers: failed to remove {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.failedCount)
-    }
+$retentionLogsRoot = if ($SkipUserProfileCleanup) {
+    # Secure machine phase never enumerates/deletes the concurrently
+    # user-writable updater logs tree.
+    Join-Path $updaterRoot "machine-logs"
 }
-catch {
-    Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
+else {
+    Join-Path $updaterRoot "logs"
+}
+Invoke-RevAgentLogRetention -LogsRoot $retentionLogsRoot -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+Repair-RevAgentManagedInstallPermissions
+if (-not $SkipUserProfileCleanup) {
+    Repair-RevAgentScheduledTaskAction -ConfigPath $updaterConfigPath -UpdaterPath (Join-Path $updaterRoot "update-from-nas.ps1")
+}
+Remove-LegacyRevitMcpInstallRoot
+if (-not $SkipUserProfileCleanup) {
+    try {
+        $desktopLauncherCleanup = Invoke-RevAgentLegacyDesktopLauncherCleanup
+        if ([int]$desktopLauncherCleanup.removedCount -gt 0) {
+            Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.removedCount) -ForegroundColor Green
+        }
+        if ([int]$desktopLauncherCleanup.failedCount -gt 0) {
+            Write-Warning ("Desktop launchers: failed to remove {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanup.failedCount)
+        }
+    }
+    catch {
+        Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
+    }
 }
 
 Write-Host "Self-contained revAgent bundle installed for Revit $RevitVersion" -ForegroundColor Green
@@ -1396,4 +1960,10 @@ if (-not $SuppressNextSteps) {
     Write-Host "9. Run /skills reload in Codex, or restart Codex"
     Write-Host "10. Open Revit; if prompted for the unsigned add-in, choose Always Load"
     Write-Host "11. revAgent starts automatically. Use the ribbon revAgent Info button to view active version metadata"
+}
+}
+finally {
+    if ($null -ne $script:RevAgentSecureMachineTempContext) {
+        Complete-RevAgentSecureMachineTemp -Context $script:RevAgentSecureMachineTempContext
+    }
 }

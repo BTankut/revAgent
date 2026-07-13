@@ -11,6 +11,20 @@ function New-RevitMcpDailyUpdateTrigger {
     return New-ScheduledTaskTrigger -Daily -At $time
 }
 
+function Test-RevitMcpHiddenScheduledTaskActionMatch {
+    param(
+        [string]$CurrentExecute = "",
+        [string]$CurrentArguments = "",
+        [Parameter(Mandatory = $true)]
+        [string]$DesiredExecute,
+        [Parameter(Mandatory = $true)]
+        [string]$DesiredArguments
+    )
+
+    return [string]::Equals($CurrentExecute, $DesiredExecute, [System.StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($CurrentArguments, $DesiredArguments, [System.StringComparison]::OrdinalIgnoreCase)
+}
+
 function Repair-RevitMcpHiddenScheduledTaskAction {
     param(
         [string]$Name = "revAgent Auto Update",
@@ -47,7 +61,7 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
         Write-RevitMcpHiddenPowerShellLauncher `
             -LauncherPath $launcherPath `
             -ScriptPath $UpdaterPath `
-            -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-NotifyUser", "-OperationMethod", "scheduled-update") `
+            -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-AuditOnly", "-NotifyUser", "-OperationMethod", "scheduled-update-audit") `
             -WaitForExit
         foreach ($legacyLauncherPath in @(Get-RevitMcpLegacyHiddenUpdaterLauncherPaths -ConfigPath $UpdaterConfigPath)) {
             if ((-not [string]::Equals($legacyLauncherPath, $launcherPath, [System.StringComparison]::OrdinalIgnoreCase)) -and
@@ -83,9 +97,11 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
         $currentAction = @($task.Actions | Select-Object -First 1)
         $currentArgs = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Arguments } else { "" }
         $currentExecute = if ($currentAction.Count -gt 0) { [string]$currentAction[0].Execute } else { "" }
-        $currentExecuteMatches = [string]::Equals($currentExecute, $desiredExecute, [System.StringComparison]::OrdinalIgnoreCase) -or
-            [string]::Equals($currentExecute, "wscript.exe", [System.StringComparison]::OrdinalIgnoreCase)
-        $actionMatches = [string]::Equals($currentArgs, $desiredArgs, [System.StringComparison]::OrdinalIgnoreCase) -and $currentExecuteMatches
+        $actionMatches = Test-RevitMcpHiddenScheduledTaskActionMatch `
+            -CurrentExecute $currentExecute `
+            -CurrentArguments $currentArgs `
+            -DesiredExecute $desiredExecute `
+            -DesiredArguments $desiredArgs
 
         if (-not $actionMatches) {
             Set-ScheduledTask -TaskName $Name -Action $action -ErrorAction Stop | Out-Null
@@ -113,10 +129,11 @@ function Repair-RevitMcpHiddenScheduledTaskAction {
 $revAgentFunctionAliases = @{
     "New-RevAgentDailyUpdateTrigger" = "New-RevitMcpDailyUpdateTrigger"
     "Repair-RevAgentHiddenScheduledTaskAction" = "Repair-RevitMcpHiddenScheduledTaskAction"
+    "Test-RevAgentHiddenScheduledTaskActionMatch" = "Test-RevitMcpHiddenScheduledTaskActionMatch"
 }
 foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
     Set-Alias -Name $aliasPair.Key -Value $aliasPair.Value
 }
 
-Export-ModuleMember -Function Repair-RevitMcpHiddenScheduledTaskAction, New-RevitMcpDailyUpdateTrigger
+Export-ModuleMember -Function Repair-RevitMcpHiddenScheduledTaskAction, New-RevitMcpDailyUpdateTrigger, Test-RevitMcpHiddenScheduledTaskActionMatch
 Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

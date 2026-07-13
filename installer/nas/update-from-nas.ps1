@@ -51,17 +51,267 @@ param(
     [switch]$NoNotifyUser,
     [ValidateRange(15, 10080)]
     [int]$NotificationThrottleMinutes = 240,
-    [switch]$AllowReplaceGitPackageTarget
+    [switch]$AllowReplaceGitPackageTarget,
+    [switch]$MachinePhaseOnly,
+    [switch]$UserPhaseOnly,
+    [string]$PhaseResultPath = "",
+    [string]$TargetInteractiveUser = "",
+    [string]$TargetInteractiveUserSid = "",
+    [string]$TargetUserProfileRoot = "",
+    [string]$TargetCodexHome = "",
+    [switch]$HostedMachinePhase,
+    [switch]$ModulePathSecuritySmokeTest
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:RevAgentOsSystemDirectory = [Environment]::SystemDirectory
+$script:RevAgentOsWindowsDirectory = [System.IO.Directory]::GetParent($script:RevAgentOsSystemDirectory).FullName
+$script:RevAgentOsProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+$script:RevAgentOsProgramFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+$script:RevAgentOsCommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+$script:RevAgentOsUserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+$script:RevAgentOsAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
+$script:RevAgentOsLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$script:RevAgentPreImportIntegrityModule = $null
+
+function Initialize-RevAgentTrustedPowerShellModules {
+    # `-NoProfile` does not disable module autoload. Remove user-writable module
+    # roots before any security-sensitive command (Get-Acl, signature checks,
+    # archive expansion, CIM, or ScheduledTasks) can trigger discovery.
+    $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    [void]$candidateRoots.Add([System.IO.Path]::Combine($PSHOME, 'Modules'))
+    [void]$candidateRoots.Add([System.IO.Path]::Combine($script:RevAgentOsSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
+    foreach ($programFilesRoot in @($script:RevAgentOsProgramFiles, $script:RevAgentOsProgramFilesX86)) {
+        if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
+        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
+    }
+
+    $trustedRoots = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in $candidateRoots) {
+        $fullPath = [System.IO.Path]::GetFullPath($candidate).TrimEnd('\')
+        if (-not [System.IO.Directory]::Exists($fullPath) -or -not $seen.Add($fullPath)) { continue }
+        if (([System.IO.File]::GetAttributes($fullPath) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Trusted PowerShell module root is a reparse point: $fullPath"
+        }
+        [void]$trustedRoots.Add($fullPath)
+    }
+    if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
+    $env:PSModulePath = [string]::Join([System.IO.Path]::PathSeparator, $trustedRoots.ToArray())
+
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+        $manifestPath = [System.IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
+        if (-not [System.IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
+        Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
+    }
+    $scheduledTasksManifest = [System.IO.Path]::Combine($script:RevAgentOsSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules', 'ScheduledTasks', 'ScheduledTasks.psd1')
+    if (-not [System.IO.File]::Exists($scheduledTasksManifest)) { throw "Required ScheduledTasks module manifest was not found: $scheduledTasksManifest" }
+    Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksManifest -Force -ErrorAction Stop
+    return $env:PSModulePath
+}
+
+$script:RevAgentTrustedPowerShellModulePath = Initialize-RevAgentTrustedPowerShellModules
+if ($ModulePathSecuritySmokeTest) {
+    $getAclCommand = Microsoft.PowerShell.Core\Get-Command Get-Acl -CommandType Cmdlet -ErrorAction Stop
+    $expandArchiveCommand = Microsoft.PowerShell.Core\Get-Command Expand-Archive -CommandType Function -ErrorAction Stop
+    [pscustomobject][ordered]@{
+        success = $true
+        action = 'module-path-security-smoke-test'
+        psModulePath = $env:PSModulePath
+        getAclModulePath = [string]$getAclCommand.Module.Path
+        expandArchiveModulePath = [string]$expandArchiveCommand.Module.Path
+    } | ConvertTo-Json -Compress
+    return
+}
+
+function Assert-RevAgentEarlyReleaseFile {
+    param([string]$Path, [string]$ReleaseRoot, [string[]]$BlockedSids)
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullRoot = [System.IO.Path]::GetFullPath($ReleaseRoot).TrimEnd("\")
+    if (-not ($fullPath + "\").StartsWith($fullRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pre-import release path escaped pinned root: $fullPath"
+    }
+    $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor [System.Security.AccessControl.FileSystemRights]::AppendData -bor [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [System.Security.AccessControl.FileSystemRights]::Delete -bor [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    function Assert-RevAgentEarlyDirectoryEffectivelyReadOnly {
+        param([string]$Directory)
+        $reportsRoot = Join-Path $fullRoot "reports"
+        if (($Directory + "\").StartsWith($reportsRoot.TrimEnd("\") + "\", [System.StringComparison]::OrdinalIgnoreCase)) { return }
+        $probePath = Join-Path $Directory (".revagent-sealed-probe-{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+        $stream = $null
+        $created = $false
+        try {
+            $stream = [System.IO.File]::Open($probePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+            $created = $true
+        }
+        catch {
+            $probeException = $_.Exception
+            $accessDenied = $false
+            while ($null -ne $probeException) {
+                $errorCode = [int]$probeException.HResult -band 0xFFFF
+                if ($probeException -is [System.UnauthorizedAccessException] -or $errorCode -eq 5) { $accessDenied = $true; break }
+                $probeException = $probeException.InnerException
+            }
+            if ($accessDenied) { return }
+            throw "Pre-import release effective writability CreateNew probe failed unexpectedly for '$Directory': $($_.Exception.Message)"
+        }
+        finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+        }
+        if ($created) {
+            try { [System.IO.File]::Delete($probePath) }
+            catch { throw "Pre-import release effective writability probe succeeded but cleanup failed for '$probePath': $($_.Exception.Message)" }
+            if (Test-Path -LiteralPath $probePath) { throw "Pre-import release effective writability probe cleanup did not remove '$probePath'." }
+            throw "Pre-import release path is effectively writable and is not sealed (CreateNew succeeded): $Directory"
+        }
+    }
+    $cursor = $fullPath
+    while (($cursor + "\").StartsWith($fullRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-Path -LiteralPath $cursor)) { throw "Pre-import release path is missing: $cursor" }
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+            throw "Pre-import release path contains a link/reparse component: $cursor"
+        }
+        if ($item.PSIsContainer) { Assert-RevAgentEarlyDirectoryEffectivelyReadOnly -Directory $item.FullName }
+        $acl = Get-Acl -LiteralPath $cursor -ErrorAction Stop
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+        foreach ($rule in $rules) {
+            if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+                throw "Pre-import release path is not sealed read-only. principal=$($rule.IdentityReference.Value) rights=$($rule.FileSystemRights) path=$cursor"
+            }
+        }
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = Split-Path -Parent $cursor
+    }
+    return $fullPath
+}
+
+function Assert-RevAgentEarlyReleaseSurface {
+    param([string]$ChannelPath, [string]$ReleaseRoot, [string]$ToolsRoot, [string]$InteractiveSid)
+    $blockedSids = @("S-1-1-0", "S-1-5-11", "S-1-5-32-545", $InteractiveSid) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $channelFullPath = Assert-RevAgentEarlyReleaseFile -Path $ChannelPath -ReleaseRoot $ReleaseRoot -BlockedSids $blockedSids
+    $channel = Get-Content -Raw -LiteralPath $channelFullPath | ConvertFrom-Json
+    $manifestPath = [string]$channel.manifestPath
+    if (-not [System.IO.Path]::IsPathRooted($manifestPath)) { $manifestPath = Join-Path (Split-Path -Parent $channelFullPath) $manifestPath }
+    $manifestPath = Assert-RevAgentEarlyReleaseFile -Path $manifestPath -ReleaseRoot $ReleaseRoot -BlockedSids $blockedSids
+    $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
+    $surfaceMap = [ordered]@{
+        updater = @("installer\nas\update-from-nas.ps1", "update-from-nas.ps1")
+        installerLibHiddenLauncher = @("installer\lib\RevAgent.HiddenLauncher.psm1", "lib\RevAgent.HiddenLauncher.psm1")
+        installerLibScheduledTask = @("installer\lib\RevAgent.ScheduledTask.psm1", "lib\RevAgent.ScheduledTask.psm1")
+        installerLibVersions = @("installer\lib\RevAgent.RevitVersions.psm1", "lib\RevAgent.RevitVersions.psm1")
+        installerLibPackage = @("installer\lib\RevAgent.Package.psm1", "lib\RevAgent.Package.psm1")
+        installerLibUpdatePolicy = @("installer\lib\RevAgent.UpdatePolicy.psm1", "lib\RevAgent.UpdatePolicy.psm1")
+        installerLibProxy = @("installer\lib\RevAgent.Proxy.psm1", "lib\RevAgent.Proxy.psm1")
+        installerLibLogRetention = @("installer\lib\RevAgent.LogRetention.psm1", "lib\RevAgent.LogRetention.psm1")
+        installerLibPermissions = @("installer\lib\RevAgent.Permissions.psm1", "lib\RevAgent.Permissions.psm1")
+        installerLibSecureTemp = @("installer\lib\RevAgent.SecureTemp.psm1", "lib\RevAgent.SecureTemp.psm1")
+        installerLibCodexRegistration = @("installer\lib\RevAgent.CodexRegistration.psm1", "lib\RevAgent.CodexRegistration.psm1")
+        installerLibConfigSync = @("installer\lib\RevAgent.ConfigSync.psm1", "lib\RevAgent.ConfigSync.psm1")
+        installerLibReporting = @("installer\lib\RevAgent.Reporting.psm1", "lib\RevAgent.Reporting.psm1")
+        installerLibDesktopLauncherCleanup = @("installer\lib\RevAgent.DesktopLauncherCleanup.psm1", "lib\RevAgent.DesktopLauncherCleanup.psm1")
+        installerLibDistributionIntegrity = @("installer\lib\RevAgent.DistributionIntegrity.psm1", "lib\RevAgent.DistributionIntegrity.psm1")
+        installerLibLicense = @("installer\lib\RevAgent.License.psm1", "lib\RevAgent.License.psm1")
+        installerLibSourceFreeMigration = @("installer\lib\RevAgent.SourceFreeMigration.psm1", "lib\RevAgent.SourceFreeMigration.psm1")
+    }
+    foreach ($surface in $surfaceMap.GetEnumerator()) {
+        $component = $manifest.components.($surface.Key)
+        $filePath = Assert-RevAgentEarlyReleaseFile -Path (Join-Path $ToolsRoot ([string]$surface.Value[1])) -ReleaseRoot $ReleaseRoot -BlockedSids $blockedSids
+        if ($null -eq $component -or -not [string]::Equals(([string]$component.path).Replace("/", "\"), [string]$surface.Value[0], [System.StringComparison]::OrdinalIgnoreCase)) { throw "Missing or invalid pre-import manifest component: $($surface.Key)" }
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
+        if (-not [string]::Equals($hash, [string]$component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Pre-import hash mismatch: $($surface.Key)" }
+    }
+    $keysPath = Assert-RevAgentEarlyReleaseFile -Path (Join-Path $ToolsRoot "config\release-trusted-keys.json") -ReleaseRoot $ReleaseRoot -BlockedSids $blockedSids
+    foreach ($signaturePath in @(
+            (Join-Path (Split-Path -Parent $channelFullPath) (([System.IO.Path]::GetFileNameWithoutExtension($channelFullPath)) + ".sig.json")),
+            (Join-Path (Split-Path -Parent $manifestPath) (([System.IO.Path]::GetFileNameWithoutExtension($manifestPath)) + ".sig.json")))) {
+        [void](Assert-RevAgentEarlyReleaseFile -Path $signaturePath -ReleaseRoot $ReleaseRoot -BlockedSids $blockedSids)
+    }
+    $keys = Get-Content -Raw -LiteralPath $keysPath | ConvertFrom-Json
+    $key = $keys.trustedKeys."revagent-prod-rsa-2026q3"
+    $normalizedKey = ([string]$key.publicKeyXml).Trim() -replace "\s+", ""
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $fingerprint = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalizedKey)))).Replace("-", "") } finally { $sha.Dispose() }
+    if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Pinned release key fingerprint mismatch." }
+    $integrityModulePath = Join-Path $ToolsRoot "lib\RevAgent.DistributionIntegrity.psm1"
+    $pinnedIntegrityModuleHash = "2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4"
+    $actualIntegrityModuleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
+    if (-not [string]::Equals($actualIntegrityModuleHash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pinned pre-import integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash Actual=$actualIntegrityModuleHash"
+    }
+    $script:RevAgentPreImportIntegrityModule = Import-Module $integrityModulePath -Force -PassThru
+    $verifyCommand = Get-Command ("{0}\Test-RevAgentReleaseDistributionIntegrity" -f $script:RevAgentPreImportIntegrityModule.Name) -ErrorAction Stop
+    $verification = & $verifyCommand -ChannelPath $channelFullPath -Channel $channel -ReleaseManifestPath $manifestPath -ReleaseManifest $manifest -TrustedKeys $keys.trustedKeys -Policy enforce
+    if (-not [bool]$verification.success) { throw "Signed pre-import release verification failed: $($verification.reason). $($verification.message)" }
+}
+
+# Reject unsafe privilege/legacy modes before resolving or importing any sibling
+# module. Otherwise an elevated invocation of a user-writable copy could execute
+# attacker-controlled module code before the later phase guard runs.
+$earlyProcessIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+$earlyProcessPrincipal = [System.Security.Principal.WindowsPrincipal]::new($earlyProcessIdentity)
+$earlyProcessElevated = $earlyProcessPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($MachinePhaseOnly -and $UserPhaseOnly) { throw "-MachinePhaseOnly and -UserPhaseOnly are mutually exclusive." }
+if ($MachinePhaseOnly -and -not $earlyProcessElevated) { throw "-MachinePhaseOnly requires an elevated process before module import." }
+if ($UserPhaseOnly -and $earlyProcessElevated) { throw "-UserPhaseOnly must run in the original unelevated interactive-user process before module import." }
+if ($earlyProcessElevated -and -not $MachinePhaseOnly) { throw "Elevated updater execution is restricted to -MachinePhaseOnly before module import." }
+if (-not $MachinePhaseOnly -and -not $UserPhaseOnly -and -not $AuditOnly) {
+    throw "Mutating legacy updater execution is disabled before module import. Start the protected GUI so work is split into machine and user phases."
+}
+
+# Machine-only execution imports code from beside this script. Establish its
+# canonical release origin before importing any sibling module.
+if ($MachinePhaseOnly) {
+    $earlyChannelManifestPath = $ChannelManifestPath
+    if ([string]::IsNullOrWhiteSpace($earlyChannelManifestPath) -and
+        -not [string]::IsNullOrWhiteSpace($ConfigPath) -and
+        (Test-Path -LiteralPath $ConfigPath -PathType Leaf)) {
+        $earlyConfig = Get-Content -Raw -LiteralPath $ConfigPath | ConvertFrom-Json
+        $earlyChannelManifestPath = [string]$earlyConfig.channelManifestPath
+    }
+    if ([string]::IsNullOrWhiteSpace($earlyChannelManifestPath)) {
+        throw "Machine-only updater requires ChannelManifestPath (directly or in ConfigPath) before module import."
+    }
+    $earlyChannelFullPath = [System.IO.Path]::GetFullPath($earlyChannelManifestPath)
+    $earlyChannelRoot = Split-Path -Parent $earlyChannelFullPath
+    $earlyReleaseRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $earlyChannelRoot)).TrimEnd("\")
+    $earlyPinnedReleaseRoot = [System.IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy").TrimEnd("\")
+    if (-not [string]::Equals($earlyReleaseRoot, $earlyPinnedReleaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Machine-only updater requires pinned release root '$earlyPinnedReleaseRoot'; refusing '$earlyReleaseRoot'."
+    }
+    $earlyCanonicalToolsRoot = [System.IO.Path]::GetFullPath((Join-Path $earlyReleaseRoot "tools")).TrimEnd("\")
+    $earlyScriptRoot = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd("\")
+    if (-not $earlyScriptRoot.StartsWith("\\", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals($earlyScriptRoot, $earlyCanonicalToolsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Machine-only updater must run from the canonical UNC release tools root '$earlyCanonicalToolsRoot'; refusing '$earlyScriptRoot'."
+    }
+    $earlyExpectedEntrypoint = [System.IO.Path]::GetFullPath((Join-Path $earlyCanonicalToolsRoot "update-from-nas.ps1"))
+    if (-not [string]::Equals([System.IO.Path]::GetFullPath($PSCommandPath), $earlyExpectedEntrypoint, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Machine-only updater must run the exact signed canonical entrypoint '$earlyExpectedEntrypoint'; refusing '$PSCommandPath'."
+    }
+    $earlyInteractiveSid = $TargetInteractiveUserSid
+    if ([string]::IsNullOrWhiteSpace($earlyInteractiveSid) -and $earlyConfig -and $earlyConfig.targetInteractiveUserSid) { $earlyInteractiveSid = [string]$earlyConfig.targetInteractiveUserSid }
+    Assert-RevAgentEarlyReleaseSurface -ChannelPath $earlyChannelFullPath -ReleaseRoot $earlyReleaseRoot -ToolsRoot $earlyCanonicalToolsRoot -InteractiveSid $earlyInteractiveSid
+}
+
 $nasLibRoot = @(
     (Join-Path $PSScriptRoot "lib"),
     (Join-Path (Split-Path -Parent $PSScriptRoot) "lib")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Container } | Select-Object -First 1
 if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
     throw "revAgent updater lib folder was not found beside or above: $PSScriptRoot"
+}
+Import-Module (Join-Path $nasLibRoot "RevAgent.SecureTemp.psm1") -Force
+$script:RevAgentSecureMachineTempContext = $null
+if ($MachinePhaseOnly) {
+    $earlyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $earlyPrincipal = [Security.Principal.WindowsPrincipal]::new($earlyIdentity)
+    if (-not $earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw "-MachinePhaseOnly requires an elevated process before module import."
+    }
+    $script:RevAgentSecureMachineTempContext = Initialize-RevAgentSecureMachineTemp
 }
 Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.ScheduledTask.psm1") -Force
@@ -70,11 +320,17 @@ Import-Module (Join-Path $nasLibRoot "RevAgent.Package.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.UpdatePolicy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.Proxy.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.LogRetention.psm1") -Force
+Import-Module (Join-Path $nasLibRoot "RevAgent.Permissions.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.ConfigSync.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.Reporting.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
-$script:RevAgentDistributionIntegrityModule = Import-Module (Join-Path $nasLibRoot "RevAgent.DistributionIntegrity.psm1") -Force -PassThru
+$script:RevAgentDistributionIntegrityModule = if ($MachinePhaseOnly) {
+    $script:RevAgentPreImportIntegrityModule
+}
+else {
+    Import-Module (Join-Path $nasLibRoot "RevAgent.DistributionIntegrity.psm1") -Force -PassThru
+}
 Import-Module (Join-Path $nasLibRoot "RevAgent.License.psm1") -Force
 Import-Module (Join-Path $nasLibRoot "RevAgent.SourceFreeMigration.psm1") -Force
 Set-RevAgentCurrentProcessUtf8Console | Out-Null
@@ -84,6 +340,7 @@ $script:RevAgentTranscriptStarted = $false
 $script:RevAgentLogPath = ""
 $script:PreviousTranscriptActive = $env:REVIT_MCP_TRANSCRIPT_ACTIVE
 $script:PreviousLogPath = $env:REVIT_MCP_LOG_PATH
+$script:RevAgentExecutionPhase = if ($MachinePhaseOnly) { "machine" } elseif ($UserPhaseOnly) { "user" } else { "legacy" }
 $script:RevAgentProxyUrl = ""
 $script:RevAgentProxyBypass = "<local>"
 $script:RevAgentRemoteReportsRoot = ""
@@ -134,6 +391,10 @@ function Initialize-RevAgentTranscript {
         [string]$Prefix
     )
 
+    if ($MachinePhaseOnly -and -not $HostedMachinePhase) {
+        Remove-Item Env:\REVIT_MCP_TRANSCRIPT_ACTIVE -ErrorAction SilentlyContinue
+        Remove-Item Env:\REVIT_MCP_LOG_PATH -ErrorAction SilentlyContinue
+    }
     if ($env:REVIT_MCP_TRANSCRIPT_ACTIVE -eq "1") {
         $script:RevAgentLogPath = $env:REVIT_MCP_LOG_PATH
         return
@@ -142,7 +403,7 @@ function Initialize-RevAgentTranscript {
     $path = $RequestedLogPath
     if ([string]::IsNullOrWhiteSpace($path)) {
         $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-        $logRoot = Join-Path $PreferredWorkRoot "logs"
+        $logRoot = Join-Path $PreferredWorkRoot $(if ($MachinePhaseOnly) { "machine-logs" } else { "logs" })
         $path = Join-Path $logRoot ("{0}-{1}.log" -f $Prefix, $stamp)
     }
 
@@ -153,6 +414,9 @@ function Initialize-RevAgentTranscript {
         }
     }
     catch {
+        if ($MachinePhaseOnly) {
+            throw "Machine-phase transcript directory could not be created under protected machine-logs. Intended path: $path. $($_.Exception.Message)"
+        }
         $path = Join-Path $env:TEMP ("revAgent-{0}-{1}.log" -f $Prefix, (Get-Date -Format "yyyyMMdd-HHmmss"))
     }
 
@@ -165,6 +429,9 @@ function Initialize-RevAgentTranscript {
         Write-Host "Update log      : $path" -ForegroundColor Green
     }
     catch {
+        if ($MachinePhaseOnly) {
+            throw "Machine-phase transcript could not be started at protected path '$path'. $($_.Exception.Message)"
+        }
         $script:RevAgentLogPath = $path
         Write-Warning "Could not start update transcript: $($_.Exception.Message). Intended log path: $path"
     }
@@ -201,7 +468,7 @@ function Complete-RevAgentTranscript {
         }
     }
 
-    if ($script:RevAgentTranscriptStarted -and $null -ne $script:RevAgentLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevAgentRemoteReportsRoot)) {
+    if (-not $MachinePhaseOnly -and $script:RevAgentTranscriptStarted -and $null -ne $script:RevAgentLatestReport -and -not [string]::IsNullOrWhiteSpace($script:RevAgentRemoteReportsRoot)) {
         try {
             Publish-RevAgentMachineRunReport `
                 -ReportsRoot $script:RevAgentRemoteReportsRoot `
@@ -209,6 +476,7 @@ function Complete-RevAgentTranscript {
                 -Operation $script:RevAgentOperation `
                 -OperationMethod $script:RevAgentOperationMethod `
                 -LogPath $logPath `
+                -LocalLogAllowedRoot (Split-Path -Parent $logPath) `
                 -KeepLastLogs 2 `
                 -WriteCompatibilityReport | Out-Null
         }
@@ -280,9 +548,9 @@ function Assert-ManagedDirectoryTarget {
 
     $blocked = @(
         [System.IO.Path]::GetPathRoot($fullPath).TrimEnd("\"),
-        [System.IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd("\"),
-        [System.IO.Path]::GetFullPath($env:APPDATA).TrimEnd("\"),
-        [System.IO.Path]::GetFullPath($env:LOCALAPPDATA).TrimEnd("\")
+        [System.IO.Path]::GetFullPath($script:RevAgentOsUserProfile).TrimEnd("\"),
+        [System.IO.Path]::GetFullPath($script:RevAgentOsAppData).TrimEnd("\"),
+        [System.IO.Path]::GetFullPath($script:RevAgentOsLocalAppData).TrimEnd("\")
     )
 
     foreach ($candidate in $blocked) {
@@ -301,16 +569,32 @@ function Resolve-RequiredCommand {
         [string]$InstallHint = ""
     )
 
+    $elevationGuardAvailable = $null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)
+    $guardElevated = $elevationGuardAvailable -and (Test-CurrentProcessElevated)
     $command = Get-Command $Name -ErrorAction SilentlyContinue
-    if ($command) {
-        return $command.Source
+    if ($command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+        if (-not $guardElevated) { return $command.Source }
+        try {
+            return Assert-RevAgentElevatedPathTrusted -Path $command.Source -RequireSignature:([System.IO.Path]::GetExtension([string]$command.Source) -ieq ".exe")
+        }
+        catch {
+            if (-not (Test-CurrentProcessElevated)) { throw }
+            Write-Warning "Ignoring untrusted elevated command candidate '$($command.Source)': $($_.Exception.Message)"
+        }
     }
 
     foreach ($candidate in $Candidates) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
         if (Test-Path -LiteralPath $expanded -PathType Leaf) {
-            return $expanded
+            if (-not $guardElevated) { return $expanded }
+            try {
+                return Assert-RevAgentElevatedPathTrusted -Path $expanded -RequireSignature:([System.IO.Path]::GetExtension($expanded) -ieq ".exe")
+            }
+            catch {
+                if (-not (Test-CurrentProcessElevated)) { throw }
+                Write-Warning "Ignoring untrusted elevated command candidate '$expanded': $($_.Exception.Message)"
+            }
         }
     }
 
@@ -331,11 +615,20 @@ function Resolve-OptionalCommand {
         [string[]]$Candidates = @()
     )
 
+    $elevationGuardAvailable = $null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)
+    $guardElevated = $elevationGuardAvailable -and (Test-CurrentProcessElevated)
     foreach ($name in $Names) {
         if ([string]::IsNullOrWhiteSpace($name)) { continue }
         $command = Get-Command $name -ErrorAction SilentlyContinue
-        if ($command) {
-            return $command.Source
+        if ($command -and -not [string]::IsNullOrWhiteSpace([string]$command.Source)) {
+            if (-not $guardElevated) { return $command.Source }
+            try {
+                return Assert-RevAgentElevatedPathTrusted -Path $command.Source -RequireSignature:([System.IO.Path]::GetExtension([string]$command.Source) -ieq ".exe")
+            }
+            catch {
+                if (-not (Test-CurrentProcessElevated)) { throw }
+                Write-Warning "Ignoring untrusted elevated command candidate '$($command.Source)': $($_.Exception.Message)"
+            }
         }
     }
 
@@ -343,7 +636,14 @@ function Resolve-OptionalCommand {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
         if (Test-Path -LiteralPath $expanded -PathType Leaf) {
-            return $expanded
+            if (-not $guardElevated) { return $expanded }
+            try {
+                return Assert-RevAgentElevatedPathTrusted -Path $expanded -RequireSignature:([System.IO.Path]::GetExtension($expanded) -ieq ".exe")
+            }
+            catch {
+                if (-not (Test-CurrentProcessElevated)) { throw }
+                Write-Warning "Ignoring untrusted elevated command candidate '$expanded': $($_.Exception.Message)"
+            }
         }
     }
 
@@ -368,17 +668,37 @@ function Add-ProcessPathEntry {
 }
 
 function Refresh-DependencyPath {
-    foreach ($path in @(
-            (Join-Path ${env:ProgramFiles} "nodejs"),
-            (Join-Path ${env:ProgramFiles(x86)} "nodejs"),
-            (Join-Path $env:APPDATA "npm"),
-            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin")
-        )) {
+    $candidatePaths = @(
+        (Join-Path $script:RevAgentOsProgramFiles "nodejs"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "nodejs")
+    )
+    if (-not (Test-CurrentProcessElevated)) {
+        $candidatePaths += @(
+            (Join-Path $script:RevAgentOsAppData "npm"),
+            (Join-Path $script:RevAgentOsLocalAppData "OpenAI\Codex\bin")
+        )
+    }
+
+    foreach ($path in $candidatePaths) {
         Add-ProcessPathEntry -Path $path
     }
 }
 
 function Get-DependencySearchRoots {
+    if ($MachinePhaseOnly) {
+        if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
+            throw "Machine-only dependency resolution requires ChannelManifestPath."
+        }
+        $channelDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($ChannelManifestPath))
+        $releaseRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $channelDirectory))
+        $canonicalDependencyRoot = [System.IO.Path]::GetFullPath((Join-Path $releaseRoot "tools\dependencies"))
+        $scriptDependencyRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "dependencies"))
+        if (-not [string]::Equals($canonicalDependencyRoot.TrimEnd("\"), $scriptDependencyRoot.TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Machine-only dependency root is not canonical. Expected=$canonicalDependencyRoot Actual=$scriptDependencyRoot"
+        }
+        return @($canonicalDependencyRoot)
+    }
+
     $roots = [System.Collections.Generic.List[string]]::new()
     foreach ($candidate in @(
             $env:REVIT_MCP_DEPENDENCIES_ROOT,
@@ -425,6 +745,7 @@ function Invoke-ProcessWithTimeout {
         [int]$TimeoutSeconds = 240
     )
 
+    $FilePath = Assert-RevAgentElevatedPathTrusted -Path $FilePath -RequireSignature
     $process = Start-Process -FilePath $FilePath -ArgumentList $Arguments -WindowStyle Hidden -PassThru
     $completed = $process.WaitForExit([Math]::Max(30, $TimeoutSeconds) * 1000)
     if (-not $completed) {
@@ -447,6 +768,195 @@ function Test-CurrentProcessElevated {
     catch {
         return $false
     }
+}
+
+function Test-RevAgentPathUnderRoot {
+    param(
+        [string]$Path,
+        [string]$Root
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path) -or [string]::IsNullOrWhiteSpace($Root)) {
+        return $false
+    }
+
+    try {
+        $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd("\")
+        $fullRoot = [System.IO.Path]::GetFullPath($Root).TrimEnd("\")
+        return [string]::Equals($fullPath, $fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+            $fullPath.StartsWith($fullRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Assert-RevAgentPathHasNoReparseComponents {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $cursor = $fullPath
+    if (-not (Test-Path -LiteralPath $cursor)) {
+        $cursor = Split-Path -Parent $cursor
+    }
+
+    while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+        if (Test-Path -LiteralPath $cursor) {
+            $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Refusing elevated access through a reparse-point path component: $($item.FullName)"
+            }
+        }
+
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $cursor, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $cursor = $parent
+    }
+
+    return $fullPath
+}
+
+function Assert-RevAgentPathNotUserWritable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$TrustedRoot
+    )
+
+    $untrustedSidValues = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($sidValue in @(
+            "S-1-1-0",       # Everyone
+            "S-1-5-11",      # Authenticated Users
+            "S-1-5-32-545",  # BUILTIN\Users
+            $TargetInteractiveUserSid,
+            [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        )) {
+        if (-not [string]::IsNullOrWhiteSpace($sidValue)) {
+            [void]$untrustedSidValues.Add($sidValue)
+        }
+    }
+
+    # Do not use the composite Write/Modify/FullControl values here because
+    # they include Synchronize, which is also present on read-only rules.
+    $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+        [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    $fullTrustedRoot = [System.IO.Path]::GetFullPath($TrustedRoot).TrimEnd("\")
+    $cursor = [System.IO.Path]::GetFullPath($Path)
+    while (-not [string]::IsNullOrWhiteSpace($cursor) -and
+        (Test-RevAgentPathUnderRoot -Path $cursor -Root $fullTrustedRoot)) {
+        $acl = Get-Acl -LiteralPath $cursor -ErrorAction Stop
+        $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
+        if ($null -ne $ownerSid -and $untrustedSidValues.Contains([string]$ownerSid.Value)) {
+            throw "Refusing elevated use of a path owned by an unprivileged/user principal: $cursor (owner=$($ownerSid.Value))"
+        }
+        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
+        foreach ($rule in $rules) {
+            if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
+                continue
+            }
+            if ($untrustedSidValues.Contains([string]$rule.IdentityReference.Value) -and
+                (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+                throw "Refusing elevated use of a user-writable path: $cursor (principal=$($rule.IdentityReference.Value), rights=$($rule.FileSystemRights))"
+            }
+        }
+
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullTrustedRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or
+            [string]::Equals($parent, $cursor, [System.StringComparison]::OrdinalIgnoreCase)) {
+            break
+        }
+        $cursor = $parent
+    }
+}
+
+function Assert-RevAgentElevatedPathTrusted {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$RequireSignature
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath([Environment]::ExpandEnvironmentVariables($Path))
+    if (-not (Test-CurrentProcessElevated)) {
+        return $fullPath
+    }
+
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Leaf)) {
+        throw "Elevated execution target was not found: $fullPath"
+    }
+
+    $blockedRoots = @($script:RevAgentOsUserProfile, $script:RevAgentOsAppData, $script:RevAgentOsLocalAppData, $env:TEMP, $env:TMP) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    foreach ($blockedRoot in $blockedRoots) {
+        if (Test-RevAgentPathUnderRoot -Path $fullPath -Root $blockedRoot) {
+            throw "Refusing to use a user-writable path while elevated: $fullPath"
+        }
+    }
+
+    $trustedRoots = @($script:RevAgentOsWindowsDirectory, $script:RevAgentOsProgramFiles, $script:RevAgentOsProgramFilesX86) |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+    $underTrustedRoot = $false
+    $matchedTrustedRoot = ""
+    foreach ($trustedRoot in $trustedRoots) {
+        if (Test-RevAgentPathUnderRoot -Path $fullPath -Root $trustedRoot) {
+            $underTrustedRoot = $true
+            $matchedTrustedRoot = $trustedRoot
+            break
+        }
+    }
+    if (-not $underTrustedRoot) {
+        throw "Refusing elevated execution outside Windows or Program Files: $fullPath"
+    }
+
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $fullPath)
+    Assert-RevAgentPathNotUserWritable -Path $fullPath -TrustedRoot $matchedTrustedRoot
+    if ($RequireSignature) {
+        $signature = Get-AuthenticodeSignature -LiteralPath $fullPath
+        if ($null -eq $signature -or $signature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+            throw "Refusing unsigned or invalid elevated executable: $fullPath (signature=$($signature.Status))"
+        }
+    }
+
+    return $fullPath
+}
+
+if ($MachinePhaseOnly -and $UserPhaseOnly) {
+    throw "-MachinePhaseOnly and -UserPhaseOnly are mutually exclusive."
+}
+$currentProcessElevated = Test-CurrentProcessElevated
+if ($MachinePhaseOnly -and -not $currentProcessElevated) {
+    throw "-MachinePhaseOnly requires an elevated process."
+}
+if ($UserPhaseOnly -and $currentProcessElevated) {
+    throw "-UserPhaseOnly must run in the original unelevated interactive-user process."
+}
+if ($currentProcessElevated -and -not $MachinePhaseOnly) {
+    throw "Elevated updater execution is restricted to -MachinePhaseOnly. Start the GUI normally so it can split machine and user phases."
+}
+if (-not $MachinePhaseOnly -and -not $UserPhaseOnly -and -not $AuditOnly) {
+    throw "Mutating legacy updater execution is disabled. Start the protected GUI so update work is split into -MachinePhaseOnly and -UserPhaseOnly. Scheduled/background execution is audit-only."
+}
+if ($MachinePhaseOnly) {
+    $SkipCodexMcpRegistration = $true
+    $SkipCodexUserIntegration = $true
+    $AllowManualCodexSetup = $false
+    $WorkspaceAgentsTarget = ""
+    $NotifyUser = $false
+    $NoNotifyUser = $true
+    Write-Host "Privilege phase  : elevated machine-only (user Codex/profile integration disabled)" -ForegroundColor Yellow
+}
+elseif ($UserPhaseOnly) {
+    Write-Host "Privilege phase  : unelevated interactive-user integration" -ForegroundColor Green
 }
 
 function ConvertTo-RevAgentProxyUrl {
@@ -503,9 +1013,9 @@ function Set-RevAgentProxyEnvironment {
     }
 
     $elevated = Test-CurrentProcessElevated
-    $targets = @("Process", "User")
+    $targets = if ($elevated) { @("Process", "Machine") } else { @("Process", "User") }
     if ($elevated) {
-        $targets += "Machine"
+        Write-Host "Proxy env       : machine-only phase; current-user environment is not modified."
     }
 
     $proxyVariables = @("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy")
@@ -610,7 +1120,8 @@ function Test-RevAgentWinHttpProxyMatches {
     }
 
     try {
-        $output = (& netsh winhttp show proxy 2>$null | Out-String)
+        $netshPath = Assert-RevAgentElevatedPathTrusted -Path (Join-Path $script:RevAgentOsSystemDirectory "netsh.exe") -RequireSignature
+        $output = (& $netshPath winhttp show proxy 2>$null | Out-String)
         return ($output -match [regex]::Escape($server))
     }
     catch {
@@ -639,7 +1150,7 @@ function Set-RevAgentWinHttpProxy {
         return
     }
 
-    $netshPath = Join-Path $env:WINDIR "System32\netsh.exe"
+    $netshPath = Join-Path $script:RevAgentOsSystemDirectory "netsh.exe"
     try {
         $exitCode = Invoke-ProcessWithTimeout -FilePath $netshPath -Arguments @("winhttp", "set", "proxy", "proxy-server=$server", "bypass-list=$ProxyBypass") -TimeoutSeconds 60
         if ($exitCode -ne 0) {
@@ -703,7 +1214,7 @@ function Get-RevAgentKeyValueFileValue {
 function Test-RevAgentNpmProxyConfigured {
     param([string]$ProxyUrl)
 
-    $npmrcPath = Join-Path $env:USERPROFILE ".npmrc"
+    $npmrcPath = Join-Path $script:RevAgentOsUserProfile ".npmrc"
     return (
         [string]::Equals((Get-RevAgentKeyValueFileValue -Path $npmrcPath -Key "proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
         [string]::Equals((Get-RevAgentKeyValueFileValue -Path $npmrcPath -Key "https-proxy"), $ProxyUrl, [System.StringComparison]::OrdinalIgnoreCase) -and
@@ -713,6 +1224,11 @@ function Test-RevAgentNpmProxyConfigured {
 
 function Set-RevAgentNpmProxy {
     param([string]$ProxyUrl)
+
+    if (Test-CurrentProcessElevated) {
+        Write-Host "npm proxy       : deferred to unelevated user phase."
+        return
+    }
 
     if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
         return
@@ -725,8 +1241,8 @@ function Set-RevAgentNpmProxy {
 
     Refresh-DependencyPath
     $npmPath = Resolve-OptionalCommand -Names @("npm.cmd", "npm") -Candidates @(
-        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+        (Join-Path $script:RevAgentOsProgramFiles "nodejs\npm.cmd"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "nodejs\npm.cmd")
     )
     if ([string]::IsNullOrWhiteSpace($npmPath)) {
         Write-Host "npm proxy       : skipped (npm not found)"
@@ -779,13 +1295,18 @@ function Test-RevAgentGitProxyConfigured {
 function Set-RevAgentGitProxy {
     param([string]$ProxyUrl)
 
+    if (Test-CurrentProcessElevated) {
+        Write-Host "Git proxy       : deferred to unelevated user phase."
+        return
+    }
+
     if ([string]::IsNullOrWhiteSpace($ProxyUrl)) {
         return
     }
 
     $gitPath = Resolve-OptionalCommand -Names @("git.exe", "git") -Candidates @(
-        (Join-Path ${env:ProgramFiles} "Git\cmd\git.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "Git\cmd\git.exe")
+        (Join-Path $script:RevAgentOsProgramFiles "Git\cmd\git.exe"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "Git\cmd\git.exe")
     )
     if ([string]::IsNullOrWhiteSpace($gitPath)) {
         Write-Host "Git proxy       : skipped (git not found)"
@@ -832,10 +1353,15 @@ function Initialize-RevAgentWorkstationProxy {
 
     Write-Host "Office proxy    : $normalizedProxyUrl"
     Set-RevAgentProxyEnvironment -ProxyUrl $normalizedProxyUrl
-    Set-RevAgentWinInetProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
-    Set-RevAgentWinHttpProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
-    Set-RevAgentNpmProxy -ProxyUrl $normalizedProxyUrl
-    Set-RevAgentGitProxy -ProxyUrl $normalizedProxyUrl
+    if (Test-CurrentProcessElevated) {
+        Set-RevAgentWinHttpProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+        Write-Host "User proxy      : deferred to unelevated user phase."
+    }
+    else {
+        Set-RevAgentWinInetProxy -ProxyUrl $normalizedProxyUrl -ProxyBypass $ProxyBypass
+        Set-RevAgentNpmProxy -ProxyUrl $normalizedProxyUrl
+        Set-RevAgentGitProxy -ProxyUrl $normalizedProxyUrl
+    }
 }
 
 function Assert-PathUnderRoot {
@@ -863,6 +1389,8 @@ function Get-NodeMajorVersion {
     }
 
     try {
+        $guardElevated = ($null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)) -and (Test-CurrentProcessElevated)
+        if ($guardElevated) { $NodePath = Assert-RevAgentElevatedPathTrusted -Path $NodePath -RequireSignature }
         $versionText = (& $NodePath --version 2>$null | Out-String).Trim()
         if ($versionText -match '^v?(\d+)') {
             return [int]$Matches[1]
@@ -894,6 +1422,8 @@ function Get-NodeRuntimeIdentity {
     }
 
     try {
+        $guardElevated = ($null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)) -and (Test-CurrentProcessElevated)
+        if ($guardElevated) { $NodePath = Assert-RevAgentElevatedPathTrusted -Path $NodePath -RequireSignature }
         $identityJson = (& $NodePath -p 'JSON.stringify({nodeVersion:process.version,nodeModuleVersion:String(process.versions.modules),napiVersion:String(process.versions.napi),platform:process.platform,arch:process.arch})' 2>$null | Out-String).Trim()
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($identityJson)) {
             return $null
@@ -958,7 +1488,16 @@ function Get-NpmCliRuntimeStatus {
     $npmVersion = ""
     $errorMessage = ""
     try {
+        $guardElevated = ($null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)) -and (Test-CurrentProcessElevated)
+        if ($guardElevated) { $NodePath = Assert-RevAgentElevatedPathTrusted -Path $NodePath -RequireSignature }
         $npmCliPath = Resolve-NpmCliScript -NpmPath $NpmPath -NodePath $NodePath
+        if ($guardElevated) {
+            [void](Assert-RevAgentPathHasNoReparseComponents -Path $npmCliPath)
+            if (-not (Test-RevAgentPathUnderRoot -Path $npmCliPath -Root (Split-Path -Parent $NodePath))) {
+                throw "Refusing npm CLI outside the trusted Node installation while elevated: $npmCliPath"
+            }
+            Assert-RevAgentPathNotUserWritable -Path $npmCliPath -TrustedRoot (Split-Path -Parent $NodePath)
+        }
         $versionOutput = @(& $NodePath $npmCliPath --version 2>&1)
         $versionExitCode = $LASTEXITCODE
         $npmVersion = ($versionOutput | Out-String).Trim()
@@ -985,12 +1524,12 @@ function Get-NpmCliRuntimeStatus {
 
 function Get-NodeRuntimeStatus {
     $nodeCandidates = @(
-        (Join-Path ${env:ProgramFiles} "nodejs\node.exe"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\node.exe")
+        (Join-Path $script:RevAgentOsProgramFiles "nodejs\node.exe"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "nodejs\node.exe")
     )
     $npmCandidates = @(
-        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+        (Join-Path $script:RevAgentOsProgramFiles "nodejs\npm.cmd"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "nodejs\npm.cmd")
     )
 
     $nodePath = Resolve-OptionalCommand -Names @("node.exe", "node") -Candidates $nodeCandidates
@@ -1012,8 +1551,13 @@ function Get-NodeRuntimeStatus {
 }
 
 function Install-NodeFromWinget {
+    if (Test-CurrentProcessElevated) {
+        Write-Host "winget Node.js install skipped in elevated machine phase; user-profile WindowsApps shims are not trusted."
+        return $false
+    }
+
     $wingetPath = Resolve-OptionalCommand -Names @("winget.exe", "winget") -Candidates @(
-        (Join-Path $env:LOCALAPPDATA "Microsoft\WindowsApps\winget.exe")
+        (Join-Path $script:RevAgentOsLocalAppData "Microsoft\WindowsApps\winget.exe")
     )
     if ([string]::IsNullOrWhiteSpace($wingetPath)) {
         Write-Warning "winget was not found; bundled Node.js MSI will be used if needed."
@@ -1037,7 +1581,33 @@ function Install-NodeFromBundledMsi {
         throw "Bundled Node.js installer was not found under NAS tools dependencies or local package dependencies."
     }
 
-    $msiexecPath = Join-Path $env:WINDIR "System32\msiexec.exe"
+    if ($MachinePhaseOnly) {
+        $channelDirectory = Split-Path -Parent ([System.IO.Path]::GetFullPath($ChannelManifestPath))
+        $releaseRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $channelDirectory))
+        $canonicalMsiPath = [System.IO.Path]::GetFullPath((Join-Path $releaseRoot "tools\dependencies\node-v24.14.1-x64.msi"))
+        if (-not [string]::Equals([System.IO.Path]::GetFullPath($msiPath), $canonicalMsiPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing non-canonical bundled Node.js MSI in machine-only phase: $msiPath"
+        }
+        [void](Assert-RevAgentPathHasNoReparseComponents -Path $msiPath)
+        Assert-RevAgentPathNotUserWritable -Path $msiPath -TrustedRoot $releaseRoot
+        $expectedMsiSha256 = "FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC"
+        $actualMsiSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $msiPath).Hash
+        if (-not [string]::Equals($actualMsiSha256, $expectedMsiSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bundled Node.js MSI hash mismatch. Expected=$expectedMsiSha256 Actual=$actualMsiSha256"
+        }
+    }
+
+    $msiSignature = Get-AuthenticodeSignature -LiteralPath $msiPath
+    if ($null -eq $msiSignature -or $msiSignature.Status -ne [System.Management.Automation.SignatureStatus]::Valid) {
+        throw "Bundled Node.js MSI has no valid Authenticode signature: $msiPath (signature=$($msiSignature.Status))"
+    }
+    $expectedSignerSubject = "CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US"
+    if ($MachinePhaseOnly -and
+        -not [string]::Equals([string]$msiSignature.SignerCertificate.Subject, $expectedSignerSubject, [System.StringComparison]::Ordinal)) {
+        throw "Bundled Node.js MSI signer mismatch. Expected='$expectedSignerSubject' Actual='$($msiSignature.SignerCertificate.Subject)'"
+    }
+
+    $msiexecPath = Assert-RevAgentElevatedPathTrusted -Path (Join-Path $script:RevAgentOsSystemDirectory "msiexec.exe") -RequireSignature
     Write-Host "Installing Node.js from bundled MSI: $msiPath"
     $msiArgument = '"' + $msiPath.Replace('"', '\"') + '"'
     $process = Start-Process -FilePath $msiexecPath -ArgumentList "/i $msiArgument /qn /norestart" -Wait -PassThru
@@ -1095,9 +1665,13 @@ function Get-CodexDesktopAppxPackage {
 }
 
 function Resolve-CodexDesktopCommand {
+    if (Test-CurrentProcessElevated) {
+        throw "Codex CLI resolution is forbidden in the elevated machine phase."
+    }
+
     Refresh-DependencyPath
     foreach ($candidate in @(
-            (Join-Path $env:LOCALAPPDATA "OpenAI\Codex\bin\codex.exe")
+            (Join-Path $script:RevAgentOsLocalAppData "OpenAI\Codex\bin\codex.exe")
         )) {
         if ([string]::IsNullOrWhiteSpace($candidate)) { continue }
         $expanded = [Environment]::ExpandEnvironmentVariables($candidate)
@@ -1127,22 +1701,22 @@ function New-CodexDesktopShortcut {
 
         $shortcutDir = Join-Path $programsRoot "DPE"
         New-Item -ItemType Directory -Path $shortcutDir -Force | Out-Null
-        $shortcutPath = Join-Path $shortcutDir "Codex.lnk"
+        $shortcutPath = Join-Path $shortcutDir "ChatGPT.lnk"
         $appId = "$($package.PackageFamilyName)!App"
-        $iconPath = Join-Path $package.InstallLocation "app\Codex.exe"
+        $iconPath = Join-Path $package.InstallLocation "app\ChatGPT.exe"
         $shell = New-Object -ComObject WScript.Shell
         $shortcut = $shell.CreateShortcut($shortcutPath)
-        $shortcut.TargetPath = Join-Path $env:WINDIR "explorer.exe"
+        $shortcut.TargetPath = Join-Path $script:RevAgentOsWindowsDirectory "explorer.exe"
         $shortcut.Arguments = "shell:AppsFolder\$appId"
         $shortcut.WorkingDirectory = $package.InstallLocation
         if (Test-Path -LiteralPath $iconPath -PathType Leaf) {
             $shortcut.IconLocation = "$iconPath,0"
         }
         $shortcut.Save()
-        Write-Host "Codex Desktop shortcut: $shortcutPath"
+        Write-Host "ChatGPT desktop shortcut: $shortcutPath"
     }
     catch {
-        Write-Warning "Could not create Codex Desktop shortcut: $($_.Exception.Message)"
+        Write-Warning "Could not create ChatGPT desktop shortcut: $($_.Exception.Message)"
     }
 }
 
@@ -1190,7 +1764,7 @@ $Reason
 Proxy ve internet ayarlari hazir.
 Codex calisma klasoru hazir: $CodexWorkspaceRoot
 
-Lutfen simdi Codex Desktop'u manuel kurun/acin, oturum ve abonelik islemini tamamlayin, gerekirse calisma klasoru olarak $CodexWorkspaceRoot secin.
+Lutfen simdi ChatGPT masaustu uygulamasini (Codex dahil) manuel kurun/acin, oturum ve abonelik islemini tamamlayin, gerekirse calisma klasoru olarak $CodexWorkspaceRoot secin.
 
 Codex hazir olduktan sonra devam etmek icin OK tusuna basin.
 "@
@@ -1203,7 +1777,7 @@ Codex hazir olduktan sonra devam etmek icin OK tusuna basin.
         Add-Type -AssemblyName System.Windows.Forms
         $result = [System.Windows.Forms.MessageBox]::Show(
             $message,
-            "revAgent - Codex Desktop",
+            "revAgent - ChatGPT",
             [System.Windows.Forms.MessageBoxButtons]::OKCancel,
             [System.Windows.Forms.MessageBoxIcon]::Information)
         return ($result -eq [System.Windows.Forms.DialogResult]::OK)
@@ -1224,7 +1798,7 @@ function Ensure-CodexDesktop {
     }
 
     if ($AllowManualCodexSetup) {
-        $reason = "Bu Windows kullanicisi icin Codex Desktop kurulu degil."
+        $reason = "Bu Windows kullanicisi icin ChatGPT masaustu uygulamasi (Codex dahil) kurulu degil."
         if (Show-ManualCodexSetupPrompt -Reason $reason) {
             Refresh-DependencyPath
             if (Test-CodexDesktopAvailable) {
@@ -1234,7 +1808,7 @@ function Ensure-CodexDesktop {
         }
     }
 
-    throw "Codex Desktop bu Windows kullanicisi icin kurulu degil. Proxy ayarlari ve Codex calisma klasoru hazir. Codex Desktop'u manuel kurup oturum acin, sonra installer/updater'i tekrar calistirin."
+    throw "ChatGPT masaustu uygulamasi (Codex dahil) bu Windows kullanicisi icin kurulu degil. Proxy ayarlari ve Codex calisma klasoru hazir. ChatGPT'yi manuel kurup oturum acin, sonra installer/updater'i tekrar calistirin."
 }
 
 function Ensure-UpdateDependencies {
@@ -1412,6 +1986,8 @@ database.prepare('SELECT 1 AS ok').get();
 database.close();
 '@
     try {
+        $guardElevated = ($null -ne (Get-Command Test-CurrentProcessElevated -CommandType Function -ErrorAction SilentlyContinue)) -and (Test-CurrentProcessElevated)
+        if ($guardElevated) { $NodePath = Assert-RevAgentElevatedPathTrusted -Path $NodePath -RequireSignature }
         $validationOutput = @(& $NodePath -e $validationScript $dependencyPath 2>&1)
         $validationExitCode = $LASTEXITCODE
         if ($validationExitCode -eq 0) {
@@ -1761,10 +2337,51 @@ function Invoke-NpmInstallIfNeeded {
     Save-NpmDependenciesToCache -WorkingDirectory $WorkingDirectory -Fingerprint $fingerprint -CacheRoot $CacheRoot -NodePath $NodePath -Label $Label
 }
 
+function Invoke-NpmInstallMachinePhaseClean {
+    param(
+        [string]$NodePath,
+        [string]$NpmCliPath,
+        [string]$WorkingDirectory,
+        [string]$Label
+    )
+
+    if (-not $MachinePhaseOnly -or -not (Test-CurrentProcessElevated)) {
+        throw "Machine-phase clean npm provisioning requires elevated -MachinePhaseOnly."
+    }
+    $workingFullPath = [System.IO.Path]::GetFullPath($WorkingDirectory)
+    if (-not (Test-RevAgentPathUnderRoot -Path $workingFullPath -Root $InstallRoot)) {
+        throw "Refusing machine-phase npm provisioning outside InstallRoot: $workingFullPath"
+    }
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $workingFullPath)
+    $lockPath = Join-Path $workingFullPath "package-lock.json"
+    if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
+        throw "$Label machine-phase npm provisioning requires package-lock.json: $lockPath"
+    }
+
+    # Existing dependency trees and markers were writable before the ACL
+    # lockdown and must never be probed or reused by an elevated process.
+    Remove-NpmNodeModulesPath -WorkingDirectory $workingFullPath
+    Remove-Item -LiteralPath (Get-NpmDependencyMarkerPath -WorkingDirectory $workingFullPath) -Force -ErrorAction SilentlyContinue
+    Invoke-NpmWithLifecycleScripts `
+        -NodePath $NodePath `
+        -NpmCliPath $NpmCliPath `
+        -Arguments @("ci", "--omit=dev", "--no-audit", "--no-fund") `
+        -WorkingDirectory $workingFullPath
+    Assert-NpmNativeDependenciesLoad -WorkingDirectory $workingFullPath -NodePath $NodePath -Label $Label
+
+    $runtimeIdentity = Get-NodeRuntimeIdentity -NodePath $NodePath
+    if ($null -eq $runtimeIdentity) {
+        throw "Could not determine Node identity after clean $Label dependency provisioning."
+    }
+    $fingerprint = Get-NpmDependencyFingerprint -WorkingDirectory $workingFullPath -RuntimeIdentity $runtimeIdentity
+    Write-NpmDependencyMarker -WorkingDirectory $workingFullPath -Fingerprint $fingerprint
+    Write-Host "$Label dependencies: clean lockfile-backed npm ci completed in machine-only phase." -ForegroundColor Green
+}
+
 function Resolve-NpmCommand {
     return Resolve-RequiredCommand -Name "npm.cmd" -Candidates @(
-        (Join-Path ${env:ProgramFiles} "nodejs\npm.cmd"),
-        (Join-Path ${env:ProgramFiles(x86)} "nodejs\npm.cmd")
+        (Join-Path $script:RevAgentOsProgramFiles "nodejs\npm.cmd"),
+        (Join-Path $script:RevAgentOsProgramFilesX86 "nodejs\npm.cmd")
     )
 }
 
@@ -1807,7 +2424,7 @@ function Set-CodexMcpServerConfig {
         [string[]]$McpArgs
     )
 
-    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
     New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
     $configPath = Join-Path $configRoot "config.toml"
     $content = ""
@@ -1839,7 +2456,7 @@ function Remove-CodexMcpServerConfig {
         [string]$Name
     )
 
-    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
     $configPath = Join-Path $configRoot "config.toml"
     if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
         return $configPath
@@ -1873,7 +2490,7 @@ function Register-CodexMcpServersInConfig {
 }
 
 function Set-CodexMemoryConfig {
-    $configRoot = Join-Path $env:USERPROFILE ".codex"
+    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
     $configPath = Join-Path $configRoot "config.toml"
     [void](Set-RevAgentCodexMemoryConfig -ConfigPath $configPath)
     Write-Host "Codex memory config: enabled"
@@ -1885,7 +2502,7 @@ function Remove-CodexProfileBackupArtifacts {
         return
     }
 
-    $codexRoot = Join-Path $env:USERPROFILE ".codex"
+    $codexRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
     if (-not (Test-Path -LiteralPath $codexRoot -PathType Container)) {
         return
     }
@@ -1935,6 +2552,7 @@ function Invoke-External {
         [string]$WorkingDirectory
     )
 
+    $FilePath = Assert-RevAgentElevatedPathTrusted -Path $FilePath -RequireSignature
     Push-Location $WorkingDirectory
     try {
         & $FilePath @Arguments
@@ -2712,7 +3330,7 @@ function Test-CodexSkillInstallPresent {
     }
 
     if (-not $SkipUserIntegration) {
-        $userSkillPath = Join-Path $env:USERPROFILE ".codex\skills\revAgent"
+        $userSkillPath = Join-Path $script:RevAgentOsUserProfile ".codex\skills\revAgent"
         if (-not (Test-Path -LiteralPath $userSkillPath)) {
             return $false
         }
@@ -3099,22 +3717,74 @@ function Write-UpdateReport {
         }
     }
 
-    Write-JsonFile -Path $LocalReportPath -Value $report
+    $localReportRoot = Split-Path -Parent $LocalReportPath
+    Write-RevAgentJsonFile -Path $LocalReportPath -Value $report -GuardRoot $localReportRoot
     $script:RevAgentLatestReport = $report
-    $script:RevAgentRemoteReportsRoot = $RemoteReportsRoot
+    $script:RevAgentRemoteReportsRoot = if ($MachinePhaseOnly) { "" } else { $RemoteReportsRoot }
+}
 
-    if (-not [string]::IsNullOrWhiteSpace($RemoteReportsRoot)) {
-        try {
-            New-Item -ItemType Directory -Path $RemoteReportsRoot -Force | Out-Null
-            $safeUser = ($env:USERNAME -replace '[\\/:*?"<>|]', "_")
-            $safeComputer = ($env:COMPUTERNAME -replace '[\\/:*?"<>|]', "_")
-            $remotePath = Join-Path $RemoteReportsRoot ("{0}_{1}.json" -f $safeComputer, $safeUser)
-            Write-JsonFile -Path $remotePath -Value $report
-        }
-        catch {
-            Write-Warning "Could not write remote report: $($_.Exception.Message)"
+function Publish-RevAgentPendingMachineUpdateReport {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportPath,
+        [Parameter(Mandatory = $true)][string]$ReportAllowedRoot,
+        [Parameter(Mandatory = $true)][string]$LogAllowedRoot,
+        [Parameter(Mandatory = $true)][string]$RemoteReportsRoot,
+        [Parameter(Mandatory = $true)][string]$IntegrationStatus,
+        [Parameter(Mandatory = $true)][string]$IntegrationMessage,
+        [object]$IntegrationDetails = $null
+    )
+
+    if ([string]::IsNullOrWhiteSpace($RemoteReportsRoot)) {
+        throw "The user phase cannot publish the machine report because ReportsRoot is empty."
+    }
+    if (-not (Test-Path -LiteralPath $ReportPath -PathType Leaf)) {
+        throw "The machine phase did not leave its local update report: $ReportPath"
+    }
+
+    $pendingReport = Read-RevAgentJsonReportFile -Path $ReportPath -AllowedRoot $ReportAllowedRoot
+    $diagnostics = [ordered]@{}
+    $existingDiagnostics = Get-JsonPropertyValue -Object $pendingReport -Name "diagnostics"
+    if ($existingDiagnostics) {
+        foreach ($property in $existingDiagnostics.PSObject.Properties) {
+            $diagnostics[$property.Name] = $property.Value
         }
     }
+    $integrationSucceeded = [string]::Equals($IntegrationStatus, "completed", [System.StringComparison]::OrdinalIgnoreCase)
+    $diagnostics["codexUserIntegration"] = [ordered]@{
+        success = $integrationSucceeded
+        status = $IntegrationStatus
+        message = $IntegrationMessage
+        details = $IntegrationDetails
+        completedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+    }
+    $pendingReport | Add-Member -NotePropertyName diagnostics -NotePropertyValue $diagnostics -Force
+    if (-not $integrationSucceeded) {
+        $pendingReport | Add-Member -NotePropertyName status -NotePropertyValue "failed" -Force
+    }
+    $machineMessage = [string](Get-JsonPropertyValue -Object $pendingReport -Name "message")
+    $combinedMessage = if ([string]::IsNullOrWhiteSpace($machineMessage)) { $IntegrationMessage } else { "$machineMessage User integration: $IntegrationMessage" }
+    $pendingReport | Add-Member -NotePropertyName message -NotePropertyValue $combinedMessage -Force
+
+    $pendingOperation = [string](Get-JsonPropertyValue -Object $pendingReport -Name "operation")
+    if ([string]::IsNullOrWhiteSpace($pendingOperation)) { $pendingOperation = "update" }
+    $pendingMethod = [string](Get-JsonPropertyValue -Object $pendingReport -Name "operationMethod")
+    $pendingPaths = Get-JsonPropertyValue -Object $pendingReport -Name "paths"
+    $pendingLogPath = if ($pendingPaths) { [string](Get-JsonPropertyValue -Object $pendingPaths -Name "logPath") } else { "" }
+    $publishArgs = @{
+        ReportsRoot = $RemoteReportsRoot
+        Report = $pendingReport
+        Operation = $pendingOperation
+        OperationMethod = $pendingMethod
+        KeepLastLogs = 2
+        WriteCompatibilityReport = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($pendingLogPath)) {
+        $publishArgs["LogPath"] = $pendingLogPath
+        $publishArgs["LocalLogAllowedRoot"] = $LogAllowedRoot
+    }
+    $published = Publish-RevAgentMachineRunReport @publishArgs
+    Write-Host "Machine report   : final user-phase outcome published unelevated." -ForegroundColor Green
+    return $published
 }
 
 function New-CurrentUpdateDiagnostics {
@@ -3204,7 +3874,7 @@ function Show-UserNotification {
         [string]$Icon = "Information"
     )
 
-    $statePath = Join-Path $WorkRoot "notification-state.json"
+    $statePath = Join-Path $WorkRoot "user-state\notification-state.json"
     if (-not (Test-ShouldNotifyUser -StatePath $statePath -Key $Key -ThrottleMinutes $NotificationThrottleMinutes)) {
         return
     }
@@ -3371,7 +4041,7 @@ function Install-UpdaterToolsFromPackage {
     }
 
     New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
-    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1")) {
+    foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         $source = Join-Path $SourceRoot $toolName
         Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:($toolName -ne "migrate-source-free-install.ps1")
     }
@@ -3394,14 +4064,15 @@ function Install-UpdaterToolsFromPackage {
     if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
         @(
             "@echo off",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -NoNotifyUser -AllowManualCodexSetup -OperationMethod manual-update",
+            "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
+            "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
             "pause"
         ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
         @(
             "@echo off",
-            "powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
+            "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
         ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
     }
@@ -3454,6 +4125,10 @@ if ($config) {
     if ($config.skipCodexMcpRegistration) { $SkipCodexMcpRegistration = $true }
     if ($config.skipCodexUserIntegration) { $SkipCodexUserIntegration = $true }
     if ($config.skipProxySetup) { $SkipProxySetup = $true }
+    if ([string]::IsNullOrWhiteSpace($TargetInteractiveUser) -and $config.targetInteractiveUser) { $TargetInteractiveUser = [string]$config.targetInteractiveUser }
+    if ([string]::IsNullOrWhiteSpace($TargetInteractiveUserSid) -and $config.targetInteractiveUserSid) { $TargetInteractiveUserSid = [string]$config.targetInteractiveUserSid }
+    if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot) -and $config.targetUserProfileRoot) { $TargetUserProfileRoot = [string]$config.targetUserProfileRoot }
+    if ([string]::IsNullOrWhiteSpace($TargetCodexHome) -and $config.targetCodexHome) { $TargetCodexHome = [string]$config.targetCodexHome }
     if ($config.notifyUser -and -not $NoNotifyUser) { $NotifyUser = $true }
     if ($config.notificationThrottleMinutes) { $NotificationThrottleMinutes = [int]$config.notificationThrottleMinutes }
     if ([string]::IsNullOrWhiteSpace($LogPath) -and $config.updateLogPath) { $LogPath = [string]$config.updateLogPath }
@@ -3463,6 +4138,41 @@ $CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $Codex
 $MachineRole = Resolve-MachineRole -RequestedRole $MachineRole -Config $config
 $preserveLocalCodexInstructions = [string]::Equals($CodexInstructionPolicy, "preserve-local", [System.StringComparison]::OrdinalIgnoreCase)
 
+if ($MachinePhaseOnly) {
+    $SkipCodexMcpRegistration = $true
+    $SkipCodexUserIntegration = $true
+    $WorkspaceAgentsTarget = ""
+    if ([string]::IsNullOrWhiteSpace($TargetInteractiveUser) -or
+        [string]::IsNullOrWhiteSpace($TargetInteractiveUserSid) -or
+        [string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) {
+        throw "-MachinePhaseOnly requires the original interactive user name, SID, and profile root captured before UAC elevation."
+    }
+    $interactiveBinding = Resolve-RevAgentInteractiveUserBinding `
+        -TargetInteractiveUser $TargetInteractiveUser `
+        -TargetInteractiveUserSid $TargetInteractiveUserSid `
+        -TargetUserProfileRoot $TargetUserProfileRoot
+    $TargetInteractiveUser = [string]$interactiveBinding.UserName
+    $TargetInteractiveUserSid = [string]$interactiveBinding.Sid
+    $TargetUserProfileRoot = [string]$interactiveBinding.ProfileRoot
+}
+elseif ($UserPhaseOnly) {
+    $SkipCodexMcpRegistration = $false
+    $SkipCodexUserIntegration = $false
+    $currentIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $currentSid = [string]$currentIdentity.User.Value
+    if (-not [string]::IsNullOrWhiteSpace($TargetInteractiveUserSid) -and
+        -not [string]::Equals($currentSid, $TargetInteractiveUserSid, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "User phase identity mismatch. Expected SID $TargetInteractiveUserSid but current SID is $currentSid."
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TargetUserProfileRoot) -and
+        -not [string]::Equals(
+            [System.IO.Path]::GetFullPath($script:RevAgentOsUserProfile).TrimEnd("\"),
+            [System.IO.Path]::GetFullPath($TargetUserProfileRoot).TrimEnd("\"),
+            [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "User phase profile mismatch. Expected '$TargetUserProfileRoot' but current profile is '$script:RevAgentOsUserProfile'."
+    }
+}
+
 if ($NoNotifyUser) {
     $NotifyUser = $false
 }
@@ -3471,7 +4181,7 @@ if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
     throw "ChannelManifestPath is required. Pass it directly or through -ConfigPath."
 }
 
-$programDataRoot = if ([string]::IsNullOrWhiteSpace($env:ProgramData)) { "C:\ProgramData" } else { $env:ProgramData }
+$programDataRoot = $script:RevAgentOsCommonAppData
 $defaultInstallRoot = Join-Path $programDataRoot "DPE\revAgent"
 $legacyInstallRoot = Join-Path $programDataRoot "DPE\RevitMCP"
 function Test-RevAgentSamePath {
@@ -3501,6 +4211,121 @@ function Test-RevAgentPathUnder {
     }
     catch {
         return $false
+    }
+}
+
+function Assert-RevAgentMachinePhasePaths {
+    if (-not $MachinePhaseOnly) {
+        return
+    }
+
+    $programDataFull = [System.IO.Path]::GetFullPath($programDataRoot).TrimEnd("\")
+    foreach ($pathEntry in @(
+            [pscustomobject]@{ Name = "InstallRoot"; Path = $InstallRoot; Root = $programDataFull },
+            [pscustomobject]@{ Name = "WorkRoot"; Path = $WorkRoot; Root = $InstallRoot },
+            [pscustomobject]@{ Name = "PackageTarget"; Path = $PackageTarget; Root = $InstallRoot },
+            [pscustomobject]@{ Name = "ServerTarget"; Path = $ServerTarget; Root = $InstallRoot },
+            [pscustomobject]@{ Name = "ConfigPath"; Path = $ConfigPath; Root = $WorkRoot },
+            [pscustomobject]@{ Name = "LogPath"; Path = $LogPath; Root = $WorkRoot },
+            [pscustomobject]@{ Name = "PhaseResultPath"; Path = $PhaseResultPath; Root = $WorkRoot }
+        )) {
+        if ([string]::IsNullOrWhiteSpace([string]$pathEntry.Path)) {
+            continue
+        }
+        if (-not (Test-RevAgentPathUnderRoot -Path ([string]$pathEntry.Path) -Root ([string]$pathEntry.Root))) {
+            throw "Machine-only phase path '$($pathEntry.Name)' must remain under '$($pathEntry.Root)': $($pathEntry.Path)"
+        }
+        [void](Assert-RevAgentPathHasNoReparseComponents -Path ([string]$pathEntry.Path))
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
+        throw "Machine-only phase cannot write WorkspaceAgentsTarget. User integration must run unelevated."
+    }
+    $machineLogRoot = Join-Path $WorkRoot "machine-logs"
+    $machineStateRoot = Join-Path $WorkRoot "machine-state"
+    $effectiveMachineLogPath = if (-not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_TRANSCRIPT_ACTIVE) -and
+        -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_LOG_PATH)) { $env:REVIT_MCP_LOG_PATH } else { $LogPath }
+    if (-not [string]::IsNullOrWhiteSpace($effectiveMachineLogPath) -and
+        -not (Test-RevAgentPathUnderRoot -Path $effectiveMachineLogPath -Root $machineLogRoot)) {
+        throw "Machine-only LogPath must remain under protected machine-logs: $effectiveMachineLogPath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($effectiveMachineLogPath)) {
+        [void](Assert-RevAgentPathHasNoReparseComponents -Path $effectiveMachineLogPath)
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PhaseResultPath) -and
+        -not (Test-RevAgentPathUnderRoot -Path $PhaseResultPath -Root $machineStateRoot)) {
+        throw "Machine-only PhaseResultPath must remain under protected machine-state: $PhaseResultPath"
+    }
+    $newMachineFiles = @($PhaseResultPath)
+    if ([string]::IsNullOrWhiteSpace($env:REVIT_MCP_TRANSCRIPT_ACTIVE)) {
+        $newMachineFiles += $effectiveMachineLogPath
+    }
+    foreach ($newMachineFile in $newMachineFiles) {
+        if (-not [string]::IsNullOrWhiteSpace($newMachineFile) -and (Test-Path -LiteralPath $newMachineFile)) {
+            throw "Machine-only output path must be a new file; refusing pre-existing path: $newMachineFile"
+        }
+    }
+}
+
+function Assert-RevAgentUserPhasePaths {
+    if (-not $UserPhaseOnly) { return }
+    $effectiveUserLogPath = if (-not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_TRANSCRIPT_ACTIVE) -and
+        -not [string]::IsNullOrWhiteSpace($env:REVIT_MCP_LOG_PATH)) { $env:REVIT_MCP_LOG_PATH } else { $LogPath }
+    if (-not [string]::IsNullOrWhiteSpace($effectiveUserLogPath) -and
+        -not (Test-RevAgentPathUnderRoot -Path $effectiveUserLogPath -Root (Join-Path $WorkRoot "logs"))) {
+        throw "User-phase LogPath must remain under WorkRoot\logs: $effectiveUserLogPath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($PhaseResultPath) -and
+        -not (Test-RevAgentPathUnderRoot -Path $PhaseResultPath -Root (Join-Path $WorkRoot "user-state"))) {
+        throw "User-phase PhaseResultPath must remain under WorkRoot\user-state: $PhaseResultPath"
+    }
+}
+
+function Write-RevAgentPhaseResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][bool]$ContinueUserPhase,
+        [string]$Message = "",
+        [object]$Details = $null
+    )
+
+    if ([string]::IsNullOrWhiteSpace($PhaseResultPath)) {
+        return
+    }
+    if (-not (Test-RevAgentPathUnderRoot -Path $PhaseResultPath -Root $WorkRoot)) {
+        throw "Phase result path must remain under WorkRoot: $PhaseResultPath"
+    }
+
+    $fullResultPath = [System.IO.Path]::GetFullPath($PhaseResultPath)
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $fullResultPath)
+    $resultDirectory = Split-Path -Parent $fullResultPath
+    New-Item -ItemType Directory -Path $resultDirectory -Force | Out-Null
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $resultDirectory)
+
+    $payload = [ordered]@{
+        schemaVersion = 1
+        phase = $script:RevAgentExecutionPhase
+        status = $Status
+        continueUserPhase = $ContinueUserPhase
+        success = ($Status -in @("completed", "current"))
+        message = $Message
+        createdAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        processElevated = (Test-CurrentProcessElevated)
+        interactiveUser = $TargetInteractiveUser
+        interactiveUserSid = $TargetInteractiveUserSid
+        details = $Details
+    }
+    $json = $payload | ConvertTo-Json -Depth 20
+    $encoding = New-Object System.Text.UTF8Encoding($false)
+    $bytes = $encoding.GetBytes($json)
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($fullResultPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
     }
 }
 
@@ -3535,6 +4360,17 @@ if ($channelMovedToCanonicalNasRoot -and (Test-RevAgentPathUnder -ChildPath $Rep
     $releaseRootForReports = Split-Path -Parent $channelDirForReports
     $ReportsRoot = Join-Path $releaseRootForReports "reports"
 }
+if ($MachinePhaseOnly) {
+    $ReportsRoot = ""
+    $script:RevAgentRemoteReportsRoot = ""
+    Write-Host "Machine reports  : local ProgramData handoff only; NAS publication is deferred to the unelevated user phase." -ForegroundColor Green
+}
+elseif ($UserPhaseOnly -and [string]::IsNullOrWhiteSpace($ReportsRoot)) {
+    $userChannelRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($ChannelManifestPath))
+    $userReleaseRoot = Split-Path -Parent $userChannelRoot
+    $ReportsRoot = Join-Path $userReleaseRoot "reports"
+    $script:RevAgentRemoteReportsRoot = $ReportsRoot
+}
 
 if ((-not $explicitInstallRoot) -and (Test-RevAgentSamePath -Left $InstallRoot -Right $legacyInstallRoot)) {
     Write-Host "Legacy install root detected in updater config; migrating to revAgent root: $defaultInstallRoot"
@@ -3567,18 +4403,73 @@ if ([string]::IsNullOrWhiteSpace($ConfigPath) -or
     $ConfigPath = Join-Path $WorkRoot "updater-config.json"
 }
 
-Initialize-RevAgentTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "update"
-
 $InstallRoot = [System.IO.Path]::GetFullPath($InstallRoot)
 $WorkRoot = [System.IO.Path]::GetFullPath($WorkRoot)
 $PackageTarget = Assert-ManagedDirectoryTarget -Path $PackageTarget -ExpectedLeafNames @("package", "revit-mcp-skill")
 $ServerTarget = [System.IO.Path]::GetFullPath($ServerTarget)
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
+if ($MachinePhaseOnly) {
+    $canonicalInstallRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RevAgentOsCommonAppData 'DPE\revAgent')).TrimEnd('\')
+    $canonicalMachinePaths = @(
+        [pscustomobject]@{ Name = 'InstallRoot'; Actual = $InstallRoot; Expected = $canonicalInstallRoot },
+        [pscustomobject]@{ Name = 'WorkRoot'; Actual = $WorkRoot; Expected = (Join-Path $canonicalInstallRoot 'updater') },
+        [pscustomobject]@{ Name = 'PackageTarget'; Actual = $PackageTarget; Expected = (Join-Path $canonicalInstallRoot 'package') },
+        [pscustomobject]@{ Name = 'ServerTarget'; Actual = $ServerTarget; Expected = (Join-Path $canonicalInstallRoot 'runtime') },
+        [pscustomobject]@{ Name = 'ConfigPath'; Actual = $ConfigPath; Expected = (Join-Path $canonicalInstallRoot 'updater\updater-config.json') },
+        [pscustomobject]@{ Name = 'RevitInstallRoot'; Actual = $RevitInstallRoot; Expected = (Join-Path $script:RevAgentOsProgramFiles ("Autodesk\Revit {0}" -f $RevitVersion)) }
+    )
+    foreach ($entry in $canonicalMachinePaths) {
+        if (-not [string]::Equals([System.IO.Path]::GetFullPath([string]$entry.Actual).TrimEnd('\'), [System.IO.Path]::GetFullPath([string]$entry.Expected).TrimEnd('\'), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Machine-only $($entry.Name) must equal the canonical managed path '$($entry.Expected)'; refusing '$($entry.Actual)'."
+        }
+    }
+    $LegacyServerTargets = @()
+}
+if ($MachinePhaseOnly -and -not $HostedMachinePhase) {
+    # A transcript is process-local. Inherited markers can only suppress the
+    # protected machine transcript and therefore are never trusted.
+    Remove-Item Env:\REVIT_MCP_TRANSCRIPT_ACTIVE -ErrorAction SilentlyContinue
+    Remove-Item Env:\REVIT_MCP_LOG_PATH -ErrorAction SilentlyContinue
+}
+Assert-RevAgentMachinePhasePaths
+Assert-RevAgentUserPhasePaths
+$script:RevAgentMachineTreeProtected = $false
+$script:RevAgentUserStateGrantCompleted = $false
+$interactivePrincipal = ""
+trap {
+    $originalFailure = $_
+    if ($MachinePhaseOnly -and -not $HostedMachinePhase -and $script:RevAgentMachineTreeProtected -and -not $script:RevAgentUserStateGrantCompleted) {
+        try {
+            [void](Grant-RevAgentUserStateAccess -WorkRoot $WorkRoot -InteractivePrincipal $interactivePrincipal)
+            $script:RevAgentUserStateGrantCompleted = $true
+        }
+        catch {
+            throw "Machine phase failed and final user-state access restoration also failed. original=$($originalFailure.Exception.Message) restore=$($_.Exception.Message)"
+        }
+    }
+    throw $originalFailure
+}
+if ($MachinePhaseOnly) {
+    $interactivePrincipal = "*$TargetInteractiveUserSid"
+    [void](Protect-RevAgentManagedExecutionTree -InstallRoot $InstallRoot -InteractivePrincipal $interactivePrincipal)
+    $script:RevAgentMachineTreeProtected = $true
+    Assert-RevAgentMachinePhasePaths
+    Write-Host "Machine ACL      : execution tree protected; user-state access remains closed until final handoff." -ForegroundColor Green
+}
+Initialize-RevAgentTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "update"
 $statePath = Join-Path $WorkRoot "installed.json"
-$localReportPath = Join-Path $WorkRoot "last-update-report.json"
+$userStateRoot = Join-Path $WorkRoot "user-state"
+$machineStateRoot = Join-Path $WorkRoot "machine-state"
+$localReportPath = Join-Path $(if ($MachinePhaseOnly) { $machineStateRoot } else { $userStateRoot }) "last-update-report.json"
+$machineReportPath = Join-Path $machineStateRoot "last-update-report.json"
+if ($MachinePhaseOnly -and -not (Test-Path -LiteralPath $machineStateRoot -PathType Container)) {
+    New-Item -ItemType Directory -Path $machineStateRoot -Force | Out-Null
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $machineStateRoot)
+}
 $cacheRoot = Join-Path $WorkRoot "cache"
 $stagingRoot = Join-Path $WorkRoot "staging"
 $backupRoot = Join-Path $WorkRoot "backups"
+$docsIndexDeferred = $false
 $revAgentCleanInstallTransitionMarkerPath = Join-Path $WorkRoot "revagent-clean-install-transition.json"
 $revAgentCleanInstallTransitionRequired = $false
 $localPackageBackupPolicyState = [ordered]@{
@@ -3620,7 +4511,16 @@ $revAgentCleanInstallTransitionState = [ordered]@{
 }
 
 try {
-    $desktopLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup
+    if ($MachinePhaseOnly) {
+        $desktopLauncherCleanupState.mode = "deferred-to-user-phase"
+        Write-Host "Desktop launchers: user-profile cleanup deferred to unelevated user phase."
+    }
+    elseif ($AuditOnly) {
+        $desktopLauncherCleanupState.mode = "skipped-audit-only"
+    }
+    else {
+        $desktopLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup
+    }
     if ([int]$desktopLauncherCleanupState.removedCount -gt 0) {
         Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanupState.removedCount) -ForegroundColor Green
     }
@@ -3641,11 +4541,156 @@ catch {
     }
     Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
 }
-New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
+if (-not $MachinePhaseOnly) {
+    New-Item -ItemType Directory -Path $userStateRoot -Force | Out-Null
+}
+if (-not $UserPhaseOnly -and -not $AuditOnly) {
+    New-Item -ItemType Directory -Path $cacheRoot, $stagingRoot, $backupRoot -Force | Out-Null
+}
 
 $taskUpdaterPath = Join-Path $WorkRoot "update-from-nas.ps1"
 if (-not (Test-Path -LiteralPath $taskUpdaterPath -PathType Leaf)) {
     $taskUpdaterPath = $PSCommandPath
+}
+
+if ($UserPhaseOnly) {
+    $integrationResult = $null
+    $reportPublishEvidence = $null
+    $reportPublishError = ""
+    try {
+        Initialize-RevAgentWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+        $docsServerPath = Join-Path $PackageTarget "installer\revit-api-docs-mcp"
+        $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
+        $installedStateForUserPhase = Read-InstalledState -Path $statePath
+        $deferredDocsIndex = $false
+        $installedAtUtc = [datetime]::MinValue
+        if ($installedStateForUserPhase) {
+            $deferredDocsIndex = [bool](Get-JsonPropertyValue -Object $installedStateForUserPhase -Name "docsIndexDeferred")
+            [void][datetime]::TryParse([string](Get-JsonPropertyValue -Object $installedStateForUserPhase -Name "installedAtUtc"), [ref]$installedAtUtc)
+        }
+        $docsIndexNeedsRefresh = $deferredDocsIndex -and (
+            -not (Test-Path -LiteralPath $docsCachePath -PathType Leaf) -or
+            (Get-Item -LiteralPath $docsCachePath -Force -ErrorAction SilentlyContinue).LastWriteTimeUtc -lt $installedAtUtc.ToUniversalTime())
+        if ($docsIndexNeedsRefresh) {
+            $docsIndexScript = Join-Path $docsServerPath "scripts\build-index.ps1"
+            if (-not (Test-Path -LiteralPath $docsIndexScript -PathType Leaf)) {
+                throw "Deferred Revit API index build script is missing: $docsIndexScript"
+            }
+            $userPowerShellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
+                (Join-Path $script:RevAgentOsSystemDirectory "WindowsPowerShell\v1.0\powershell.exe")
+            )
+            Invoke-External -FilePath $userPowerShellPath -Arguments @(
+                "-ExecutionPolicy", "Bypass",
+                "-File", $docsIndexScript,
+                "-RevitRoot", $RevitInstallRoot,
+                "-OutputPath", $docsCachePath
+            ) -WorkingDirectory $docsServerPath
+            Write-Host "Revit API index: deferred machine work completed unelevated before Codex MCP integration." -ForegroundColor Green
+        }
+        elseif ($deferredDocsIndex) {
+            Write-Host "Revit API index: deferred marker satisfied by a current unelevated cache." -ForegroundColor Green
+        }
+        Ensure-CodexDesktop
+
+        $userIntegrationScript = Join-Path $PackageTarget "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
+        if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
+            $userIntegrationScript = Join-Path $PSScriptRoot "Invoke-revAgent-CodexUserIntegration.ps1"
+        }
+        if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
+            throw "Unelevated Codex user-integration entrypoint was not found in the installed package or updater tools."
+        }
+
+        $targetProfile = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+        $targetSid = if ([string]::IsNullOrWhiteSpace($TargetInteractiveUserSid)) {
+            [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        }
+        else {
+            $TargetInteractiveUserSid
+        }
+        $integrationArgs = @{
+            InstallRoot = $InstallRoot
+            CodexInstructionPolicy = $CodexInstructionPolicy
+            TargetUserProfileRoot = $targetProfile
+            TargetUserSid = $targetSid
+            RuntimeServerPath = (Join-Path $ServerTarget "build\index.js")
+            DocsServerPath = (Join-Path $docsServerPath "build\index.js")
+            SkillSourcePath = (Join-Path $InstallRoot "codex\skills\revAgent")
+            AgentsSourcePath = (Join-Path $InstallRoot "codex\AGENTS.md")
+            PassThru = $true
+        }
+        if (-not [string]::IsNullOrWhiteSpace($TargetCodexHome)) {
+            $integrationArgs["CodexHome"] = $TargetCodexHome
+        }
+
+        $integrationOutput = @(& $userIntegrationScript @integrationArgs)
+        $integrationResult = $integrationOutput | Where-Object {
+            $null -ne $_ -and $null -ne $_.PSObject.Properties["success"]
+        } | Select-Object -Last 1
+        if ($null -eq $integrationResult -or -not [bool]$integrationResult.success) {
+            throw "Codex user integration did not return a successful attestation result."
+        }
+
+        $publishedReport = Publish-RevAgentPendingMachineUpdateReport `
+            -ReportPath $machineReportPath `
+            -ReportAllowedRoot $machineStateRoot `
+            -LogAllowedRoot (Join-Path $WorkRoot "machine-logs") `
+            -RemoteReportsRoot $ReportsRoot `
+            -IntegrationStatus "completed" `
+            -IntegrationMessage "Unelevated Codex user integration completed and was attested." `
+            -IntegrationDetails $integrationResult
+        $reportPublishEvidence = [ordered]@{
+            latestPath = [string]$publishedReport.LatestPath
+            operationLatestPath = [string]$publishedReport.OperationLatestPath
+            compatibilityPath = [string]$publishedReport.CompatibilityPath
+            logPath = [string]$publishedReport.LogPath
+        }
+        Write-RevAgentPhaseResult -Status "completed" -ContinueUserPhase:$false -Message "Unelevated Codex user integration completed and the machine report was published." -Details ([ordered]@{
+                integration = $integrationResult
+                reportPublished = $true
+                reportEvidence = $reportPublishEvidence
+            })
+        Write-Host "User integration : completed and attested." -ForegroundColor Green
+    }
+    catch {
+        $phaseMessage = $_.Exception.Message
+        try {
+            $failedPublish = Publish-RevAgentPendingMachineUpdateReport `
+                -ReportPath $machineReportPath `
+                -ReportAllowedRoot $machineStateRoot `
+                -LogAllowedRoot (Join-Path $WorkRoot "machine-logs") `
+                -RemoteReportsRoot $ReportsRoot `
+                -IntegrationStatus "failed" `
+                -IntegrationMessage $phaseMessage `
+                -IntegrationDetails $integrationResult
+            $reportPublishEvidence = [ordered]@{
+                latestPath = [string]$failedPublish.LatestPath
+                operationLatestPath = [string]$failedPublish.OperationLatestPath
+                compatibilityPath = [string]$failedPublish.CompatibilityPath
+                logPath = [string]$failedPublish.LogPath
+            }
+        }
+        catch {
+            $reportPublishError = $_.Exception.Message
+            $phaseMessage = "$phaseMessage Machine report publication also failed: $reportPublishError"
+        }
+        try {
+            Write-RevAgentPhaseResult -Status "failed" -ContinueUserPhase:$false -Message $phaseMessage -Details ([ordered]@{
+                    integration = $integrationResult
+                    reportPublished = ($null -ne $reportPublishEvidence)
+                    reportEvidence = $reportPublishEvidence
+                    reportPublishError = $reportPublishError
+                })
+        }
+        catch {
+            Write-Warning "Could not write user-phase result: $($_.Exception.Message)"
+        }
+        Write-Host "revAgent user integration failed: $phaseMessage" -ForegroundColor Red
+        throw
+    }
+    finally {
+        Complete-RevAgentTranscript
+    }
+    return
 }
 
 $channelDir = Split-Path -Parent $ChannelManifestPath
@@ -3739,25 +4784,27 @@ try {
         $revAgentCleanInstallTransitionState.required = $true
         $revAgentCleanInstallTransitionState.packageBackupSkipped = $true
     }
-    $localPackageBackupPolicyCleanup = Invoke-RevAgentBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
-    $localPackageBackupPolicyState.cleanupAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    $localPackageBackupPolicyState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
-    $localPackageBackupPolicyState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
-    $localPackageBackupPolicyState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
-    $localPackageBackupPolicyState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
-    if ($revAgentCleanInstallTransitionRequired) {
-        $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
-        $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
-        $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
-        $revAgentCleanInstallTransitionState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
-    }
-    if ([int]$localPackageBackupPolicyCleanup.failedBackupItemCount -gt 0 -or
-        [int]$localPackageBackupPolicyCleanup.failedCacheItemCount -gt 0) {
-        throw "Local package backup/cache cleanup failed. Workstation rollback must use signed NAS release archives, not local package backups."
-    }
-    if ([int]$localPackageBackupPolicyCleanup.removedBackupItemCount -gt 0 -or
-        [int]$localPackageBackupPolicyCleanup.removedCacheItemCount -gt 0) {
-        Write-Host ("Local package backups: disabled; removed {0} backup item(s) and {1} cached release ZIP(s)." -f $localPackageBackupPolicyCleanup.removedBackupItemCount, $localPackageBackupPolicyCleanup.removedCacheItemCount) -ForegroundColor Green
+    if (-not $AuditOnly) {
+        $localPackageBackupPolicyCleanup = Invoke-RevAgentBackupRootReset -BackupRoot $backupRoot -CacheRoot $cacheRoot
+        $localPackageBackupPolicyState.cleanupAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        $localPackageBackupPolicyState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
+        $localPackageBackupPolicyState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
+        $localPackageBackupPolicyState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
+        $localPackageBackupPolicyState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
+        if ($revAgentCleanInstallTransitionRequired) {
+            $revAgentCleanInstallTransitionState.removedBackupItemCount = [int]$localPackageBackupPolicyCleanup.removedBackupItemCount
+            $revAgentCleanInstallTransitionState.failedBackupItemCount = [int]$localPackageBackupPolicyCleanup.failedBackupItemCount
+            $revAgentCleanInstallTransitionState.removedCacheItemCount = [int]$localPackageBackupPolicyCleanup.removedCacheItemCount
+            $revAgentCleanInstallTransitionState.failedCacheItemCount = [int]$localPackageBackupPolicyCleanup.failedCacheItemCount
+        }
+        if ([int]$localPackageBackupPolicyCleanup.failedBackupItemCount -gt 0 -or
+            [int]$localPackageBackupPolicyCleanup.failedCacheItemCount -gt 0) {
+            throw "Local package backup/cache cleanup failed. Workstation rollback must use signed NAS release archives, not local package backups."
+        }
+        if ([int]$localPackageBackupPolicyCleanup.removedBackupItemCount -gt 0 -or
+            [int]$localPackageBackupPolicyCleanup.removedCacheItemCount -gt 0) {
+            Write-Host ("Local package backups: disabled; removed {0} backup item(s) and {1} cached release ZIP(s)." -f $localPackageBackupPolicyCleanup.removedBackupItemCount, $localPackageBackupPolicyCleanup.removedCacheItemCount) -ForegroundColor Green
+        }
     }
     $script:RevAgentOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($isFirstInstall) { "install" } elseif ($Force) { "reinstall" } else { "update" }
     if ([string]::IsNullOrWhiteSpace($OperationMethod)) {
@@ -3868,6 +4915,7 @@ try {
                 -LocalReportPath $localReportPath `
                 -RemoteReportsRoot $ReportsRoot
             Show-UserNotification -Title "revAgent migration required" -Message $message -Key ("source-free-migration-required|{0}" -f $targetVersion) -Icon "Warning"
+            Write-RevAgentPhaseResult -Status "blocked" -ContinueUserPhase:$false -Message $message
             return
         }
     }
@@ -3877,10 +4925,11 @@ try {
         [void](Set-CodexMemoryConfig)
     }
 
-    if (-not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and $isPackageCurrent -and -not $requiresRevitClosed) {
+    if (-not $MachinePhaseOnly -and -not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
         Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
+        Write-RevAgentPhaseResult -Status "current" -ContinueUserPhase:$true -Message $message
         return
     }
     elseif ($isPackageCurrent -and $revitPayloadChanges.Count -gt 0) {
@@ -3897,6 +4946,7 @@ try {
         Write-Host $message -ForegroundColor Yellow
         Write-UpdateReport -Status "update-available" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         Show-UserNotification -Title "revAgent update available" -Message $message -Key ("update-available|{0}" -f $targetVersion) -Icon "Information"
+        Write-RevAgentPhaseResult -Status "audit" -ContinueUserPhase:$false -Message $message
         return
     }
 
@@ -3957,6 +5007,7 @@ try {
         Write-Warning $message
         Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         Show-UserNotification -Title "revAgent update requires Revit to close" -Message $message -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
+        Write-RevAgentPhaseResult -Status "blocked" -ContinueUserPhase:$false -Message $message
         return
     }
     elseif ($runningDecision.SkipRevitPayloadInstall) {
@@ -4024,6 +5075,18 @@ try {
         }
     }
 
+    if ($MachinePhaseOnly) {
+        # Installed execution/dependency surfaces were writable before the ACL
+        # lockdown. Rehydrate them from the freshly hash-verified release.
+        $skipRuntimePayloadInstall = $false
+        $skipDocsPayloadWork = $false
+        $skipCodexMcpRegistrationForThisUpdate = $true
+        if (-not $preserveLocalCodexInstructions) {
+            $skipCodexSkillInstallForThisUpdate = $false
+        }
+        Write-Host "Machine repair   : runtime/docs sources forced from verified release payload." -ForegroundColor Yellow
+    }
+
     $sourceFreeMigrationPreCleanup = $null
     $sourceFreeMigrationPostCleanup = $null
     if ($SourceFreeMigration) {
@@ -4031,7 +5094,7 @@ try {
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
-            -UserProfileRoot $env:USERPROFILE `
+            -UserProfileRoot $(if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }) `
             -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
             -SkipCodexUserIntegration:$SkipCodexUserIntegration `
             -Commit
@@ -4055,6 +5118,13 @@ try {
 
     $installer = Join-Path $PackageTarget $packageLayout.installerRelativePath
     $docsServerPath = Join-Path $PackageTarget $packageLayout.docsServerRelativePath
+    $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
+    if ($MachinePhaseOnly -and -not ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf))) {
+        $docsIndexDeferred = $true
+        if ($SkipNpmInstall) {
+            Write-Host "Revit API index: deferred to the unelevated user phase; elevated writes to InstallRoot\state are prohibited." -ForegroundColor Yellow
+        }
+    }
     $npmDependencyCacheRoot = Join-Path $InstallRoot "dependencies\npm"
     $fastPackageOnlyUpdate = $skipRevitPayloadInstall -and
         $skipRuntimePayloadInstall -and
@@ -4070,7 +5140,8 @@ try {
             Write-Host "Fast update path : package/updater metadata only; self-contained installer skipped." -ForegroundColor Green
             $nasToolsSource = Join-Path (Split-Path -Parent $installer) "nas"
             Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $WorkRoot -ConfigPath $ConfigPath
-            Invoke-RevAgentLogRetention -LogsRoot (Join-Path $WorkRoot "logs") -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
+            $retentionLogsRoot = Join-Path $WorkRoot $(if ($MachinePhaseOnly) { "machine-logs" } else { "logs" })
+            Invoke-RevAgentLogRetention -LogsRoot $retentionLogsRoot -KeepLast 10 -ActiveLogPath $env:REVIT_MCP_LOG_PATH
             if ($SkipNpmInstall) {
                 Write-Host "Runtime dependencies: skipped by -SkipNpmInstall."
                 Write-Host "Documentation server dependencies: skipped by -SkipNpmInstall."
@@ -4078,8 +5149,14 @@ try {
             else {
                 $nodePath = [string]$nodeRuntimeStatus.nodePath
                 $npmCliPath = [string]$nodeRuntimeStatus.npmCliPath
-                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
-                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+                if ($MachinePhaseOnly) {
+                    Invoke-NpmInstallMachinePhaseClean -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime"
+                    Invoke-NpmInstallMachinePhaseClean -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server"
+                }
+                else {
+                    Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+                    Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+                }
             }
             Write-Host "Revit API index: skipped; docs payload unchanged."
             Write-Host "Codex MCP registration: skipped; runtime/docs entry points unchanged."
@@ -4102,11 +5179,19 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($WorkspaceAgentsTarget)) {
             $installArgs["WorkspaceAgentsTarget"] = $WorkspaceAgentsTarget
         }
-        if ($LegacyServerTargets.Count -gt 0) {
+        if (-not $MachinePhaseOnly -and $LegacyServerTargets.Count -gt 0) {
             $installArgs["LegacyServerTargets"] = $LegacyServerTargets
         }
         if ($SkipCodexUserIntegration) {
             $installArgs["SkipCodexUserIntegration"] = $true
+        }
+        if ($MachinePhaseOnly) {
+            $installerCommand = Get-Command -Name $installer -CommandType ExternalScript -ErrorAction Stop
+            if ($null -eq $installerCommand.Parameters["SkipUserProfileCleanup"]) {
+                throw "Installed self-contained installer does not support the secure machine-only boundary (-SkipUserProfileCleanup)."
+            }
+            $installArgs["SkipUserProfileCleanup"] = $true
+            $installArgs["SkipLegacyCleanup"] = $true
         }
         if ($skipCodexSkillInstallForThisUpdate) {
             $installArgs["SkipCodexSkillInstall"] = $true
@@ -4125,17 +5210,35 @@ try {
             $nodePath = [string]$nodeRuntimeStatus.nodePath
             $npmCliPath = [string]$nodeRuntimeStatus.npmCliPath
             $powershellPath = Resolve-RequiredCommand -Name "powershell" -Candidates @(
-                (Join-Path $env:WINDIR "System32\WindowsPowerShell\v1.0\powershell.exe")
+                (Join-Path $script:RevAgentOsSystemDirectory "WindowsPowerShell\v1.0\powershell.exe")
             )
 
             if ($skipRuntimePayloadInstall) {
                 Write-Host "Runtime payload unchanged; validating installed dependencies against the selected Node runtime."
             }
-            Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+            if ($MachinePhaseOnly) {
+                Invoke-NpmInstallMachinePhaseClean -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime"
+            }
+            else {
+                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $ServerTarget -Label "Runtime" -CacheRoot $npmDependencyCacheRoot
+            }
 
-            $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-            Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
-            if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
+            if ($MachinePhaseOnly) {
+                Invoke-NpmInstallMachinePhaseClean -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server"
+            }
+            else {
+                Invoke-NpmInstallIfNeeded -NodePath $nodePath -NpmCliPath $npmCliPath -WorkingDirectory $docsServerPath -Label "Documentation server" -CacheRoot $npmDependencyCacheRoot
+            }
+            if ($MachinePhaseOnly) {
+                if ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
+                    Write-Host "Revit API index: skipped; docs payload unchanged."
+                }
+                else {
+                    $docsIndexDeferred = $true
+                    Write-Host "Revit API index: deferred to the unelevated user phase before Codex MCP integration; elevated writes to InstallRoot\state are prohibited." -ForegroundColor Yellow
+                }
+            }
+            elseif ($skipDocsPayloadWork -and (Test-Path -LiteralPath $docsCachePath -PathType Leaf)) {
                 Write-Host "Revit API index: skipped; docs payload unchanged."
             }
             else {
@@ -4188,7 +5291,7 @@ try {
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
-            -UserProfileRoot $env:USERPROFILE `
+            -UserProfileRoot $(if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }) `
             -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
             -SkipCodexUserIntegration:$SkipCodexUserIntegration `
             -Commit
@@ -4247,6 +5350,7 @@ try {
         revitPayloadSkipped = [bool]$skipRevitPayloadInstall
         runtimePayloadSkipped = [bool]$skipRuntimePayloadInstall
         docsPayloadWorkSkipped = [bool]$skipDocsPayloadWork
+        docsIndexDeferred = [bool]$docsIndexDeferred
         codexSkillInstallSkipped = [bool]$skipCodexSkillInstallForThisUpdate
         codexMcpRegistrationSkipped = [bool]$skipCodexMcpRegistrationForThisUpdate
         fastPackageOnlyUpdate = [bool]$fastPackageOnlyUpdate
@@ -4287,6 +5391,11 @@ try {
     Write-UpdateReport -Status "updated" -Message $updateMessage -Channel $channel -InstalledState $newState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $targetVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
     Write-Host $updateMessage -ForegroundColor Green
     Show-UserNotification -Title "revAgent updated" -Message ($updateMessage + "`r`n`r`nInstalled version: " + $targetVersion) -Key ("updated|{0}" -f $targetVersion) -Icon "Information"
+    Write-RevAgentPhaseResult -Status "completed" -ContinueUserPhase:$true -Message $updateMessage -Details ([ordered]@{
+        previousVersion = $installedVersion
+        installedVersion = $targetVersion
+        packageSha256 = $actualSha
+    })
 }
 catch {
     $message = $_.Exception.Message
@@ -4297,8 +5406,22 @@ catch {
     if (-not [string]::IsNullOrWhiteSpace($script:RevAgentLogPath)) {
         Write-Host "Update log: $script:RevAgentLogPath" -ForegroundColor Yellow
     }
+    try {
+        Write-RevAgentPhaseResult -Status "failed" -ContinueUserPhase:$false -Message $message
+    }
+    catch {
+        Write-Warning "Could not write machine-phase result: $($_.Exception.Message)"
+    }
     throw
 }
 finally {
     Complete-RevAgentTranscript
+    if ($MachinePhaseOnly -and -not $HostedMachinePhase -and $script:RevAgentMachineTreeProtected -and -not $script:RevAgentUserStateGrantCompleted) {
+        [void](Grant-RevAgentUserStateAccess -WorkRoot $WorkRoot -InteractivePrincipal $interactivePrincipal)
+        $script:RevAgentUserStateGrantCompleted = $true
+        Write-Host "User-state ACL   : restored after elevated traversal completed." -ForegroundColor Green
+    }
+    if ($null -ne $script:RevAgentSecureMachineTempContext) {
+        Complete-RevAgentSecureMachineTemp -Context $script:RevAgentSecureMachineTempContext
+    }
 }

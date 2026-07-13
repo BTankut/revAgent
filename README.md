@@ -125,7 +125,7 @@ explicit:
 - Autodesk Revit 2022
 - Git for Windows, if you want to pull future updates from this repo
 - Node.js 20+; Node 24 is supported by the bundled runtime dependency lock
-- Codex Desktop app or another MCP/skill-capable LLM host
+- ChatGPT desktop app with Codex enabled, or another MCP/skill-capable LLM host
 
 Office workstation installs automatically configure the DPE proxy
 `http://192.168.90.10:6588` for terminal tools, npm/Git, current-user Windows
@@ -141,29 +141,25 @@ repo-root development setup outside the NAS installer, use the same proxy:
 
 ## Quick start
 
-For office workstations, prefer the NAS updater in `installer/nas/README.md`.
-It installs into the standard machine-wide root:
+For office workstations, use the protected local launcher prepared by the
+coordinator as described in `installer/nas/README.md`:
+
+The managed machine installation root is:
 
 ```text
 C:\ProgramData\DPE\revAgent
 ```
 
-For a manual repo-root install, close Revit and run:
+Launch install/update/repair with:
 
-```powershell
-$RepoRoot = (Resolve-Path .).Path
-
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
-
-cd C:\ProgramData\DPE\revAgent\runtime
-npm install --omit=dev --no-audit --no-fund
-codex mcp add revAgent -- node "C:\ProgramData\DPE\revAgent\runtime\build\index.js"
-
-cd "$RepoRoot\installer\revit-api-docs-mcp"
-npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
+```text
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
+
+Never elevate installer or prestage scripts directly from the repository,
+Desktop, downloads, or another user-writable directory.
+Use the exact normal-user evidence plus built-in-only administrative staging
+procedure in [`docs/BOOTSTRAP_PRESTAGE.md`](docs/BOOTSTRAP_PRESTAGE.md).
 
 Both MCP servers are required: the runtime server executes code, the docs server resolves the API surface against the locally installed Revit DLLs and XML. The skill assumes both are connected.
 
@@ -173,7 +169,8 @@ For multiple office workstations, use `installer/nas/` instead of manually
 pulling and reinstalling on every machine.
 
 - GitHub remains the source history.
-- The NAS share is the single deployment source workstations read from.
+- The NAS share carries the signed deployment data workstations read; the
+  executable first hop is the protected local ProgramData bootstrap.
 - A normal feature-branch `git commit` / `git push` does not update the office.
 - Any update that reaches protected `main` starts the signed source-free CD
   workflow in build/validate mode only; it does not publish to the NAS stable
@@ -417,13 +414,18 @@ workspace/user directories.
 To remove the self-contained install without installing a fresh copy:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022 -Uninstall
+powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\revAgent\package\installer\install-self-contained.ps1" `
+  -RevitVersion 2022 `
+  -Uninstall `
+  -SkipCodexUserIntegration `
+  -SkipUserProfileCleanup `
+  -SkipLegacyCleanup
 ```
 
-Use `-RemoveAgents` with `-Uninstall` only when you also want to remove the
-global and workspace `AGENTS.md` files. If a workstation used an older runtime
-directory name, pass it explicitly with `-LegacyServerTargets` so it is cleaned
-under the same safety checks.
+For an elevated machine-only uninstall, also pass `-SkipCodexUserIntegration`,
+`-SkipUserProfileCleanup`, and `-SkipLegacyCleanup`. User instruction cleanup
+is a separate unelevated workflow; do not use an elevated uninstall to traverse
+or delete user-profile Codex paths.
 
 ### Source-free migration
 
@@ -481,60 +483,35 @@ NuGet is only relevant if you are rebuilding the command-set source project in a
 
 ## Clean machine checklist
 
-Use this order on a fresh machine. In the office, the preferred path is to
-double-click the NAS updater:
+Use this order on a fresh machine. After coordinator prestage, the only
+production first hop is the protected local launcher:
 
 ```text
-\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\Install-revAgent-Updater.cmd
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-Manual repo-root install:
+Do not use PATH-resolved `npm`, `node`, or `codex` from an elevated shell and do
+not run a repo-root repair. A missing or stale protected bootstrap is a security
+stop requiring a fresh authenticated coordinator prestage.
+
+Manual repair prerequisites:
 
 1. Install the prerequisites:
    - Autodesk Revit 2022
    - Git for Windows
    - Node.js 20+; Node 24 is supported by the bundled dependency lock
-   - Codex Desktop app or another MCP/skill-capable LLM host
+   - ChatGPT desktop app with Codex enabled, or another MCP/skill-capable LLM host
 2. Clone or download this repo.
 3. Close Revit.
-4. Capture the repo root and run the installer:
+4. Run the protected local launcher; it owns the split machine/user flow.
+5. Verify both `revAgent` and `revAgent-api-docs` through the returned
+   `mcpReadback` and handshake attestations.
 
-```powershell
-$RepoRoot = (Resolve-Path .).Path
-powershell -ExecutionPolicy Bypass -File "$RepoRoot\installer\install-self-contained.ps1" -RevitVersion 2022
-```
-
-5. Install Node dependencies in the deployed runtime server target:
-
-```powershell
-cd C:\ProgramData\DPE\revAgent\runtime
-npm install --omit=dev --no-audit --no-fund
-```
-
-6. Register the runtime MCP server in Codex:
-
-```powershell
-codex mcp add revAgent -- node "C:\ProgramData\DPE\revAgent\runtime\build\index.js"
-```
-
-7. Install and register the required docs MCP server:
-
-```powershell
-cd "$RepoRoot\installer\revit-api-docs-mcp"
-npm install --omit=dev --no-audit --no-fund
-powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
-```
-
-8. Reload Codex skills:
-
-```text
-/skills reload
-```
-
-The installer already installs the machine-level Codex payload under
-`C:\ProgramData\DPE\revAgent\codex` and creates user-profile integration unless
-`-SkipCodexUserIntegration` is passed.
+The machine phase installs the managed Codex source under
+`C:\ProgramData\DPE\revAgent\codex`; the dedicated unelevated phase writes the
+effective `CODEX_HOME`, `.agents\skills`, and MCP registration. Start a
+genuinely new ChatGPT task after integration so the app rebuilds instruction,
+skill, and MCP descriptors.
 
 ## Local build and smoke tests
 
@@ -741,15 +718,20 @@ Expected bundled docs commands:
 
 This repo includes a second MCP server that reads the installed Revit API assemblies and XML doc files directly from the local Revit installation. It is kept as a separate process so the live Revit tool surface stays minimal, but the skill **depends on it** - it is the authoritative source for class and member signatures that the snippet generation step relies on.
 
-Install it after the runtime server (Quick start already shows this step):
+For repository development, install/build its dependencies as the normal
+unelevated developer user:
 
 ```powershell
 $RepoRoot = (Resolve-Path .).Path
 cd "$RepoRoot\installer\revit-api-docs-mcp"
 npm install --omit=dev --no-audit --no-fund
 powershell -ExecutionPolicy Bypass -File ".\scripts\build-index.ps1" -RevitRoot "C:\Program Files\Autodesk\Revit 2022" -OutputPath "C:\ProgramData\DPE\revAgent\state\revit-api-docs\cache\revit-api-docs-2022.json"
-codex mcp add revAgent-api-docs -- node "$RepoRoot\installer\revit-api-docs-mcp\build\index.js"
 ```
+
+Do not register it with a PATH-resolved `codex` command from an administrator
+shell. The dedicated unelevated integration entrypoint selects the current
+OpenAI-signed CLI and OpenJS-signed system Node, writes both MCP entries
+atomically, then performs `mcp get --json` and protocol handshakes.
 
 On first query, the docs server builds a local cache from the installed `RevitAPI*.dll` and matching `RevitAPI*.xml` files under the Revit install folder.
 `get_member_details` also resolves common Revit C# convenience aliases such as
@@ -859,13 +841,21 @@ Useful flags:
 
 After the script finishes:
 
-- Codex Desktop: run `/skills reload`.
+- ChatGPT desktop app: start a genuinely new task after integration; restart
+  the app only if the new task still shows stale skill/MCP descriptors.
 - Claude Code: start a new session.
 - Cursor: restart Cursor.
 
 ## Host compatibility
 
-The office installation flow registers MCP servers through the current user's installed Codex Desktop command on Windows, with a direct `config.toml` update fallback when that command helper is missing. It also writes the standard Codex memory configuration and normalizes `service_tier = "fast"` idempotently under `%USERPROFILE%\.codex\config.toml`. The skill itself is host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are registered:
+The office installation flow resolves the effective `CODEX_HOME`, selects an
+origin- and signer-attested current ChatGPT/Codex CLI plus an OpenJS-signed
+system Node runtime, updates `config.toml` with lock/CAS/atomic-replace
+protection, and accepts registration only after `mcp get --json` plus protocol
+handshakes. It also writes the standard Codex memory configuration and
+normalizes `service_tier = "fast"` idempotently. The skill itself is
+host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are
+registered:
 
 - `revAgent` for live Revit execution and inspection
 - `revAgent-api-docs` for required API class/member lookup
@@ -874,7 +864,7 @@ Host-specific notes:
 
 - **Claude Code**: copy the repo root into the desired skill location and register both MCP servers with `claude mcp add`. The `send_code_to_revit` tool should surface under the `revAgent` MCP server prefix.
 - **Cursor**: place the repo under your skills/rules location and register both MCP servers in Cursor's MCP settings.
-- **Codex Desktop**: see the Quick start section above.
+- **ChatGPT desktop app (Codex)**: see the Quick start section above.
 
 `SKILL.md` does not hardcode any host-specific tool name.
 
@@ -1369,13 +1359,16 @@ The docs server remains under `installer\revit-api-docs-mcp`; register it as a r
 
 This repo remains self-contained for distribution. The Revit plugin payload, runtime MCP server build, and docs MCP server are vendored here.
 
-Node dependencies still need to be installed on the target machine with:
+Repository developers may install Node dependencies in their source checkout
+as the normal user with:
 
 ```powershell
 npm install --omit=dev --no-audit --no-fund
 ```
 
-The bundled runtime server pins `better-sqlite3` to a Node 24-compatible
+Production target-machine dependency installation is owned by the supported NAS
+updater; do not run a PATH-resolved `npm` from its elevated machine phase. The
+bundled runtime server pins `better-sqlite3` to a Node 24-compatible
 version so clean Windows installs do not need Python or Visual Studio Build
 Tools just to compile that native dependency. The supported NAS updater is the
 authoritative installation path: it runs npm through the same `node.exe` used

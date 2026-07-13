@@ -56,6 +56,24 @@ function Assert-Equal {
     }
 }
 
+function Assert-ThrowsLike {
+    param(
+        [scriptblock]$Action,
+        [string]$Pattern,
+        [string]$Message
+    )
+
+    $threw = $false
+    try { & $Action }
+    catch {
+        $threw = $true
+        if ($_.Exception.Message -notmatch $Pattern) {
+            throw "$Message Unexpected error: $($_.Exception.Message)"
+        }
+    }
+    if (-not $threw) { throw "$Message Expected an exception matching '$Pattern'." }
+}
+
 function Get-ScriptParamNames {
     param([string]$Path)
 
@@ -151,6 +169,94 @@ try {
     Write-Host "Test installer lib function alias contract"
     Assert-InstallerLibFunctionAliasContract -Root $RepoRoot
 
+    Write-Host "Test split-phase installer report and GUI handoff contract"
+    $installTaskPath = Join-Path $RepoRoot "installer\nas\install-updater-task.ps1"
+    $installTaskTokens = $null
+    $installTaskParseErrors = $null
+    $installTaskAst = [System.Management.Automation.Language.Parser]::ParseFile($installTaskPath, [ref]$installTaskTokens, [ref]$installTaskParseErrors)
+    Assert-Equal $installTaskParseErrors.Count 0 "PowerShell parse errors found in split-phase installer."
+    $installTaskHarnessFunctions = @(
+        "Set-RevAgentInstallRunReport",
+        "Test-InstallPhasePathUnderRoot",
+        "Assert-InstallPhasePathNoReparse",
+        "Assert-InstallPhaseOutputPaths",
+        "Write-RevAgentInstallLocalReport",
+        "Write-RevAgentInstallPhaseResult",
+        "Write-RevAgentInstallMachinePhaseResult",
+        "Write-RevAgentInstallUserPhaseResult"
+    )
+    $installTaskFunctionNodes = @($installTaskAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $installTaskHarnessFunctions -contains $node.Name
+            }, $true) | Sort-Object { $_.Extent.StartOffset })
+    Assert-Equal $installTaskFunctionNodes.Count $installTaskHarnessFunctions.Count "Split-phase installer test harness could not resolve every production function."
+    $installTaskFunctionText = ($installTaskFunctionNodes | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    & {
+        param([string]$FunctionText, [string]$HarnessRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        function Read-OptionalJsonFile { param([string]$Path) return $null }
+
+        $MachinePhaseOnly = $true
+        $UserPhaseOnly = $false
+        $WorkRoot = Join-Path $HarnessRoot "updater"
+        $LogPath = Join-Path $WorkRoot "machine-logs\install-machine.log"
+        $PhaseResultPath = Join-Path $WorkRoot "machine-state\machine-result.json"
+        $ChannelManifestPath = Join-Path $HarnessRoot "stable.json"
+        $InstallRoot = $HarnessRoot
+        $PackageTarget = Join-Path $HarnessRoot "package"
+        $ServerTarget = Join-Path $HarnessRoot "runtime"
+        $RevitInstallRoot = Join-Path $HarnessRoot "Revit"
+        $CodexInstructionPolicy = "preserve-local"
+        $MachineRole = "developer"
+        $script:RevAgentLatestReport = $null
+        $script:RevAgentOperation = "install"
+        $script:RevAgentOperationMethod = "gui-install"
+        $script:RevAgentCodexUserIntegrationPhase = $null
+        $script:RevAgentDesktopLauncherCleanup = $null
+        $script:RevAgentLogPath = $LogPath
+
+        Assert-InstallPhaseOutputPaths
+        $machineReportPath = Join-Path $WorkRoot "machine-state\last-install-report.json"
+        Assert-True (-not (Test-Path -LiteralPath $machineReportPath)) "Output-path validation must not write a null install report."
+
+        Set-RevAgentInstallRunReport -Status "completed" -Message "machine complete"
+        Assert-True (Test-Path -LiteralPath $machineReportPath -PathType Leaf) "Machine install report was not persisted after report population."
+        $machineReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$machineReport.status) "completed" "Persisted machine install report status mismatch."
+
+        Write-RevAgentJsonFile -Path $PhaseResultPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value ([ordered]@{
+                phase = "machine"
+                status = "completed"
+                success = $true
+                continueUserPhase = $true
+                source = "nested-updater"
+            })
+        Write-RevAgentInstallMachinePhaseResult -Status "completed" -Message "continue user phase" -ContinueUserPhase $true -Details ([ordered]@{ reportPath = $machineReportPath })
+        $machineResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$machineResult.phase) "machine" "Machine handoff phase mismatch."
+        Assert-True ([bool]$machineResult.success) "Machine handoff must report success."
+        Assert-True ([bool]$machineResult.continueUserPhase) "Machine handoff must continue the unelevated user phase."
+        Assert-True ($null -eq $machineResult.PSObject.Properties["source"]) "Outer installer handoff must atomically replace the nested updater result."
+
+        Write-RevAgentInstallMachinePhaseResult -Status "failed" -Message "machine failed" -ContinueUserPhase $false
+        $failedMachineResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-True (-not [bool]$failedMachineResult.success) "Failed machine handoff must not report success."
+        Assert-True (-not [bool]$failedMachineResult.continueUserPhase) "Failed machine handoff must block the user phase."
+
+        $MachinePhaseOnly = $false
+        $UserPhaseOnly = $true
+        $LogPath = Join-Path $WorkRoot "logs\install-user.log"
+        $PhaseResultPath = Join-Path $WorkRoot "user-state\user-result.json"
+        Assert-InstallPhaseOutputPaths
+        Write-RevAgentInstallUserPhaseResult -Status "completed" -Message "user complete"
+        $userResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "user-state")
+        Assert-Equal ([string]$userResult.phase) "user" "User handoff phase mismatch."
+        Assert-True ([bool]$userResult.success) "User handoff must report success for the GUI terminal state."
+        Assert-True (-not [bool]$userResult.continueUserPhase) "User handoff must be terminal."
+    } $installTaskFunctionText (Join-Path $tempRoot "split-phase-installer")
+
     Write-Host "Test hidden VBS launcher"
     $exitScript = Join-Path $tempRoot "exit-7.ps1"
     Set-Content -LiteralPath $exitScript -Value "exit 7" -Encoding ASCII
@@ -165,9 +271,12 @@ try {
 
     Write-Host "Test scheduled task action"
     $action = New-RevAgentHiddenUpdaterScheduledTaskAction -LauncherPath $launcher
-    Assert-True ([string]$action.Execute -match 'wscript\.exe$') "Scheduled task action must use wscript.exe."
+    $canonicalWscript = Join-Path ([Environment]::SystemDirectory) "wscript.exe"
+    Assert-True ([string]::Equals([string]$action.Execute, $canonicalWscript, [System.StringComparison]::OrdinalIgnoreCase)) "Scheduled task action must use the exact System32 wscript.exe."
     Assert-True ([string]$action.Execute -notmatch 'powershell\.exe$') "Scheduled task action must not execute powershell.exe directly."
     Assert-True ([string]$action.Arguments -match [regex]::Escape($launcher)) "Scheduled task action must point at the hidden VBS launcher."
+    Assert-True (Test-RevAgentHiddenScheduledTaskActionMatch -CurrentExecute $canonicalWscript -CurrentArguments ([string]$action.Arguments) -DesiredExecute $canonicalWscript -DesiredArguments ([string]$action.Arguments)) "Canonical scheduled-task action must match exactly."
+    Assert-True (-not (Test-RevAgentHiddenScheduledTaskActionMatch -CurrentExecute "wscript.exe" -CurrentArguments ([string]$action.Arguments) -DesiredExecute $canonicalWscript -DesiredArguments ([string]$action.Arguments))) "Bare legacy wscript.exe must require repair."
     $dailyTrigger = New-RevAgentDailyUpdateTrigger -DailyAt "12:00"
     $dailyTriggerLocalTime = ([datetime]::Parse([string]$dailyTrigger.StartBoundary)).ToLocalTime().ToString("HH:mm")
     Assert-Equal $dailyTriggerLocalTime "12:00" "Scheduled task trigger must run at noon local time."
@@ -407,6 +516,7 @@ try {
             "CodexInstructionPolicy",
             "SkipCodexSkillInstall",
             "SkipCodexUserIntegration",
+            "SkipUserProfileCleanup",
             "SkipLegacyCleanup",
             "SkipRevitPayloadInstall",
             "SkipRuntimePayloadInstall",
@@ -417,22 +527,31 @@ try {
         Assert-True ($installerParams -contains $name) "install-self-contained.ps1 lost public parameter -$name."
     }
     $updaterTaskParams = Get-ScriptParamNames -Path (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
-    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate", "CodexInstructionPolicy", "RunSourceFreeMigration")) {
+    foreach ($name in @("ChannelManifestPath", "RunNow", "ForceUpdate", "CodexInstructionPolicy", "RunSourceFreeMigration", "MachinePhaseOnly", "UserPhaseOnly", "PhaseResultPath")) {
         Assert-True ($updaterTaskParams -contains $name) "install-updater-task.ps1 lost public parameter -$name."
     }
 
     Write-Host "Test GUI updater exposes update and restore actions"
     $guiText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
+    $localBootstrapText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1")
+    $localBootstrapModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.LocalBootstrap.psm1")
+    $stableLauncherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
+    Assert-True ($stableLauncherText -match '%ProgramData%\\DPE\\revAgent\\bootstrap\\Start-revAgent-Update\.ps1' -and $stableLauncherText -notmatch 'Install-revAgent-Updater-GUI\.ps1' -and $stableLauncherText -match 'NAS scripts cannot bootstrap their own trust') "Stable launcher must call only the protected local bootstrap and fail closed with prestage instructions."
+    Assert-True ($localBootstrapText -match 'bootstrap-state\.json' -and $localBootstrapText -match 'independentlyAuthenticated' -and $localBootstrapText -match 'FileMode\]::CreateNew' -and $localBootstrapText -match 'PSModulePath' -and $localBootstrapText -match 'installerLibLocalBootstrap' -and $localBootstrapText -match 'localBootstrap') "Local bootstrap must enforce protected state, effective read-only access, trusted modules, and signed surface mapping."
+    Assert-True ($localBootstrapText -match 'localCurrentReleaseBindings' -and $localBootstrapText -match 'bootstrap_refresh_required' -and $localBootstrapText -match 'FileAccess\]::Write' -and $localBootstrapText -match 'fsutil\.exe' -and $localBootstrapText -match 'hardlink list') "Local bootstrap must reject stale trust-anchor files, effective file writes, and hardlinks."
+    Assert-True ($localBootstrapModuleText -match 'ExpectedSourceHashes' -and $localBootstrapModuleText -match 'SetOwner.*S-1-5-32-544' -and $localBootstrapModuleText -match 'CreateSubdirectory' -and $localBootstrapModuleText -match 'Assert-RevAgentBootstrapLinkSafe' -and $localBootstrapModuleText -match 'sourceAuthentication') "Bootstrap prestage must be hash-authenticated, admin-owned, link-safe, and staged under restrictive ACLs."
+    Assert-True ($guiText.IndexOf('bootstrap-state.json') -lt $guiText.IndexOf('Import-Module $localSourceFreeMigrationModule')) "GUI must validate protected local bootstrap state before importing SourceFreeMigration."
     Assert-True ($guiText -match 'Install/Repair') "GUI must expose a separate install/repair button."
     Assert-True ($guiText -match '-ForceUpdate') "GUI restore action must force the channel package install."
     Assert-True ($guiText -match '-OperationMethod", \$operationMethod') "GUI operations must pass the visible install/update method to child logs."
     Assert-True ($guiText -match 'UpdateEnabled') "GUI must gate the update button from channel status."
-    Assert-True ($guiText -match '\$localUpdaterPath = Join-Path \$workRoot "update-from-nas\.ps1"' -and $guiText -match '\$hasLocalUpdater') "GUI update action must prefer the local trusted updater for installed workstations."
+    Assert-True ($guiText -match '\$releaseUpdaterPath = Join-Path \$releaseToolsRoot "update-from-nas\.ps1"' -and $guiText -match 'Elevated execution of the user-writable local updater is refused') "Protected local GUI machine phase must use the signed canonical NAS updater, never the user-writable local copy."
+    Assert-True ($guiText -match '"-File", \$releaseUpdaterPath' -and $guiText -match '\$userScriptPath = \$releaseUpdaterPath' -and $guiText -match 'PendingUserPhaseComponentKey' -and $guiText -match 'Assert-GuiTrustedMachineScript -MachineScriptPath \$script:PendingUserPhaseFilePath') "Direct update user phase must re-attest and execute the signed canonical release updater, never a stale local updater."
     Assert-True ($guiText -match '\$useDirectUpdate = \(\$Operation -eq "update"' -and $guiText -match '\$runSourceFreeMigration') "GUI must reserve direct updater execution for normal updates and explicit source-free migration."
     Assert-True ($guiText -match '"-File", \$directUpdaterPath') "Normal GUI updates must run update-from-nas.ps1 directly."
-    Assert-True ($guiText -match '"-CodexInstructionPolicy", \$codexInstructionPolicy' -and $guiText -match '-PreserveLocalCodexInstructions:\$preserveLocalCodexInstructions') "GUI direct updates and migration inventory must honor updater-config Codex instruction policy."
+    Assert-True ($guiText -match '\$machineArguments \+= @\("-CodexInstructionPolicy", \$codexInstructionPolicy\)' -and $guiText -match '\$userArguments \+= @\("-CodexInstructionPolicy", \$codexInstructionPolicy\)') "GUI machine and user phases must carry the same Codex instruction policy."
     Assert-True ($guiText -match 'Test-LocalUpdaterSupportsSourceFreeMigration' -and $guiText -match '\$needsSourceFreeMigrationBootstrap') "GUI must detect older local updater tools before source-free migration."
-    Assert-True ($guiText -match '\$arguments \+= "-RunSourceFreeMigration"') "GUI must bootstrap old local updater tools and run source-free migration in one confirmed action."
+    Assert-True ($guiText -match '\$machineArguments \+= "-RunSourceFreeMigration"') "GUI must bootstrap old local updater tools in the machine phase after one confirmed action."
     Assert-True ($guiText.IndexOf('No update is available.') -lt $guiText.IndexOf('This workstation has an installed revAgent package')) "GUI should report no-op update status before warning about a missing local updater."
     Assert-True ($guiText -match 'Get-PackageDescriptionForGui' -and $guiText -match 'Standard user package' -and $guiText -match 'Developer machine' -and $guiText -match 'Codex instructions: preserve local') "GUI must label standard user packages and preserve-local developer machines distinctly."
     Assert-True ($guiText -match 'DPE\\revAgent' -and $guiText -match 'legacyConfigPath') "GUI must default to the revAgent install root while preserving legacy updater config policy."
@@ -440,7 +559,7 @@ try {
     Assert-True ($guiText -match 'RevAgent\.SourceFreeMigration\.psm1' -and $guiText -match 'Get-RevAgentSourceFreeArtifactInventory') "GUI must check source-free migration inventory before install/update actions."
     Assert-True ($guiText -match 'UpdateButtonText = "Migrate"' -and $guiText -match 'SourceFreeMigrationRequired = \$true') "GUI must expose a migration-required state instead of hiding the update path."
     Assert-True ($guiText -match 'Confirm-SourceFreeMigrationForGui' -and $guiText -match 'Continue with source-free migration and update') "GUI must ask before running source-free migration."
-    Assert-True ($guiText -match '\$arguments \+= "-SourceFreeMigration"') "GUI migration path must run update-from-nas.ps1 with -SourceFreeMigration."
+    Assert-True ($guiText -match '\$machineArguments \+= "-SourceFreeMigration"') "GUI migration path must run update-from-nas.ps1 machine phase with -SourceFreeMigration."
     Assert-True ($guiText -match '\$form\.Text = "revAgent"') "GUI title must use the revAgent product name."
     Assert-True ($guiText -match 'Your AI agent inside Revit\.') "GUI must show the revAgent product tagline."
     Assert-True ($guiText -match '2026 Baris Tankut') "GUI must show the revAgent copyright footer."
@@ -449,6 +568,14 @@ try {
     Assert-True ($guiText -match '\$logBox\.Text = \$text') "GUI must stream the live installer log into the terminal area."
     Assert-True ($guiText -match '\$logBox\.AppendText\("Operation completed') "GUI must append completion status without replacing the streamed log."
     Assert-True ($guiText -notmatch 'Operation is running\.\.\.`r`nThis can take a few minutes') "GUI must not replace live terminal output with a generic running message."
+    Assert-True ($guiText -match '2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4' -and $guiText -match 'Pinned pre-UAC integrity verifier hash mismatch') "GUI must pin the signature verifier independently of the release manifest before UAC."
+    Assert-True ($guiText -match 'Trusted release path has a writable ACL and is not sealed' -and $guiText -match 'Pre-UAC signed release verification failed') "GUI must require a sealed canonical NAS surface and signed metadata before elevation."
+    Assert-True ($guiText -match 'Assert-GuiDirectoryEffectivelyReadOnly' -and $guiText -match 'FileMode\]::CreateNew' -and $guiText -match 'UnauthorizedAccessException' -and $guiText -match 'Join-Path \$GuardRoot "reports"' -and $guiText -match 'CreateNew succeeded') "GUI must behaviorally reject effectively writable signed-source directories while preserving the reports exception."
+    Assert-True ($guiText -match 'updaterGui' -and $guiText -match '\$surfaceMap\["updater"\].*update-from-nas\.ps1' -and $guiText -match 'installerLibDistributionIntegrity' -and $guiText -match 'installerLibConfigSync' -and $guiText -match 'installerLibLicense') "GUI must bind itself, the nested updater, and every elevated updater import to signed manifest components."
+    $actualBootstrapVerifierHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1")).Hash
+    foreach ($bootstrapText in @($guiText, (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")), (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")))) {
+        Assert-True ($bootstrapText -match ('\$pinnedIntegrityModuleHash\s*=\s*"{0}"' -f [regex]::Escape($actualBootstrapVerifierHash))) "Every privilege-boundary bootstrap must pin the exact current DistributionIntegrity module SHA-256."
+    }
 
     Write-Host "Test updater skips unchanged payload surfaces"
     $updateText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
@@ -519,14 +646,41 @@ try {
     Assert-True ($updateText -match 'Publish-RevAgentMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
     Assert-True ($updateText -notmatch 'Repair-RevAgentScheduledTaskAction -Name \$TaskName') "Normal updates must not run an extra scheduled-task repair before the package installer."
+    Assert-True ($updateText -match 'Pinned pre-import integrity verifier hash mismatch' -and $updateText -match '2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4') "Elevated updater must independently pin its pre-import signature verifier after UAC."
+    Assert-True ($updateText -match 'Machine-only updater must run the exact signed canonical entrypoint' -and $updateText -match 'Join-Path \$earlyCanonicalToolsRoot "update-from-nas\.ps1"') "Elevated updater must bind PSCommandPath to the exact signed canonical entrypoint, not merely its parent folder."
+    Assert-True ($updateText.IndexOf('Assert-RevAgentEarlyReleaseSurface') -lt $updateText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated updater must verify signed hashes before importing sibling modules."
+    Assert-True ($updateText -match 'Pre-import release path is not sealed read-only' -and $updateText -match 'link/reparse component') "Elevated updater must reject writable or linked canonical release inputs."
+    Assert-True ($updateText -match 'Assert-RevAgentEarlyDirectoryEffectivelyReadOnly' -and $updateText -match 'FileMode\]::CreateNew' -and $updateText -match 'UnauthorizedAccessException' -and $updateText -match 'Join-Path \$fullRoot "reports"' -and $updateText -match 'CreateNew succeeded') "Elevated updater must behaviorally reject effectively writable signed-source directories while preserving the reports exception."
+    Assert-True ($updateText -match 'Machine-phase transcript could not be started at protected path' -and $updateText -match 'Remove-Item Env:\\REVIT_MCP_TRANSCRIPT_ACTIVE') "Machine updater must ignore inherited transcript markers and fail closed outside protected machine-logs."
+    Assert-True ($updateText -match '\[switch\]\$HostedMachinePhase' -and $updateText -match '\$MachinePhaseOnly -and -not \$HostedMachinePhase') "Direct machine updater runs must ignore inherited transcript markers while hosted same-process runs preserve the validated parent transcript."
+    Assert-True ($updateText -match '\$localReportPath = Join-Path \$\(if \(\$MachinePhaseOnly\) \{ \$machineStateRoot \} else \{ \$userStateRoot \}\)' -and $updateText -match 'local ProgramData handoff only' -and $updateText -match 'Publish-RevAgentPendingMachineUpdateReport') "Machine updater reports must stay in protected machine-state and be published only by the unelevated user phase."
+    Assert-True ($updateText -match 'Write-RevAgentJsonFile -Path \$LocalReportPath' -and $updateText -match 'Read-RevAgentJsonReportFile -Path \$ReportPath' -and $updateText -match '-not \$MachinePhaseOnly -and \$script:RevAgentTranscriptStarted') "Updater report handoff must use guarded local JSON and block machine-phase remote publication."
+    Assert-True ($updateText -notmatch 'New-Item -ItemType Directory -Path \$RemoteReportsRoot' -and $updateText -notmatch 'Write-JsonFile -Path \$remotePath') "Elevated updater code must not directly create or write NAS report paths."
+    Assert-True ($updateText -match 'Revit API index: deferred to the unelevated user phase' -and $updateText -match 'docsIndexDeferred = \[bool\]\$docsIndexDeferred') "Machine updater must defer docs index writes to the unelevated user phase."
+    Assert-True ($updateText -match '\$retentionLogsRoot = Join-Path \$WorkRoot \$\(if \(\$MachinePhaseOnly\) \{ "machine-logs" \} else \{ "logs" \}\)') "Machine fast-path retention must not touch user-writable logs."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
+    Assert-True ($installTaskText -match '-MachinePhaseOnly -HostedMachinePhase') "Nested same-process updater runs must preserve only the validated parent machine transcript and defer final ACL handoff to the outer installer."
     Assert-True ($installTaskText -match 'installOperationMethod = \$script:RevAgentOperationMethod') "Updater installer config must record the install/repair method."
     Assert-True ($installTaskText -match 'function Get-EffectiveInstallOperation') "Updater installer must classify install versus reinstall operation type."
     Assert-True ($installTaskText -match 'diagnostics = \[ordered\]@') "Updater installer reports must include dashboard-ready diagnostics."
     Assert-True ($installTaskText -match 'Publish-RevAgentMachineRunReport') "Updater installer must publish per-machine NAS reports and logs."
-    Assert-True ($installTaskText -match '-OperationMethod", "scheduled-update"') "Scheduled updater launcher must tag background runs in logs."
+    Assert-True ($installTaskText -match 'local ProgramData handoff only' -and $installTaskText -match 'Publish-RevAgentPendingMachineInstallReport' -and $installTaskText -match 'Write-RevAgentInstallUserPhaseResult') "Installer machine reports must be handed off locally and final publication evidence must be written by the unelevated user phase."
+    Assert-True ($installTaskText -match '-not \$MachinePhaseOnly -and \$script:RevAgentTranscriptStarted' -and $installTaskText -match 'Read-RevAgentJsonReportFile -Path \$ReportPath') "Installer machine phase must not publish remotely and the user phase must re-read the guarded local report."
+    Assert-True ($installTaskText -match 'RevAgentCodexUserIntegrationPhase = Read-RevAgentJsonReportFile -Path \$phaseResultFullPath' -and $installTaskText -match 'updaterUserPhase = \$script:RevAgentCodexUserIntegrationPhase' -and $installTaskText -match 'codexUserIntegration = \$script:RevAgentCodexUserIntegrationPhase') "Installer final reports and phase results must preserve the actual nested updater/Codex user-integration attestation before replacing the shared phase-result file."
+    Assert-True ($installTaskText -match '-AuditOnly' -and $installTaskText -match '-OperationMethod", "scheduled-update-audit"') "Scheduled updater launcher must be audit-only and tag background audits in logs."
     Assert-True ($installTaskText -match 'trustedKeysPath = \$localTrustedReleaseKeysPath' -and $installTaskText -match 'policy = "enforce"') "Updater installer must pin the local trusted release key path and enforce distribution integrity."
-    Assert-True ($installTaskText -match 'preserved previously pinned local trusted release keys' -and $installTaskText -match 'Restored previously pinned local trusted release keys' -and $installTaskText -match 'config remains pinned and fail-closed until keys are restored' -and $installTaskText -match 'trustedKeysMissing' -and $installTaskText -match 'Test-Path -LiteralPath \$localTrustedReleaseKeysPath -PathType Leaf\) -or \$previousReleaseIntegrityPinned') "Updater installer repair must preserve enforce-pinned distribution integrity when NAS trusted release keys are missing."
+    Assert-True ($installTaskText -notmatch 'previousTrustedReleaseKeysPath' -and $installTaskText -match 'Canonical release tools key is unavailable; refusing updater repair' -and $installTaskText -match 'InstallVerifiedTrustedKeysSha256') "Updater installer must never copy a trusted-key path from old config and must fail closed on the verified canonical release key."
+    Assert-True ($installTaskText -match 'function Write-RevAgentAtomicBytes' -and $installTaskText -match '\[System\.IO\.File\]::Replace' -and $installTaskText -match 'PermissionNativeFileInfo\]::GetLinkCount') "Updater installer config/tool file writes must use atomic replacement after reparse and hardlink guards."
+    Assert-True ($installTaskText -match 'Pinned pre-import integrity verifier hash mismatch' -and $installTaskText.IndexOf('Assert-InstallEarlyReleaseSurface') -lt $installTaskText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated installer must reverify the independently pinned signed surface before sibling imports."
+    Assert-True ($installTaskText -match 'Assert-InstallEarlyDirectoryEffectivelyReadOnly' -and $installTaskText -match 'FileMode\]::CreateNew' -and $installTaskText -match 'UnauthorizedAccessException' -and $installTaskText -match 'Join-Path \$fullRoot "reports"' -and $installTaskText -match 'CreateNew succeeded') "Elevated installer must behaviorally reject effectively writable signed-source directories while preserving the reports exception."
+    Assert-True ($installTaskText -match 'Elevated updater bootstrap must run the exact signed canonical entrypoint' -and $installTaskText -match 'Join-Path \$trustedToolsRoot "install-updater-task\.ps1"') "Elevated installer must bind PSCommandPath to the exact signed canonical entrypoint, not merely its parent folder."
+    Assert-True ($installTaskText -match 'updater = @\("installer\\nas\\update-from-nas\.ps1", "update-from-nas\.ps1"\)' -and $installTaskText -match 'Release updater changed after signed bootstrap verification' -and $installTaskText -match 'InstallVerifiedSurfaceHashes\["updater"\]') "Installer bootstrap closure must hash-bind update-from-nas and recheck it immediately before elevated nested execution."
+    Assert-True ($installTaskText -match 'Remove-Item Env:\\REVIT_MCP_TRANSCRIPT_ACTIVE' -and $installTaskText -match 'Machine-phase transcript could not be started at protected path') "Elevated installer must ignore inherited transcript markers and fail closed if protected logging cannot start."
+    $updaterProtectIndex = $updateText.IndexOf('[void](Protect-RevAgentManagedExecutionTree')
+    $updaterFinalGrantIndex = $updateText.IndexOf('[void](Grant-RevAgentUserStateAccess', $updaterProtectIndex)
+    $installerProtectIndex = $installTaskText.IndexOf('[void](Protect-RevAgentManagedExecutionTree')
+    $installerFinalGrantIndex = $installTaskText.IndexOf('[void](Grant-RevAgentUserStateAccess', $installerProtectIndex)
+    Assert-True ($updaterProtectIndex -ge 0 -and $updaterFinalGrantIndex -gt $updateText.LastIndexOf('finally {') -and $installerProtectIndex -ge 0 -and $installerFinalGrantIndex -gt $installTaskText.LastIndexOf('finally {')) "User-writable state ACLs must be restored only in the outermost machine workflow finalization after all elevated traversal."
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     Assert-True ($publishText -match '\$components\["runtimePayload"\] = Get-DirectoryTreeHash') "Release manifest must include a runtime payload fingerprint."
     Assert-True ($publishText -match '\$components\["docsServerPayload"\] = Get-DirectoryTreeHash') "Release manifest must include a docs payload fingerprint."
@@ -537,6 +691,10 @@ try {
     Assert-True ($publishText -match '\[long\]\$ReleaseSequence = 0' -and $publishText -match '\[long\]\$MinimumAcceptedReleaseSequence = 0') "Release publish signing must support signed anti-rollback sequence metadata."
     Assert-True ($publishText -match '\[switch\]\$RequireSigning') "Release publishing must expose an operator-enforced signing requirement."
     Assert-True ($publishText -match '\[string\]\$TrustedReleaseKeysPath = ""' -and $publishText -match 'release-trusted-keys\.json') "Release publishing must optionally copy public trusted release keys to tools config."
+    Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "scripts\\install-revagent-local-bootstrap\.ps1" -DestinationRelativePath "installer\\nas\\install-revagent-local-bootstrap\.ps1"' -and $publishText -match 'Copy-UserPackFile -SourceRelativePath "scripts\\New-RevAgentBootstrapPrestageEvidence\.ps1"' -and $publishText -match 'bootstrapPrestageEvidenceSchema = "installer\\nas\\bootstrap-prestage-evidence\.schema\.json"' -and $publishText -match 'localBootstrapInstaller = "installer\\nas\\install-revagent-local-bootstrap\.ps1"' -and $publishText -match 'localBootstrapLauncher = "installer\\nas\\Start-revAgent-Update\.cmd"' -and $publishText -match 'updaterGui = "installer\\nas\\Install-revAgent-Updater-GUI\.ps1"' -and $publishText -match 'installerLibConfigSync = "installer\\lib\\RevAgent\.ConfigSync\.psm1"' -and $publishText -match 'installerLibDistributionIntegrity = "installer\\lib\\RevAgent\.DistributionIntegrity\.psm1"') "Signed user pack and release manifest must include the evidence producer/schema, prestage installer, protected local launcher, GUI, and every privilege-boundary library component."
+    $nasToolsRefreshText = [regex]::Match($publishText, '(?s)Write-Section "Refresh NAS tools".*?foreach \(\$toolName in @\((.*?)\)\)').Groups[1].Value
+    Assert-True (-not [string]::IsNullOrWhiteSpace($nasToolsRefreshText) -and $nasToolsRefreshText -notmatch '\.cmd') "Production NAS tools refresh must not publish any unsigned CMD first-hop alias."
+    Assert-True ($publishText -match 'localBootstrap = "installer\\nas\\Start-revAgent-Update\.ps1"' -and $publishText -match 'installerLibLocalBootstrap = "installer\\lib\\RevAgent\.LocalBootstrap\.psm1"') "Signed release manifest must bind the local bootstrap and its protected prestage module."
     Assert-True ($publishText -match '\$manifestMetadataPath' -and $publishText -match '\$zipMetadataPath') "Release publishing must write portable relative channel paths for signed CD artifacts."
     Assert-True ($publishText -match 'Signing private key must be stored outside the repository' -and $publishText -match 'Signing private key must be stored outside NAS tools') "Publish signing must reject private keys stored in shipped or tool roots."
     Assert-True ($publishText -match 'manifest\.sig\.json' -and $publishText -match '\{0\}\.sig\.json' -and $publishText -match 'Test-RevAgentDetachedJsonSignatureFile') "Publish signing must write and verify detached signature files."
@@ -1234,7 +1392,7 @@ try {
     Assert-True ($publishText -match 'installer\\codex-user\\SKILL\.md') "Publish must use the user orchestration SKILL.md."
     Assert-True ($publishText -match 'Copy-UserPackFile -SourceRelativePath "CHANGELOG\.md"' -and $publishText -match 'changelog = "CHANGELOG\.md"') "User pack must include the changelog and hash it in the release manifest."
     Assert-True ($publishText -match 'update-from-nas\.ps1' -and $publishText -match 'show-installed-version\.ps1' -and $publishText -match 'install-updater-task\.ps1') "User pack must include only workstation updater entrypoints from installer\\nas."
-    Assert-True ($publishText -match 'revAgent Updater STABLE\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publishText -match 'Install-revAgent-Updater-GUI\.ps1' -and $publishText -match 'Install-revAgent-Updater\.cmd') "NAS tools must publish revAgent-named user launcher files."
+    Assert-True ($publishText -match 'Install-revAgent-Updater-GUI\.ps1' -and $nasToolsRefreshText -notmatch '\.cmd') "NAS tools must publish the signed PowerShell GUI surface without any unsigned CMD launcher alias."
     Assert-True ($publishText -match 'scripts\\publish-desktop-launcher-evidence\.ps1' -and $publishText -match 'toolsRoot "publish-desktop-launcher-evidence\.ps1"') "NAS tools must publish the desktop launcher evidence helper for rollout closure."
     Assert-True ($publishText -match 'scripts\\collect-rollout-evidence\.ps1' -and $publishText -match 'toolsRoot "collect-rollout-evidence\.ps1"') "NAS tools must publish the SSH rollout evidence collector for rollout closure."
     Assert-True ($publishText -match 'scripts\\invoke-live-smoke-over-ssh\.ps1' -and $publishText -match 'toolsRoot "invoke-live-smoke-over-ssh\.ps1"') "NAS tools must publish the SSH live smoke runner for representative Revit tests."
@@ -1263,13 +1421,13 @@ try {
     Assert-True ($installTaskText -match '\[string\]\$TaskName = "revAgent Auto Update"') "Updater scheduled task must use the revAgent product name by default."
     Assert-True ($installTaskText -match 'DPE\\revAgent') "Updater scheduled-task installer must default to the revAgent install root."
     Assert-True ($installTaskText -match 'Update-revAgent-Now\.cmd' -and $installTaskText -match 'Show-revAgent-Version\.cmd') "Updater scheduled-task installer must create revAgent-named helper commands."
-    Assert-True ($installTaskText -match 'New-RevAgentDailyUpdateTrigger -DailyAt \$DailyAt') "Updater scheduled-task installer must use the shared daily trigger helper."
+    Assert-True ($installTaskText -match 'New-RevAgentDailyUpdateTrigger -DailyAt \$RunAt') "Updater scheduled-task installer must use the shared daily trigger helper."
     Assert-True ($installTaskText -notmatch 'New-ScheduledTaskTrigger -AtLogOn') "Updater scheduled task must not run at logon."
     Assert-True ($installTaskText -notmatch 'RepetitionInterval') "Updater scheduled task must not repeat through the day."
     Assert-True ($installTaskText -notmatch 'StartWhenAvailable') "Updater scheduled task must not start immediately for a missed noon trigger during GUI RunNow installs."
     Assert-True ($installTaskText -match 'dailyAt = \$DailyAt') "Updater config must persist the daily check time for future repairs."
     Assert-True ($installTaskText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $installTaskText -match 'Resolve-CodexInstructionPolicy') "Updater config must persist the Codex instruction policy for future repairs."
-    Assert-True ($installTaskText -match 'Task schedule\s+: daily at \$DailyAt') "Updater install output must report the daily schedule."
+    Assert-True ($installTaskText -match 'Task schedule\s+: daily at \$RunAt') "Updater install output must report the daily schedule."
     Assert-True ($installTaskText -match '"revAgent Auto Update\.vbs"') "Startup fallback reminder must use the revAgent product name."
     Assert-True ($installTaskText -match 'Revit MCP Auto Update\.cmd", "Revit MCP Auto Update\.vbs"') "Startup fallback must remove legacy Revit MCP reminder launchers."
     Assert-True ($installTaskText -match 'Removed legacy task: \$legacyTaskName') "Updater install must remove the legacy Revit MCP scheduled task after registering the revAgent task."
@@ -1331,7 +1489,7 @@ try {
     Assert-True ($updaterText -match 'Remove-StaleNpmDependencyJunction') "Updater must remove stale cached dependency junctions before refreshing."
     Assert-True ($updaterText -match 'Invoke-NpmInstallIfNeeded -NodePath \$nodePath -NpmCliPath \$npmCliPath -WorkingDirectory \$ServerTarget .* -CacheRoot \$npmDependencyCacheRoot') "Runtime npm install must use the validated ABI-aware Node/npm CLI pair."
     Assert-True ($updaterText -match 'Invoke-NpmInstallIfNeeded -NodePath \$nodePath -NpmCliPath \$npmCliPath -WorkingDirectory \$docsServerPath .* -CacheRoot \$npmDependencyCacheRoot') "Docs server npm install must use the validated ABI-aware Node/npm CLI pair."
-    Assert-True ($updaterText.IndexOf('Already up to date.') -lt $updaterText.IndexOf('Initialize-RevAgentWorkstationProxy -ProxyUrl')) "No-op current updates must return before proxy setup."
+    Assert-True ($updaterText.IndexOf('Already up to date.') -lt $updaterText.LastIndexOf('Initialize-RevAgentWorkstationProxy -ProxyUrl')) "No-op machine updates must return before machine-phase proxy setup; the separate user phase may still verify Codex integration."
     Assert-True ($updaterText.IndexOf('Already up to date.') -lt $updaterText.IndexOf('Ensure-UpdateDependencies -SkipNpmInstall')) "No-op current updates must return before Node/Codex/npm dependency checks."
     Assert-True ($updaterText.IndexOf('deferred-revit-close-required') -lt $updaterText.IndexOf('Ensure-UpdateDependencies -SkipNpmInstall')) "Revit-close deferrals must return before Node/Codex/npm dependency checks."
     Assert-True ($updaterText -match 'if \(\$runningRevit\)\s*\{\s*Write-Warning "Revit is running, but this update does not change Revit add-in/command files') "Updater must only warn that Revit is running when Revit.exe is actually detected."
@@ -1388,7 +1546,7 @@ try {
     $windowsPowerShellProfileText = Get-Content -Raw -LiteralPath $windowsPowerShellProfile
     $powerShell7ProfileText = Get-Content -Raw -LiteralPath (Join-Path $profileUserRoot "Documents\PowerShell\Microsoft.PowerShell_profile.ps1")
     Assert-True ($windowsPowerShellProfileText -match '# existing operator profile') "UTF-8 console config must preserve existing profile content."
-    Assert-True ($windowsPowerShellProfileText -match '\[Console\]::OutputEncoding = \$revAgentUtf8Encoding' -and $windowsPowerShellProfileText -match 'chcp\.com 65001') "Windows PowerShell profile must force UTF-8 console output."
+    Assert-True ($windowsPowerShellProfileText -match '\[Console\]::OutputEncoding = \$revAgentUtf8Encoding' -and $windowsPowerShellProfileText -match '(?s)\[Environment\]::SystemDirectory.*chcp\.com.*65001') "Windows PowerShell profile must force UTF-8 console output through the trusted known-folder System32 binary."
     Assert-True ($powerShell7ProfileText -match '\[Console\]::OutputEncoding = \$revAgentUtf8Encoding' -and $powerShell7ProfileText -match 'PYTHONIOENCODING = "utf-8"') "PowerShell 7 profile must force UTF-8 console output."
     [void](Set-RevAgentPowerShellUtf8ConsoleConfig -UserProfileRoot $profileUserRoot)
     $windowsPowerShellProfileTextAfterSecondWrite = Get-Content -Raw -LiteralPath $windowsPowerShellProfile
@@ -1404,21 +1562,25 @@ try {
     Assert-True ($codexRegistrationText -match 'function Set-RevitMcpCurrentProcessUtf8Console' -and $codexRegistrationText -match '"Set-RevAgentCurrentProcessUtf8Console" = "Set-RevitMcpCurrentProcessUtf8Console"' -and $codexRegistrationText -match 'Export-ModuleMember -Alias @\(\$revAgentFunctionAliases\.Keys\)') "Codex registration module must keep the legacy UTF-8 helper and export the revAgent alias."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
     Assert-True ($installTaskText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater task installer entrypoint must force UTF-8 output even when launched with -NoProfile."
-    Assert-True ($installTaskText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installTaskText -match '\[bool\]\$Required = \$true' -and $installTaskText -match 'Remove-Item -LiteralPath \$Destination -Force' -and $installTaskText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \(Join-Path \$PSScriptRoot "migrate-source-free-install\.ps1"\) -Destination \$localMigrationTool -Required:\(\[bool\]\$RunSourceFreeMigration\)') "Updater task installer must replace stale ACL-blocked updater files and require the migration tool only when source-free migration is requested."
+    Assert-True ($installTaskText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installTaskText -match '\[bool\]\$Required = \$true' -and $installTaskText -match 'Write-RevAgentAtomicBytes -Path \$Destination' -and $installTaskText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \(Join-Path \$PSScriptRoot "migrate-source-free-install\.ps1"\) -Destination \$localMigrationTool -Required:\(\[bool\]\$RunSourceFreeMigration\)') "Updater task installer must atomically replace managed updater files and require the migration tool only when source-free migration is requested."
     Assert-True ($installTaskText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installTaskText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $installTaskText -match 'desktopLauncherCleanup') "Updater task installer must remove and report legacy revAgent desktop launchers."
     Assert-True ($updaterText -match 'Set-RevAgentCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
     Assert-True ($updaterText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($updaterText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $updaterText -match '\[bool\]\$Required = \$true' -and $updaterText -match 'Remove-Item -LiteralPath \$Destination -Force' -and $updaterText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\(\$toolName -ne "migrate-source-free-install\.ps1"\)') "Updater fast-path tool refresh must replace stale ACL-blocked updater files and treat the migration tool as optional during normal updates."
     Assert-True ($updaterText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $updaterText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $updaterText -match 'desktopLauncherCleanup') "Updater must remove and report legacy revAgent desktop launchers."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
+    Assert-True ($updaterText -match 'manual-update-audit' -and $updaterText -match '-AuditOnly -NotifyUser' -and $updaterText -match 'Machine updates require the protected local revAgent launcher') "Updater-generated manual helper must be audit-only and route payload changes back to the protected GUI/UAC flow."
     $installerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
-    Assert-True ($installerText -match 'Set-RevAgentCodexMemoryConfig') "Installer must enforce Codex memory config."
-    Assert-True ($installerText -match 'Set-RevAgentPowerShellUtf8ConsoleConfig .* -ConfigureConsoleRegistry' -and $installerText -match 'PowerShell UTF-8 console profiles') "Installer must enforce UTF-8 console defaults for Codex PowerShell sessions."
+    Assert-True ($installerText -match 'machine-only and requires -SkipCodexUserIntegration' -and $installerText -match 'Invoke-revAgent-CodexUserIntegration\.ps1 separately as the original unelevated interactive user') "Self-contained installer must fail closed instead of performing direct user Codex/config/profile writes."
+    Assert-True ($installerText -match 'function Assert-RevAgentProtectedInstallerOriginAcl' -and $installerText -match 'function Assert-RevAgentProtectedInstallerOriginFile' -and $installerText -match 'function Import-RevAgentProtectedInstallerModule') "Self-contained installer must validate the protected origin and re-attest every module immediately before import."
+    Assert-True ($installerText -match 'CreateRestrictedToken' -and $installerText -match 'FileMode\.CreateNew' -and $installerText -match 'FileMode\.Append' -and $installerText -match 'GetLinkCount' -and $installerText -match 'GetIdentity') "Self-contained protected origin must cover effective create/append, hardlink, and file-identity checks."
+    Assert-True ($installerText -match 'New-RevAgentProtectedInstallerSubdirectory' -and $installerText -match 'FileSystemAclExtensions\]::CreateDirectory' -and $installerText -match 'preimport-') "Self-contained origin native helper must compile from an ACL-at-create protected machine temp across PowerShell runtimes."
     Assert-True ($installerText -match 'Set-RevAgentCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installerText -match '\[bool\]\$Required = \$true' -and $installerText -match 'Remove-Item -LiteralPath \$Destination -Force' -and $installerText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\(\$toolName -ne "migrate-source-free-install\.ps1"\)') "Self-contained installer updater tool refresh must replace stale ACL-blocked updater files and treat the migration tool as optional during normal updates."
     Assert-True ($installerText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installerText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup') "Self-contained installer must remove legacy revAgent desktop launchers."
     Assert-True ($installTaskText -notmatch 'legacy Revit MCP launcher shortcut' -and $updaterText -notmatch 'legacy Revit MCP launcher shortcut' -and $installerText -notmatch 'legacy Revit MCP launcher shortcut') "Active installer/updater launcher cleanup messages must use revAgent wording."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
+    Assert-True ($installerText -match 'manual-update-audit' -and $installerText -match '-AuditOnly -NotifyUser' -and $installerText -match 'Machine updates require the protected local revAgent launcher') "Installer-generated manual helper must be audit-only and route payload changes back to the protected GUI/UAC flow."
     Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevAgentRuntimeUserPayload') "Installer must copy only the runtime user payload."
@@ -1491,6 +1653,8 @@ try {
     $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Reporting.psm1")
     Assert-True ($reportingText -match 'app = "revAgent"' -and $reportingText -notmatch 'app = "revit-mcp-skill"') "Machine report helper must default to the revAgent app identity."
     Assert-True ($reportingText -match '\$operationLatestPath = Join-Path \$machineRoot \("\{0\}-latest\.json" -f \$safeOperation\)' -and $reportingText -match 'Write-RevitMcpJsonFile -Path \$operationLatestPath -Value \$published') "Machine report publishing must emit operation-specific latest files used by dashboard version fallback."
+    Assert-True ($reportingText -match 'Remote report publishing is forbidden in an elevated process' -and $reportingText -match 'FileMode\]::CreateNew' -and $reportingText -match 'File\]::Replace' -and $reportingText -match 'GetLinkCount') "Remote reporting must reject elevation and use create-new atomic writes with hardlink checks."
+    Assert-True ($reportingText -notmatch 'Copy-Item -LiteralPath \$LogPath' -and $reportingText -notmatch 'Set-Content -LiteralPath \$Path') "Remote reporting must not use direct Copy-Item or Set-Content writes."
     $safePathCases = @(
         @{ input = "HAFIZE"; expected = "HAFIZE" },
         @{ input = "MARINA"; expected = "MARINA" },
@@ -1502,16 +1666,62 @@ try {
         Assert-Equal (ConvertTo-RevAgentSafePathSegment -Value $case.input -Fallback "fallback") $case.expected "Safe path segment conversion must preserve machine names across Turkish culture-sensitive letters."
     }
     $remoteReportsRoot = Join-Path $tempRoot "reports"
-    $operationLog = Join-Path $tempRoot "install.log"
+    New-Item -ItemType Directory -Path $remoteReportsRoot -Force | Out-Null
+    $localReportSourceRoot = Join-Path $tempRoot "local-report-source"
+    New-Item -ItemType Directory -Path $localReportSourceRoot -Force | Out-Null
+    $operationLog = Join-Path $localReportSourceRoot "install.log"
     Set-Content -LiteralPath $operationLog -Value "Operation method : gui-install" -Encoding ASCII
-    Publish-RevAgentMachineRunReport -ReportsRoot $remoteReportsRoot -Report $report -Operation "install" -OperationMethod "gui-install" -LogPath $operationLog -KeepLastLogs 2 -WriteCompatibilityReport | Out-Null
+    Publish-RevAgentMachineRunReport -ReportsRoot $remoteReportsRoot -Report $report -Operation "install" -OperationMethod "gui-install" -LogPath $operationLog -LocalLogAllowedRoot $localReportSourceRoot -KeepLastLogs 2 -WriteCompatibilityReport | Out-Null
     $safeComputer = ConvertTo-RevAgentSafePathSegment -Value $env:COMPUTERNAME -Fallback "unknown-computer"
+    $safeUser = ConvertTo-RevAgentSafePathSegment -Value $env:USERNAME -Fallback "unknown-user"
     $machineLatest = Join-Path $remoteReportsRoot ("machines\{0}\latest.json" -f $safeComputer)
     Assert-True (Test-Path -LiteralPath $machineLatest -PathType Leaf) "Machine latest report must be written under reports\\machines\\<computer>."
     $machineReport = Get-Content -Raw -LiteralPath $machineLatest | ConvertFrom-Json
     Assert-Equal $machineReport.operationMethod "gui-install" "Machine report must record operationMethod."
+    Assert-True (Test-Path -LiteralPath (Join-Path $remoteReportsRoot ("machines\{0}\install-latest.json" -f $safeComputer)) -PathType Leaf) "Operation latest report must preserve dashboard fallback semantics."
+    Assert-True (Test-Path -LiteralPath (Join-Path $remoteReportsRoot ("{0}_{1}.json" -f $safeComputer, $safeUser)) -PathType Leaf) "Compatibility latest report must preserve the legacy dashboard path."
     $machineLogsRoot = Join-Path $remoteReportsRoot ("machines\{0}\logs" -f $safeComputer)
     Assert-Equal (@(Get-ChildItem -LiteralPath $machineLogsRoot -File -Filter "*.log").Count) 1 "Machine report log must be copied to NAS report storage."
+
+    for ($publishIndex = 1; $publishIndex -le 3; $publishIndex++) {
+        Set-Content -LiteralPath $operationLog -Value ("Operation method : gui-install {0}" -f $publishIndex) -Encoding ASCII
+        Publish-RevAgentMachineRunReport -ReportsRoot $remoteReportsRoot -Report $report -Operation "install" -OperationMethod "gui-install" -LogPath $operationLog -LocalLogAllowedRoot $localReportSourceRoot -KeepLastLogs 2 -WriteCompatibilityReport | Out-Null
+    }
+    Assert-Equal (@(Get-ChildItem -LiteralPath $machineLogsRoot -File -Filter "*.log").Count) 2 "Bounded remote retention must keep exactly the latest two safe logs."
+    $guardedRead = Read-RevAgentJsonReportFile -Path $machineLatest -AllowedRoot $remoteReportsRoot
+    Assert-Equal $guardedRead.operation "install" "Guarded JSON report reads must preserve the published operation."
+
+    $junctionReportsRoot = Join-Path $tempRoot "reports-junction-guard"
+    $junctionOutsideRoot = Join-Path $tempRoot "reports-junction-outside"
+    New-Item -ItemType Directory -Path $junctionReportsRoot, $junctionOutsideRoot -Force | Out-Null
+    New-Item -ItemType Junction -Path (Join-Path $junctionReportsRoot "machines") -Target $junctionOutsideRoot | Out-Null
+    Assert-ThrowsLike -Pattern 'link/reparse' -Message "Report publishing must reject a junction below ReportsRoot." -Action {
+        Publish-RevAgentMachineRunReport -ReportsRoot $junctionReportsRoot -Report $report -Operation "install" | Out-Null
+    }
+    Assert-Equal @(Get-ChildItem -LiteralPath $junctionOutsideRoot -Force).Count 0 "Rejected report junctions must not mutate their external target."
+
+    $hardlinkReportsRoot = Join-Path $tempRoot "reports-hardlink-guard"
+    $hardlinkMachineRoot = Join-Path $hardlinkReportsRoot ("machines\{0}" -f $safeComputer)
+    New-Item -ItemType Directory -Path $hardlinkMachineRoot -Force | Out-Null
+    $outsideLatest = Join-Path $tempRoot "outside-latest.json"
+    Set-Content -LiteralPath $outsideLatest -Value '{"sentinel":true}' -Encoding ASCII
+    New-Item -ItemType HardLink -Path (Join-Path $hardlinkMachineRoot "latest.json") -Target $outsideLatest | Out-Null
+    Assert-ThrowsLike -Pattern '(hard-linked|link/reparse)' -Message "Report publishing must reject a hard-linked latest file." -Action {
+        Publish-RevAgentMachineRunReport -ReportsRoot $hardlinkReportsRoot -Report $report -Operation "install" | Out-Null
+    }
+    Assert-True ((Get-Content -Raw -LiteralPath $outsideLatest) -match 'sentinel') "Rejected hard-linked latest files must not mutate the external file."
+
+    $hardlinkLogReportsRoot = Join-Path $tempRoot "reports-hardlink-log-guard"
+    $hardlinkLogSourceRoot = Join-Path $tempRoot "local-hardlink-log-source"
+    New-Item -ItemType Directory -Path $hardlinkLogReportsRoot, $hardlinkLogSourceRoot -Force | Out-Null
+    $outsideLog = Join-Path $tempRoot "outside-log.txt"
+    Set-Content -LiteralPath $outsideLog -Value "outside sentinel" -Encoding ASCII
+    $hardlinkLog = Join-Path $hardlinkLogSourceRoot "install.log"
+    New-Item -ItemType HardLink -Path $hardlinkLog -Target $outsideLog | Out-Null
+    Assert-ThrowsLike -Pattern '(hard-linked|link/reparse)' -Message "Report publishing must reject a hard-linked local log source." -Action {
+        Publish-RevAgentMachineRunReport -ReportsRoot $hardlinkLogReportsRoot -Report $report -Operation "install" -LogPath $hardlinkLog -LocalLogAllowedRoot $hardlinkLogSourceRoot | Out-Null
+    }
+    Assert-Equal (Get-Content -Raw -LiteralPath $outsideLog).Trim() "outside sentinel" "Rejected hard-linked log sources must not mutate the external file."
 
     Write-Host "Test updater log retention"
     $logsRoot = Join-Path $tempRoot "logs-retention"

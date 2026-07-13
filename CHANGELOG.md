@@ -4,6 +4,27 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hardened the workstation updater for the unified ChatGPT/Codex desktop
+  transition. Elevated work is now a canonical, signed, source-verified
+  machine phase that cannot execute or write through user-profile paths,
+  shims, poisoned `PSModulePath` roots, reparse points, hardlinks, inherited
+  transcript/TEMP paths, or user-writable state. Unelevated user integration
+  resolves the interactive SID/profile and `CODEX_HOME`, pins OpenAI/OpenJS
+  signer identities, migrates
+  skills to `.agents\skills`, updates config with lock/CAS/atomic replacement,
+  and verifies both `codex mcp get --json` and MCP initialize/tools-list
+  handshakes. The scheduled task is audit-only; install/update requires the
+  visible split-privilege GUI. New adversarial fixtures cover malicious
+  executable, junction, hardlink, config-race, different-UAC-identity, and
+  ChatGPT-open/closed behavior. NAS release sources are sealed read-only and
+  behaviorally checked for effective writability outside an approved publish
+  window. The production first hop is now the manifest-bound, admin-owned local
+  launcher; NAS `.cmd` files and repo-side prestage/self-contained scripts are
+  rejected as elevated trust origins. Production ACL operations also pin the
+  exact canonical UNC and require protected DACLs on every sealed item.
+- Kept the non-Revit local gate deterministic on PowerShell 7.6 by normalizing
+  empty JSON write-pattern arrays before usage-intelligence classification and
+  comparing parsed JSON timestamps by UTC value rather than display culture.
 - Added the read-only Spatial Context Engine Phase 1b query, diff, and summary
   layer on top of durable Phase 1a snapshots. A backward-compatible
   SpatialSnapshot v0.3 native capture contract now records separated

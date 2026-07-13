@@ -107,7 +107,7 @@ function New-TestRsaProvider {
 Write-Host "Test signed source-free CD producer and NAS publish wrapper"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-signed-source-free-cd-test-" + [Guid]::NewGuid().ToString("N"))
 $releaseRoot = Join-Path $tempRoot "release-root"
-$nasRoot = Join-Path $tempRoot "nas-root"
+$nasRoot = Join-Path $tempRoot "revAgent-deploy"
 $secretRoot = Join-Path $tempRoot "secrets"
 $version = "2026.06.23.1-cd-test"
 $keyId = "test-cd-key"
@@ -128,6 +128,8 @@ try {
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
     $trustedKeys | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+    New-Item -ItemType Directory -Path (Join-Path $releaseRoot "tools") -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $releaseRoot "tools\legacy-unsigned-launcher.cmd") -Value "@echo off" -Encoding ASCII
 
     $buildResult = & (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1") `
         -ReleaseRoot $releaseRoot `
@@ -181,6 +183,39 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\collect-rollout-evidence.ps1") -PathType Leaf) "CD release root should carry the SSH rollout evidence collector."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\invoke-live-smoke-over-ssh.ps1") -PathType Leaf) "CD release root should carry the SSH live smoke runner."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\test-commandset-live.ps1") -PathType Leaf) "CD release root should carry the live smoke evidence helper."
+    Assert-Equal @(Get-ChildItem -LiteralPath (Join-Path $releaseRoot "tools") -Recurse -File -Filter "*.cmd").Count 0 "CD production tools tree must not publish unsigned CMD first-hop aliases."
+
+    $sourceZipPath = Join-Path $releaseRoot "releases\$version\revAgent-$version.zip"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $sourceArchive = [IO.Compression.ZipFile]::OpenRead($sourceZipPath)
+    try {
+        foreach ($entryName in @(
+                "installer/nas/install-revagent-local-bootstrap.ps1",
+                "installer/nas/New-RevAgentBootstrapPrestageEvidence.ps1",
+                "installer/nas/bootstrap-prestage-evidence.schema.json",
+                "installer/nas/bootstrap-prestage-evidence.example.json",
+                "installer/nas/Start-revAgent-Update.cmd",
+                "installer/nas/Start-revAgent-Update.ps1",
+                "installer/lib/RevAgent.LocalBootstrap.psm1"
+            )) {
+            Assert-Equal @($sourceArchive.Entries | Where-Object { [string]::Equals($_.FullName.Replace("\", "/"), $entryName, [StringComparison]::OrdinalIgnoreCase) }).Count 1 "Signed user pack entry '$entryName' must exist exactly once."
+        }
+    }
+    finally { $sourceArchive.Dispose() }
+    foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap")) {
+        Assert-True ($null -ne $sourceManifest.components.$componentKey -and -not [string]::IsNullOrWhiteSpace([string]$sourceManifest.components.$componentKey.sha256)) "Signed manifest is missing bootstrap component '$componentKey'."
+    }
+    $evidencePath = Join-Path $tempRoot "bootstrap-prestage-evidence.json"
+    $evidenceResult = & (Join-Path $RepoRoot "scripts\New-RevAgentBootstrapPrestageEvidence.ps1") `
+        -ReleaseRoot $releaseRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -OutputPath $evidencePath `
+        -RepoRoot $RepoRoot `
+        -AllowTestRoot
+    Assert-True ([bool]$evidenceResult.success -and [bool]$evidenceResult.signatureVerified) "Production evidence producer did not verify the signed release fixture."
+    $evidenceDocument = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
+    Assert-Equal ([string]$evidenceDocument.localBootstrapInstallerScript) ([string]$sourceManifest.components.localBootstrapInstaller.sha256) "Evidence producer did not bind its own signed prestage installer."
+    Assert-Equal ([string]$evidenceDocument.sources.launcher) ([string]$sourceManifest.components.localBootstrapLauncher.sha256) "Evidence producer did not bind the protected local launcher."
 
     $legacyReleaseDir = Join-Path $nasRoot "releases\2026.05.01.legacy"
     New-Item -ItemType Directory -Path $legacyReleaseDir -Force | Out-Null
@@ -191,9 +226,13 @@ try {
         -NasReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
         -Force `
-        -RepoRoot $RepoRoot
+        -RepoRoot $RepoRoot `
+        -AllowTestRoot
     Assert-True ([bool]$publishResult.success) "NAS publish wrapper should return success."
     Assert-Equal ([string]$publishResult.version) $version "NAS publish wrapper should report the published version."
+    Assert-True ([bool]$publishResult.releaseAcl.preview.sealed) "NAS publish wrapper should return a verified sealed ACL state."
+    Assert-Equal ([string]$publishResult.releaseAcl.unseal.publisherPrincipalSource) "release_root_owner" "NAS publish must default publisher identity to the release-root owner."
+    Assert-True ([bool]$publishResult.releaseAcl.unseal.publisherSessionProbe.cleaned -and [bool]$publishResult.releaseAcl.unseal.unsealWriteCanary.created -and [bool]$publishResult.releaseAcl.unseal.unsealWriteCanary.deleted) "NAS publish must carry publisher session mapping and effective write/delete evidence."
 
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.json") -PathType Leaf) "NAS stable channel should exist after publish."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.sig.json") -PathType Leaf) "NAS stable channel signature should exist after publish."
@@ -206,6 +245,7 @@ try {
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\collect-rollout-evidence.ps1") -PathType Leaf) "NAS publish should carry the SSH rollout evidence collector."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\invoke-live-smoke-over-ssh.ps1") -PathType Leaf) "NAS publish should carry the SSH live smoke runner."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\test-commandset-live.ps1") -PathType Leaf) "NAS publish should carry the live smoke evidence helper."
+    Assert-Equal @(Get-ChildItem -LiteralPath (Join-Path $nasRoot "tools") -Recurse -File -Filter "*.cmd").Count 0 "NAS publish must not restore unsigned CMD aliases into production tools."
 
     $nasReadiness = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $nasRoot `
@@ -216,6 +256,11 @@ try {
     Assert-Equal ([string]$nasReadiness.artifactScanScope) "activeRelease" "NAS publish readiness should use the active release artifact scan scope."
 
     $nasStableChannelPath = Join-Path $nasRoot "channels\stable.json"
+    & (Join-Path $RepoRoot "scripts\set-nas-release-acl.ps1") `
+        -ReleaseRoot $nasRoot `
+        -Mode Unseal `
+        -ConfirmPublisherWrite `
+        -AllowTestRoot | Out-Null
     $legacyStableChannel = Get-Content -Raw -LiteralPath $nasStableChannelPath | ConvertFrom-Json
     $legacyStableChannel.PSObject.Properties.Remove("releaseSequence")
     $legacyStableChannel | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $nasStableChannelPath -Encoding UTF8
@@ -225,7 +270,8 @@ try {
         -TrustedKeysPath $trustedKeysPath `
         -Force `
         -AllowRollback `
-        -RepoRoot $RepoRoot
+        -RepoRoot $RepoRoot `
+        -AllowTestRoot
     Assert-True ([bool]$legacyRepairPublishResult.success) "NAS publisher should allow explicit -AllowRollback bootstrap over a legacy stable channel missing releaseSequence."
     $legacyRepairStableChannel = Get-Content -Raw -LiteralPath $nasStableChannelPath | ConvertFrom-Json
     Assert-Equal ([long]$legacyRepairStableChannel.releaseSequence) ([long]$releaseSequence) "Legacy stable repair publish should restore the signed releaseSequence."
@@ -281,6 +327,16 @@ try {
 }
 finally {
     $rsa.Dispose()
+    if (Test-Path -LiteralPath $nasRoot -PathType Container) {
+        try {
+            & (Join-Path $RepoRoot "scripts\set-nas-release-acl.ps1") `
+                -ReleaseRoot $nasRoot `
+                -Mode Unseal `
+                -ConfirmPublisherWrite `
+                -AllowTestRoot | Out-Null
+        }
+        catch {}
+    }
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force
     }

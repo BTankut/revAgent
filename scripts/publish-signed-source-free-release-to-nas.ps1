@@ -35,6 +35,8 @@ param(
 
     [switch]$OutputJson,
 
+    [switch]$AllowTestRoot,
+
     [string]$RepoRoot = ""
 )
 
@@ -378,7 +380,32 @@ $promotionStarted = $false
 $payloadCopyStarted = $false
 $hadToolsDir = $false
 $hadReleaseDir = $false
+$releaseAclScriptPath = Join-Path $RepoRoot "scripts\set-nas-release-acl.ps1"
+if (-not (Test-Path -LiteralPath $releaseAclScriptPath -PathType Leaf)) {
+    throw "NAS release ACL controller was not found: $releaseAclScriptPath"
+}
+$publisherPrincipal = ""
+$releaseAclUnseal = $null
+$releaseAclSeal = $null
+$releaseAclPreview = $null
+$releaseAclResealRequired = $false
 try {
+    # The release-root owner is the publisher principal. The ACL controller
+    # proves that this process's filesystem/SMB session maps to that principal
+    # before opening the writable window. Set the finally guard first so even a
+    # partial ACL mutation is followed by a fail-closed seal attempt.
+    $releaseAclResealRequired = $true
+    $releaseAclUnseal = & $releaseAclScriptPath `
+        -ReleaseRoot $NasReleaseRoot `
+        -Mode Unseal `
+        -ConfirmPublisherWrite `
+        -AllowTestRoot:$AllowTestRoot
+    $publisherPrincipal = [string]$releaseAclUnseal.publisherPrincipal
+    if (-not [bool]$releaseAclUnseal.safe -or -not [bool]$releaseAclUnseal.unsealedForPublisherOnly) {
+        throw "NAS release ACL unseal verification failed before publish."
+    }
+
+    try {
     New-Item -ItemType Directory -Path $NasReleaseRoot -Force | Out-Null
     $hadToolsDir = Backup-RevAgentDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
     $hadReleaseDir = Backup-RevAgentDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
@@ -466,6 +493,25 @@ finally {
     }
     Remove-Item -LiteralPath $cleanupPaths -Force -ErrorAction SilentlyContinue
 }
+}
+finally {
+    if ($releaseAclResealRequired -and (Test-Path -LiteralPath $NasReleaseRoot -PathType Container)) {
+        $releaseAclSeal = & $releaseAclScriptPath `
+            -ReleaseRoot $NasReleaseRoot `
+            -Mode Seal `
+            -PublisherPrincipal $publisherPrincipal `
+            -AllowTestRoot:$AllowTestRoot
+        $releaseAclPreview = & $releaseAclScriptPath `
+            -ReleaseRoot $NasReleaseRoot `
+            -Mode Preview `
+            -PublisherPrincipal $publisherPrincipal `
+            -AllowTestRoot:$AllowTestRoot
+        if (-not [bool]$releaseAclSeal.sealed -or -not [bool]$releaseAclPreview.sealed -or
+            -not [bool]$releaseAclSeal.safe -or -not [bool]$releaseAclPreview.safe) {
+            throw "NAS release ACL reseal verification failed; protected release paths may still be writable."
+        }
+    }
+}
 
 $result = [pscustomobject][ordered]@{
     success = $true
@@ -478,6 +524,12 @@ $result = [pscustomobject][ordered]@{
     stableSignaturePath = $stableSignaturePath
     releaseDirectory = $nasReleaseDir
     readiness = $stableReadiness
+    releaseAcl = [pscustomobject][ordered]@{
+        publisherPrincipal = $publisherPrincipal
+        unseal = $releaseAclUnseal
+        seal = $releaseAclSeal
+        preview = $releaseAclPreview
+    }
 }
 
 if ($OutputJson) {
