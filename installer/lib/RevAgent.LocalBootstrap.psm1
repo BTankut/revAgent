@@ -601,7 +601,7 @@ function Install-RevAgentLocalBootstrap {
         Assert-RevAgentBootstrapLinkSafe -Path $commonApplicationData
         $dpeRoot = Join-Path $commonApplicationData 'DPE'
         if (-not (Test-Path -LiteralPath $dpeRoot -PathType Container)) {
-            $dpeRoot = New-RevAgentProtectedBootstrapDirectory -Parent $commonApplicationData -Name 'DPE'
+            throw "bootstrap_shared_ancestor_not_prestaged: the shared DPE ancestor must be created by the supervised elevated prestage block before bootstrap installation: $dpeRoot"
         }
         else {
             $dpeRoot = Assert-RevAgentBootstrapSharedAncestorSafe -Path $dpeRoot

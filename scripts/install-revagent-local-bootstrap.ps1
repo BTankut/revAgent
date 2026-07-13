@@ -413,6 +413,9 @@ function Get-RevAgentPrestageParent {
         $candidate = Join-Path $cursor $name
         [void](Assert-RevAgentPrestagePathNoLinks -Path $candidate)
         if (-not (Test-Path -LiteralPath $candidate)) {
+            if ([string]::Equals($name, "DPE", [StringComparison]::Ordinal)) {
+                throw "bootstrap_shared_ancestor_not_prestaged: the shared DPE ancestor must be created by the supervised elevated prestage block: $candidate"
+            }
             [void]([IO.DirectoryInfo]::new($cursor).CreateSubdirectory($name, (New-RevAgentPrestageAdminDirectorySecurity)))
         }
         if ([string]::Equals($name, "DPE", [StringComparison]::Ordinal)) {
