@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Test durable NAS release ACL sealing with disposable local fixtures only.
+    Test optional NAS ACL telemetry/administration with disposable fixtures.
 #>
 
 [CmdletBinding()]
@@ -36,33 +36,6 @@ function Write-TestFile {
     [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
 }
 
-function Get-TestFunctionDefinitionText {
-    param([string]$Path, [string]$Name)
-    $tokens = $null
-    $errors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
-    if (@($errors).Count -gt 0) { throw "Could not parse '$Path': $(@($errors)[0].Message)" }
-    $definition = @($ast.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
-                    [string]::Equals($node.Name, $Name, [StringComparison]::OrdinalIgnoreCase)
-            }, $true)) | Select-Object -First 1
-    if ($null -eq $definition) { throw "Function '$Name' was not found in '$Path'." }
-    return [string]$definition.Extent.Text
-}
-
-$guiScript = Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1"
-$updaterScript = Join-Path $RepoRoot "installer\nas\update-from-nas.ps1"
-$installTaskScript = Join-Path $RepoRoot "installer\nas\install-updater-task.ps1"
-foreach ($definition in @(
-        (Get-TestFunctionDefinitionText -Path $guiScript -Name "Test-GuiPathUnderRoot"),
-        (Get-TestFunctionDefinitionText -Path $guiScript -Name "Assert-GuiDirectoryEffectivelyReadOnly"),
-        (Get-TestFunctionDefinitionText -Path $updaterScript -Name "Assert-RevAgentEarlyDirectoryEffectivelyReadOnly"),
-        (Get-TestFunctionDefinitionText -Path $installTaskScript -Name "Assert-InstallEarlyDirectoryEffectivelyReadOnly")
-    )) {
-    Invoke-Expression $definition
-}
-
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("revagent-release-acl-test-" + [Guid]::NewGuid().ToString("N"))
 $releaseRoot = Join-Path $tempRoot "revAgent-deploy-fixture"
 $publisher = [Security.Principal.WindowsIdentity]::GetCurrent().Name
@@ -90,6 +63,8 @@ try {
     Write-Host "Test preview and first seal"
     $initial = & $aclScript -ReleaseRoot $releaseRoot -Mode Preview -AllowTestRoot
     Assert-True (-not [bool]$initial.sealed) "Fresh publisher-owned fixture should begin unsealed."
+    Assert-Equal ([string]$initial.transportTrust) "signed_local_snapshot" "ACL preview must identify the actual signed local snapshot transport boundary."
+    Assert-True (-not [bool]$initial.requiredForTransportTrust -and [string]$initial.diagnosticRole -eq "optional_acl_telemetry") "ACL preview must remain optional transport telemetry."
     Assert-Equal ([string]$initial.publisherSid) $rootOwnerSid "Preview must default publisher identity to the release-root owner."
     Assert-Equal ([string]$initial.publisherPrincipalSource) "release_root_owner" "Preview must report owner-derived publisher selection."
     $sealed = & $aclScript -ReleaseRoot $releaseRoot -Mode Seal -AllowTestRoot
@@ -99,16 +74,6 @@ try {
     Assert-True ([bool]$sealed.reportsPreserved -and [bool]$sealed.reportsAclProtected -and [bool]$sealed.reportsWritableEvidence) "Reports ACL evidence must remain protected and writable."
     Assert-Equal ([IO.File]::ReadAllText($toolFile)) "tool-v1" "Sealed release should retain read access."
     $reportsAclAfterFirstSeal = (Get-Acl -LiteralPath (Join-Path $releaseRoot "reports")).Sddl
-
-    Write-Host "Test GUI/updater/install-task effective sealed-source probes"
-    $fullRoot = $releaseRoot
-    Assert-GuiDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools") -GuardRoot $releaseRoot
-    Assert-RevAgentEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools")
-    Assert-InstallEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools")
-    Assert-GuiDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "reports") -GuardRoot $releaseRoot
-    Assert-RevAgentEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "reports")
-    Assert-InstallEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "reports")
-    Assert-Equal @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -Force -Filter ".revagent-sealed-probe-*").Count 0 "Sealed-source probes left an artifact."
 
     Assert-ThrowsLike -Action {
         [IO.File]::WriteAllText($toolFile, "unauthorized", [Text.UTF8Encoding]::new($false))
@@ -131,10 +96,6 @@ try {
     Assert-True ([bool]$unsealed.unsealWriteCanary.created -and [bool]$unsealed.unsealWriteCanary.deleted -and [bool]$unsealed.unsealWriteCanary.cleaned) "Unseal did not prove effective release-root write/delete access."
     Assert-Equal @($unsealed.protectedWriteRules | Where-Object { $_.sid -ne $unsealed.publisherSid }).Count 0 "Unseal retained a foreign writer."
     Assert-Equal @(Get-ChildItem -LiteralPath $releaseRoot -Force -Filter ".revagent-acl-canary-*").Count 0 "Unseal write/delete canary was not cleaned."
-    Assert-ThrowsLike -Action { Assert-GuiDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools") -GuardRoot $releaseRoot } -Pattern "effectively writable.*CreateNew succeeded" -Message "GUI probe must reject an effectively writable source."
-    Assert-ThrowsLike -Action { Assert-RevAgentEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools") } -Pattern "effectively writable.*CreateNew succeeded" -Message "Updater probe must reject an effectively writable source."
-    Assert-ThrowsLike -Action { Assert-InstallEarlyDirectoryEffectivelyReadOnly -Directory (Join-Path $releaseRoot "tools") } -Pattern "effectively writable.*CreateNew succeeded" -Message "Install-task probe must reject an effectively writable source."
-    Assert-Equal @(Get-ChildItem -LiteralPath $releaseRoot -Recurse -Force -Filter ".revagent-sealed-probe-*").Count 0 "Writable-source rejection probes were not cleaned."
     [IO.File]::WriteAllText($toolFile, "tool-v2", [Text.UTF8Encoding]::new($false))
     $resealed = & $aclScript -ReleaseRoot $releaseRoot -Mode Seal -AllowTestRoot -PublisherPrincipal $publisher
     Assert-True ([bool]$resealed.sealed) "Release fixture did not reseal after publish."
@@ -169,10 +130,11 @@ try {
     $finalSeal = & $aclScript -ReleaseRoot $releaseRoot -Mode Seal -AllowTestRoot -PublisherPrincipal $publisher
     Assert-True ([bool]$finalSeal.sealed) "Fixture did not return to sealed state after link tests."
 
-    Write-Host "Test signed publish wrapper statically owns unseal/finally/reseal verification"
+    Write-Host "Test signed publish wrapper keeps ACL inspection optional and non-mutating"
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
-    Assert-True ($publishText -match 'set-nas-release-acl\.ps1' -and $publishText -match 'Mode\s+Unseal' -and $publishText -match 'ConfirmPublisherWrite' -and $publishText -match '\$publisherPrincipal = \[string\]\$releaseAclUnseal\.publisherPrincipal') "Publish wrapper does not use the ACL controller's owner-derived publisher identity."
-    Assert-True ($publishText -match '(?s)finally\s*\{.*Mode\s+Seal.*Mode\s+Preview' -and $publishText -match 'NAS release ACL reseal verification failed') "Publish wrapper does not always reseal and verify in finally."
+    Assert-True ($publishText -match '\[switch\]\$IncludeAclTelemetry' -and $publishText -match 'not_requested_optional' -and $publishText -match 'set-nas-release-acl\.ps1' -and $publishText -match 'Mode\s+Preview' -and $publishText -match 'acl_diagnostic_unavailable') "Publish wrapper must retain opt-in ACL telemetry."
+    Assert-True ($publishText -notmatch 'Mode\s+Unseal' -and $publishText -notmatch 'Mode\s+Seal' -and $publishText -notmatch 'ConfirmPublisherWrite') "Publish wrapper must not mutate Samba/SMB DACLs."
+    Assert-True ($publishText -match 'transportTrust = "signed_local_snapshot"' -and $publishText -match 'releaseRootOwnerSid' -and $publishText -match 'createdDirectoryOwnerSid' -and $publishText -match 'createDeleteCanary') "Publish wrapper must report signed transport owner/session and create-delete canary evidence."
 }
 finally {
     if (Test-Path -LiteralPath $releaseRoot -PathType Container) {
@@ -181,4 +143,4 @@ finally {
     if (Test-Path -LiteralPath $tempRoot) { Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }
 
-Write-Host "NAS release ACL seal/unseal tests passed." -ForegroundColor Green
+Write-Host "Optional NAS release ACL telemetry/administration tests passed." -ForegroundColor Green

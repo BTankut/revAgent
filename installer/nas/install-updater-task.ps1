@@ -50,6 +50,7 @@ param(
     [switch]$MachinePhaseOnly,
     [switch]$UserPhaseOnly,
     [string]$PhaseResultPath = "",
+    [string]$ExecutionSnapshotStatePath = "",
     [string]$TargetInteractiveUser = "",
     [string]$TargetInteractiveUserSid = "",
     [string]$TargetUserProfileRoot = "",
@@ -65,6 +66,10 @@ $script:RevAgentOsCommonAppData = [Environment]::GetFolderPath([Environment+Spec
 $script:RevAgentOsUserProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
 $script:RevAgentOsAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::ApplicationData)
 $script:RevAgentOsLocalAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+$script:InstallExecutionSnapshotState = $null
+$script:InstallVerifiedTrustedKeysPath = ""
+$script:InstallVerifiedTrustedKeysSha256 = ""
+$script:InstallVerifiedSurfaceHashes = [ordered]@{}
 
 function Initialize-RevAgentTrustedPowerShellModules {
     # `-NoProfile` still inherits PSModulePath and permits module autoload. Keep
@@ -213,7 +218,7 @@ function Assert-InstallEarlyReleaseSurface {
     try { $fingerprint = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalizedKey)))).Replace("-", "") } finally { $sha.Dispose() }
     if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Pinned release key fingerprint mismatch." }
     $integrityModulePath = Join-Path $ToolsRoot "lib\RevAgent.DistributionIntegrity.psm1"
-    $pinnedIntegrityModuleHash = "2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4"
+    $pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
     $actualIntegrityModuleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
     if (-not [string]::Equals($actualIntegrityModuleHash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Pinned pre-import integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash Actual=$actualIntegrityModuleHash"
@@ -227,6 +232,176 @@ function Assert-InstallEarlyReleaseSurface {
     $script:InstallVerifiedSurfaceHashes = $verifiedSurfaceHashes
 }
 
+function Assert-InstallEarlySnapshotPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [switch]$RequireLeaf
+    )
+
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $fullRoot = [System.IO.Path]::GetFullPath($SnapshotRoot).TrimEnd("\")
+    if (-not [string]::Equals($fullPath.TrimEnd("\"), $fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.StartsWith($fullRoot + "\", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot path escaped its protected root: $fullPath"
+    }
+    $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
+        [System.Security.AccessControl.FileSystemRights]::AppendData -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [System.Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [System.Security.AccessControl.FileSystemRights]::Delete -bor
+        [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [System.Security.AccessControl.FileSystemRights]::TakeOwnership
+    $trustedWriterSids = @("S-1-5-18", "S-1-5-32-544", "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464")
+    $cursor = $fullPath
+    while (-not [string]::IsNullOrWhiteSpace($cursor) -and $cursor.StartsWith($fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-Path -LiteralPath $cursor)) { throw "Execution snapshot path is missing: $cursor" }
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) { throw "Execution snapshot contains a filesystem link: $cursor" }
+        $acl = Get-Acl -LiteralPath $cursor -ErrorAction Stop
+        $ownerSid = [string]$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if ($trustedWriterSids -notcontains $ownerSid) { throw "Execution snapshot owner is not trusted. path=$cursor owner=$ownerSid" }
+        if (-not $acl.AreAccessRulesProtected) { throw "Execution snapshot DACL must be protected from inheritance: $cursor" }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
+            $sid = [string]$rule.IdentityReference.Value
+            if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                $trustedWriterSids -notcontains $sid -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+                throw "Execution snapshot grants write access to an untrusted principal. path=$cursor principal=$sid rights=$($rule.FileSystemRights)"
+            }
+        }
+        if (-not $item.PSIsContainer) {
+            $fsutilPath = Join-Path ([Environment]::SystemDirectory) "fsutil.exe"
+            $links = @(& $fsutilPath hardlink list $item.FullName 2>&1 | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+            if ($LASTEXITCODE -ne 0 -or $links.Count -ne 1) { throw "Execution snapshot file must have exactly one hardlink reference: $($item.FullName)" }
+        }
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = Split-Path -Parent $cursor
+    }
+    if ($RequireLeaf -and -not (Test-Path -LiteralPath $fullPath -PathType Leaf)) { throw "Execution snapshot file is missing: $fullPath" }
+    return $fullPath
+}
+
+function Assert-InstallEarlyAuthenticatedSnapshot {
+    param(
+        [Parameter(Mandatory = $true)][string]$StatePath,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$RequiredComponents
+    )
+
+    $canonicalSnapshotsRoot = [System.IO.Path]::GetFullPath((Join-Path $script:RevAgentOsCommonAppData "DPE\revAgent\execution-snapshots")).TrimEnd("\")
+    $stateFullPath = [System.IO.Path]::GetFullPath($StatePath)
+    $snapshotRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $stateFullPath)).TrimEnd("\")
+    if (-not $snapshotRoot.StartsWith($canonicalSnapshotsRoot + "\", [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals((Split-Path -Parent $snapshotRoot).TrimEnd("\"), $canonicalSnapshotsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot must be one exact child of '$canonicalSnapshotsRoot': $snapshotRoot"
+    }
+    $expectedStatePath = Join-Path $snapshotRoot "snapshot-state.json"
+    if (-not [string]::Equals($stateFullPath, [System.IO.Path]::GetFullPath($expectedStatePath), [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "ExecutionSnapshotStatePath must be the exact protected snapshot state file: $expectedStatePath"
+    }
+    [void](Assert-InstallEarlySnapshotPath -Path $stateFullPath -SnapshotRoot $snapshotRoot -RequireLeaf)
+    $stateFile = Get-Item -LiteralPath $stateFullPath -Force -ErrorAction Stop
+    if ($stateFile.Length -le 0 -or $stateFile.Length -gt 8388608) { throw "Execution snapshot state size is outside the bounded policy: $($stateFile.Length)" }
+    $state = Get-Content -Raw -LiteralPath $stateFullPath | ConvertFrom-Json
+    if ([int]$state.schemaVersion -ne 1 -or
+        -not [string]::Equals([string]$state.app, "revAgent", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$state.stateType, "authenticated-release-snapshot", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$state.transportTrust, "signed_local_snapshot", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath([string]$state.snapshotRoot).TrimEnd("\"), $snapshotRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+        [string]$state.snapshotId -notmatch '^[a-f0-9]{32}$' -or [long]$state.release.releaseSequence -le 0 -or
+        -not [bool]$state.trust.signaturesVerified) {
+        throw "Execution snapshot state contract is invalid or unauthenticated: $stateFullPath"
+    }
+
+    $snapshotChannel = [string]$state.release.channel
+    if ($snapshotChannel -notin @('stable', 'pilot') -or
+        -not [string]::Equals([string]$state.release.channelManifestRelativePath, "channels\$snapshotChannel.json", [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot channel binding is invalid: $snapshotChannel"
+    }
+    $snapshotChannelPath = Assert-InstallEarlySnapshotPath -Path (Join-Path $snapshotRoot ([string]$state.release.channelManifestRelativePath)) -SnapshotRoot $snapshotRoot -RequireLeaf
+    if ([string]$state.release.channelManifestSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+        -not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $snapshotChannelPath).Hash, [string]$state.release.channelManifestSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Execution snapshot channel manifest hash binding is invalid.'
+    }
+    $expectedAcquisitionPath = [System.IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\channels\$snapshotChannel.json")
+    if (-not [string]::Equals([System.IO.Path]::GetFullPath([string]$state.acquisitionChannelManifestPath), $expectedAcquisitionPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot acquisition channel is not the exact canonical state-bound path. expected=$expectedAcquisitionPath actual=$($state.acquisitionChannelManifestPath)"
+    }
+    if (-not [string]::Equals([string]$state.channelPolicy.channel, $snapshotChannel, [System.StringComparison]::Ordinal)) {
+        throw 'Execution snapshot channel policy is not bound to the signed channel.'
+    }
+    $machineName = [Environment]::MachineName.Trim().ToUpperInvariant()
+    if ($snapshotChannel -eq 'pilot') {
+        $allowedMachines = @($state.channelPolicy.allowedMachineNames | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() })
+        if (-not [bool]$state.channelPolicy.cohortEnforced -or $allowedMachines.Count -eq 0 -or $allowedMachines -notcontains $machineName) {
+            throw "pilot_machine_not_allowed: execution snapshot does not authorize this computer: $machineName"
+        }
+    }
+    elseif ([bool]$state.channelPolicy.cohortEnforced -or @($state.channelPolicy.allowedMachineNames).Count -ne 0) {
+        throw 'Stable execution snapshot must not enforce a pilot cohort.'
+    }
+
+    $verifiedSurfaceHashes = [ordered]@{}
+    foreach ($entry in $RequiredComponents.GetEnumerator()) {
+        $component = $state.components.($entry.Key)
+        if ($null -eq $component -or
+            -not [string]::Equals(([string]$component.path).Replace("/", "\"), [string]$entry.Value, [System.StringComparison]::OrdinalIgnoreCase) -or
+            [string]$component.sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Execution snapshot is missing required manifest component '$($entry.Key)'."
+        }
+        $expectedRelativePath = Join-Path "payload" ([string]$entry.Value)
+        if (-not [string]::Equals(([string]$component.snapshotRelativePath).Replace("/", "\"), $expectedRelativePath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Execution snapshot component path mismatch for '$($entry.Key)'."
+        }
+        $componentPath = Assert-InstallEarlySnapshotPath -Path (Join-Path $snapshotRoot $expectedRelativePath) -SnapshotRoot $snapshotRoot -RequireLeaf
+        if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $componentPath).Hash, [string]$component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Execution snapshot component hash mismatch: $($entry.Key)"
+        }
+        $verifiedSurfaceHashes[$entry.Key] = [string]$component.sha256
+        if ([string]::Equals([string]$entry.Key, "updaterTaskInstaller", [System.StringComparison]::Ordinal) -and
+            -not [string]::Equals([System.IO.Path]::GetFullPath($PSCommandPath), [System.IO.Path]::GetFullPath($componentPath), [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Installer entrypoint does not match the authenticated snapshot component. Expected=$componentPath Actual=$PSCommandPath"
+        }
+    }
+
+    $trustedKeysPath = Assert-InstallEarlySnapshotPath -Path (Join-Path $snapshotRoot ([string]$state.trust.trustedKeysRelativePath)) -SnapshotRoot $snapshotRoot -RequireLeaf
+    $verifierPath = Assert-InstallEarlySnapshotPath -Path (Join-Path $snapshotRoot ([string]$state.trust.verifierRelativePath)) -SnapshotRoot $snapshotRoot -RequireLeaf
+    if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $trustedKeysPath).Hash, [string]$state.trust.trustedKeysSha256, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Execution snapshot trusted-key hash mismatch." }
+    if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $verifierPath).Hash, [string]$state.trust.verifierSha256, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Execution snapshot integrity-verifier hash mismatch." }
+    $productionKeyId = "revagent-prod-rsa-2026q3"
+    $productionKeyFingerprint = "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33"
+    $trustedKeyDocument = Get-Content -Raw -LiteralPath $trustedKeysPath | ConvertFrom-Json
+    $trustedKeyProperties = @($trustedKeyDocument.trustedKeys.PSObject.Properties)
+    if ($trustedKeyProperties.Count -ne 1 -or
+        -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [System.StringComparison]::Ordinal)) {
+        throw "Execution snapshot trust document must contain exactly '$productionKeyId' and no additional signing keys."
+    }
+    $productionKey = $trustedKeyProperties[0].Value
+    if (-not [string]::Equals([string]$productionKey.algorithm, "RS256", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$productionKey.publicKeyFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$state.trust.productionKeyFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot production release-key metadata does not match the pinned RS256 key."
+    }
+    $normalizedProductionKey = ([string]$productionKey.publicKeyXml).Trim() -replace "\s+", ""
+    $productionKeySha = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $actualProductionFingerprint = ([System.BitConverter]::ToString($productionKeySha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalizedProductionKey)))).Replace("-", "")
+    }
+    finally { $productionKeySha.Dispose() }
+    if (-not [string]::Equals($actualProductionFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Execution snapshot production release-key fingerprint mismatch."
+    }
+    $pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
+    if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $verifierPath).Hash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Pinned snapshot integrity verifier hash mismatch." }
+
+    $script:InstallVerifiedTrustedKeysPath = $trustedKeysPath
+    $script:InstallVerifiedTrustedKeysSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedKeysPath).Hash
+    $script:InstallVerifiedSurfaceHashes = $verifiedSurfaceHashes
+    [void](Import-Module $verifierPath -Force -PassThru)
+    return $state
+}
+
 # Fail closed before sibling-module resolution. This entrypoint has no supported
 # mutating legacy mode; the visible GUI must select exactly one privilege phase.
 $earlyProcessIdentity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
@@ -237,27 +412,31 @@ if (-not $MachinePhaseOnly -and -not $UserPhaseOnly) { throw "Legacy updater boo
 if ($MachinePhaseOnly -and -not $earlyProcessElevated) { throw "-MachinePhaseOnly requires an elevated process before module import." }
 if ($UserPhaseOnly -and $earlyProcessElevated) { throw "-UserPhaseOnly must run in the original unelevated interactive-user process before module import." }
 
-if ($MachinePhaseOnly) {
-    $channelFullPath = [System.IO.Path]::GetFullPath($ChannelManifestPath)
-    $releaseRoot = Split-Path -Parent (Split-Path -Parent $channelFullPath)
-    $canonicalReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
-    if (-not [string]::Equals(
-            [System.IO.Path]::GetFullPath($releaseRoot).TrimEnd("\"),
-            [System.IO.Path]::GetFullPath($canonicalReleaseRoot).TrimEnd("\"),
-            [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated updater bootstrap requires the canonical revAgent release root: $canonicalReleaseRoot"
+if ($MachinePhaseOnly -or $UserPhaseOnly) {
+    if ([string]::IsNullOrWhiteSpace($ExecutionSnapshotStatePath)) {
+        throw "Split-phase updater installation requires -ExecutionSnapshotStatePath before sibling-module import."
     }
-    $trustedToolsRoot = [System.IO.Path]::GetFullPath((Join-Path $releaseRoot "tools")).TrimEnd("\")
-    $scriptRootFullPath = [System.IO.Path]::GetFullPath($PSScriptRoot).TrimEnd("\")
-    if (-not $scriptRootFullPath.StartsWith("\\", [System.StringComparison]::Ordinal) -or
-        -not [string]::Equals($scriptRootFullPath, $trustedToolsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated updater bootstrap must run from the canonical read-only release tools root. expected=$trustedToolsRoot actual=$scriptRootFullPath"
+    $requiredSnapshotComponents = [ordered]@{
+        updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
+        updater = "installer\nas\update-from-nas.ps1"
+        versionStatusTool = "installer\nas\show-installed-version.ps1"
+        sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
+        codexUserIntegrationTool = "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
+        installerLibHiddenLauncher = "installer\lib\RevAgent.HiddenLauncher.psm1"
+        installerLibScheduledTask = "installer\lib\RevAgent.ScheduledTask.psm1"
+        installerLibVersions = "installer\lib\RevAgent.RevitVersions.psm1"
+        installerLibPermissions = "installer\lib\RevAgent.Permissions.psm1"
+        installerLibSecureTemp = "installer\lib\RevAgent.SecureTemp.psm1"
+        installerLibProxy = "installer\lib\RevAgent.Proxy.psm1"
+        installerLibLogRetention = "installer\lib\RevAgent.LogRetention.psm1"
+        installerLibCodexRegistration = "installer\lib\RevAgent.CodexRegistration.psm1"
+        installerLibReporting = "installer\lib\RevAgent.Reporting.psm1"
+        installerLibDesktopLauncherCleanup = "installer\lib\RevAgent.DesktopLauncherCleanup.psm1"
+        installerLibDistributionIntegrity = "installer\lib\RevAgent.DistributionIntegrity.psm1"
     }
-    $expectedBootstrapEntrypoint = [System.IO.Path]::GetFullPath((Join-Path $trustedToolsRoot "install-updater-task.ps1"))
-    if (-not [string]::Equals([System.IO.Path]::GetFullPath($PSCommandPath), $expectedBootstrapEntrypoint, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated updater bootstrap must run the exact signed canonical entrypoint '$expectedBootstrapEntrypoint'; refusing '$PSCommandPath'."
-    }
-    Assert-InstallEarlyReleaseSurface -ChannelPath $channelFullPath -ReleaseRoot $releaseRoot -ToolsRoot $trustedToolsRoot -InteractiveSid $TargetInteractiveUserSid
+    $script:InstallExecutionSnapshotState = Assert-InstallEarlyAuthenticatedSnapshot `
+        -StatePath $ExecutionSnapshotStatePath `
+        -RequiredComponents $requiredSnapshotComponents
 }
 $nasLibRoot = @(
     (Join-Path $PSScriptRoot "lib"),
@@ -680,15 +859,17 @@ function Invoke-InitialUpdateCheck {
         [string]$OperationMethod = "initial-update",
         [switch]$MachinePhaseOnly,
         [switch]$UserPhaseOnly,
-        [string]$PhaseResultPath = ""
+        [string]$PhaseResultPath = "",
+        [string]$ExecutionSnapshotStatePath = "",
+        [string]$ChannelManifestPath = ""
     )
 
     if ($MachinePhaseOnly) {
-        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -Force:$ForceUpdate -SourceFreeMigration:$SourceFreeMigration -OperationMethod $OperationMethod -MachinePhaseOnly -HostedMachinePhase -PhaseResultPath $PhaseResultPath
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -ChannelManifestPath $ChannelManifestPath -NoNotifyUser -Force:$ForceUpdate -SourceFreeMigration:$SourceFreeMigration -OperationMethod $OperationMethod -MachinePhaseOnly -HostedMachinePhase -PhaseResultPath $PhaseResultPath -ExecutionSnapshotStatePath $ExecutionSnapshotStatePath
         return
     }
     if ($UserPhaseOnly) {
-        & $UpdaterPath -ConfigPath $UpdaterConfigPath -NoNotifyUser -OperationMethod $OperationMethod -UserPhaseOnly -PhaseResultPath $PhaseResultPath
+        & $UpdaterPath -ConfigPath $UpdaterConfigPath -ChannelManifestPath $ChannelManifestPath -NoNotifyUser -OperationMethod $OperationMethod -UserPhaseOnly -PhaseResultPath $PhaseResultPath -ExecutionSnapshotStatePath $ExecutionSnapshotStatePath
         return
     }
 
@@ -1770,6 +1951,7 @@ $targetPermissionPrincipal = if (-not [string]::IsNullOrWhiteSpace($TargetIntera
 $script:RevAgentMachineTreeProtected = $false
 $reportPublishEvidence = $null
 $reportPublishError = ""
+$updaterConfigRollback = $null
 try {
 if ($MachinePhaseOnly) {
     New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
@@ -1782,14 +1964,27 @@ $script:RevAgentOperationMethod = Get-EffectiveInstallOperationMethod
 $script:RevAgentOperation = Get-EffectiveInstallOperation
 Initialize-RevAgentTranscript -PreferredWorkRoot $WorkRoot -RequestedLogPath $LogPath -Prefix "install"
 Write-Host "Operation method : $script:RevAgentOperationMethod"
-$originalChannelManifestPath = $ChannelManifestPath
+$snapshotRootForChannel = [System.IO.Path]::GetFullPath([string]$script:InstallExecutionSnapshotState.snapshotRoot).TrimEnd("\")
+$expectedExecutionChannelManifestPath = [System.IO.Path]::GetFullPath((Join-Path $snapshotRootForChannel ([string]$script:InstallExecutionSnapshotState.release.channelManifestRelativePath)))
+$executionChannelManifestPath = [System.IO.Path]::GetFullPath($ChannelManifestPath)
+if (-not [string]::Equals($executionChannelManifestPath, $expectedExecutionChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Current split-phase channel must be the exact authenticated snapshot channel. Expected=$expectedExecutionChannelManifestPath Actual=$executionChannelManifestPath"
+}
+$persistentChannelManifestPath = [System.IO.Path]::GetFullPath([string]$script:InstallExecutionSnapshotState.acquisitionChannelManifestPath)
+$authenticatedChannel = [string]$script:InstallExecutionSnapshotState.release.channel
+if ($authenticatedChannel -notin @('stable', 'pilot')) { throw "Authenticated snapshot contains an unsupported release channel: $authenticatedChannel" }
+$expectedPersistentChannelManifestPath = [System.IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\channels\$authenticatedChannel.json")
+if (-not [string]::Equals($persistentChannelManifestPath, $expectedPersistentChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Authenticated snapshot acquisition channel is not the exact canonical state-bound channel. Expected=$expectedPersistentChannelManifestPath Actual=$persistentChannelManifestPath"
+}
+$originalChannelManifestPath = $executionChannelManifestPath
 $ChannelManifestPath = Resolve-RevAgentCanonicalNasTransitionPath -Path $ChannelManifestPath
 $channelMovedToCanonicalNasRoot = -not [string]::Equals($originalChannelManifestPath, $ChannelManifestPath, [System.StringComparison]::OrdinalIgnoreCase)
 if ($channelMovedToCanonicalNasRoot) {
     Write-Host "Canonical NAS release root detected; updater config will use: $ChannelManifestPath" -ForegroundColor Green
 }
 if ([string]::IsNullOrWhiteSpace($ReportsRoot)) {
-    $channelDir = Split-Path -Parent $ChannelManifestPath
+    $channelDir = Split-Path -Parent $persistentChannelManifestPath
     $releaseRootGuess = Split-Path -Parent $channelDir
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
 }
@@ -1797,6 +1992,11 @@ elseif ($channelMovedToCanonicalNasRoot -and (Test-RevAgentNasPathUnder -ChildPa
     $channelDir = Split-Path -Parent $ChannelManifestPath
     $releaseRootGuess = Split-Path -Parent $channelDir
     $ReportsRoot = Join-Path $releaseRootGuess "reports"
+}
+$persistentReportsRoot = [System.IO.Path]::GetFullPath($ReportsRoot)
+$expectedPersistentReportsRoot = [System.IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\reports")
+if (-not [string]::Equals($persistentReportsRoot, $expectedPersistentReportsRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Persistent reports root must be the canonical NAS evidence path. Expected=$expectedPersistentReportsRoot Actual=$persistentReportsRoot"
 }
 if ($MachinePhaseOnly) {
     $ReportsRoot = ""
@@ -1816,6 +2016,7 @@ if ($UserPhaseOnly) {
             @{ Property = "proxyUrl"; Variable = "ProxyUrl" },
             @{ Property = "proxyBypass"; Variable = "ProxyBypass" },
             @{ Property = "codexWorkspaceRoot"; Variable = "CodexWorkspaceRoot" },
+            @{ Property = "reportsRoot"; Variable = "ReportsRoot" },
             @{ Property = "dailyAt"; Variable = "DailyAt" },
             @{ Property = "taskName"; Variable = "TaskName" }
         )) {
@@ -1835,7 +2036,17 @@ if ($UserPhaseOnly) {
         throw "Machine phase did not install the local updater: $localUpdater"
     }
     $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
-    Invoke-InitialUpdateCheck -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -OperationMethod ("{0}-user-integration" -f $script:RevAgentOperationMethod) -UserPhaseOnly -PhaseResultPath $phaseResultFullPath
+    $releaseUpdater = Join-Path $PSScriptRoot "update-from-nas.ps1"
+    if (-not (Test-Path -LiteralPath $releaseUpdater -PathType Leaf)) {
+        throw "Authenticated snapshot updater was not found beside install-updater-task.ps1: $releaseUpdater"
+    }
+    $expectedReleaseUpdaterHash = [string]$script:InstallVerifiedSurfaceHashes["updater"]
+    $actualReleaseUpdaterHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseUpdater).Hash
+    if ([string]::IsNullOrWhiteSpace($expectedReleaseUpdaterHash) -or
+        -not [string]::Equals($actualReleaseUpdaterHash, $expectedReleaseUpdaterHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Authenticated snapshot updater changed after pre-import verification. Expected=$expectedReleaseUpdaterHash Actual=$actualReleaseUpdaterHash"
+    }
+    Invoke-InitialUpdateCheck -UpdaterPath $releaseUpdater -UpdaterConfigPath $configPath -ChannelManifestPath $executionChannelManifestPath -OperationMethod ("{0}-user-integration" -f $script:RevAgentOperationMethod) -UserPhaseOnly -PhaseResultPath $phaseResultFullPath -ExecutionSnapshotStatePath $ExecutionSnapshotStatePath
     $script:RevAgentCodexUserIntegrationPhase = Read-RevAgentJsonReportFile -Path $phaseResultFullPath -AllowedRoot (Join-Path $WorkRoot "user-state")
     $nestedPhase = Get-JsonPropertyString -Object $script:RevAgentCodexUserIntegrationPhase -Name "phase"
     $nestedStatus = Get-JsonPropertyString -Object $script:RevAgentCodexUserIntegrationPhase -Name "status"
@@ -1908,19 +2119,17 @@ $CodexInstructionPolicy = Resolve-CodexInstructionPolicy -RequestedPolicy $Codex
 $MachineRole = Resolve-MachineRole -RequestedRole $MachineRole -PreviousConfig $previousConfig
 $localLibRoot = Join-Path $WorkRoot "lib"
 $localTrustedReleaseKeysPath = Join-Path $WorkRoot "config\release-trusted-keys.json"
-$trustedReleaseKeysSource = if ($MachinePhaseOnly) { [string]$script:InstallVerifiedTrustedKeysPath } else { Join-Path $PSScriptRoot "config\release-trusted-keys.json" }
+$trustedReleaseKeysSource = [string]$script:InstallVerifiedTrustedKeysPath
 if ([string]::IsNullOrWhiteSpace($trustedReleaseKeysSource) -or -not (Test-Path -LiteralPath $trustedReleaseKeysSource -PathType Leaf)) {
-    throw "Canonical release tools key is unavailable; refusing updater repair. Expected source: $trustedReleaseKeysSource"
+    throw "Authenticated snapshot release key is unavailable; refusing updater repair. Expected source: $trustedReleaseKeysSource"
 }
-if ($MachinePhaseOnly) {
-    $expectedTrustedKeySource = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "config\release-trusted-keys.json"))
-    if (-not [string]::Equals([System.IO.Path]::GetFullPath($trustedReleaseKeysSource), $expectedTrustedKeySource, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated updater repair key source must be the verified canonical release tools key: $expectedTrustedKeySource"
-    }
-    $currentTrustedKeySourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedReleaseKeysSource).Hash
-    if (-not [string]::Equals($currentTrustedKeySourceHash, [string]$script:InstallVerifiedTrustedKeysSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Canonical release tools key changed after pre-import verification."
-    }
+$expectedTrustedKeySource = [System.IO.Path]::GetFullPath((Join-Path ([string]$script:InstallExecutionSnapshotState.snapshotRoot) ([string]$script:InstallExecutionSnapshotState.trust.trustedKeysRelativePath)))
+if (-not [string]::Equals([System.IO.Path]::GetFullPath($trustedReleaseKeysSource), $expectedTrustedKeySource, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Updater repair key source must be the authenticated snapshot release key: $expectedTrustedKeySource"
+}
+$currentTrustedKeySourceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedReleaseKeysSource).Hash
+if (-not [string]::Equals($currentTrustedKeySourceHash, [string]$script:InstallVerifiedTrustedKeysSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+    throw "Authenticated snapshot release key changed after pre-import verification."
 }
 
 Copy-RevAgentManagedUpdaterToolFile -Source (Join-Path $PSScriptRoot "update-from-nas.ps1") -Destination $localUpdater
@@ -1945,7 +2154,7 @@ $script:RevAgentRemoteReportsRoot = $ReportsRoot
 $config = [ordered]@{
     schemaVersion = 1
     app = "revAgent"
-    channelManifestPath = $ChannelManifestPath
+    channelManifestPath = $persistentChannelManifestPath
     installRoot = $InstallRoot
     workRoot = $WorkRoot
     packageTarget = $PackageTarget
@@ -1958,7 +2167,7 @@ $config = [ordered]@{
     codexWorkspaceRoot = $CodexWorkspaceRoot
     codexInstructionPolicy = $CodexInstructionPolicy
     legacyServerTargets = $LegacyServerTargets
-    reportsRoot = $ReportsRoot
+    reportsRoot = $persistentReportsRoot
     skipNpmInstall = [bool]$SkipNpmInstall
     skipCodexMcpRegistration = [bool]$SkipCodexMcpRegistration
     skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
@@ -1991,6 +2200,20 @@ if (-not [string]::IsNullOrWhiteSpace($MachineRole)) {
 $config["distributionIntegrity"] = [ordered]@{
     policy = "enforce"
     trustedKeysPath = $localTrustedReleaseKeysPath
+}
+$previousConfigExists = Test-Path -LiteralPath $configPath -PathType Leaf
+$previousConfigBytes = if ($previousConfigExists) { [IO.File]::ReadAllBytes($configPath) } else { [byte[]]@() }
+$previousConfigSha256 = ''
+if ($previousConfigExists) {
+    $previousConfigSha = [Security.Cryptography.SHA256]::Create()
+    try { $previousConfigSha256 = ([BitConverter]::ToString($previousConfigSha.ComputeHash($previousConfigBytes))).Replace('-', '') }
+    finally { $previousConfigSha.Dispose() }
+}
+$updaterConfigRollback = [pscustomobject][ordered]@{
+    path = [IO.Path]::GetFullPath($configPath)
+    existed = $previousConfigExists
+    bytes = $previousConfigBytes
+    sha256 = $previousConfigSha256
 }
 Write-JsonFile -Path $configPath -Value $config
 $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
@@ -2025,7 +2248,7 @@ if ($MachinePhaseOnly) {
             -not [string]::Equals($actualReleaseUpdaterHash, $expectedReleaseUpdaterHash, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Release updater changed after signed bootstrap verification. Expected=$expectedReleaseUpdaterHash Actual=$actualReleaseUpdaterHash"
         }
-        Invoke-InitialUpdateCheck -UpdaterPath $releaseUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-machine" -f $script:RevAgentOperationMethod) -MachinePhaseOnly -PhaseResultPath $phaseResultFullPath
+        Invoke-InitialUpdateCheck -UpdaterPath $releaseUpdater -UpdaterConfigPath $configPath -ChannelManifestPath $executionChannelManifestPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-machine" -f $script:RevAgentOperationMethod) -MachinePhaseOnly -PhaseResultPath $phaseResultFullPath -ExecutionSnapshotStatePath $ExecutionSnapshotStatePath
         $script:RevAgentMachineUpdatePhase = Read-RevAgentJsonReportFile -Path $phaseResultFullPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
         $nestedPhase = Get-JsonPropertyString -Object $script:RevAgentMachineUpdatePhase -Name "phase"
         $nestedStatus = Get-JsonPropertyString -Object $script:RevAgentMachineUpdatePhase -Name "status"
@@ -2048,6 +2271,7 @@ if ($MachinePhaseOnly) {
             localReportPath = $localMachineReportPath
             updaterMachinePhase = $script:RevAgentMachineUpdatePhase
         })
+    $updaterConfigRollback = $null
     Write-Host "Machine phase    : completed; returning to the unelevated GUI." -ForegroundColor Green
     return
 }
@@ -2081,6 +2305,34 @@ Set-RevAgentInstallRunReport -Status "completed" -Message ("Updater install comp
 }
 catch {
     $originalFailure = $_
+    if ($MachinePhaseOnly -and $null -ne $updaterConfigRollback) {
+        try {
+            if ([bool]$updaterConfigRollback.existed) {
+                Write-RevAgentAtomicBytes -Path ([string]$updaterConfigRollback.path) -Bytes ([byte[]]$updaterConfigRollback.bytes)
+                $restoredBytes = [IO.File]::ReadAllBytes([string]$updaterConfigRollback.path)
+                $restoredSha = [Security.Cryptography.SHA256]::Create()
+                try { $restoredSha256 = ([BitConverter]::ToString($restoredSha.ComputeHash($restoredBytes))).Replace('-', '') }
+                finally { $restoredSha.Dispose() }
+                if ($restoredBytes.Length -ne ([byte[]]$updaterConfigRollback.bytes).Length -or
+                    -not [string]::Equals($restoredSha256, [string]$updaterConfigRollback.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Updater config rollback did not restore the exact previous bytes.'
+                }
+            }
+            elseif (Test-Path -LiteralPath ([string]$updaterConfigRollback.path) -PathType Leaf) {
+                [IO.File]::Delete([string]$updaterConfigRollback.path)
+                if (Test-Path -LiteralPath ([string]$updaterConfigRollback.path)) { throw 'Updater config rollback did not restore prior absence.' }
+            }
+            $updaterConfigRollback = $null
+        }
+        catch {
+            $rollbackMessage = $_.Exception.Message
+            $originalFailure = [Management.Automation.ErrorRecord]::new(
+                [InvalidOperationException]::new("$($originalFailure.Exception.Message) Updater config rollback failed: $rollbackMessage", $originalFailure.Exception),
+                'RevAgentUpdaterConfigRollbackFailed',
+                [Management.Automation.ErrorCategory]::WriteError,
+                $configPath)
+        }
+    }
     $localFailureReportError = ""
     if ($UserPhaseOnly -and $null -eq $script:RevAgentCodexUserIntegrationPhase -and (Test-Path -LiteralPath $phaseResultFullPath -PathType Leaf)) {
         try {

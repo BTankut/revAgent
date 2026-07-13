@@ -82,6 +82,41 @@ The supported NAS updater installs the pinned system Node runtime in its bounded
 machine phase and performs CLI/MCP work only in the original unelevated user
 phase after signer, origin, version, and capability checks.
 
+Codex discovery is bound to the current registered `OpenAI.Codex` Store
+package, its exact family/publisher/status/WindowsApps files, the signed block
+map, and its allowlisted `app\resources\codex.exe` content. The machine phase
+copies that verified binary, without executing it, into the deterministic
+administrator-protected `ProgramData` Store-cache path. The unelevated user
+phase independently re-attests the Store package and executes only the matching
+protected copy. A `%LOCALAPPDATA%` mirror is diagnostic-only. AppX inventory
+must complete successfully and return exactly one valid package. Query/access
+errors and an absent package fail closed.
+
+The desktop task/model contract and CLI config contract are separate. The
+unelevated phase first tests the selected protected CLI with root-level
+`model_reasoning_effort = "ultra"` in a disposable `CODEX_HOME`. If accepted,
+the real value is preserved. Only a CLI that rejects `ultra` but accepts
+`xhigh` triggers a root-only atomic compatibility migration to `"xhigh"`;
+profile-local and unrelated settings remain unchanged. The protected CLI must
+then accept the real `CODEX_HOME`; there is no direct-edit fallback. Desktop
+task-level `Ultra` selection is not treated as invalid and is checked in the
+new-task pilot.
+
+No Windows standalone package receipt or persistent signed full-file hash
+chain is currently available for revAgent to authenticate after installation.
+Therefore user-writable standalone layouts, legacy
+`%LOCALAPPDATA%\OpenAI\Codex`, npm shims, custom `CODEX_INSTALL_DIR`, arbitrary
+Program Files binaries, and copied signed executables are never executable
+origins. Installing the supported Store/ChatGPT desktop package is the recovery
+path; a plausible directory/JSON layout is not origin evidence.
+
+Every accepted Codex/Node probe and final MCP readback holds no-delete/no-rename
+handles on the exact executable and its directory chain through process start.
+The process is created suspended, assigned to a kill-on-close Job Object, and
+resumed only after assignment; its working directory is the protected executable
+directory. The final server handshake applies the same guarded launch contract
+to the protected Node runtime and installed MCP entrypoint.
+
 Both MCP servers are required:
 
 - `revAgent`: live Revit execution and inspection.
@@ -113,26 +148,27 @@ machine uninstall. Perform it only in a separate explicit unelevated workflow.
 
 ## Release Publishing
 
-Production release ZIPs normally publish through the signed source-free GitHub
-Actions CD workflow. Protected `main` updates build and validate a signed
-source-free release; production NAS publish requires an explicit manual workflow
-dispatch with `publish_to_nas=true`. Use the manual publish command only for
-controlled recovery/backstop work from a clean development checkout:
+Production release ZIPs publish through the signed source-free GitHub Actions
+CD workflow. Protected `main` updates build and validate a signed source-free
+release without publishing. A manual dispatch may set
+`publish_to_pilot=true` for the signed DESKTOP-OKNV128/NET01 pilot channel;
+that operation must leave stable metadata, the active stable release, and the
+shared NAS tools tree unchanged. General stable/fleet publication remains a
+separate `publish_to_nas=true` action and is fail-closed until its shared-tools
+replacement transaction has the same handle-bound guarantees.
 
-```powershell
-$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
-$PrivateKeyPath = "C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml"
-$TrustedKeysPath = "C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json"
-powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
-  -ReleaseRoot $ReleaseRoot `
-  -Channel stable `
-  -RequireSigning `
-  -SigningPrivateKeyPath $PrivateKeyPath `
-  -SigningKeyId "revagent-prod-rsa-2026q3" `
-  -TrustedReleaseKeysPath $TrustedKeysPath
-```
+`installer\nas\publish-nas-release.ps1` may produce only a local signed staging
+root. It must never target the canonical NAS path, including for recovery or
+backstop work. Every canonical NAS write must consume an already signed and
+validated local staging root through
+`scripts\publish-signed-source-free-release-to-nas.ps1`; the protected workflow
+is the normal entrypoint.
 
-`revagent-prod-rsa-2026q3` is the current rotation example; update both the key
-id and private-key path together when rotating production release-signing keys.
+`revagent-prod-rsa-2026q3` is the currently pinned production key id, with
+public-key fingerprint
+`32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
+Production accepts a single-key trusted-key document. Do not add a second key
+for live overlap; follow the coordinated code-and-bootstrap-prestage rotation
+procedure in `docs\DEVELOPER_RUNBOOK.md`.
 
 See `installer\nas\README.md` for the full NAS deployment workflow.

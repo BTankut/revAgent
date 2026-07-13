@@ -1,12 +1,18 @@
 <#
 .SYNOPSIS
-    Preview, seal, or temporarily unseal the canonical revAgent NAS release tree.
+    Optionally inspect or administer ACLs on the canonical revAgent NAS release tree.
 
 .DESCRIPTION
-    The normal state removes write-capable allow ACEs from the release root and
-    every item below tools, channels, and releases. The reports subtree is
-    protected from release-root inheritance and otherwise preserved for the
-    evidence writers already authorized by the NAS administrator.
+    NAS ACL state is optional defense-in-depth telemetry. Production transport
+    trust is established by signed metadata and a protected local workstation
+    snapshot (`signed_local_snapshot`); the publisher does not call Seal or
+    Unseal and does not require Windows DACL mutation support from Samba.
+
+    When an operator deliberately invokes Seal, it removes write-capable allow
+    ACEs from the release root and every item below tools, channels, and
+    releases. The reports subtree is protected from release-root inheritance
+    and otherwise preserved for evidence writers authorized by the NAS
+    administrator.
 
     Unseal is a bounded publish operation. The release-root owner is the default
     publisher. A temporary publisher-only reports probe must prove the active
@@ -435,6 +441,9 @@ function Get-RevAgentReleaseAclState {
     return [pscustomobject][ordered]@{
         success = $true
         action = "nas-release-acl"
+        transportTrust = "signed_local_snapshot"
+        requiredForTransportTrust = $false
+        diagnosticRole = "optional_acl_telemetry"
         mode = $Mode.ToLowerInvariant()
         releaseRoot = $ReleaseRoot
         safe = @($safetyIssues).Count -eq 0
@@ -470,7 +479,7 @@ elseif (-not [string]::Equals($ReleaseRoot, $canonicalProductionReleaseRoot, [St
 
 if ($Mode -eq "Preview") {
     if (-not (Test-Path -LiteralPath $ReleaseRoot -PathType Container)) {
-        $preview = [pscustomobject][ordered]@{ success = $true; action = "nas-release-acl"; mode = "preview"; releaseRoot = $ReleaseRoot; safe = $true; sealed = $false; unsealedForPublisherOnly = $false; publisherPrincipal = $PublisherPrincipal; publisherSid = ""; publisherPrincipalSource = $publisherPrincipalSource; publisherSessionProbe = $null; unsealWriteCanary = $null; missingProtectedRoots = @($requiredProtectedRoots); safetyIssues = @(); protectedWriteRules = @(); allProtectedDaclsProtected = $false; unprotectedDaclItems = @(); reportsPreserved = $false; reportsAclProtected = $false; reportsWritableEvidence = $false; reportsWriteRules = @() }
+        $preview = [pscustomobject][ordered]@{ success = $true; action = "nas-release-acl"; transportTrust = "signed_local_snapshot"; requiredForTransportTrust = $false; diagnosticRole = "optional_acl_telemetry"; mode = "preview"; releaseRoot = $ReleaseRoot; safe = $true; sealed = $false; unsealedForPublisherOnly = $false; publisherPrincipal = $PublisherPrincipal; publisherSid = ""; publisherPrincipalSource = $publisherPrincipalSource; publisherSessionProbe = $null; unsealWriteCanary = $null; missingProtectedRoots = @($requiredProtectedRoots); safetyIssues = @(); protectedWriteRules = @(); allProtectedDaclsProtected = $false; unprotectedDaclItems = @(); reportsPreserved = $false; reportsAclProtected = $false; reportsWritableEvidence = $false; reportsWriteRules = @() }
     }
     else {
         if ([string]::IsNullOrWhiteSpace($PublisherPrincipal)) { $PublisherPrincipal = Get-RevAgentReleaseRootOwnerPrincipal }

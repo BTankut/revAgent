@@ -78,6 +78,7 @@ try {
         -Force `
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
+        -AllowTestSigningIdentity `
         -ReleaseSequence $releaseSequence `
         -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence | Out-Null
 

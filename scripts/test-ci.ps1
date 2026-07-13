@@ -77,6 +77,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-publish-signing.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-signed-stable-readiness.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-signed-source-free-cd.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-release-snapshot.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-nas-release-acl.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-local-update-bootstrap.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-rollout-readiness.ps1") -RepoRoot $RepoRoot

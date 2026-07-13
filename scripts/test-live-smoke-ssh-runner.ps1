@@ -38,6 +38,8 @@ Assert-True ($scriptText -match 'LaunchMode' -and $scriptText -match 'Interactiv
 Assert-True ($scriptText -match 'Revit 2022\\Revit\.exe') "SSH live smoke runner must default to Revit 2022."
 Assert-True ($scriptText -match 'test-commandset-live\.ps1') "SSH live smoke runner must execute the live commandset smoke helper."
 Assert-True ($scriptText -match 'scp\.exe' -and $scriptText -match 'LiveHelperPath') "SSH live smoke runner must stage the current helper instead of trusting stale remote copies."
+Assert-True ($scriptText -match '-UseNasHelper is retired' -and $scriptText -match 'never executes a loose NAS tools script') "SSH live smoke runner must reject the retired loose-NAS-helper execution path."
+Assert-True ($scriptText -notmatch 'Join-Path \(Join-Path \$ReleaseRoot "tools"\) "test-commandset-live\.ps1"') "SSH live smoke runner must never select the loose NAS helper as its remote execution path."
 Assert-True ($scriptText -match 'live-smoke-ssh-latest\.json') "SSH live smoke runner must publish a per-machine invocation report."
 Assert-True ($scriptText -match 'remoteSmokeEvidencePath' -and $scriptText -match 'reports"\) "rollout"') "SSH live smoke runner must retrieve smoke evidence and publish it centrally from the coordinator."
 Assert-True ($scriptText -match 'Start-Process -FilePath `\$revitExePath') "SSH live smoke runner must be able to start Revit with the sample model."

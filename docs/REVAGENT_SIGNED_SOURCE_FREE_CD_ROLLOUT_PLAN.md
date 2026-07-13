@@ -198,11 +198,16 @@ Chosen CD model:
   key file path.
 - NAS publish is a separate job behind the protected
   `revagent-production-publish` environment. It runs only when the workflow is
-  manually dispatched with `publish_to_nas=true`.
-- The publish job uses the validated release root staged locally under the
-  self-hosted runner workspace; it does not rebuild or re-sign. This avoids
-  GitHub artifact storage quota, but it means the selected runner labels must
-  resolve to the office runner that owns both signing-key and NAS access.
+  manually dispatched with exactly one of `publish_to_pilot=true` or
+  `publish_to_nas=true`.
+- For such a dispatch, the build job uploads the validated release root as one
+  immutable, one-day GitHub Actions artifact and exports its exact artifact id,
+  digest, and signed source-channel SHA-256. The publish job binds the artifact
+  through GitHub REST to the same repository, run, and commit, downloads it by
+  exact id into an absent non-reparse local landing leaf, and passes the
+  build-bound source-channel hash to the publisher. It does not rebuild or
+  re-sign. The selected runner labels must still resolve to the office runner
+  with signing-key and NAS access.
 - NAS candidate/stable readiness uses active-release artifact hygiene so the
   new signed source-free release and current `tools\` payload are enforced
   without blocking on historical source-full ZIPs already present in the
@@ -243,10 +248,12 @@ Operational setup status:
 - A self-hosted Windows runner was registered for this repo with the
   `revagent-cd` label on the office workstation.
 - PowerShell 7 was installed for the runner because the workflow uses `pwsh`.
-- Signed source-free CD has run from protected `main` in build/validate mode
-  and has published production NAS stable by manual workflow dispatch. The
-  workflow uses local self-hosted runner staging for the signed release-root
-  handoff instead of GitHub artifact storage.
+- Signed source-free CD has run from protected `main` in build/validate mode,
+  and an earlier revision published production NAS stable by manual workflow
+  dispatch. The current workflow no longer trusts a cross-job local staging
+  path: explicit publish dispatches use an exact GitHub artifact id/digest plus
+  source-channel SHA-256 handoff. Stable publication is currently fail-closed
+  while the two-machine pilot path is validated.
 
 Still open after CD/NAS automation:
 
@@ -306,9 +313,11 @@ Required outcomes:
   SHA256, and release sequence metadata.
 - Run `scripts/check-signed-stable-readiness.ps1` against the produced release
   root before upload or NAS publish.
-- Keep the produced release root in local self-hosted runner staging for the
-  publish job handoff. Do not expose private signing material in logs or
-  artifacts.
+- For an explicit publish dispatch, upload only the validated source-free
+  release root as an immutable short-lived artifact; bind its exact artifact
+  id/digest, repository/run/commit identity, and signed source-channel SHA-256
+  before the publish job consumes it. Never expose private signing material in
+  logs or artifacts.
 
 Gate:
 
@@ -353,7 +362,10 @@ tools\
   completed and NAS `stable.json` points at the expected merge commit.
 - Keep `allow_rollback=false` for normal forward publishes. Use
   `allow_rollback=true` only as an explicit operator decision for signed
-  rollback, same-sequence repair, or first legacy stable bootstrap.
+  rollback or same-sequence repair after the current stable baseline passes
+  signed readiness and exposes a positive `releaseSequence`. The flag never
+  authorizes legacy, unsigned, missing-sequence, unreadable, or invalid stable
+  metadata.
 
 Gate:
 

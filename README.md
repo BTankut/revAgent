@@ -173,14 +173,14 @@ pulling and reinstalling on every machine.
   executable first hop is the protected local ProgramData bootstrap.
 - A normal feature-branch `git commit` / `git push` does not update the office.
 - Any update that reaches protected `main` starts the signed source-free CD
-  workflow in build/validate mode only; it does not publish to the NAS stable
-  channel.
+  workflow in build/validate mode only; it publishes neither NAS channel.
 - Signed source-free CD runs through
-  `.github/workflows/signed-source-free-cd.yml`; production NAS publish requires
-  an explicit manual dispatch with `publish_to_nas=true`.
+  `.github/workflows/signed-source-free-cd.yml`; `publish_to_pilot=true` is the
+  exact DESKTOP-OKNV128/NET01 pilot, while `publish_to_nas=true` is the later
+  stable/fleet action. They are separate, mutually exclusive manual dispatches.
 - The protected PR review/CI/merge decision is the normal human gate for
   production publish. After a protected `main` update, verify the signed CD run
-  and `channels\stable.json` before manual or broad rollout instructions.
+  and the selected signed channel before any manual rollout instruction.
 - Before closing a workstation rollout, run the read-only readiness audit over
   NAS stable and machine reports:
   `powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-rollout-closure-audit.ps1`.
@@ -565,9 +565,9 @@ then restores the caller environment, so a user-level `ignore-scripts=true`
 setting cannot suppress native dependencies such as `better-sqlite3`. Passing
 it does not publish or deploy. The canonical continuation is a topic-branch
 draft PR, protected review/checks, merge to `main`, automatic signed source-free
-build/validation, and only then a separately approved manual workflow dispatch
-with `publish_to_nas=true`. Never publish NAS stable directly from a topic
-branch. Spatial Phase 1a and Phase 1b also have separate live Revit acceptance
+  build/validation, and only then a separately approved manual pilot or stable
+  workflow dispatch. Never publish either NAS channel directly from a topic
+  branch. Spatial Phase 1a and Phase 1b also have separate live Revit acceptance
 gates documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md` and
 `docs/REVAGENT_SPATIAL_PHASE1B_ACCEPTANCE.md`; neither gate is part of
 `test-all.ps1` or `test-ci.ps1`.
@@ -578,14 +578,13 @@ for PRs, and signed source-free CD for `main` updates. Normal development
 should happen on a topic branch, then merge through a pull request after the
 required checks pass and actionable review comments are addressed.
 Any update that reaches protected `main` builds and validates a signed
-source-free release root. Publishing that release to the office NAS stable
-channel is a separate manual workflow-dispatch action with
-`publish_to_nas=true`. The canonical NAS root is `revAgent-deploy`; production
-publish no longer dual-publishes to the old `revit-mcp-deploy` compatibility
-root by default. Verify the workflow result and `channels\stable.json` after
-publish before manual rollout instructions, and pause scheduled updater rollout
-separately when verification must happen before any workstation installs the new
-stable release.
+source-free release root. `publish_to_pilot=true` publishes only the signed
+DESKTOP-OKNV128/NET01 pilot and must leave stable plus shared tools unchanged.
+`publish_to_nas=true` is the separately approved stable/fleet action and remains
+fail-closed until its handle-bound shared-tools transaction is implemented. The
+canonical NAS root is `revAgent-deploy`; neither path dual-publishes to the old
+`revit-mcp-deploy` compatibility root. Verify exact channel/release/hash evidence
+before manual uptake.
 
 When the shared bridge command payload changes and Revit 2022 is available, run the
 optional live commandset gate separately:
@@ -602,8 +601,10 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-commandset-li
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 ```
 
-After a NAS publish, source-free workstations can run the same live smoke helper
-from `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\test-commandset-live.ps1`.
+Do not execute the loose copy under NAS `tools`. Run the helper from a clean
+repository checkout or an independently protected local coordinator copy. The
+SSH wrapper below stages those exact local bytes over SCP; the NAS is used only
+for signed release data and report output.
 
 For the standard representative workstation flow, run the SSH wrapper from the
 coordinator. First use `-OpenOnly` to open Revit 2022 in the logged-on
@@ -848,14 +849,17 @@ After the script finishes:
 
 ## Host compatibility
 
-The office installation flow resolves the effective `CODEX_HOME`, selects an
-origin- and signer-attested current ChatGPT/Codex CLI plus an OpenJS-signed
+The office installation flow resolves the effective `CODEX_HOME`, attests the
+current Store-backed ChatGPT/Codex CLI, materializes it into an
+administrator-protected `ProgramData` path, and executes only that protected
+copy from an unelevated user phase. A `%LOCALAPPDATA%` mirror remains
+diagnostic-only. Guarded processes are created suspended and assigned to a
+kill-on-close Job Object before resume. The flow also selects an OpenJS-signed
 system Node runtime, updates `config.toml` with lock/CAS/atomic-replace
 protection, and accepts registration only after `mcp get --json` plus protocol
-handshakes. It also writes the standard Codex memory configuration and
-normalizes `service_tier = "fast"` idempotently. The skill itself is
-host-agnostic: any MCP/skill-capable LLM host can use it if both MCP servers are
-registered:
+handshakes. It writes the standard Codex memory configuration and normalizes
+`service_tier = "fast"` idempotently. The skill itself is host-agnostic: any
+MCP/skill-capable LLM host can use it if both MCP servers are registered:
 
 - `revAgent` for live Revit execution and inspection
 - `revAgent-api-docs` for required API class/member lookup
@@ -1203,8 +1207,9 @@ Record the desktop launcher audit as `desktopLauncherEvidence` in the closure
 config or as `reports\rollout\desktop-launcher-latest.json`. Prefer producing
 that file with `publish-desktop-launcher-evidence.ps1`: run `-Mode ScanLocal`
 on each in-scope machine, then run `-Mode Aggregate` from the coordinator using
-the rollout config. The helper is available from the repo `scripts\` folder and
-from NAS `tools\` after publish. The readiness audit also reads each machine's
+the rollout config. Run the helper from the repo `scripts\` folder or an
+independently protected local coordinator copy; the published NAS `tools` copy
+is not an execution origin. The readiness audit also reads each machine's
 latest `reports\machines\<machine>\desktop-launcher-latest.json`; this
 per-machine evidence can complete coverage when the rollout aggregate is stale
 or was collected before a late workstation scan. Physical compatibility-root

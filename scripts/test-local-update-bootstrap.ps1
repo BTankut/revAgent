@@ -49,6 +49,8 @@ $sources = [ordered]@{
     updaterGui = Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1"
     distributionIntegrity = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
     sourceFreeMigration = Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1"
+    releaseSnapshot = Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1"
+    privilegedSnapshotUpdate = Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
     trustedKeys = $trustedKeys
 }
 try {
@@ -61,7 +63,12 @@ try {
         schemaVersion = 1
         app = "revAgent"
         evidenceType = "bootstrap-prestage"
-        release = [ordered]@{ signatureVerified = $true }
+        release = [ordered]@{
+            root = $fakeRelease; channel = 'stable'; version = '2099.01.01.test'
+            releaseSequence = 10; minimumAcceptedReleaseSequence = 1; highestAcceptedReleaseSequence = 10
+            channelManifestSha256 = ('A' * 64); releaseManifestSha256 = ('B' * 64); packageSha256 = ('C' * 64)
+            signatureVerified = $true
+        }
         localBootstrapInstallerScript = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")).Hash
         localBootstrapInstallerModule = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.LocalBootstrap.psm1")).Hash
         sources = $hashes
@@ -71,9 +78,10 @@ try {
     Assert-True ([bool]$state.sourceAuthentication.independentlyAuthenticated) "Prestage state lacks independent-authentication evidence."
     Assert-True (Test-Path -LiteralPath (Join-Path $bootstrapRoot "bootstrap-state.json")) "Protected bootstrap state was not installed."
     Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Start-revAgent-Update.cmd") -PathType Leaf) -and $null -ne $state.files.launcher) "Protected local clickable launcher and its hash evidence were not installed."
+    Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $bootstrapRoot "lib\RevAgent.ReleaseSnapshot.psm1") -PathType Leaf)) "Protected snapshot broker/module were not installed."
     $caught = $null
     try { & (Join-Path $bootstrapRoot "Start-revAgent-Update.ps1") -BootstrapRoot $bootstrapRoot -ChannelManifestPath (Join-Path $fakeRelease "channels\stable.json") -VerificationOnly -AllowTestRoot | Out-Null } catch { $caught = $_ }
-    Assert-True ($null -ne $caught -and [string]$caught.Exception.Message -match "Bootstrap path is missing") "Bootstrap execution did not reach fail-closed signed-channel validation."
+    Assert-True ($null -ne $caught -and [string]$caught.Exception.Message -match "Bootstrap path is missing") ("Bootstrap execution did not reach fail-closed signed-channel validation. actual={0}" -f $(if ($null -eq $caught) { '<none>' } else { [string]$caught.Exception.Message }))
 
     Write-Host "Test foreign bootstrap writer fails closed"
     $bootstrapScriptPath = Join-Path $bootstrapRoot "Start-revAgent-Update.ps1"
@@ -110,6 +118,8 @@ try {
         updaterTaskInstaller = @("installer\nas\install-updater-task.ps1", "install-updater-task.ps1")
         installerLibDistributionIntegrity = @("installer\lib\RevAgent.DistributionIntegrity.psm1", "lib\RevAgent.DistributionIntegrity.psm1")
         installerLibSourceFreeMigration = @("installer\lib\RevAgent.SourceFreeMigration.psm1", "lib\RevAgent.SourceFreeMigration.psm1")
+        installerLibReleaseSnapshot = @("installer\lib\RevAgent.ReleaseSnapshot.psm1", "lib\RevAgent.ReleaseSnapshot.psm1")
+        privilegedSnapshotUpdate = @("installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1", "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")
         installerLibLocalBootstrap = @("installer\lib\RevAgent.LocalBootstrap.psm1", "lib\RevAgent.LocalBootstrap.psm1")
         installerLibHiddenLauncher = @("installer\lib\RevAgent.HiddenLauncher.psm1", "lib\RevAgent.HiddenLauncher.psm1")
         installerLibScheduledTask = @("installer\lib\RevAgent.ScheduledTask.psm1", "lib\RevAgent.ScheduledTask.psm1")
@@ -142,7 +152,7 @@ try {
 
     $currentCaught = $null
     try { & (Join-Path $bootstrapRoot "Start-revAgent-Update.ps1") -BootstrapRoot $bootstrapRoot -ChannelManifestPath $channelPath -VerificationOnly -AllowTestRoot | Out-Null } catch { $currentCaught = $_ }
-    Assert-True ($null -ne $currentCaught -and [string]$currentCaught.Exception.Message -match "effectively writable" -and [string]$currentCaught.Exception.Message -notmatch "bootstrap_refresh_required") "Current local bootstrap components did not pass freshness binding before the disposable writable-source guard."
+    Assert-True ($null -ne $currentCaught -and [string]$currentCaught.Exception.Message -match "packagePath" -and [string]$currentCaught.Exception.Message -notmatch "bootstrap_refresh_required") "Current local bootstrap components did not pass freshness binding before signed package transport validation."
 
     $components.localBootstrapLauncher.sha256 = ("0" * 64)
     [IO.File]::WriteAllText($manifestPath, ([ordered]@{ schemaVersion = 1; app = "revAgent"; components = $components } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
@@ -191,9 +201,11 @@ try {
             "installer\lib\RevAgent.LocalBootstrap.psm1",
             "installer\lib\RevAgent.DistributionIntegrity.psm1",
             "installer\lib\RevAgent.SourceFreeMigration.psm1",
+            "installer\lib\RevAgent.ReleaseSnapshot.psm1",
             "installer\nas\Start-revAgent-Update.ps1",
             "installer\nas\Start-revAgent-Update.cmd",
-            "installer\nas\Install-revAgent-Updater-GUI.ps1"
+            "installer\nas\Install-revAgent-Updater-GUI.ps1",
+            "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
         )) {
         Copy-Item -LiteralPath (Join-Path $RepoRoot $relativePath) -Destination (Join-Path $swapRepo $relativePath)
     }
@@ -203,6 +215,8 @@ try {
         updaterGui = Join-Path $swapRepo "installer\nas\Install-revAgent-Updater-GUI.ps1"
         distributionIntegrity = Join-Path $swapRepo "installer\lib\RevAgent.DistributionIntegrity.psm1"
         sourceFreeMigration = Join-Path $swapRepo "installer\lib\RevAgent.SourceFreeMigration.psm1"
+        releaseSnapshot = Join-Path $swapRepo "installer\lib\RevAgent.ReleaseSnapshot.psm1"
+        privilegedSnapshotUpdate = Join-Path $swapRepo "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
         trustedKeys = $trustedKeys
     }
     $swapHashes = [ordered]@{}
@@ -213,7 +227,12 @@ try {
                 schemaVersion = 1
                 app = "revAgent"
                 evidenceType = "bootstrap-prestage"
-                release = [ordered]@{ signatureVerified = $true }
+                release = [ordered]@{
+                    root = $fakeRelease; channel = 'stable'; version = '2099.01.01.test'
+                    releaseSequence = 10; minimumAcceptedReleaseSequence = 1; highestAcceptedReleaseSequence = 10
+                    channelManifestSha256 = ('A' * 64); releaseManifestSha256 = ('B' * 64); packageSha256 = ('C' * 64)
+                    signatureVerified = $true
+                }
                 localBootstrapInstallerScript = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")).Hash
                 localBootstrapInstallerModule = (Get-FileHash -Algorithm SHA256 -LiteralPath $swapModulePath).Hash
                 sources = $swapHashes
@@ -227,6 +246,143 @@ try {
     catch { $swapCaught = $_ }
     Assert-True ($null -ne $swapCaught -and [string]$swapCaught.Exception.Message -match "changed identity or content after verification") "Hash-to-import module source swap was not rejected after protected staging."
     Assert-True (-not (Test-Path -LiteralPath $swapBootstrapRoot)) "Hash-to-import rejection occurred after bootstrap installation."
+
+    Write-Host "Test legacy developer product-root ACL migration"
+    $aclFixtureRoot = Join-Path $temp "legacy-product-root-fixture"
+    $aclFixtureShared = Join-Path $aclFixtureRoot "DPE"
+    $aclFixtureProduct = Join-Path $aclFixtureShared "revAgent"
+    $aclFixtureLinkTarget = Join-Path $aclFixtureRoot "junction-target"
+    $aclFixtureLink = Join-Path $aclFixtureShared "linkedAgent"
+    $aclFixtureSwap = Join-Path $aclFixtureShared "revAgent-swapped"
+    New-Item -ItemType Directory -Path $aclFixtureProduct, $aclFixtureLinkTarget -Force | Out-Null
+    New-Item -ItemType Junction -Path $aclFixtureLink -Target $aclFixtureLinkTarget | Out-Null
+    $localBootstrapModule = Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.LocalBootstrap.psm1") -Force -PassThru
+    try {
+        $aclFixtureResult = & $localBootstrapModule {
+            param($SharedPath, $ProductPath, $LinkName, $UntrustedOwnerSid, $SwapPath)
+
+            $script:AclFixtureSharedPath = [IO.Path]::GetFullPath($SharedPath).TrimEnd('\')
+            $script:AclFixtureProductPath = [IO.Path]::GetFullPath($ProductPath).TrimEnd('\')
+            $script:AclFixtureProductOwner = 'S-1-5-32-544'
+            $script:AclFixtureHardened = $false
+            $script:AclFixtureHardenCallCount = 0
+            $script:AclFixtureRenameBlocked = $false
+
+            function New-AclFixtureRule {
+                param([string]$Sid, [Security.AccessControl.FileSystemRights]$Rights)
+                return [pscustomobject]@{
+                    AccessControlType = [Security.AccessControl.AccessControlType]::Allow
+                    IdentityReference = [Security.Principal.SecurityIdentifier]::new($Sid)
+                    FileSystemRights = $Rights
+                }
+            }
+
+            function New-AclFixtureDescriptor {
+                param([string]$OwnerSid, [bool]$Protected, [object[]]$Rules)
+                $descriptor = [pscustomobject]@{
+                    AreAccessRulesProtected = $Protected
+                    FixtureOwnerSid = $OwnerSid
+                    FixtureRules = @($Rules)
+                }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetOwner -Value {
+                    param($TargetType)
+                    return [Security.Principal.SecurityIdentifier]::new([string]$this.FixtureOwnerSid)
+                }
+                $descriptor | Add-Member -MemberType ScriptMethod -Name GetAccessRules -Value {
+                    param($IncludeExplicit, $IncludeInherited, $TargetType)
+                    return @($this.FixtureRules)
+                }
+                return $descriptor
+            }
+
+            function Get-Acl {
+                [CmdletBinding()]
+                param([Parameter(Mandatory = $true)][string]$LiteralPath)
+                $canonical = [IO.Path]::GetFullPath($LiteralPath).TrimEnd('\')
+                if ([string]::Equals($canonical, $script:AclFixtureSharedPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    # The shared DPE ancestor may allow create/write data, but it
+                    # may not delegate delete, DACL, or ownership capability.
+                    return New-AclFixtureDescriptor -OwnerSid 'S-1-5-32-544' -Protected $false -Rules @(
+                        (New-AclFixtureRule -Sid 'S-1-5-32-545' -Rights ([Security.AccessControl.FileSystemRights]::Write))
+                    )
+                }
+                if ([string]::Equals($canonical, $script:AclFixtureProductPath, [StringComparison]::OrdinalIgnoreCase)) {
+                    if ($script:AclFixtureHardened) {
+                        return New-AclFixtureDescriptor -OwnerSid 'S-1-5-32-544' -Protected $true -Rules @(
+                            (New-AclFixtureRule -Sid 'S-1-5-32-545' -Rights ([Security.AccessControl.FileSystemRights]::ReadAndExecute))
+                        )
+                    }
+                    return New-AclFixtureDescriptor -OwnerSid $script:AclFixtureProductOwner -Protected $false -Rules @(
+                        (New-AclFixtureRule -Sid $UntrustedOwnerSid -Rights ([Security.AccessControl.FileSystemRights]::Modify))
+                    )
+                }
+                Microsoft.PowerShell.Security\Get-Acl -LiteralPath $LiteralPath
+            }
+
+            function Set-RevAgentBootstrapDacl {
+                param([Parameter(Mandatory = $true)][string]$Path, [switch]$SetAdministratorsOwner)
+                $canonical = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+                if (-not [string]::Equals($canonical, $script:AclFixtureProductPath, [StringComparison]::OrdinalIgnoreCase) -or -not $SetAdministratorsOwner) {
+                    throw "Fixture observed an unexpected ACL hardening target. path=$canonical"
+                }
+                $script:AclFixtureHardenCallCount++
+                try {
+                    Move-Item -LiteralPath $script:AclFixtureProductPath -Destination $SwapPath -ErrorAction Stop
+                    Move-Item -LiteralPath $SwapPath -Destination $script:AclFixtureProductPath -ErrorAction Stop
+                }
+                catch { $script:AclFixtureRenameBlocked = $true }
+                $script:AclFixtureHardened = $true
+            }
+
+            $identityGuard = Open-RevAgentBootstrapDirectoryGuard -Path $ProductPath
+            try { $identityBefore = [string]$identityGuard.Identity }
+            finally { $identityGuard.Handle.Dispose() }
+            $successPath = Initialize-RevAgentProtectedProductRoot -SharedParent $SharedPath -Name 'revAgent'
+            $identityGuard = Open-RevAgentBootstrapDirectoryGuard -Path $ProductPath
+            try { $identityAfter = [string]$identityGuard.Identity }
+            finally { $identityGuard.Handle.Dispose() }
+            $successHardened = $script:AclFixtureHardened
+            $successHardenCalls = $script:AclFixtureHardenCallCount
+
+            $script:AclFixtureHardened = $false
+            $script:AclFixtureProductOwner = $UntrustedOwnerSid
+            $maliciousOwnerError = $null
+            try { Initialize-RevAgentProtectedProductRoot -SharedParent $SharedPath -Name 'revAgent' | Out-Null }
+            catch { $maliciousOwnerError = [string]$_.Exception.Message }
+            $callsAfterMaliciousOwner = $script:AclFixtureHardenCallCount
+
+            $linkError = $null
+            try { Initialize-RevAgentProtectedProductRoot -SharedParent $SharedPath -Name $LinkName | Out-Null }
+            catch { $linkError = [string]$_.Exception.Message }
+
+            return [pscustomobject]@{
+                successPath = $successPath
+                successHardened = $successHardened
+                successHardenCalls = $successHardenCalls
+                renameBlocked = $script:AclFixtureRenameBlocked
+                identityBefore = $identityBefore
+                identityAfter = $identityAfter
+                maliciousOwnerError = $maliciousOwnerError
+                callsAfterMaliciousOwner = $callsAfterMaliciousOwner
+                linkError = $linkError
+            }
+        } $aclFixtureShared $aclFixtureProduct 'linkedAgent' ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value) $aclFixtureSwap
+    }
+    finally {
+        Remove-Module $localBootstrapModule.Name -Force -ErrorAction SilentlyContinue
+        if (Test-Path -LiteralPath $aclFixtureLink) { [IO.Directory]::Delete($aclFixtureLink) }
+    }
+    Assert-True ([bool]$aclFixtureResult.successHardened -and [int]$aclFixtureResult.successHardenCalls -eq 1 -and [string]::Equals([IO.Path]::GetFullPath([string]$aclFixtureResult.successPath), [IO.Path]::GetFullPath($aclFixtureProduct), [StringComparison]::OrdinalIgnoreCase)) "A trusted legacy developer product root with a user Modify/Delete ACE was not hardened in place."
+    Assert-True ([bool]$aclFixtureResult.renameBlocked -and [string]::Equals([string]$aclFixtureResult.identityBefore, [string]$aclFixtureResult.identityAfter, [StringComparison]::Ordinal)) "Legacy product-root ACL migration did not hold a no-FILE_SHARE_DELETE handle with stable path identity."
+    Assert-True ([string]$aclFixtureResult.maliciousOwnerError -match "untrusted owner" -and [int]$aclFixtureResult.callsAfterMaliciousOwner -eq 1) "A product root with an untrusted owner reached ACL mutation."
+    Assert-True ([string]$aclFixtureResult.linkError -match "filesystem link") "A product-root junction was not rejected before ACL mutation."
+
+    $prestageDocText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "docs\BOOTSTRAP_PRESTAGE.md")
+    $productHardenIndex = $prestageDocText.IndexOf('Set-ProtectedProductRootAcl $productPath', [StringComparison]::Ordinal)
+    $prestageCreateIndex = $prestageDocText.IndexOf("New-ProtectedChild `$product 'prestage'", [StringComparison]::Ordinal)
+    Assert-True ($prestageDocText -match 'exact existing product root \(or prestage child\) may carry the' -and $prestageDocText -match 'Never apply this migration to the shared DPE ancestor') "Manual prestage does not document the exact product-root/prestage legacy ACL migration boundary."
+    Assert-True ($productHardenIndex -ge 0 -and $prestageCreateIndex -gt $productHardenIndex) "Manual prestage does not harden the existing product root before creating the protected prestage child."
+    Assert-True ($prestageDocText -match 'FILE_SHARE_DELETE' -and $prestageDocText -match 'Assert-DirectoryGuardPath \$guard \$Path' -and $prestageDocText -match 'if \(Test-Path -LiteralPath \$path\) \{ Set-ProtectedProductRootAcl \$path') "Manual prestage does not hold and reverify exact product-root/prestage directory identity during legacy ACL hardening."
 
     $launcher = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
     Assert-True ($launcher -match '%ProgramData%\\DPE\\revAgent\\bootstrap\\Start-revAgent-Update\.ps1' -and $launcher -notmatch 'Install-revAgent-Updater-GUI\.ps1') "Stable launcher is not local-bootstrap-only."

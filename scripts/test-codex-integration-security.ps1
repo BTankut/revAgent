@@ -124,9 +124,11 @@ try {
     $unsignedCli = Join-Path $isolatedLocalAppData "malicious-codex.cmd"
     Write-Utf8NoBom -Path $unsignedCli -Content "@echo off`r`necho executed>`"$unsignedMarker`"`r`necho codex-cli 999`r`n"
     $env:PATH = (Join-Path $env:WINDIR "System32")
+    $installedUnifiedPackages = @(Appx\Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue)
+    $expectedUnsignedFailure = if ($installedUnifiedPackages.Count -gt 0) { 'No Codex CLI candidate passed origin' } else { 'No OpenAI\.Codex Store package is installed' }
     Assert-ThrowsLike -Action {
         Resolve-RevAgentCodexCli -ExplicitPath $unsignedCli -CodexHome $defaultHome.path -LocalAppData $isolatedLocalAppData | Out-Null
-    } -Pattern "No Codex CLI candidate passed" -Message "Unsigned Codex CLI must fail closed."
+    } -Pattern $expectedUnsignedFailure -Message "Unsigned Codex CLI or a package-present attestation failure must fail closed without a user-writable fallback."
     Assert-True (-not (Test-Path -LiteralPath $unsignedMarker)) "Unsigned Codex CLI fixture was executed."
     $env:PATH = $previousPath
 
@@ -139,6 +141,117 @@ try {
     } $cmdProbeFixture
     Assert-Equal $cmdProbe.exitCode 0 "CMD capability probe wrapper failed."
     Assert-Equal $cmdProbe.stdout "alpha beta|gamma" "CMD capability probe wrapper corrupted arguments."
+
+    Write-Host "Test native suspended probe uses the executable directory, not inherited repo/user CWD"
+    $cwdProbe = & $codexRegistrationModule {
+        param($NodePath)
+        Invoke-RevAgentProcessProbe -FilePath $NodePath -Arguments @('-e', 'process.stdout.write(process.cwd())')
+    } $programFilesNode
+    Assert-Equal $cwdProbe.exitCode 0 "Protected Node CWD probe failed."
+    Assert-True ([string]::Equals([IO.Path]::GetFullPath($cwdProbe.stdout), [IO.Path]::GetFullPath((Split-Path -Parent $programFilesNode)), [StringComparison]::OrdinalIgnoreCase)) "Probe inherited a user-writable/repository CWD instead of the exact executable directory."
+
+    Write-Host "Test bounded probe cleanup unlinks reparse/hardlink children without target traversal"
+    $cleanupExternalTarget = Join-Path $tempRoot 'probe-cleanup-external-target'
+    New-Item -ItemType Directory -Path $cleanupExternalTarget -Force | Out-Null
+    $cleanupExternalSentinel = Join-Path $cleanupExternalTarget 'sentinel.txt'
+    Write-Utf8NoBom -Path $cleanupExternalSentinel -Content 'must-survive'
+    $cleanupExternalHardlinkTarget = Join-Path $tempRoot 'probe-cleanup-hardlink-target.txt'
+    Write-Utf8NoBom -Path $cleanupExternalHardlinkTarget -Content 'hardlink-target-must-survive'
+    $probeCleanupRoot = Join-Path $profileRoot 'probe-cleanup-root'
+    New-Item -ItemType Directory -Path $probeCleanupRoot -Force | Out-Null
+    $probeCleanupGuard = & $codexRegistrationModule {
+        param($Path, $AllowedRoot)
+        Open-RevAgentSafeUserProbeRootGuard -Path $Path -AllowedRoot $AllowedRoot
+    } $probeCleanupRoot $profileRoot
+    New-Item -ItemType Directory -Path (Join-Path $probeCleanupRoot 'nested') -Force | Out-Null
+    Write-Utf8NoBom -Path (Join-Path $probeCleanupRoot 'nested\owned.txt') -Content 'owned'
+    New-Item -ItemType Junction -Path (Join-Path $probeCleanupRoot 'external-junction') -Target $cleanupExternalTarget | Out-Null
+    New-Item -ItemType HardLink -Path (Join-Path $probeCleanupRoot 'external-hardlink.txt') -Target $cleanupExternalHardlinkTarget | Out-Null
+    & $codexRegistrationModule {
+        param($Guard)
+        Close-RevAgentSafeUserProbeRootGuard -Guard $Guard -Remove
+    } $probeCleanupGuard
+    Assert-True (-not (Test-Path -LiteralPath $probeCleanupRoot)) "Bounded probe cleanup left its exact root behind."
+    Assert-Equal (Get-Content -Raw -LiteralPath $cleanupExternalSentinel) 'must-survive' "Probe cleanup traversed a child junction target."
+    Assert-Equal (Get-Content -Raw -LiteralPath $cleanupExternalHardlinkTarget) 'hardlink-target-must-survive' "Probe cleanup modified a hardlink target instead of unlinking its owned entry."
+    $probeRootJunction = Join-Path $profileRoot 'probe-root-junction'
+    New-Item -ItemType Junction -Path $probeRootJunction -Target $cleanupExternalTarget | Out-Null
+    Assert-ThrowsLike -Action {
+        & $codexRegistrationModule {
+            param($Path, $AllowedRoot)
+            Open-RevAgentSafeUserProbeRootGuard -Path $Path -AllowedRoot $AllowedRoot | Out-Null
+        } $probeRootJunction $profileRoot
+    } -Pattern 'reparse point|reparse-point' -Message 'Probe root guard must reject a root junction before execution.'
+    [IO.Directory]::Delete($probeRootJunction, $false)
+
+    Write-Host "Test probe timeout kills the complete job before executable guards are released"
+    $probeLockEvidence = Join-Path $tempRoot 'probe-lock-evidence.txt'
+    $probeOrphanMarker = Join-Path $tempRoot 'probe-orphan-survived.txt'
+    $probeChildPidPath = Join-Path $tempRoot 'probe-child.pid'
+    $probeTreeFixture = Join-Path $tempRoot 'probe-tree-fixture.js'
+    $probeTreeText = @'
+const fs = require("fs");
+const { spawn } = require("child_process");
+const lockEvidence = process.argv[2];
+const orphanMarker = process.argv[3];
+const childPidPath = process.argv[4];
+try {
+  fs.renameSync(process.execPath, process.execPath + ".swapped");
+  fs.renameSync(process.execPath + ".swapped", process.execPath);
+  fs.writeFileSync(lockEvidence, "rename-succeeded");
+} catch (error) {
+  fs.writeFileSync(lockEvidence, "rename-blocked");
+}
+const payload = `const fs=require("fs");setTimeout(()=>fs.writeFileSync(${JSON.stringify(orphanMarker)},"survived"),1800);setInterval(()=>{},1000);`;
+const child = spawn(process.execPath, ["-e", payload], { stdio: "ignore" });
+fs.writeFileSync(childPidPath, String(child.pid));
+setInterval(() => {}, 1000);
+'@
+    Write-Utf8NoBom -Path $probeTreeFixture -Content $probeTreeText
+    $copiedNodeIdentity = & $codexRegistrationModule { param($Path) Get-RevAgentFileIdentity -Path $Path } $copiedNode
+    $copiedNodeSha256 = Get-RevAgentFileSha256 -Path $copiedNode
+    $probeTimeout = & $codexRegistrationModule {
+        param($NodePath, $AllowedRoot, $Identity, $Sha256, $Fixture, $LockEvidence, $OrphanMarker, $ChildPidPath)
+        Invoke-RevAgentIdentityLockedProcessProbe -Path $NodePath -AllowedRoot $AllowedRoot `
+            -ExpectedFileIdentity $Identity -ExpectedSha256 $Sha256 -ExpectedSignerSubject $script:RevAgentOpenJsSignerSubject `
+            -Arguments @($Fixture, $LockEvidence, $OrphanMarker, $ChildPidPath) -TimeoutSeconds 1
+    } $copiedNode $profileRoot $copiedNodeIdentity $copiedNodeSha256 $probeTreeFixture $probeLockEvidence $probeOrphanMarker $probeChildPidPath
+    Assert-True ([bool]$probeTimeout.timedOut -and [bool]$probeTimeout.processTreeTerminated) "Timed-out probe did not confirm complete job termination before returning."
+    Assert-Equal (Get-Content -Raw -LiteralPath $probeLockEvidence) 'rename-blocked' "The executable pathname guard was not held while the process ran."
+    $probeChildPid = [int](Get-Content -Raw -LiteralPath $probeChildPidPath)
+    Start-Sleep -Milliseconds 2200
+    Assert-True (-not (Test-Path -LiteralPath $probeOrphanMarker)) "A timed-out probe child survived the kill-on-close job."
+    Assert-True ($null -eq (Get-Process -Id $probeChildPid -ErrorAction SilentlyContinue)) "A timed-out probe child process remained alive after guard release."
+    $copiedNodeHeld = $copiedNode + '.post-cleanup'
+    Move-Item -LiteralPath $copiedNode -Destination $copiedNodeHeld -ErrorAction Stop
+    Move-Item -LiteralPath $copiedNodeHeld -Destination $copiedNode -ErrorAction Stop
+
+    Write-Host "Test immediate child cannot escape before job assignment when parent exits with an error"
+    $earlyChildMarker = Join-Path $tempRoot 'early-child-escaped.txt'
+    $earlyChildPidPath = Join-Path $tempRoot 'early-child.pid'
+    $earlyChildFixture = Join-Path $tempRoot 'early-child-fixture.js'
+    $earlyChildText = @'
+const fs = require("fs");
+const { spawn } = require("child_process");
+const marker = process.argv[2];
+const pidPath = process.argv[3];
+const payload = `const fs=require("fs");setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},"escaped"),700);setInterval(()=>{},1000);`;
+const child = spawn(process.execPath, ["-e", payload], { stdio: "ignore" });
+fs.writeFileSync(pidPath, String(child.pid));
+process.exit(23);
+'@
+    Write-Utf8NoBom -Path $earlyChildFixture -Content $earlyChildText
+    $earlyChildResult = & $codexRegistrationModule {
+        param($NodePath, $Fixture, $Marker, $PidPath)
+        Invoke-RevAgentProcessProbe -FilePath $NodePath -Arguments @($Fixture, $Marker, $PidPath) -TimeoutSeconds 5
+    } $programFilesNode $earlyChildFixture $earlyChildMarker $earlyChildPidPath
+    Assert-Equal $earlyChildResult.exitCode 23 "Immediate-child fixture did not preserve the parent's error exit code."
+    Assert-True ([bool]$earlyChildResult.processTreeTerminated) "Immediate-child error path did not drain the assigned process job."
+    Assert-True (Test-Path -LiteralPath $earlyChildPidPath -PathType Leaf) "Immediate-child fixture did not publish its child PID."
+    $earlyChildPid = [int](Get-Content -Raw -LiteralPath $earlyChildPidPath)
+    Start-Sleep -Milliseconds 1100
+    Assert-True (-not (Test-Path -LiteralPath $earlyChildMarker)) "A child escaped during the pre-assignment Process.Start race."
+    Assert-True ($null -eq (Get-Process -Id $earlyChildPid -ErrorAction SilentlyContinue)) "Immediate child remained alive after the error path released its guards."
 
     Write-Host "Test semantic-newest Codex selection is independent of origin score and path order"
     $semanticSelection = & $codexRegistrationModule {
@@ -158,39 +271,430 @@ try {
     }
     Assert-Equal $prereleaseSelection.path 'Z:\beta\codex.exe' "Codex selection did not apply semantic prerelease precedence."
 
-    Write-Host "Test active unified Codex bundle attestation rejects a copied signed executable"
+    Write-Host "Test unified ChatGPT package CLI layout uses an exact non-recursive allowlist"
+    $fixtureWindowsApps = Join-Path $tempRoot 'fixture-WindowsApps'
+    $fixturePackageFullName = 'OpenAI.Codex_26.707.6957.0_x64__2p2nqsd0c76g0'
+    $fixtureInstallLocation = Join-Path $fixtureWindowsApps $fixturePackageFullName
+    $fixturePackageCli = Join-Path $fixtureInstallLocation 'app\resources\codex.exe'
+    $fixtureNestedCli = Join-Path $fixtureInstallLocation 'app\resources\nested\codex.exe'
+    Write-Utf8NoBom -Path $fixturePackageCli -Content 'supported package CLI layout fixture'
+    Write-Utf8NoBom -Path $fixtureNestedCli -Content 'must never be discovered recursively'
+    $fixturePackage = [pscustomobject][ordered]@{
+        Name = 'OpenAI.Codex'; Version = [version]'26.707.6957.0'; PackageFullName = $fixturePackageFullName
+        PackageFamilyName = 'OpenAI.Codex_2p2nqsd0c76g0'; Publisher = 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B'
+        PublisherId = '2p2nqsd0c76g0'; SignatureKind = 'Store'; Status = 'Ok'; Architecture = 'X64'
+        InstallLocation = $fixtureInstallLocation; IsFramework = $false; IsResourcePackage = $false
+    }
+    $fixtureLayout = & $codexRegistrationModule {
+        param($Package, $WindowsAppsRoot)
+        Resolve-RevAgentUnifiedCodexPackageCliLayout -Package $Package -WindowsAppsRoot $WindowsAppsRoot
+    } $fixturePackage $fixtureWindowsApps
+    Assert-True ([bool]$fixtureLayout.success) "The supported app\\resources\\codex.exe package layout was not resolved."
+    Assert-Equal $fixtureLayout.layoutId 'chatgpt-unified-app-resources-v1' "The unified package layout id drifted."
+    Assert-Equal $fixtureLayout.relativePath 'app\resources\codex.exe' "The unified package-relative CLI path drifted."
+    Assert-Equal $fixtureLayout.packageCliPath $fixturePackageCli "The package resolver did not return the exact allowlisted CLI path."
+    $fixtureHeldCli = $fixturePackageCli + '.held'
+    Move-Item -LiteralPath $fixturePackageCli -Destination $fixtureHeldCli
+    try {
+        $recursiveOnlyLayout = & $codexRegistrationModule {
+            param($Package, $WindowsAppsRoot)
+            Resolve-RevAgentUnifiedCodexPackageCliLayout -Package $Package -WindowsAppsRoot $WindowsAppsRoot
+        } $fixturePackage $fixtureWindowsApps
+        Assert-True (-not [bool]$recursiveOnlyLayout.success) "A nested codex.exe escaped the exact package-relative layout allowlist."
+        Assert-Equal $recursiveOnlyLayout.reason 'package_cli_missing' "A nested package CLI failed for the wrong reason."
+    }
+    finally {
+        Move-Item -LiteralPath $fixtureHeldCli -Destination $fixturePackageCli
+    }
+
+    Write-Host "Test AppX query error and confirmed absence both fail closed before fallback execution"
+    $appxQueryFailure = & $codexRegistrationModule {
+        param($LocalAppData)
+        Get-RevAgentActiveUnifiedCodexCliAttestation -LocalAppData $LocalAppData -PackageQuery { throw 'injected Get-AppxPackage failure' }
+    } $isolatedLocalAppData
+    Assert-True (-not [bool]$appxQueryFailure.querySucceeded -and -not [bool]$appxQueryFailure.absenceConfirmed) "Injected Get-AppxPackage failure was misclassified as package absence."
+    Assert-True ($appxQueryFailure.reason -match 'attestation_error: injected Get-AppxPackage failure') "Injected Get-AppxPackage failure did not preserve fail-closed evidence."
+    Assert-ThrowsLike -Action {
+        & $codexRegistrationModule {
+            param($CodexHome, $LocalAppData)
+            Resolve-RevAgentCodexCli -CodexHome $CodexHome -LocalAppData $LocalAppData -PackageQuery { throw 'injected Get-AppxPackage failure' } | Out-Null
+        } $defaultHome.path $isolatedLocalAppData
+    } -Pattern 'Store package query failed closed.*injected Get-AppxPackage failure' -Message "An AppX query error must never become Store absence or authorize standalone/PATH execution."
+    $appxConfirmedAbsence = & $codexRegistrationModule {
+        param($LocalAppData)
+        Get-RevAgentActiveUnifiedCodexCliAttestation -LocalAppData $LocalAppData -PackageQuery { @() }
+    } $isolatedLocalAppData
+    Assert-True ([bool]$appxConfirmedAbsence.querySucceeded -and [bool]$appxConfirmedAbsence.absenceConfirmed -and -not [bool]$appxConfirmedAbsence.available) "An explicit successful zero-package query did not produce confirmed absence."
+    Assert-ThrowsLike -Action {
+        & $codexRegistrationModule {
+            param($CodexHome, $LocalAppData)
+            Resolve-RevAgentCodexCli -CodexHome $CodexHome -LocalAppData $LocalAppData -PackageQuery { @() } | Out-Null
+        } $defaultHome.path $isolatedLocalAppData
+    } -Pattern 'No OpenAI\.Codex Store package is installed.*standalone/PATH Codex execution is disabled' -Message "Confirmed Store absence must require the Store package instead of executing user-writable fallback state."
+    $multiplePackageFailure = & $codexRegistrationModule {
+        param($LocalAppData, $Package)
+        Get-RevAgentActiveUnifiedCodexCliAttestation -LocalAppData $LocalAppData -PackageQuery { @($Package, $Package) }
+    } $isolatedLocalAppData $fixturePackage
+    Assert-True ([bool]$multiplePackageFailure.querySucceeded -and [int]$multiplePackageFailure.packageCount -eq 2 -and -not [bool]$multiplePackageFailure.success) "Multiple active Store packages did not fail closed."
+    Assert-Equal $multiplePackageFailure.reason 'multiple_active_store_packages_fail_closed' "Multiple active Store packages failed for the wrong reason."
+
+    Write-Host "Test Store-absent standalone policy is disabled without an authenticated receipt"
+    $standalonePolicy = & $codexRegistrationModule {
+        $attestation = [pscustomobject]@{ safe = $true; openAiSigned = $true; linkCount = 1; fileIdentity = 'fixture-id'; sha256 = ('A' * 64) }
+        $standalone = [pscustomobject]@{ success = $true; packageLayoutAttested = $true; codexFileIdentity = 'fixture-id'; codexSha256 = ('A' * 64) }
+        [pscustomobject]@{
+            packageAbsentExact = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $false -ActiveBundleMatch $false -StandaloneMatch $true -Attestation $attestation -StandaloneAttestation $standalone
+            packagePresentExact = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $true -ActiveBundleMatch $false -StandaloneMatch $true -Attestation $attestation -StandaloneAttestation $standalone
+            packageAbsentLegacy = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $false -ActiveBundleMatch $false -StandaloneMatch $false -Attestation $attestation -StandaloneAttestation $standalone
+        }
+    }
+    Assert-Equal $standalonePolicy.packageAbsentExact.origin 'unattested' "A forged exact standalone layout received an executable origin."
+    Assert-True (-not [bool]$standalonePolicy.packageAbsentExact.trusted -and -not [bool]$standalonePolicy.packageAbsentExact.packageBound) "A user-authored standalone layout was treated as an authenticated package receipt."
+    Assert-True (-not [bool]$standalonePolicy.packagePresentExact.trusted) "Standalone fallback remained trusted while the Store package was present."
+    Assert-True (-not [bool]$standalonePolicy.packageAbsentLegacy.trusted) "A non-exact/legacy standalone path escaped the package-absent allowlist."
+
+    Write-Host "Test active Store package attestation and user-writable mirror diagnostics"
     $activeUnified = & $codexRegistrationModule { Get-RevAgentActiveUnifiedCodexCliAttestation }
-    if ($activeUnified.success) {
-        $copiedSignedCodex = Join-Path $tempRoot 'copied-signed-codex.exe'
-        Copy-Item -LiteralPath $activeUnified.userCliPath -Destination $copiedSignedCodex -Force
-        $copiedCodexResolution = Resolve-RevAgentCodexCli -ExplicitPath $copiedSignedCodex -CodexHome $defaultHome.path
-        $copiedCodexCandidate = @($copiedCodexResolution.candidates | Where-Object { [string]::Equals($_.path, $copiedSignedCodex, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
-        Assert-True ($null -ne $copiedCodexCandidate) "Copied signed Codex fixture was not audited."
-        Assert-True (-not [bool]$copiedCodexCandidate.originAttested -and -not [bool]$copiedCodexCandidate.ready) "A copied signed Codex executable escaped active-package origin attestation."
-        Assert-Equal $copiedCodexCandidate.versionProbeExitCode -1 "Copied signed Codex executable must not receive a version probe."
-        Assert-Equal $copiedCodexCandidate.capabilityProbeExitCode -1 "Copied signed Codex executable must not receive a capability probe."
-        Assert-Equal $copiedCodexResolution.selected.path $activeUnified.userCliPath "Active unified bundle metadata did not bind the selected Codex executable."
-        Assert-True ([bool]$copiedCodexResolution.selected.actualConfigCapabilityJsonValid) "Selected newest Codex CLI did not pass the actual-config capability probe."
-        $tamperedCliAttestation = $copiedCodexResolution.selected | Select-Object *
-        $tamperedCliAttestation.sha256 = ('0' * 64)
+    if ($installedUnifiedPackages.Count -gt 0 -and -not $activeUnified.success) {
+        throw "Installed OpenAI.Codex package attestation failed and must never be skipped. reason=$($activeUnified.reason) package=$($activeUnified.packageFullName)"
+    }
+    if ($installedUnifiedPackages.Count -gt 0) {
+        Assert-True ([bool]$activeUnified.packageIdentityAttested -and [bool]$activeUnified.manifestIdentityAttested -and [bool]$activeUnified.blockMapAttested) "The installed unified package lacks signed identity/manifest/block-map evidence."
+        Assert-Equal $activeUnified.packageFamilyName 'OpenAI.Codex_2p2nqsd0c76g0' "The installed package family is not pinned."
+        Assert-Equal $activeUnified.packagePublisher 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B' "The installed Store package publisher is not pinned."
+        Assert-Equal $activeUnified.packageSignatureKind 'Store' "The installed unified package is not Store-signed."
+        Assert-Equal $activeUnified.packageSignatureStatus 'Valid' "The installed package signature is not valid."
+        Assert-Equal $activeUnified.packageCliRelativePath 'app\resources\codex.exe' "The live package CLI is not at the supported exact relative path."
+        Assert-Equal $activeUnified.packageCliPath (Join-Path $activeUnified.installLocation $activeUnified.packageCliRelativePath) "The live package CLI path is not bound to the active package root."
+        Assert-True ([bool]$activeUnified.packageCliProtected -and [int]$activeUnified.packageCliLinkCount -ge 1) "The package CLI is writable/unprotected or lacks a valid file identity."
+        Assert-True ($activeUnified.packageCliSha256 -match '^[0-9A-F]{64}$' -and [int]$activeUnified.blockMapBlockCount -gt 0) "The package CLI is missing full signed block-map/SHA-256 evidence."
+        Assert-True ([bool]$activeUnified.localMirrorDiagnosticOnly) "LocalAppData mirror state became an executable origin instead of diagnostic evidence."
+        if (-not [string]::IsNullOrWhiteSpace([string]$activeUnified.userCliPath)) {
+            Assert-True ($activeUnified.userCliPath -match '(?i)\\OpenAI\\Codex\\bin\\[0-9a-f]{16}\\codex\.exe$') "The diagnostic user mirror is not the exact hash-qualified unified bundle path."
+        }
+
+        Write-Host "Test hash-matching LocalAppData mirror plus app-local dbghelp.dll remains diagnostic-only"
+        $maliciousMirrorRoot = Join-Path $isolatedLocalAppData 'OpenAI\Codex\bin\deadbeefdeadbeef'
+        New-Item -ItemType Directory -Path $maliciousMirrorRoot -Force | Out-Null
+        $maliciousMirrorCli = Join-Path $maliciousMirrorRoot 'codex.exe'
+        $maliciousMirrorDll = Join-Path $maliciousMirrorRoot 'dbghelp.dll'
+        $maliciousMirrorMarker = Join-Path $tempRoot 'malicious-mirror-executed.txt'
+        Copy-Item -LiteralPath $activeUnified.packageCliPath -Destination $maliciousMirrorCli -Force
+        Write-Utf8NoBom -Path $maliciousMirrorDll -Content ('invalid app-local DLL fixture; marker=' + $maliciousMirrorMarker)
+        $mirrorDiagnostic = & $codexRegistrationModule {
+            param($LocalAppData)
+            Get-RevAgentActiveUnifiedCodexCliAttestation -LocalAppData $LocalAppData
+        } $isolatedLocalAppData
+        $maliciousMirrorRow = @($mirrorDiagnostic.candidates | Where-Object { [string]::Equals([string]$_.path, $maliciousMirrorCli, [StringComparison]::OrdinalIgnoreCase) }) | Select-Object -First 1
+        Assert-True ($null -ne $maliciousMirrorRow -and [bool]$maliciousMirrorRow.hashMatchesActivePackage -and [bool]$maliciousMirrorRow.diagnosticOnly -and -not [bool]$maliciousMirrorRow.matches) "A hash-matching mirror with app-local DLL state was not confined to diagnostics."
+        $maliciousMirrorResolution = $null
+        try {
+            $maliciousMirrorResolution = Resolve-RevAgentCodexCli -ExplicitPath $maliciousMirrorCli -CodexHome $defaultHome.path -InstallRoot $canonicalInstallRoot -LocalAppData $isolatedLocalAppData
+        }
+        catch {
+            Assert-True ($_.Exception.Message -match 'No Codex CLI candidate passed origin') "Malicious mirror resolution failed for an unexpected reason: $($_.Exception.Message)"
+        }
+        if ($null -ne $maliciousMirrorResolution) {
+            Assert-Equal $maliciousMirrorResolution.selected.origin 'protected-active-store-copy' "A malicious explicit mirror displaced the protected Store copy."
+            Assert-True (-not [string]::Equals([string]$maliciousMirrorResolution.selected.path, $maliciousMirrorCli, [StringComparison]::OrdinalIgnoreCase)) "The malicious mirror became the selected executable."
+        }
+        Assert-True (-not (Test-Path -LiteralPath $maliciousMirrorMarker)) "The LocalAppData mirror/app-local DLL fixture was executed."
+
+        Write-Host "Test copied signed Store CLI plus forged standalone manifest/helpers remains non-executable"
+        $standaloneFixtureRoot = Join-Path $tempRoot 'official-standalone-fixture'
+        $standaloneLocalAppData = Join-Path $standaloneFixtureRoot 'LocalAppData'
+        $standaloneCodexHome = Join-Path $standaloneFixtureRoot 'CodexHome'
+        $standaloneRoot = Join-Path $standaloneCodexHome 'packages\standalone'
+        $standaloneReleases = Join-Path $standaloneRoot 'releases'
+        $nativeArchitecture = if (-not [string]::IsNullOrWhiteSpace($env:PROCESSOR_ARCHITEW6432)) { [string]$env:PROCESSOR_ARCHITEW6432 } else { [string]$env:PROCESSOR_ARCHITECTURE }
+        $standaloneTarget = if ($nativeArchitecture -match '^(?i:ARM64)$') { 'aarch64-pc-windows-msvc' } else { 'x86_64-pc-windows-msvc' }
+        $standaloneVersion = '0.144.3'
+        $standaloneRelease = Join-Path $standaloneReleases ($standaloneVersion + '-' + $standaloneTarget)
+        foreach ($directory in @(
+            (Join-Path $standaloneRelease 'bin'), (Join-Path $standaloneRelease 'codex-path'),
+            (Join-Path $standaloneRelease 'codex-resources'), (Join-Path $standaloneLocalAppData 'Programs\OpenAI\Codex')
+        )) { New-Item -ItemType Directory -Path $directory -Force | Out-Null }
+        $standaloneCodexPath = Join-Path $standaloneRelease 'bin\codex.exe'
+        Copy-Item -LiteralPath $activeUnified.packageCliPath -Destination $standaloneCodexPath
+        foreach ($relativePath in @(
+            'bin\codex-code-mode-host.exe', 'codex-path\rg.exe',
+            'codex-resources\codex-command-runner.exe', 'codex-resources\codex-windows-sandbox-setup.exe'
+        )) { Write-Utf8NoBom -Path (Join-Path $standaloneRelease $relativePath) -Content ('fixture ' + $relativePath) }
+        $standaloneManifestPath = Join-Path $standaloneRelease 'codex-package.json'
+        [IO.File]::WriteAllText($standaloneManifestPath, ([ordered]@{
+            layoutVersion = 1; version = $standaloneVersion; target = $standaloneTarget; variant = 'codex'
+            entrypoint = 'bin/codex.exe'; resourcesDir = 'codex-resources'; pathDir = 'codex-path'
+        } | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
+        $standaloneCurrent = Join-Path $standaloneRoot 'current'
+        $standaloneVisibleBin = Join-Path $standaloneLocalAppData 'Programs\OpenAI\Codex\bin'
+        New-Item -ItemType Junction -Path $standaloneCurrent -Target $standaloneRelease | Out-Null
+        New-Item -ItemType Junction -Path $standaloneVisibleBin -Target (Join-Path $standaloneCurrent 'bin') | Out-Null
+        $standaloneAttestation = & $codexRegistrationModule {
+            param($CodexHome, $LocalAppData)
+            Get-RevAgentOfficialStandaloneCodexAttestation -CodexHome $CodexHome -LocalAppData $LocalAppData
+        } $standaloneCodexHome $standaloneLocalAppData
+        Assert-True ([bool]$standaloneAttestation.available -and -not [bool]$standaloneAttestation.success -and -not [bool]$standaloneAttestation.authenticatedReceiptAttested) "A copied signed Store CLI and forged standalone package escaped the receipt requirement."
+        Assert-Equal $standaloneAttestation.reason 'standalone_disabled_no_authenticated_receipt' "Forged standalone state failed closed for the wrong reason."
+        Assert-Equal $standaloneAttestation.visibleBinPath $standaloneVisibleBin "Custom or legacy visible-bin discovery replaced the exact official default."
         Assert-ThrowsLike -Action {
-            Test-RevAgentCodexMcpReadback -CodexCliPath $tamperedCliAttestation.path -CodexHome $defaultHome.path -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' -CodexCliCandidate $tamperedCliAttestation | Out-Null
-        } -Pattern "identity changed after attestation" -Message "Final Codex MCP readback must re-attest the selected user-bundle executable before process start."
+            & $codexRegistrationModule {
+                param($CodexPath, $ReleasePath)
+                $forged = [pscustomobject]@{
+                    path = $CodexPath; origin = 'official-standalone-user-package'; originAttested = $true; trusted = $true
+                    packageBound = $true; attestationRoot = $ReleasePath; linkCount = 1; fileIdentity = 'forged'; sha256 = ('A' * 64)
+                }
+                Open-RevAgentCodexExecutableLaunchGuard -Candidate $forged | Out-Null
+            } $standaloneCodexPath $standaloneRelease
+        } -Pattern 'origin is not executable|standalone Codex execution is disabled' -Message "A caller-forged standalone candidate must be rejected before process launch."
+
+        $copiedSignedCodex = Join-Path $tempRoot 'copied-signed-codex.exe'
+        Copy-Item -LiteralPath $activeUnified.packageCliPath -Destination $copiedSignedCodex -Force
+        $copiedCodexAttestation = & $codexRegistrationModule {
+            param($Path, $Root)
+            $attestation = Get-RevAgentCodexExecutableAttestation -Path $Path -AllowedRoot $Root
+            [pscustomobject]@{
+                attestation = $attestation
+                decision = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $true -ActiveBundleMatch $false -StandaloneMatch $false `
+                    -Attestation $attestation -StandaloneAttestation $null -ActivePackageCliSha256 $attestation.sha256
+            }
+        } $copiedSignedCodex $tempRoot
+        Assert-True ([bool]$copiedCodexAttestation.attestation.openAiSigned) "Copied Store CLI fixture lost its valid OpenAI signer evidence."
+        Assert-Equal $copiedCodexAttestation.decision.origin 'unattested' "A copied signed Codex executable received an executable origin."
+        Assert-True (-not [bool]$copiedCodexAttestation.decision.trusted) "A copied signed Codex executable escaped protected-origin attestation."
+
+        Write-Host "Test protected Store-copy trust decision requires both exact package hash and protected path"
+        $protectedPositive = & $codexRegistrationModule {
+            param($Sha256)
+            $attestation = [pscustomobject]@{ safe = $true; openAiSigned = $true; linkCount = 1; sha256 = $Sha256 }
+            [pscustomobject]@{
+                exact = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $true -ActiveBundleMatch $false -StandaloneMatch $false `
+                    -Attestation $attestation -StandaloneAttestation $null -ActivePackageCliSha256 $Sha256 -ProtectedStoreMatch $true -ProtectedPathAttested $true
+                unprotected = Get-RevAgentCodexOriginTrustDecision -ActiveUnifiedAvailable $true -ActiveBundleMatch $false -StandaloneMatch $false `
+                    -Attestation $attestation -StandaloneAttestation $null -ActivePackageCliSha256 $Sha256 -ProtectedStoreMatch $true -ProtectedPathAttested $false
+            }
+        } $activeUnified.packageCliSha256
+        Assert-Equal $protectedPositive.exact.origin 'protected-active-store-copy' "Exact protected Store-copy fixture lost its origin."
+        Assert-True ([bool]$protectedPositive.exact.trusted -and [bool]$protectedPositive.exact.packageBound -and [bool]$protectedPositive.exact.protectedPath) "Exact protected Store-copy fixture did not become executable."
+        Assert-True (-not [bool]$protectedPositive.unprotected.trusted) "An otherwise exact Store copy became executable without protected-path evidence."
+
+        Write-Host "Test protected Store receipt is bound to the exact target user SID"
+        $receiptSidBinding = & $codexRegistrationModule {
+            param($ActivePackage, $TargetSid)
+            $receipt = [pscustomobject]@{
+                schemaVersion = 1; origin = 'OpenAI.Codex-Store-package'; targetUserSid = $TargetSid
+                packageFullName = [string]$ActivePackage.packageFullName; packageVersion = [string]$ActivePackage.packageVersion
+                packageFamilyName = [string]$ActivePackage.packageFamilyName
+                packageCliRelativePath = [string]$ActivePackage.packageCliRelativePath; packageCliSha256 = [string]$ActivePackage.packageCliSha256
+            }
+            [pscustomobject]@{
+                exact = Test-RevAgentProtectedCodexReceiptBinding -Receipt $receipt -ActivePackageAttestation $ActivePackage -TargetUserSid $TargetSid
+                mismatch = Test-RevAgentProtectedCodexReceiptBinding -Receipt $receipt -ActivePackageAttestation $ActivePackage -TargetUserSid 'S-1-5-21-111111111-222222222-333333333-4444'
+            }
+        } $activeUnified ([string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        Assert-True ([bool]$receiptSidBinding.exact -and -not [bool]$receiptSidBinding.mismatch) "Protected Store receipt accepted a different UAC/target user SID."
+
+        $liveProtected = & $codexRegistrationModule {
+            param($InstallRoot, $ActivePackage, $TargetUserSid)
+            Get-RevAgentProtectedCodexCliAttestation -InstallRoot $InstallRoot -ActivePackageAttestation $ActivePackage -TargetUserSid $TargetUserSid
+        } $canonicalInstallRoot $activeUnified ([string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        if ($liveProtected.success) {
+            $protectedResolution = Resolve-RevAgentCodexCli -ExplicitPath $copiedSignedCodex -CodexHome $defaultHome.path -InstallRoot $canonicalInstallRoot
+            Assert-Equal $protectedResolution.selected.path $liveProtected.path "Resolver did not select the exact protected Store copy."
+            Assert-Equal $protectedResolution.selected.origin 'protected-active-store-copy' "The selected protected executable lost its active-package origin."
+            Assert-True ([bool]$protectedResolution.selected.packageBound -and [bool]$protectedResolution.selected.originAttested -and [bool]$protectedResolution.selected.protectedPath) "The selected protected executable is not independently bound to the active Store package."
+            Assert-True ($protectedResolution.reasoningEffortCompatibility.probeMode -eq 'isolated-disposable-root-config' -and [bool]$protectedResolution.reasoningEffortCompatibility.guardedExecutable) "Protected Codex CLI did not produce guarded isolated Ultra capability evidence."
+            Assert-Equal $protectedResolution.reasoningEffortCompatibility.cliSha256 $protectedResolution.selected.sha256 "Ultra capability evidence was not bound to the selected protected CLI hash."
+            Assert-True ([bool]$protectedResolution.selected.actualConfigCapabilityJsonValid) "Protected Codex CLI did not pass the actual-config capability probe."
+            $tamperedCliAttestation = $protectedResolution.selected | Select-Object *
+            $tamperedCliAttestation.sha256 = ('0' * 64)
+            Assert-ThrowsLike -Action {
+                Test-RevAgentCodexMcpReadback -CodexCliPath $tamperedCliAttestation.path -CodexHome $defaultHome.path -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' -CodexCliCandidate $tamperedCliAttestation | Out-Null
+            } -Pattern "identity changed after attestation" -Message "Final Codex MCP readback must re-attest the protected Store copy before process start."
+        }
+        else {
+            Write-Host "SKIP live protected Store-copy execution: machine phase has not materialized this Store version yet."
+        }
     }
     else {
-        Write-Host ("SKIP copied signed Codex fixture: " + $activeUnified.reason)
+        Write-Host "SKIP live unified Codex package probe: OpenAI.Codex is not installed on this runner."
     }
 
     Write-Host "Test config lock, expected hash, atomic replace, hardlink, and junction guards"
     $configHome = Join-Path $profileRoot "config-home"
     New-Item -ItemType Directory -Path $configHome -Force | Out-Null
     $configPath = Join-Path $configHome "config.toml"
-    Write-Utf8NoBom -Path $configPath -Content "model = \"gpt-5.5\"`r`n"
+    $fixtureCliSha256 = ('A' * 64)
+    $supportsUltraCompatibility = [pscustomobject][ordered]@{
+        schemaVersion = 1; probeMode = 'isolated-disposable-root-config'; guardedExecutable = $true
+        cliSha256 = $fixtureCliSha256; decision = 'preserve_supported_ultra'; compatible = $true
+        ultra = [pscustomobject][ordered]@{
+            effort = 'ultra'; attempted = $true; accepted = $true; exitCode = 0; jsonValid = $true; unsupportedUltra = $false; rejectionClass = 'accepted'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = ''
+        }
+        xhigh = [pscustomobject][ordered]@{
+            effort = 'xhigh'; attempted = $false; accepted = $false; exitCode = -1; jsonValid = $false; rejectionClass = 'not_required'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = ''
+        }
+    }
+    $rejectsUltraCompatibility = [pscustomobject][ordered]@{
+        schemaVersion = 1; probeMode = 'isolated-disposable-root-config'; guardedExecutable = $true
+        cliSha256 = $fixtureCliSha256; decision = 'normalize_ultra_to_xhigh'; compatible = $true
+        ultra = [pscustomobject][ordered]@{
+            effort = 'ultra'; attempted = $true; accepted = $false; exitCode = 1; jsonValid = $false; unsupportedUltra = $true; rejectionClass = 'unsupported_or_unknown_ultra'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = 'unknown variant ultra, expected one of low, medium, high, xhigh'
+        }
+        xhigh = [pscustomobject][ordered]@{
+            effort = 'xhigh'; attempted = $true; accepted = $true; exitCode = 0; jsonValid = $true; rejectionClass = 'accepted'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = ''
+        }
+    }
+    $unclassifiedUltraCompatibility = [pscustomobject][ordered]@{
+        schemaVersion = 1; probeMode = 'isolated-disposable-root-config'; guardedExecutable = $true
+        cliSha256 = $fixtureCliSha256; decision = 'fail_closed'; compatible = $false
+        ultra = [pscustomobject][ordered]@{
+            effort = 'ultra'; attempted = $true; accepted = $false; exitCode = 1; jsonValid = $false; unsupportedUltra = $false; rejectionClass = 'unclassified_rejection'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = 'unrelated process failure'
+        }
+        xhigh = [pscustomobject][ordered]@{
+            effort = 'xhigh'; attempted = $false; accepted = $false; exitCode = -1; jsonValid = $false; rejectionClass = 'not_required'
+            isolatedCodexHome = $true; rootOnlyConfig = $true; diagnostic = ''
+        }
+    }
+    $legacyReasoningConfig = @'
+model = "gpt-5.5"
+model_reasoning_effort = "ultra" # legacy unified-app value
+unrelated_root = "preserve-me"
+
+[profiles.operator]
+model_reasoning_effort = "ultra"
+keep = "untouched"
+'@ -replace "`n", "`r`n"
+    Write-Utf8NoBom -Path $configPath -Content ($legacyReasoningConfig + "`r`n")
     $expectedHash = Get-RevAgentFileSha256 -Path $configPath
-    $atomic = Set-RevAgentCodexMcpConfigAtomic -CodexHome $configHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath "C:\Program Files\revAgent\runtime.js" -DocsServerPath "C:\Program Files\revAgent\docs.js" -ExpectedSha256 $expectedHash
+    $atomic = Set-RevAgentCodexMcpConfigAtomic -CodexHome $configHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath "C:\Program Files\revAgent\runtime.js" -DocsServerPath "C:\Program Files\revAgent\docs.js" -ExpectedSha256 $expectedHash `
+        -ReasoningEffortCompatibility $supportsUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256
     Assert-True ([bool]$atomic.atomicReplace) "Config update did not attest atomic replacement."
     Assert-True ($atomic.afterSha256 -ne $atomic.beforeSha256) "Config hash did not change after registration."
-    Assert-True ((Get-Content -Raw -LiteralPath $configPath) -match '\[mcp_servers\.revAgent\]') "Atomic config output is missing revAgent."
+    $normalizedConfigText = Get-Content -Raw -LiteralPath $configPath
+    Assert-True ($normalizedConfigText -match '\[mcp_servers\.revAgent\]') "Atomic config output is missing revAgent."
+    Assert-True ($normalizedConfigText -match '(?m)^model_reasoning_effort\s*=\s*"ultra"\s*# legacy unified-app value\s*$') "A CLI that accepts Ultra must preserve the root Ultra value and its inline content."
+    Assert-True ($normalizedConfigText -match '(?ms)^\[profiles\.operator\].*?^model_reasoning_effort\s*=\s*"ultra"\s*$') "Profile-local reasoning effort must remain operator-owned and unchanged."
+    Assert-True ($normalizedConfigText -match '(?m)^unrelated_root\s*=\s*"preserve-me"\s*$' -and $normalizedConfigText -match '(?m)^keep\s*=\s*"untouched"\s*$') "Reasoning-effort normalization modified unrelated config content."
+    Assert-True (-not [bool]$atomic.modelReasoningEffortNormalization.changed) "A CLI that supports Ultra must not normalize it."
+    Assert-Equal $atomic.modelReasoningEffortNormalization.replacementCount 0 "Supported Ultra unexpectedly reported a normalization."
+    Assert-Equal $atomic.modelReasoningEffortNormalization.scope 'root' "Config result reported the wrong normalization scope."
+    Assert-Equal $atomic.modelReasoningEffortNormalization.from 'ultra' "Config result reported the wrong source reasoning effort."
+    Assert-Equal $atomic.modelReasoningEffortNormalization.to 'ultra' "Config result must attest that supported Ultra was preserved."
+    Assert-Equal $atomic.modelReasoningEffortCompatibility.action 'preserved_supported_ultra' "Config result did not attest the supports-Ultra action."
+    Assert-Equal $atomic.modelReasoningEffortCompatibility.capabilityCliSha256 $fixtureCliSha256 "Config result lost the selected CLI capability binding."
+
+    $rejectsUltraHome = Join-Path $profileRoot 'rejects-ultra-home'
+    New-Item -ItemType Directory -Path $rejectsUltraHome -Force | Out-Null
+    $rejectsUltraPath = Join-Path $rejectsUltraHome 'config.toml'
+    Write-Utf8NoBom -Path $rejectsUltraPath -Content ($legacyReasoningConfig + "`r`n")
+    $rejectsUltraAtomic = Set-RevAgentCodexMcpConfigAtomic -CodexHome $rejectsUltraHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' `
+        -ExpectedSha256 (Get-RevAgentFileSha256 $rejectsUltraPath) -ReasoningEffortCompatibility $rejectsUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256
+    $rejectsUltraText = Get-Content -Raw -LiteralPath $rejectsUltraPath
+    Assert-True ($rejectsUltraText -match '(?m)^model_reasoning_effort\s*=\s*"xhigh"\s*# legacy unified-app value\s*$') "An explicit unsupported-Ultra probe plus accepted-xhigh probe did not conditionally migrate root Ultra."
+    Assert-True ($rejectsUltraText -match '(?ms)^\[profiles\.operator\].*?^model_reasoning_effort\s*=\s*"ultra"\s*$') "Conditional root migration modified a profile-local Ultra value."
+    Assert-True ([bool]$rejectsUltraAtomic.modelReasoningEffortNormalization.changed -and $rejectsUltraAtomic.modelReasoningEffortNormalization.replacementCount -eq 1) "Conditional Ultra migration was not attested."
+    Assert-Equal $rejectsUltraAtomic.modelReasoningEffortCompatibility.action 'normalized_unsupported_ultra_to_xhigh' "Conditional Ultra migration reported the wrong action."
+
+    $unknownUltraHome = Join-Path $profileRoot 'unknown-ultra-home'
+    New-Item -ItemType Directory -Path $unknownUltraHome -Force | Out-Null
+    $unknownUltraPath = Join-Path $unknownUltraHome 'config.toml'
+    Write-Utf8NoBom -Path $unknownUltraPath -Content ($legacyReasoningConfig + "`r`n")
+    $unknownUltraBefore = Get-Content -Raw -LiteralPath $unknownUltraPath
+    Assert-ThrowsLike -Action {
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $unknownUltraHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' `
+            -ExpectedSha256 (Get-RevAgentFileSha256 $unknownUltraPath) -ReasoningEffortCompatibility $unclassifiedUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256 | Out-Null
+    } -Pattern 'did not provide safe evidence to preserve or conditionally normalize root Ultra' -Message 'An unclassified Ultra probe failure must fail closed.'
+    Assert-Equal (Get-Content -Raw -LiteralPath $unknownUltraPath) $unknownUltraBefore "Fail-closed Ultra classification modified config.toml."
+
+    Write-Host 'Test active Store package/receipt change after commit restores original config under lock'
+    $activationRaceHome = Join-Path $profileRoot 'activation-race-home'
+    New-Item -ItemType Directory -Path $activationRaceHome -Force | Out-Null
+    $activationRacePath = Join-Path $activationRaceHome 'config.toml'
+    Write-Utf8NoBom -Path $activationRacePath -Content ($legacyReasoningConfig + "`r`n")
+    $activationRaceOriginal = Get-Content -Raw -LiteralPath $activationRacePath
+    $activationRaceOriginalHash = Get-RevAgentFileSha256 -Path $activationRacePath
+    $activationRaceState = [pscustomobject]@{ preCommitBindingChecks = 0; postCommitBindingChecks = 0 }
+    $activationRacePreCommit = {
+        $activationRaceState.preCommitBindingChecks++
+    }.GetNewClosure()
+    $activationRacePostCommit = {
+        $activationRaceState.postCommitBindingChecks++
+        throw 'Codex CLI is no longer bound to the same active signed OpenAI.Codex package'
+    }.GetNewClosure()
+    Assert-ThrowsLike -Action {
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $activationRaceHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' `
+            -ExpectedSha256 $activationRaceOriginalHash -ReasoningEffortCompatibility $rejectsUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256 `
+            -BeforeAtomicCommit $activationRacePreCommit -AfterAtomicCommitValidation $activationRacePostCommit | Out-Null
+    } -Pattern 'Post-commit selected-CLI validation failed; original config bytes/hash were restored under lock' -Message 'A Store activation/receipt race after commit must roll back the staged config.'
+    Assert-Equal $activationRaceState.preCommitBindingChecks 1 "Activation-race fixture did not run the immediate pre-commit binding check."
+    Assert-Equal $activationRaceState.postCommitBindingChecks 1 "Activation-race fixture did not run the post-commit binding/probe check before backup cleanup."
+    Assert-Equal (Get-Content -Raw -LiteralPath $activationRacePath) $activationRaceOriginal "Store activation race did not restore the original config bytes."
+    Assert-Equal (Get-RevAgentFileSha256 -Path $activationRacePath) $activationRaceOriginalHash "Store activation race did not restore the original config hash."
+    Assert-Equal @(Get-ChildItem -LiteralPath $activationRaceHome -Force | Where-Object { $_.Name -match '^\.config\.toml\.revagent-.*\.(tmp|bak|discard)$' }).Count 0 "Store activation rollback left a staged config/backup artifact."
+
+    Write-Host 'Test existing-config rollback restores a writer arriving after rollback precheck'
+    $existingRollbackRaceHome = Join-Path $profileRoot 'existing-rollback-writer-race-home'
+    New-Item -ItemType Directory -Path $existingRollbackRaceHome -Force | Out-Null
+    $existingRollbackRacePath = Join-Path $existingRollbackRaceHome 'config.toml'
+    Write-Utf8NoBom -Path $existingRollbackRacePath -Content ($legacyReasoningConfig + "`r`n")
+    $existingRollbackOriginal = Get-Content -Raw -LiteralPath $existingRollbackRacePath
+    $existingRollbackOriginalHash = Get-RevAgentFileSha256 -Path $existingRollbackRacePath
+    $existingRollbackWriterText = "model = `"writer-wins`"`r`n# arrived after rollback precheck`r`n"
+    $existingRollbackWriterHook = {
+        param($DestinationPath)
+        $replacement = $DestinationPath + '.writer-replacement'
+        $displaced = $DestinationPath + '.writer-displaced'
+        [IO.File]::WriteAllText($replacement, $existingRollbackWriterText, [Text.UTF8Encoding]::new($false))
+        [IO.File]::Replace($replacement, $DestinationPath, $displaced, $true)
+        Remove-Item -LiteralPath $displaced -Force
+    }.GetNewClosure()
+    Assert-ThrowsLike -Action {
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $existingRollbackRaceHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' `
+            -ExpectedSha256 $existingRollbackOriginalHash -ReasoningEffortCompatibility $rejectsUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256 `
+            -AfterAtomicCommitValidation $activationRacePostCommit -BeforePostCommitRollback $existingRollbackWriterHook | Out-Null
+    } -Pattern 'a concurrent writer was restored exactly and the original config was preserved' -Message 'Existing-config rollback must restore a writer that lands after rollback precheck.'
+    Assert-Equal (Get-Content -Raw -LiteralPath $existingRollbackRacePath) $existingRollbackWriterText "Existing-config rollback overwrote the concurrent writer."
+    $existingRollbackBackups = @(Get-ChildItem -LiteralPath $existingRollbackRaceHome -Force -File | Where-Object { $_.Name -match '^\.config\.toml\.revagent-.*\.bak$' })
+    Assert-Equal $existingRollbackBackups.Count 1 "Existing-config writer race did not preserve exactly one original backup."
+    Assert-Equal (Get-Content -Raw -LiteralPath $existingRollbackBackups[0].FullName) $existingRollbackOriginal "Existing-config writer race backup lost the original bytes."
+    Assert-Equal (Get-RevAgentFileSha256 -Path $existingRollbackBackups[0].FullName) $existingRollbackOriginalHash "Existing-config writer race backup lost the original hash."
+    Remove-Item -LiteralPath $existingRollbackBackups[0].FullName -Force
+
+    Write-Host 'Test missing-config rollback atomically preserves a competing writer'
+    $missingRollbackRaceHome = Join-Path $profileRoot 'missing-rollback-writer-race-home'
+    New-Item -ItemType Directory -Path $missingRollbackRaceHome -Force | Out-Null
+    $missingRollbackRacePath = Join-Path $missingRollbackRaceHome 'config.toml'
+    $missingRollbackWriterText = "model = `"writer-created`"`r`n# original config was missing`r`n"
+    $missingRollbackWriterHook = {
+        param($DestinationPath)
+        $replacement = $DestinationPath + '.writer-replacement'
+        $displaced = $DestinationPath + '.writer-displaced'
+        [IO.File]::WriteAllText($replacement, $missingRollbackWriterText, [Text.UTF8Encoding]::new($false))
+        [IO.File]::Replace($replacement, $DestinationPath, $displaced, $true)
+        Remove-Item -LiteralPath $displaced -Force
+    }.GetNewClosure()
+    Assert-ThrowsLike -Action {
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $missingRollbackRaceHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' `
+            -ExpectedSha256 'MISSING' -AfterAtomicCommitValidation $activationRacePostCommit -BeforePostCommitRollback $missingRollbackWriterHook | Out-Null
+    } -Pattern 'a competing writer replaced the staged config and its exact bytes/identity were restored instead of deleted' -Message 'Missing-config rollback must atomically preserve a writer replacing the staged config.'
+    Assert-Equal (Get-Content -Raw -LiteralPath $missingRollbackRacePath) $missingRollbackWriterText "Missing-config rollback deleted or altered the competing writer."
+    Assert-Equal @(Get-ChildItem -LiteralPath $missingRollbackRaceHome -Force | Where-Object { $_.Name -match '^\.config\.toml\.revagent-.*\.(tmp|bak|discard|missing-rollback)$|\.writer-(replacement|displaced)$' }).Count 0 "Missing-config writer rollback left an unexpected displacement artifact."
+
+    $capabilityClassifiers = & $codexRegistrationModule {
+        [pscustomobject]@{
+            unsupported = Test-RevAgentCodexUltraUnsupportedDiagnostic -Text 'unknown variant `ultra`, expected one of low, high, xhigh'
+            unrelated = Test-RevAgentCodexUltraUnsupportedDiagnostic -Text 'network timeout while config contained ultra'
+            noRoot = Resolve-RevAgentCodexRootReasoningEffortCompatibility -Content "model_reasoning_effort = `"high`"`r`n[profiles.keep]`r`nmodel_reasoning_effort = `"ultra`"`r`n"
+        }
+    }
+    Assert-True ([bool]$capabilityClassifiers.unsupported -and -not [bool]$capabilityClassifiers.unrelated) "Ultra rejection classifier did not distinguish an explicit variant rejection from an unrelated failure."
+    Assert-Equal $capabilityClassifiers.noRoot.action 'no_root_ultra' "A profile-only Ultra value must not require a CLI compatibility migration."
+    Assert-Equal $capabilityClassifiers.noRoot.content "model_reasoning_effort = `"high`"`r`n[profiles.keep]`r`nmodel_reasoning_effort = `"ultra`"`r`n" "Non-root Ultra compatibility handling did not preserve content byte-for-byte."
     Assert-Equal @(Get-ChildItem -LiteralPath $configHome -Force | Where-Object { $_.Name -match '^\.config\.toml\.revagent-.*\.(tmp|bak)$' }).Count 0 "Atomic config update left staging artifacts."
 
     $staleHash = Get-RevAgentFileSha256 -Path $configPath
@@ -208,7 +712,8 @@ try {
     }.GetNewClosure()
     $preCommitHash = Get-RevAgentFileSha256 -Path $configPath
     Assert-ThrowsLike -Action {
-        Set-RevAgentCodexMcpConfigAtomic -CodexHome $configHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath "runtime.js" -DocsServerPath "docs.js" -ExpectedSha256 $preCommitHash -BeforeDestinationCommit $chatGptWriterHook | Out-Null
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $configHome -GuardRoot $profileRoot -NodePath $programFilesNode -RuntimeServerPath "runtime.js" -DocsServerPath "docs.js" -ExpectedSha256 $preCommitHash `
+            -ReasoningEffortCompatibility $supportsUltraCompatibility -ExpectedCodexCliSha256 $fixtureCliSha256 -BeforeDestinationCommit $chatGptWriterHook | Out-Null
     } -Pattern "destination changed before atomic replace" -Message "A non-cooperating content write after initial read must win and fail CAS."
     Assert-Equal (Get-Content -Raw -LiteralPath $configPath) $chatGptWriterText "CAS failure lost the concurrent ChatGPT content write."
 
@@ -513,26 +1018,24 @@ try {
     Assert-True ([bool]$legacyCodexState.running -and -not [bool]$legacyCodexState.unifiedChatGptDetected) "Legacy Codex process state is incorrect."
 
     Write-Host "Test fake codex mcp get --json readback"
-    $fakeCli = $programFilesNode
+    $fakeCli = Join-Path $tempRoot 'fake-codex.cmd'
+    $fakeCliScript = Join-Path $tempRoot 'fake-codex.js'
     $runtimePath = Join-Path $tempRoot "runtime-server.js"
     $docsPath = Join-Path $tempRoot "docs-server.js"
-    $fakeMcpCommand = Join-Path $tempRoot "mcp"
     $fakeCliSource = @'
-const name = process.argv[3];
+const name = process.argv[4];
 const entry = name === "revAgent" ? process.env.REVAGENT_FIXTURE_RUNTIME : process.env.REVAGENT_FIXTURE_DOCS;
 process.stdout.write(JSON.stringify({enabled:true,transport:{type:"stdio",command:process.env.REVAGENT_FIXTURE_NODE,args:[entry]}}));
 '@
-    Write-Utf8NoBom -Path $fakeMcpCommand -Content $fakeCliSource
+    Write-Utf8NoBom -Path $fakeCliScript -Content $fakeCliSource
+    Write-Utf8NoBom -Path $fakeCli -Content ('@echo off' + "`r`n" + '"' + $programFilesNode + '" "%~dp0fake-codex.js" %*' + "`r`n")
     $env:REVAGENT_FIXTURE_NODE = $programFilesNode
     $env:REVAGENT_FIXTURE_RUNTIME = $runtimePath
     $env:REVAGENT_FIXTURE_DOCS = $docsPath
-    $previousCurrentDirectory = [Environment]::CurrentDirectory
-    [Environment]::CurrentDirectory = $tempRoot
     try {
         $readback = Test-RevAgentCodexMcpReadback -CodexCliPath $fakeCli -CodexHome $defaultHome.path -NodePath $programFilesNode -RuntimeServerPath $runtimePath -DocsServerPath $docsPath
     }
     finally {
-        [Environment]::CurrentDirectory = $previousCurrentDirectory
         Remove-Item Env:\REVAGENT_FIXTURE_NODE, Env:\REVAGENT_FIXTURE_RUNTIME, Env:\REVAGENT_FIXTURE_DOCS -ErrorAction SilentlyContinue
     }
     Assert-True ([bool]$readback.success) ("Fake codex mcp get --json readback failed: " + (($readback.servers | ConvertTo-Json -Depth 8 -Compress)))
@@ -558,6 +1061,41 @@ rl.on("line", (line) => {
     Assert-Equal $handshake.toolCount 1 "Fake MCP tools/list response was not observed."
     Assert-Equal $handshake.serverName "revAgent-fixture" "Fake MCP initialize server identity is incorrect."
     Assert-Equal @($handshake.missingExpectedTools).Count 0 "Expected MCP tool inventory was not verified."
+
+    Write-Host "Test MCP handshake timeout kills proxy, server, and grandchild before returning"
+    $handshakeOrphanMarker = Join-Path $tempRoot 'handshake-orphan-survived.txt'
+    $handshakeChildPidPath = Join-Path $tempRoot 'handshake-child.pid'
+    $timeoutMcp = Join-Path $tempRoot 'timeout-mcp-server.js'
+    $timeoutMcpText = @'
+const fs = require("fs");
+const { spawn } = require("child_process");
+const readline = require("readline");
+const marker = process.env.REVAGENT_HANDSHAKE_ORPHAN_MARKER;
+const pidPath = process.env.REVAGENT_HANDSHAKE_CHILD_PID;
+let spawned = false;
+readline.createInterface({ input: process.stdin, crlfDelay: Infinity }).on("line", () => {
+  if (spawned) return;
+  spawned = true;
+  const payload = `const fs=require("fs");setTimeout(()=>fs.writeFileSync(${JSON.stringify(marker)},"survived"),1800);setInterval(()=>{},1000);`;
+  const child = spawn(process.execPath, ["-e", payload], { stdio: "ignore" });
+  fs.writeFileSync(pidPath, String(child.pid));
+});
+setInterval(() => {}, 1000);
+'@
+    Write-Utf8NoBom -Path $timeoutMcp -Content $timeoutMcpText
+    $env:REVAGENT_HANDSHAKE_ORPHAN_MARKER = $handshakeOrphanMarker
+    $env:REVAGENT_HANDSHAKE_CHILD_PID = $handshakeChildPidPath
+    try {
+        $timeoutHandshake = Test-RevAgentMcpStdioHandshake -NodePath $programFilesNode -ServerPath $timeoutMcp -TimeoutSeconds 1 -ExpectedServerNames @('never-responds')
+    }
+    finally {
+        Remove-Item Env:\REVAGENT_HANDSHAKE_ORPHAN_MARKER, Env:\REVAGENT_HANDSHAKE_CHILD_PID -ErrorAction SilentlyContinue
+    }
+    Assert-True (-not [bool]$timeoutHandshake.success -and $timeoutHandshake.error -match 'timed out') "Timed-out MCP handshake did not fail closed with timeout evidence."
+    $handshakeChildPid = [int](Get-Content -Raw -LiteralPath $handshakeChildPidPath)
+    Start-Sleep -Milliseconds 2200
+    Assert-True (-not (Test-Path -LiteralPath $handshakeOrphanMarker)) "An MCP handshake grandchild survived the proxy/server job cleanup."
+    Assert-True ($null -eq (Get-Process -Id $handshakeChildPid -ErrorAction SilentlyContinue)) "An MCP handshake grandchild remained alive after the function returned."
 
     Write-Host "Test strict MCP handshake rejects malformed identity, protocol, and inventory responses"
     $strictMcpFixture = @'
@@ -776,13 +1314,17 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     $scheduledText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.ScheduledTask.psm1")
     $selfContainedText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\install-self-contained.ps1")
     $codexUserIntegrationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1")
+    $snapshotBrokerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")
     $permissionsText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1")
     $codexRegistrationText = Get-Content -Raw -LiteralPath $modulePath
     $workspaceSkillPath = Join-Path $RepoRoot ".agents\skills\revAgent\SKILL.md"
 
-    Assert-True ($guiText -match 'function Assert-GuiTrustedMachineScript' -and $guiText -match 'releaseManifest\.components\.\(\$surface\.Key\)' -and $guiText -match 'Pre-import surface hash mismatch' -and $guiText -match 'Pre-UAC signed release verification failed') "GUI must bind elevated execution to hash-verified signed canonical release surfaces."
-    Assert-True ($guiText -match '\$psi\.Verb\s*=\s*"runas"' -and $guiText -match '"-MachinePhaseOnly"' -and $guiText -match '"-UserPhaseOnly"') "GUI must elevate only the machine phase and resume a separate user phase."
-    Assert-True ($guiText -match 'PendingUserPhaseFilePath' -and $guiText -match 'PendingUserPhaseComponentKey' -and $guiText -match 'Assert-GuiTrustedMachineScript -MachineScriptPath \$script:PendingUserPhaseFilePath' -and $guiText -match 'refreshed unelevated user-phase script') "GUI must re-attest and resume a signed canonical user-phase script from the original unelevated process."
+    Assert-True ($guiText -match 'function Assert-GuiProtectedSnapshotBroker' -and $guiText -match 'New-RevAgentAuthenticatedReleaseInbox' -and $guiText -match 'TargetArgumentsBase64' -and $guiText -match 'Start-GuiPhaseProcess -ScriptPath \$brokerPath') "GUI must elevate only the protected local snapshot broker after signed inbox acquisition."
+    Assert-True ($guiText -match '\$psi\.Verb\s*=\s*"runas"' -and $guiText -match '"-Target", \$machineComponentKey' -and $guiText -match '"-UserPhaseOnly"') "GUI must elevate only the broker-owned machine phase and resume a separate user phase."
+    Assert-True ($guiText -match 'PendingUserPhaseComponentKey' -and $guiText -match 'Resolve-GuiSnapshotUserEntrypoint -PhaseResult \$phaseResult' -and $guiText -match 'ExecutionSnapshotStatePath' -and $guiText -match 'authenticated local snapshot') "GUI must re-attest and resume the protected local snapshot user entrypoint from the original unelevated process."
+    $guiInboxCleanupIndex = $guiText.LastIndexOf('Remove-GuiAuthenticatedInbox -Path $script:ActiveInboxRoot')
+    $guiSnapshotUserResumeIndex = $guiText.IndexOf('Resolve-GuiSnapshotUserEntrypoint -PhaseResult $phaseResult')
+    Assert-True ($guiText -match 'function Remove-GuiAuthenticatedInbox' -and $guiText -match '\^\[a-f0-9\]\{32\}\$' -and $guiInboxCleanupIndex -ge 0 -and $guiSnapshotUserResumeIndex -gt $guiInboxCleanupIndex) "GUI must consume and safely remove the exact authenticated user inbox before resuming from the protected machine snapshot."
     $guiEarlyElevationGuardIndex = $guiText.IndexOf('The revAgent updater GUI refuses elevated execution before local bootstrap module import')
     $guiEarlyOriginGuardIndex = $guiText.IndexOf('Updater GUI must run from the protected local bootstrap before module import')
     $guiLocalModuleImportIndex = $guiText.IndexOf('Import-Module $localSourceFreeMigrationModule -Force')
@@ -798,6 +1340,9 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     Assert-True ($updaterText -match 'function Assert-RevAgentElevatedPathTrusted' -and $updaterText -match 'RevAgentOsLocalAppData' -and $updaterText -match 'RevAgentOsAppData' -and $updaterText -match 'Refusing to use a user-writable path while elevated') "Elevated updater must reject LocalAppData/AppData/user-root executables resolved from canonical known folders."
     Assert-True ($updaterText -match 'function Assert-RevAgentMachinePhasePaths' -and $updaterText -match 'Assert-RevAgentMachinePhasePaths') "Machine updater must validate all privileged path inputs before work."
     Assert-True ($updaterText -match 'Resolve-RevAgentInteractiveUserBinding' -and $installTaskText -match 'Resolve-RevAgentInteractiveUserBinding') "Both elevated machine entrypoints must rebind SID/account/profile through the trusted identity resolver."
+    $protectedCodexProvisionIndex = $updaterText.IndexOf('Install-RevAgentProtectedCodexCliFromStore')
+    $installedStateCommitIndex = $updaterText.IndexOf('$newState = [ordered]@{', $protectedCodexProvisionIndex)
+    Assert-True ($protectedCodexProvisionIndex -ge 0 -and $installedStateCommitIndex -gt $protectedCodexProvisionIndex -and $updaterText -match '-TargetUserSid \$TargetInteractiveUserSid' -and $updaterText -match 'protectedCodexCli = \$protectedCodexCliProvision') "Machine phase must materialize the target user's Store CLI into protected ProgramData before committing successful installed state/report evidence."
 
     Assert-True ($scheduledText -match '"-AuditOnly"' -and $scheduledText -match 'scheduled-update-audit') "Scheduled task must be audit-only."
     Assert-True ($scheduledText -notmatch '"-MachinePhaseOnly"') "Scheduled task module must not silently run the elevated machine phase."
@@ -822,8 +1367,39 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     Assert-True ($permissionsText -match 'Join-Path \$WorkRoot "user-state"' -and $permissionsText -match 'Join-Path \$WorkRoot "logs"') "User write ACLs must be limited to logs/user-state."
     Assert-True ($permissionsText -match 'SetAccessRuleProtection\(\$true, \$false\)' -and $permissionsText -match 'S-1-5-32-545' -and $permissionsText -match 'ReadAndExecute') "Protected machine tree must replace its DACL with the SYSTEM/Admin/Users-RX allowlist."
     Assert-True ($permissionsText -match 'runtime\\node_modules' -and $permissionsText -match 'RemoveDirectoryLink' -and $permissionsText -match 'Set-Acl -LiteralPath \$child\.FullName -AclObject \$security' -and $permissionsText -match 'Set-Acl -LiteralPath \$child\.FullName -AclObject \$fileSecurity') "ACL migration must safely unlink exact prior-version npm junctions and lock directories/files top-down."
+    $immutableDiscoveryIndex = $permissionsText.IndexOf("foreach (`$leaf in @('bootstrap', 'execution-snapshots', 'broker-state'))")
+    $rootAclMutationIndex = $permissionsText.IndexOf('Set-Acl -LiteralPath $root -AclObject $security')
+    Assert-True ($immutableDiscoveryIndex -ge 0 -and $rootAclMutationIndex -gt $immutableDiscoveryIndex -and $permissionsText -match 'function Assert-RevitMcpImmutableSecurityTree' -and $permissionsText -match 'immutableSecurityRoots\.Contains' -and $permissionsText -match 'foreach \(\$immutableRoot in \$immutableSecurityRoots\)') "Permission repair must attest immutable bootstrap/snapshot/broker-state roots before mutation, exclude them from recursive DACL reset, and re-attest them afterward."
+    $brokerSecureTempIndex = $snapshotBrokerText.IndexOf('$secureBrokerTemp = New-RevAgentBrokerSecureTemp')
+    $brokerSnapshotImportIndex = $snapshotBrokerText.IndexOf('Import-Module $snapshotModulePath -Force')
+    $brokerLedgerIndex = $snapshotBrokerText.LastIndexOf('Write-RevAgentBrokerHighWaterLedger')
+    $brokerLaunchIndex = $snapshotBrokerText.IndexOf('$process.Start()')
+    Assert-True ($snapshotBrokerText -match 'Global\\DPE\.revAgent\.PrivilegedSnapshotBroker' -and $snapshotBrokerText -match 'Invoke-RevAgentBrokerSnapshotRetention' -and $snapshotBrokerText -match '\[IO\.File\]::Replace\(\$tempPath, \$Path, \$backupPath' -and $brokerSecureTempIndex -ge 0 -and $brokerSnapshotImportIndex -gt $brokerSecureTempIndex -and $brokerLedgerIndex -ge 0 -and $brokerLaunchIndex -gt $brokerLedgerIndex) "Privileged broker must serialize executions, compile only in protected Windows TEMP, persist anti-rollback high-water state before launch, and retain snapshots with a bounded policy."
     Assert-True ($permissionsText -notmatch '(?m)^\s*&\s+icacls(?:\.exe)?\b' -and $permissionsText -match 'Join-Path \(\[Environment\]::SystemDirectory\) "icacls\.exe"') "Elevated permission work must invoke only the trusted known-folder System32 icacls path."
     Assert-True ($codexRegistrationText -match 'OpenAI OpCo, LLC' -and $codexRegistrationText -match 'CN=OpenJS Foundation' -and $codexRegistrationText -notmatch 'trustedVendor') "CLI and Node runtime selection must pin exact OpenAI/OpenJS signer subjects."
+    Assert-True ($codexRegistrationText -match 'querySucceeded' -and $codexRegistrationText -match 'absenceConfirmed' -and $codexRegistrationText -match 'Store package query failed closed' -and $codexRegistrationText -match 'standalone_disabled_no_authenticated_receipt' -and $codexRegistrationText -match 'no authenticated installed-package receipt/hash chain exists') "Codex discovery must distinguish AppX failure from confirmed absence and keep unauthenticated Windows standalone execution disabled."
+    Assert-True ($codexRegistrationText -match 'Test-RevAgentAppxBlockMapFileContent' -and $codexRegistrationText -match 'all_signed_blocks_match' -and $codexRegistrationText -match 'localMirrorDiagnosticOnly' -and $codexRegistrationText -match 'diagnosticOnly = \$true') "Store CLI identity must verify every signed AppxBlockMap block while LocalAppData mirrors remain diagnostics only."
+    Assert-True ($codexRegistrationText -match 'function Install-RevAgentProtectedCodexCliFromStore' -and $codexRegistrationText -match 'sourceExecuted = \$false' -and $codexRegistrationText -match "'protected-active-store-copy'" -and $codexRegistrationText -match '-RequireProtectedPath') "Machine phase must materialize, and user phase must execute, only the exact protected ProgramData copy bound to the active Store package."
+    $isolatedUltraProbeIndex = $codexRegistrationText.IndexOf('$reasoningEffortCompatibility = Get-RevAgentCodexReasoningEffortCompatibility -Candidate $selectedCandidate -LocalAppData $localRoot')
+    $deferredActualProbeIndex = $codexRegistrationText.IndexOf('Resolve-RevAgentCodexCli -ExplicitPath $CodexCliPath -CodexHome $codexHomeInfo.path -InstallRoot $InstallRoot -TargetUserSid $user.sid -DeferActualConfigProbe')
+    $preCommitBindingValidatorIndex = $codexRegistrationText.IndexOf('$preCommitCliBindingValidation = {', $deferredActualProbeIndex)
+    $postCommitValidatorIndex = $codexRegistrationText.IndexOf('$postCommitActualConfigValidation = {', $preCommitBindingValidatorIndex)
+    $atomicConfigIndex = $codexRegistrationText.IndexOf('$config = Set-RevAgentCodexMcpConfigAtomic', $deferredActualProbeIndex)
+    $actualCapabilityEvidenceIndex = $codexRegistrationText.IndexOf('$actualCapability = $config.postCommitValidation', $atomicConfigIndex)
+    $finalReadbackIndex = $codexRegistrationText.IndexOf('$readback = Test-RevAgentCodexMcpReadback', $actualCapabilityEvidenceIndex)
+    $configReplaceIndex = $codexRegistrationText.IndexOf('[IO.File]::Replace($tempPath, $configPath, $backupPath, $true)')
+    $insideLockValidationIndex = $codexRegistrationText.IndexOf('$postCommitValidation = & $AfterAtomicCommitValidation', $configReplaceIndex)
+    $backupCleanupIndex = $codexRegistrationText.IndexOf('Remove-Item -LiteralPath $backupPath -Force -ErrorAction Stop', $insideLockValidationIndex)
+    Assert-True ($codexRegistrationText -match 'function Invoke-RevAgentCodexReasoningEffortCapabilityProbe' -and $codexRegistrationText -match 'Invoke-RevAgentGuardedCodexProcessProbe -Candidate \$Candidate' -and $codexRegistrationText -match 'preserve_supported_ultra' -and $codexRegistrationText -match 'normalize_ultra_to_xhigh' -and $codexRegistrationText -match 'modelReasoningEffortCompatibility' -and $isolatedUltraProbeIndex -ge 0 -and $deferredActualProbeIndex -gt $isolatedUltraProbeIndex -and $preCommitBindingValidatorIndex -gt $deferredActualProbeIndex -and $postCommitValidatorIndex -gt $preCommitBindingValidatorIndex -and $atomicConfigIndex -gt $postCommitValidatorIndex -and $actualCapabilityEvidenceIndex -gt $atomicConfigIndex -and $finalReadbackIndex -gt $actualCapabilityEvidenceIndex) "User integration must probe Ultra with the same protected CLI, preserve it when supported, conditionally migrate only an explicit rejection with accepted xhigh, then consume actual-config evidence from the locked CAS without fallback."
+    Assert-True ($codexRegistrationText -match '-BeforeAtomicCommit \$preCommitCliBindingValidation -AfterAtomicCommitValidation \$postCommitActualConfigValidation' -and $configReplaceIndex -ge 0 -and $insideLockValidationIndex -gt $configReplaceIndex -and $backupCleanupIndex -gt $insideLockValidationIndex -and $codexRegistrationText -match 'original config bytes/hash were restored under lock') "Config CAS must rebind the exact active package immediately before mutation and retain the original backup until the guarded post-commit actual-config probe succeeds or rolls back."
+    Assert-True ($codexRegistrationText -match '\[IO\.File\]::Move\(\$configPath, \$missingRollbackDiscard\)' -and $codexRegistrationText -match '\[IO\.File\]::Replace\(\$rollbackDiscard, \$configPath, \$backupPath, \$true\)' -and $codexRegistrationText -match 'competing writer replaced the staged config' -and $codexRegistrationText -match 'concurrent writer was restored exactly') "Both missing/existing config rollback branches must atomically displace and restore concurrent writers instead of deleting or overwriting them after a pathname precheck."
+    Assert-True ($codexRegistrationText -match 'function Open-RevAgentSafeUserProbeRootGuard' -and $codexRegistrationText -match 'function Clear-RevAgentSafeUserProbeDirectory' -and $codexRegistrationText -match 'function Close-RevAgentSafeUserProbeRootGuard' -and $codexRegistrationText -match 'Codex probe cleanup failed closed; user config must remain unchanged' -and $codexRegistrationText -notmatch 'Remove-Item\s+-LiteralPath\s+\$probeHome\s+-Recurse') "Disposable Codex probe homes must hold an exact root identity guard and use bounded leaf-first, non-traversing cleanup that fails before config mutation."
+    Assert-True ($codexRegistrationText -match 'OpenDirectoryReadLock' -and $codexRegistrationText -match 'function Open-RevAgentExecutableLaunchGuard' -and $codexRegistrationText -match 'function Invoke-RevAgentGuardedCodexProcessProbe' -and $codexRegistrationText -match 'Invoke-RevAgentGuardedCodexProcessProbe -Candidate \$CodexCliCandidate' -and $codexRegistrationText -match '-NodeCandidate \$node\.selected -ServerAttestation \$server\.attestation') "Codex probes/readback and the final Node/server handshake must hold executable and directory-chain launch guards through process creation."
+    $nativeCreateIndex = $codexRegistrationText.IndexOf('CreateProcessW(CREATE_SUSPENDED) failed')
+    $nativeAssignIndex = $codexRegistrationText.IndexOf('AssignProcessToJobObject before resume failed')
+    $nativeResumeIndex = $codexRegistrationText.IndexOf('ResumeThread failed')
+    Assert-True ($codexRegistrationText -match 'JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE' -and $codexRegistrationText -match 'function Stop-RevAgentGuardedProcessTree' -and $nativeCreateIndex -ge 0 -and $nativeAssignIndex -gt $nativeCreateIndex -and $nativeResumeIndex -gt $nativeAssignIndex -and $codexRegistrationText -match 'process job is confirmed empty') "Codex/Node probes and handshakes must create suspended, assign before resume, then drain their full process job before releasing guards."
+    Assert-True ($codexRegistrationText -match '\$workingDirectory = Split-Path -Parent \$fullActualFile' -and $codexRegistrationText -match '\$nodeWorkingDirectory = Split-Path -Parent \$fullNodePath' -and $codexRegistrationText -match 'CreateAssigned\(\$job, \$fullActualFile, \$argumentLine, \$workingDirectory' -and $codexRegistrationText -match 'CreateAssigned\(\$job, \$fullNodePath, \$nodeArgumentLine, \$nodeWorkingDirectory') "Every protected Codex/Node launch must use the exact executable directory instead of inherited user-writable CWD."
     Assert-True ($codexRegistrationText -match "'canonical-program-files-node'" -and $codexRegistrationText -match 'Get-RevAgentProtectedPathChainAttestation' -and $codexRegistrationText -match 'Assert-RevAgentNodeExecutableUnchanged' -and $codexRegistrationText -notmatch 'Get-Command node\.exe,node') "Node execution must use only the exact protected canonical Program Files runtime with repeated identity checks."
     Assert-True ($codexRegistrationText -match 'Get-RevAgentMcpServerEntrypointAttestations' -and $codexRegistrationText -match "'runtimeBundle'" -and $codexRegistrationText -match "'docsServerBundle'" -and $codexRegistrationText -match 'Assert-RevAgentProtectedMachineFileUnchanged') "MCP server execution must bind protected entrypoints to installed release component evidence."
     Assert-True ($codexRegistrationText -match '-CodexCliCandidate \$cli\.selected' -and $codexRegistrationText -match '\$success = \$instructionPolicySatisfied -and \$readback\.success') "Final integration success must re-attest the Codex CLI and require managed instruction attestations."

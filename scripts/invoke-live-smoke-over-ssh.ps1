@@ -49,6 +49,9 @@ param(
 
     [switch]$OpenOnly,
 
+    # Retained only to give older operator commands a deterministic security
+    # error. Loose NAS scripts are mutable transport data and are never an
+    # execution source.
     [switch]$UseNasHelper,
 
     [switch]$KeepRemoteStage,
@@ -62,6 +65,10 @@ $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
 $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+
+if ($UseNasHelper) {
+    throw "-UseNasHelper is retired. Run this coordinator wrapper from a clean repository checkout (or an independently protected local coordinator copy); it stages the exact local helper over SCP and never executes a loose NAS tools script."
+}
 
 function ConvertTo-RevAgentSingleQuotedLiteral {
     param([string]$Value)
@@ -255,7 +262,7 @@ if ([string]::IsNullOrWhiteSpace($target.Host)) {
     $target.Host = $target.Computer
 }
 
-if (-not $OpenOnly -and -not $UseNasHelper -and -not (Test-Path -LiteralPath $LiveHelperPath -PathType Leaf)) {
+if (-not $OpenOnly -and -not (Test-Path -LiteralPath $LiveHelperPath -PathType Leaf)) {
     throw "Live helper was not found: $LiveHelperPath"
 }
 
@@ -275,15 +282,12 @@ if ($mkdir.ExitCode -ne 0) {
     throw "Failed to create remote stage on $($target.Computer): $($mkdir.Stderr)"
 }
 
-if (-not $OpenOnly -and -not $UseNasHelper) {
+if (-not $OpenOnly) {
     $remoteScpPath = $remoteHelperPath -replace '\\', '/'
     $scp = Invoke-RevAgentNativeCommand -FilePath "scp.exe" -Arguments ($sshOptions + @($LiveHelperPath, ("{0}:{1}" -f $sshTarget, $remoteScpPath))) -TimeoutSec 120
     if ($scp.ExitCode -ne 0) {
         throw "Failed to copy live helper to $($target.Computer): $($scp.Stderr)"
     }
-}
-else {
-    $remoteHelperPath = Join-Path (Join-Path $ReleaseRoot "tools") "test-commandset-live.ps1"
 }
 
 $releaseRootLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $ReleaseRoot
@@ -296,7 +300,7 @@ $machineLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $target.Computer
 $remoteStageLiteral = ConvertTo-RevAgentSingleQuotedLiteral -Value $RemoteStage
 $noStartLiteral = if ($NoStartRevit) { '$true' } else { '$false' }
 $openOnlyLiteral = if ($OpenOnly) { '$true' } else { '$false' }
-$keepStageLiteral = if ($KeepRemoteStage -or $UseNasHelper) { '$true' } else { '$false' }
+$keepStageLiteral = if ($KeepRemoteStage) { '$true' } else { '$false' }
 $portLiteral = [int]$Port
 $bridgeTimeoutLiteral = [int]$BridgeTimeoutSec
 

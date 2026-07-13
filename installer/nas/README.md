@@ -21,14 +21,16 @@ Code change
 -> Engineering gates + GitGuardian + automatic Claude Code Review
 -> protected main update
 -> signed-source-free-cd.yml builds, signs, and validates without publishing
--> manual workflow_dispatch with publish_to_nas=true updates NAS stable
+-> manual workflow_dispatch with publish_to_pilot=true updates only the signed
+   DESKTOP-OKNV128/NET01 pilot channel
+-> a later, separately approved publish_to_nas=true updates NAS stable/fleet
 -> scheduled tasks audit; operators install through the split-privilege GUI
 ```
 
 A normal feature-branch `git commit` or `git push` does not update the office by
 itself. A protected `main` update builds and validates the signed source-free
-release root, but production NAS stable publish requires an explicit
-`workflow_dispatch` run with `publish_to_nas=true`.
+release root but publishes neither channel. Pilot and stable publication are
+separate, mutually exclusive manual workflow dispatches.
 
 The daily workstation task reads stable in `-AuditOnly` mode and may notify the
 operator, but cannot install it. Production uptake begins only when an operator
@@ -72,50 +74,54 @@ After NAS root migration, the old
 publish target or launcher fallback. Keep it only for explicit diagnostics,
 rollback reference, or data-gated physical cleanup/freeze.
 
-## Manual Publish Fallback
+## Signed Publish Boundary
 
-The normal production path is GitHub Actions signed source-free CD. Use
-`publish-nas-release.ps1` directly only for controlled recovery/backstop work
-from a clean repo root on the development machine:
+The production path is GitHub Actions signed source-free CD.
+`installer\nas\publish-nas-release.ps1` is a local artifact producer only: its
+release root must be on an eligible local drive below the controlled staging
+root, with no reparse ancestor. It may not write the canonical NAS path, a UNC
+path, a mapped network drive, or a redirected staging root. This remains true
+for recovery and backstop work.
 
-```powershell
-$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
-powershell -ExecutionPolicy Bypass -File ".\installer\nas\publish-nas-release.ps1" `
-  -ReleaseRoot $ReleaseRoot `
-  -Channel stable
-```
-
-Detached release signing is required for production stable. When using the
-manual fallback, pass both `-SigningPrivateKeyPath` and `-SigningKeyId`; the
-script writes `manifest.sig.json` and `stable.sig.json`, verifies them before
-finishing, and rejects private keys stored under the repo or NAS `tools` root.
-Pass `-TrustedReleaseKeysPath` to copy the public release key set into
-`tools\config\release-trusted-keys.json` for workstation updaters. Do not store
-private signing keys in Git, the user ZIP, or NAS tools.
+Every canonical NAS write must consume an already signed and validated local
+release root through
+`scripts\publish-signed-source-free-release-to-nas.ps1`. Detached production
+signatures use the pinned key outside the repo and NAS; never put a private key
+in Git, the release ZIP, the staging output, or NAS tools.
 
 ## GitHub Actions CD
 
 The protected workflow `.github/workflows/signed-source-free-cd.yml` is the
 preferred CD producer for signed source-free releases. It runs from `main`,
 uses the protected `revagent-release-signing` environment to build and validate
-a signed release root, and stores that root in local staging under the
-self-hosted runner workspace.
+a signed release root, and for an explicit publish dispatch uploads that root
+as one immutable, one-day GitHub Actions artifact. The build job exposes the
+exact artifact id, artifact digest, and signed source-channel SHA-256 to the
+publish job; an ordinary `main` push performs build/validation without an
+artifact upload.
 
 When protected `main` is updated, the workflow builds and validates the signed
-release root, then removes the staged root if no publish was requested.
-Production NAS publish is a separate explicit `workflow_dispatch` run with
-`publish_to_nas=true`. The publish job reads the validated staged release root
-and runs `scripts/publish-signed-source-free-release-to-nas.ps1`, which copies
-the release and tools to NAS, validates `stable.candidate.json`, blocks stable
-`releaseSequence` rollback or equal-sequence repair unless `-AllowRollback` is
-passed deliberately, then promotes `stable.sig.json` and `stable.json` with
-channel and payload rollback backups kept until the post-publish readiness
-check passes. The legacy direct publisher also blocks stable `releaseSequence`
-rollback/equal-sequence repair unless its own `-AllowRollback` flag is passed.
-It does not
-rebuild or re-sign the artifact. The local runner staging handoff avoids GitHub
-Actions artifact storage quota, so the selected runner labels must resolve to
-the office runner that owns both signing-key and NAS access.
+release root. Before publish, the second job verifies through GitHub REST that
+the exact artifact belongs to the same repository, run, and commit, downloads
+it by exact id with digest-mismatch failure enabled, and requires an absent,
+job-unique local landing leaf below `RUNNER_TEMP` with no reparse ancestor.
+Production NAS publish is a separate explicit manual dispatch. Set
+`publish_to_pilot=true` to publish only an exact signed pilot cohort containing
+DESKTOP-OKNV128 and NET01. The publisher creates a unique pilot-namespaced
+release and updates only `channels\pilot.json` plus its signature; it proves the
+stable pair, active stable release tree, and shared tools tree were unchanged.
+Set `publish_to_nas=true` only in a later, separately approved stable/fleet
+window. The two inputs are mutually exclusive, and stable publication is
+currently fail-closed until shared-tools replacement has a handle-bound
+transaction equivalent to the pilot path.
+
+The publish job reads the exact downloaded and digest-verified release root and
+runs `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not
+rebuild or re-sign the artifact. It also passes the build-bound signed
+source-channel SHA-256 to the publisher, so a different valid release tree
+cannot be substituted at the handoff. The selected runner labels must still
+resolve to the office runner that owns signing-key access for the build job and
+NAS access for the publish job.
 
 The manual dispatch also exposes `release_identity`. The default identity is
 now `revAgent`, which produces matching `revAgent` channel app ids and release
@@ -167,10 +173,12 @@ Current production signing setup on this workstation uses key id
 `C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`,
 and public trusted keys path
 `C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`.
-The key id and private-key filename are current rotation examples; rotate them
-together and publish the new public key before signing with the new private
-key.
-The public key fingerprint is
+The key id and fingerprint are pinned production values, not rotation
+examples. The production trusted-key document contains exactly this one key;
+do not publish an old-plus-new overlap document. Rotation requires the
+coordinated code-and-bootstrap-prestage procedure in
+`docs\DEVELOPER_RUNBOOK.md` before the replacement-key release is promoted to
+stable. The public key fingerprint is
 `32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
 
 The GitHub environments exist and the workflow variables are configured, but
@@ -239,9 +247,10 @@ runs the user phase without elevation. The elevated phase never executes
 and it never writes Codex user configuration or skills.
 
 First-install and legacy bootstrap code must come from the protected local
-bootstrap root. That bootstrap verifies the sealed canonical release source,
-signed channel/manifest, and every pre-import component before it launches the
-local GUI. If the local bootstrap/GUI/verifiers do not match the current signed
+bootstrap root. That bootstrap acquires the signed canonical release set into
+an administrator-protected local snapshot, re-attests the signed
+channel/manifest and every pre-import component there, and only then launches
+the local GUI. If the local bootstrap/GUI/verifiers do not match the current signed
 manifest, `bootstrap_refresh_required` fails closed until another authenticated
 administrator prestage. Do not elevate a copied desktop script body, NAS GUI,
 or local user-writable updater. After installation, machine code, package,
@@ -335,18 +344,19 @@ audit also classifies each machine's latest `paths.channelManifestPath` as
 canonical, legacy, or unknown. The default production publish and STABLE
 launcher no longer target `revit-mcp-deploy`; use the audit evidence before any
 physical old-root cleanup or freeze.
-After a NAS publish, the live smoke helper is available as
-`tools\test-commandset-live.ps1`; run it with `-ReleaseRoot` on the Revit smoke
-machine to write `reports\rollout\live-smoke-latest.json`.
-For the standard NET01 smoke, run the coordinator-side SSH wrapper in two
-steps: first `tools\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
+The NAS `tools` copy is transport/reference material, not an execution source.
+Run `scripts\test-commandset-live.ps1` from a clean repository checkout or an
+independently protected local coordinator copy, with `-ReleaseRoot`, to write
+`reports\rollout\live-smoke-latest.json`.
+For the standard NET01 smoke, run the repo-side coordinator SSH wrapper in two
+steps: first `scripts\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
 <root> -OpenOnly` to open the installed Revit 2022 sample model in the
 logged-on workstation session and verify the expected active document through
 revAgent, then rerun without `-OpenOnly` to run the helper and write the same
 rollout evidence.
 Record the launcher audit in `desktopLauncherEvidence` or
 `reports\rollout\desktop-launcher-latest.json`. The supported path is to run
-`tools\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each
+the repo/protected-local `scripts\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each
 in-scope machine, then `-Mode Aggregate` from the coordinator with the rollout
 config. The same script is also available from the repo `scripts\` folder for
 developer-side audits. The readiness audit also reads per-machine
@@ -366,7 +376,8 @@ shortcuts that use old `Revit MCP` names from local and OneDrive desktop
 folders. The cleanup is reported as `diagnostics.desktopLauncherCleanup`; rerun
 stable update before recollecting launcher evidence when stale desktop
 shortcuts are reported.
-For SSH-managed workstations, prefer `tools\collect-rollout-evidence.ps1` over
+For SSH-managed workstations, prefer the repo/protected-local
+`scripts\collect-rollout-evidence.ps1` coordinator over
 the install/repair deploy script. It stages only read-only evidence tools,
 runs source-free inventory in `dryRun`, scans desktop launchers, retrieves the
 staged JSON evidence files back to the coordinator, publishes the per-machine
@@ -380,16 +391,14 @@ Updater/security changes follow the normal protected delivery order: refresh
 generated payloads, run `test-all.ps1` and local `test-ci.ps1`, open a draft
 PR, pass protected engineering/review checks, merge to `main`, and let signed
 source-free CD build and validate. Only then may an operator manually dispatch
-`publish_to_nas=true`.
+`publish_to_pilot=true` for the exact developer/NET01 cohort.
 
-After publish, update one approved pilot workstation from the exact signed
-stable version/hash before broad rollout. Verify the machine/user phase reports,
-administrator-owned machine ACLs and bounded user-state ACLs, `mcp get`
-readback, both MCP handshakes, and a genuinely new ChatGPT task that sees MCP,
-AGENTS, and the expected skill policy/attestation. Broad rollout remains a
-manual GUI action per online workstation; powered-off machines are recorded as
-pending normal uptake and skipped. Close rollout only after canonical NAS
-artifact/hash evidence and the rollout audit agree.
+Verify both pilot machines against the exact signed pilot version/hash:
+machine/user phase reports, administrator-owned machine ACLs and bounded
+user-state ACLs, `mcp get` readback, both MCP handshakes, and a genuinely new
+ChatGPT task that sees MCP, AGENTS, and the expected skill policy/attestation.
+This closes the pilot task without changing stable or contacting the general
+fleet. Broad rollout remains a later, separately approved stable action.
 
 ## Update Behavior
 

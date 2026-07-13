@@ -1,10 +1,10 @@
 <#
 .SYNOPSIS
-    Point the stable NAS channel at an existing release without rebuilding the package.
+    Retired unsigned NAS channel promotion entrypoint.
 
 .DESCRIPTION
-    Reads releases\<Version>\manifest.json and updates channels\stable.json.
-    Use this for rollback or repair when the release package already exists.
+    This compatibility entrypoint is intentionally fail-closed. Signed channel
+    promotion is owned exclusively by the handle-bound signed publisher.
 #>
 
 [CmdletBinding()]
@@ -21,60 +21,4 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if ($Version -notmatch '^[A-Za-z0-9._-]+$') {
-    throw "Version may only contain letters, numbers, dot, underscore, and dash: $Version"
-}
-
-$ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
-$manifestPath = Join-Path $ReleaseRoot ("releases\{0}\manifest.json" -f $Version)
-$channelsRoot = Join-Path $ReleaseRoot "channels"
-$channelPath = Join-Path $channelsRoot ("{0}.json" -f $Channel)
-
-if (-not (Test-Path -LiteralPath $manifestPath)) {
-    throw "Release manifest was not found: $manifestPath"
-}
-
-function Test-RevAgentReleaseAppIdentity {
-    param([AllowNull()][string]$App)
-
-    return [string]::Equals($App, "revit-mcp-skill", [System.StringComparison]::Ordinal) -or
-        [string]::Equals($App, "revAgent", [System.StringComparison]::Ordinal)
-}
-
-$manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-if (-not (Test-RevAgentReleaseAppIdentity -App ([string]$manifest.app))) {
-    throw "Manifest app is not revAgent or revit-mcp-skill: $manifestPath"
-}
-if ($manifest.version -ne $Version) {
-    throw "Manifest version does not match requested version. Manifest=$($manifest.version), requested=$Version"
-}
-
-New-Item -ItemType Directory -Path $channelsRoot -Force | Out-Null
-
-function Write-JsonFile {
-    param(
-        [Parameter(Mandatory = $true)]
-        [object]$Value,
-        [Parameter(Mandatory = $true)]
-        [string]$Path,
-        [int]$Depth = 8
-    )
-
-    $Value | ConvertTo-Json -Depth $Depth | Set-Content -LiteralPath $Path -Encoding UTF8
-}
-
-$channelManifest = [ordered]@{
-    schemaVersion = 1
-    app = [string]$manifest.app
-    channel = $Channel
-    version = $Version
-    publishedAtUtc = (Get-Date).ToUniversalTime().ToString("o")
-    manifestPath = $manifestPath
-    packagePath = [string]$manifest.package.path
-    sha256 = [string]$manifest.package.sha256
-    git = $manifest.git
-}
-
-Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
-Write-Host "Set release target to $Version" -ForegroundColor Green
-Write-Host "Updated release manifest: $channelPath"
+throw 'Unsigned direct channel promotion is disabled. Build a signed local staging root, then publish it only through scripts\publish-signed-source-free-release-to-nas.ps1 so signature, sequence, CAS, and handle-bound transport guards are enforced.'

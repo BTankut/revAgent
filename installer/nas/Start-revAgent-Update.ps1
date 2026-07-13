@@ -9,7 +9,9 @@ param(
     [string]$BootstrapRoot = "",
     [switch]$VerificationOnly,
     [switch]$RuntimePathSmokeTest,
-    [switch]$AllowTestRoot
+    [switch]$AllowTestRoot,
+    [Parameter(DontShow = $true)][string]$TestMachineName = "",
+    [Parameter(DontShow = $true)][scriptblock]$TestBeforeGuiLaunchHook = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -40,6 +42,9 @@ if ([string]::IsNullOrWhiteSpace($BootstrapRoot)) { $BootstrapRoot = $canonicalB
 $BootstrapRoot = [IO.Path]::GetFullPath($BootstrapRoot).TrimEnd("\")
 if (-not $AllowTestRoot -and -not [string]::Equals($BootstrapRoot, [IO.Path]::GetFullPath($canonicalBootstrapRoot).TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) {
     throw "Local bootstrap must run from the canonical protected root: $canonicalBootstrapRoot"
+}
+if ((-not [string]::IsNullOrWhiteSpace($TestMachineName) -or $null -ne $TestBeforeGuiLaunchHook) -and -not $AllowTestRoot) {
+    throw 'Bootstrap test seams are available only with -AllowTestRoot.'
 }
 $expectedEntrypoint = Join-Path $BootstrapRoot "Start-revAgent-Update.ps1"
 if (-not [string]::Equals([IO.Path]::GetFullPath($PSCommandPath), [IO.Path]::GetFullPath($expectedEntrypoint), [StringComparison]::OrdinalIgnoreCase)) {
@@ -167,20 +172,34 @@ foreach ($property in $state.files.PSObject.Properties) {
 }
 
 $localIntegrityModule = Join-Path $BootstrapRoot ([string]$state.files.distributionIntegrity.relativePath)
-$pinnedIntegrityModuleHash = "2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4"
+$pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
 if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $localIntegrityModule).Hash, $pinnedIntegrityModuleHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Protected local distribution-integrity verifier does not match the bootstrap pin."
 }
 $localTrustedKeysPath = Join-Path $BootstrapRoot ([string]$state.files.trustedKeys.relativePath)
 $trustedKeyDocument = Get-Content -Raw -LiteralPath $localTrustedKeysPath | ConvertFrom-Json
+$productionKeyId = "revagent-prod-rsa-2026q3"
+$trustedKeyProperties = @($trustedKeyDocument.trustedKeys.PSObject.Properties)
+if (-not $AllowTestRoot -and
+    ($trustedKeyProperties.Count -ne 1 -or
+        -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [StringComparison]::Ordinal))) {
+    throw "Protected production trusted-key set must contain exactly '$productionKeyId' and no additional signing keys."
+}
 $trustedKey = $trustedKeyDocument.trustedKeys."revagent-prod-rsa-2026q3"
 if ($null -eq $trustedKey) { throw "Protected local trusted-key set does not contain the production release key." }
+if (-not $AllowTestRoot -and
+    (-not [string]::Equals([string]$trustedKey.algorithm, "RS256", [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$trustedKey.publicKeyFingerprint, "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33", [StringComparison]::OrdinalIgnoreCase))) {
+    throw "Protected local release-key metadata does not match the pinned RS256 key."
+}
 $normalizedPublicKey = ([string]$trustedKey.publicKeyXml).Trim() -replace "\s+", ""
 $sha = [Security.Cryptography.SHA256]::Create()
 try { $fingerprint = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedPublicKey)))).Replace("-", "") } finally { $sha.Dispose() }
 if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Protected local production release-key fingerprint mismatch." }
 
-if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) { $ChannelManifestPath = Join-Path ([string]$state.releaseRoot) "channels\stable.json" }
+$bootstrapChannel = [string]$state.release.channel
+if ($bootstrapChannel -notin @('stable', 'pilot')) { throw "Protected bootstrap state contains an unsupported release channel: $bootstrapChannel" }
+if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) { $ChannelManifestPath = Join-Path ([string]$state.releaseRoot) "channels\$bootstrapChannel.json" }
 $ChannelManifestPath = [IO.Path]::GetFullPath($ChannelManifestPath)
 $channelRoot = Split-Path -Parent $ChannelManifestPath
 $releaseRoot = [IO.Path]::GetFullPath((Split-Path -Parent $channelRoot)).TrimEnd("\")
@@ -190,78 +209,76 @@ if (-not $AllowTestRoot -and -not [string]::Equals($releaseRoot, "\\dpe-nas\Dpe-
 if (-not [string]::Equals($releaseRoot, [IO.Path]::GetFullPath([string]$state.releaseRoot).TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) {
     throw "Bootstrap state release root does not match the requested channel."
 }
-$toolsRoot = Join-Path $releaseRoot "tools"
+$expectedChannelPath = Join-Path (Join-Path $releaseRoot "channels") "$bootstrapChannel.json"
+if (-not [string]::Equals($ChannelManifestPath, [IO.Path]::GetFullPath($expectedChannelPath), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Protected bootstrap accepts only the exact state-bound channel data path: $expectedChannelPath"
+}
 
 [void](Assert-RevAgentBootstrapPathSafe -Path $ChannelManifestPath -Root $releaseRoot)
 $channel = Get-Content -Raw -LiteralPath $ChannelManifestPath | ConvertFrom-Json
+if (-not [string]::Equals([string]$channel.channel, $bootstrapChannel, [StringComparison]::Ordinal)) {
+    throw "Signed channel identity does not match protected bootstrap state. state=$bootstrapChannel signed=$($channel.channel)"
+}
 $releaseManifestPath = [string]$channel.manifestPath
 if (-not [IO.Path]::IsPathRooted($releaseManifestPath)) { $releaseManifestPath = Join-Path $channelRoot $releaseManifestPath }
 $releaseManifestPath = [IO.Path]::GetFullPath($releaseManifestPath)
 [void](Assert-RevAgentBootstrapPathSafe -Path $releaseManifestPath -Root $releaseRoot)
 $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
 
-$surfaceMap = [ordered]@{
-    localBootstrap = @("installer\nas\Start-revAgent-Update.ps1", "Start-revAgent-Update.ps1")
-    updaterGui = @("installer\nas\Install-revAgent-Updater-GUI.ps1", "Install-revAgent-Updater-GUI.ps1")
-    updater = @("installer\nas\update-from-nas.ps1", "update-from-nas.ps1")
-    updaterTaskInstaller = @("installer\nas\install-updater-task.ps1", "install-updater-task.ps1")
-    installerLibDistributionIntegrity = @("installer\lib\RevAgent.DistributionIntegrity.psm1", "lib\RevAgent.DistributionIntegrity.psm1")
-    installerLibSourceFreeMigration = @("installer\lib\RevAgent.SourceFreeMigration.psm1", "lib\RevAgent.SourceFreeMigration.psm1")
-    installerLibLocalBootstrap = @("installer\lib\RevAgent.LocalBootstrap.psm1", "lib\RevAgent.LocalBootstrap.psm1")
-    installerLibHiddenLauncher = @("installer\lib\RevAgent.HiddenLauncher.psm1", "lib\RevAgent.HiddenLauncher.psm1")
-    installerLibScheduledTask = @("installer\lib\RevAgent.ScheduledTask.psm1", "lib\RevAgent.ScheduledTask.psm1")
-    installerLibVersions = @("installer\lib\RevAgent.RevitVersions.psm1", "lib\RevAgent.RevitVersions.psm1")
-    installerLibPackage = @("installer\lib\RevAgent.Package.psm1", "lib\RevAgent.Package.psm1")
-    installerLibUpdatePolicy = @("installer\lib\RevAgent.UpdatePolicy.psm1", "lib\RevAgent.UpdatePolicy.psm1")
-    installerLibProxy = @("installer\lib\RevAgent.Proxy.psm1", "lib\RevAgent.Proxy.psm1")
-    installerLibLogRetention = @("installer\lib\RevAgent.LogRetention.psm1", "lib\RevAgent.LogRetention.psm1")
-    installerLibPermissions = @("installer\lib\RevAgent.Permissions.psm1", "lib\RevAgent.Permissions.psm1")
-    installerLibSecureTemp = @("installer\lib\RevAgent.SecureTemp.psm1", "lib\RevAgent.SecureTemp.psm1")
-    installerLibCodexRegistration = @("installer\lib\RevAgent.CodexRegistration.psm1", "lib\RevAgent.CodexRegistration.psm1")
-    installerLibConfigSync = @("installer\lib\RevAgent.ConfigSync.psm1", "lib\RevAgent.ConfigSync.psm1")
-    installerLibReporting = @("installer\lib\RevAgent.Reporting.psm1", "lib\RevAgent.Reporting.psm1")
-    installerLibDesktopLauncherCleanup = @("installer\lib\RevAgent.DesktopLauncherCleanup.psm1", "lib\RevAgent.DesktopLauncherCleanup.psm1")
-    installerLibLicense = @("installer\lib\RevAgent.License.psm1", "lib\RevAgent.License.psm1")
-}
-
 $localCurrentReleaseBindings = [ordered]@{
-    bootstrap = "localBootstrap"
-    launcher = "localBootstrapLauncher"
-    updaterGui = "updaterGui"
-    distributionIntegrity = "installerLibDistributionIntegrity"
-    sourceFreeMigration = "installerLibSourceFreeMigration"
+    bootstrap = @("localBootstrap", "installer\nas\Start-revAgent-Update.ps1")
+    launcher = @("localBootstrapLauncher", "installer\nas\Start-revAgent-Update.cmd")
+    updaterGui = @("updaterGui", "installer\nas\Install-revAgent-Updater-GUI.ps1")
+    distributionIntegrity = @("installerLibDistributionIntegrity", "installer\lib\RevAgent.DistributionIntegrity.psm1")
+    sourceFreeMigration = @("installerLibSourceFreeMigration", "installer\lib\RevAgent.SourceFreeMigration.psm1")
+    releaseSnapshot = @("installerLibReleaseSnapshot", "installer\lib\RevAgent.ReleaseSnapshot.psm1")
+    privilegedSnapshotUpdate = @("privilegedSnapshotUpdate", "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")
 }
 foreach ($binding in $localCurrentReleaseBindings.GetEnumerator()) {
-    $localHash = [string]$state.files.($binding.Key).sha256
-    $currentComponent = $releaseManifest.components.($binding.Value)
-    if ($null -eq $currentComponent -or -not [string]::Equals($localHash, [string]$currentComponent.sha256, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "bootstrap_refresh_required: protected local '$($binding.Key)' does not match current signed component '$($binding.Value)'. Administrator/coordinator prestage is required before this release can run."
+    $localFile = $state.files.($binding.Key)
+    $currentComponent = $releaseManifest.components.([string]$binding.Value[0])
+    if ($null -eq $localFile -or $null -eq $currentComponent -or
+        -not [string]::Equals(([string]$currentComponent.path).Replace("/", "\"), [string]$binding.Value[1], [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$localFile.sha256, [string]$currentComponent.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "bootstrap_refresh_required: protected local '$($binding.Key)' does not match current signed component '$($binding.Value[0])'. Administrator/coordinator prestage is required before this release can run."
     }
 }
 
-foreach ($path in @($ChannelManifestPath, $releaseManifestPath)) {
-    [void](Assert-RevAgentBootstrapPathSafe -Path $path -Root $releaseRoot)
-}
-foreach ($surface in $surfaceMap.GetEnumerator()) {
-    $component = $releaseManifest.components.($surface.Key)
-    if ($null -eq $component -or -not [string]::Equals(([string]$component.path).Replace("/", "\"), [string]$surface.Value[0], [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Signed release is missing protected bootstrap component '$($surface.Key)'."
-    }
-    $sourcePath = Join-Path $toolsRoot ([string]$surface.Value[1])
-    [void](Assert-RevAgentBootstrapPathSafe -Path $sourcePath -Root $releaseRoot)
-    if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath).Hash, [string]$component.sha256, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Signed bootstrap surface hash mismatch: $($surface.Key)"
-    }
-}
-foreach ($directory in @($releaseRoot, $toolsRoot, $channelRoot, (Split-Path -Parent $releaseManifestPath))) {
-    Assert-RevAgentDirectoryEffectivelyReadOnly -Directory $directory -Label "Canonical signed release source"
+$packagePath = [string]$channel.packagePath
+if ([string]::IsNullOrWhiteSpace($packagePath)) { throw "Signed stable channel does not declare packagePath." }
+if (-not [IO.Path]::IsPathRooted($packagePath)) { $packagePath = Join-Path $channelRoot $packagePath }
+$packagePath = [IO.Path]::GetFullPath($packagePath)
+[void](Assert-RevAgentBootstrapPathSafe -Path $packagePath -Root $releaseRoot)
+
+$channelSignaturePath = Join-Path $channelRoot (([IO.Path]::GetFileNameWithoutExtension($ChannelManifestPath)) + ".sig.json")
+$manifestSignaturePath = Join-Path (Split-Path -Parent $releaseManifestPath) (([IO.Path]::GetFileNameWithoutExtension($releaseManifestPath)) + ".sig.json")
+foreach ($signedTransportPath in @($ChannelManifestPath, $channelSignaturePath, $releaseManifestPath, $manifestSignaturePath, $packagePath)) {
+    [void](Assert-RevAgentBootstrapPathSafe -Path $signedTransportPath -Root $releaseRoot)
 }
 
 $integrityModule = Import-Module $localIntegrityModule -Force -PassThru
 $integrityCommand = Get-Command ("{0}\Test-RevAgentReleaseDistributionIntegrity" -f $integrityModule.Name) -ErrorAction Stop
 $integrity = & $integrityCommand -ChannelPath $ChannelManifestPath -Channel $channel -ReleaseManifestPath $releaseManifestPath -ReleaseManifest $releaseManifest -TrustedKeys $trustedKeyDocument.trustedKeys -Policy enforce
 if (-not [bool]$integrity.success) { throw "Protected bootstrap rejected the signed release: $($integrity.reason). $($integrity.message)" }
-foreach ($path in @($ChannelManifestPath, $releaseManifestPath) + @($surfaceMap.GetEnumerator() | ForEach-Object { Join-Path $toolsRoot ([string]$_.Value[1]) })) {
+$pilotPolicy = if ($channel.PSObject.Properties['pilotPolicy']) { $channel.pilotPolicy } else { $null }
+if ($bootstrapChannel -eq 'pilot') {
+    if ($null -eq $pilotPolicy -or [int]$pilotPolicy.schemaVersion -ne 1) {
+        throw 'Protected pilot channel requires pilotPolicy schemaVersion 1.'
+    }
+    $machineName = if ([string]::IsNullOrWhiteSpace($TestMachineName)) { [Environment]::MachineName.Trim().ToUpperInvariant() } else { $TestMachineName.Trim().ToUpperInvariant() }
+    $allowedMachines = @($pilotPolicy.allowedMachineNames | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() })
+    if ($allowedMachines.Count -eq 0 -or $allowedMachines -notcontains $machineName) {
+        throw "pilot_machine_not_allowed: protected pilot channel does not authorize this computer: $machineName"
+    }
+}
+elseif ($null -ne $pilotPolicy) { throw 'Protected stable channel must not contain pilotPolicy.' }
+$expectedPackageHash = [string]$channel.sha256
+if ($expectedPackageHash -notmatch '^[A-Fa-f0-9]{64}$') { throw "Signed stable channel does not declare a valid package SHA-256." }
+$actualPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash
+if (-not [string]::Equals($actualPackageHash, $expectedPackageHash, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Signed release package transport hash mismatch. Expected=$expectedPackageHash Actual=$actualPackageHash"
+}
+foreach ($path in @($ChannelManifestPath, $channelSignaturePath, $releaseManifestPath, $manifestSignaturePath, $packagePath)) {
     [void](Assert-RevAgentBootstrapPathSafe -Path $path -Root $releaseRoot)
 }
 
@@ -272,7 +289,9 @@ $result = [pscustomobject][ordered]@{
     bootstrapStatePath = $statePath
     channelManifestPath = $ChannelManifestPath
     releaseManifestPath = $releaseManifestPath
-    verifiedSurfaceCount = $surfaceMap.Count
+    packagePath = $packagePath
+    packageSha256 = $actualPackageHash
+    verifiedSurfaceCount = $localCurrentReleaseBindings.Count
     sourceAuthentication = $state.sourceAuthentication
     distributionIntegrity = $integrity
 }
@@ -285,5 +304,6 @@ $psi = [Diagnostics.ProcessStartInfo]::new()
 $psi.FileName = $powershellPath
 $psi.Arguments = ($arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " "
 $psi.UseShellExecute = $true
+if ($null -ne $TestBeforeGuiLaunchHook) { & $TestBeforeGuiLaunchHook $psi }
 [Diagnostics.Process]::Start($psi) | Out-Null
 $result

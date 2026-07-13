@@ -104,8 +104,7 @@ if ([string]::IsNullOrWhiteSpace($ChannelManifestPath)) {
 }
 $channelDirectory = Split-Path -Parent ([IO.Path]::GetFullPath($ChannelManifestPath))
 $releaseRoot = if ($SmokeTest) { Split-Path -Parent $scriptDir } else { [IO.Path]::GetFullPath((Split-Path -Parent $channelDirectory)).TrimEnd("\") }
-$releaseToolsRoot = if ($SmokeTest) { $scriptDir } else { Join-Path $releaseRoot "tools" }
-$installerPath = Join-Path $releaseToolsRoot "install-updater-task.ps1"
+$installerPath = if ($SmokeTest) { Join-Path $scriptDir "install-updater-task.ps1" } else { "" }
 
 $programDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 if ([string]::IsNullOrWhiteSpace($programDataRoot)) { throw "Windows CommonApplicationData could not be resolved." }
@@ -125,10 +124,11 @@ $serverTarget = Join-Path $InstallRoot "runtime"
 $configPath = Join-Path $workRoot "updater-config.json"
 $legacyConfigPath = Join-Path $legacyInstallRoot "updater\updater-config.json"
 $localVersionTool = Join-Path $workRoot "show-installed-version.ps1"
-$nasLibRoot = Join-Path $releaseToolsRoot "lib"
-if ([string]::IsNullOrWhiteSpace($nasLibRoot)) {
-    throw "revAgent updater lib folder was not found beside or above: $scriptDir"
-}
+$script:GuiPrivilegedSnapshotBrokerPath = ""
+$script:GuiReleaseSnapshotModulePath = ""
+$script:GuiDistributionIntegrityModulePath = ""
+$script:GuiTrustedKeysPath = ""
+$script:GuiNewReleaseInboxCommand = $null
 if (-not $SmokeTest) {
     if ([string]::IsNullOrWhiteSpace($BootstrapStatePath)) { throw "Protected local GUI requires BootstrapStatePath." }
     $expectedBootstrapStatePath = Join-Path $scriptDir "bootstrap-state.json"
@@ -139,8 +139,17 @@ if (-not $SmokeTest) {
     if (-not [bool]$script:GuiBootstrapState.sourceAuthentication.independentlyAuthenticated -or -not [bool]$script:GuiBootstrapState.sourceAuthentication.operatorConfirmed) {
         throw "Local GUI bootstrap state does not prove independently authenticated prestage."
     }
-    foreach ($role in @("updaterGui", "sourceFreeMigration")) {
+    $script:GuiChannel = [string]$script:GuiBootstrapState.release.channel
+    if ($script:GuiChannel -notin @('stable', 'pilot')) { throw "Protected GUI bootstrap state contains an unsupported channel: $($script:GuiChannel)" }
+    $expectedGuiChannelPath = [IO.Path]::GetFullPath((Join-Path ([string]$script:GuiBootstrapState.releaseRoot) "channels\$($script:GuiChannel).json"))
+    if (-not [string]::Equals([IO.Path]::GetFullPath($ChannelManifestPath), $expectedGuiChannelPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected GUI channel path does not match the bootstrap state channel. expected=$expectedGuiChannelPath actual=$ChannelManifestPath"
+    }
+    foreach ($role in @("updaterGui", "distributionIntegrity", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys")) {
         $evidence = $script:GuiBootstrapState.files.$role
+        if ($null -eq $evidence -or [string]::IsNullOrWhiteSpace([string]$evidence.relativePath) -or [string]::IsNullOrWhiteSpace([string]$evidence.sha256)) {
+            throw "Protected local GUI bootstrap state is missing required file evidence: $role"
+        }
         $localPath = Join-Path $scriptDir ([string]$evidence.relativePath)
         if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $localPath).Hash, [string]$evidence.sha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Protected local GUI bootstrap hash mismatch: $role"
@@ -148,17 +157,23 @@ if (-not $SmokeTest) {
     }
     $localSourceFreeMigrationModule = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.sourceFreeMigration.relativePath)
     Import-Module $localSourceFreeMigrationModule -Force
+    $script:GuiReleaseSnapshotModulePath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.releaseSnapshot.relativePath)
+    $releaseSnapshotModule = Import-Module $script:GuiReleaseSnapshotModulePath -Force -PassThru
+    $script:GuiNewReleaseInboxCommand = Get-Command ("{0}\New-RevAgentAuthenticatedReleaseInbox" -f $releaseSnapshotModule.Name) -ErrorAction Stop
+    $script:GuiPrivilegedSnapshotBrokerPath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.privilegedSnapshotUpdate.relativePath)
+    $script:GuiDistributionIntegrityModulePath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.distributionIntegrity.relativePath)
+    $script:GuiTrustedKeysPath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.trustedKeys.relativePath)
 }
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
 $script:LastLogLength = -1
 $script:ActivePhase = ""
 $script:ActivePhaseResultPath = ""
-$script:PendingUserPhaseFilePath = ""
 $script:PendingUserPhaseComponentKey = ""
 $script:PendingUserPhaseArguments = @()
 $script:PendingUserPhaseResultPath = ""
 $script:PendingUserLogPath = ""
+$script:ActiveInboxRoot = ""
 
 function Resolve-GuiProfileListImagePath {
     param(
@@ -256,29 +271,6 @@ function Read-GuiUpdaterConfig {
         return $config
     }
     return Read-JsonFile -Path $legacyConfigPath
-}
-
-function Test-LocalUpdaterSupportsSourceFreeMigration {
-    param([string]$UpdaterPath)
-
-    if ([string]::IsNullOrWhiteSpace($UpdaterPath) -or -not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
-        return $false
-    }
-
-    $updaterRoot = Split-Path -Parent $UpdaterPath
-    $migrationTool = Join-Path $updaterRoot "migrate-source-free-install.ps1"
-    $migrationLib = Join-Path $updaterRoot "lib\RevAgent.SourceFreeMigration.psm1"
-    if (-not (Test-Path -LiteralPath $migrationTool -PathType Leaf) -or -not (Test-Path -LiteralPath $migrationLib -PathType Leaf)) {
-        return $false
-    }
-
-    try {
-        $updaterText = Get-Content -Raw -LiteralPath $UpdaterPath
-        return ($updaterText -match 'SourceFreeMigration')
-    }
-    catch {
-        return $false
-    }
 }
 
 function Get-JsonPropertyString {
@@ -592,56 +584,18 @@ function Assert-GuiTrustedPathComponents {
     return $fullPath
 }
 
-function Assert-GuiDirectoryEffectivelyReadOnly {
-    param(
-        [Parameter(Mandatory = $true)][string]$Directory,
-        [Parameter(Mandatory = $true)][string]$GuardRoot
-    )
-
-    $reportsRoot = Join-Path $GuardRoot "reports"
-    if (Test-GuiPathUnderRoot -Path $Directory -Root $reportsRoot) { return }
-    $probePath = Join-Path $Directory (".revagent-sealed-probe-{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
-    $stream = $null
-    $created = $false
-    try {
-        $stream = [System.IO.File]::Open($probePath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
-        $created = $true
-    }
-    catch {
-        $probeException = $_.Exception
-        $accessDenied = $false
-        while ($null -ne $probeException) {
-            $errorCode = [int]$probeException.HResult -band 0xFFFF
-            if ($probeException -is [System.UnauthorizedAccessException] -or $errorCode -eq 5) { $accessDenied = $true; break }
-            $probeException = $probeException.InnerException
-        }
-        if ($accessDenied) { return }
-        throw "Trusted release effective writability CreateNew probe failed unexpectedly for '$Directory': $($_.Exception.Message)"
-    }
-    finally {
-        if ($null -ne $stream) { $stream.Dispose() }
-    }
-    if ($created) {
-        try { [System.IO.File]::Delete($probePath) }
-        catch { throw "Trusted release effective writability probe succeeded but cleanup failed for '$probePath': $($_.Exception.Message)" }
-        if (Test-Path -LiteralPath $probePath) { throw "Trusted release effective writability probe cleanup did not remove '$probePath'." }
-        throw "Trusted release path is effectively writable and is not sealed (CreateNew succeeded): $Directory"
-    }
-}
-
-function Assert-GuiTrustedPathAcl {
+function Assert-GuiProtectedLocalPath {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$GuardRoot
+        [Parameter(Mandatory = $true)][string]$GuardRoot,
+        [switch]$RequireLeaf
     )
 
     $fullPath = [System.IO.Path]::GetFullPath($Path)
-    $fullGuardRoot = [System.IO.Path]::GetFullPath($GuardRoot).TrimEnd("\")
-    $currentSid = [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-    $blockedSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
-    foreach ($sid in @($currentSid, "S-1-1-0", "S-1-5-11", "S-1-5-32-545")) {
-        if (-not [string]::IsNullOrWhiteSpace($sid)) { [void]$blockedSids.Add($sid) }
-    }
+    $fullRoot = [System.IO.Path]::GetFullPath($GuardRoot).TrimEnd("\")
+    if ($fullPath.StartsWith("\\", [System.StringComparison]::Ordinal)) { throw "Protected execution path must be local, not UNC: $fullPath" }
+    [void](Assert-GuiTrustedPathComponents -Path $fullPath -GuardRoot $fullRoot)
+    $trustedWriters = @("S-1-5-18", "S-1-5-32-544")
     $writeMask = [System.Security.AccessControl.FileSystemRights]::WriteData -bor
         [System.Security.AccessControl.FileSystemRights]::AppendData -bor
         [System.Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
@@ -650,207 +604,102 @@ function Assert-GuiTrustedPathAcl {
         [System.Security.AccessControl.FileSystemRights]::Delete -bor
         [System.Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [System.Security.AccessControl.FileSystemRights]::TakeOwnership
-
     $cursor = $fullPath
-    while (-not [string]::IsNullOrWhiteSpace($cursor) -and
-        (Test-GuiPathUnderRoot -Path $cursor -Root $fullGuardRoot)) {
-        $cursorItem = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
-        if ($cursorItem.PSIsContainer) { Assert-GuiDirectoryEffectivelyReadOnly -Directory $cursorItem.FullName -GuardRoot $fullGuardRoot }
+    while (Test-GuiPathUnderRoot -Path $cursor -Root $fullRoot) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
         $acl = Get-Acl -LiteralPath $cursor -ErrorAction Stop
-        $ownerSid = $acl.GetOwner([System.Security.Principal.SecurityIdentifier])
-        if ($null -ne $ownerSid -and [string]::Equals([string]$ownerSid.Value, $currentSid, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Trusted release path is owned by the interactive user: $cursor"
+        $ownerSid = [string]$acl.GetOwner([System.Security.Principal.SecurityIdentifier]).Value
+        if ($ownerSid -notin $trustedWriters) {
+            throw "Protected local execution path owner is not trusted: $cursor owner=$ownerSid"
         }
-        $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
-        foreach ($rule in $rules) {
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [System.StringComparison]::OrdinalIgnoreCase) -and -not $acl.AreAccessRulesProtected) {
+            throw "Protected local execution root DACL must be protected from inheritance: $cursor"
+        }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])) {
             if ($rule.AccessControlType -eq [System.Security.AccessControl.AccessControlType]::Allow -and
+                $trustedWriters -notcontains [string]$rule.IdentityReference.Value -and
                 (($rule.FileSystemRights -band $writeMask) -ne 0)) {
-                throw "Trusted release path has a writable ACL and is not sealed: $cursor (principal=$($rule.IdentityReference.Value), rights=$($rule.FileSystemRights))"
+                throw "Protected local execution path grants write/delete access to an untrusted principal. path=$cursor principal=$($rule.IdentityReference.Value) rights=$($rule.FileSystemRights)"
             }
         }
-        if ([string]::Equals($cursor.TrimEnd("\"), $fullGuardRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-            break
-        }
-        $parent = Split-Path -Parent $cursor
-        if ([string]::IsNullOrWhiteSpace($parent) -or
-            [string]::Equals($parent, $cursor, [System.StringComparison]::OrdinalIgnoreCase)) {
-            break
-        }
-        $cursor = $parent
+        if ([string]::Equals($cursor.TrimEnd("\"), $fullRoot, [System.StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = Split-Path -Parent $cursor
     }
+    if ($RequireLeaf) {
+        $leaf = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+        if ($leaf.PSIsContainer) { throw "Protected local execution path must be a file: $fullPath" }
+        $fsutil = Join-Path $osSystemDirectory "fsutil.exe"
+        $links = @(& $fsutil hardlink list $fullPath 2>&1 | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+        if ($LASTEXITCODE -ne 0 -or $links.Count -ne 1) { throw "Protected local execution file must have exactly one hardlink reference: $fullPath" }
+    }
+    return $fullPath
 }
 
-function Assert-GuiTrustedMachineScript {
+function Assert-GuiProtectedSnapshotBroker {
+    $evidence = $script:GuiBootstrapState.files.privilegedSnapshotUpdate
+    $expectedPath = [System.IO.Path]::GetFullPath((Join-Path $scriptDir "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"))
+    $actualPath = [System.IO.Path]::GetFullPath($script:GuiPrivilegedSnapshotBrokerPath)
+    if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath((Join-Path $scriptDir ([string]$evidence.relativePath))), $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Privileged update broker must be the exact protected local bootstrap file: $expectedPath"
+    }
+    [void](Assert-GuiProtectedLocalPath -Path $actualPath -GuardRoot $scriptDir -RequireLeaf)
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $actualPath).Hash
+    if (-not [string]::Equals($actualHash, [string]$evidence.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected privileged update broker hash mismatch."
+    }
+    return $actualPath
+}
+
+function Resolve-GuiSnapshotUserEntrypoint {
     param(
-        [Parameter(Mandatory = $true)][string]$MachineScriptPath,
+        [Parameter(Mandatory = $true)][object]$PhaseResult,
         [Parameter(Mandatory = $true)][ValidateSet("updater", "updaterTaskInstaller")][string]$ComponentKey
     )
 
-    $channelFullPath = [System.IO.Path]::GetFullPath($ChannelManifestPath)
-    $channelDirectory = Split-Path -Parent $channelFullPath
-    $releaseRoot = [System.IO.Path]::GetFullPath((Split-Path -Parent $channelDirectory)).TrimEnd("\")
-    $pinnedReleaseRoot = [System.IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy").TrimEnd("\")
-    if (-not [string]::Equals($releaseRoot, $pinnedReleaseRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated update source must use the pinned revAgent release root '$pinnedReleaseRoot'; refusing '$releaseRoot'."
-    }
-    $canonicalChannelRoot = Join-Path $releaseRoot "channels"
-    $canonicalToolsRoot = Join-Path $releaseRoot "tools"
-    $canonicalReleasesRoot = Join-Path $releaseRoot "releases"
-    if (-not [string]::Equals([System.IO.Path]::GetFullPath($channelDirectory).TrimEnd("\"), [System.IO.Path]::GetFullPath($canonicalChannelRoot).TrimEnd("\"), [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Channel manifest is not under the canonical release channels root: $channelFullPath"
-    }
-    $canonicalGuiPath = [System.IO.Path]::GetFullPath((Join-Path $InstallRoot "bootstrap\Install-revAgent-Updater-GUI.ps1"))
-    if (-not [string]::Equals([System.IO.Path]::GetFullPath($PSCommandPath), $canonicalGuiPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Updater GUI must run from the protected local bootstrap root: $canonicalGuiPath"
-    }
-
-    $expectedLeaf = if ($ComponentKey -eq "updater") { "update-from-nas.ps1" } else { "install-updater-task.ps1" }
-    $canonicalMachineScript = [System.IO.Path]::GetFullPath((Join-Path $canonicalToolsRoot $expectedLeaf))
-    $machineScriptFullPath = [System.IO.Path]::GetFullPath($MachineScriptPath)
-    if (-not [string]::Equals($machineScriptFullPath, $canonicalMachineScript, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Elevated machine script must be the canonical release tool '$canonicalMachineScript'; refusing '$machineScriptFullPath'."
-    }
-
-    $channel = Get-Content -Raw -LiteralPath $channelFullPath | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace([string]$channel.manifestPath)) {
-        throw "Channel manifest does not reference a release manifest: $channelFullPath"
-    }
-    $releaseManifestPath = [string]$channel.manifestPath
-    if (-not [System.IO.Path]::IsPathRooted($releaseManifestPath)) {
-        $releaseManifestPath = Join-Path $channelDirectory $releaseManifestPath
-    }
-    $releaseManifestPath = [System.IO.Path]::GetFullPath($releaseManifestPath)
-    if (-not (Test-GuiPathUnderRoot -Path $releaseManifestPath -Root $canonicalReleasesRoot)) {
-        throw "Release manifest escaped the canonical releases root: $releaseManifestPath"
-    }
-
-    foreach ($trustedPath in @($channelFullPath, $releaseManifestPath, $machineScriptFullPath)) {
-        [void](Assert-GuiTrustedPathComponents -Path $trustedPath -GuardRoot $releaseRoot)
-        Assert-GuiTrustedPathAcl -Path $trustedPath -GuardRoot $releaseRoot
-    }
-
-    $releaseManifest = Get-Content -Raw -LiteralPath $releaseManifestPath | ConvertFrom-Json
-    $surfaceMap = [ordered]@{
-        updaterGui = @("installer\nas\Install-revAgent-Updater-GUI.ps1", "Install-revAgent-Updater-GUI.ps1")
-        installerLibDistributionIntegrity = @("installer\lib\RevAgent.DistributionIntegrity.psm1", "lib\RevAgent.DistributionIntegrity.psm1")
-    }
-    if ($ComponentKey -eq "updater") {
-        $surfaceMap["updater"] = @("installer\nas\update-from-nas.ps1", "update-from-nas.ps1")
-        foreach ($entry in ([ordered]@{
-                installerLibHiddenLauncher = "RevAgent.HiddenLauncher.psm1"
-                installerLibScheduledTask = "RevAgent.ScheduledTask.psm1"
-                installerLibVersions = "RevAgent.RevitVersions.psm1"
-                installerLibPackage = "RevAgent.Package.psm1"
-                installerLibUpdatePolicy = "RevAgent.UpdatePolicy.psm1"
-                installerLibProxy = "RevAgent.Proxy.psm1"
-                installerLibLogRetention = "RevAgent.LogRetention.psm1"
-                installerLibPermissions = "RevAgent.Permissions.psm1"
-                installerLibSecureTemp = "RevAgent.SecureTemp.psm1"
-                installerLibCodexRegistration = "RevAgent.CodexRegistration.psm1"
-                installerLibConfigSync = "RevAgent.ConfigSync.psm1"
-                installerLibReporting = "RevAgent.Reporting.psm1"
-                installerLibDesktopLauncherCleanup = "RevAgent.DesktopLauncherCleanup.psm1"
-                installerLibLicense = "RevAgent.License.psm1"
-                installerLibSourceFreeMigration = "RevAgent.SourceFreeMigration.psm1"
-            }).GetEnumerator()) {
-            $surfaceMap[$entry.Key] = @(("installer\lib\{0}" -f $entry.Value), ("lib\{0}" -f $entry.Value))
+    $executionSnapshot = $PhaseResult.executionSnapshot
+    if ($null -eq $executionSnapshot) { throw "Privileged snapshot broker phase result is missing executionSnapshot." }
+    foreach ($field in @("snapshotRoot", "statePath", "targetRelativePath", "targetSha256", "targetComponentKey")) {
+        if ($null -eq $executionSnapshot.PSObject.Properties[$field] -or [string]::IsNullOrWhiteSpace([string]$executionSnapshot.$field)) {
+            throw "Privileged snapshot broker phase result is missing executionSnapshot.$field."
         }
     }
-    else {
-        $surfaceMap["updaterTaskInstaller"] = @("installer\nas\install-updater-task.ps1", "install-updater-task.ps1")
-        # install-updater-task later invokes this top-level script elevated.
-        # Bind it now as part of the same pre-UAC closure; its internal UAC-side
-        # checks are defense in depth, not permission to run an unbound script.
-        $surfaceMap["updater"] = @("installer\nas\update-from-nas.ps1", "update-from-nas.ps1")
-        foreach ($entry in ([ordered]@{
-                installerLibHiddenLauncher = "RevAgent.HiddenLauncher.psm1"
-                installerLibScheduledTask = "RevAgent.ScheduledTask.psm1"
-                installerLibVersions = "RevAgent.RevitVersions.psm1"
-                installerLibPermissions = "RevAgent.Permissions.psm1"
-                installerLibSecureTemp = "RevAgent.SecureTemp.psm1"
-                installerLibProxy = "RevAgent.Proxy.psm1"
-                installerLibLogRetention = "RevAgent.LogRetention.psm1"
-                installerLibCodexRegistration = "RevAgent.CodexRegistration.psm1"
-                installerLibReporting = "RevAgent.Reporting.psm1"
-                installerLibDesktopLauncherCleanup = "RevAgent.DesktopLauncherCleanup.psm1"
-            }).GetEnumerator()) {
-            $surfaceMap[$entry.Key] = @(("installer\lib\{0}" -f $entry.Value), ("lib\{0}" -f $entry.Value))
-        }
+    $snapshotRoot = [System.IO.Path]::GetFullPath([string]$executionSnapshot.snapshotRoot).TrimEnd("\")
+    $statePath = [System.IO.Path]::GetFullPath([string]$executionSnapshot.statePath)
+    $entrypointPath = [System.IO.Path]::GetFullPath((Join-Path $snapshotRoot ([string]$executionSnapshot.targetRelativePath)))
+    if ($snapshotRoot.StartsWith("\\", [System.StringComparison]::Ordinal) -or
+        $statePath.StartsWith("\\", [System.StringComparison]::Ordinal) -or
+        $entrypointPath.StartsWith("\\", [System.StringComparison]::Ordinal)) {
+        throw "Snapshot machine/user execution paths must be local; UNC execution is forbidden."
     }
-
-    foreach ($surface in $surfaceMap.GetEnumerator()) {
-        $component = $releaseManifest.components.($surface.Key)
-        $expectedPackagePath = [string]$surface.Value[0]
-        $toolPath = [System.IO.Path]::GetFullPath((Join-Path $canonicalToolsRoot ([string]$surface.Value[1])))
-        if ($null -eq $component -or [string]::IsNullOrWhiteSpace([string]$component.sha256)) {
-            throw "Release manifest is missing pre-import component '$($surface.Key)'."
-        }
-        if (-not [string]::Equals(([string]$component.path).Replace("/", "\"), $expectedPackagePath, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Release manifest component '$($surface.Key)' path mismatch: $($component.path)"
-        }
-        [void](Assert-GuiTrustedPathComponents -Path $toolPath -GuardRoot $releaseRoot)
-        Assert-GuiTrustedPathAcl -Path $toolPath -GuardRoot $releaseRoot
-        $actualSurfaceHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $toolPath).Hash
-        if (-not [string]::Equals($actualSurfaceHash, [string]$component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
-            throw "Pre-import surface hash mismatch. Component=$($surface.Key) Expected=$($component.sha256) Actual=$actualSurfaceHash"
-        }
+    if (-not (Test-GuiPathUnderRoot -Path $statePath -Root $snapshotRoot) -or -not (Test-GuiPathUnderRoot -Path $entrypointPath -Root $snapshotRoot)) {
+        throw "Snapshot phase result paths escaped the authenticated local snapshot root."
     }
-
-    $trustedKeysPath = Join-Path $canonicalToolsRoot "config\release-trusted-keys.json"
-    $channelSignaturePath = Join-Path $channelDirectory (([System.IO.Path]::GetFileNameWithoutExtension($channelFullPath)) + ".sig.json")
-    $manifestSignaturePath = Join-Path (Split-Path -Parent $releaseManifestPath) (([System.IO.Path]::GetFileNameWithoutExtension($releaseManifestPath)) + ".sig.json")
-    foreach ($signedInput in @($trustedKeysPath, $channelSignaturePath, $manifestSignaturePath)) {
-        [void](Assert-GuiTrustedPathComponents -Path $signedInput -GuardRoot $releaseRoot)
-        Assert-GuiTrustedPathAcl -Path $signedInput -GuardRoot $releaseRoot
+    [void](Assert-GuiProtectedLocalPath -Path $statePath -GuardRoot $snapshotRoot -RequireLeaf)
+    [void](Assert-GuiProtectedLocalPath -Path $entrypointPath -GuardRoot $snapshotRoot -RequireLeaf)
+    $snapshotState = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
+    if ([int]$snapshotState.schemaVersion -ne 1 -or
+        -not [string]::Equals([string]$snapshotState.stateType, "authenticated-release-snapshot", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$snapshotState.transportTrust, "signed_local_snapshot", [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([System.IO.Path]::GetFullPath([string]$snapshotState.snapshotRoot).TrimEnd("\"), $snapshotRoot, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Local execution snapshot state contract is invalid."
     }
-    $trustedKeyDocument = Get-Content -Raw -LiteralPath $trustedKeysPath | ConvertFrom-Json
-    $trustedKey = $trustedKeyDocument.trustedKeys."revagent-prod-rsa-2026q3"
-    $normalizedPublicKey = ([string]$trustedKey.publicKeyXml).Trim() -replace "\s+", ""
-    $publicKeyBytes = [System.Text.Encoding]::UTF8.GetBytes($normalizedPublicKey)
-    $sha256 = [System.Security.Cryptography.SHA256]::Create()
-    try { $actualFingerprint = ([System.BitConverter]::ToString($sha256.ComputeHash($publicKeyBytes))).Replace("-", "") } finally { $sha256.Dispose() }
-    $pinnedFingerprint = "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33"
-    if (-not [string]::Equals($actualFingerprint, $pinnedFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Trusted release key fingerprint mismatch. Expected=$pinnedFingerprint Actual=$actualFingerprint"
+    $component = $snapshotState.components.$ComponentKey
+    if ($null -eq $component) { throw "Local execution snapshot state is missing component '$ComponentKey'." }
+    $expectedPackagePath = if ($ComponentKey -eq "updater") { "installer\nas\update-from-nas.ps1" } else { "installer\nas\install-updater-task.ps1" }
+    $expectedSnapshotPath = [System.IO.Path]::GetFullPath((Join-Path $snapshotRoot ([string]$component.snapshotRelativePath)))
+    if (-not [string]::Equals(([string]$component.path).Replace("/", "\"), $expectedPackagePath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$executionSnapshot.targetComponentKey, $ComponentKey, [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$executionSnapshot.targetRelativePath, [string]$component.snapshotRelativePath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($entrypointPath, $expectedSnapshotPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string]$executionSnapshot.targetSha256, [string]$component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Local snapshot user entrypoint does not match its signed component binding."
     }
-
-    $integrityModulePath = Join-Path $canonicalToolsRoot "lib\RevAgent.DistributionIntegrity.psm1"
-    $pinnedIntegrityModuleHash = "2360CC209EAAD6AEF26E90F6865427914CDE499F0F6F8838296D5F5381F371B4"
-    $actualIntegrityModuleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
-    if (-not [string]::Equals($actualIntegrityModuleHash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
-        throw "Pinned pre-UAC integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash Actual=$actualIntegrityModuleHash"
+    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $entrypointPath).Hash
+    if (-not [string]::Equals($actualHash, [string]$component.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Local snapshot user entrypoint hash mismatch."
     }
-    $integrityModule = Import-Module $integrityModulePath -Force -PassThru
-    $integrityCommand = Get-Command ("{0}\Test-RevAgentReleaseDistributionIntegrity" -f $integrityModule.Name) -ErrorAction Stop
-    $integrity = & $integrityCommand `
-        -ChannelPath $channelFullPath `
-        -Channel $channel `
-        -ReleaseManifestPath $releaseManifestPath `
-        -ReleaseManifest $releaseManifest `
-        -TrustedKeys $trustedKeyDocument.trustedKeys `
-        -Policy "enforce"
-    if (-not [bool]$integrity.success) {
-        throw "Pre-UAC signed release verification failed: $($integrity.reason). $($integrity.message)"
-    }
-
-    $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $machineScriptFullPath).Hash
-    Write-Host "Trusted machine surface: $machineScriptFullPath ($ComponentKey $actualHash; signed release verified)"
-    return $machineScriptFullPath
-}
-
-function Test-LocalUpdaterSupportsSplitPrivilege {
-    param([string]$UpdaterPath)
-
-    if ([string]::IsNullOrWhiteSpace($UpdaterPath) -or -not (Test-Path -LiteralPath $UpdaterPath -PathType Leaf)) {
-        return $false
-    }
-    try {
-        $updaterText = Get-Content -Raw -LiteralPath $UpdaterPath
-        return ($updaterText -match '\$MachinePhaseOnly' -and $updaterText -match '\$UserPhaseOnly' -and $updaterText -match '\$PhaseResultPath')
-    }
-    catch {
-        return $false
-    }
+    return $entrypointPath
 }
 
 Add-Type -AssemblyName System.Windows.Forms
@@ -1044,6 +893,37 @@ function Read-GuiPhaseResult {
     }
 }
 
+function Remove-GuiAuthenticatedInbox {
+    param([string]$Path)
+    if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
+    $allowedRoot = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DPE\revAgent\release-inbox')).TrimEnd('\')
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not (Test-GuiPathUnderRoot -Path $fullPath -Root $allowedRoot) -or
+        [IO.Path]::GetFileName($fullPath) -notmatch '^[a-f0-9]{32}$') {
+        throw "Refusing release inbox cleanup outside the exact user-local inbox pattern: $fullPath"
+    }
+    if (-not (Test-Path -LiteralPath $fullPath -PathType Container)) { return $false }
+    $cursor = $fullPath
+    while (Test-GuiPathUnderRoot -Path $cursor -Root $allowedRoot) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+            throw "Refusing release inbox cleanup through a filesystem link: $cursor"
+        }
+        if ([string]::Equals($cursor.TrimEnd('\'), $allowedRoot, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = Split-Path -Parent $cursor
+    }
+    foreach ($item in Get-ChildItem -LiteralPath $fullPath -Recurse -Force -ErrorAction Stop) {
+        $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+            throw "Refusing release inbox cleanup because it contains a filesystem link: $($item.FullName)"
+        }
+    }
+    [IO.Directory]::Delete($fullPath, $true)
+    if ([IO.Directory]::Exists($fullPath)) { throw "Release inbox cleanup was incomplete: $fullPath" }
+    return $true
+}
+
 function Start-GuiPhaseProcess {
     param(
         [Parameter(Mandatory = $true)][string]$ScriptPath,
@@ -1058,6 +938,10 @@ function Start-GuiPhaseProcess {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $powershellPath
     $psi.Arguments = Join-CommandLine -Arguments $Arguments
+    # Never let either the UAC broker or the unelevated continuation inherit a
+    # user-writable/NAS current directory into native DLL search. The phase
+    # scripts receive absolute paths and do not depend on the caller CWD.
+    $psi.WorkingDirectory = Split-Path -Parent $powershellPath
     if ($Elevated) {
         $psi.UseShellExecute = $true
         $psi.Verb = "runas"
@@ -1077,8 +961,8 @@ function Start-GuiPhaseProcess {
 function Start-InstallerOperation {
     param([ValidateSet("update", "restore")] [string]$Operation)
 
-    if (-not (Test-Path -LiteralPath $installerPath)) {
-        [System.Windows.Forms.MessageBox]::Show("Installer was not found.", "revAgent") | Out-Null
+    if (-not (Test-Path -LiteralPath $script:GuiPrivilegedSnapshotBrokerPath -PathType Leaf)) {
+        [System.Windows.Forms.MessageBox]::Show("The protected local update broker was not found. Repeat the administrator bootstrap prestage.", "revAgent") | Out-Null
         return
     }
     if (-not (Test-Path -LiteralPath $ChannelManifestPath)) {
@@ -1086,22 +970,9 @@ function Start-InstallerOperation {
         return
     }
 
-    $localUpdaterPath = Join-Path $workRoot "update-from-nas.ps1"
-    $hasLocalUpdater = Test-Path -LiteralPath $localUpdaterPath -PathType Leaf
-    $releaseUpdaterPath = Join-Path $releaseToolsRoot "update-from-nas.ps1"
-    if (-not (Test-Path -LiteralPath $releaseUpdaterPath -PathType Leaf)) {
-        [System.Windows.Forms.MessageBox]::Show("The trusted release updater was not found beside the GUI. Elevated execution of the user-writable local updater is refused.", "revAgent") | Out-Null
-        Set-ButtonsEnabled -Enabled $true
-        return
-    }
-    $directUpdaterPath = $releaseUpdaterPath
     $status = Get-ChannelStatus
     $sourceFreeArtifacts = @(Get-SourceFreeMigrationArtifactsForGui)
     $runSourceFreeMigration = ($sourceFreeArtifacts.Count -gt 0)
-    $localUpdaterSupportsSourceFreeMigration = Test-LocalUpdaterSupportsSourceFreeMigration -UpdaterPath $localUpdaterPath
-    $needsSourceFreeMigrationBootstrap = ($runSourceFreeMigration -and -not $localUpdaterSupportsSourceFreeMigration)
-    $localUpdaterSupportsSplitPrivilege = Test-LocalUpdaterSupportsSplitPrivilege -UpdaterPath $localUpdaterPath
-    $needsPrivilegeSplitBootstrap = ($hasLocalUpdater -and -not $localUpdaterSupportsSplitPrivilege)
     if ($runSourceFreeMigration) {
         if (-not (Confirm-SourceFreeMigrationForGui -Artifacts $sourceFreeArtifacts)) {
             Set-ButtonsEnabled -Enabled $true
@@ -1112,12 +983,6 @@ function Start-InstallerOperation {
 
     if ($Operation -eq "update" -and -not [bool]$status.UpdateEnabled) {
         [System.Windows.Forms.MessageBox]::Show("No update is available.`r`n`r`n$($status.StatusText)", "revAgent") | Out-Null
-        Set-ButtonsEnabled -Enabled $true
-        return
-    }
-
-    if ($Operation -eq "update" -and -not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -and -not $hasLocalUpdater) {
-        [System.Windows.Forms.MessageBox]::Show("This workstation has an installed revAgent package, but the local trusted updater was not found. Use Install/Repair to restore the local updater before normal updates.", "revAgent") | Out-Null
         Set-ButtonsEnabled -Enabled $true
         return
     }
@@ -1140,10 +1005,7 @@ function Start-InstallerOperation {
     $codexInstructionPolicy = Get-CodexInstructionPolicyForGui
     $machineRole = Get-MachineRoleForGui
     $operationMethod = if ($runSourceFreeMigration) {
-        if ($needsSourceFreeMigrationBootstrap) { "source-free-migration-bootstrap" } else { "source-free-migration" }
-    }
-    elseif ($needsPrivilegeSplitBootstrap) {
-        "privilege-split-bootstrap"
+        "source-free-migration"
     }
     elseif ($Operation -eq "restore") {
         if ([string]::IsNullOrWhiteSpace($status.InstalledVersion)) { "gui-install" } else { "gui-install-repair" }
@@ -1161,35 +1023,22 @@ function Start-InstallerOperation {
     Set-ButtonsEnabled -Enabled $false
 
     $useDirectUpdate = ($Operation -eq "update" -and
-        (-not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -or $runSourceFreeMigration)) -and
-        $hasLocalUpdater -and
-        -not $needsSourceFreeMigrationBootstrap -and
-        -not $needsPrivilegeSplitBootstrap
+        (-not [string]::IsNullOrWhiteSpace($status.InstalledVersion) -or $runSourceFreeMigration))
 
     $machinePhaseResultPath = New-GuiPhaseResultPath -Phase "machine"
     $userPhaseResultPath = New-GuiPhaseResultPath -Phase "user"
 
     if ($useDirectUpdate) {
         $machineArguments = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $directUpdaterPath,
-            "-ChannelManifestPath", $ChannelManifestPath,
             "-InstallRoot", $InstallRoot,
             "-WorkRoot", $workRoot,
             "-PackageTarget", $packageTarget,
             "-ServerTarget", $serverTarget,
             "-NoNotifyUser",
             "-OperationMethod", $operationMethod,
-            "-LogPath", $script:ActiveLogPath,
-            "-MachinePhaseOnly",
-            "-PhaseResultPath", $machinePhaseResultPath
+            "-LogPath", $script:ActiveLogPath
         )
         $userArguments = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $releaseUpdaterPath,
-            "-ChannelManifestPath", $ChannelManifestPath,
             "-InstallRoot", $InstallRoot,
             "-WorkRoot", $workRoot,
             "-PackageTarget", $packageTarget,
@@ -1197,47 +1046,29 @@ function Start-InstallerOperation {
             "-NoNotifyUser",
             "-AllowManualCodexSetup",
             "-OperationMethod", $operationMethod,
-            "-LogPath", $userLogPath,
-            "-UserPhaseOnly",
-            "-PhaseResultPath", $userPhaseResultPath
+            "-LogPath", $userLogPath
         )
-        $machineScriptPath = $directUpdaterPath
-        $userScriptPath = $releaseUpdaterPath
         $machineComponentKey = "updater"
         $userComponentKey = "updater"
     }
     else {
         $machineArguments = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $installerPath,
-            "-ChannelManifestPath", $ChannelManifestPath,
             "-InstallRoot", $InstallRoot,
             "-WorkRoot", $workRoot,
             "-PackageTarget", $packageTarget,
             "-ServerTarget", $serverTarget,
             "-RunNow",
             "-OperationMethod", $operationMethod,
-            "-LogPath", $script:ActiveLogPath,
-            "-MachinePhaseOnly",
-            "-PhaseResultPath", $machinePhaseResultPath
+            "-LogPath", $script:ActiveLogPath
         )
         $userArguments = @(
-            "-NoProfile",
-            "-ExecutionPolicy", "Bypass",
-            "-File", $installerPath,
-            "-ChannelManifestPath", $ChannelManifestPath,
             "-InstallRoot", $InstallRoot,
             "-WorkRoot", $workRoot,
             "-PackageTarget", $packageTarget,
             "-ServerTarget", $serverTarget,
             "-OperationMethod", $operationMethod,
-            "-LogPath", $userLogPath,
-            "-UserPhaseOnly",
-            "-PhaseResultPath", $userPhaseResultPath
+            "-LogPath", $userLogPath
         )
-        $machineScriptPath = $installerPath
-        $userScriptPath = $installerPath
         $machineComponentKey = "updaterTaskInstaller"
         $userComponentKey = "updaterTaskInstaller"
     }
@@ -1250,21 +1081,47 @@ function Start-InstallerOperation {
     if ($Operation -eq "restore") {
         $machineArguments += "-ForceUpdate"
     }
-    if ($needsSourceFreeMigrationBootstrap) {
-        $machineArguments += "-RunSourceFreeMigration"
-    }
-    elseif ($runSourceFreeMigration) {
+    if ($runSourceFreeMigration) {
         $machineArguments += "-SourceFreeMigration"
     }
     $machineArguments = Add-InteractiveContextArguments -Arguments $machineArguments
     $userArguments = Add-InteractiveContextArguments -Arguments $userArguments
 
     try {
-        $machineScriptPath = Assert-GuiTrustedMachineScript -MachineScriptPath $machineScriptPath -ComponentKey $machineComponentKey
-        $script:ActiveProcess = Start-GuiPhaseProcess -ScriptPath $machineScriptPath -Arguments $machineArguments -Elevated
+        $brokerPath = Assert-GuiProtectedSnapshotBroker
+        $highestAcceptedReleaseSequence = [long]0
+        $installedState = Read-JsonFile -Path (Join-Path $workRoot "installed.json")
+        if ($null -ne $installedState) {
+            foreach ($value in @($installedState.releaseSequence, $installedState.highestAcceptedReleaseSequence, $installedState.distributionIntegrity.highestAcceptedReleaseSequence)) {
+                $candidate = [long]0
+                if ($null -ne $value -and [long]::TryParse([string]$value, [ref]$candidate)) { $highestAcceptedReleaseSequence = [Math]::Max($highestAcceptedReleaseSequence, $candidate) }
+            }
+        }
+        $inbox = & $script:GuiNewReleaseInboxCommand `
+            -ReleaseRoot $releaseRoot `
+            -Channel $script:GuiChannel `
+            -TrustedKeysPath $script:GuiTrustedKeysPath `
+            -IntegrityModulePath $script:GuiDistributionIntegrityModulePath `
+            -HighestAcceptedReleaseSequence $highestAcceptedReleaseSequence
+        if ($null -eq $inbox -or [string]::IsNullOrWhiteSpace([string]$inbox.inboxRoot)) { throw "Signed release inbox acquisition did not return an authenticated local inbox." }
+        $script:ActiveInboxRoot = [string]$inbox.inboxRoot
+        $targetArgumentJson = ConvertTo-Json -InputObject @($machineArguments) -Compress
+        $targetArgumentsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($targetArgumentJson))
+        $brokerArguments = @(
+            "-NoProfile",
+            "-ExecutionPolicy", "Bypass",
+            "-File", $brokerPath,
+            "-Target", $machineComponentKey,
+            "-Channel", $script:GuiChannel,
+            "-InboxPath", [string]$inbox.inboxRoot,
+            "-TargetArgumentsBase64", $targetArgumentsBase64,
+            "-PhaseResultPath", $machinePhaseResultPath,
+            "-TargetInteractiveUserSid", $interactiveUserSid,
+            "-TargetUserProfileRoot", $interactiveUserProfileRoot
+        )
+        $script:ActiveProcess = Start-GuiPhaseProcess -ScriptPath $brokerPath -Arguments $brokerArguments -Elevated
         $script:ActivePhase = "machine"
         $script:ActivePhaseResultPath = $machinePhaseResultPath
-        $script:PendingUserPhaseFilePath = $userScriptPath
         $script:PendingUserPhaseComponentKey = $userComponentKey
         $script:PendingUserPhaseArguments = @($userArguments)
         $script:PendingUserPhaseResultPath = $userPhaseResultPath
@@ -1273,6 +1130,10 @@ function Start-InstallerOperation {
         $timer.Start()
     }
     catch {
+        if (-not [string]::IsNullOrWhiteSpace($script:ActiveInboxRoot)) {
+            try { [void](Remove-GuiAuthenticatedInbox -Path $script:ActiveInboxRoot) } catch {}
+            $script:ActiveInboxRoot = ''
+        }
         $progress.Style = "Blocks"
         Set-ButtonsEnabled -Enabled $true
         $statusLabel.Text = "Could not start."
@@ -1345,18 +1206,54 @@ $timer.Add_Tick({
         $script:ActiveProcess.Dispose()
         $script:ActiveProcess = $null
 
+        if ($completedPhase -eq 'machine' -and -not [string]::IsNullOrWhiteSpace($script:ActiveInboxRoot)) {
+            try {
+                if (Remove-GuiAuthenticatedInbox -Path $script:ActiveInboxRoot) {
+                    $logBox.AppendText("Authenticated user inbox consumed and removed.`r`n")
+                }
+            }
+            catch {
+                $logBox.AppendText("Warning: authenticated user inbox cleanup was deferred: $($_.Exception.Message)`r`n")
+            }
+            finally { $script:ActiveInboxRoot = '' }
+        }
+
         if ($completedPhase -eq "machine" -and
             $exitCode -eq 0 -and
             $null -ne $phaseResult -and
             [bool]$phaseResult.continueUserPhase) {
             try {
-                if (-not (Test-Path -LiteralPath $script:PendingUserPhaseFilePath -PathType Leaf)) {
-                    throw "The refreshed unelevated user-phase script was not found: $($script:PendingUserPhaseFilePath)"
+                $verifiedUserPhasePath = Resolve-GuiSnapshotUserEntrypoint -PhaseResult $phaseResult -ComponentKey $script:PendingUserPhaseComponentKey
+                $snapshotRoot = [System.IO.Path]::GetFullPath([string]$phaseResult.executionSnapshot.snapshotRoot).TrimEnd("\")
+                $snapshotStatePath = [System.IO.Path]::GetFullPath([string]$phaseResult.executionSnapshot.statePath)
+                $snapshotState = Get-Content -Raw -LiteralPath $snapshotStatePath | ConvertFrom-Json
+                if (-not [string]::Equals([string]$snapshotState.release.channel, $script:GuiChannel, [System.StringComparison]::Ordinal)) {
+                    throw "Authenticated snapshot channel does not match the protected GUI channel."
                 }
-                $verifiedUserPhasePath = Assert-GuiTrustedMachineScript -MachineScriptPath $script:PendingUserPhaseFilePath -ComponentKey $script:PendingUserPhaseComponentKey
+                $snapshotChannelRelativePath = [string]$snapshotState.release.channelManifestRelativePath
+                if (-not [string]::Equals($snapshotChannelRelativePath, "channels\$($script:GuiChannel).json", [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Authenticated snapshot channel relative path is not the exact state-bound channel path."
+                }
+                $snapshotChannelPath = [System.IO.Path]::GetFullPath((Join-Path $snapshotRoot $snapshotChannelRelativePath))
+                if (-not (Test-GuiPathUnderRoot -Path $snapshotChannelPath -Root $snapshotRoot) -or -not (Test-Path -LiteralPath $snapshotChannelPath -PathType Leaf)) {
+                    throw "The authenticated local snapshot channel manifest was not found at its exact path."
+                }
+                [void](Assert-GuiProtectedLocalPath -Path $snapshotChannelPath -GuardRoot $snapshotRoot -RequireLeaf)
+                if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $snapshotChannelPath).Hash, [string]$snapshotState.release.channelManifestSha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Authenticated snapshot channel manifest hash does not match snapshot state."
+                }
+                $userPhaseArguments = @(
+                    "-NoProfile",
+                    "-ExecutionPolicy", "Bypass",
+                    "-File", $verifiedUserPhasePath,
+                    "-ChannelManifestPath", $snapshotChannelPath,
+                    "-ExecutionSnapshotStatePath", $snapshotStatePath,
+                    "-UserPhaseOnly",
+                    "-PhaseResultPath", $script:PendingUserPhaseResultPath
+                ) + @($script:PendingUserPhaseArguments)
                 $script:ActiveProcess = Start-GuiPhaseProcess `
                     -ScriptPath $verifiedUserPhasePath `
-                    -Arguments $script:PendingUserPhaseArguments
+                    -Arguments $userPhaseArguments
                 $script:ActivePhase = "user"
                 $script:ActivePhaseResultPath = $script:PendingUserPhaseResultPath
                 $script:ActiveLogPath = $script:PendingUserLogPath
