@@ -169,6 +169,94 @@ try {
     Write-Host "Test installer lib function alias contract"
     Assert-InstallerLibFunctionAliasContract -Root $RepoRoot
 
+    Write-Host "Test split-phase installer report and GUI handoff contract"
+    $installTaskPath = Join-Path $RepoRoot "installer\nas\install-updater-task.ps1"
+    $installTaskTokens = $null
+    $installTaskParseErrors = $null
+    $installTaskAst = [System.Management.Automation.Language.Parser]::ParseFile($installTaskPath, [ref]$installTaskTokens, [ref]$installTaskParseErrors)
+    Assert-Equal $installTaskParseErrors.Count 0 "PowerShell parse errors found in split-phase installer."
+    $installTaskHarnessFunctions = @(
+        "Set-RevAgentInstallRunReport",
+        "Test-InstallPhasePathUnderRoot",
+        "Assert-InstallPhasePathNoReparse",
+        "Assert-InstallPhaseOutputPaths",
+        "Write-RevAgentInstallLocalReport",
+        "Write-RevAgentInstallPhaseResult",
+        "Write-RevAgentInstallMachinePhaseResult",
+        "Write-RevAgentInstallUserPhaseResult"
+    )
+    $installTaskFunctionNodes = @($installTaskAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $installTaskHarnessFunctions -contains $node.Name
+            }, $true) | Sort-Object { $_.Extent.StartOffset })
+    Assert-Equal $installTaskFunctionNodes.Count $installTaskHarnessFunctions.Count "Split-phase installer test harness could not resolve every production function."
+    $installTaskFunctionText = ($installTaskFunctionNodes | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    & {
+        param([string]$FunctionText, [string]$HarnessRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        function Read-OptionalJsonFile { param([string]$Path) return $null }
+
+        $MachinePhaseOnly = $true
+        $UserPhaseOnly = $false
+        $WorkRoot = Join-Path $HarnessRoot "updater"
+        $LogPath = Join-Path $WorkRoot "machine-logs\install-machine.log"
+        $PhaseResultPath = Join-Path $WorkRoot "machine-state\machine-result.json"
+        $ChannelManifestPath = Join-Path $HarnessRoot "stable.json"
+        $InstallRoot = $HarnessRoot
+        $PackageTarget = Join-Path $HarnessRoot "package"
+        $ServerTarget = Join-Path $HarnessRoot "runtime"
+        $RevitInstallRoot = Join-Path $HarnessRoot "Revit"
+        $CodexInstructionPolicy = "preserve-local"
+        $MachineRole = "developer"
+        $script:RevAgentLatestReport = $null
+        $script:RevAgentOperation = "install"
+        $script:RevAgentOperationMethod = "gui-install"
+        $script:RevAgentCodexUserIntegrationPhase = $null
+        $script:RevAgentDesktopLauncherCleanup = $null
+        $script:RevAgentLogPath = $LogPath
+
+        Assert-InstallPhaseOutputPaths
+        $machineReportPath = Join-Path $WorkRoot "machine-state\last-install-report.json"
+        Assert-True (-not (Test-Path -LiteralPath $machineReportPath)) "Output-path validation must not write a null install report."
+
+        Set-RevAgentInstallRunReport -Status "completed" -Message "machine complete"
+        Assert-True (Test-Path -LiteralPath $machineReportPath -PathType Leaf) "Machine install report was not persisted after report population."
+        $machineReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$machineReport.status) "completed" "Persisted machine install report status mismatch."
+
+        Write-RevAgentJsonFile -Path $PhaseResultPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value ([ordered]@{
+                phase = "machine"
+                status = "completed"
+                success = $true
+                continueUserPhase = $true
+                source = "nested-updater"
+            })
+        Write-RevAgentInstallMachinePhaseResult -Status "completed" -Message "continue user phase" -ContinueUserPhase $true -Details ([ordered]@{ reportPath = $machineReportPath })
+        $machineResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$machineResult.phase) "machine" "Machine handoff phase mismatch."
+        Assert-True ([bool]$machineResult.success) "Machine handoff must report success."
+        Assert-True ([bool]$machineResult.continueUserPhase) "Machine handoff must continue the unelevated user phase."
+        Assert-True ($null -eq $machineResult.PSObject.Properties["source"]) "Outer installer handoff must atomically replace the nested updater result."
+
+        Write-RevAgentInstallMachinePhaseResult -Status "failed" -Message "machine failed" -ContinueUserPhase $false
+        $failedMachineResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-True (-not [bool]$failedMachineResult.success) "Failed machine handoff must not report success."
+        Assert-True (-not [bool]$failedMachineResult.continueUserPhase) "Failed machine handoff must block the user phase."
+
+        $MachinePhaseOnly = $false
+        $UserPhaseOnly = $true
+        $LogPath = Join-Path $WorkRoot "logs\install-user.log"
+        $PhaseResultPath = Join-Path $WorkRoot "user-state\user-result.json"
+        Assert-InstallPhaseOutputPaths
+        Write-RevAgentInstallUserPhaseResult -Status "completed" -Message "user complete"
+        $userResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "user-state")
+        Assert-Equal ([string]$userResult.phase) "user" "User handoff phase mismatch."
+        Assert-True ([bool]$userResult.success) "User handoff must report success for the GUI terminal state."
+        Assert-True (-not [bool]$userResult.continueUserPhase) "User handoff must be terminal."
+    } $installTaskFunctionText (Join-Path $tempRoot "split-phase-installer")
+
     Write-Host "Test hidden VBS launcher"
     $exitScript = Join-Path $tempRoot "exit-7.ps1"
     Set-Content -LiteralPath $exitScript -Value "exit 7" -Encoding ASCII

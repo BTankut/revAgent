@@ -299,6 +299,7 @@ $script:RevAgentRemoteReportsRoot = ""
 $script:RevAgentLatestReport = $null
 $script:RevAgentOperation = "install"
 $script:RevAgentOperationMethod = ""
+$script:RevAgentMachineUpdatePhase = $null
 $script:RevAgentCodexUserIntegrationPhase = $null
 $script:RevAgentDesktopLauncherCleanup = [ordered]@{
     enabled = $true
@@ -663,6 +664,10 @@ function Set-RevAgentInstallRunReport {
             channelManifestPath = $ChannelManifestPath
             logPath = $script:RevAgentLogPath
         }
+    }
+
+    if ($MachinePhaseOnly -or $UserPhaseOnly) {
+        [void](Write-RevAgentInstallLocalReport)
     }
 }
 
@@ -1254,8 +1259,22 @@ function Assert-InstallPhaseOutputPaths {
         New-Item -ItemType Directory -Path $localStateRoot -Force | Out-Null
     }
     Assert-InstallPhasePathNoReparse -Path $localStateRoot
+}
+
+function Write-RevAgentInstallLocalReport {
+    if (-not $MachinePhaseOnly -and -not $UserPhaseOnly) { return "" }
+    if ($null -eq $script:RevAgentLatestReport) {
+        throw "The install report must be populated before it is persisted."
+    }
+
+    $localStateRoot = Join-Path $WorkRoot $(if ($MachinePhaseOnly) { "machine-state" } else { "user-state" })
+    if (-not (Test-Path -LiteralPath $localStateRoot -PathType Container)) {
+        New-Item -ItemType Directory -Path $localStateRoot -Force | Out-Null
+    }
+    Assert-InstallPhasePathNoReparse -Path $localStateRoot
     $localReportPath = Join-Path $localStateRoot "last-install-report.json"
     Write-RevAgentJsonFile -Path $localReportPath -Value $script:RevAgentLatestReport -GuardRoot $localStateRoot
+    return $localReportPath
 }
 
 function Publish-RevAgentPendingMachineInstallReport {
@@ -1323,6 +1342,46 @@ function Publish-RevAgentPendingMachineInstallReport {
     return $published
 }
 
+function Write-RevAgentInstallPhaseResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][bool]$ContinueUserPhase,
+        [object]$Details = $null
+    )
+
+    if ((-not $MachinePhaseOnly -and -not $UserPhaseOnly) -or [string]::IsNullOrWhiteSpace($PhaseResultPath)) { return }
+    $phase = if ($MachinePhaseOnly) { "machine" } else { "user" }
+    $stateRoot = Join-Path $WorkRoot ("{0}-state" -f $phase)
+    if (-not (Test-InstallPhasePathUnderRoot -Path $PhaseResultPath -Root $stateRoot)) {
+        throw "${phase}-phase result must remain under '$stateRoot': $PhaseResultPath"
+    }
+    Assert-InstallPhasePathNoReparse -Path $PhaseResultPath
+    Write-RevAgentJsonFile -Path $PhaseResultPath -GuardRoot $stateRoot -Value ([ordered]@{
+            schemaVersion = 1
+            app = "revAgent"
+            phase = $phase
+            status = $Status
+            continueUserPhase = $ContinueUserPhase
+            success = ($Status -in @("completed", "current"))
+            message = $Message
+            details = $Details
+            atUtc = (Get-Date).ToUniversalTime().ToString("o")
+        })
+}
+
+function Write-RevAgentInstallMachinePhaseResult {
+    param(
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][string]$Message,
+        [Parameter(Mandatory = $true)][bool]$ContinueUserPhase,
+        [object]$Details = $null
+    )
+
+    if (-not $MachinePhaseOnly) { return }
+    Write-RevAgentInstallPhaseResult -Status $Status -Message $Message -ContinueUserPhase $ContinueUserPhase -Details $Details
+}
+
 function Write-RevAgentInstallUserPhaseResult {
     param(
         [Parameter(Mandatory = $true)][string]$Status,
@@ -1330,22 +1389,8 @@ function Write-RevAgentInstallUserPhaseResult {
         [object]$Details = $null
     )
 
-    if (-not $UserPhaseOnly -or [string]::IsNullOrWhiteSpace($PhaseResultPath)) { return }
-    $userStateRoot = Join-Path $WorkRoot "user-state"
-    if (-not (Test-InstallPhasePathUnderRoot -Path $PhaseResultPath -Root $userStateRoot)) {
-        throw "User-phase result must remain under '$userStateRoot': $PhaseResultPath"
-    }
-    Assert-InstallPhasePathNoReparse -Path $PhaseResultPath
-    Write-RevAgentJsonFile -Path $PhaseResultPath -GuardRoot $userStateRoot -Value ([ordered]@{
-            schemaVersion = 1
-            app = "revAgent"
-            phase = "user"
-            status = $Status
-            continueUserPhase = $false
-            message = $Message
-            details = $Details
-            atUtc = (Get-Date).ToUniversalTime().ToString("o")
-        })
+    if (-not $UserPhaseOnly) { return }
+    Write-RevAgentInstallPhaseResult -Status $Status -Message $Message -ContinueUserPhase $false -Details $Details
 }
 
 function Ensure-CodexWorkspaceRoot {
@@ -1981,8 +2026,28 @@ if ($MachinePhaseOnly) {
             throw "Release updater changed after signed bootstrap verification. Expected=$expectedReleaseUpdaterHash Actual=$actualReleaseUpdaterHash"
         }
         Invoke-InitialUpdateCheck -UpdaterPath $releaseUpdater -UpdaterConfigPath $configPath -ForceUpdate:$ForceUpdate -SourceFreeMigration:$RunSourceFreeMigration -OperationMethod ("{0}-machine" -f $script:RevAgentOperationMethod) -MachinePhaseOnly -PhaseResultPath $phaseResultFullPath
+        $script:RevAgentMachineUpdatePhase = Read-RevAgentJsonReportFile -Path $phaseResultFullPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        $nestedPhase = Get-JsonPropertyString -Object $script:RevAgentMachineUpdatePhase -Name "phase"
+        $nestedStatus = Get-JsonPropertyString -Object $script:RevAgentMachineUpdatePhase -Name "status"
+        $nestedSuccessProperty = $script:RevAgentMachineUpdatePhase.PSObject.Properties["success"]
+        $nestedContinueProperty = $script:RevAgentMachineUpdatePhase.PSObject.Properties["continueUserPhase"]
+        if (-not [string]::Equals($nestedPhase, "machine", [System.StringComparison]::OrdinalIgnoreCase) -or
+            $nestedStatus -notin @("completed", "current") -or
+            $null -eq $nestedSuccessProperty -or -not [bool]$nestedSuccessProperty.Value -or
+            $null -eq $nestedContinueProperty -or -not [bool]$nestedContinueProperty.Value) {
+            throw "Nested updater machine phase did not leave a successful handoff attestation. phase=$nestedPhase status=$nestedStatus"
+        }
     }
     Set-RevAgentInstallRunReport -Status "completed" -Message ("Elevated machine phase completed by {0}; user integration remains pending." -f $script:RevAgentOperationMethod)
+    $localMachineReportPath = Join-Path $WorkRoot "machine-state\last-install-report.json"
+    Write-RevAgentInstallMachinePhaseResult `
+        -Status "completed" `
+        -Message "Elevated updater installation completed; continue with unelevated user integration." `
+        -ContinueUserPhase $true `
+        -Details ([ordered]@{
+            localReportPath = $localMachineReportPath
+            updaterMachinePhase = $script:RevAgentMachineUpdatePhase
+        })
     Write-Host "Machine phase    : completed; returning to the unelevated GUI." -ForegroundColor Green
     return
 }
@@ -2036,6 +2101,17 @@ catch {
     catch {
         $localFailureReportError = $_.Exception.Message
         Write-Warning "Could not write the local failed install report: $localFailureReportError"
+    }
+    if ($MachinePhaseOnly) {
+        try {
+            Write-RevAgentInstallMachinePhaseResult -Status "failed" -Message $originalFailure.Exception.Message -ContinueUserPhase $false -Details ([ordered]@{
+                    localFailureReportError = $localFailureReportError
+                    updaterMachinePhase = $script:RevAgentMachineUpdatePhase
+                })
+        }
+        catch {
+            Write-Warning "Could not write the final machine-phase failure result: $($_.Exception.Message)"
+        }
     }
     if ($UserPhaseOnly) {
         try {
