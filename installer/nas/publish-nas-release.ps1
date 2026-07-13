@@ -58,7 +58,10 @@ param(
     [string]$NodeMsiPath = "",
 
     [Parameter(DontShow = $true)]
-    [object]$StagingRootGuard = $null
+    [object]$StagingRootGuard = $null,
+
+    [Parameter(DontShow = $true)]
+    [scriptblock]$TestNodeMsiCreatedFailureCleanupHook = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,11 +72,15 @@ $script:RevAgentNodeMsiName = 'node-v24.14.1-x64.msi'
 $script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
 $script:RevAgentNodeMsiSizeBytes = [long]32387072
 $script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
+if ($null -ne $TestNodeMsiCreatedFailureCleanupHook -and -not $AllowTestSigningIdentity) {
+    throw 'TestNodeMsiCreatedFailureCleanupHook is limited to disposable test-signing roots.'
+}
 
 if (-not ('RevAgent.ReleaseAssetNative' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -99,6 +106,29 @@ namespace RevAgent {
         [DllImport("kernel32.dll", SetLastError = true)]
         private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out BY_HANDLE_FILE_INFORMATION information);
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILE_DISPOSITION_INFO {
+            [MarshalAs(UnmanagedType.Bool)]
+            public bool DeleteFile;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFile(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool SetFileInformationByHandle(
+            SafeFileHandle handle,
+            int fileInformationClass,
+            ref FILE_DISPOSITION_INFO fileInformation,
+            uint bufferSize);
+
         private static BY_HANDLE_FILE_INFORMATION Read(SafeFileHandle handle) {
             if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.");
             BY_HANDLE_FILE_INFORMATION information;
@@ -108,6 +138,43 @@ namespace RevAgent {
 
         public static uint GetLinkCount(SafeFileHandle handle) { return Read(handle).NumberOfLinks; }
         public static uint GetAttributes(SafeFileHandle handle) { return Read(handle).FileAttributes; }
+
+        public static FileStream CreateNewDeleteCapableStream(string path) {
+            const uint GenericRead = 0x80000000;
+            const uint GenericWrite = 0x40000000;
+            const uint DeleteAccess = 0x00010000;
+            const uint FileShareRead = 0x00000001;
+            const uint CreateNew = 1;
+            const uint FileAttributeNormal = 0x00000080;
+            SafeFileHandle handle = CreateFile(
+                path,
+                GenericRead | GenericWrite | DeleteAccess,
+                FileShareRead,
+                IntPtr.Zero,
+                CreateNew,
+                FileAttributeNormal,
+                IntPtr.Zero);
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error, "Failed to create an exact delete-capable release asset.");
+            }
+            try {
+                return new FileStream(handle, FileAccess.ReadWrite);
+            }
+            catch {
+                handle.Dispose();
+                throw;
+            }
+        }
+
+        public static void MarkDeleteOnClose(SafeFileHandle handle) {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.");
+            FILE_DISPOSITION_INFO information = new FILE_DISPOSITION_INFO { DeleteFile = true };
+            if (!SetFileInformationByHandle(handle, 4, ref information, (uint)Marshal.SizeOf(typeof(FILE_DISPOSITION_INFO)))) {
+                throw new Win32Exception(Marshal.GetLastWin32Error(), "Failed to mark the exact release asset for delete-on-close.");
+            }
+        }
     }
 }
 '@
@@ -160,20 +227,28 @@ function Copy-RevAgentPinnedNodeMsiSidecar {
     param(
         [Parameter(Mandatory = $true)][string]$SourcePath,
         [Parameter(Mandatory = $true)][string]$DestinationPath,
-        [switch]$AllowTestIdentity
+        [switch]$AllowTestIdentity,
+        [switch]$AllowExistingIdentical
     )
 
     $sourceFullPath = Assert-RevAgentOrdinaryReleaseAssetPath -Path $SourcePath
     $destinationFullPath = [IO.Path]::GetFullPath($DestinationPath)
     $destinationParent = Split-Path -Parent $destinationFullPath
     if (-not (Test-Path -LiteralPath $destinationParent -PathType Container)) { throw "Release asset destination parent was not found: $destinationParent" }
-    if (Test-Path -LiteralPath $destinationFullPath) { throw "Release asset destination already exists: $destinationFullPath" }
+    $destinationExists = Test-Path -LiteralPath $destinationFullPath
+    if ($destinationExists -and -not (Test-Path -LiteralPath $destinationFullPath -PathType Leaf)) {
+        throw "Release asset destination exists but is not a file: $destinationFullPath"
+    }
+    if ($destinationExists -and -not $AllowExistingIdentical) { throw "Release asset destination already exists: $destinationFullPath" }
+    $reuseExisting = $destinationExists -and $AllowExistingIdentical
 
     $source = $null
-    $destination = $null
     $destinationGuard = $null
     $algorithm = $null
     $completed = $false
+    $destinationCreated = $false
+    $operationError = $null
+    $cleanupError = $null
     try {
         # Deny concurrent write/delete for the complete read/hash/copy window.
         $source = [IO.FileStream]::new($sourceFullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
@@ -189,43 +264,74 @@ function Copy-RevAgentPinnedNodeMsiSidecar {
             throw "Node.js MSI source is reparse-backed: $sourceFullPath"
         }
         [void](Assert-RevAgentOrdinaryReleaseAssetPath -Path $sourceFullPath)
-
-        $destination = [IO.File]::Open($destinationFullPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-        $algorithm = [Security.Cryptography.SHA256]::Create()
-        $buffer = New-Object byte[] 1048576
-        [long]$total = 0
-        while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
-            $total += $read
-            if ($total -gt 268435456) { throw "Node.js MSI exceeded its byte bound while copying: $sourceFullPath" }
-            [void]$algorithm.TransformBlock($buffer, 0, $read, $null, 0)
-            $destination.Write($buffer, 0, $read)
-        }
-        [void]$algorithm.TransformFinalBlock((New-Object byte[] 0), 0, 0)
-        $destination.Flush($true)
-        $sha256 = ([BitConverter]::ToString($algorithm.Hash)).Replace('-', '')
-        if ($total -ne $source.Length) { throw "Node.js MSI changed length while being copied: $sourceFullPath" }
+        [long]$total = $source.Length
+        $sha256 = Get-RevAgentLockedStreamSha256 -Stream $source
         if (-not $AllowTestIdentity -and -not [string]::Equals($sha256, $script:RevAgentNodeMsiSha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Node.js MSI SHA-256 mismatch. expected=$($script:RevAgentNodeMsiSha256) actual=$sha256"
         }
-
-        $destination.Dispose()
-        $destination = $null
-        $destinationGuard = [IO.FileStream]::new($destinationFullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-        if ([RevAgent.ReleaseAssetNative]::GetLinkCount($destinationGuard.SafeFileHandle) -ne 1) { throw "Release-owned Node.js MSI must have exactly one hardlink reference: $destinationFullPath" }
-        $destinationHash = Get-RevAgentLockedStreamSha256 -Stream $destinationGuard
-        if (-not [string]::Equals($destinationHash, $sha256, [StringComparison]::OrdinalIgnoreCase) -or $destinationGuard.Length -ne $total) {
-            throw "Release-owned Node.js MSI failed post-copy identity verification: $destinationFullPath"
-        }
-
         $signature = $null
         if (-not $AllowTestIdentity) {
-            $signature = Get-AuthenticodeSignature -LiteralPath $destinationFullPath
+            # Verify Authenticode while the exact source is held deny-write/delete.
+            # A create-new destination remains DELETE-capable and open until its
+            # identity is proven, so pathname-based signature readers must not
+            # compete with that handle. Exact destination hash/size equality
+            # transfers this embedded-signature evidence byte-for-byte.
+            $signature = Get-AuthenticodeSignature -LiteralPath $sourceFullPath
             if ($null -eq $signature -or $signature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
-                throw "Node.js MSI Authenticode signature is not valid: $destinationFullPath"
+                throw "Node.js MSI source Authenticode signature is not valid: $sourceFullPath"
             }
             if (-not [string]::Equals([string]$signature.SignerCertificate.Subject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal)) {
-                throw "Node.js MSI signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($signature.SignerCertificate.Subject)'"
+                throw "Node.js MSI source signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($signature.SignerCertificate.Subject)'"
             }
+        }
+
+        if ($reuseExisting) {
+            [void](Assert-RevAgentOrdinaryReleaseAssetPath -Path $destinationFullPath)
+            $destinationGuard = [IO.FileStream]::new($destinationFullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        }
+        else {
+            $destinationGuard = [RevAgent.ReleaseAssetNative]::CreateNewDeleteCapableStream($destinationFullPath)
+            $destinationCreated = $true
+            if ($null -ne $TestNodeMsiCreatedFailureCleanupHook) {
+                & $TestNodeMsiCreatedFailureCleanupHook 'after_create' $destinationFullPath
+            }
+            $algorithm = [Security.Cryptography.SHA256]::Create()
+            $buffer = New-Object byte[] 1048576
+            [long]$copied = 0
+            $source.Position = 0
+            while (($read = $source.Read($buffer, 0, $buffer.Length)) -gt 0) {
+                $copied += $read
+                if ($copied -gt 268435456) { throw "Node.js MSI exceeded its byte bound while copying: $sourceFullPath" }
+                [void]$algorithm.TransformBlock($buffer, 0, $read, $null, 0)
+                $destinationGuard.Write($buffer, 0, $read)
+            }
+            [void]$algorithm.TransformFinalBlock((New-Object byte[] 0), 0, 0)
+            $destinationGuard.Flush($true)
+            $copySha256 = ([BitConverter]::ToString($algorithm.Hash)).Replace('-', '')
+            if ($copied -ne $total -or -not [string]::Equals($copySha256, $sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Node.js MSI copy did not preserve the locked source identity: $sourceFullPath"
+            }
+        }
+        $destinationLinkCount = [uint32][RevAgent.ReleaseAssetNative]::GetLinkCount($destinationGuard.SafeFileHandle)
+        if ($destinationLinkCount -ne 1) { throw "Release-owned Node.js MSI must have exactly one hardlink reference: $destinationFullPath" }
+        if (([RevAgent.ReleaseAssetNative]::GetAttributes($destinationGuard.SafeFileHandle) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Release-owned Node.js MSI is reparse-backed: $destinationFullPath"
+        }
+        [void](Assert-RevAgentOrdinaryReleaseAssetPath -Path $destinationFullPath)
+        $destinationHash = Get-RevAgentLockedStreamSha256 -Stream $destinationGuard
+        if (-not [string]::Equals($destinationHash, $sha256, [StringComparison]::OrdinalIgnoreCase) -or $destinationGuard.Length -ne $total) {
+            throw "Release-owned Node.js MSI failed exact identity verification: $destinationFullPath"
+        }
+
+        if (-not $AllowTestIdentity -and $reuseExisting) {
+            $existingSignature = Get-AuthenticodeSignature -LiteralPath $destinationFullPath
+            if ($null -eq $existingSignature -or $existingSignature.Status -ne [Management.Automation.SignatureStatus]::Valid) {
+                throw "Existing Node.js MSI Authenticode signature is not valid: $destinationFullPath"
+            }
+            if (-not [string]::Equals([string]$existingSignature.SignerCertificate.Subject, $script:RevAgentNodeMsiSignerSubject, [StringComparison]::Ordinal)) {
+                throw "Existing Node.js MSI signer mismatch. expected='$($script:RevAgentNodeMsiSignerSubject)' actual='$($existingSignature.SignerCertificate.Subject)'"
+            }
+            $signature = $existingSignature
         }
         $completed = $true
         return [pscustomobject][ordered]@{
@@ -237,17 +343,41 @@ function Copy-RevAgentPinnedNodeMsiSidecar {
             signerSubject = if ($null -ne $signature) { [string]$signature.SignerCertificate.Subject } else { 'TEST-ONLY' }
             authenticodeStatus = if ($null -ne $signature) { [string]$signature.Status } else { 'TestBypass' }
             sourceLinkCount = $sourceLinkCount
+            destinationLinkCount = $destinationLinkCount
+            reusedExisting = [bool]$reuseExisting
         }
     }
+    catch { $operationError = $_ }
     finally {
-        if ($null -ne $destinationGuard) { $destinationGuard.Dispose() }
-        if ($null -ne $algorithm) { $algorithm.Dispose() }
-        if ($null -ne $destination) { $destination.Dispose() }
-        if ($null -ne $source) { $source.Dispose() }
-        if (-not $completed -and (Test-Path -LiteralPath $destinationFullPath -PathType Leaf)) {
-            Remove-Item -LiteralPath $destinationFullPath -Force -ErrorAction SilentlyContinue
+        if ($destinationCreated -and -not $completed -and $null -ne $destinationGuard) {
+            if ($null -ne $TestNodeMsiCreatedFailureCleanupHook) {
+                try { & $TestNodeMsiCreatedFailureCleanupHook 'before_cleanup' $destinationFullPath }
+                catch { $cleanupError = $_ }
+            }
+            try { [RevAgent.ReleaseAssetNative]::MarkDeleteOnClose($destinationGuard.SafeFileHandle) }
+            catch {
+                if ($null -eq $cleanupError) { $cleanupError = $_ }
+                else {
+                    $cleanupError = [Management.Automation.ErrorRecord]::new(
+                        [InvalidOperationException]::new("Test cleanup hook and exact-handle delete-on-close both failed. hook=$($cleanupError.Exception.Message) delete=$($_.Exception.Message)"),
+                        'node_msi_exact_handle_cleanup_failed',
+                        [Management.Automation.ErrorCategory]::WriteError,
+                        $destinationFullPath)
+                }
+            }
         }
+        if ($null -ne $destinationGuard) {
+            try { $destinationGuard.Dispose() }
+            catch { if ($null -eq $cleanupError) { $cleanupError = $_ } }
+        }
+        if ($null -ne $algorithm) { $algorithm.Dispose() }
+        if ($null -ne $source) { $source.Dispose() }
     }
+    if ($null -ne $cleanupError) {
+        $operationMessage = if ($null -ne $operationError) { $operationError.Exception.Message } else { '<none>' }
+        throw "Node.js MSI operation failed and exact-handle cleanup was incomplete. operation=$operationMessage cleanup=$($cleanupError.Exception.Message)"
+    }
+    if ($null -ne $operationError) { throw $operationError }
 }
 
 function Assert-RevAgentLocalStagingRoot {
@@ -1297,7 +1427,8 @@ try {
         [void](Copy-RevAgentPinnedNodeMsiSidecar `
                 -SourcePath $nodeMsiEvidence.destinationPath `
                 -DestinationPath (Join-Path $dependenciesTarget $script:RevAgentNodeMsiName) `
-                -AllowTestIdentity:$AllowTestSigningIdentity)
+                -AllowTestIdentity:$AllowTestSigningIdentity `
+                -AllowExistingIdentical)
     }
 
     Write-Section "Stage package"

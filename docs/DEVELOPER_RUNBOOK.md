@@ -1270,8 +1270,11 @@ create-new copy into the versioned release, and the signed manifest records its
 exact path, SHA-256, size, signer, and signature status. A legacy-compatible
 copy may also exist in the local CD artifact's `tools\dependencies`, but pilot
 publication never copies or mutates shared NAS `tools`; the updater trusts only
-the manifest-bound versioned sidecar. A future stable publish remains a separate
-approval boundary. During this one-time contract transition, the NAS publisher
+the manifest-bound versioned sidecar. Repeated generation into the same local CD
+root reuses that compatibility copy only when its path, single-link identity,
+size, hash, and production Authenticode signer still match; otherwise generation
+fails without deleting or replacing the existing file. A future stable publish
+remains a separate approval boundary. During this one-time contract transition, the NAS publisher
 may authenticate an exact canonical already-active STABLE or pilot destination
 baseline that predates the sidecar. That allowance never applies to a source,
 candidate, noncanonical channel path, or full-root readiness scan.
