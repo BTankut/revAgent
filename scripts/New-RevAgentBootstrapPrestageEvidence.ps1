@@ -145,7 +145,7 @@ if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) { throw "Ev
 if (-not (Test-Path -LiteralPath $TrustedKeysPath -PathType Leaf)) { throw "Trusted key document was not found: $TrustedKeysPath" }
 
 $integrityModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
-$pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
+$pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
 $integrityModuleBytes = Read-RevAgentPinnedModuleBytes -Path $integrityModulePath -ExpectedSha256 $pinnedIntegrityModuleHash
 if ($null -ne $IntegrityModuleBytesVerifiedHook) { & $IntegrityModuleBytesVerifiedHook $integrityModulePath }
 $trustedKeys = Get-Content -Raw -LiteralPath $TrustedKeysPath | ConvertFrom-Json

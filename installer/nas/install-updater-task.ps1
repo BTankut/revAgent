@@ -218,7 +218,7 @@ function Assert-InstallEarlyReleaseSurface {
     try { $fingerprint = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalizedKey)))).Replace("-", "") } finally { $sha.Dispose() }
     if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Pinned release key fingerprint mismatch." }
     $integrityModulePath = Join-Path $ToolsRoot "lib\RevAgent.DistributionIntegrity.psm1"
-    $pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
+    $pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
     $actualIntegrityModuleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
     if (-not [string]::Equals($actualIntegrityModuleHash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Pinned pre-import integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash Actual=$actualIntegrityModuleHash"
@@ -392,7 +392,7 @@ function Assert-InstallEarlyAuthenticatedSnapshot {
     if (-not [string]::Equals($actualProductionFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Execution snapshot production release-key fingerprint mismatch."
     }
-    $pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
+    $pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
     if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $verifierPath).Hash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) { throw "Pinned snapshot integrity verifier hash mismatch." }
 
     $script:InstallVerifiedTrustedKeysPath = $trustedKeysPath

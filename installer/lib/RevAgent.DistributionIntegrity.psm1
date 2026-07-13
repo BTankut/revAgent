@@ -1,3 +1,5 @@
+# This module is byte-pinned across the updater privilege boundary. Keep its
+# repository and checkout bytes deterministic via the exact .gitattributes rule.
 Set-StrictMode -Version Latest
 
 $script:RevitMcpCanonicalizationId = "RFC8785-JCS-SHA256-v1"

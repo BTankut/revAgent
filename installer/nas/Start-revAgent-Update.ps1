@@ -172,7 +172,7 @@ foreach ($property in $state.files.PSObject.Properties) {
 }
 
 $localIntegrityModule = Join-Path $BootstrapRoot ([string]$state.files.distributionIntegrity.relativePath)
-$pinnedIntegrityModuleHash = "A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D"
+$pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
 if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $localIntegrityModule).Hash, $pinnedIntegrityModuleHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Protected local distribution-integrity verifier does not match the bootstrap pin."
 }

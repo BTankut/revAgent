@@ -569,14 +569,32 @@ try {
     Assert-True ($guiText -match '\$logBox\.Text = \$text') "GUI must stream the live installer log into the terminal area."
     Assert-True ($guiText -match '\$logBox\.AppendText\("Operation completed') "GUI must append completion status without replacing the streamed log."
     Assert-True ($guiText -notmatch 'Operation is running\.\.\.`r`nThis can take a few minutes') "GUI must not replace live terminal output with a generic running message."
-    Assert-True ($releaseSnapshotText -match 'A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D' -and $releaseSnapshotText -match 'Signed release package SHA-256 mismatch') "Protected snapshot acquisition must pin the signature verifier and verify the signed package before UAC."
+    Assert-True ($releaseSnapshotText -match 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E' -and $releaseSnapshotText -match 'Signed release package SHA-256 mismatch') "Protected snapshot acquisition must pin the signature verifier and verify the signed package before UAC."
     Assert-True ($guiText -notmatch 'Trusted release path has a writable ACL and is not sealed|Assert-GuiDirectoryEffectivelyReadOnly|canonicalToolsRoot') "GUI must treat NAS as signed data transport without a sealed-ACL or loose-tools execution dependency."
     Assert-True ($snapshotBrokerText -match 'TargetArgumentsBase64' -and $snapshotBrokerText -match 'New-RevAgentProtectedReleaseSnapshot' -and $snapshotBrokerText -match 'targetRelativePath' -and $snapshotBrokerText -match '''-ExecutionSnapshotStatePath'', \$snapshot\.statePath' -and $snapshotBrokerText -match 'Assert-RevAgentBrokerTargetArguments' -and $snapshotBrokerText -match 'security-control arguments are forbidden') "Broker must decode exact-allowlisted target arguments, reject caller-owned trust parameters, and bind execution to the protected snapshot component/state."
-    $actualBootstrapVerifierHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1")).Hash
+    $integrityModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
+    $gitAttributesText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".gitattributes")
+    Assert-True ($gitAttributesText -match '(?m)^installer/lib/RevAgent\.DistributionIntegrity\.psm1\s+text\s+eol=lf\s*$') "The byte-pinned DistributionIntegrity module must have an exact LF checkout policy."
+    Assert-True (-not ([IO.File]::ReadAllBytes($integrityModulePath) -contains [byte]13)) "The byte-pinned DistributionIntegrity module checkout must contain LF line endings only."
+    $actualBootstrapVerifierHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
     Assert-True ($releaseSnapshotText -match ('\$script:RevAgentIntegrityModuleSha256\s*=\s*''{0}''' -f [regex]::Escape($actualBootstrapVerifierHash))) "ReleaseSnapshot must pin the exact current DistributionIntegrity module SHA-256."
-    foreach ($bootstrapText in @((Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")), (Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")))) {
-        Assert-True ($bootstrapText -match ('\$pinnedIntegrityModuleHash\s*=\s*"{0}"' -f [regex]::Escape($actualBootstrapVerifierHash))) "Every privilege-boundary bootstrap must pin the exact current DistributionIntegrity module SHA-256."
+    $bootstrapPinFiles = [ordered]@{
+        "installer\nas\update-from-nas.ps1" = 2
+        "installer\nas\install-updater-task.ps1" = 2
+        "installer\nas\Start-revAgent-Update.ps1" = 1
+        "scripts\New-RevAgentBootstrapPrestageEvidence.ps1" = 1
     }
+    $bootstrapPinCount = 0
+    foreach ($entry in $bootstrapPinFiles.GetEnumerator()) {
+        $bootstrapText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $entry.Key)
+        $pinMatches = [regex]::Matches($bootstrapText, '\$pinnedIntegrityModuleHash\s*=\s*"(?<hash>[A-Fa-f0-9]{64})"')
+        Assert-Equal $pinMatches.Count $entry.Value "Privilege-boundary bootstrap '$($entry.Key)' must expose the expected number of exact-byte verifier pins."
+        foreach ($pinMatch in $pinMatches) {
+            Assert-Equal $pinMatch.Groups['hash'].Value $actualBootstrapVerifierHash "Every privilege-boundary bootstrap pin must match the exact current DistributionIntegrity module SHA-256."
+            $bootstrapPinCount++
+        }
+    }
+    Assert-Equal $bootstrapPinCount 6 "All six privilege-boundary bootstrap pins must be covered by the exact-byte hash assertion."
 
     Write-Host "Test updater skips unchanged payload surfaces"
 $updateText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1")
@@ -650,7 +668,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match 'Publish-RevAgentMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
     Assert-True ($updateText -notmatch 'Repair-RevAgentScheduledTaskAction -Name \$TaskName') "Normal updates must not run an extra scheduled-task repair before the package installer."
-    Assert-True ($updateText -match 'Pinned pre-import integrity verifier hash mismatch' -and $updateText -match 'A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D') "Elevated updater must independently pin its pre-import signature verifier after UAC."
+    Assert-True ($updateText -match 'Pinned pre-import integrity verifier hash mismatch' -and $updateText -match 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E') "Elevated updater must independently pin its pre-import signature verifier after UAC."
     Assert-True ($updateText -match 'Updater entrypoint does not match the authenticated snapshot component' -and $updateText -match 'GetFullPath\(\$PSCommandPath\).*GetFullPath\(\$componentPath\)') "Elevated updater must bind PSCommandPath to the exact authenticated local snapshot component."
     Assert-True ($updateText.IndexOf('Assert-RevAgentEarlyAuthenticatedSnapshot') -lt $updateText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated updater must verify the protected snapshot state/hashes before importing sibling modules."
     Assert-True ($updateText -match 'authenticated-release-snapshot' -and $updateText -match 'signed_local_snapshot' -and $updateText -match 'Execution snapshot contains a filesystem link') "Elevated updater must reject unauthenticated or linked local snapshot inputs."

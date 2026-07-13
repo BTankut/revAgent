@@ -2,7 +2,7 @@ Set-StrictMode -Version Latest
 
 $script:RevAgentProductionReleaseRoot = [IO.Path]::GetFullPath('\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy').TrimEnd('\')
 $script:RevAgentProductionKeyFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
-$script:RevAgentIntegrityModuleSha256 = 'A5DE45341FD8E55CA44EB99EA6B2DC19A18098A62DEBC770B7EF7499D16D2F1D'
+$script:RevAgentIntegrityModuleSha256 = 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E'
 $script:RevAgentNodeMsiName = 'node-v24.14.1-x64.msi'
 $script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
 $script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
