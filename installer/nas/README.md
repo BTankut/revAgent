@@ -236,8 +236,11 @@ C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
 The GUI shows the live install/update log and provides a button to open the log
-folder if something fails. The GUI launchers start PowerShell hidden, so a
-separate terminal window should not remain beside the installer.
+folder if something fails. The protected bootstrap starts the absolute trusted
+Windows PowerShell executable directly, without shell association, from the
+canonical Windows PowerShell host directory under System32. It keeps the
+PowerShell console hidden, so a separate terminal window should not remain
+beside the installer.
 
 The GUI starts unelevated, captures the interactive account, SID, profile, and
 effective `CODEX_HOME`, and then runs two explicit phases. Windows UAC is used

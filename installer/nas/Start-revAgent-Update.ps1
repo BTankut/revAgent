@@ -17,6 +17,25 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
+function New-RevAgentBootstrapGuiStartInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$GuiPath,
+        [Parameter(Mandatory = $true)][string]$ChannelPath,
+        [Parameter(Mandatory = $true)][string]$BootstrapStatePath
+    )
+
+    $powershellPath = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
+    if (-not [IO.File]::Exists($powershellPath)) { throw "Trusted Windows PowerShell runtime was not found: $powershellPath" }
+    $arguments = @("-STA", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $GuiPath, "-ChannelManifestPath", $ChannelPath, "-BootstrapStatePath", $BootstrapStatePath)
+    $startInfo = [Diagnostics.ProcessStartInfo]::new()
+    $startInfo.FileName = $powershellPath
+    $startInfo.Arguments = ($arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " "
+    $startInfo.UseShellExecute = $false
+    $startInfo.CreateNoWindow = $true
+    $startInfo.WorkingDirectory = Split-Path -Parent $powershellPath
+    return $startInfo
+}
+
 $systemDirectory = [Environment]::SystemDirectory
 $trustedModuleRoots = @(
     (Join-Path $PSHOME "Modules"),
@@ -33,9 +52,26 @@ foreach ($moduleName in @("Microsoft.PowerShell.Management", "Microsoft.PowerShe
 $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $canonicalBootstrapRoot = Join-Path $programData "DPE\revAgent\bootstrap"
 if ($RuntimePathSmokeTest) {
-    $runtimePowerShell = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
-    if (-not [IO.File]::Exists($runtimePowerShell)) { throw "Trusted Windows PowerShell runtime was not found: $runtimePowerShell" }
-    [pscustomobject]@{ success = $true; powershellPath = $runtimePowerShell }
+    $runtimeStartInfo = New-RevAgentBootstrapGuiStartInfo `
+        -GuiPath 'C:\Program Files\revAgent Bootstrap Smoke\Install-revAgent-Updater-GUI.ps1' `
+        -ChannelPath 'C:\Program Files\revAgent Bootstrap Smoke\channels\stable.json' `
+        -BootstrapStatePath 'C:\Program Files\revAgent Bootstrap Smoke\bootstrap-state.json'
+    [pscustomobject]@{
+        success = $true
+        powershellPath = [string]$runtimeStartInfo.FileName
+        arguments = [string]$runtimeStartInfo.Arguments
+        useShellExecute = [bool]$runtimeStartInfo.UseShellExecute
+        createNoWindow = [bool]$runtimeStartInfo.CreateNoWindow
+        workingDirectory = [string]$runtimeStartInfo.WorkingDirectory
+        verb = [string]$runtimeStartInfo.Verb
+        userName = [string]$runtimeStartInfo.UserName
+        domain = [string]$runtimeStartInfo.Domain
+        hasPassword = $null -ne $runtimeStartInfo.Password
+        redirectStandardInput = [bool]$runtimeStartInfo.RedirectStandardInput
+        redirectStandardOutput = [bool]$runtimeStartInfo.RedirectStandardOutput
+        redirectStandardError = [bool]$runtimeStartInfo.RedirectStandardError
+        processStartInfo = $runtimeStartInfo
+    }
     return
 }
 if ([string]::IsNullOrWhiteSpace($BootstrapRoot)) { $BootstrapRoot = $canonicalBootstrapRoot }
@@ -298,12 +334,7 @@ $result = [pscustomobject][ordered]@{
 if ($VerificationOnly) { $result; return }
 
 $guiPath = Join-Path $BootstrapRoot ([string]$state.files.updaterGui.relativePath)
-$powershellPath = Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"
-$arguments = @("-STA", "-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $guiPath, "-ChannelManifestPath", $ChannelManifestPath, "-BootstrapStatePath", $statePath)
-$psi = [Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = $powershellPath
-$psi.Arguments = ($arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " "
-$psi.UseShellExecute = $true
+$psi = New-RevAgentBootstrapGuiStartInfo -GuiPath $guiPath -ChannelPath $ChannelManifestPath -BootstrapStatePath $statePath
 if ($null -ne $TestBeforeGuiLaunchHook) { & $TestBeforeGuiLaunchHook $psi }
 [Diagnostics.Process]::Start($psi) | Out-Null
 $result

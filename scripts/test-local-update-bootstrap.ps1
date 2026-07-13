@@ -56,6 +56,60 @@ $sources = [ordered]@{
 try {
     $runtimeSmoke = & (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1") -RuntimePathSmokeTest
     Assert-True ([bool]$runtimeSmoke.success -and [IO.Path]::IsPathRooted([string]$runtimeSmoke.powershellPath) -and (Test-Path -LiteralPath $runtimeSmoke.powershellPath -PathType Leaf)) "Bootstrap runtime path smoke test failed."
+    $expectedRuntimeDirectory = Split-Path -Parent (Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe")
+    Assert-True (-not [bool]$runtimeSmoke.useShellExecute -and [bool]$runtimeSmoke.createNoWindow) "Bootstrap GUI runtime must use direct process creation with no console window."
+    Assert-True ([string]::Equals([string]$runtimeSmoke.workingDirectory, $expectedRuntimeDirectory, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI runtime does not use the trusted Windows PowerShell working directory."
+    Assert-True ([string]$runtimeSmoke.arguments -match '-STA\s+-NoProfile\s+-WindowStyle\s+Hidden' -and [string]$runtimeSmoke.arguments -match '"C:\\Program Files\\revAgent Bootstrap Smoke\\Install-revAgent-Updater-GUI\.ps1"') "Bootstrap GUI runtime smoke test did not preserve the exact hidden STA argument contract."
+    Assert-True ([string]::IsNullOrWhiteSpace([string]$runtimeSmoke.verb) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.userName) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.domain) -and -not [bool]$runtimeSmoke.hasPassword) "Bootstrap GUI runtime must preserve the current interactive token without a verb or alternate credentials."
+    Assert-True (-not [bool]$runtimeSmoke.redirectStandardInput -and -not [bool]$runtimeSmoke.redirectStandardOutput -and -not [bool]$runtimeSmoke.redirectStandardError) "Production bootstrap GUI runtime unexpectedly redirects standard streams."
+
+    Write-Host "Test direct GUI child process identity and working-directory semantics"
+    $probeScript = @'
+$identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+$principal = [Security.Principal.WindowsPrincipal]::new($identity)
+[pscustomobject]@{
+    sid = $identity.User.Value
+    name = $identity.Name
+    isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    processPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+    workingDirectory = [Environment]::CurrentDirectory
+} | ConvertTo-Json -Compress
+'@
+    $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
+    $probeStartInfo = $runtimeSmoke.processStartInfo
+    Assert-True ($probeStartInfo -is [Diagnostics.ProcessStartInfo]) "Runtime smoke test did not return its production ProcessStartInfo instance."
+    $probeStartInfo.Arguments = "-NoProfile -EncodedCommand $encodedProbe"
+    $probeStartInfo.RedirectStandardOutput = $true
+    $probeStartInfo.RedirectStandardError = $true
+    $poisonRoot = Join-Path $temp "poisoned-launch-resolution"
+    New-Item -ItemType Directory -Path $poisonRoot -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) "where.exe") -Destination (Join-Path $poisonRoot "powershell.exe") -Force
+    Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) "where.exe") -Destination (Join-Path $poisonRoot "cmd.exe") -Force
+    $originalPath = $env:PATH
+    $originalLocation = Get-Location
+    $probeProcess = $null
+    try {
+        $env:PATH = $poisonRoot
+        Set-Location -LiteralPath $poisonRoot
+        $probeProcess = [Diagnostics.Process]::Start($probeStartInfo)
+        Assert-True ($probeProcess.WaitForExit(15000)) "Direct bootstrap GUI child identity probe timed out."
+        $probeStdout = $probeProcess.StandardOutput.ReadToEnd().Trim()
+        $probeStderr = $probeProcess.StandardError.ReadToEnd().Trim()
+        Assert-True ($probeProcess.ExitCode -eq 0) "Direct bootstrap GUI child identity probe failed. stderr=$probeStderr"
+    }
+    finally {
+        if ($null -ne $probeProcess -and -not $probeProcess.HasExited) { try { $probeProcess.Kill() } catch { } }
+        Set-Location -LiteralPath $originalLocation.Path
+        $env:PATH = $originalPath
+        if ($null -ne $probeProcess) { $probeProcess.Dispose() }
+    }
+    $probeResult = $probeStdout | ConvertFrom-Json
+    $parentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $parentPrincipal = [Security.Principal.WindowsPrincipal]::new($parentIdentity)
+    Assert-True ([string]::Equals([string]$probeResult.processPath, [string]$runtimeSmoke.powershellPath, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child resolved through poisoned PATH instead of the absolute trusted PowerShell executable."
+    Assert-True ([string]::Equals([string]$probeResult.workingDirectory, $expectedRuntimeDirectory, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child inherited a caller-controlled working directory."
+    Assert-True ([string]$probeResult.sid -eq [string]$parentIdentity.User.Value -and [string]::Equals([string]$probeResult.name, [string]$parentIdentity.Name, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child did not preserve the current interactive identity."
+    Assert-True ([bool]$probeResult.isAdministrator -eq [bool]$parentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) "Bootstrap GUI child changed the parent token's administrator state."
     New-Item -ItemType Directory -Path (Join-Path $fakeRelease "channels") -Force | Out-Null
     $hashes = [ordered]@{}
     foreach ($entry in $sources.GetEnumerator()) { $hashes[$entry.Key] = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.Value).Hash }
@@ -928,6 +982,7 @@ try {
     Assert-True ($launcher -match '%ProgramData%\\DPE\\revAgent\\bootstrap\\Start-revAgent-Update\.ps1' -and $launcher -notmatch 'Install-revAgent-Updater-GUI\.ps1') "Stable launcher is not local-bootstrap-only."
     $bootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1")
     Assert-True ($bootstrapSource -match '\[IO\.FileMode\]::Open' -and $bootstrapSource -match '\[IO\.FileMode\]::Append') "Protected bootstrap must probe both overwrite and append-only effective write access."
+    Assert-True ($bootstrapSource -match '\$psi = New-RevAgentBootstrapGuiStartInfo -GuiPath \$guiPath -ChannelPath \$ChannelManifestPath -BootstrapStatePath \$statePath' -and $bootstrapSource -match '(?s)\$startInfo\.UseShellExecute = \$false.*\$startInfo\.CreateNoWindow = \$true.*\$startInfo\.WorkingDirectory = Split-Path -Parent \$powershellPath' -and $bootstrapSource -notmatch '\$startInfo\.WindowStyle\s*=') "Protected bootstrap GUI launch does not use the shared future-safe direct-CreateProcess configuration after release verification."
     $prestageInstallerSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")
     Assert-True ($prestageInstallerSource -match 'Administrator prestage installer must already be staged at the protected canonical path' -and $prestageInstallerSource -match 'localBootstrapInstallerScript' -and $prestageInstallerSource -match 'Protected prestage installer does not match independently authenticated SHA-256 evidence') "Production prestage must reject elevation of the repo-side wrapper and bind the protected staged wrapper to independent evidence."
 }
