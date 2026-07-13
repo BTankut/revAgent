@@ -4,6 +4,16 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed signed pilot updates failing before UAC when the pinned Node.js MSI was
+  absent from shared NAS tools. Signed CD now downloads and verifies the exact
+  official Node v24.14.1 MSI, binds its path/hash/size/OpenJS signature evidence
+  into the signed versioned release, and carries it as an immutable sidecar
+  outside the source-free ZIP. Inbox and protected-snapshot acquisition verify
+  that sidecar in the same deny-write/delete signed set; new candidates cannot
+  fall back to ambient `tools\dependencies`. Pilot publication still leaves
+  STABLE and shared tools byte-identical, with a narrowly scoped compatibility
+  allowance only for authenticating an exact already-active pre-sidecar STABLE
+  or pilot destination baseline; source and candidate releases remain strict.
 - Hardened the workstation updater for the unified ChatGPT/Codex desktop
   transition. Elevated work is now a canonical, signed, source-verified
   machine phase that cannot execute or write through user-profile paths,

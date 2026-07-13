@@ -75,6 +75,10 @@ try {
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
     @{ trustedKeys = $trustedKeys } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+    $nodeMsiPath = Join-Path $tempRoot 'node-v24.14.1-x64.msi'
+    [IO.File]::WriteAllBytes($nodeMsiPath, [Text.Encoding]::UTF8.GetBytes('revAgent test-only Node MSI fixture'))
+    $nodeMsiHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $nodeMsiPath).Hash
+    $nodeMsiSize = (Get-Item -LiteralPath $nodeMsiPath).Length
 
     $publishOutput = & (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1") `
         -ReleaseRoot $releaseRoot `
@@ -86,6 +90,7 @@ try {
         -AllowTestSigningIdentity `
         -ReleaseSequence $releaseSequence `
         -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+        -NodeMsiPath $nodeMsiPath `
         -TrustedReleaseKeysPath $trustedKeysPath 6>&1 | Out-String
 
     Assert-True ($publishOutput -match "Release signing: enabled for keyId '$keyId'") "Publish output should report signing by keyId only."
@@ -135,7 +140,16 @@ try {
     Assert-Equal ([long]$channel.releaseSequence) ([long]$releaseSequence) "Published channel must include the signed release sequence."
     Assert-Equal ([long]$manifest.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published manifest must include the minimum accepted release sequence."
     Assert-Equal ([long]$channel.minimumAcceptedReleaseSequence) ([long]$minimumAcceptedReleaseSequence) "Published channel must include the minimum accepted release sequence."
+    Assert-Equal ([string]$manifest.externalDependencies.nodeMsi.relativePath) 'external\node-v24.14.1-x64.msi' 'Signed manifest must bind the versioned Node MSI sidecar path.'
+    Assert-Equal ([string]$manifest.externalDependencies.nodeMsi.sha256) $nodeMsiHash 'Signed manifest must bind the test Node MSI SHA-256.'
+    Assert-Equal ([long]$manifest.externalDependencies.nodeMsi.sizeBytes) ([long]$nodeMsiSize) 'Signed manifest must bind the test Node MSI size.'
+    Assert-Equal ([string]$manifest.externalDependencies.nodeMsi.signerSubject) 'TEST-ONLY' 'Test signing must mark Node MSI signer evidence as test-only.'
+    Assert-Equal ([string]$manifest.externalDependencies.nodeMsi.authenticodeStatus) 'TestBypass' 'Test signing must mark Node MSI Authenticode evidence as bypassed.'
+    $releaseNodeMsiPath = Join-Path (Split-Path -Parent $manifestPath) ([string]$manifest.externalDependencies.nodeMsi.relativePath)
+    Assert-True (Test-Path -LiteralPath $releaseNodeMsiPath -PathType Leaf) 'Versioned release-owned Node MSI sidecar was not published.'
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseNodeMsiPath).Hash $nodeMsiHash 'Versioned Node MSI sidecar hash must match the signed manifest.'
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "Public trusted release keys should be copied to NAS tools config when supplied."
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $releaseRoot 'tools\dependencies\node-v24.14.1-x64.msi')).Hash $nodeMsiHash 'Legacy stable-compatibility tools copy must derive from the same authenticated sidecar.'
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "Dashboard admin add-on installer should be published under tools\\addons."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-tunnel.ps1") -PathType Leaf) "Dashboard tunnel installer should be published under tools\\addons."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "Usage-intelligence admin add-on installer should be published under tools\\addons."
@@ -166,7 +180,8 @@ try {
             -SigningKeyId $keyId `
             -AllowTestSigningIdentity `
             -ReleaseSequence $legacyReleaseSequence `
-            -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+             -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+            -NodeMsiPath $nodeMsiPath `
             -TrustedReleaseKeysPath $trustedKeysPath `
             -ReleaseAppId "revit-mcp-skill" `
             -ReleasePackageBaseName "revit-mcp-skill" 6>&1 | Out-String)
