@@ -219,7 +219,10 @@ CD downloads the exact official Node MSI, verifies its pinned SHA-256, byte size
 and Authenticode signer, then writes it as
 `releases\<version>\external\node-v24.14.1-x64.msi`. The signed release manifest
 binds that exact relative path and identity. Pilot publication copies the
-versioned sidecar while proving shared NAS `tools` byte-identical.
+versioned sidecar while proving shared NAS `tools` byte-identical. If a local CD
+root already contains the compatibility copy under `tools\dependencies`, it is
+reused only after exact ordinary-file, single-link, hash, size, and signer
+revalidation; a mismatch fails closed without replacing the existing file.
 
 Before the first run on a workstation, a coordinator must prestage the exact
 bootstrap/GUI/verifier files from an independently authenticated merged build.

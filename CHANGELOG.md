@@ -14,6 +14,11 @@ All notable revAgent workstation deployment changes are tracked here.
   STABLE and shared tools byte-identical, with a narrowly scoped compatibility
   allowance only for authenticating an exact already-active pre-sidecar STABLE
   or pilot destination baseline; source and candidate releases remain strict.
+  Repeated local signed-CD generation reuses the compatibility copy under
+  `tools\dependencies` only after exact ordinary-file/link/hash/signature
+  revalidation, and leaves a mismatched existing file untouched while failing.
+  Failed create-new copies are removed through the same DELETE-capable file
+  handle, so cleanup cannot delete a pathname replacement from another writer.
 - Hardened the workstation updater for the unified ChatGPT/Codex desktop
   transition. Elevated work is now a canonical, signed, source-verified
   machine phase that cannot execute or write through user-profile paths,

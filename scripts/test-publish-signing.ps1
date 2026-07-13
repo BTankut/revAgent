@@ -45,6 +45,21 @@ function Assert-Equal {
     }
 }
 
+function Assert-ThrowsLike {
+    param(
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][string]$Pattern,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $caught = $null
+    try { & $Action }
+    catch { $caught = $_ }
+    if ($null -eq $caught -or [string]$caught.Exception.Message -notmatch $Pattern) {
+        throw "$Message Actual: $(if ($null -eq $caught) { '<no error>' } else { $caught.Exception.Message })"
+    }
+}
+
 function New-TestRsaProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
     $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
@@ -166,6 +181,112 @@ try {
         -Policy "enforce"
     Assert-True $aggregateVerification.success "Published signed release aggregate should pass enforce-mode verification."
     Assert-Equal $aggregateVerification.releaseSequence ([long]$releaseSequence) "Aggregate verification must preserve releaseSequence."
+
+    Write-Host 'Test repeated signed generation reuses only an exact shared compatibility MSI'
+    $toolsNodeMsiPath = Join-Path $releaseRoot 'tools\dependencies\node-v24.14.1-x64.msi'
+    $toolsNodeMsiBytes = [IO.File]::ReadAllBytes($toolsNodeMsiPath)
+    $toolsNodeMsiLastWriteTicks = (Get-Item -LiteralPath $toolsNodeMsiPath).LastWriteTimeUtc.Ticks
+    $repeatVersion = '2026.06.22.1-repeat-signing-test'
+    $repeatSequence = [long]($releaseSequence + 1)
+    [void](& (Join-Path $RepoRoot 'installer\nas\publish-nas-release.ps1') `
+            -ReleaseRoot $releaseRoot `
+            -Version $repeatVersion `
+            -AllowDirty `
+            -Force `
+            -SigningPrivateKeyPath $privateKeyPath `
+            -SigningKeyId $keyId `
+            -AllowTestSigningIdentity `
+            -ReleaseSequence $repeatSequence `
+            -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+            -NodeMsiPath $nodeMsiPath `
+            -TrustedReleaseKeysPath $trustedKeysPath 6>&1 | Out-String)
+    Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $toolsNodeMsiPath).Hash $nodeMsiHash 'Repeated signed generation changed the shared compatibility MSI hash.'
+    Assert-Equal (Get-Item -LiteralPath $toolsNodeMsiPath).LastWriteTimeUtc.Ticks $toolsNodeMsiLastWriteTicks 'Repeated signed generation rewrote an already-identical shared compatibility MSI.'
+    $repeatChannel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+    Assert-Equal ([string]$repeatChannel.version) $repeatVersion 'Repeated signed generation did not advance the channel after exact MSI reuse.'
+
+    $mismatchedBytes = [Text.Encoding]::UTF8.GetBytes('MISMATCHED EXISTING NODE MSI MUST SURVIVE FAILURE')
+    [IO.File]::WriteAllBytes($toolsNodeMsiPath, $mismatchedBytes)
+    try {
+        Assert-ThrowsLike -Action {
+            [void](& (Join-Path $RepoRoot 'installer\nas\publish-nas-release.ps1') `
+                    -ReleaseRoot $releaseRoot `
+                    -Version '2026.06.22.1-mismatch-signing-test' `
+                    -AllowDirty `
+                    -Force `
+                    -SigningPrivateKeyPath $privateKeyPath `
+                    -SigningKeyId $keyId `
+                    -AllowTestSigningIdentity `
+                    -ReleaseSequence ([long]($repeatSequence + 1)) `
+                    -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+                    -NodeMsiPath $nodeMsiPath `
+                    -TrustedReleaseKeysPath $trustedKeysPath 6>&1 | Out-String)
+        } -Pattern 'failed exact identity verification' -Message 'Repeated signed generation accepted a mismatched existing shared compatibility MSI.'
+        Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($toolsNodeMsiPath), [byte[]]$mismatchedBytes)) 'Failed shared MSI reuse deleted or replaced the mismatched existing file.'
+    }
+    finally { [IO.File]::WriteAllBytes($toolsNodeMsiPath, $toolsNodeMsiBytes) }
+
+    Write-Host 'Test failed create-new cleanup stays bound to the exact open file handle'
+    $cleanupRaceRoot = Join-Path $tempRoot 'release-root-cleanup-race'
+    $cleanupProbe = [pscustomobject]@{
+        afterCreateCalled = $false
+        beforeCleanupCalled = $false
+        swapBlocked = $false
+        replacementWritten = $false
+        path = ''
+    }
+    $cleanupHook = {
+        param([string]$phase, [string]$path)
+        if ([string]::Equals($phase, 'after_create', [StringComparison]::Ordinal)) {
+            $cleanupProbe.afterCreateCalled = $true
+            $cleanupProbe.path = $path
+            throw 'injected_node_msi_created_failure'
+        }
+        if ([string]::Equals($phase, 'before_cleanup', [StringComparison]::Ordinal)) {
+            $cleanupProbe.beforeCleanupCalled = $true
+            try {
+                Remove-Item -LiteralPath $path -Force -ErrorAction Stop
+                [IO.File]::WriteAllBytes($path, [Text.Encoding]::UTF8.GetBytes('FOREIGN PATHNAME REPLACEMENT'))
+                $cleanupProbe.replacementWritten = $true
+            }
+            catch { $cleanupProbe.swapBlocked = $true }
+        }
+    }.GetNewClosure()
+    Assert-ThrowsLike -Action {
+        [void](& (Join-Path $RepoRoot 'installer\nas\publish-nas-release.ps1') `
+                -ReleaseRoot $cleanupRaceRoot `
+                -Version '2026.06.22.1-cleanup-race-test' `
+                -AllowDirty `
+                -Force `
+                -SigningPrivateKeyPath $privateKeyPath `
+                -SigningKeyId $keyId `
+                -AllowTestSigningIdentity `
+                -ReleaseSequence 1004 `
+                -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
+                -NodeMsiPath $nodeMsiPath `
+                -TrustedReleaseKeysPath $trustedKeysPath `
+                -TestNodeMsiCreatedFailureCleanupHook $cleanupHook 6>&1 | Out-String)
+    } -Pattern 'injected_node_msi_created_failure' -Message 'Injected create-new failure did not propagate after exact-handle cleanup.'
+    Assert-True ([bool]$cleanupProbe.afterCreateCalled -and [bool]$cleanupProbe.beforeCleanupCalled) 'Exact-handle cleanup regression did not cross both test seams.'
+    Assert-True ([bool]$cleanupProbe.swapBlocked -and -not [bool]$cleanupProbe.replacementWritten) 'A pathname replacement succeeded while the exact created sidecar handle was held.'
+    Assert-True (-not (Test-Path -LiteralPath ([string]$cleanupProbe.path))) 'Exact-handle delete-on-close did not remove the failed create-new sidecar.'
+
+    $officialNodeMsiPath = Join-Path $RepoRoot 'installer\nas\dependencies\node-v24.14.1-x64.msi'
+    if (Test-Path -LiteralPath $officialNodeMsiPath -PathType Leaf) {
+        Write-Host 'Test real OpenJS MSI production Authenticode path with create-new handle held'
+        $productionProbeRoot = Join-Path $tempRoot 'release-root-production-msi-probe'
+        [void](& (Join-Path $RepoRoot 'installer\nas\publish-nas-release.ps1') `
+                -ReleaseRoot $productionProbeRoot `
+                -Version '2026.06.22.1-production-msi-probe' `
+                -AllowDirty `
+                -Force `
+                -NoChannelUpdate `
+                -NodeMsiPath $officialNodeMsiPath 6>&1 | Out-String)
+        $productionProbeSidecar = Join-Path $productionProbeRoot 'releases\2026.06.22.1-production-msi-probe\external\node-v24.14.1-x64.msi'
+        Assert-True (Test-Path -LiteralPath $productionProbeSidecar -PathType Leaf) 'Real production MSI probe did not create the versioned sidecar.'
+        Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $productionProbeSidecar).Hash 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC' 'Real production MSI probe sidecar hash mismatch.'
+    }
+    else { Write-Host 'SKIP real OpenJS MSI production-path probe: ignored local MSI is not present.' }
 
     Write-Host "Test explicit legacy release app and package identity publish"
     $legacyReleaseRoot = Join-Path $tempRoot "release-root-legacy"
