@@ -1,3 +1,5 @@
+# This module is byte-pinned across the updater privilege boundary. Keep its
+# repository and checkout bytes deterministic via the exact .gitattributes rule.
 Set-StrictMode -Version Latest
 
 $script:RevitMcpCanonicalizationId = "RFC8785-JCS-SHA256-v1"
@@ -608,6 +610,174 @@ function ConvertFrom-RevitMcpJsonPreservingStrings {
     return $Json | ConvertFrom-Json
 }
 
+function New-RevitMcpCallerBindingComparison {
+    param(
+        [bool]$Success,
+        [string]$Path,
+        [string]$Reason,
+        [string]$Message
+    )
+
+    return [pscustomobject][ordered]@{
+        success = $Success
+        path = $Path
+        reason = $Reason
+        message = $Message
+    }
+}
+
+function Test-RevitMcpCallerDateValueMatchesSignedString {
+    param(
+        [Parameter(Mandatory = $true)][object]$CallerValue,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$SignedValue
+    )
+
+    if ($CallerValue -isnot [datetime] -and $CallerValue -isnot [datetimeoffset]) {
+        return $false
+    }
+
+    try {
+        # Reparse the exact signed JSON string with this PowerShell runtime's
+        # default conversion behavior. This avoids reconstructing timestamps
+        # with locale- or timezone-dependent formatting while still supporting
+        # PowerShell versions that materialize ISO-8601 JSON strings as dates.
+        $signedJsonString = ConvertTo-RevitMcpJsonString -Value $SignedValue
+        $runtimeValue = $signedJsonString | ConvertFrom-Json
+    }
+    catch {
+        return $false
+    }
+
+    if ($CallerValue -is [datetime] -and $runtimeValue -is [datetime]) {
+        $roundTripValue = $runtimeValue.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+        return [string]::Equals($SignedValue, $roundTripValue, [System.StringComparison]::Ordinal) -and
+            $CallerValue.Ticks -eq $runtimeValue.Ticks -and
+            $CallerValue.Kind -eq $runtimeValue.Kind
+    }
+    if ($CallerValue -is [datetimeoffset] -and $runtimeValue -is [datetimeoffset]) {
+        $roundTripValue = $runtimeValue.ToString("o", [System.Globalization.CultureInfo]::InvariantCulture)
+        return [string]::Equals($SignedValue, $roundTripValue, [System.StringComparison]::Ordinal) -and
+            $CallerValue.Ticks -eq $runtimeValue.Ticks -and
+            $CallerValue.Offset -eq $runtimeValue.Offset
+    }
+
+    return $false
+}
+
+function Test-RevitMcpCallerValueMatchesSignedValue {
+    param(
+        [AllowNull()][object]$CallerValue,
+        [AllowNull()][object]$SignedValue,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    if ($null -eq $SignedValue) {
+        if ($null -eq $CallerValue) {
+            return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+        }
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "value_mismatch" -Message "Caller value is not null."
+    }
+    if ($null -eq $CallerValue) {
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "value_mismatch" -Message "Caller value is null."
+    }
+
+    if ($SignedValue -is [bool]) {
+        if ($CallerValue -is [bool] -and $CallerValue -eq $SignedValue) {
+            return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+        }
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "value_mismatch" -Message "Boolean values differ."
+    }
+
+    if (Test-RevitMcpCanonicalInteger -Value $SignedValue) {
+        if ((Test-RevitMcpCanonicalInteger -Value $CallerValue) -and
+            (ConvertTo-RevitMcpCanonicalJson -Value $CallerValue) -ceq (ConvertTo-RevitMcpCanonicalJson -Value $SignedValue)) {
+            return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+        }
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "value_mismatch" -Message "Integer values differ."
+    }
+
+    if ($SignedValue -is [char] -or $SignedValue -is [string]) {
+        $signedString = [string]$SignedValue
+        if (($CallerValue -is [char] -or $CallerValue -is [string]) -and [string]::Equals([string]$CallerValue, $signedString, [System.StringComparison]::Ordinal)) {
+            return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+        }
+        if (Test-RevitMcpCallerDateValueMatchesSignedString -CallerValue $CallerValue -SignedValue $signedString) {
+            return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "The runtime-converted date matches the exact signed JSON string."
+        }
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "value_mismatch" -Message "String values differ."
+    }
+
+    $signedIsSequence = $SignedValue -is [System.Collections.IEnumerable] -and
+        $SignedValue -isnot [System.Collections.IDictionary] -and
+        $SignedValue -isnot [string]
+    if ($signedIsSequence) {
+        $callerIsSequence = $CallerValue -is [System.Collections.IEnumerable] -and
+            $CallerValue -isnot [System.Collections.IDictionary] -and
+            $CallerValue -isnot [string]
+        if (-not $callerIsSequence) {
+            return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "type_mismatch" -Message "Caller value is not an array."
+        }
+
+        $signedItems = [System.Collections.Generic.List[object]]::new()
+        $callerItems = [System.Collections.Generic.List[object]]::new()
+        foreach ($item in $SignedValue) {
+            [void]$signedItems.Add($item)
+        }
+        foreach ($item in $CallerValue) {
+            [void]$callerItems.Add($item)
+        }
+        if ($signedItems.Count -ne $callerItems.Count) {
+            return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "array_length_mismatch" -Message "Array lengths differ."
+        }
+        for ($index = 0; $index -lt $signedItems.Count; $index++) {
+            $itemComparison = Test-RevitMcpCallerValueMatchesSignedValue `
+                -CallerValue $callerItems[$index] `
+                -SignedValue $signedItems[$index] `
+                -Path ("{0}[{1}]" -f $Path, $index)
+            if (-not [bool]$itemComparison.success) {
+                return $itemComparison
+            }
+        }
+        return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+    }
+
+    $signedIsObject = $SignedValue -is [System.Collections.IDictionary] -or $SignedValue -is [System.Management.Automation.PSCustomObject]
+    $callerIsObject = $CallerValue -is [System.Collections.IDictionary] -or $CallerValue -is [System.Management.Automation.PSCustomObject]
+    if (-not $signedIsObject -or -not $callerIsObject) {
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "type_mismatch" -Message "Caller and signed JSON value types differ."
+    }
+
+    try {
+        [string[]]$signedNames = @(Get-RevitMcpObjectPropertyNames -Value $SignedValue)
+        [string[]]$callerNames = @(Get-RevitMcpObjectPropertyNames -Value $CallerValue)
+    }
+    catch {
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "invalid_object" -Message $_.Exception.Message
+    }
+    if ($signedNames.Count -ne $callerNames.Count) {
+        return New-RevitMcpCallerBindingComparison -Success $false -Path $Path -Reason "property_set_mismatch" -Message "Object property counts differ."
+    }
+
+    $callerNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($callerName in $callerNames) {
+        [void]$callerNameSet.Add($callerName)
+    }
+    foreach ($signedName in $signedNames) {
+        if (-not $callerNameSet.Contains($signedName)) {
+            return New-RevitMcpCallerBindingComparison -Success $false -Path ("{0}.{1}" -f $Path, $signedName) -Reason "property_set_mismatch" -Message "Caller object is missing a signed property."
+        }
+        $propertyComparison = Test-RevitMcpCallerValueMatchesSignedValue `
+            -CallerValue (Get-RevitMcpObjectPropertyValue -Value $CallerValue -Name $signedName) `
+            -SignedValue (Get-RevitMcpObjectPropertyValue -Value $SignedValue -Name $signedName) `
+            -Path ("{0}.{1}" -f $Path, $signedName)
+        if (-not [bool]$propertyComparison.success) {
+            return $propertyComparison
+        }
+    }
+
+    return New-RevitMcpCallerBindingComparison -Success $true -Path $Path -Reason "ok" -Message "Values match."
+}
+
 function Test-RevitMcpSignatureEnvelopeShape {
     param(
         [Parameter(Mandatory = $true)][object]$SignatureEnvelope,
@@ -748,8 +918,13 @@ function Test-RevitMcpDetachedJsonSignatureFile {
         [Parameter(Mandatory = $true)][string]$SignaturePath,
         [Parameter(Mandatory = $true)][hashtable]$TrustedKeys,
         [string[]]$AllowedSignedObjects = @("channel", "release-manifest"),
+        [AllowNull()][ref]$VerifiedContent,
         [switch]$ThrowOnFailure
     )
+
+    if ($null -ne $VerifiedContent) {
+        $VerifiedContent.Value = $null
+    }
 
     if (-not (Test-Path -LiteralPath $ContentPath -PathType Leaf)) {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "content_file_missing" -Message "Signed content file was not found: $ContentPath" -ThrowOnFailure:$ThrowOnFailure
@@ -776,12 +951,16 @@ function Test-RevitMcpDetachedJsonSignatureFile {
         return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_json_file" -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure
     }
 
-    return Test-RevitMcpDetachedJsonSignature `
+    $verification = Test-RevitMcpDetachedJsonSignature `
         -Content $content `
         -SignatureEnvelope $signatureEnvelope `
         -TrustedKeys $TrustedKeys `
         -AllowedSignedObjects $AllowedSignedObjects `
         -ThrowOnFailure:$ThrowOnFailure
+    if ([bool]$verification.success -and $null -ne $VerifiedContent) {
+        $VerifiedContent.Value = $content
+    }
+    return $verification
 }
 
 function ConvertTo-RevitMcpTrustedKeyMap {
@@ -881,8 +1060,13 @@ function Test-RevitMcpDetachedJsonSignatureCompatibilityFile {
         [Parameter(Mandatory = $true)][object]$TrustedKeys,
         [Parameter(Mandatory = $true)][string]$SignedObject,
         [ValidateSet("compatibility", "enforce")]
-        [string]$Policy = "compatibility"
+        [string]$Policy = "compatibility",
+        [AllowNull()][ref]$VerifiedContent
     )
+
+    if ($null -ne $VerifiedContent) {
+        $VerifiedContent.Value = $null
+    }
 
     $trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $TrustedKeys
     if (-not (Test-Path -LiteralPath $SignaturePath -PathType Leaf)) {
@@ -913,11 +1097,16 @@ function Test-RevitMcpDetachedJsonSignatureCompatibilityFile {
             -TrustedKeyCount $trustedKeyMap.Count
     }
 
+    $verifiedContentValue = $null
     $result = Test-RevitMcpDetachedJsonSignatureFile `
         -ContentPath $ContentPath `
         -SignaturePath $SignaturePath `
         -TrustedKeys $trustedKeyMap `
-        -AllowedSignedObjects @($SignedObject)
+        -AllowedSignedObjects @($SignedObject) `
+        -VerifiedContent ([ref]$verifiedContentValue)
+    if ([bool]$result.success -and $null -ne $VerifiedContent) {
+        $VerifiedContent.Value = $verifiedContentValue
+    }
 
     return New-RevitMcpDetachedJsonSignatureCompatibilityResult `
         -Success ([bool]$result.success) `
@@ -988,6 +1177,46 @@ function Test-RevitMcpReleaseManifestChannelConsistency {
         -not [string]::IsNullOrWhiteSpace($manifestMinimumSequence) -and
         -not [string]::Equals($channelMinimumSequence, $manifestMinimumSequence, [System.StringComparison]::Ordinal)) {
         [void]$issues.Add("minimum accepted release sequence mismatch '$channelMinimumSequence' != '$manifestMinimumSequence'")
+    }
+
+    $channelPilotPolicy = Get-RevitMcpObjectPropertyValue -Value $Channel -Name "pilotPolicy"
+    $manifestPilotPolicy = Get-RevitMcpObjectPropertyValue -Value $ReleaseManifest -Name "pilotPolicy"
+    if ([string]::Equals($channelName, "pilot", [System.StringComparison]::Ordinal)) {
+        if ($null -eq $channelPilotPolicy -or $null -eq $manifestPilotPolicy) {
+            [void]$issues.Add("pilot policy is required in both signed channel and release manifest")
+        }
+        elseif (-not [string]::Equals(
+                (ConvertTo-RevitMcpCanonicalJson -Value $channelPilotPolicy),
+                (ConvertTo-RevitMcpCanonicalJson -Value $manifestPilotPolicy),
+                [System.StringComparison]::Ordinal)) {
+            [void]$issues.Add("pilot policy mismatch")
+        }
+        else {
+            $policySchema = Get-RevitMcpObjectPropertyValue -Value $channelPilotPolicy -Name "schemaVersion"
+            # Get-RevitMcpObjectPropertyValue intentionally preserves arrays as
+            # one pipeline object. Assign first, then enumerate the value so a
+            # signed multi-machine pilot allowlist is validated per machine.
+            $allowedMachinesValue = Get-RevitMcpObjectPropertyValue -Value $channelPilotPolicy -Name "allowedMachineNames"
+            $allowedMachines = @($allowedMachinesValue)
+            if ([string]$policySchema -ne "1" -or $allowedMachines.Count -eq 0) {
+                [void]$issues.Add("pilot policy must use schemaVersion 1 and a non-empty allowedMachineNames array")
+            }
+            else {
+                $pilotMachineSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+                foreach ($machineName in $allowedMachines) {
+                    $normalizedMachineName = ([string]$machineName).Trim().ToUpperInvariant()
+                    if ($normalizedMachineName -cnotmatch '^[A-Z0-9][A-Z0-9-]{0,62}$' -or
+                        -not [string]::Equals([string]$machineName, $normalizedMachineName, [System.StringComparison]::Ordinal) -or
+                        -not $pilotMachineSet.Add($normalizedMachineName)) {
+                        [void]$issues.Add("pilot policy contains an invalid, non-normalized, or duplicate machine name")
+                        break
+                    }
+                }
+            }
+        }
+    }
+    elseif ($null -ne $channelPilotPolicy -or $null -ne $manifestPilotPolicy) {
+        [void]$issues.Add("pilot policy is forbidden outside the pilot channel")
     }
 
     if ($issues.Count -gt 0) {
@@ -1229,14 +1458,17 @@ function Test-RevitMcpReleaseDistributionIntegrity {
 
     $trustedKeyMap = ConvertTo-RevitMcpTrustedKeyMap -TrustedKeys $TrustedKeys
     $channelSignaturePath = Get-RevitMcpDetachedSignaturePath -ContentPath $ChannelPath
+    $verifiedChannelContent = $null
     $channelSignature = Test-RevitMcpDetachedJsonSignatureCompatibilityFile `
         -ContentPath $ChannelPath `
         -SignaturePath $channelSignaturePath `
         -TrustedKeys $trustedKeyMap `
         -SignedObject "channel" `
-        -Policy $Policy
+        -Policy $Policy `
+        -VerifiedContent ([ref]$verifiedChannelContent)
 
     $releaseManifestSignature = $null
+    $verifiedReleaseManifestContent = $null
     if ([string]::IsNullOrWhiteSpace($ReleaseManifestPath)) {
         $releaseManifestSignature = New-RevitMcpDetachedJsonSignatureCompatibilityResult `
             -Success ($Policy -eq "compatibility") `
@@ -1257,7 +1489,8 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -SignaturePath $releaseManifestSignaturePath `
             -TrustedKeys $trustedKeyMap `
             -SignedObject "release-manifest" `
-            -Policy $Policy
+            -Policy $Policy `
+            -VerifiedContent ([ref]$verifiedReleaseManifestContent)
     }
 
     $unsignedLegacyConsistency = [pscustomobject][ordered]@{
@@ -1385,6 +1618,47 @@ function Test-RevitMcpReleaseDistributionIntegrity {
             -ChannelSignature $channelSignature `
             -ReleaseManifestSignature $releaseManifestSignature `
             -Consistency $consistency
+    }
+
+    # The caller-supplied objects drive consistency and anti-rollback checks.
+    # Compare them against the exact parsed objects used for detached-signature
+    # verification. PowerShell 7 may materialize ISO-8601 strings as DateTime;
+    # the comparison accepts that runtime conversion only when reparsing the
+    # original signed JSON string produces the same ticks and Kind. Canonical
+    # hashing remains exclusively over the string-preserving signed content.
+    $channelBinding = Test-RevitMcpCallerValueMatchesSignedValue -CallerValue $Channel -SignedValue $verifiedChannelContent -Path '$channel'
+    $releaseManifestBinding = Test-RevitMcpCallerValueMatchesSignedValue -CallerValue $ReleaseManifest -SignedValue $verifiedReleaseManifestContent -Path '$releaseManifest'
+    $channelObjectSha256 = if ([bool]$channelBinding.success) { Get-RevitMcpCanonicalJsonSha256 -Value $verifiedChannelContent } else { "" }
+    $releaseManifestObjectSha256 = if ([bool]$releaseManifestBinding.success) { Get-RevitMcpCanonicalJsonSha256 -Value $verifiedReleaseManifestContent } else { "" }
+    $objectBinding = [pscustomobject][ordered]@{
+        success = [bool]$channelBinding.success -and
+            [bool]$releaseManifestBinding.success -and
+            [string]::Equals($channelObjectSha256, [string]$channelSignature.contentSha256, [System.StringComparison]::OrdinalIgnoreCase) -and
+            [string]::Equals($releaseManifestObjectSha256, [string]$releaseManifestSignature.contentSha256, [System.StringComparison]::OrdinalIgnoreCase)
+        state = "verified"
+        reason = "ok"
+        message = "Caller-supplied channel and release-manifest objects match the verified signed content."
+        channelBinding = $channelBinding
+        channelObjectSha256 = $channelObjectSha256
+        verifiedChannelSha256 = [string]$channelSignature.contentSha256
+        releaseManifestBinding = $releaseManifestBinding
+        releaseManifestObjectSha256 = $releaseManifestObjectSha256
+        verifiedReleaseManifestSha256 = [string]$releaseManifestSignature.contentSha256
+    }
+    if (-not [bool]$objectBinding.success) {
+        $objectBinding.state = "rejected"
+        $objectBinding.reason = "signed_object_binding_mismatch"
+        $objectBinding.message = "Caller-supplied release metadata does not match the exact signed content verified from disk."
+        return New-RevitMcpReleaseDistributionIntegrityAggregate `
+            -Success $false `
+            -State "rejected" `
+            -Reason "signed_object_binding_mismatch" `
+            -Message ([string]$objectBinding.message) `
+            -Policy $Policy `
+            -TrustedKeyCount $trustedKeyMap.Count `
+            -ChannelSignature $channelSignature `
+            -ReleaseManifestSignature $releaseManifestSignature `
+            -Consistency $objectBinding
     }
 
     $consistency = Test-RevitMcpReleaseManifestChannelConsistency -Channel $Channel -ReleaseManifest $ReleaseManifest

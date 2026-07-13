@@ -32,7 +32,11 @@ if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
 $RepoRoot = [System.IO.Path]::GetFullPath($RepoRoot)
-Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") -Force
+$integrityModule = Import-Module (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") -Force -PassThru
+$integrityCommand = $integrityModule.ExportedCommands['Test-RevAgentReleaseDistributionIntegrity']
+if ($null -eq $integrityCommand) {
+    throw 'Pinned distribution-integrity module did not export Test-RevAgentReleaseDistributionIntegrity.'
+}
 
 function Read-RevAgentJsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -354,7 +358,7 @@ if (Test-Path -LiteralPath $releaseManifestPath -PathType Leaf) {
     $releaseManifest = Read-RevAgentJsonFile -Path $releaseManifestPath
 }
 
-$integrity = Test-RevAgentReleaseDistributionIntegrity `
+$integrity = & $integrityCommand `
     -ChannelPath $ChannelManifestPath `
     -Channel $channel `
     -ReleaseManifestPath $releaseManifestPath `

@@ -15,8 +15,10 @@ param(
     [Parameter(Mandatory = $true)]
     [string]$ReleaseRoot,
 
-    [ValidateSet("stable")]
+    [ValidateSet("stable", "pilot")]
     [string]$Channel = "stable",
+
+    [string[]]$PilotAllowedMachineNames = @(),
 
     [string]$Version = "",
 
@@ -49,11 +51,102 @@ param(
 
     [string]$TrustedReleaseKeysPath = "",
 
-    [switch]$NoChannelUpdate
+    [switch]$AllowTestSigningIdentity,
+
+    [switch]$NoChannelUpdate,
+
+    [Parameter(DontShow = $true)]
+    [object]$StagingRootGuard = $null
 )
 
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
+$script:RevAgentProductionSigningKeyId = 'revagent-prod-rsa-2026q3'
+$script:RevAgentProductionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
+
+function Assert-RevAgentLocalStagingRoot {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string[]]$AllowedPrefixes)
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if ($fullPath.StartsWith('\\', [StringComparison]::Ordinal)) { throw 'UNC staging roots are forbidden.' }
+    $pathRoot = [IO.Path]::GetPathRoot($fullPath)
+    $drive = [IO.DriveInfo]::new($pathRoot)
+    if (-not $drive.IsReady -or $drive.DriveType -notin @([IO.DriveType]::Fixed, [IO.DriveType]::Removable, [IO.DriveType]::Ram)) {
+        throw "Staging root must use a ready local fixed/removable/RAM drive; drive type is $($drive.DriveType)."
+    }
+    $underAllowedPrefix = @($AllowedPrefixes | Where-Object {
+            $prefix = [IO.Path]::GetFullPath($_).TrimEnd('\')
+            [string]::Equals($fullPath.TrimEnd('\'), $prefix, [StringComparison]::OrdinalIgnoreCase) -or
+                $fullPath.StartsWith($prefix + '\', [StringComparison]::OrdinalIgnoreCase)
+        }).Count -gt 0
+    if (-not $underAllowedPrefix) { throw 'Staging root is outside TEMP and RUNNER_WORKSPACE.' }
+
+    $cursor = $fullPath
+    while (-not (Test-Path -LiteralPath $cursor)) {
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or [string]::Equals($parent, $cursor, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = $parent
+    }
+    while (-not [string]::IsNullOrWhiteSpace($cursor) -and (Test-Path -LiteralPath $cursor)) {
+        $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+            throw "Staging root ancestor chain contains a reparse/link path: $cursor"
+        }
+        $parent = Split-Path -Parent $cursor
+        if ([string]::IsNullOrWhiteSpace($parent) -or [string]::Equals($parent, $cursor, [StringComparison]::OrdinalIgnoreCase)) { break }
+        $cursor = $parent
+    }
+    return $fullPath
+}
+
+function Assert-RevAgentAtomicStagingGuard {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [object]$Guard,
+        [switch]$Required
+    )
+
+    if ($null -eq $Guard) {
+        if ($Required) {
+            throw 'Production signed release generation requires the handle-bound staging guard from invoke-signed-source-free-cd.ps1; direct production generation is disabled.'
+        }
+        return $null
+    }
+    if (-not ('RevAgent.CdStagingNative' -as [type])) {
+        throw 'The supplied staging guard cannot be authenticated in this process.'
+    }
+    foreach ($propertyName in @('contractVersion', 'producer', 'path', 'parentPath', 'rootHandle', 'rootIdentity', 'parentHandle', 'parentIdentity')) {
+        if ($null -eq $Guard.PSObject.Properties[$propertyName]) { throw "The supplied staging guard is missing '$propertyName'." }
+    }
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if ($Guard.contractVersion -ne 1 -or
+        -not [string]::Equals([string]$Guard.producer, 'invoke-signed-source-free-cd', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$Guard.path).TrimEnd('\'), $fullPath, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([IO.Path]::GetFullPath([string]$Guard.parentPath).TrimEnd('\'), [IO.Path]::GetFullPath((Split-Path -Parent $fullPath)).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'The supplied staging guard is not bound to this exact direct-child release root.'
+    }
+    if ($Guard.rootHandle.IsInvalid -or $Guard.rootHandle.IsClosed -or $Guard.parentHandle.IsInvalid -or $Guard.parentHandle.IsClosed) {
+        throw 'The supplied staging guard handles are not live.'
+    }
+    $rootIdentity = [RevAgent.CdStagingNative]::GetIdentity($Guard.rootHandle)
+    $parentIdentity = [RevAgent.CdStagingNative]::GetIdentity($Guard.parentHandle)
+    if (($rootIdentity.FileAttributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        ($parentIdentity.FileAttributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        -not [string]::Equals([string]$rootIdentity.StableId, [string]$Guard.rootIdentity.StableId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$parentIdentity.StableId, [string]$Guard.parentIdentity.StableId, [StringComparison]::Ordinal)) {
+        throw 'The supplied staging guard handle identity changed or is reparse-backed.'
+    }
+    $pathItem = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    if (-not $pathItem.PSIsContainer -or ($pathItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$pathItem.LinkType)) {
+        throw 'The supplied staging guard path is not an ordinary directory.'
+    }
+    return [pscustomobject][ordered]@{
+        path = $fullPath
+        rootStableId = [string]$rootIdentity.StableId
+        parentStableId = [string]$parentIdentity.StableId
+        handlesLive = $true
+    }
+}
 
 $scriptRoot = $PSScriptRoot
 if ([string]::IsNullOrWhiteSpace($scriptRoot)) {
@@ -548,7 +641,7 @@ function Copy-RevAgentUserPack {
     Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.schema.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.schema.json"
     Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.example.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.example.json"
     Copy-UserPackDirectory -SourceRelativePath "installer\lib"
-    foreach ($nasTool in @("Start-revAgent-Update.ps1", "Start-revAgent-Update.cmd", "Install-revAgent-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
+    foreach ($nasTool in @("Start-revAgent-Update.ps1", "Start-revAgent-Update.cmd", "Install-revAgent-Updater-GUI.ps1", "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         Copy-UserPackFile -SourceRelativePath (Join-Path "installer\nas" $nasTool)
     }
 
@@ -734,7 +827,8 @@ function New-RevAgentPublishSigningContext {
         [string]$PrivateKeyPath,
         [string]$KeyId,
         [string]$RepositoryRoot,
-        [string]$NasToolsRoot
+        [string]$NasToolsRoot,
+        [switch]$AllowTestIdentity
     )
 
     $hasPrivateKeyPath = -not [string]::IsNullOrWhiteSpace($PrivateKeyPath)
@@ -766,6 +860,11 @@ function New-RevAgentPublishSigningContext {
     $privateKeyXml = Get-Content -Raw -LiteralPath $privateKeyFullPath -Encoding UTF8
     $publicKeyXml = Get-RevAgentPublicKeyXmlFromPrivateKeyXml -PrivateKeyXml $privateKeyXml
     $publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+    if (-not $AllowTestIdentity -and
+        (-not [string]::Equals($KeyId, $script:RevAgentProductionSigningKeyId, [StringComparison]::Ordinal) -or
+            -not [string]::Equals($publicKeyFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase))) {
+        throw "Production signing identity must be '$($script:RevAgentProductionSigningKeyId)' with fingerprint '$($script:RevAgentProductionSigningFingerprint)'."
+    }
 
     $trustedKeys = @{}
     $trustedKeys[$KeyId] = [pscustomobject][ordered]@{
@@ -779,6 +878,38 @@ function New-RevAgentPublishSigningContext {
         privateKeyXml = $privateKeyXml
         publicKeyFingerprint = $publicKeyFingerprint
         trustedKeys = $trustedKeys
+    }
+}
+
+function Get-RevAgentPilotAllowedMachineNames {
+    param([string[]]$Names)
+
+    $normalized = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($name in @($Names)) {
+        $value = ([string]$name).Trim().ToUpperInvariant()
+        if ([string]::IsNullOrWhiteSpace($value) -or $value -cnotmatch '^[A-Z0-9][A-Z0-9-]{0,62}$') {
+            throw "Pilot machine names must be non-empty Windows computer names containing only A-Z, 0-9, and dash: '$name'"
+        }
+        if (-not $seen.Add($value)) { throw "Pilot machine allowlist contains a duplicate: $value" }
+        [void]$normalized.Add($value)
+    }
+    return @($normalized.ToArray() | Sort-Object)
+}
+
+function Assert-RevAgentProductionTrustedKeysDocument {
+    param([Parameter(Mandatory = $true)][string]$Path)
+    $document = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+    $properties = @($document.trustedKeys.PSObject.Properties)
+    if ($properties.Count -ne 1 -or -not [string]::Equals([string]$properties[0].Name, $script:RevAgentProductionSigningKeyId, [StringComparison]::Ordinal)) {
+        throw "Production trusted-key document must contain exactly one '$($script:RevAgentProductionSigningKeyId)' key."
+    }
+    $key = $properties[0].Value
+    $computedFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml ([string]$key.publicKeyXml)
+    if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$key.publicKeyFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals($computedFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Production trusted-key document does not match the pinned RS256 release key.'
     }
 }
 
@@ -833,8 +964,22 @@ if ($isDirty -and -not $AllowDirty) {
     throw "Working tree has uncommitted changes. Commit first or pass -AllowDirty for a deliberate test package."
 }
 
+$pilotAllowedMachines = @(Get-RevAgentPilotAllowedMachineNames -Names $PilotAllowedMachineNames)
+if ([string]::Equals($Channel, "pilot", [StringComparison]::Ordinal)) {
+    if ($pilotAllowedMachines.Count -eq 0) {
+        throw "Signed pilot releases require at least one -PilotAllowedMachineNames entry."
+    }
+}
+elseif ($pilotAllowedMachines.Count -gt 0) {
+    throw "PilotAllowedMachineNames is valid only when -Channel pilot is selected."
+}
+
 if ([string]::IsNullOrWhiteSpace($Version)) {
     $Version = "{0}.{1}-{2}" -f (Get-Date -Format "yyyy.MM.dd"), $commitCount, $shortCommit
+    if ([string]::Equals($Channel, "pilot", [StringComparison]::Ordinal)) { $Version += "-pilot" }
+}
+elseif ([string]::Equals($Channel, "pilot", [StringComparison]::Ordinal) -and $Version -notmatch '(?i)(?:^|[._-])pilot(?:[._-]|$)') {
+    throw "Explicit pilot versions must contain a distinct 'pilot' segment so a later stable publish cannot reuse the same release directory: $Version"
 }
 Assert-SafeVersion -Value $Version
 
@@ -856,11 +1001,22 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Section "Prepare release folders"
-if (-not $ReleaseRoot.StartsWith("\\")) {
-    Write-Warning "ReleaseRoot is not a UNC path. For office deployment, prefer a path that every workstation can read, e.g. \\dpe-nas\...\revAgent-deploy"
-}
-
 $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
+$testReleasePrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+$allowedStagingPrefixes = [Collections.Generic.List[string]]::new()
+[void]$allowedStagingPrefixes.Add($testReleasePrefix)
+if (-not [string]::IsNullOrWhiteSpace($env:RUNNER_WORKSPACE)) {
+    [void]$allowedStagingPrefixes.Add(([IO.Path]::GetFullPath($env:RUNNER_WORKSPACE).TrimEnd('\') + '\'))
+}
+$ReleaseRoot = Assert-RevAgentLocalStagingRoot -Path $ReleaseRoot -AllowedPrefixes @($allowedStagingPrefixes.ToArray())
+$atomicStagingEvidence = Assert-RevAgentAtomicStagingGuard `
+    -Path $ReleaseRoot `
+    -Guard $StagingRootGuard `
+    -Required:($RequireSigning -and -not $AllowTestSigningIdentity)
+if ($AllowTestSigningIdentity -and
+    -not $ReleaseRoot.StartsWith($testReleasePrefix, [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'AllowTestSigningIdentity is limited to disposable local release roots below TEMP.'
+}
 $releasesRoot = Join-Path $ReleaseRoot "releases"
 $channelsRoot = Join-Path $ReleaseRoot "channels"
 $toolsRoot = Join-Path $ReleaseRoot "tools"
@@ -869,9 +1025,16 @@ $signingContext = New-RevAgentPublishSigningContext `
     -PrivateKeyPath $SigningPrivateKeyPath `
     -KeyId $SigningKeyId `
     -RepositoryRoot $RepoRoot `
-    -NasToolsRoot $toolsRoot
+    -NasToolsRoot $toolsRoot `
+    -AllowTestIdentity:$AllowTestSigningIdentity
 if ($RequireSigning -and -not $signingContext) {
     throw "Release signing is required for this publish. Provide -SigningPrivateKeyPath and -SigningKeyId."
+}
+if ($signingContext -and -not $AllowTestSigningIdentity) {
+    if ([string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) { throw 'Production signed publish requires the pinned trusted-key document.' }
+    $productionTrustedKeysPath = [IO.Path]::GetFullPath($TrustedReleaseKeysPath)
+    if (-not (Test-Path -LiteralPath $productionTrustedKeysPath -PathType Leaf)) { throw "Trusted release keys file was not found: $productionTrustedKeysPath" }
+    Assert-RevAgentProductionTrustedKeysDocument -Path $productionTrustedKeysPath
 }
 if ($ReleaseSequence -lt 0) {
     throw "ReleaseSequence must be zero or a positive integer."
@@ -979,6 +1142,7 @@ try {
         installerLibReporting = "installer\lib\RevAgent.Reporting.psm1"
         installerLibSourceFreeMigration = "installer\lib\RevAgent.SourceFreeMigration.psm1"
         installerLibLocalBootstrap = "installer\lib\RevAgent.LocalBootstrap.psm1"
+        installerLibReleaseSnapshot = "installer\lib\RevAgent.ReleaseSnapshot.psm1"
         installer = "installer\install-self-contained.ps1"
         localBootstrapInstaller = "installer\nas\install-revagent-local-bootstrap.ps1"
         bootstrapPrestageEvidenceTool = "installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1"
@@ -988,6 +1152,7 @@ try {
         localBootstrapLauncher = "installer\nas\Start-revAgent-Update.cmd"
         updater = "installer\nas\update-from-nas.ps1"
         updaterGui = "installer\nas\Install-revAgent-Updater-GUI.ps1"
+        privilegedSnapshotUpdate = "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
         versionStatusTool = "installer\nas\show-installed-version.ps1"
         updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
         sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
@@ -1081,6 +1246,12 @@ try {
     if ($MinimumAcceptedReleaseSequence -gt 0) {
         $manifest["minimumAcceptedReleaseSequence"] = $MinimumAcceptedReleaseSequence
     }
+    if ([string]::Equals($Channel, "pilot", [StringComparison]::Ordinal)) {
+        $manifest["pilotPolicy"] = [ordered]@{
+            schemaVersion = 1
+            allowedMachineNames = @($pilotAllowedMachines)
+        }
+    }
     $manifest | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $manifestPath -Encoding UTF8
     if ($signingContext) {
         $manifestSignaturePath = Join-Path $releaseDir "manifest.sig.json"
@@ -1116,6 +1287,12 @@ try {
         if ($MinimumAcceptedReleaseSequence -gt 0) {
             $channelManifest["minimumAcceptedReleaseSequence"] = $MinimumAcceptedReleaseSequence
         }
+        if ([string]::Equals($Channel, "pilot", [StringComparison]::Ordinal)) {
+            $channelManifest["pilotPolicy"] = [ordered]@{
+                schemaVersion = 1
+                allowedMachineNames = @($pilotAllowedMachines)
+            }
+        }
         Write-JsonFile -Value $channelManifest -Path $channelPath -Depth 8
         if ($signingContext) {
             $channelSignaturePath = Join-Path $channelsRoot ("{0}.sig.json" -f $Channel)
@@ -1132,7 +1309,7 @@ try {
     }
 
     Write-Section "Refresh NAS tools"
-    foreach ($toolName in @("Start-revAgent-Update.ps1", "Install-revAgent-Updater-GUI.ps1", "Install-Revit-MCP-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1", "promote-nas-release.ps1", "README.md")) {
+    foreach ($toolName in @("Start-revAgent-Update.ps1", "Install-revAgent-Updater-GUI.ps1", "Install-Revit-MCP-Updater-GUI.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $scriptRoot $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
     }
     Copy-Item -LiteralPath (Join-Path $RepoRoot "scripts\publish-desktop-launcher-evidence.ps1") -Destination (Join-Path $toolsRoot "publish-desktop-launcher-evidence.ps1") -Force
@@ -1192,6 +1369,10 @@ try {
 
     Write-Host "Release package: $zipPath" -ForegroundColor Green
     Write-Host "Release manifest: $manifestPath" -ForegroundColor Green
+    if ($null -ne $StagingRootGuard) {
+        $atomicStagingEvidence = Assert-RevAgentAtomicStagingGuard -Path $ReleaseRoot -Guard $StagingRootGuard -Required
+        Write-Host "Staging root guard: $($atomicStagingEvidence.rootStableId)" -ForegroundColor Green
+    }
 }
 finally {
     if (Test-Path -LiteralPath $stageRoot) {

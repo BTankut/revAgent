@@ -35,8 +35,13 @@ on:
         required: true
         type: boolean
         default: false
+      publish_to_pilot:
+        description: 'Publish only the signed DESKTOP-OKNV128/NET01 pilot channel. Stable metadata, active stable release, and shared tools remain unchanged.'
+        required: true
+        type: boolean
+        default: false
       allow_rollback:
-        description: 'Allow signed rollback, same-sequence repair, or one-time legacy stable bootstrap during NAS publish.'
+        description: 'Allow rollback to an authenticated signed release or authenticated same-sequence repair; never bypass current stable readiness.'
         required: true
         type: boolean
         default: false
@@ -56,17 +61,29 @@ jobs:
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
     environment: revagent-release-signing
     outputs:
-      release_root: ${{ steps.build.outputs.release_root }}
+      artifact_id: ${{ steps.signed-release-artifact.outputs.artifact-id }}
+      artifact_digest: ${{ steps.signed-release-artifact.outputs.artifact-digest }}
+      source_channel_sha256: ${{ steps.build.outputs.source_channel_sha256 }}
 
     steps:
       - name: Checkout main
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
+      - name: Verify exact checked out commit
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $checkedOutSha = (& git rev-parse HEAD 2>$null | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              -not [string]::Equals($checkedOutSha, $env:GITHUB_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Checked out build commit does not equal GITHUB_SHA. expected=$env:GITHUB_SHA actual=$checkedOutSha"
+          }
+
       - name: Validate main commit gates before production publish
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas }}
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -159,6 +176,8 @@ jobs:
           REVAGENT_CD_RELEASE_SEQUENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.release_sequence || '' }}
           REVAGENT_CD_MINIMUM_ACCEPTED_RELEASE_SEQUENCE: ${{ github.event_name == 'workflow_dispatch' && inputs.minimum_accepted_release_sequence || '' }}
           REVAGENT_CD_RELEASE_IDENTITY: ${{ github.event_name == 'workflow_dispatch' && inputs.release_identity || 'revAgent' }}
+          REVAGENT_CD_PUBLISH_STABLE: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas || false }}
+          REVAGENT_CD_PUBLISH_PILOT: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_pilot || false }}
         run: |
           $ErrorActionPreference = "Stop"
           foreach ($name in @("REVAGENT_RELEASE_SIGNING_PRIVATE_KEY_PATH", "REVAGENT_RELEASE_SIGNING_KEY_ID", "REVAGENT_TRUSTED_RELEASE_KEYS_PATH")) {
@@ -167,16 +186,17 @@ jobs:
             }
           }
 
-          $stagingRoot = Join-Path $env:RUNNER_WORKSPACE "_revagent_signed_cd"
-          New-Item -ItemType Directory -Force -Path $stagingRoot | Out-Null
-          Get-ChildItem -LiteralPath $stagingRoot -Directory -ErrorAction SilentlyContinue |
-            Where-Object { $_.LastWriteTimeUtc -lt [DateTime]::UtcNow.AddDays(-14) } |
-            Remove-Item -Recurse -Force
+          $publishStable = [string]::Equals($env:REVAGENT_CD_PUBLISH_STABLE, "true", [System.StringComparison]::OrdinalIgnoreCase)
+          $publishPilot = [string]::Equals($env:REVAGENT_CD_PUBLISH_PILOT, "true", [System.StringComparison]::OrdinalIgnoreCase)
+          if ($publishStable -and $publishPilot) {
+            throw "publish_to_nas and publish_to_pilot are mutually exclusive."
+          }
+          $channel = if ($publishPilot) { "pilot" } else { "stable" }
 
-          $runKey = "{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
-          $releaseRoot = Join-Path $stagingRoot $runKey
+          $runKey = "revagent-signed-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT
+          $releaseRoot = Join-Path $env:RUNNER_WORKSPACE $runKey
           if (Test-Path -LiteralPath $releaseRoot) {
-            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+            throw "Signed staging leaf already exists; refusing pathname cleanup or reuse: $releaseRoot"
           }
 
           $releaseSequence = if ([string]::IsNullOrWhiteSpace($env:REVAGENT_CD_RELEASE_SEQUENCE)) { [long]0 } else { [long]$env:REVAGENT_CD_RELEASE_SEQUENCE }
@@ -195,7 +215,11 @@ jobs:
             MinimumAcceptedReleaseSequence = $minimumAcceptedReleaseSequence
             ReleaseAppId = $releaseIdentity
             ReleasePackageBaseName = $releaseIdentity
+            Channel = $channel
             Force = $true
+          }
+          if ($channel -eq "pilot") {
+            $args["PilotAllowedMachineNames"] = @("DESKTOP-OKNV128", "NET01")
           }
           if (-not [string]::IsNullOrWhiteSpace($env:REVAGENT_CD_VERSION)) {
             $args["Version"] = $env:REVAGENT_CD_VERSION
@@ -203,21 +227,31 @@ jobs:
 
           .\scripts\invoke-signed-source-free-cd.ps1 @args
 
-          "release_root=$releaseRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
-
-      - name: Remove staged release root after no-publish validation
-        if: ${{ (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && !inputs.publish_to_nas)) && success() }}
-        shell: pwsh
-        run: |
-          $releaseRoot = "${{ steps.build.outputs.release_root }}"
-          if (-not [string]::IsNullOrWhiteSpace($releaseRoot) -and (Test-Path -LiteralPath $releaseRoot)) {
-            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
+          $sourceChannelPath = Join-Path $releaseRoot "channels\$channel.json"
+          $sourceChannelSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceChannelPath -ErrorAction Stop).Hash.ToLowerInvariant()
+          if ($sourceChannelSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Built signed channel did not produce one SHA-256 identity: $sourceChannelPath"
           }
+          "REVAGENT_SIGNED_BUILD_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "source_channel_sha256=$sourceChannelSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Upload immutable signed release artifact
+        id: signed-release-artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: revagent-signed-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REVAGENT_SIGNED_BUILD_ROOT }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: true
 
   publish-to-nas:
     name: Publish signed release to NAS
     needs: build-signed-release
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_to_nas }}
+    if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
     runs-on: ${{ fromJSON(inputs.runner_labels_json) }}
     environment: revagent-production-publish
 
@@ -225,30 +259,220 @@ jobs:
       - name: Checkout main
         uses: actions/checkout@v6
         with:
-          ref: main
+          ref: ${{ github.sha }}
           fetch-depth: 0
 
-      - name: Resolve staged signed release root
+      - name: Verify exact publish-script commit
         shell: pwsh
         run: |
-          $sourceReleaseRoot = "${{ needs.build-signed-release.outputs.release_root }}"
-          if ([string]::IsNullOrWhiteSpace($sourceReleaseRoot)) {
-            throw "Build job did not expose a staged signed release root path."
+          $ErrorActionPreference = "Stop"
+          $checkedOutSha = (& git rev-parse HEAD 2>$null | Out-String).Trim()
+          if ($LASTEXITCODE -ne 0 -or
+              -not [string]::Equals($checkedOutSha, $env:GITHUB_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Checked out publisher commit does not equal GITHUB_SHA. expected=$env:GITHUB_SHA actual=$checkedOutSha"
           }
-          if (-not (Test-Path -LiteralPath (Join-Path $sourceReleaseRoot "channels\stable.json") -PathType Leaf)) {
-            throw "Staged signed release root is missing channels\stable.json: $sourceReleaseRoot"
+
+      - name: Verify exact signed artifact REST binding
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_ARTIFACT_ID: ${{ needs.build-signed-release.outputs.artifact_id }}
+          EXPECTED_ARTIFACT_DIGEST: ${{ needs.build-signed-release.outputs.artifact_digest }}
+          EXPECTED_REPOSITORY_ID: ${{ github.repository_id }}
+          EXPECTED_RUN_ID: ${{ github.run_id }}
+          EXPECTED_SHA: ${{ github.sha }}
+          EXPECTED_SOURCE_CHANNEL_SHA256: ${{ needs.build-signed-release.outputs.source_channel_sha256 }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          [long]$artifactId = 0
+          if (-not [long]::TryParse($env:EXPECTED_ARTIFACT_ID, [ref]$artifactId) -or $artifactId -le 0) {
+            throw "Build job did not expose one positive immutable artifact ID."
+          }
+          $artifactDigest = ([string]$env:EXPECTED_ARTIFACT_DIGEST).Trim().ToLowerInvariant()
+          if ($artifactDigest -notmatch '^[0-9a-f]{64}$') {
+            throw "Build job artifact digest is not one raw SHA-256 value."
+          }
+          $sourceChannelSha256 = ([string]$env:EXPECTED_SOURCE_CHANNEL_SHA256).Trim().ToLowerInvariant()
+          if ($sourceChannelSha256 -notmatch '^[0-9a-f]{64}$') {
+            throw "Build job source channel identity is not one raw SHA-256 value."
+          }
+          [long]$repositoryId = 0
+          [long]$runId = 0
+          if (-not [long]::TryParse($env:EXPECTED_REPOSITORY_ID, [ref]$repositoryId) -or $repositoryId -le 0) {
+            throw "GitHub repository identity is unavailable."
+          }
+          if (-not [long]::TryParse($env:EXPECTED_RUN_ID, [ref]$runId) -or $runId -le 0) {
+            throw "GitHub workflow run identity is unavailable."
+          }
+
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2026-03-10"
+          }
+          $artifactUri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$artifactId"
+          $artifact = Invoke-RestMethod -Method Get -Uri $artifactUri -Headers $headers
+          $expectedServerDigest = "sha256:$artifactDigest"
+
+          if ([long]$artifact.id -ne $artifactId -or
+              -not [string]::Equals([string]$artifact.url, $artifactUri, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Artifact REST response is not bound to the requested exact artifact ID."
+          }
+          if ([bool]$artifact.expired) {
+            throw "The exact signed release artifact is already expired."
+          }
+          if ([long]$artifact.workflow_run.id -ne $runId -or
+              [long]$artifact.workflow_run.repository_id -ne $repositoryId -or
+              [long]$artifact.workflow_run.head_repository_id -ne $repositoryId -or
+              -not [string]::Equals([string]$artifact.workflow_run.head_sha, $env:EXPECTED_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Artifact REST response is not bound to this repository, workflow run, and commit."
+          }
+          if (-not [string]::Equals([string]$artifact.digest, $expectedServerDigest, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Artifact server digest does not equal sha256:<build artifact-digest>."
+          }
+
+      - name: Prepare absent artifact landing leaf
+        id: artifact-landing
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Assert-OrdinaryDirectoryChain {
+            param([string]$Path, [string]$Label)
+            $cursor = [System.IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+              if (-not $item.PSIsContainer -or
+                  ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+                throw "$Label contains a non-directory or reparse/link ancestor: $cursor"
+              }
+              $parent = [System.IO.Directory]::GetParent($cursor)
+              if ($null -eq $parent) { break }
+              $cursor = $parent.FullName
+            }
+          }
+
+          $landingParent = [System.IO.Path]::GetFullPath($env:RUNNER_TEMP).TrimEnd('\', '/')
+          if ($landingParent.StartsWith('\\', [System.StringComparison]::Ordinal)) {
+            throw "Artifact landing parent must be on a local filesystem."
+          }
+          $landingDrive = [System.IO.DriveInfo]::new([System.IO.Path]::GetPathRoot($landingParent))
+          if ($landingDrive.DriveType -notin @([System.IO.DriveType]::Fixed, [System.IO.DriveType]::Removable, [System.IO.DriveType]::Ram)) {
+            throw "Artifact landing parent must use a local fixed/removable/RAM drive. actual=$($landingDrive.DriveType)"
+          }
+          Assert-OrdinaryDirectoryChain -Path $landingParent -Label "Artifact landing parent ancestor chain before download"
+          $landingLeaf = "revagent-signed-download-{0}-{1}-{2}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT, $env:GITHUB_JOB
+          if ($landingLeaf.IndexOfAny([char[]]@('\', '/', ':')) -ge 0) {
+            throw "Artifact landing leaf name is invalid."
+          }
+          $landingRoot = [System.IO.Path]::GetFullPath((Join-Path $landingParent $landingLeaf))
+          if (-not [string]::Equals((Split-Path -Parent $landingRoot).TrimEnd('\', '/'), $landingParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Artifact landing root must be one direct child of RUNNER_TEMP."
+          }
+          $preexisting = @(
+            Get-ChildItem -LiteralPath $landingParent -Force -ErrorAction Stop |
+              Where-Object { [string]::Equals($_.Name, $landingLeaf, [System.StringComparison]::OrdinalIgnoreCase) }
+          )
+          if ($preexisting.Count -ne 0) {
+            throw "Job-unique artifact landing leaf already exists; refusing cleanup or reuse: $landingRoot"
+          }
+
+          "landing_root=$landingRoot" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "landing_parent=$landingParent" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+
+      - name: Download exact signed release artifact
+        id: signed-release-download
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ needs.build-signed-release.outputs.artifact_id }}
+          path: ${{ steps.artifact-landing.outputs.landing_root }}
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: ${{ github.run_id }}
+          digest-mismatch: error
+
+      - name: Validate downloaded signed release landing root
+        shell: pwsh
+        env:
+          EXPECTED_DOWNLOAD_PATH: ${{ steps.signed-release-download.outputs.download-path }}
+          EXPECTED_LANDING_ROOT: ${{ steps.artifact-landing.outputs.landing_root }}
+          EXPECTED_LANDING_PARENT: ${{ steps.artifact-landing.outputs.landing_parent }}
+          REVAGENT_CD_PUBLISH_PILOT: ${{ inputs.publish_to_pilot }}
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          function Assert-OrdinaryDirectoryChain {
+            param([string]$Path, [string]$Label)
+            $cursor = [System.IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+              if (-not $item.PSIsContainer -or
+                  ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+                throw "$Label contains a non-directory or reparse/link ancestor: $cursor"
+              }
+              $parent = [System.IO.Directory]::GetParent($cursor)
+              if ($null -eq $parent) { break }
+              $cursor = $parent.FullName
+            }
+          }
+
+          $sourceReleaseRoot = [System.IO.Path]::GetFullPath($env:EXPECTED_LANDING_ROOT).TrimEnd('\', '/')
+          $landingParent = [System.IO.Path]::GetFullPath($env:EXPECTED_LANDING_PARENT).TrimEnd('\', '/')
+          $downloadPath = [System.IO.Path]::GetFullPath($env:EXPECTED_DOWNLOAD_PATH).TrimEnd('\', '/')
+          if (-not [string]::Equals($sourceReleaseRoot, $downloadPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Download action output path does not equal the prepared exact landing root."
+          }
+          Assert-OrdinaryDirectoryChain -Path $sourceReleaseRoot -Label "Artifact landing leaf and ancestor chain after download"
+          if (-not [string]::Equals((Split-Path -Parent $sourceReleaseRoot).TrimEnd('\', '/'), $landingParent, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Downloaded artifact escaped the prepared RUNNER_TEMP parent."
+          }
+          $exactLeaf = @(
+            Get-ChildItem -LiteralPath $landingParent -Force -ErrorAction Stop |
+              Where-Object { [string]::Equals($_.FullName.TrimEnd('\', '/'), $sourceReleaseRoot, [System.StringComparison]::OrdinalIgnoreCase) }
+          )
+          if ($exactLeaf.Count -ne 1) {
+            throw "Downloaded artifact landing leaf is not one exact parent entry."
+          }
+
+          $channel = if ([string]::Equals($env:REVAGENT_CD_PUBLISH_PILOT, "true", [System.StringComparison]::OrdinalIgnoreCase)) { "pilot" } else { "stable" }
+          foreach ($relativePath in @("channels\$channel.json", "channels\$channel.sig.json")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $sourceReleaseRoot $relativePath) -PathType Leaf)) {
+              throw "Downloaded signed release root is missing $relativePath."
+            }
           }
 
           "REVAGENT_SIGNED_RELEASE_ROOT=$sourceReleaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "REVAGENT_SIGNED_RELEASE_CHANNEL=$channel" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
-      - name: Publish to NAS stable
+      - name: Publish signed channel to NAS
         shell: pwsh
         env:
           REVAGENT_NAS_RELEASE_ROOT: ${{ vars.REVAGENT_NAS_RELEASE_ROOT }}
           REVAGENT_TRUSTED_RELEASE_KEYS_PATH: ${{ vars.REVAGENT_TRUSTED_RELEASE_KEYS_PATH }}
           REVAGENT_CD_ALLOW_ROLLBACK: ${{ inputs.allow_rollback }}
+          REVAGENT_EXPECTED_SOURCE_CHANNEL_SHA256: ${{ needs.build-signed-release.outputs.source_channel_sha256 }}
         run: |
           $ErrorActionPreference = "Stop"
+
+          function Assert-OrdinaryDirectoryChain {
+            param([string]$Path, [string]$Label)
+            $cursor = [System.IO.Path]::GetFullPath($Path)
+            while (-not [string]::IsNullOrWhiteSpace($cursor)) {
+              $item = Get-Item -LiteralPath $cursor -Force -ErrorAction Stop
+              if (-not $item.PSIsContainer -or
+                  ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+                  -not [string]::IsNullOrWhiteSpace([string]$item.LinkType)) {
+                throw "$Label contains a non-directory or reparse/link ancestor: $cursor"
+              }
+              $parent = [System.IO.Directory]::GetParent($cursor)
+              if ($null -eq $parent) { break }
+              $cursor = $parent.FullName
+            }
+          }
+
           foreach ($name in @("REVAGENT_NAS_RELEASE_ROOT", "REVAGENT_TRUSTED_RELEASE_KEYS_PATH")) {
             if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
               throw "Required protected environment variable is missing: $name"
@@ -256,6 +480,7 @@ jobs:
           }
 
           $sourceReleaseRoot = $env:REVAGENT_SIGNED_RELEASE_ROOT
+          Assert-OrdinaryDirectoryChain -Path $sourceReleaseRoot -Label "Artifact landing leaf and ancestor chain immediately before publisher"
 
           $nasReleaseRoot = $env:REVAGENT_NAS_RELEASE_ROOT.Trim()
           if ([string]::IsNullOrWhiteSpace($nasReleaseRoot)) {
@@ -267,19 +492,12 @@ jobs:
             SourceReleaseRoot = $sourceReleaseRoot
             NasReleaseRoot = $nasReleaseRoot
             TrustedKeysPath = $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
-            Force = $true
+            Channel = $env:REVAGENT_SIGNED_RELEASE_CHANNEL
+            ExpectedSourceChannelSha256 = $env:REVAGENT_EXPECTED_SOURCE_CHANNEL_SHA256
           }
+          if ($env:REVAGENT_SIGNED_RELEASE_CHANNEL -eq "stable") { $publishArgs["Force"] = $true }
           if ([string]::Equals($env:REVAGENT_CD_ALLOW_ROLLBACK, "true", [System.StringComparison]::OrdinalIgnoreCase)) {
             $publishArgs["AllowRollback"] = $true
           }
 
           .\scripts\publish-signed-source-free-release-to-nas.ps1 @publishArgs
-
-      - name: Remove staged release root after NAS publish
-        if: ${{ success() }}
-        shell: pwsh
-        run: |
-          $releaseRoot = "${{ needs.build-signed-release.outputs.release_root }}"
-          if (-not [string]::IsNullOrWhiteSpace($releaseRoot) -and (Test-Path -LiteralPath $releaseRoot)) {
-            Remove-Item -LiteralPath $releaseRoot -Recurse -Force
-          }

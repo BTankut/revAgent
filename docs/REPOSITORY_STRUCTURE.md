@@ -209,15 +209,13 @@ diagnostics, and Revit-close policy, read `docs/DEVELOPER_RUNBOOK.md`.
 
 ## Deployment
 
-Production NAS stable releases are produced by the signed source-free GitHub
-Actions CD workflow after protected `main` updates. The manual publish command
-below remains available as a controlled fallback/recovery primitive:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\installer\nas\publish-nas-release.ps1 `
-  -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
-  -Channel stable
-```
+Production NAS releases are produced by the signed source-free GitHub Actions
+CD workflow after protected `main` updates. Canonical NAS writes must go only
+through `scripts/publish-signed-source-free-release-to-nas.ps1` with an already
+signed, locally staged release root. `installer/nas/publish-nas-release.ps1` is
+the local artifact producer; it must never target the canonical NAS root,
+whether for normal delivery, fallback, or recovery. Stable and pilot workflow
+dispatches remain separate explicit production actions.
 
 The generated release ZIP remains self-contained for office workstations. The
 package uses the canonical `installer/` layout only; removed compatibility

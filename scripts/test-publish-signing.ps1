@@ -83,6 +83,7 @@ try {
         -Force `
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
+        -AllowTestSigningIdentity `
         -ReleaseSequence $releaseSequence `
         -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
         -TrustedReleaseKeysPath $trustedKeysPath 6>&1 | Out-String
@@ -163,6 +164,7 @@ try {
             -Force `
             -SigningPrivateKeyPath $privateKeyPath `
             -SigningKeyId $keyId `
+            -AllowTestSigningIdentity `
             -ReleaseSequence $legacyReleaseSequence `
             -MinimumAcceptedReleaseSequence $minimumAcceptedReleaseSequence `
             -TrustedReleaseKeysPath $trustedKeysPath `

@@ -459,6 +459,33 @@ function Assert-RevitMcpManagedTreeLinkSafe {
     return $fullRoot
 }
 
+function Assert-RevitMcpImmutableSecurityTree {
+    param([Parameter(Mandatory = $true)][string]$Root)
+    $fullRoot = Assert-RevitMcpManagedTreeLinkSafe -Root $Root
+    if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) { throw "Immutable revAgent security root was not found: $fullRoot" }
+    $trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
+    $writeMask = [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($item in @((Get-Item -LiteralPath $fullRoot -Force)) + @(Get-ChildItem -LiteralPath $fullRoot -Recurse -Force -ErrorAction Stop)) {
+        $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+        $owner = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($owner -notin $trustedOwners) { throw "Immutable revAgent security item has an untrusted owner. path=$($item.FullName) owner=$owner" }
+        if (-not $acl.AreAccessRulesProtected) { throw "Immutable revAgent security item must keep a protected DACL: $($item.FullName)" }
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            $sid = [string]$rule.IdentityReference.Value
+            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                $sid -notin $trustedOwners -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+                throw "Immutable revAgent security item grants write/delete/ACL capability to an untrusted principal. path=$($item.FullName) principal=$sid"
+            }
+        }
+    }
+    return $fullRoot
+}
+
 function Protect-RevitMcpManagedExecutionTree {
     param(
         [Parameter(Mandatory = $true)]
@@ -504,6 +531,15 @@ function Protect-RevitMcpManagedExecutionTree {
     $fileSecurity.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($administratorsSid, [System.Security.AccessControl.FileSystemRights]::FullControl, $allow))
     $fileSecurity.AddAccessRule([System.Security.AccessControl.FileSystemAccessRule]::new($usersSid, [System.Security.AccessControl.FileSystemRights]::ReadAndExecute, $allow))
 
+    $immutableSecurityRoots = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($leaf in @('bootstrap', 'execution-snapshots', 'broker-state')) {
+        $candidate = Join-Path $root $leaf
+        if (Test-Path -LiteralPath $candidate -PathType Container) {
+            [void](Assert-RevitMcpImmutableSecurityTree -Root $candidate)
+            [void]$immutableSecurityRoots.Add([System.IO.Path]::GetFullPath($candidate).TrimEnd('\'))
+        }
+    }
+
     # Prior releases intentionally created these two cache-backed node_modules
     # junctions. Unlink only those exact leaves without following their target;
     # all other reparse points remain a hard failure.
@@ -546,6 +582,10 @@ function Protect-RevitMcpManagedExecutionTree {
                 throw "Refusing managed execution tree containing a reparse point: $($child.FullName)"
             }
             if ($child.PSIsContainer) {
+                if ($immutableSecurityRoots.Contains([System.IO.Path]::GetFullPath($child.FullName).TrimEnd('\'))) {
+                    [void](Assert-RevitMcpImmutableSecurityTree -Root $child.FullName)
+                    continue
+                }
                 Set-Acl -LiteralPath $child.FullName -AclObject $security -ErrorAction Stop
                 $pendingDirectories.Push($child.FullName)
             }
@@ -572,6 +612,10 @@ function Protect-RevitMcpManagedExecutionTree {
     # reset the root itself, which would re-import ProgramData's create/write
     # ACE for BUILTIN\Users.
     foreach ($child in @(Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue)) {
+        if ($child.PSIsContainer -and $immutableSecurityRoots.Contains([System.IO.Path]::GetFullPath($child.FullName).TrimEnd('\'))) {
+            [void](Assert-RevitMcpImmutableSecurityTree -Root $child.FullName)
+            continue
+        }
         & $icacls $child.FullName "/reset" "/T" "/C" "/Q" | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Failed to normalize revAgent descendant ACLs (icacls exit $LASTEXITCODE): $($child.FullName)"
@@ -579,6 +623,7 @@ function Protect-RevitMcpManagedExecutionTree {
     }
 
     [void](Assert-RevitMcpManagedTreeLinkSafe -Root $root)
+    foreach ($immutableRoot in $immutableSecurityRoots) { [void](Assert-RevitMcpImmutableSecurityTree -Root $immutableRoot) }
 
     return $root
 }

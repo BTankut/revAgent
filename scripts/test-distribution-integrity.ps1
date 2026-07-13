@@ -242,6 +242,21 @@ try {
         Assert-Equal $validAggregate.releaseSequence ([long]1001) "Valid signed release aggregate should report releaseSequence."
         Assert-Equal $validAggregate.highestAcceptedReleaseSequence ([long]1001) "Valid signed release aggregate should advance highest accepted sequence."
 
+        Write-Host "Test updater aggregate binds runtime-converted ISO dates to exact signed JSON"
+        $runtimeParsedChannel = Get-Content -Raw -LiteralPath $channelPath -Encoding UTF8 | ConvertFrom-Json
+        $runtimeParsedManifest = Get-Content -Raw -LiteralPath $manifestPath -Encoding UTF8 | ConvertFrom-Json
+        $runtimeParsedAggregate = Test-RevAgentReleaseDistributionIntegrity `
+            -ChannelPath $channelPath `
+            -Channel $runtimeParsedChannel `
+            -ReleaseManifestPath $manifestPath `
+            -ReleaseManifest $runtimeParsedManifest `
+            -TrustedKeys $jsonTrustedKeys `
+            -Policy "compatibility"
+        if ((Get-Command ConvertFrom-Json).Parameters.ContainsKey("DateKind")) {
+            Assert-True ($runtimeParsedChannel.publishedAtUtc -is [datetime]) "The regression fixture must exercise PowerShell's default ISO date materialization."
+        }
+        Assert-True $runtimeParsedAggregate.success "Runtime-converted ISO date values must bind to the exact verified signed JSON content."
+
         Write-Host "Test updater aggregate accepts revAgent app identity"
         $revAgentChannel = Copy-OrderedMap -Value $channel
         $revAgentChannel["app"] = "revAgent"

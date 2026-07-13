@@ -9,3 +9,4 @@ installer/revit-api-docs-mcp/scripts/**/*.ts text eol=lf
 installer/revit-api-docs-mcp/build/**/*.js text eol=lf
 installer/revit-api-docs-mcp/release/**/*.js text eol=lf
 installer/revit-api-docs-mcp/release/**/*.json text eol=lf
+installer/lib/RevAgent.DistributionIntegrity.psm1 text eol=lf

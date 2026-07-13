@@ -19,6 +19,69 @@ foreach ($moduleName in @("Microsoft.PowerShell.Management", "Microsoft.PowerShe
     if (-not [IO.File]::Exists($manifest)) { throw "Required trusted PowerShell module was not found: $manifest" }
     Microsoft.PowerShell.Core\Import-Module -Name $manifest -Force -ErrorAction Stop
 }
+
+function New-RevAgentPrestageCompilerTemp {
+    $windowsRoot = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
+    $windowsTemp = [IO.Path]::GetFullPath((Join-Path $windowsRoot 'Temp')).TrimEnd('\')
+    if (-not [IO.Directory]::Exists($windowsTemp)) { throw "Canonical Windows Temp was not found: $windowsTemp" }
+    $tempRootItem = Get-Item -LiteralPath $windowsTemp -Force
+    if (($tempRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace([string]$tempRootItem.LinkType)) {
+        throw "Canonical Windows Temp is a filesystem link: $windowsTemp"
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $ownerSid = if ($elevated) { [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') } else { $identity.User }
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($ownerSid)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544')
+    if (-not $elevated) { $allowedSids += [string]$identity.User.Value }
+    foreach ($sid in @($allowedSids | Select-Object -Unique)) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid),
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    $path = Join-Path $windowsTemp ('revagent-prestage-compiler-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $aclCreateOverload = [IO.Directory].GetMethods() | Where-Object {
+            $_.Name -eq 'CreateDirectory' -and $_.GetParameters().Count -eq 2 -and $_.GetParameters()[1].ParameterType -eq [Security.AccessControl.DirectorySecurity]
+        } | Select-Object -First 1
+        if ($null -ne $aclCreateOverload) {
+            [void]$aclCreateOverload.Invoke($null, [object[]]@([string]$path, [Security.AccessControl.DirectorySecurity]$security))
+        }
+        elseif ($elevated) {
+            throw 'Production prestage requires Windows PowerShell with ACL-at-create directory support.'
+        }
+        else {
+            [void][IO.Directory]::CreateDirectory($path)
+            [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo](Get-Item -LiteralPath $path -Force), $security)
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        $acl = Get-Acl -LiteralPath $path
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not $acl.AreAccessRulesProtected -or
+            -not [string]::Equals([string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value, [string]$ownerSid.Value, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Secure prestage compiler TEMP attestation failed: $path"
+        }
+        return $path
+    }
+    catch {
+        if ([IO.Directory]::Exists($path)) { [IO.Directory]::Delete($path, $true) }
+        throw
+    }
+}
+
+$prestageOriginalTemp = $env:TEMP
+$prestageOriginalTmp = $env:TMP
+$prestageCompilerTemp = New-RevAgentPrestageCompilerTemp
+try {
+$env:TEMP = $prestageCompilerTemp
+$env:TMP = $prestageCompilerTemp
 if (-not ("RevAgent.PrestageNativeFileInfo" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -55,6 +118,23 @@ public static class PrestageNativeFileInfo
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION information);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+
     private static BY_HANDLE_FILE_INFORMATION Read(SafeFileHandle handle)
     {
         if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.", "handle");
@@ -68,6 +148,27 @@ public static class PrestageNativeFileInfo
         return Read(handle).NumberOfLinks;
     }
 
+    public static uint GetAttributes(SafeFileHandle handle) { return Read(handle).FileAttributes; }
+
+    public static SafeFileHandle OpenDirectoryNoDeleteShare(string path)
+    {
+        SafeFileHandle handle = CreateFileW(
+            path,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            throw new Win32Exception(error, "Could not open the exact directory without FILE_SHARE_DELETE: " + path);
+        }
+        return handle;
+    }
+
     public static string GetIdentity(SafeFileHandle handle)
     {
         BY_HANDLE_FILE_INFORMATION information = Read(handle);
@@ -76,6 +177,12 @@ public static class PrestageNativeFileInfo
 }
 }
 '@
+}
+}
+finally {
+    $env:TEMP = $prestageOriginalTemp
+    $env:TMP = $prestageOriginalTmp
+    if ([IO.Directory]::Exists($prestageCompilerTemp)) { [IO.Directory]::Delete($prestageCompilerTemp, $true) }
 }
 
 function Assert-RevAgentPrestagePathNoLinks {
@@ -320,7 +427,10 @@ Assert-RevAgentPrestageFileUnchanged -Evidence $expectedEvidence -MaxBytes 65536
 if ([int]$expectedDocument.schemaVersion -ne 1 -or
     -not [string]::Equals([string]$expectedDocument.app, "revAgent", [StringComparison]::Ordinal) -or
     -not [string]::Equals([string]$expectedDocument.evidenceType, "bootstrap-prestage", [StringComparison]::Ordinal) -or
-    -not [bool]$expectedDocument.release.signatureVerified) {
+    -not [bool]$expectedDocument.release.signatureVerified -or
+    [long]$expectedDocument.release.releaseSequence -le 0 -or
+    [long]$expectedDocument.release.highestAcceptedReleaseSequence -lt [long]$expectedDocument.release.releaseSequence -or
+    [long]$expectedDocument.release.minimumAcceptedReleaseSequence -gt [long]$expectedDocument.release.releaseSequence) {
     throw "Authenticated prestage evidence does not satisfy the revAgent bootstrap-prestage schema/version/signature contract."
 }
 $selfEvidence = Read-RevAgentPrestageBoundedFile -Path $PSCommandPath -MaxBytes 1048576
@@ -370,8 +480,11 @@ try {
         -GuiPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1") `
         -DistributionIntegrityModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") `
         -SourceFreeMigrationModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1") `
+        -ReleaseSnapshotModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1") `
+        -PrivilegedSnapshotUpdatePath (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") `
         -TrustedKeysPath $TrustedKeysPath `
         -ExpectedSourceHashes $expected `
+        -AuthenticatedRelease $expectedDocument.release `
         -SourceAuthenticationMethod "coordinator-admin-independent-prestage" `
         -ConfirmIndependentlyAuthenticatedSource `
         -AllowTestRoot:$AllowTestRoot

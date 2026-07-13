@@ -1,5 +1,70 @@
 Set-StrictMode -Version Latest
 
+function New-RevAgentLocalBootstrapCompilerTemp {
+    $windowsRoot = [IO.Directory]::GetParent([Environment]::SystemDirectory).FullName
+    $windowsTemp = [IO.Path]::GetFullPath((Join-Path $windowsRoot 'Temp')).TrimEnd('\')
+    if (-not [IO.Directory]::Exists($windowsTemp)) { throw "Canonical Windows Temp was not found: $windowsTemp" }
+    $tempRootItem = Get-Item -LiteralPath $windowsTemp -Force
+    $tempRootLinkType = if ($tempRootItem.PSObject.Properties['LinkType']) { [string]$tempRootItem.LinkType } else { '' }
+    if (($tempRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($tempRootLinkType)) {
+        throw "Canonical Windows Temp is a filesystem link: $windowsTemp"
+    }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    $elevated = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    $ownerSid = if ($elevated) { [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') } else { $identity.User }
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner($ownerSid)
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544')
+    if (-not $elevated) { $allowedSids += [string]$identity.User.Value }
+    foreach ($sid in @($allowedSids | Select-Object -Unique)) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid),
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    $path = Join-Path $windowsTemp ('revagent-bootstrap-compiler-' + [Guid]::NewGuid().ToString('N'))
+    try {
+        $aclCreateOverload = [IO.Directory].GetMethods() | Where-Object {
+            $_.Name -eq 'CreateDirectory' -and $_.GetParameters().Count -eq 2 -and $_.GetParameters()[1].ParameterType -eq [Security.AccessControl.DirectorySecurity]
+        } | Select-Object -First 1
+        if ($null -ne $aclCreateOverload) {
+            [void]$aclCreateOverload.Invoke($null, [object[]]@([string]$path, [Security.AccessControl.DirectorySecurity]$security))
+        }
+        elseif ($elevated) {
+            throw 'Production local bootstrap requires Windows PowerShell with ACL-at-create directory support.'
+        }
+        else {
+            [void][IO.Directory]::CreateDirectory($path)
+            [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo](Get-Item -LiteralPath $path -Force), $security)
+        }
+        $item = Get-Item -LiteralPath $path -Force
+        $itemLinkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+        $acl = Get-Acl -LiteralPath $path
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not [string]::IsNullOrWhiteSpace($itemLinkType) -or
+            -not $acl.AreAccessRulesProtected -or
+            -not [string]::Equals([string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value, [string]$ownerSid.Value, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Secure local-bootstrap compiler TEMP attestation failed: $path"
+        }
+        return $path
+    }
+    catch {
+        if ([IO.Directory]::Exists($path)) { [IO.Directory]::Delete($path, $true) }
+        throw
+    }
+}
+
+$localBootstrapOriginalTemp = $env:TEMP
+$localBootstrapOriginalTmp = $env:TMP
+$localBootstrapCompilerTemp = New-RevAgentLocalBootstrapCompilerTemp
+try {
+$env:TEMP = $localBootstrapCompilerTemp
+$env:TMP = $localBootstrapCompilerTemp
 if (-not ("RevAgent.PrestageNativeFileInfo" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -32,6 +97,23 @@ public static class PrestageNativeFileInfo
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool GetFileInformationByHandle(SafeFileHandle file, out BY_HANDLE_FILE_INFORMATION information);
 
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern SafeFileHandle CreateFileW(
+        string fileName,
+        uint desiredAccess,
+        uint shareMode,
+        IntPtr securityAttributes,
+        uint creationDisposition,
+        uint flagsAndAttributes,
+        IntPtr templateFile);
+
+    private const uint FILE_SHARE_READ = 0x00000001;
+    private const uint FILE_SHARE_WRITE = 0x00000002;
+    private const uint GENERIC_READ = 0x80000000;
+    private const uint OPEN_EXISTING = 3;
+    private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+    private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+
     private static BY_HANDLE_FILE_INFORMATION Read(SafeFileHandle handle)
     {
         if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid file handle is required.", "handle");
@@ -42,6 +124,27 @@ public static class PrestageNativeFileInfo
 
     public static uint GetLinkCount(SafeFileHandle handle) { return Read(handle).NumberOfLinks; }
 
+    public static uint GetAttributes(SafeFileHandle handle) { return Read(handle).FileAttributes; }
+
+    public static SafeFileHandle OpenDirectoryNoDeleteShare(string path)
+    {
+        SafeFileHandle handle = CreateFileW(
+            path,
+            GENERIC_READ,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            IntPtr.Zero,
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            IntPtr.Zero);
+        if (handle == null || handle.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error();
+            if (handle != null) handle.Dispose();
+            throw new Win32Exception(error, "Could not open the exact directory without FILE_SHARE_DELETE: " + path);
+        }
+        return handle;
+    }
+
     public static string GetIdentity(SafeFileHandle handle)
     {
         BY_HANDLE_FILE_INFORMATION information = Read(handle);
@@ -50,6 +153,66 @@ public static class PrestageNativeFileInfo
 }
 }
 '@
+}
+
+function Open-RevAgentBootstrapDirectoryGuard {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $handle = $null
+    try {
+        $handle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($fullPath)
+        $attributes = [uint32][RevAgent.PrestageNativeFileInfo]::GetAttributes($handle)
+        if (($attributes -band [uint32][IO.FileAttributes]::Directory) -eq 0 -or
+            ($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "bootstrap_parent_not_protected: guarded product path is not an ordinary directory: $fullPath"
+        }
+        return [pscustomobject]@{
+            Path = $fullPath
+            Handle = $handle
+            Identity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($handle)
+        }
+    }
+    catch {
+        if ($null -ne $handle) { $handle.Dispose() }
+        throw
+    }
+}
+
+function Assert-RevAgentBootstrapDirectoryGuardPath {
+    param(
+        [Parameter(Mandatory = $true)][object]$Guard,
+        [Parameter(Mandatory = $true)][string]$Path
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not [string]::Equals([string]$Guard.Path, $fullPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "bootstrap_parent_not_protected: guarded product-root path changed. expected=$($Guard.Path) actual=$fullPath"
+    }
+    $pathHandle = $null
+    try {
+        # Guard.Handle deliberately omits FILE_SHARE_DELETE. The second open proves
+        # that this pathname still resolves to the exact object whose rename/delete
+        # is blocked while ACL migration is in progress.
+        $pathHandle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($fullPath)
+        $attributes = [uint32][RevAgent.PrestageNativeFileInfo]::GetAttributes($pathHandle)
+        if (($attributes -band [uint32][IO.FileAttributes]::Directory) -eq 0 -or
+            ($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "bootstrap_parent_not_protected: guarded product path became a link or non-directory: $fullPath"
+        }
+        $pathIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($pathHandle)
+        if (-not [string]::Equals($pathIdentity, [string]$Guard.Identity, [StringComparison]::Ordinal)) {
+            throw "bootstrap_parent_not_protected: guarded product-root identity changed. path=$fullPath expected=$($Guard.Identity) actual=$pathIdentity"
+        }
+        return $pathIdentity
+    }
+    finally { if ($null -ne $pathHandle) { $pathHandle.Dispose() } }
+}
+}
+finally {
+    $env:TEMP = $localBootstrapOriginalTemp
+    $env:TMP = $localBootstrapOriginalTmp
+    if ([IO.Directory]::Exists($localBootstrapCompilerTemp)) { [IO.Directory]::Delete($localBootstrapCompilerTemp, $true) }
 }
 
 function Set-RevAgentBootstrapDacl {
@@ -184,9 +347,13 @@ function Assert-RevAgentBootstrapParentProtected {
         throw "bootstrap_parent_not_protected: bootstrap parent DACL must be protected from inheritance: $($item.FullName)"
     }
 
+    # Do not OR aggregate Modify/FullControl values into the probe mask: those
+    # aggregates also contain read/execute bits and would misclassify the
+    # intentional BUILTIN\Users ReadAndExecute grant as writable. Full/Modify
+    # ACEs are still caught through their atomic Write/Delete bits.
     $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
@@ -197,6 +364,98 @@ function Assert-RevAgentBootstrapParentProtected {
             throw "bootstrap_parent_not_protected: bootstrap parent grants write-capable access to a non-administrator principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
         }
     }
+}
+
+function Assert-RevAgentBootstrapSharedAncestorSafe {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    Assert-RevAgentBootstrapLinkSafe -Path $Path
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer) { throw "bootstrap_parent_not_protected: shared bootstrap ancestor is not a directory: $Path" }
+    $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    $ownerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($ownerSid -notin @('S-1-5-18', 'S-1-5-32-544')) {
+        throw "bootstrap_parent_not_protected: shared bootstrap ancestor must be owned by SYSTEM or Administrators: $($item.FullName)"
+    }
+
+    # DPE can be shared by other products and legacy installs may intentionally
+    # allow create-only access. What must never be delegated is the ability to
+    # delete/rename an existing product child or change ownership/DACLs.
+    $dangerousMask = [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $sid = [string]$rule.IdentityReference.Value
+        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+            $sid -notin @('S-1-5-18', 'S-1-5-32-544') -and
+            (($rule.FileSystemRights -band $dangerousMask) -ne 0)) {
+            throw "bootstrap_parent_not_protected: shared ancestor grants delete/ACL/owner capability to a non-administrator principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
+        }
+    }
+    return $item.FullName
+}
+
+function Initialize-RevAgentProtectedProductRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$SharedParent,
+        [Parameter(Mandatory = $true)][string]$Name
+    )
+
+    $safeParent = Assert-RevAgentBootstrapSharedAncestorSafe -Path $SharedParent
+    $path = [IO.Path]::GetFullPath((Join-Path $safeParent $Name)).TrimEnd('\')
+    Assert-RevAgentBootstrapLinkSafe -Path $path
+    $wasExisting = Test-Path -LiteralPath $path
+    if (-not $wasExisting) {
+        $parentInfo = [IO.DirectoryInfo](Get-Item -LiteralPath $safeParent -Force)
+        $security = [Security.AccessControl.DirectorySecurity]::new()
+        $security.SetAccessRuleProtection($true, $false)
+        $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+        $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        foreach ($entry in @(
+                [pscustomobject]@{ Sid = 'S-1-5-18'; Rights = [Security.AccessControl.FileSystemRights]::FullControl },
+                [pscustomobject]@{ Sid = 'S-1-5-32-544'; Rights = [Security.AccessControl.FileSystemRights]::FullControl },
+                [pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute }
+            )) {
+            [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                    [Security.Principal.SecurityIdentifier]::new([string]$entry.Sid),
+                    [Security.AccessControl.FileSystemRights]$entry.Rights,
+                    $inheritance,
+                    [Security.AccessControl.PropagationFlags]::None,
+                    [Security.AccessControl.AccessControlType]::Allow))
+        }
+        [void]$parentInfo.CreateSubdirectory($Name, $security)
+    }
+
+    $guard = $null
+    try {
+        # This no-FILE_SHARE_DELETE handle is the migration boundary. A legacy
+        # standard-user Modify/Delete ACE cannot rename the validated directory
+        # and substitute a different path target between owner validation and
+        # Set-Acl. FILE_FLAG_OPEN_REPARSE_POINT also makes a raced junction visible
+        # as the guarded object instead of following it.
+        $guard = Open-RevAgentBootstrapDirectoryGuard -Path $path
+        [void](Assert-RevAgentBootstrapDirectoryGuardPath -Guard $guard -Path $path)
+        $existing = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        if (-not $existing.PSIsContainer) { throw "bootstrap_parent_not_protected: product root is not a directory: $path" }
+        $existingAcl = Get-Acl -LiteralPath $path -ErrorAction Stop
+        $existingOwner = [string]$existingAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if ($existingOwner -notin @('S-1-5-18', 'S-1-5-32-544')) {
+            throw "bootstrap_parent_not_protected: refusing to migrate a product root with an untrusted owner. path=$path owner=$existingOwner"
+        }
+        # For an existing directory this is the authenticated elevated one-time
+        # migration from the legacy user-writable revAgent root. The same operation
+        # reattests an ACL-at-create result so a create race cannot be mistaken for
+        # a protected product root. Descendant user-state grants are recreated later
+        # by the split machine/user installer.
+        Set-RevAgentBootstrapDacl -Path $path -SetAdministratorsOwner
+
+        [void](Assert-RevAgentBootstrapDirectoryGuardPath -Guard $guard -Path $path)
+        Assert-RevAgentBootstrapLinkSafe -Path $path
+        Assert-RevAgentBootstrapParentProtected -Path $path
+        return $path
+    }
+    finally { if ($null -ne $guard -and $null -ne $guard.Handle) { $guard.Handle.Dispose() } }
 }
 
 function New-RevAgentProtectedBootstrapDirectory {
@@ -243,8 +502,11 @@ function Install-RevAgentLocalBootstrap {
         [Parameter(Mandatory = $true)][string]$GuiPath,
         [Parameter(Mandatory = $true)][string]$DistributionIntegrityModulePath,
         [Parameter(Mandatory = $true)][string]$SourceFreeMigrationModulePath,
+        [Parameter(Mandatory = $true)][string]$ReleaseSnapshotModulePath,
+        [Parameter(Mandatory = $true)][string]$PrivilegedSnapshotUpdatePath,
         [Parameter(Mandatory = $true)][string]$TrustedKeysPath,
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ExpectedSourceHashes,
+        [Parameter(Mandatory = $true)][object]$AuthenticatedRelease,
         [Parameter(Mandatory = $true)][string]$SourceAuthenticationMethod,
         [switch]$ConfirmIndependentlyAuthenticatedSource,
         [switch]$AllowTestRoot
@@ -252,6 +514,41 @@ function Install-RevAgentLocalBootstrap {
 
     if (-not $ConfirmIndependentlyAuthenticatedSource) {
         throw "Local bootstrap installation requires -ConfirmIndependentlyAuthenticatedSource."
+    }
+    if ($null -eq $AuthenticatedRelease -or
+        -not [bool]$AuthenticatedRelease.signatureVerified -or
+        [long]$AuthenticatedRelease.releaseSequence -le 0 -or
+        [long]$AuthenticatedRelease.highestAcceptedReleaseSequence -lt [long]$AuthenticatedRelease.releaseSequence -or
+        [long]$AuthenticatedRelease.minimumAcceptedReleaseSequence -gt [long]$AuthenticatedRelease.releaseSequence) {
+        throw 'Local bootstrap installation requires valid independently authenticated release-sequence evidence.'
+    }
+    $authenticatedChannel = [string]$AuthenticatedRelease.channel
+    if ($authenticatedChannel -notin @('stable', 'pilot')) { throw "Authenticated bootstrap release channel is not allowed: $authenticatedChannel" }
+    $pilotPolicy = if ($AuthenticatedRelease.PSObject.Properties['pilotPolicy']) { $AuthenticatedRelease.pilotPolicy } else { $null }
+    if ($authenticatedChannel -eq 'pilot') {
+        if ($null -eq $pilotPolicy -or [int]$pilotPolicy.schemaVersion -ne 1) {
+            throw 'Pilot bootstrap evidence requires pilotPolicy schemaVersion 1.'
+        }
+        $allowedMachines = @($pilotPolicy.allowedMachineNames | ForEach-Object { ([string]$_).Trim().ToUpperInvariant() })
+        $machineName = [Environment]::MachineName.Trim().ToUpperInvariant()
+        if ($allowedMachines.Count -eq 0 -or $allowedMachines -notcontains $machineName) {
+            throw "pilot_machine_not_allowed: authenticated pilot bootstrap does not authorize this computer: $machineName"
+        }
+    }
+    elseif ($null -ne $pilotPolicy) { throw 'Stable bootstrap evidence must not contain pilotPolicy.' }
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$AuthenticatedRelease.root).TrimEnd('\'), [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Authenticated release evidence root does not match ReleaseRoot.'
+    }
+    if (-not $AllowTestRoot) {
+        $canonicalReleaseRoot = [IO.Path]::GetFullPath('\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy').TrimEnd('\')
+        if (-not [string]::Equals([IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\'), $canonicalReleaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Production bootstrap release root must be the canonical NAS root: $canonicalReleaseRoot"
+        }
+    }
+    foreach ($hashName in @('channelManifestSha256', 'releaseManifestSha256', 'packageSha256')) {
+        if ([string]$AuthenticatedRelease.$hashName -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Authenticated release evidence contains an invalid $hashName."
+        }
     }
     $BootstrapRoot = [IO.Path]::GetFullPath($BootstrapRoot).TrimEnd("\")
     $canonicalBootstrapRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "DPE\revAgent\bootstrap"
@@ -272,6 +569,8 @@ function Install-RevAgentLocalBootstrap {
         updaterGui = [IO.Path]::GetFullPath($GuiPath)
         distributionIntegrity = [IO.Path]::GetFullPath($DistributionIntegrityModulePath)
         sourceFreeMigration = [IO.Path]::GetFullPath($SourceFreeMigrationModulePath)
+        releaseSnapshot = [IO.Path]::GetFullPath($ReleaseSnapshotModulePath)
+        privilegedSnapshotUpdate = [IO.Path]::GetFullPath($PrivilegedSnapshotUpdatePath)
         trustedKeys = [IO.Path]::GetFullPath($TrustedKeysPath)
     }
     $sourceEvidence = [ordered]@{}
@@ -300,8 +599,14 @@ function Install-RevAgentLocalBootstrap {
     else {
         $commonApplicationData = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)).TrimEnd("\")
         Assert-RevAgentBootstrapLinkSafe -Path $commonApplicationData
-        $protectedParent = New-RevAgentProtectedBootstrapDirectory -Parent $commonApplicationData -Name "DPE"
-        $protectedParent = New-RevAgentProtectedBootstrapDirectory -Parent $protectedParent -Name "revAgent"
+        $dpeRoot = Join-Path $commonApplicationData 'DPE'
+        if (-not (Test-Path -LiteralPath $dpeRoot -PathType Container)) {
+            $dpeRoot = New-RevAgentProtectedBootstrapDirectory -Parent $commonApplicationData -Name 'DPE'
+        }
+        else {
+            $dpeRoot = Assert-RevAgentBootstrapSharedAncestorSafe -Path $dpeRoot
+        }
+        $protectedParent = Initialize-RevAgentProtectedProductRoot -SharedParent $dpeRoot -Name 'revAgent'
         if (-not [string]::Equals([IO.Path]::GetFullPath($parent).TrimEnd("\"), [IO.Path]::GetFullPath($protectedParent).TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) {
             throw "bootstrap_parent_not_protected: canonical bootstrap parent resolution changed unexpectedly. expected=$parent actual=$protectedParent"
         }
@@ -328,6 +633,8 @@ function Install-RevAgentLocalBootstrap {
             updaterGui = "Install-revAgent-Updater-GUI.ps1"
             distributionIntegrity = "lib\RevAgent.DistributionIntegrity.psm1"
             sourceFreeMigration = "lib\RevAgent.SourceFreeMigration.psm1"
+            releaseSnapshot = "lib\RevAgent.ReleaseSnapshot.psm1"
+            privilegedSnapshotUpdate = "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
             trustedKeys = "config\release-trusted-keys.json"
         }
         $fileEvidence = [ordered]@{}
@@ -347,6 +654,18 @@ function Install-RevAgentLocalBootstrap {
             app = "revAgent"
             bootstrapRoot = $BootstrapRoot
             releaseRoot = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd("\")
+            release = [ordered]@{
+                channel = [string]$AuthenticatedRelease.channel
+                version = [string]$AuthenticatedRelease.version
+                releaseSequence = [long]$AuthenticatedRelease.releaseSequence
+                minimumAcceptedReleaseSequence = [long]$AuthenticatedRelease.minimumAcceptedReleaseSequence
+                highestAcceptedReleaseSequence = [long]$AuthenticatedRelease.highestAcceptedReleaseSequence
+                channelManifestSha256 = [string]$AuthenticatedRelease.channelManifestSha256
+                releaseManifestSha256 = [string]$AuthenticatedRelease.releaseManifestSha256
+                packageSha256 = [string]$AuthenticatedRelease.packageSha256
+                signatureVerified = $true
+                pilotPolicy = $pilotPolicy
+            }
             installedAtUtc = [DateTime]::UtcNow.ToString("o")
             installedBy = [ordered]@{ name = [string]$identity.Name; sid = [string]$identity.User.Value }
             sourceAuthentication = [ordered]@{

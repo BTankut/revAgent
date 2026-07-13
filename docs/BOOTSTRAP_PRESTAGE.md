@@ -8,20 +8,34 @@ must not derive replacement hashes.
 The contract is `config/bootstrap-prestage-evidence.schema.json`; the adjacent
 example contains non-production placeholder hashes.
 
+The signed NAS tree is a data transport, not an execution root. The coordinator
+verifies detached channel/release signatures and the package hash with the
+pinned local verifier/key fingerprint, then derives every bootstrap source hash
+from the signed package. The evidence producer opens that verifier without
+write/delete sharing, hashes the acquired bytes, and executes only those exact
+bytes as an in-memory module; it never imports the pathname after hashing.
+Neither the normal launcher nor the GUI imports or executes a loose
+script/module from `\\dpe-nas`. A writable Samba tree therefore does not become
+an executable trust boundary and no NAS `sealed` ACL claim is required for this
+flow.
+
 ## 1. Normal coordinator shell
 
-Run from a clean merged checkout while the NAS release root is sealed:
+Run from a clean merged checkout after the selected signed channel has passed
+its release gates. Use `pilot` only for the exact signed developer/NET01 cohort;
+use `stable` only in a separately approved fleet window:
 
 ```powershell
 $RepoRoot = "C:\Users\BT\Projects\revAgent"
 $ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
+$Channel = "pilot"
 $TrustedKeys = Join-Path $ReleaseRoot "tools\config\release-trusted-keys.json"
 $EvidenceSource = Join-Path $env:TEMP ("revagent-bootstrap-evidence-{0}.json" -f [guid]::NewGuid().ToString("N"))
 $evidenceResult = & "$RepoRoot\scripts\New-RevAgentBootstrapPrestageEvidence.ps1" `
   -ReleaseRoot $ReleaseRoot -TrustedKeysPath $TrustedKeys `
-  -OutputPath $EvidenceSource -RepoRoot $RepoRoot
+  -OutputPath $EvidenceSource -RepoRoot $RepoRoot -Channel $Channel
 
-$channel = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot "channels\stable.json") | ConvertFrom-Json
+$channel = Get-Content -Raw -LiteralPath (Join-Path $ReleaseRoot "channels\$Channel.json") | ConvertFrom-Json
 $packagePath = [IO.Path]::GetFullPath((Join-Path (Join-Path $ReleaseRoot "channels") ([string]$channel.packagePath)))
 $evidence = Get-Content -Raw -LiteralPath $EvidenceSource | ConvertFrom-Json
 if ((Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash -ne [string]$evidence.release.packageSha256) { throw "Signed package changed after evidence production." }
@@ -53,13 +67,75 @@ $ExpectedEvidenceSha256 = '<EvidenceSha256 from step 1>'
 $ExpectedInstallerSha256 = '<InstallerSha256 from step 1>'
 $ReleaseRoot = '\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy'
 $TrustedKeys = Join-Path $ReleaseRoot 'tools\config\release-trusted-keys.json'
+$ErrorActionPreference = 'Stop'
+$currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
+if (-not [Security.Principal.WindowsPrincipal]::new($currentIdentity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'This prestage block requires a fresh elevated Windows PowerShell shell.' }
 $ProgramDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 $trustedOwners = @('S-1-5-18', 'S-1-5-32-544', 'S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464')
 $danger = [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
 
+# Compile the directory-lock helper only from this literal block, with compiler
+# scratch isolated in an ACL-at-create administrator directory under Windows Temp.
+$windowsTemp = Join-Path ([IO.Directory]::GetParent([Environment]::SystemDirectory).FullName) 'Temp'
+$compilerAcl = [Security.AccessControl.DirectorySecurity]::new()
+$compilerAcl.SetAccessRuleProtection($true, $false)
+$compilerAcl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+  [void]$compilerAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [Security.AccessControl.FileSystemRights]::FullControl, ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+}
+$compilerTemp = [IO.DirectoryInfo]::new($windowsTemp).CreateSubdirectory(('revagent-prestage-native-' + [Guid]::NewGuid().ToString('N')), $compilerAcl).FullName
+$oldTemp = $env:TEMP; $oldTmp = $env:TMP
+try {
+  $env:TEMP = $compilerTemp; $env:TMP = $compilerTemp
+  if (-not ('RevAgent.Prestage.DirectoryLockNative' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace RevAgent.Prestage {
+  public static class DirectoryLockNative {
+    [StructLayout(LayoutKind.Sequential)] private struct FILETIME { public uint Low; public uint High; }
+    [StructLayout(LayoutKind.Sequential)] private struct INFO { public uint Attributes; public FILETIME Creation; public FILETIME Access; public FILETIME Write; public uint Volume; public uint SizeHigh; public uint SizeLow; public uint Links; public uint IndexHigh; public uint IndexLow; }
+    [DllImport("kernel32.dll", CharSet=CharSet.Unicode, SetLastError=true)] private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError=true)] private static extern bool GetFileInformationByHandle(SafeFileHandle handle, out INFO info);
+    public static SafeFileHandle Open(string path) { var h=CreateFileW(path,0x80000000,3,IntPtr.Zero,3,0x02200000,IntPtr.Zero); if(h==null||h.IsInvalid){int e=Marshal.GetLastWin32Error();if(h!=null)h.Dispose();throw new Win32Exception(e,"No-delete-share directory open failed: "+path);} return h; }
+    private static INFO Read(SafeFileHandle h) { INFO i; if(h==null||h.IsInvalid||!GetFileInformationByHandle(h,out i)) throw new Win32Exception(Marshal.GetLastWin32Error()); return i; }
+    public static uint Attributes(SafeFileHandle h) { return Read(h).Attributes; }
+    public static string Identity(SafeFileHandle h) { var i=Read(h); return String.Format("{0:X8}:{1:X8}{2:X8}",i.Volume,i.IndexHigh,i.IndexLow); }
+  }
+}
+'@
+  }
+} finally {
+  $env:TEMP = $oldTemp; $env:TMP = $oldTmp
+  if ([IO.Directory]::Exists($compilerTemp)) { [IO.Directory]::Delete($compilerTemp, $true) }
+}
+
+function Open-DirectoryGuard([string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd('\'); $handle = $null
+  try {
+    $handle = [RevAgent.Prestage.DirectoryLockNative]::Open($full)
+    $attributes = [RevAgent.Prestage.DirectoryLockNative]::Attributes($handle)
+    if (($attributes -band [uint32][IO.FileAttributes]::Directory) -eq 0 -or ($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Guarded prestage path is not an ordinary directory: $full" }
+    return [pscustomobject]@{ Path=$full; Handle=$handle; Identity=[RevAgent.Prestage.DirectoryLockNative]::Identity($handle) }
+  } catch { if ($null -ne $handle) { $handle.Dispose() }; throw }
+}
+
+function Assert-DirectoryGuardPath($Guard, [string]$Path) {
+  $full = [IO.Path]::GetFullPath($Path).TrimEnd('\'); $pathHandle = $null
+  try {
+    $pathHandle = [RevAgent.Prestage.DirectoryLockNative]::Open($full)
+    $attributes = [RevAgent.Prestage.DirectoryLockNative]::Attributes($pathHandle)
+    $identity = [RevAgent.Prestage.DirectoryLockNative]::Identity($pathHandle)
+    if (($attributes -band [uint32][IO.FileAttributes]::Directory) -eq 0 -or ($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::Equals($identity, [string]$Guard.Identity, [StringComparison]::Ordinal)) { throw "Prestage directory path/handle identity changed: $full" }
+  } finally { if ($null -ne $pathHandle) { $pathHandle.Dispose() } }
+}
+
 function Assert-SafeExistingDirectory([string]$Path) {
   $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-  if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Unsafe prestage ancestor: $Path" }
+  $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+  if (-not $item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) { throw "Unsafe prestage ancestor: $Path" }
   $acl = Get-Acl -LiteralPath $Path
   $owner = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
   if ($trustedOwners -notcontains $owner) { throw "Untrusted prestage ancestor owner: $Path owner=$owner" }
@@ -68,10 +144,41 @@ function Assert-SafeExistingDirectory([string]$Path) {
   }
 }
 
+function Set-ProtectedProductRootAcl([string]$Path) {
+  $guard = Open-DirectoryGuard $Path
+  try {
+    Assert-DirectoryGuardPath $guard $Path
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $currentAcl = Get-Acl -LiteralPath $Path
+    $owner = [string]$currentAcl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if ($trustedOwners -notcontains $owner) { throw "Refusing legacy product root with untrusted owner: $Path owner=$owner" }
+
+    # This exact existing product root (or prestage child) may carry the
+    # developer's legacy Modify/Delete ACE. The no-FILE_SHARE_DELETE handle
+    # prevents rename/swap until the new DACL and identity are reverified.
+    # Never apply this migration to the shared DPE ancestor.
+    $acl = [Security.AccessControl.DirectorySecurity]::new()
+    $acl.SetAccessRuleProtection($true, $false)
+    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    foreach ($entry in @(@('S-1-5-18', [Security.AccessControl.FileSystemRights]::FullControl), @('S-1-5-32-544', [Security.AccessControl.FileSystemRights]::FullControl), @('S-1-5-32-545', [Security.AccessControl.FileSystemRights]::ReadAndExecute))) {
+      [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new([string]$entry[0]), [Security.AccessControl.FileSystemRights]$entry[1], ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    }
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, $acl) } else { ([IO.DirectoryInfo]$item).SetAccessControl($acl) }
+
+    Assert-DirectoryGuardPath $guard $Path
+    $verified = Get-Acl -LiteralPath $Path
+    if (-not $verified.AreAccessRulesProtected -or [string]$verified.GetOwner([Security.Principal.SecurityIdentifier]).Value -ne 'S-1-5-32-544') { throw "Legacy product root ACL hardening failed: $Path" }
+    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor [Security.AccessControl.FileSystemRights]::Delete -bor [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor [Security.AccessControl.FileSystemRights]::ChangePermissions -bor [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $verified.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+      if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and $trustedOwners -notcontains [string]$rule.IdentityReference.Value -and (($rule.FileSystemRights -band $writeMask) -ne 0)) { throw "Legacy product root remains writable by an untrusted principal: $Path principal=$($rule.IdentityReference.Value)" }
+    }
+  } finally { $guard.Handle.Dispose() }
+}
+
 function New-ProtectedChild([string]$Parent, [string]$Name) {
   Assert-SafeExistingDirectory $Parent
   $path = Join-Path $Parent $Name
-  if (Test-Path -LiteralPath $path) { Assert-SafeExistingDirectory $path; return $path }
+  if (Test-Path -LiteralPath $path) { Set-ProtectedProductRootAcl $path; return $path }
   $acl = [Security.AccessControl.DirectorySecurity]::new()
   $acl.SetAccessRuleProtection($true, $false)
   $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
@@ -79,7 +186,9 @@ function New-ProtectedChild([string]$Parent, [string]$Name) {
     [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new([string]$entry[0]), [Security.AccessControl.FileSystemRights]$entry[1], ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
   }
   [void]([IO.DirectoryInfo]::new($Parent).CreateSubdirectory($Name, $acl))
-  Assert-SafeExistingDirectory $path
+  # Reattest through the same handle-bound hardening path so an exact-name
+  # create race cannot turn an existing user-owned directory into a trust root.
+  Set-ProtectedProductRootAcl $path
   return $path
 }
 
@@ -100,7 +209,11 @@ $evidenceBytes = Read-VerifiedBytes $EvidenceSource $ExpectedEvidenceSha256 6553
 $evidence = ([Text.UTF8Encoding]::new($false, $true)).GetString($evidenceBytes) | ConvertFrom-Json
 if (-not [string]::Equals([string]$evidence.localBootstrapInstallerScript, $ExpectedInstallerSha256, [StringComparison]::OrdinalIgnoreCase)) { throw 'Installer hash does not match the independently verified evidence.' }
 $installerBytes = Read-VerifiedBytes (Join-Path $SourceRoot 'installer\nas\install-revagent-local-bootstrap.ps1') $ExpectedInstallerSha256 1048576
-$dpe = New-ProtectedChild $ProgramDataRoot 'DPE'; $product = New-ProtectedChild $dpe 'revAgent'; $prestage = New-ProtectedChild $product 'prestage'
+$dpePath = Join-Path $ProgramDataRoot 'DPE'
+$dpe = if (Test-Path -LiteralPath $dpePath) { Assert-SafeExistingDirectory $dpePath; $dpePath } else { New-ProtectedChild $ProgramDataRoot 'DPE' }
+$productPath = Join-Path $dpe 'revAgent'
+if (Test-Path -LiteralPath $productPath) { Set-ProtectedProductRootAcl $productPath; $product = $productPath } else { $product = New-ProtectedChild $dpe 'revAgent' }
+$prestage = New-ProtectedChild $product 'prestage'
 $stagedEvidence = Join-Path $prestage 'bootstrap-prestage-evidence.json'; $stagedInstaller = Join-Path $prestage 'install-revagent-local-bootstrap.ps1'
 function Set-AdminOnlyAcl([string]$Path) {
   $item = Get-Item -LiteralPath $Path -Force
@@ -133,3 +246,19 @@ C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 Production NAS `tools` contains no `.cmd` launcher. A stale local launcher is
 still checked against its signed manifest component and returns
 `bootstrap_refresh_required`; repeat this two-shell procedure.
+
+The prestage evidence and protected bootstrap now include two additional signed
+components:
+
+- `lib\RevAgent.ReleaseSnapshot.psm1`, which copies and re-verifies the signed
+  transport set into a user-local authenticated inbox before UAC, then creates
+  the administrator-owned execution snapshot;
+- `Invoke-revAgent-PrivilegedSnapshotUpdate.ps1`, the only file the GUI may
+  elevate. It creates the protected snapshot and invokes the exact snapshot
+  machine entrypoint.
+
+The broker writes the immutable snapshot identity/path/hash binding into the
+machine phase result. The unelevated GUI reads that binding, verifies
+`snapshot-state.json`, and runs the exact local snapshot user entrypoint with
+the snapshot-local `channels\stable.json`. It never falls back to a loose NAS
+tool or a user-writable installed updater.
