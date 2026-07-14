@@ -72,24 +72,33 @@ function Resolve-RevitMcpPackageLayout {
     throw "Extracted package does not look like a revAgent package: $Root"
 }
 
-function Expand-RevitMcpReleaseArchive {
+function Expand-RevitMcpReleaseArchiveStream {
     param(
         [Parameter(Mandatory = $true)]
-        [string]$ZipPath,
+        [System.IO.Stream]$ArchiveStream,
         [Parameter(Mandatory = $true)]
         [string]$DestinationPath
     )
+
+    if (-not $ArchiveStream.CanRead -or -not $ArchiveStream.CanSeek) {
+        throw "Release archive stream must remain readable and seekable for authenticated extraction."
+    }
 
     if (Test-Path -LiteralPath $DestinationPath) {
         Remove-Item -LiteralPath $DestinationPath -Recurse -Force
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $DestinationPath) -Force | Out-Null
+    Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     New-Item -ItemType Directory -Path $DestinationPath -Force | Out-Null
 
     $destinationRoot = [System.IO.Path]::GetFullPath($DestinationPath).TrimEnd("\") + "\"
-    $archive = [System.IO.Compression.ZipFile]::OpenRead($ZipPath)
+    [void]$ArchiveStream.Seek(0, [System.IO.SeekOrigin]::Begin)
+    $archive = [System.IO.Compression.ZipArchive]::new(
+        $ArchiveStream,
+        [System.IO.Compression.ZipArchiveMode]::Read,
+        $true)
     try {
         foreach ($entry in $archive.Entries) {
             $entryName = $entry.FullName.Replace("/", "\")
@@ -135,8 +144,30 @@ function Expand-RevitMcpReleaseArchive {
     }
 }
 
+function Expand-RevitMcpReleaseArchive {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ZipPath,
+        [Parameter(Mandatory = $true)]
+        [string]$DestinationPath
+    )
+
+    $archiveStream = [System.IO.FileStream]::new(
+        [System.IO.Path]::GetFullPath($ZipPath),
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Read,
+        [System.IO.FileShare]::Read)
+    try {
+        Expand-RevitMcpReleaseArchiveStream -ArchiveStream $archiveStream -DestinationPath $DestinationPath
+    }
+    finally {
+        $archiveStream.Dispose()
+    }
+}
+
 $revAgentFunctionAliases = @{
     "Expand-RevAgentReleaseArchive" = "Expand-RevitMcpReleaseArchive"
+    "Expand-RevAgentReleaseArchiveStream" = "Expand-RevitMcpReleaseArchiveStream"
     "Resolve-RevAgentPackageLayout" = "Resolve-RevitMcpPackageLayout"
     "Resolve-RevAgentReleasePath" = "Resolve-RevitMcpReleasePath"
 }
@@ -147,5 +178,6 @@ foreach ($aliasPair in $revAgentFunctionAliases.GetEnumerator()) {
 Export-ModuleMember -Function `
     Resolve-RevitMcpReleasePath, `
     Resolve-RevitMcpPackageLayout, `
+    Expand-RevitMcpReleaseArchiveStream, `
     Expand-RevitMcpReleaseArchive
 Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

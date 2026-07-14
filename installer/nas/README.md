@@ -381,7 +381,33 @@ SSH/admin runs still inspect normal operator launchers.
 If source-free evidence is missing, run `migrate-source-free-install.ps1` in
 `dryRun` mode with `-ReportsRoot` set to the canonical reports root. The dry-run
 publishes `source-free-migration-latest.json` for readiness without replacing
-the dashboard `latest.json` version report.
+the dashboard `latest.json` version report. The standalone script is
+inventory-only: its retained `-Mode commit` compatibility value fails closed.
+Start
+`C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd` and choose
+the GUI `Migrate` action for mutation; use `Install/Repair` there when the local
+updater must first be bootstrapped. That route is required so the authenticated
+snapshot broker can run the administrator-only machine phase and return to the
+original unelevated user phase safely.
+
+The GUI `Install/Repair` action is the canonical hard-rebaseline path. It
+refreshes the signed managed payload and performs bounded legacy cleanup in both
+phases: exact retired machine roots/add-ins/npm namespace in the administrator
+phase, then exact per-user add-ins/Startup launchers/retired-machine Codex link
+in the unelevated phase. Unknown legacy-root children and custom or real Codex
+skill directories are reported and preserved. Unsafe exact managed remnants,
+inventory failures, and removal failures are action-required and prevent a
+successful terminal attestation. Revit must be closed because this path can
+remove retired Revit add-in surfaces even when current payload hashes match.
+On `preserve-local` developer machines it does not traverse or replace the
+current Codex instruction tree; it can unlink only the exact legacy
+`.codex\skills\revit-mcp` reparse leaf when it targets the retired machine
+skill root. Every shipped updater tool is required and length/SHA-256 verified,
+while `lib` and `config` are staged and swapped as complete verified trees.
+Reparse points, non-unit hardlinks, missing shipped config, or conflicting
+write/delete handles stop the rebaseline. The canonical Revit `Addins` parent,
+exact year root, and `revAgent.addin` receive protected SYSTEM/Admin write and
+Users read/execute ACLs without recursively changing other vendors' children.
 Updater install/repair and update runs remove managed legacy desktop launcher
 shortcuts that use old `Revit MCP` names from local and OneDrive desktop
 folders. The cleanup is reported as `diagnostics.desktopLauncherCleanup`; rerun
@@ -599,6 +625,11 @@ These commands do not publish to NAS and do not edit `channels\stable.json`.
   run again. Non-GUI updater runs still report
   `source-free-migration-required` and stop instead of replacing the package
   without explicit migration mode.
+- Direct `migrate-source-free-install.ps1 -Mode commit` execution is disabled.
+  It does not launch the local updater or attempt elevation. Use the protected
+  local GUI `Migrate` flow (or its `Install/Repair` bootstrap path) for all
+  mutating source-free migration work; `-Mode dryRun` remains available for
+  read-only inventory and rollout evidence.
 - On developer workstations with `codexInstructionPolicy=preserve-local`, the
   migration inventory and cleanup omit local Codex instruction roots and report
   `codexInstructionCleanupSkipped=true`. This is not a source-free bypass for

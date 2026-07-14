@@ -217,6 +217,23 @@ function Test-RevAgentTrustedPrestageOwnerSid {
     )
 }
 
+function Test-RevAgentBootstrapRightsAllowMutation {
+    param([Parameter(Mandatory = $true)][Security.AccessControl.FileSystemRights]$Rights)
+
+    # Keep this mask to atomic mutation rights. Modify and FullControl also
+    # contain read/execute/synchronize bits and would reject a safe read-only
+    # evidence ACE. Their actual mutation capabilities remain covered below.
+    $leafDangerMask = [Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    return (([int64]$Rights -band [int64]$leafDangerMask) -ne 0)
+}
+
 function Assert-RevAgentExpectedEvidenceAclChain {
     param([Parameter(Mandatory = $true)][string]$Path)
 
@@ -227,17 +244,11 @@ function Assert-RevAgentExpectedEvidenceAclChain {
     if (-not (Test-RevAgentTrustedPrestageOwnerSid -Sid $leafOwner)) {
         throw "Authenticated hash evidence must be owned by SYSTEM, Administrators, or TrustedInstaller: $fullPath"
     }
-    $leafDangerMask = [Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Delete -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
-        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($rule in $leafAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         $sid = [string]$rule.IdentityReference.Value
         if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
             -not (Test-RevAgentTrustedPrestageOwnerSid -Sid $sid) -and
-            (($rule.FileSystemRights -band $leafDangerMask) -ne 0)) {
+            (Test-RevAgentBootstrapRightsAllowMutation -Rights $rule.FileSystemRights)) {
             throw "Authenticated hash evidence grants write/delete-capable access to an untrusted principal. path=$fullPath principal=$sid rights=$($rule.FileSystemRights)"
         }
     }

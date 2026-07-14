@@ -24,6 +24,7 @@ $libRoot = Join-Path $RepoRoot "installer\lib"
 Import-Module (Join-Path $libRoot "RevAgent.HiddenLauncher.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.ScheduledTask.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.Permissions.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.ConfigSync.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.Package.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.RevitVersions.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.UpdatePolicy.psm1") -Force
@@ -32,6 +33,7 @@ Import-Module (Join-Path $libRoot "RevAgent.LogRetention.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.CodexRegistration.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.Reporting.psm1") -Force
 Import-Module (Join-Path $libRoot "RevAgent.License.psm1") -Force
+Import-Module (Join-Path $libRoot "RevAgent.DesktopLauncherCleanup.psm1") -Force
 
 function Assert-True {
     param(
@@ -176,6 +178,15 @@ try {
     $installTaskAst = [System.Management.Automation.Language.Parser]::ParseFile($installTaskPath, [ref]$installTaskTokens, [ref]$installTaskParseErrors)
     Assert-Equal $installTaskParseErrors.Count 0 "PowerShell parse errors found in split-phase installer."
     $installTaskHarnessFunctions = @(
+        "Get-RevAgentInstallObjectPropertyValue",
+        "Test-RevAgentInstallObjectProperty",
+        "New-RevAgentInstallVersionEvidence",
+        "New-RevAgentInstallRunDiagnostics",
+        "Resolve-RevAgentNestedMachinePhaseOutcome",
+        "Assert-RevAgentInstallMachineReportBinding",
+        "Read-RevAgentPendingMachineInstallOutcome",
+        "ConvertTo-RevAgentInstallUtcTimestamp",
+        "Read-RevAgentRecoveredMachineFailureEvidence",
         "Set-RevAgentInstallRunReport",
         "Test-InstallPhasePathUnderRoot",
         "Assert-InstallPhasePathNoReparse",
@@ -196,7 +207,16 @@ try {
         param([string]$FunctionText, [string]$HarnessRoot)
         . ([scriptblock]::Create($FunctionText))
 
-        function Read-OptionalJsonFile { param([string]$Path) return $null }
+        function Read-OptionalJsonFile {
+            param([string]$Path)
+            if ([string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath($ChannelManifestPath), [StringComparison]::OrdinalIgnoreCase)) {
+                return $script:HarnessChannel
+            }
+            if ([string]::Equals([IO.Path]::GetFullPath($Path), [IO.Path]::GetFullPath((Join-Path $WorkRoot "installed.json")), [StringComparison]::OrdinalIgnoreCase)) {
+                return $script:HarnessInstalledState
+            }
+            return $null
+        }
 
         $MachinePhaseOnly = $true
         $UserPhaseOnly = $false
@@ -213,9 +233,16 @@ try {
         $script:RevAgentLatestReport = $null
         $script:RevAgentOperation = "install"
         $script:RevAgentOperationMethod = "gui-install"
+        $script:RevAgentMachineUpdatePhase = $null
+        $script:RevAgentNestedMachineRunReport = $null
+        $script:RevAgentMachineEvidenceRecoveryError = ""
+        $script:RevAgentPendingMachineReportValidated = $false
         $script:RevAgentCodexUserIntegrationPhase = $null
         $script:RevAgentDesktopLauncherCleanup = $null
+        $script:InstallExecutionSnapshotState = $null
         $script:RevAgentLogPath = $LogPath
+        $script:HarnessChannel = $null
+        $script:HarnessInstalledState = $null
 
         Assert-InstallPhaseOutputPaths
         $machineReportPath = Join-Path $WorkRoot "machine-state\last-install-report.json"
@@ -225,6 +252,258 @@ try {
         Assert-True (Test-Path -LiteralPath $machineReportPath -PathType Leaf) "Machine install report was not persisted after report population."
         $machineReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
         Assert-Equal ([string]$machineReport.status) "completed" "Persisted machine install report status mismatch."
+
+        $snapshotId = "0123456789abcdef0123456789abcdef"
+        $packageSha256 = ("A" * 64)
+        $releaseSequence = 20260714000101
+        $script:InstallExecutionSnapshotState = [pscustomobject]@{
+            snapshotId = $snapshotId
+            release = [pscustomobject]@{
+                version = "2026.07.14.600-new"
+                packageSha256 = $packageSha256
+                releaseSequence = $releaseSequence
+            }
+        }
+        $script:HarnessChannel = [pscustomobject]@{ channel = "pilot"; version = "2026.07.14.600-new"; sha256 = $packageSha256 }
+        $script:HarnessInstalledState = [pscustomobject]@{ version = "2026.07.14.600-new"; packageSha256 = $packageSha256 }
+        $script:RevAgentMachineUpdatePhase = [pscustomobject]@{
+            phase = "machine"
+            status = "completed"
+            success = $true
+            continueUserPhase = $true
+            message = "updated"
+        }
+        $script:RevAgentNestedMachineRunReport = [pscustomobject]@{
+            status = "updated"
+            previousVersion = "2026.07.14.599-old"
+            targetVersion = "2026.07.14.600-new"
+            installedVersion = "2026.07.14.600-new"
+            versionTransition = "2026.07.14.599-old -> 2026.07.14.600-new"
+            pendingVersionTransition = $null
+            diagnostics = [pscustomobject]@{ isFirstInstall = $false; revitRunning = $false; deferredForRevitClose = $false }
+        }
+        Set-RevAgentInstallRunReport -Status "completed" -Message "machine update complete"
+        $updatedMachineReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$updatedMachineReport.previousVersion) "2026.07.14.599-old" "Outer successful report must preserve the nested pre-update version instead of re-reading the new installed state as previous."
+        Assert-Equal ([string]$updatedMachineReport.versionTransition) "2026.07.14.599-old -> 2026.07.14.600-new" "Outer successful report must preserve the nested version transition."
+        Assert-True (-not [bool]$updatedMachineReport.diagnostics.isFirstInstall) "Outer successful report must preserve nested isFirstInstall truth."
+        Assert-Equal ([string]$updatedMachineReport.diagnostics.executionSnapshotId) $snapshotId "Machine report must bind the cross-process handoff to the authenticated execution snapshot."
+        Assert-Equal ([long]$updatedMachineReport.diagnostics.executionSnapshotReleaseSequence) $releaseSequence "Machine report must bind the cross-process handoff to the authenticated release sequence."
+
+        Write-RevAgentJsonFile -Path $ChannelManifestPath -GuardRoot $HarnessRoot -Value $script:HarnessChannel
+        Write-RevAgentJsonFile -Path (Join-Path $WorkRoot "installed.json") -GuardRoot $WorkRoot -Value $script:HarnessInstalledState
+        Assert-ThrowsLike {
+            Read-RevAgentPendingMachineInstallOutcome `
+                -WorkRoot $WorkRoot `
+                -ExpectedOperationMethod "gui-install" `
+                -ExpectedComputerName $env:COMPUTERNAME `
+                -ExpectedSnapshotId "ffffffffffffffffffffffffffffffff" `
+                -ExpectedVersion "2026.07.14.600-new" `
+                -ExpectedPackageSha256 $packageSha256 `
+                -ExpectedReleaseSequence $releaseSequence | Out-Null
+        } "snapshot id mismatch" "Pending machine handoff must reject a report from a different authenticated execution snapshot."
+        $crossProcessHarnessPath = Join-Path $HarnessRoot "user-phase-cross-process.ps1"
+        $crossProcessHarnessPreamble = @'
+param(
+    [Parameter(Mandatory = $true)][string]$ReportingModulePath,
+    [Parameter(Mandatory = $true)][string]$WorkRootPath,
+    [Parameter(Mandatory = $true)][string]$ChannelPath,
+    [Parameter(Mandatory = $true)][string]$SnapshotId,
+    [Parameter(Mandatory = $true)][string]$Version,
+    [Parameter(Mandatory = $true)][string]$PackageSha256,
+    [Parameter(Mandatory = $true)][long]$ReleaseSequence,
+    [Parameter(Mandatory = $true)][string]$OperationMethod,
+    [Parameter(Mandatory = $true)][string]$ComputerName
+)
+$ErrorActionPreference = "Stop"
+Import-Module $ReportingModulePath -Force
+'@
+        $crossProcessHarnessBody = @'
+function Read-OptionalJsonFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) { return $null }
+    return Get-Content -Raw -LiteralPath $Path | ConvertFrom-Json
+}
+
+$MachinePhaseOnly = $false
+$UserPhaseOnly = $true
+$WorkRoot = $WorkRootPath
+$ChannelManifestPath = $ChannelPath
+$InstallRoot = Split-Path -Parent $WorkRootPath
+$PackageTarget = Join-Path $InstallRoot "package"
+$ServerTarget = Join-Path $InstallRoot "runtime"
+$RevitInstallRoot = Join-Path $InstallRoot "Revit"
+$CodexInstructionPolicy = "preserve-local"
+$MachineRole = "developer"
+$script:RevAgentLatestReport = $null
+$script:RevAgentOperation = "install"
+$script:RevAgentOperationMethod = $OperationMethod
+$script:RevAgentMachineUpdatePhase = $null
+$script:RevAgentNestedMachineRunReport = $null
+$script:RevAgentMachineEvidenceRecoveryError = ""
+$script:RevAgentPendingMachineReportValidated = $false
+$script:RevAgentCodexUserIntegrationPhase = [pscustomobject]@{ phase = "user"; status = "completed"; success = $true; continueUserPhase = $false }
+$script:RevAgentDesktopLauncherCleanup = [pscustomobject]@{ mode = "commit"; removedCount = 1; failedCount = 0 }
+$script:RevAgentLogPath = Join-Path $WorkRoot "logs\install-user.log"
+$script:InstallExecutionSnapshotState = [pscustomobject]@{
+    snapshotId = $SnapshotId
+    release = [pscustomobject]@{ version = $Version; packageSha256 = $PackageSha256; releaseSequence = $ReleaseSequence }
+}
+$pending = Read-RevAgentPendingMachineInstallOutcome `
+    -WorkRoot $WorkRoot `
+    -ExpectedOperationMethod $OperationMethod `
+    -ExpectedComputerName $ComputerName `
+    -ExpectedSnapshotId $SnapshotId `
+    -ExpectedVersion $Version `
+    -ExpectedPackageSha256 $PackageSha256 `
+    -ExpectedReleaseSequence $ReleaseSequence
+$script:RevAgentNestedMachineRunReport = $pending.report
+$script:RevAgentMachineUpdatePhase = $pending.phase
+$script:RevAgentOperation = [string](Get-RevAgentInstallObjectPropertyValue -Object $pending.report -Name "operation")
+$script:RevAgentOperationMethod = [string](Get-RevAgentInstallObjectPropertyValue -Object $pending.report -Name "operationMethod")
+$script:RevAgentPendingMachineReportValidated = $true
+Set-RevAgentInstallRunReport -Status "completed" -Message "cross-process user phase complete"
+'@
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($crossProcessHarnessPath, ($crossProcessHarnessPreamble + "`r`n" + $FunctionText + "`r`n" + $crossProcessHarnessBody), $utf8NoBom)
+        $currentPowerShellHost = (Get-Process -Id $PID).Path
+        $crossProcessOutput = @(& $currentPowerShellHost `
+                -NoLogo `
+                -NoProfile `
+                -NonInteractive `
+                -ExecutionPolicy Bypass `
+                -File $crossProcessHarnessPath `
+                -ReportingModulePath (Join-Path $libRoot "RevAgent.Reporting.psm1") `
+                -WorkRootPath $WorkRoot `
+                -ChannelPath $ChannelManifestPath `
+                -SnapshotId $snapshotId `
+                -Version "2026.07.14.600-new" `
+                -PackageSha256 $packageSha256 `
+                -ReleaseSequence $releaseSequence `
+                -OperationMethod "gui-install" `
+                -ComputerName $env:COMPUTERNAME 2>&1)
+        $crossProcessExitCode = $LASTEXITCODE
+        Assert-Equal $crossProcessExitCode 0 ("Cross-process user-phase harness failed: " + ($crossProcessOutput -join "`n"))
+        $crossProcessUserReportPath = Join-Path $WorkRoot "user-state\last-install-report.json"
+        $crossProcessUserReport = Read-RevAgentJsonReportFile -Path $crossProcessUserReportPath -AllowedRoot (Join-Path $WorkRoot "user-state")
+        Assert-Equal ([string]$crossProcessUserReport.operationMethod) "gui-install" "Cross-process user report must preserve the authenticated machine operation method."
+        Assert-Equal ([string]$crossProcessUserReport.previousVersion) "2026.07.14.599-old" "Cross-process user report must preserve the machine phase previous-version truth."
+        Assert-Equal ([string]$crossProcessUserReport.versionTransition) "2026.07.14.599-old -> 2026.07.14.600-new" "Cross-process user report must preserve the machine phase version transition."
+        Assert-Equal ([string]$crossProcessUserReport.diagnostics.executionSnapshotId) $snapshotId "Cross-process user report must preserve authenticated snapshot binding."
+        Assert-True ([bool]$crossProcessUserReport.diagnostics.pendingMachineReportValidated) "Cross-process user report must attest successful pending-machine report validation."
+
+        $canonicalFailureCleanup = [pscustomobject]@{ success = $false; actionRequired = $true; failedCount = 1 }
+        $failureAtUtc = (Get-Date).ToUniversalTime().ToString("o")
+        $failurePhaseResultPath = Join-Path $WorkRoot "machine-state\nested-failure-result.json"
+        $nestedFailureReportPath = Join-Path $WorkRoot "machine-state\last-update-report.json"
+        $nestedFailurePhase = [ordered]@{
+            schemaVersion = 1
+            phase = "machine"
+            status = "failed"
+            success = $false
+            continueUserPhase = $false
+            message = "source-free cleanup failed"
+            createdAtUtc = $failureAtUtc
+            details = [ordered]@{ canonicalLegacySurfaceCleanup = $canonicalFailureCleanup }
+        }
+        $nestedFailureReport = [ordered]@{
+            schemaVersion = 1
+            app = "revAgent"
+            operation = "source-free-migration"
+            operationMethod = "gui-install-machine"
+            status = "failed"
+            message = "source-free cleanup failed"
+            computerName = $env:COMPUTERNAME
+            atUtc = $failureAtUtc
+            previousVersion = "2026.07.14.599-old"
+            targetVersion = "2026.07.14.600-new"
+            installedVersion = "2026.07.14.599-old"
+            release = [ordered]@{ packageSha256 = $packageSha256 }
+            diagnostics = [ordered]@{
+                sourceFreeMigrationRequired = $true
+                sourceFreeMigration = [ordered]@{ success = $false; failureCount = 1 }
+                canonicalLegacySurfaceCleanup = $canonicalFailureCleanup
+            }
+            paths = [ordered]@{ workRoot = $WorkRoot }
+        }
+        Write-RevAgentJsonFile -Path $failurePhaseResultPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value $nestedFailurePhase
+        $nestedFailureReport["operationMethod"] = "wrong-machine-method"
+        Write-RevAgentJsonFile -Path $nestedFailureReportPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value $nestedFailureReport
+        Assert-ThrowsLike {
+            Read-RevAgentRecoveredMachineFailureEvidence `
+                -PhaseResultPath $failurePhaseResultPath `
+                -WorkRoot $WorkRoot `
+                -ExpectedNestedOperationMethod "gui-install-machine" `
+                -ExpectedComputerName $env:COMPUTERNAME `
+                -ExpectedVersion "2026.07.14.600-new" `
+                -ExpectedPackageSha256 $packageSha256 | Out-Null
+        } "operation method" "Machine failure recovery must reject a stale or foreign operation report."
+        $nestedFailureReport["operationMethod"] = "gui-install-machine"
+        Write-RevAgentJsonFile -Path $nestedFailureReportPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value $nestedFailureReport
+        $recoveredFailureEvidence = Read-RevAgentRecoveredMachineFailureEvidence `
+            -PhaseResultPath $failurePhaseResultPath `
+            -WorkRoot $WorkRoot `
+            -ExpectedNestedOperationMethod "gui-install-machine" `
+            -ExpectedComputerName $env:COMPUTERNAME `
+            -ExpectedVersion "2026.07.14.600-new" `
+            -ExpectedPackageSha256 $packageSha256
+        $script:RevAgentMachineUpdatePhase = $recoveredFailureEvidence.phase
+        $script:RevAgentNestedMachineRunReport = $recoveredFailureEvidence.report
+        $script:RevAgentMachineEvidenceRecoveryError = ""
+        Set-RevAgentInstallRunReport -Status "failed" -Message "outer wrapper preserved nested failure"
+        $outerFailureReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-True ([bool]$outerFailureReport.diagnostics.sourceFreeMigrationRequired) "Outer failed install report must preserve recovered source-free diagnostics."
+        Assert-Equal ([int]$outerFailureReport.diagnostics.sourceFreeMigration.failureCount) 1 "Outer failed install report must preserve recovered source-free failure detail."
+        Assert-True ([bool]$outerFailureReport.diagnostics.canonicalLegacySurfaceCleanup.actionRequired) "Outer failed install report must preserve recovered canonical cleanup evidence."
+        $originalPhaseResultPath = $PhaseResultPath
+        $PhaseResultPath = $failurePhaseResultPath
+        Write-RevAgentInstallMachinePhaseResult -Status "failed" -Message "outer wrapper preserved nested failure" -ContinueUserPhase $false -Details ([ordered]@{
+                updaterMachinePhase = $script:RevAgentMachineUpdatePhase
+                updaterMachineRunReport = $script:RevAgentNestedMachineRunReport
+                machineEvidenceRecoveryError = $script:RevAgentMachineEvidenceRecoveryError
+            })
+        $outerFailurePhase = Read-RevAgentJsonReportFile -Path $failurePhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-True ([bool]$outerFailurePhase.details.updaterMachineRunReport.diagnostics.sourceFreeMigrationRequired) "Outer failure phase result must preserve recovered source-free diagnostics before replacing the nested phase file."
+        Assert-True ([bool]$outerFailurePhase.details.updaterMachinePhase.details.canonicalLegacySurfaceCleanup.actionRequired) "Outer failure phase result must preserve recovered canonical cleanup evidence before replacing the nested phase file."
+        $PhaseResultPath = $originalPhaseResultPath
+
+        $canonicalCleanupFixture = [pscustomobject]@{ success = $true; actionRequired = $false; removedCount = 2 }
+        $script:RevAgentMachineUpdatePhase = [pscustomobject]@{
+            phase = "machine"
+            status = "blocked"
+            success = $false
+            continueUserPhase = $false
+            message = "Close Revit and retry."
+            details = [pscustomobject]@{ canonicalLegacySurfaceCleanup = $canonicalCleanupFixture }
+        }
+        $script:RevAgentNestedMachineRunReport = [pscustomobject]@{
+            status = "deferred-revit-close-required"
+            previousVersion = "2026.07.14.599-old"
+            targetVersion = "2026.07.14.600-new"
+            installedVersion = "2026.07.14.599-old"
+            versionTransition = $null
+            pendingVersionTransition = "2026.07.14.599-old -> 2026.07.14.600-new"
+            diagnostics = [pscustomobject]@{
+                isFirstInstall = $false
+                revitRunning = $true
+                deferredForRevitClose = $true
+                revitPayloadChanged = $true
+                canonicalLegacySurfaceCleanup = $canonicalCleanupFixture
+            }
+        }
+        $blockedOutcome = Resolve-RevAgentNestedMachinePhaseOutcome -PhaseResult $script:RevAgentMachineUpdatePhase -NestedMachineRunReport $script:RevAgentNestedMachineRunReport
+        Assert-True ([bool]$blockedOutcome.accepted -and [bool]$blockedOutcome.blocked -and -not [bool]$blockedOutcome.continueUserPhase) "Nested Revit-close deferral must be an accepted blocked terminal outcome without user continuation."
+        Assert-Equal ([string]$blockedOutcome.reportStatus) "deferred-revit-close-required" "Blocked outcome must preserve the nested updater report status."
+        Set-RevAgentInstallRunReport -Status ([string]$blockedOutcome.reportStatus) -Message ([string]$blockedOutcome.message)
+        $blockedMachineReport = Read-RevAgentJsonReportFile -Path $machineReportPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$blockedMachineReport.status) "deferred-revit-close-required" "Outer report must retain the safe Revit-close deferral status."
+        Assert-True ([bool]$blockedMachineReport.diagnostics.revitRunning -and [bool]$blockedMachineReport.diagnostics.deferredForRevitClose -and [bool]$blockedMachineReport.diagnostics.revitPayloadChanged) "Outer deferred report must preserve nested Revit diagnostics."
+        Assert-Equal ([string]$blockedMachineReport.diagnostics.updaterMachinePhase.status) "blocked" "Outer deferred report must retain the nested blocked phase evidence."
+        Assert-Equal ([int]$blockedMachineReport.diagnostics.canonicalLegacySurfaceCleanup.removedCount) 2 "Outer deferred report must retain canonical cleanup evidence."
+        Write-RevAgentInstallMachinePhaseResult -Status "blocked" -Message ([string]$blockedOutcome.message) -ContinueUserPhase $false -Details ([ordered]@{ updaterMachinePhase = $script:RevAgentMachineUpdatePhase })
+        $blockedMachineResult = Read-RevAgentJsonReportFile -Path $PhaseResultPath -AllowedRoot (Join-Path $WorkRoot "machine-state")
+        Assert-Equal ([string]$blockedMachineResult.status) "blocked" "Outer machine handoff must preserve blocked status."
+        Assert-True (-not [bool]$blockedMachineResult.success -and -not [bool]$blockedMachineResult.continueUserPhase) "Outer blocked handoff must stop the user phase."
 
         Write-RevAgentJsonFile -Path $PhaseResultPath -GuardRoot (Join-Path $WorkRoot "machine-state") -Value ([ordered]@{
                 phase = "machine"
@@ -256,6 +535,379 @@ try {
         Assert-True ([bool]$userResult.success) "User handoff must report success for the GUI terminal state."
         Assert-True (-not [bool]$userResult.continueUserPhase) "User handoff must be terminal."
     } $installTaskFunctionText (Join-Path $tempRoot "split-phase-installer")
+
+    Write-Host "Test direct updater machine-report run binding and second-GUI race guard"
+    $updaterPathForBinding = Join-Path $RepoRoot "installer\nas\update-from-nas.ps1"
+    $updaterBindingTokens = $null
+    $updaterBindingParseErrors = $null
+    $updaterBindingAst = [System.Management.Automation.Language.Parser]::ParseFile($updaterPathForBinding, [ref]$updaterBindingTokens, [ref]$updaterBindingParseErrors)
+    Assert-Equal $updaterBindingParseErrors.Count 0 "PowerShell parse errors found in updater pending-report binding source."
+    $updaterBindingFunctions = @(
+        "Test-RevAgentPathUnderRoot",
+        "Get-JsonPropertyValue",
+        "Assert-RevAgentPendingMachineUpdateBinding",
+        "Read-RevAgentPendingMachineUpdateOutcome",
+        "Publish-RevAgentPendingMachineUpdateReport"
+    )
+    $updaterBindingFunctionNodes = @($updaterBindingAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $updaterBindingFunctions -contains $node.Name
+            }, $true) | Sort-Object { $_.Extent.StartOffset })
+    Assert-Equal $updaterBindingFunctionNodes.Count $updaterBindingFunctions.Count "Direct updater binding harness could not resolve every production function."
+    $updaterBindingFunctionText = ($updaterBindingFunctionNodes | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    & {
+        param([string]$FunctionText, [string]$CaseRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        $workRoot = Join-Path $CaseRoot "updater"
+        $machineStateRoot = Join-Path $workRoot "machine-state"
+        New-Item -ItemType Directory -Path $machineStateRoot -Force | Out-Null
+        $reportPath = Join-Path $machineStateRoot "last-update-report.json"
+        $phaseAPath = Join-Path $machineStateRoot "gui-machine-phase-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.json"
+        $phaseBPath = Join-Path $machineStateRoot "gui-machine-phase-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.json"
+        $snapshotAStatePath = Join-Path $CaseRoot "snapshot-a-state.json"
+        $snapshotBStatePath = Join-Path $CaseRoot "snapshot-b-state.json"
+        $version = "2026.07.14.601-race"
+        $packageSha256 = ("B" * 64)
+        $releaseSequence = 20260714000201
+        $snapshotAId = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        $snapshotBId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        $operationMethod = "gui-update"
+
+        function New-RaceSnapshotState {
+            param([string]$SnapshotId)
+            return [pscustomobject]@{
+                snapshotId = $SnapshotId
+                release = [pscustomobject]@{
+                    version = $version
+                    packageSha256 = $packageSha256
+                    releaseSequence = $releaseSequence
+                }
+            }
+        }
+        function New-RaceMachinePhase {
+            param([string]$SnapshotId, [string]$StatePath)
+            return [ordered]@{
+                schemaVersion = 1
+                phase = "machine"
+                status = "completed"
+                success = $true
+                continueUserPhase = $true
+                message = "updated"
+                createdAtUtc = [DateTime]::UtcNow.ToString("o")
+                executionSnapshot = [ordered]@{
+                    snapshotId = $SnapshotId
+                    statePath = $StatePath
+                    releaseSequence = $releaseSequence
+                    targetComponentKey = "updater"
+                }
+            }
+        }
+        function New-RaceMachineReport {
+            param([string]$SnapshotId, [string]$MachinePhasePath)
+            return [ordered]@{
+                schemaVersion = 1
+                app = "revAgent"
+                operation = "update"
+                operationMethod = $operationMethod
+                status = "updated"
+                computerName = $env:COMPUTERNAME
+                targetVersion = $version
+                installedVersion = $version
+                release = [ordered]@{ version = $version; packageSha256 = $packageSha256 }
+                localInstall = [ordered]@{ version = $version; packageSha256 = $packageSha256 }
+                diagnostics = [ordered]@{
+                    executionSnapshotId = $SnapshotId
+                    executionSnapshotVersion = $version
+                    executionSnapshotPackageSha256 = $packageSha256
+                    executionSnapshotReleaseSequence = $releaseSequence
+                    machinePhaseResultPath = $MachinePhasePath
+                }
+                paths = [ordered]@{ workRoot = $workRoot; logPath = "" }
+            }
+        }
+
+        $snapshotA = New-RaceSnapshotState -SnapshotId $snapshotAId
+        Write-RevAgentJsonFile -Path $phaseAPath -GuardRoot $machineStateRoot -Value (New-RaceMachinePhase -SnapshotId $snapshotAId -StatePath $snapshotAStatePath)
+        Write-RevAgentJsonFile -Path $reportPath -GuardRoot $machineStateRoot -Value (New-RaceMachineReport -SnapshotId $snapshotAId -MachinePhasePath $phaseAPath)
+        $acceptedA = Read-RevAgentPendingMachineUpdateOutcome `
+            -ReportPath $reportPath `
+            -ReportAllowedRoot $machineStateRoot `
+            -MachinePhaseResultPath $phaseAPath `
+            -ExpectedSnapshotState $snapshotA `
+            -ExpectedSnapshotStatePath $snapshotAStatePath `
+            -ExpectedWorkRoot $workRoot `
+            -ExpectedOperationMethod $operationMethod `
+            -ExpectedComputerName $env:COMPUTERNAME
+        Assert-True ([bool]$acceptedA.binding.success) "Direct updater must accept its own exact machine report/snapshot/phase binding."
+
+        # Simulate a second GUI machine phase completing after run A's initial
+        # validation and replacing the shared last-update-report.json.
+        Write-RevAgentJsonFile -Path $phaseBPath -GuardRoot $machineStateRoot -Value (New-RaceMachinePhase -SnapshotId $snapshotBId -StatePath $snapshotBStatePath)
+        Write-RevAgentJsonFile -Path $reportPath -GuardRoot $machineStateRoot -Value (New-RaceMachineReport -SnapshotId $snapshotBId -MachinePhasePath $phaseBPath)
+        $script:RacePublishCount = 0
+        function Invoke-RacePublish {
+            $script:RacePublishCount++
+            return [pscustomobject]@{}
+        }
+        Set-Alias -Name Publish-RevAgentMachineRunReport -Value Invoke-RacePublish -Scope Local -Force
+        Assert-ThrowsLike {
+            Publish-RevAgentPendingMachineUpdateReport `
+                -ReportPath $reportPath `
+                -ReportAllowedRoot $machineStateRoot `
+                -LogAllowedRoot (Join-Path $workRoot "machine-logs") `
+                -RemoteReportsRoot (Join-Path $CaseRoot "reports") `
+                -IntegrationStatus "completed" `
+                -IntegrationMessage "run A user integration completed" `
+                -RequireExactBinding `
+                -MachinePhaseResultPath $phaseAPath `
+                -ExpectedSnapshotState $snapshotA `
+                -ExpectedSnapshotStatePath $snapshotAStatePath `
+                -ExpectedWorkRoot $workRoot `
+                -ExpectedOperationMethod $operationMethod `
+                -ExpectedComputerName $env:COMPUTERNAME | Out-Null
+        } "snapshot id mismatch|phase identity mismatch" "Run A must reject run B's shared machine report before NAS publication."
+        Assert-Equal $script:RacePublishCount 0 "A foreign second-GUI machine report must not reach the NAS report publisher."
+    } $updaterBindingFunctionText (Join-Path $tempRoot "direct-update-report-race")
+
+    $guiUpdaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
+    Assert-True ($guiUpdaterText -match '-MachinePhaseResultPath' -and $guiUpdaterText -match 'PendingUserPhaseComponentKey, "updater"') "Direct GUI user handoff must pass the exact protected machine phase identity to the updater."
+
+    Write-Host "Test managed updater tool fail-closed copy contract"
+    foreach ($copyContract in @(
+            [pscustomobject]@{ Name = "install-task"; Path = (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1") },
+            [pscustomobject]@{ Name = "updater"; Path = (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1") },
+            [pscustomobject]@{ Name = "self-contained"; Path = (Join-Path $RepoRoot "installer\install-self-contained.ps1") }
+        )) {
+        $copyTokens = $null
+        $copyParseErrors = $null
+        $copyAst = [System.Management.Automation.Language.Parser]::ParseFile([string]$copyContract.Path, [ref]$copyTokens, [ref]$copyParseErrors)
+        Assert-Equal $copyParseErrors.Count 0 "PowerShell parse errors found in $($copyContract.Name) copy helper source."
+        $copyFunctionNode = @($copyAst.FindAll({
+                    param($node)
+                    $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq "Copy-RevAgentManagedUpdaterToolFile"
+                }, $true))[0]
+        Assert-True ($null -ne $copyFunctionNode) "Could not find the $($copyContract.Name) managed updater copy helper."
+        & {
+            param([string]$FunctionText, [string]$CaseRoot, [string]$ContractName)
+            . ([scriptblock]::Create($FunctionText))
+
+            New-Item -ItemType Directory -Path $CaseRoot -Force | Out-Null
+            $missingSource = Join-Path $CaseRoot "missing-source.ps1"
+            $requiredDestination = Join-Path $CaseRoot "required-destination.ps1"
+            Assert-ThrowsLike {
+                Copy-RevAgentManagedUpdaterToolFile -Source $missingSource -Destination $requiredDestination -Required:$true
+            } "source is missing" "$ContractName helper must throw when a required managed tool source is missing."
+
+            $staleOptionalDestination = Join-Path $CaseRoot "stale-optional.ps1"
+            [System.IO.File]::WriteAllBytes($staleOptionalDestination, [byte[]](1, 2, 3, 4))
+            Assert-ThrowsLike {
+                Copy-RevAgentManagedUpdaterToolFile -Source $missingSource -Destination $staleOptionalDestination -Required:$false
+            } "stale optional destination" "$ContractName helper must throw when an optional source is missing but a stale destination remains."
+            Assert-True (Test-Path -LiteralPath $staleOptionalDestination -PathType Leaf) "$ContractName helper must not silently erase an unverified stale optional destination."
+
+            $validSource = Join-Path $CaseRoot "valid-source.ps1"
+            $validDestination = Join-Path $CaseRoot "valid-destination.ps1"
+            $sourceBytes = [byte[]](0, 1, 2, 3, 13, 10, 255, 128, 64, 32, 16, 8)
+            [System.IO.File]::WriteAllBytes($validSource, $sourceBytes)
+            [System.IO.File]::WriteAllBytes($validDestination, [byte[]](9, 9, 9))
+            Copy-RevAgentManagedUpdaterToolFile -Source $validSource -Destination $validDestination -Required:$true
+            $destinationBytes = [System.IO.File]::ReadAllBytes($validDestination)
+            Assert-Equal $destinationBytes.Length $sourceBytes.Length "$ContractName helper copied a different byte length."
+            Assert-Equal ((Get-FileHash -Algorithm SHA256 -LiteralPath $validDestination).Hash) ((Get-FileHash -Algorithm SHA256 -LiteralPath $validSource).Hash) "$ContractName helper copied bytes with a different SHA256."
+        } $copyFunctionNode.Extent.Text (Join-Path $tempRoot ("copy-contract-" + [string]$copyContract.Name)) ([string]$copyContract.Name)
+    }
+
+    Write-Host "Test managed updater link/race and transactional directory guards"
+    if (-not ("RevAgentInstallerSmoke.MutationHandle" -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace RevAgentInstallerSmoke {
+    public static class MutationHandle {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+        public static SafeFileHandle Open(string path) { return OpenWithAccess(path, 0x40000000u); }
+        public static SafeFileHandle OpenWithAccess(string path, uint access) {
+            SafeFileHandle handle = CreateFileW(path, access, 7u, IntPtr.Zero, 3u, 0x02000000u | 0x00200000u, IntPtr.Zero);
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error);
+            }
+            return handle;
+        }
+    }
+}
+'@
+    }
+
+    $guardConflictRoot = Join-Path $tempRoot "managed-guard-conflict"
+    New-Item -ItemType Directory -Path $guardConflictRoot -Force | Out-Null
+    $retainedMutationHandle = [RevAgentInstallerSmoke.MutationHandle]::Open($guardConflictRoot)
+    try {
+        Assert-ThrowsLike {
+            $unexpectedGuard = Open-RevAgentManagedMutationGuard -Path $guardConflictRoot
+            $unexpectedGuard.Dispose()
+        } "mutation-capable filesystem handle|managed mutation identity set" "Mutation guard must reject a retained pre-UAC write/delete-capable directory handle."
+    }
+    finally {
+        $retainedMutationHandle.Dispose()
+    }
+    $releasedGuard = Open-RevAgentManagedMutationGuard -Path $guardConflictRoot
+    $releasedGuard.Dispose()
+
+    $parentBoundaryRoot = Join-Path $tempRoot "managed-parent-boundary"
+    $parentBoundaryUpdater = Join-Path $parentBoundaryRoot "updater"
+    New-Item -ItemType Directory -Path $parentBoundaryUpdater -Force | Out-Null
+    $retainedParentDeleteChildHandle = [RevAgentInstallerSmoke.MutationHandle]::OpenWithAccess($parentBoundaryRoot, 0x00000040)
+    try {
+        Assert-ThrowsLike {
+            $unexpectedParentGuard = Open-RevAgentManagedMutationGuard -Path $parentBoundaryRoot -ProtectedPaths @($parentBoundaryUpdater) -ExactProtectedPaths
+            $unexpectedParentGuard.Dispose()
+        } "mutation-capable filesystem handle|managed mutation identity set" "Install-root boundary guard must reject a retained FILE_DELETE_CHILD handle that could replace the updater root."
+    }
+    finally {
+        $retainedParentDeleteChildHandle.Dispose()
+    }
+    $releasedParentGuard = Open-RevAgentManagedMutationGuard -Path $parentBoundaryRoot -ProtectedPaths @($parentBoundaryUpdater) -ExactProtectedPaths
+    $releasedParentGuard.Dispose()
+
+    $childConflictPath = Join-Path $guardConflictRoot "managed-child.txt"
+    Set-Content -LiteralPath $childConflictPath -Value "managed-child" -Encoding ASCII
+    $retainedChildMutationHandle = [RevAgentInstallerSmoke.MutationHandle]::Open($childConflictPath)
+    try {
+        Assert-ThrowsLike {
+            $unexpectedChildGuard = Open-RevAgentManagedMutationGuard -Path $guardConflictRoot -ProtectedPaths @($childConflictPath)
+            $unexpectedChildGuard.Dispose()
+        } "mutation-capable filesystem handle|managed mutation identity set" "Mutation guard must reject a retained write-capable handle to a protected child file."
+    }
+    finally {
+        $retainedChildMutationHandle.Dispose()
+    }
+    $childDirectoryPath = Join-Path $guardConflictRoot "managed-child-directory"
+    New-Item -ItemType Directory -Path $childDirectoryPath -Force | Out-Null
+    $retainedChildDaclHandle = [RevAgentInstallerSmoke.MutationHandle]::OpenWithAccess($childDirectoryPath, 0x00040000)
+    try {
+        Assert-ThrowsLike {
+            $unexpectedDaclGuard = Open-RevAgentManagedMutationGuard -Path $guardConflictRoot -ProtectedPaths @($childDirectoryPath)
+            $unexpectedDaclGuard.Dispose()
+        } "mutation-capable filesystem handle|managed mutation identity set" "Mutation guard must reject a retained WRITE_DAC handle to a protected child directory."
+    }
+    finally {
+        $retainedChildDaclHandle.Dispose()
+    }
+
+    $foreignConflictPath = Join-Path $guardConflictRoot "foreign-process-child.txt"
+    Set-Content -LiteralPath $foreignConflictPath -Value "foreign-process-child" -Encoding ASCII
+    $foreignSignalPath = Join-Path $tempRoot ("foreign-handle-ready-" + [guid]::NewGuid().ToString("N"))
+    $foreignHandleJob = Start-Job -ArgumentList $foreignConflictPath, $foreignSignalPath -ScriptBlock {
+        param([string]$ConflictPath, [string]$SignalPath)
+        $foreignStream = [System.IO.FileStream]::new(
+            $ConflictPath,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::ReadWrite,
+            ([System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete))
+        try {
+            [System.IO.File]::WriteAllText($SignalPath, "ready")
+            Start-Sleep -Seconds 30
+        }
+        finally {
+            $foreignStream.Dispose()
+        }
+    }
+    try {
+        for ($waitIndex = 0; $waitIndex -lt 100 -and -not (Test-Path -LiteralPath $foreignSignalPath); $waitIndex++) {
+            Start-Sleep -Milliseconds 50
+        }
+        Assert-True (Test-Path -LiteralPath $foreignSignalPath -PathType Leaf) "Foreign retained-handle test process did not become ready."
+        Assert-ThrowsLike {
+            $unexpectedForeignGuard = Open-RevAgentManagedMutationGuard -Path $guardConflictRoot -ProtectedPaths @($foreignConflictPath) -ExactProtectedPaths
+            $unexpectedForeignGuard.Dispose()
+        } "Another process already retains a handle|managed mutation identity set" "Mutation guard must reject a foreign same-user process without relying on PROCESS_DUP_HANDLE access."
+    }
+    finally {
+        Stop-Job -Job $foreignHandleJob -ErrorAction SilentlyContinue
+        Remove-Job -Job $foreignHandleJob -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $foreignSignalPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $linkFixtureRoot = Join-Path $tempRoot "managed-link-guards"
+    $linkSourceRoot = Join-Path $linkFixtureRoot "source"
+    $linkDestinationRoot = Join-Path $linkFixtureRoot "destination"
+    New-Item -ItemType Directory -Path $linkSourceRoot,$linkDestinationRoot -Force | Out-Null
+    $linkSource = Join-Path $linkSourceRoot "update.ps1"
+    Set-Content -LiteralPath $linkSource -Value "signed-new" -Encoding ASCII
+    $externalFile = Join-Path $linkFixtureRoot "external.txt"
+    Set-Content -LiteralPath $externalFile -Value "external-original" -Encoding ASCII
+    $externalHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $externalFile).Hash
+    $externalAttributesBefore = [System.IO.File]::GetAttributes($externalFile)
+    $externalSddlBefore = (Get-Acl -LiteralPath $externalFile).Sddl
+    $hardlinkDestination = Join-Path $linkDestinationRoot "update.ps1"
+    New-Item -ItemType HardLink -Path $hardlinkDestination -Target $externalFile | Out-Null
+    Assert-ThrowsLike {
+        Install-RevAgentManagedUpdaterFile -Source $linkSource -Destination $hardlinkDestination | Out-Null
+    } "hardlink|hard-linked|reparse point|symbolic link" "Managed updater file refresh must fail closed on a preplanted hardlink."
+    Assert-Equal ((Get-FileHash -Algorithm SHA256 -LiteralPath $externalFile).Hash) $externalHashBefore "Rejected hardlink refresh changed external bytes."
+    Assert-Equal ([System.IO.File]::GetAttributes($externalFile)) $externalAttributesBefore "Rejected hardlink refresh changed external attributes."
+    Assert-Equal ((Get-Acl -LiteralPath $externalFile).Sddl) $externalSddlBefore "Rejected hardlink refresh changed external ACL."
+
+    $configSourceRoot = Join-Path $linkFixtureRoot "config-source"
+    $configParent = Join-Path $linkFixtureRoot "config-parent"
+    $externalConfigRoot = Join-Path $linkFixtureRoot "external-config"
+    New-Item -ItemType Directory -Path $configSourceRoot,$configParent,$externalConfigRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $configSourceRoot "current.json") -Value '{"current":true}' -Encoding ASCII
+    $externalConfigFile = Join-Path $externalConfigRoot "outside.json"
+    Set-Content -LiteralPath $externalConfigFile -Value '{"outside":true}' -Encoding ASCII
+    $externalConfigHashBefore = (Get-FileHash -Algorithm SHA256 -LiteralPath $externalConfigFile).Hash
+    $externalConfigAttributesBefore = [System.IO.File]::GetAttributes($externalConfigFile)
+    $externalConfigSddlBefore = (Get-Acl -LiteralPath $externalConfigFile).Sddl
+    $configJunction = Join-Path $configParent "config"
+    New-Item -ItemType Junction -Path $configJunction -Target $externalConfigRoot | Out-Null
+    Assert-ThrowsLike {
+        Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSourceRoot -DestinationRoot $configJunction | Out-Null
+    } "ordinary directory|reparse point|symbolic link" "Config sync must fail closed before following a destination junction."
+    Assert-Equal ((Get-FileHash -Algorithm SHA256 -LiteralPath $externalConfigFile).Hash) $externalConfigHashBefore "Rejected config junction changed external bytes."
+    Assert-Equal ([System.IO.File]::GetAttributes($externalConfigFile)) $externalConfigAttributesBefore "Rejected config junction changed external attributes."
+    Assert-Equal ((Get-Acl -LiteralPath $externalConfigFile).Sddl) $externalConfigSddlBefore "Rejected config junction changed external ACL."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $externalConfigRoot "current.json"))) "Rejected config junction wrote a shipped file outside the managed tree."
+    Assert-ThrowsLike {
+        Sync-RevAgentUpdaterConfigDirectory -SourceRoot (Join-Path $linkFixtureRoot "missing-config-source") -DestinationRoot (Join-Path $configParent "missing-config-destination") | Out-Null
+    } "source is missing" "Config sync must fail closed when the shipped config source is missing."
+
+    [RevAgent.PermissionNativeFileInfo]::RemoveDirectoryLink($configJunction)
+    $validConfigDestination = Join-Path $configParent "valid-config"
+    New-Item -ItemType Directory -Path $validConfigDestination -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $validConfigDestination "stale.json") -Value "stale" -Encoding ASCII
+    Set-Content -LiteralPath (Join-Path $validConfigDestination "revagent-license.json") -Value "local-license" -Encoding ASCII
+    [void](Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSourceRoot -DestinationRoot $validConfigDestination)
+    Assert-True (Test-Path -LiteralPath (Join-Path $validConfigDestination "current.json") -PathType Leaf) "Config sync did not install shipped config."
+    Assert-True (Test-Path -LiteralPath (Join-Path $validConfigDestination "revagent-license.json") -PathType Leaf) "Config sync did not preserve the allowed local license file."
+    Assert-True (-not (Test-Path -LiteralPath (Join-Path $validConfigDestination "stale.json"))) "Config sync reported success with a stale unmanaged file."
+
+    $lockedTreeSource = Join-Path $linkFixtureRoot "locked-tree-source"
+    $lockedTreeDestination = Join-Path $linkFixtureRoot "locked-tree-destination"
+    New-Item -ItemType Directory -Path $lockedTreeSource,$lockedTreeDestination -Force | Out-Null
+    $lockedSourceFile = Join-Path $lockedTreeSource "locked.txt"
+    Set-Content -LiteralPath $lockedSourceFile -Value "new-tree" -Encoding ASCII
+    $oldDestinationFile = Join-Path $lockedTreeDestination "old.txt"
+    Set-Content -LiteralPath $oldDestinationFile -Value "old-tree" -Encoding ASCII
+    $oldDestinationHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $oldDestinationFile).Hash
+    $lockedStream = [System.IO.File]::Open($lockedSourceFile, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::None)
+    try {
+        Assert-ThrowsLike {
+            Sync-RevAgentManagedUpdaterDirectory -SourceRoot $lockedTreeSource -DestinationRoot $lockedTreeDestination | Out-Null
+        } "used by another process|cannot access|being used|başka bir işlem|erişemiyor|GetLinkCount" "Transactional directory sync must fail when a source file cannot be read."
+    }
+    finally {
+        $lockedStream.Dispose()
+    }
+    Assert-True (Test-Path -LiteralPath $oldDestinationFile -PathType Leaf) "Failed transactional directory sync removed the old destination."
+    Assert-Equal ((Get-FileHash -Algorithm SHA256 -LiteralPath $oldDestinationFile).Hash) $oldDestinationHash "Failed transactional directory sync changed the old destination."
 
     Write-Host "Test hidden VBS launcher"
     $exitScript = Join-Path $tempRoot "exit-7.ps1"
@@ -332,6 +984,104 @@ try {
     Assert-Equal $layout.docsServerRelativePath "installer\revit-api-docs-mcp" "Docs server layout resolution failed."
     $releasePath = Resolve-RevAgentReleasePath -Path "releases\pkg.zip" -BaseDirectory "\\nas\share\channels"
     Assert-Equal $releasePath "\\nas\share\channels\releases\pkg.zip" "Relative release path resolution failed."
+
+    Write-Host "Test authenticated release ZIP stays pinned from hash through extraction"
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archiveFixtureRoot = Join-Path $tempRoot "authenticated-archive"
+    $archiveSourceRoot = Join-Path $archiveFixtureRoot "source"
+    $archivePath = Join-Path $archiveFixtureRoot "release.zip"
+    $archiveReplacementPath = Join-Path $archiveFixtureRoot "replacement.zip"
+    $archiveExtractRoot = Join-Path $archiveFixtureRoot "extract"
+    New-Item -ItemType Directory -Path $archiveSourceRoot -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $archiveSourceRoot "payload.txt") -Value "signed-original" -Encoding ASCII
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($archiveSourceRoot, $archivePath)
+    Set-Content -LiteralPath (Join-Path $archiveSourceRoot "payload.txt") -Value "attacker-replacement" -Encoding ASCII
+    [System.IO.Compression.ZipFile]::CreateFromDirectory($archiveSourceRoot, $archiveReplacementPath)
+
+    $updateCacheTokens = $null
+    $updateCacheErrors = $null
+    $updateCacheAst = [System.Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $RepoRoot "installer\nas\update-from-nas.ps1"),
+        [ref]$updateCacheTokens,
+        [ref]$updateCacheErrors)
+    Assert-Equal $updateCacheErrors.Count 0 "Updater authenticated-cache helper has parse errors."
+    $updateCacheFunction = @($updateCacheAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "New-RevAgentAuthenticatedPackageCacheStream"
+            }, $true) | Select-Object -First 1)
+    Assert-Equal $updateCacheFunction.Count 1 "Updater authenticated-cache helper was not found exactly once."
+    . ([scriptblock]::Create($updateCacheFunction[0].Extent.Text))
+
+    $authenticatedCacheRoot = Join-Path $archiveFixtureRoot "cache"
+    New-Item -ItemType Directory -Path $authenticatedCacheRoot -Force | Out-Null
+    $archiveExternalHardlink = Join-Path $archiveFixtureRoot "external-hardlink.bin"
+    Set-Content -LiteralPath $archiveExternalHardlink -Value "external-hardlink-evidence" -Encoding ASCII
+    $archiveExternalHardlinkBytes = [System.IO.File]::ReadAllBytes($archiveExternalHardlink)
+    $archiveExternalHardlinkAttributes = [System.IO.File]::GetAttributes($archiveExternalHardlink)
+    $archiveExternalHardlinkSddl = (Get-Acl -LiteralPath $archiveExternalHardlink).Sddl
+    $preplantedCacheHardlink = Join-Path $authenticatedCacheRoot "revit-mcp-skill-deterministic.zip"
+    New-Item -ItemType HardLink -Path $preplantedCacheHardlink -Target $archiveExternalHardlink | Out-Null
+    Assert-ThrowsLike {
+        $unexpectedHardlinkCache = New-RevAgentAuthenticatedPackageCacheStream -SourcePath $archivePath -CacheRoot $authenticatedCacheRoot
+        $unexpectedHardlinkCache.Stream.Dispose()
+        $unexpectedHardlinkCache.CacheGuard.Dispose()
+    } "hard-linked|hardlink" "Authenticated package cache must reject a preplanted cache hardlink before copying bytes."
+    Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][System.IO.File]::ReadAllBytes($archiveExternalHardlink), [byte[]]$archiveExternalHardlinkBytes)) "Rejected cache hardlink changed outside bytes."
+    Assert-Equal ([System.IO.File]::GetAttributes($archiveExternalHardlink)) $archiveExternalHardlinkAttributes "Rejected cache hardlink changed outside attributes."
+    Assert-Equal ((Get-Acl -LiteralPath $archiveExternalHardlink).Sddl) $archiveExternalHardlinkSddl "Rejected cache hardlink changed outside ACL."
+    [System.IO.File]::Delete($preplantedCacheHardlink)
+
+    $archiveExternalJunctionRoot = Join-Path $archiveFixtureRoot "external-junction-target"
+    $archiveExternalJunctionFile = Join-Path $archiveExternalJunctionRoot "must-survive.bin"
+    New-Item -ItemType Directory -Path $archiveExternalJunctionRoot -Force | Out-Null
+    Set-Content -LiteralPath $archiveExternalJunctionFile -Value "external-junction-evidence" -Encoding ASCII
+    $archiveExternalJunctionBytes = [System.IO.File]::ReadAllBytes($archiveExternalJunctionFile)
+    $archiveExternalJunctionAttributes = [System.IO.File]::GetAttributes($archiveExternalJunctionFile)
+    $archiveExternalJunctionSddl = (Get-Acl -LiteralPath $archiveExternalJunctionFile).Sddl
+    $preplantedCacheJunction = Join-Path $authenticatedCacheRoot "poisoned-cache-child"
+    New-Item -ItemType Junction -Path $preplantedCacheJunction -Target $archiveExternalJunctionRoot | Out-Null
+    Assert-ThrowsLike {
+        $unexpectedJunctionCache = New-RevAgentAuthenticatedPackageCacheStream -SourcePath $archivePath -CacheRoot $authenticatedCacheRoot
+        $unexpectedJunctionCache.Stream.Dispose()
+        $unexpectedJunctionCache.CacheGuard.Dispose()
+    } "reparse point|link" "Authenticated package cache must reject a junction child before copying bytes."
+    Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][System.IO.File]::ReadAllBytes($archiveExternalJunctionFile), [byte[]]$archiveExternalJunctionBytes)) "Rejected cache junction changed outside bytes."
+    Assert-Equal ([System.IO.File]::GetAttributes($archiveExternalJunctionFile)) $archiveExternalJunctionAttributes "Rejected cache junction changed outside attributes."
+    Assert-Equal ((Get-Acl -LiteralPath $archiveExternalJunctionFile).Sddl) $archiveExternalJunctionSddl "Rejected cache junction changed outside ACL."
+    [System.IO.Directory]::Delete($preplantedCacheJunction, $false)
+
+    $authenticatedCache = New-RevAgentAuthenticatedPackageCacheStream -SourcePath $archivePath -CacheRoot $authenticatedCacheRoot
+    $verifiedArchive = $authenticatedCache.Stream
+    try {
+        $archiveSha = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $verifiedArchiveHash = [System.BitConverter]::ToString($archiveSha.ComputeHash($verifiedArchive)).Replace("-", "")
+        }
+        finally {
+            $archiveSha.Dispose()
+        }
+        Assert-Equal $verifiedArchiveHash (Get-FileHash -Algorithm SHA256 -LiteralPath $archivePath).Hash "Pinned archive handle hash differs from its exact source bytes."
+        Assert-True (-not [string]::Equals([System.IO.Path]::GetFileName([string]$authenticatedCache.Path), "revit-mcp-skill-deterministic.zip", [System.StringComparison]::OrdinalIgnoreCase)) "Authenticated package cache must use an unpredictable CreateNew leaf."
+        Assert-Equal ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($verifiedArchive.SafeFileHandle)) 1 "Authenticated package cache destination must remain a single-link ordinary file."
+
+        $archiveOverwriteBlocked = $false
+        try { [System.IO.File]::Copy($archiveReplacementPath, [string]$authenticatedCache.Path, $true) }
+        catch { $archiveOverwriteBlocked = $true }
+        Assert-True $archiveOverwriteBlocked "Pinned authenticated archive must reject write replacement after hash verification."
+        $archiveDeleteBlocked = $false
+        try { [System.IO.File]::Delete([string]$authenticatedCache.Path) }
+        catch { $archiveDeleteBlocked = $true }
+        Assert-True $archiveDeleteBlocked "Pinned authenticated archive must reject delete/rename replacement after hash verification."
+
+        [void]$verifiedArchive.Seek(0, [System.IO.SeekOrigin]::Begin)
+        Expand-RevAgentReleaseArchiveStream -ArchiveStream $verifiedArchive -DestinationPath $archiveExtractRoot
+    }
+    finally {
+        $verifiedArchive.Dispose()
+        $authenticatedCache.CacheGuard.Dispose()
+    }
+    Assert-Equal (Get-Content -Raw -LiteralPath (Join-Path $archiveExtractRoot "payload.txt")).Trim() "signed-original" "Stream extraction must consume the exact verified archive file object."
 
     Write-Host "Test Revit version matrix"
     $v2022 = Get-RevAgentVersionConfig -Version 2022 -RepoRoot $RepoRoot
@@ -637,12 +1387,13 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match 'diagnostics = \$Diagnostics') "Updater reports must include dashboard-ready update diagnostics."
     Assert-True ($updateText -match 'RevAgent\.DistributionIntegrity\.psm1') "Updater must import the distribution-integrity verifier."
     Assert-True ($updateText -match 'release-trusted-keys\.json') "Updater must look for packaged public release-key config."
-    Assert-True ($updateText -match 'RevAgent\.ConfigSync\.psm1' -and $updateText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Fast updater tool refresh must use the shared config sync helper."
+    Assert-True ($updateText -match 'RevAgent\.ConfigSync\.psm1' -and $updateText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\) -MutationGuard \$mutationGuard') "Fast updater tool refresh must use the shared guarded config sync helper."
     Assert-True ($updateText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Fast updater tool refresh must not delete local config because that removes pinned release keys."
     $configSyncText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.ConfigSync.psm1")
-    Assert-True ($configSyncText -match 'Mirror shipped config while preserving local trust/license material intentionally not shipped inside source-free release ZIPs') "Config sync helper must document local trust/license preservation."
-    Assert-True ($configSyncText -match '\$preserveNames' -and $configSyncText -match 'release-trusted-keys\.json' -and $configSyncText -match 'license-trusted-keys\.json') "Config sync helper must explicitly preserve known local trust/license config files."
-    Assert-True ($configSyncText -match '\$sourceNames\.Contains\(\$item\.Name\)' -and $configSyncText -match 'Copy-Item -LiteralPath \$item\.FullName -Destination \$DestinationRoot -Recurse -Force') "Config sync helper must mirror shipped config items without nesting existing directories."
+    Assert-True ($configSyncText -match 'Install-RevitMcpManagedUpdaterFile' -and $configSyncText -match 'FileMode\]::CreateNew' -and $configSyncText -match 'File\]::Replace') "Config sync helper must stage ordinary files and replace destinations atomically."
+    Assert-True ($configSyncText -match 'PreserveTopLevelNames' -and $configSyncText -match 'release-trusted-keys\.json' -and $configSyncText -match 'license-trusted-keys\.json') "Config sync helper must explicitly preserve known local trust/license config files."
+    Assert-True ($configSyncText -match 'Sync-RevitMcpManagedDirectory' -and $configSyncText -match 'Managed directory installation' -and $configSyncText -match 'Assert-RevitMcpManagedTreeManifestEqual') "Config sync helper must use staged directory replacement with exact post-install manifest verification."
+    Assert-True ($configSyncText -match 'Managed directory source is missing') "Config sync helper must throw when the shipped config source is missing."
     Assert-True ($updateText -match 'distributionIntegrity = \$script:RevAgentDistributionIntegrity') "Updater reports must include distribution integrity status."
     Assert-True ($updateText -match 'Test-RevAgentReleaseDistributionIntegrity') "Updater must evaluate release signatures through the shared integrity helper."
     Assert-True ($updateText -match 'Test-RevAgentReleaseAppIdentity' -and $updateText -match 'Channel manifest app is not revAgent or revit-mcp-skill') "Updater must accept revAgent and legacy release app identities during rolling app-id migration."
@@ -666,8 +1417,12 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match 'license-trusted-keys\.json') "Updater must look for packaged public license-key config."
     Assert-True ($updateText -match 'Initialize-LicenseConfig -Config \$config') "Updater must initialize license verification before package work."
     Assert-True ($updateText -match 'license = \$script:RevAgentLicense') "Updater reports must include license verification status."
-    Assert-True ($updateText.IndexOf('Test-RevAgentReleaseDistributionIntegrity') -lt $updateText.IndexOf('Copy-Item -LiteralPath $packagePath')) "Updater must verify release integrity before copying the package into the local cache."
-    Assert-True ($updateText.IndexOf('$actualSha = (Get-FileHash') -lt $updateText.IndexOf('Expand-ReleaseArchive -ZipPath $cachedPackage')) "Updater must verify the downloaded package hash before extracting it."
+    Assert-True ($updateText.IndexOf('Test-RevAgentReleaseDistributionIntegrity') -lt $updateText.IndexOf('$authenticatedPackageCache = New-RevAgentAuthenticatedPackageCacheStream')) "Updater must verify release integrity before copying the package into the guarded local cache stream."
+    $verifiedArchiveHashIndex = $updateText.IndexOf('$sha256.ComputeHash($verifiedPackageStream)')
+    $verifiedArchiveExtractIndex = $updateText.IndexOf('Expand-ReleaseArchiveStream -ArchiveStream $verifiedPackageStream')
+    Assert-True ($verifiedArchiveHashIndex -ge 0 -and $verifiedArchiveHashIndex -lt $verifiedArchiveExtractIndex) "Updater must hash the retained package stream before extracting that same stream."
+    Assert-True ($updateText -match 'New-RevAgentAuthenticatedPackageCacheStream' -and $updateText -match '\[System\.IO\.FileMode\]::CreateNew' -and $updateText -match '\[System\.IO\.FileShare\]::Read' -and $updateText -match '\$verifiedPackageStream\s*=\s*\$authenticatedPackageCache\.Stream' -and $updateText -match '\$authenticatedPackageCache\.CacheGuard\.Dispose\(\)') "Updater must create a unique ordinary cache file under a retained cache-root guard and keep its no-write/no-delete-share stream through extraction."
+    Assert-True ($updateText -notmatch 'Copy-Item -LiteralPath \$packagePath -Destination \$cachedPackage' -and $updateText -notmatch 'Get-FileHash -Algorithm SHA256 -LiteralPath \$cachedPackage' -and $updateText -notmatch 'Expand-ReleaseArchive -ZipPath \$cachedPackage') "Updater must not follow a deterministic cache leaf or reopen the cached package path between copy, signature-bound hash verification, and extraction."
     Assert-True ($updateText -match 'elseif \(\$Force\) \{ "reinstall" \}') "Forced updater runs must be reported as reinstall operations."
     Assert-True ($updateText -match 'Publish-RevAgentMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
@@ -1482,7 +2237,134 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installTaskText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $installTaskText -match 'Resolve-CodexInstructionPolicy') "Updater config must persist the Codex instruction policy for future repairs."
     Assert-True ($installTaskText -match 'Task schedule\s+: daily at \$RunAt') "Updater install output must report the daily schedule."
     Assert-True ($installTaskText -match '"revAgent Auto Update\.vbs"') "Startup fallback reminder must use the revAgent product name."
-    Assert-True ($installTaskText -match 'Revit MCP Auto Update\.cmd", "Revit MCP Auto Update\.vbs"') "Startup fallback must remove legacy Revit MCP reminder launchers."
+    $desktopLauncherCleanupModuleText = Get-Content -Raw -LiteralPath (Join-Path $libRoot "RevAgent.DesktopLauncherCleanup.psm1")
+    Assert-True ($desktopLauncherCleanupModuleText -match 'Revit MCP Auto Update\.cmd' -and $desktopLauncherCleanupModuleText -match 'Revit MCP Auto Update\.vbs' -and $installTaskText -match 'Invoke-RevAgentExactLegacyStartupLauncherCleanup') "Shared launcher cleanup module must own the exact legacy reminder names and the updater wrapper must consume it."
+    $startupCleanupFunctionNames = @(
+        "Get-RevAgentInstallObjectPropertyValue",
+        "Remove-RevAgentLegacyStartupLaunchers",
+        "Merge-RevAgentLauncherCleanupEvidence",
+        "Merge-RevAgentDesktopLauncherCleanupEvidence",
+        "Write-UpdaterCommandFiles"
+    )
+    $startupCleanupFunctionAsts = @($installTaskAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $startupCleanupFunctionNames -contains $node.Name
+            }, $true) | Sort-Object { $_.Extent.StartOffset })
+    Assert-Equal $startupCleanupFunctionAsts.Count $startupCleanupFunctionNames.Count "Startup-launcher cleanup harness could not resolve every production function."
+    $startupCleanupFunctionText = ($startupCleanupFunctionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    & {
+        param([string]$FunctionText, [string]$HarnessRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        function Get-RevAgentLegacyHiddenUpdaterLauncherPaths { param([string]$ConfigPath) return @() }
+        function Write-HiddenPowerShellLauncher {
+            param(
+                [string]$LauncherPath,
+                [string]$ScriptPath,
+                [string[]]$ScriptArguments = @(),
+                [switch]$WaitForExit
+            )
+            "launcher" | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+        }
+        $script:RevAgentStartupLauncherCleanup = [ordered]@{
+            enabled = $true
+            mode = "not-run"
+            startupRoot = ""
+            matchedCount = 0
+            removedCount = 0
+            failedCount = 0
+            matched = @()
+            removed = @()
+            failed = @()
+        }
+        $script:RevAgentDesktopLauncherCleanup = [ordered]@{
+            enabled = $true
+            mode = "not-run"
+            matchedCount = 0
+            removedCount = 0
+            failedCount = 0
+            matched = @()
+            removed = @()
+            failed = @()
+        }
+
+        $workRoot = Join-Path $HarnessRoot "startup-cleanup-work"
+        New-Item -ItemType Directory -Path $workRoot -Force | Out-Null
+        $updaterPath = Join-Path $workRoot "update-from-nas.ps1"
+        $configPath = Join-Path $workRoot "updater-config.json"
+
+        $scheduledStartupRoot = Join-Path $HarnessRoot "scheduled-startup"
+        New-Item -ItemType Directory -Path $scheduledStartupRoot -Force | Out-Null
+        foreach ($legacyName in @("Revit MCP Auto Update.cmd", "Revit MCP Auto Update.vbs")) {
+            "legacy" | Set-Content -LiteralPath (Join-Path $scheduledStartupRoot $legacyName) -Encoding ASCII
+        }
+        "keep" | Set-Content -LiteralPath (Join-Path $scheduledStartupRoot "revAgent Auto Update.vbs") -Encoding ASCII
+        "keep" | Set-Content -LiteralPath (Join-Path $scheduledStartupRoot "unrelated.cmd") -Encoding ASCII
+
+        Write-UpdaterCommandFiles -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -UpdaterWorkRoot $workRoot -StartupRoot $scheduledStartupRoot | Out-Null
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.cmd"))) "Scheduled-task install path must remove the legacy CMD Startup launcher."
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.vbs"))) "Scheduled-task install path must remove the legacy VBS Startup launcher."
+        Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "revAgent Auto Update.vbs") -PathType Leaf) "Scheduled-task install path must preserve the current revAgent Startup launcher."
+        Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "unrelated.cmd") -PathType Leaf) "Scheduled-task install path must preserve unrelated Startup files."
+
+        foreach ($legacyName in @("Revit MCP Auto Update.cmd", "Revit MCP Auto Update.vbs")) {
+            "legacy" | Set-Content -LiteralPath (Join-Path $scheduledStartupRoot $legacyName) -Encoding ASCII
+        }
+        Write-UpdaterCommandFiles -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -UpdaterWorkRoot $workRoot -StartupRoot $scheduledStartupRoot -SkipStartupCleanup | Out-Null
+        Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.cmd") -PathType Leaf) "Machine-only command generation must not traverse or clean the interactive user's Startup folder."
+        Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.vbs") -PathType Leaf) "Machine-only command generation must preserve user Startup files for the unelevated phase."
+
+        $fallbackStartupRoot = Join-Path $HarnessRoot "fallback-startup"
+        New-Item -ItemType Directory -Path $fallbackStartupRoot -Force | Out-Null
+        foreach ($legacyName in @("Revit MCP Auto Update.cmd", "Revit MCP Auto Update.vbs")) {
+            "legacy" | Set-Content -LiteralPath (Join-Path $fallbackStartupRoot $legacyName) -Encoding ASCII
+        }
+
+        Write-UpdaterCommandFiles -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -UpdaterWorkRoot $workRoot -StartupRoot $fallbackStartupRoot -InstallStartupFallback | Out-Null
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $fallbackStartupRoot "Revit MCP Auto Update.cmd"))) "Fallback install path must remove the legacy CMD Startup launcher."
+        Assert-True (-not (Test-Path -LiteralPath (Join-Path $fallbackStartupRoot "Revit MCP Auto Update.vbs"))) "Fallback install path must remove the legacy VBS Startup launcher."
+        Assert-True (Test-Path -LiteralPath (Join-Path $fallbackStartupRoot "revAgent Auto Update.vbs") -PathType Leaf) "Fallback install path must create the current revAgent Startup launcher."
+        Assert-True (Test-Path -LiteralPath (Join-Path $workRoot "auto-update-loop.ps1") -PathType Leaf) "Fallback install path must preserve the daily audit-loop behavior."
+
+        $duplicateRecord = [pscustomobject]@{ path = "C:\Startup\duplicate.cmd"; name = "duplicate.cmd"; extension = ".cmd" }
+        $duplicatePrimary = [pscustomobject]@{ mode = "commit"; matched = @($duplicateRecord); removed = @($duplicateRecord); failed = @() }
+        $deduplicatedEvidence = Merge-RevAgentLauncherCleanupEvidence -Primary $duplicatePrimary -Additional $duplicatePrimary
+        Assert-Equal ([int]$deduplicatedEvidence.matchedCount) 1 "Launcher evidence merge must deduplicate the same matched path."
+        Assert-Equal ([int]$deduplicatedEvidence.removedCount) 1 "Launcher evidence merge must deduplicate the same removed path."
+
+        $failureStartupRoot = Join-Path $HarnessRoot "failure-startup"
+        New-Item -ItemType Directory -Path $failureStartupRoot -Force | Out-Null
+        $failureCmd = Join-Path $failureStartupRoot "Revit MCP Auto Update.cmd"
+        $failureVbs = Join-Path $failureStartupRoot "Revit MCP Auto Update.vbs"
+        "legacy" | Set-Content -LiteralPath $failureCmd -Encoding ASCII
+        "legacy" | Set-Content -LiteralPath $failureVbs -Encoding ASCII
+        $script:RevAgentStartupLauncherCleanup = [ordered]@{ enabled = $true; mode = "not-run"; startupRoot = ""; matchedCount = 0; removedCount = 0; failedCount = 0; matched = @(); removed = @(); failed = @() }
+        $script:RevAgentDesktopLauncherCleanup = [ordered]@{ enabled = $true; mode = "not-run"; matchedCount = 0; removedCount = 0; failedCount = 0; matched = @(); removed = @(); failed = @() }
+        $failureLock = [System.IO.File]::Open(
+            $failureCmd,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read)
+        $startupFailureCaught = $false
+        try {
+            Write-UpdaterCommandFiles -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -UpdaterWorkRoot $workRoot -StartupRoot $failureStartupRoot | Out-Null
+        }
+        catch {
+            $startupFailureCaught = ($_.Exception.Message -match "failed closed")
+        }
+        finally {
+            $failureLock.Dispose()
+        }
+        Assert-True $startupFailureCaught "Exact Startup cleanup failures must fail the wrapper closed after preserving evidence."
+        Assert-True (Test-Path -LiteralPath $failureCmd -PathType Leaf) "Simulated locked Startup launcher must remain for operator remediation."
+        Assert-True (-not (Test-Path -LiteralPath $failureVbs -PathType Leaf)) "Per-item cleanup must continue and remove an independent Startup launcher after another item fails."
+        Assert-Equal ([int]$script:RevAgentDesktopLauncherCleanup.matchedCount) 2 "Failed-closed launcher attestation must preserve every exact match."
+        Assert-Equal ([int]$script:RevAgentDesktopLauncherCleanup.removedCount) 1 "Failed-closed launcher attestation must preserve partial removal evidence."
+        Assert-Equal ([int]$script:RevAgentDesktopLauncherCleanup.failedCount) 1 "Failed-closed launcher attestation must preserve the per-item failure."
+        Assert-Equal ([string]$script:RevAgentDesktopLauncherCleanup.mode) "failed" "Merged launcher attestation must expose failed mode when any exact cleanup fails."
+        Assert-Equal ([int]$script:RevAgentDesktopLauncherCleanup.exactStartupCleanup.failedCount) 1 "Merged launcher attestation must retain exact Startup failure provenance."
+    } $startupCleanupFunctionText $tempRoot
     Assert-True ($installTaskText -match 'Removed legacy task: \$legacyTaskName') "Updater install must remove the legacy Revit MCP scheduled task after registering the revAgent task."
     $scheduledTaskModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.ScheduledTask.psm1")
     Assert-True ($scheduledTaskModuleText -match '\[string\]\$Name = "revAgent Auto Update"') "Scheduled-task repair must default to the revAgent task name."
@@ -1615,11 +2497,13 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($codexRegistrationText -match 'function Set-RevitMcpCurrentProcessUtf8Console' -and $codexRegistrationText -match '"Set-RevAgentCurrentProcessUtf8Console" = "Set-RevitMcpCurrentProcessUtf8Console"' -and $codexRegistrationText -match 'Export-ModuleMember -Alias @\(\$revAgentFunctionAliases\.Keys\)') "Codex registration module must keep the legacy UTF-8 helper and export the revAgent alias."
     $installTaskText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\install-updater-task.ps1")
     Assert-True ($installTaskText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater task installer entrypoint must force UTF-8 output even when launched with -NoProfile."
-    Assert-True ($installTaskText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installTaskText -match '\[bool\]\$Required = \$true' -and $installTaskText -match 'Write-RevAgentAtomicBytes -Path \$Destination' -and $installTaskText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \(Join-Path \$PSScriptRoot "migrate-source-free-install\.ps1"\) -Destination \$localMigrationTool -Required:\(\[bool\]\$RunSourceFreeMigration\)') "Updater task installer must atomically replace managed updater files and require the migration tool only when source-free migration is requested."
+    Assert-True ($installTaskText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installTaskText -match '\[bool\]\$Required = \$true' -and $installTaskText -match 'Install-RevAgentManagedUpdaterFile -Source \$Source -Destination \$Destination -Required:\$Required -MutationGuard \$MutationGuard' -and $installTaskText -match 'Sync-RevAgentManagedUpdaterDirectory -SourceRoot \$nasLibRoot' -and $installTaskText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$authenticatedConfigSource' -and $installTaskText -match 'Invoke-RevAgentFinalUpdaterSurfaceAttestation' -and $installTaskText -match 'Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot \$InstallRoot' -and $installTaskText -match 'Open-RevAgentManagedMutationGuard -Path \$InstallRoot -ProtectedPaths @\(\$WorkRoot\) -ExactProtectedPaths' -and $installTaskText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \(Join-Path \$PSScriptRoot "migrate-source-free-install\.ps1"\) -Destination \$localMigrationTool -Required:\$true') "Updater task installer must guard the canonical install-parent boundary, use shared guarded file/tree refresh, and attest before handoff or task registration."
+    Assert-True ($installTaskText -match 'Read-RevAgentPendingMachineInstallOutcome' -and $installTaskText -match 'executionSnapshotReleaseSequence' -and $installTaskText -match 'pendingMachineReportValidated' -and $installTaskText -match 'The machine install report was not authenticated for this user-phase process; remote publication was refused') "User-phase installer reporting must consume only the authenticated current machine handoff and refuse unvalidated publication."
+    Assert-True ($installTaskText -match 'Read-RevAgentRecoveredMachineFailureEvidence' -and $installTaskText -match 'Could not validate the nested updater machine-failure evidence' -and $installTaskText -match 'updaterMachineRunReport = \$script:RevAgentNestedMachineRunReport' -and $installTaskText -match 'machineEvidenceRecoveryError = \$script:RevAgentMachineEvidenceRecoveryError') "Machine outer catch must preserve validated nested failure diagnostics before replacing its phase result."
     Assert-True ($installTaskText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installTaskText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $installTaskText -match 'desktopLauncherCleanup') "Updater task installer must remove and report legacy revAgent desktop launchers."
     Assert-True ($updaterText -match 'Set-RevAgentCodexMemoryConfig') "Updater must enforce Codex memory config, including fast/no-op update paths."
     Assert-True ($updaterText -match 'Set-RevAgentCurrentProcessUtf8Console') "Updater entrypoint must force UTF-8 output even when launched with -NoProfile."
-    Assert-True ($updaterText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $updaterText -match '\[bool\]\$Required = \$true' -and $updaterText -match 'Remove-Item -LiteralPath \$Destination -Force' -and $updaterText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\(\$toolName -ne "migrate-source-free-install\.ps1"\)') "Updater fast-path tool refresh must replace stale ACL-blocked updater files and treat the migration tool as optional during normal updates."
+    Assert-True ($updaterText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $updaterText -match '\[bool\]\$Required = \$true' -and $updaterText -match 'Install-RevAgentManagedUpdaterFile -Source \$Source -Destination \$Destination -Required:\$Required -MutationGuard \$MutationGuard' -and $updaterText -match 'Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot \$managedInstallRoot' -and $updaterText -match 'Open-RevAgentManagedMutationGuard -Path \$managedInstallRoot -ProtectedPaths @\(\$DestinationRoot\) -ExactProtectedPaths' -and $updaterText -match 'Open-RevAgentManagedMutationGuard -Path \$DestinationRoot' -and $updaterText -match 'Sync-RevAgentManagedUpdaterDirectory -SourceRoot \$libSource' -and $updaterText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\$true -MutationGuard \$mutationGuard') "Updater fast path must guard the canonical install-parent boundary and use the shared guarded file/tree refresh."
     Assert-True ($updaterText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $updaterText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup' -and $updaterText -match 'desktopLauncherCleanup') "Updater must remove and report legacy revAgent desktop launchers."
     Assert-True ($updaterText -match 'Remove-CodexProfileBackupArtifacts') "Updater must clean old Codex profile backup artifacts."
     Assert-True ($updaterText -match 'manual-update-audit' -and $updaterText -match '-AuditOnly -NotifyUser' -and $updaterText -match 'Machine updates require the protected local revAgent launcher') "Updater-generated manual helper must be audit-only and route payload changes back to the protected GUI/UAC flow."
@@ -1629,12 +2513,12 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installerText -match 'CreateRestrictedToken' -and $installerText -match 'FileMode\.CreateNew' -and $installerText -match 'FileMode\.Append' -and $installerText -match 'GetLinkCount' -and $installerText -match 'GetIdentity') "Self-contained protected origin must cover effective create/append, hardlink, and file-identity checks."
     Assert-True ($installerText -match 'New-RevAgentProtectedInstallerSubdirectory' -and $installerText -match 'FileSystemAclExtensions\]::CreateDirectory' -and $installerText -match 'preimport-') "Self-contained origin native helper must compile from an ACL-at-create protected machine temp across PowerShell runtimes."
     Assert-True ($installerText -match 'Set-RevAgentCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
-    Assert-True ($installerText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installerText -match '\[bool\]\$Required = \$true' -and $installerText -match 'Remove-Item -LiteralPath \$Destination -Force' -and $installerText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\(\$toolName -ne "migrate-source-free-install\.ps1"\)') "Self-contained installer updater tool refresh must replace stale ACL-blocked updater files and treat the migration tool as optional during normal updates."
+    Assert-True ($installerText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installerText -match '\[bool\]\$Required = \$true' -and $installerText -match 'Install-RevAgentManagedUpdaterFile -Source \$Source -Destination \$Destination -Required:\$Required -MutationGuard \$MutationGuard' -and $installerText -match 'Protect-RevAgentManagedExecutionTree -InstallRoot \$InstallRoot' -and $installerText -match 'Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot \$managedInstallRoot' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$managedInstallRoot -ProtectedPaths @\(\$DestinationRoot\) -ExactProtectedPaths' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$DestinationRoot' -and $installerText -match 'Sync-RevAgentManagedUpdaterDirectory -SourceRoot \$libSource' -and $installerText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\$true -MutationGuard \$mutationGuard') "Self-contained installer must protect and guard the canonical install-parent boundary before shared guarded file/tree refresh."
     Assert-True ($installerText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installerText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup') "Self-contained installer must remove legacy revAgent desktop launchers."
     Assert-True ($installTaskText -notmatch 'legacy Revit MCP launcher shortcut' -and $updaterText -notmatch 'legacy Revit MCP launcher shortcut' -and $installerText -notmatch 'legacy Revit MCP launcher shortcut') "Active installer/updater launcher cleanup messages must use revAgent wording."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
     Assert-True ($installerText -match 'manual-update-audit' -and $installerText -match '-AuditOnly -NotifyUser' -and $installerText -match 'Machine updates require the protected local revAgent launcher') "Installer-generated manual helper must be audit-only and route payload changes back to the protected GUI/UAC flow."
-    Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\)') "Self-contained installer must use the shared config sync helper."
+    Assert-True ($installerText -match 'RevAgent\.ConfigSync\.psm1' -and $installerText -match 'Sync-RevAgentUpdaterConfigDirectory -SourceRoot \$configSource -DestinationRoot \(Join-Path \$DestinationRoot "config"\) -MutationGuard \$mutationGuard') "Self-contained installer must use the shared guarded config sync helper."
     Assert-True ($installerText -notmatch 'Remove-Item -LiteralPath \$configDestination -Recurse -Force') "Self-contained installer must not delete local config because that removes pinned release keys."
     Assert-True ($installerText -match 'Copy-RevAgentRuntimeUserPayload') "Installer must copy only the runtime user payload."
     Assert-True ($installerText -match 'Copy-RevAgentDirectoryPayload -Source \(Join-Path \$SourceRoot "schemas"\) -Destination \(Join-Path \$DestinationRoot "schemas"\)') "Installer runtime payload must include every published spatial schema version."

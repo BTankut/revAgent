@@ -35,3 +35,13 @@ jobs:
       - name: Run CI-safe gates
         shell: pwsh
         run: .\scripts\test-ci.ps1
+
+      - name: Verify installer security contracts in Windows PowerShell 5.1
+        shell: powershell
+        run: |
+          .\scripts\test-codex-integration-security.ps1
+          .\scripts\test-os-path-security.ps1
+          .\scripts\test-source-free-migration.ps1
+          .\scripts\test-installer-smoke.ps1
+          .\scripts\test-local-update-bootstrap.ps1
+          .\scripts\test-desktop-launcher-cleanup.ps1

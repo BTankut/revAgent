@@ -48,6 +48,58 @@ function Get-Text {
     return [IO.File]::ReadAllText((Join-Path $RepoRoot $RelativePath))
 }
 
+function Get-FunctionAssignmentValue {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$FunctionName,
+        [Parameter(Mandatory = $true)][string]$VariableName
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal @($parseErrors).Count 0 "Production ACL guard did not parse: $Path"
+    $expectedLeft = '$' + $VariableName
+    $assignments = @($ast.FindAll({
+                param($node)
+                if ($node -isnot [Management.Automation.Language.AssignmentStatementAst] -or
+                    -not [string]::Equals($node.Left.Extent.Text, $expectedLeft, [StringComparison]::OrdinalIgnoreCase)) {
+                    return $false
+                }
+                $cursor = $node.Parent
+                while ($null -ne $cursor) {
+                    if ($cursor -is [Management.Automation.Language.FunctionDefinitionAst]) {
+                        return [string]::Equals($cursor.Name, $FunctionName, [StringComparison]::Ordinal)
+                    }
+                    $cursor = $cursor.Parent
+                }
+                return $false
+            }, $true))
+    Assert-Equal $assignments.Count 1 "Expected one $expectedLeft assignment in function $FunctionName."
+    return & ([scriptblock]::Create($assignments[0].Right.Extent.Text))
+}
+
+function Invoke-ExtractedRightsPredicate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$FunctionName,
+        [Parameter(Mandatory = $true)][Security.AccessControl.FileSystemRights]$Rights
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal @($parseErrors).Count 0 "Production ACL predicate did not parse: $Path"
+    $functions = @($ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                [string]::Equals($node.Name, $FunctionName, [StringComparison]::Ordinal)
+            }, $true))
+    Assert-Equal $functions.Count 1 "Expected one production ACL predicate named $FunctionName."
+    $invokeText = $functions[0].Extent.Text + "`n" + $FunctionName + ' -Rights ([Security.AccessControl.FileSystemRights][int64]$args[0])'
+    return [bool](& ([scriptblock]::Create($invokeText)) ([int64]$Rights))
+}
+
 function Assert-OrderedText {
     param(
         [string]$Text,
@@ -60,6 +112,25 @@ function Assert-OrderedText {
     if ($earlierIndex -lt 0 -or $laterIndex -lt 0 -or $earlierIndex -ge $laterIndex) {
         throw "$Message earlier='$Earlier' later='$Later'"
     }
+}
+
+function Import-ScriptFunctionForTest {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$FunctionName
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$parseErrors)
+    Assert-Equal @($parseErrors).Count 0 "PowerShell parse errors found in $Path."
+    $functions = @($ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                [string]::Equals($node.Name, $FunctionName, [StringComparison]::OrdinalIgnoreCase)
+            }, $true) | Select-Object -First 1)
+    Assert-Equal $functions.Count 1 "Function '$FunctionName' was not found exactly once in $Path."
+    return [scriptblock]::Create([string]$functions[0].Extent.Text)
 }
 
 $systemDirectory = [Environment]::SystemDirectory
@@ -215,7 +286,313 @@ try {
     $selfContainedText = Get-Text "installer\install-self-contained.ps1"
     Assert-OrderedText -Text $selfContainedText -Earlier "Assert-RevAgentCanonicalAddinPathLinkSafe -Path `$addinRoot" -Later "Repair-RevAgentManagedInstallPermissions -IncludeExistingPayloadTrees" -Message "Self-contained installer must reject add-in reparse components before its first managed permission mutation."
     Assert-True ($selfContainedText -match '(?s)Invoke-RevAgentManagedPermissionRepair -Targets \$targets.*Assert-RevAgentCanonicalAddinPathLinkSafe -Path \$addinRoot') "Self-contained installer must revalidate the canonical add-in path after permission-driven creation."
-    Assert-True ($selfContainedText -match '(?s)New-Item -ItemType Directory -Path \$addinRoot -Force.*Assert-RevAgentCanonicalAddinPathLinkSafe -Path \$addinRoot') "Self-contained installer must revalidate the canonical add-in path after explicit creation."
+    Assert-OrderedText -Text $selfContainedText -Earlier "Protect-RevAgentCanonicalAddinSurface" -Later "Invoke-RevAgentCleanup -ForUninstall:`$Uninstall" -Message "Self-contained installer must protect the shared Addins parent/year boundary before cleanup or manifest writes."
+    Assert-OrderedText -Text $selfContainedText -Earlier "Write-AddinManifest -Path (Join-Path `$addinRoot `$addinManifestFileName)" -Later '-ProtectManifest `' -Message "Self-contained installer must protect the exact revAgent.addin file after writing it."
+    Assert-True ($selfContainedText -match '(?s)Write-AddinManifest -Path \(Join-Path \$addinRoot \$addinManifestFileName\).*?-ProtectManifest\s+`.*?Assert-RevAgentCanonicalAddinManifestContent') "Self-contained installer must attest canonical manifest bytes/identity after ACL protection."
+    Assert-True ($selfContainedText -match '(?s)if \(\$SkipRevitPayloadInstall\).*?Protect-RevAgentCanonicalAddinSurface.*?-ProtectManifestIfPresent') "An unchanged Revit payload must still rebaseline and attest an existing canonical manifest without rewriting it."
+    Assert-True ($selfContainedText -notmatch '(?s)Get-RevAgentManagedPermissionTargets\s+`.*?-AllUsersAddinRoot') "Self-contained installer must not route the Autodesk Addins surface through generic grant-based permission repair."
+
+    Write-Host "Test canonical Revit add-in ACL replacement and attestation without ProgramData mutation"
+    $permissionsModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1"
+    Remove-Module RevAgent.Permissions -Force -ErrorAction SilentlyContinue
+    $permissionsModule = Import-Module $permissionsModulePath -Force -PassThru
+    $aclContract = & $permissionsModule {
+        $systemSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+        $administratorsSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')
+        $usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+        $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+            [Security.AccessControl.InheritanceFlags]::ObjectInherit
+        $allow = [Security.AccessControl.AccessControlType]::Allow
+
+        # Reproduce the live regression independently of ProgramData: protected
+        # shape and trusted owner, but BUILTIN\Users still has FullControl.
+        $unsafe = [Security.AccessControl.DirectorySecurity]::new()
+        $unsafe.SetAccessRuleProtection($true, $false)
+        $unsafe.SetOwner($administratorsSid)
+        $unsafe.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($systemSid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, $allow))
+        $unsafe.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($administratorsSid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, $allow))
+        $unsafe.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($usersSid, [Security.AccessControl.FileSystemRights]::FullControl, $inheritance, [Security.AccessControl.PropagationFlags]::None, $allow))
+        $unsafeBlocked = $false
+        try {
+            Assert-RevitMcpProtectedAddinAcl -Acl $unsafe -Path 'users-full-control-fixture' -Kind Directory | Out-Null
+        }
+        catch {
+            $unsafeBlocked = ($_.Exception.Message -match 'rights mismatch')
+        }
+
+        $safeDirectory = New-RevitMcpProtectedAddinAcl -Kind Directory
+        $safeFile = New-RevitMcpProtectedAddinAcl -Kind File
+        [void](Assert-RevitMcpProtectedAddinAcl -Acl $safeDirectory -Path 'safe-directory-fixture' -Kind Directory)
+        [void](Assert-RevitMcpProtectedAddinAcl -Acl $safeFile -Path 'safe-file-fixture' -Kind File)
+        $canonicalRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'Autodesk\Revit\Addins\2022'
+        $paths = Get-RevitMcpCanonicalAddinSurfacePaths -AddinRoot $canonicalRoot -RevitVersion '2022'
+        $offRootBlocked = $false
+        try {
+            Get-RevitMcpCanonicalAddinSurfacePaths -AddinRoot (Join-Path ([IO.Path]::GetTempPath()) 'Autodesk\Revit\Addins\2022') -RevitVersion '2022' | Out-Null
+        }
+        catch {
+            $offRootBlocked = ($_.Exception.Message -match 'only the canonical ProgramData year root')
+        }
+
+        [pscustomobject][ordered]@{
+            UnsafeUsersFullControlBlocked = $unsafeBlocked
+            SafeDirectoryProtected = [bool]$safeDirectory.AreAccessRulesProtected
+            SafeFileProtected = [bool]$safeFile.AreAccessRulesProtected
+            CanonicalAddinRoot = [string]$paths.AddinRoot
+            CanonicalManifestPath = [string]$paths.ManifestPath
+            OffRootBlocked = $offRootBlocked
+        }
+    }
+    Assert-True ([bool]$aclContract.UnsafeUsersFullControlBlocked) "Canonical add-in ACL attestation accepted the live BUILTIN\Users FullControl regression."
+    Assert-True ([bool]$aclContract.SafeDirectoryProtected -and [bool]$aclContract.SafeFileProtected) "Canonical add-in directory/file descriptors must have protected DACLs."
+    Assert-Equal ([string]$aclContract.CanonicalAddinRoot) (Join-Path $canonicalProgramData 'Autodesk\Revit\Addins\2022') "Canonical add-in root followed poisoned environment state."
+    Assert-Equal ([string]$aclContract.CanonicalManifestPath) (Join-Path $canonicalProgramData 'Autodesk\Revit\Addins\2022\revAgent.addin') "Canonical add-in manifest path followed poisoned environment state."
+    Assert-True ([bool]$aclContract.OffRootBlocked) "Canonical add-in ACL helper accepted an off-ProgramData mutation root."
+    $genericPermissionTargets = Get-RevAgentManagedPermissionTargets `
+        -InstallRoot (Join-Path $canonicalProgramData 'DPE\revAgent') `
+        -WorkRoot (Join-Path $canonicalProgramData 'DPE\revAgent\updater') `
+        -PackageTarget (Join-Path $canonicalProgramData 'DPE\revAgent\package') `
+        -ServerTarget (Join-Path $canonicalProgramData 'DPE\revAgent\runtime') `
+        -AllUsersAddinRoot (Join-Path $canonicalProgramData 'Autodesk\Revit\Addins\2022') `
+        -RevitVersion '2022'
+    Assert-Equal @($genericPermissionTargets | Where-Object { [string]$_.Path -like '*\Autodesk\Revit\Addins\*' }).Count 0 "Generic grant-based permission repair still targets the protected Autodesk Addins surface."
+
+    $atomicCreateFixture = Join-Path $tempRoot 'atomic-protected-addins-root'
+    $currentUserSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $atomicCreateAcl = & $permissionsModule { New-RevitMcpProtectedAddinAcl -Kind Directory }
+    $atomicCreateAcl.SetOwner($currentUserSid)
+    & $permissionsModule { param($Path, $Acl) New-RevitMcpDirectoryWithAcl -Path $Path -Acl $Acl } $atomicCreateFixture $atomicCreateAcl
+    $createdFixtureAcl = Get-Acl -LiteralPath $atomicCreateFixture
+    Assert-True (Test-Path -LiteralPath $atomicCreateFixture -PathType Container) "Cross-version atomic DirectorySecurity creation did not create the protected add-in fixture."
+    Assert-True ([bool]$createdFixtureAcl.AreAccessRulesProtected) "Cross-version atomic DirectorySecurity creation inherited the writable parent DACL."
+
+    $aclReplacementFixture = Join-Path $tempRoot 'addin-acl-users-full-control'
+    New-Item -ItemType Directory -Path $aclReplacementFixture -Force | Out-Null
+    $manifestReplacementFixture = Join-Path $aclReplacementFixture 'revAgent.addin'
+    Set-Content -LiteralPath $manifestReplacementFixture -Value '<RevitAddIns />' -Encoding UTF8
+    $usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+    $fixtureInheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    $fixtureAcl = [Security.AccessControl.DirectorySecurity]::new()
+    $fixtureAcl.SetAccessRuleProtection($true, $false)
+    $fixtureAcl.SetOwner($currentUserSid)
+    $fixtureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUserSid, [Security.AccessControl.FileSystemRights]::FullControl, $fixtureInheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    $fixtureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($usersSid, [Security.AccessControl.FileSystemRights]::FullControl, $fixtureInheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]::new($aclReplacementFixture), $fixtureAcl) }
+    else { ([IO.DirectoryInfo]::new($aclReplacementFixture)).SetAccessControl($fixtureAcl) }
+    $manifestFixtureAcl = [Security.AccessControl.FileSecurity]::new()
+    $manifestFixtureAcl.SetAccessRuleProtection($true, $false)
+    $manifestFixtureAcl.SetOwner($currentUserSid)
+    $manifestFixtureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($currentUserSid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow))
+    $manifestFixtureAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new($usersSid, [Security.AccessControl.FileSystemRights]::FullControl, [Security.AccessControl.AccessControlType]::Allow))
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]::new($manifestReplacementFixture), $manifestFixtureAcl) }
+    else { ([IO.FileInfo]::new($manifestReplacementFixture)).SetAccessControl($manifestFixtureAcl) }
+
+    $replacementAcl = & $permissionsModule { New-RevitMcpProtectedAddinAcl -Kind Directory }
+    # Keep the test non-elevated while exercising the same handle-bound DACL
+    # replacement used in production; production independently attests the
+    # canonical Administrators owner.
+    $replacementAcl.SetOwner($currentUserSid)
+    $fixtureHandle = [RevAgent.PermissionNativeFileInfo]::OpenNoDelete($aclReplacementFixture, $true)
+    try {
+        [RevAgent.PermissionNativeFileInfo]::ApplyOwnerAndProtectedDacl($fixtureHandle, $replacementAcl.GetSecurityDescriptorBinaryForm())
+    }
+    finally {
+        $fixtureHandle.Dispose()
+    }
+    $replacedFixtureAcl = Get-Acl -LiteralPath $aclReplacementFixture
+    $replacedRules = @($replacedFixtureAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    $replacedUsersRules = @($replacedRules | Where-Object { [string]$_.IdentityReference.Value -eq 'S-1-5-32-545' })
+    $replacedCurrentUserRules = @($replacedRules | Where-Object { [string]$_.IdentityReference.Value -eq [string]$currentUserSid.Value })
+    $expectedUsersReadExecute = [int64]([Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [Security.AccessControl.FileSystemRights]::Synchronize)
+    Assert-True ([bool]$replacedFixtureAcl.AreAccessRulesProtected) "Handle-bound canonical add-in ACL replacement did not protect the DACL."
+    Assert-Equal $replacedUsersRules.Count 1 "Handle-bound canonical add-in ACL replacement did not collapse BUILTIN\Users to one rule."
+    Assert-Equal ([int64]$replacedUsersRules[0].FileSystemRights) $expectedUsersReadExecute "Handle-bound canonical add-in ACL replacement retained BUILTIN\Users mutation rights."
+    Assert-Equal $replacedCurrentUserRules.Count 0 "Handle-bound canonical add-in ACL replacement retained an interactive-user FullControl rule."
+
+    $manifestReplacementAcl = & $permissionsModule { New-RevitMcpProtectedAddinAcl -Kind File }
+    $manifestReplacementAcl.SetOwner($currentUserSid)
+    $manifestFixtureHandle = [RevAgent.PermissionNativeFileInfo]::OpenNoDelete($manifestReplacementFixture, $false)
+    try {
+        Assert-Equal ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($manifestFixtureHandle)) 1 "Manifest regression fixture unexpectedly has another hardlink."
+        [RevAgent.PermissionNativeFileInfo]::ApplyOwnerAndProtectedDacl($manifestFixtureHandle, $manifestReplacementAcl.GetSecurityDescriptorBinaryForm())
+        Assert-Equal ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($manifestFixtureHandle)) 1 "Manifest hardlink count changed during handle-bound ACL replacement."
+    }
+    finally {
+        $manifestFixtureHandle.Dispose()
+    }
+    $replacedManifestAcl = Get-Acl -LiteralPath $manifestReplacementFixture
+    $replacedManifestRules = @($replacedManifestAcl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    $replacedManifestUsersRules = @($replacedManifestRules | Where-Object { [string]$_.IdentityReference.Value -eq 'S-1-5-32-545' })
+    $replacedManifestCurrentUserRules = @($replacedManifestRules | Where-Object { [string]$_.IdentityReference.Value -eq [string]$currentUserSid.Value })
+    Assert-True ([bool]$replacedManifestAcl.AreAccessRulesProtected) "Handle-bound revAgent.addin ACL replacement did not protect the file DACL."
+    Assert-Equal $replacedManifestUsersRules.Count 1 "Handle-bound revAgent.addin ACL replacement did not collapse BUILTIN\Users to one rule."
+    Assert-Equal ([int64]$replacedManifestUsersRules[0].FileSystemRights) $expectedUsersReadExecute "Handle-bound revAgent.addin ACL replacement retained BUILTIN\Users mutation rights."
+    Assert-Equal $replacedManifestCurrentUserRules.Count 0 "Handle-bound revAgent.addin ACL replacement retained an interactive-user FullControl rule."
+
+    Write-Host "Test canonical Revit add-in guard rejects retained parent/year/manifest mutation handles"
+    if (-not ('RevAgentOsPathSecurity.RetainedMutationHandle' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.ComponentModel;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+namespace RevAgentOsPathSecurity {
+    public static class RetainedMutationHandle {
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(string path, uint access, uint share, IntPtr security, uint creation, uint flags, IntPtr template);
+        public static SafeFileHandle Open(string path, uint access, bool directory) {
+            uint flags = 0x00200000u | (directory ? 0x02000000u : 0u);
+            SafeFileHandle handle = CreateFileW(path, access, 0x00000007u, IntPtr.Zero, 3u, flags, IntPtr.Zero);
+            if (handle.IsInvalid) {
+                int error = Marshal.GetLastWin32Error();
+                handle.Dispose();
+                throw new Win32Exception(error, "Could not open retained mutation-handle fixture: " + path);
+            }
+            return handle;
+        }
+    }
+}
+'@
+    }
+    $retainedAddinsParent = Join-Path $tempRoot 'retained-handle-addins'
+    $retainedAddinRoot = Join-Path $retainedAddinsParent '2022'
+    $retainedManifest = Join-Path $retainedAddinRoot 'revAgent.addin'
+    New-Item -ItemType Directory -Path $retainedAddinRoot -Force | Out-Null
+    [IO.File]::WriteAllText($retainedManifest, '<RevitAddIns />', [Text.UTF8Encoding]::new($false))
+    $retainedPaths = [pscustomobject]@{
+        AddinsParent = $retainedAddinsParent
+        AddinRoot = $retainedAddinRoot
+        ManifestPath = $retainedManifest
+    }
+    $retainedDirectoryAcl = & $permissionsModule { New-RevitMcpProtectedAddinAcl -Kind Directory }
+    $retainedDirectoryAcl.SetOwner($currentUserSid)
+    $retainedFileAcl = & $permissionsModule { New-RevitMcpProtectedAddinAcl -Kind File }
+    $retainedFileAcl.SetOwner($currentUserSid)
+    foreach ($fixture in @(
+            [pscustomobject]@{ Label = 'parent FILE_ADD_FILE'; Path = $retainedAddinsParent; Access = [uint32]0x00000002; Directory = $true; Property = 'ParentGuard'; Kind = 'Directory'; Acl = $retainedDirectoryAcl },
+            [pscustomobject]@{ Label = 'parent DELETE_CHILD'; Path = $retainedAddinsParent; Access = [uint32]0x00000040; Directory = $true; Property = 'ParentGuard'; Kind = 'Directory'; Acl = $retainedDirectoryAcl },
+            [pscustomobject]@{ Label = 'year WRITE_DAC'; Path = $retainedAddinRoot; Access = [uint32]0x00040000; Directory = $true; Property = 'RootGuard'; Kind = 'Directory'; Acl = $retainedDirectoryAcl },
+            [pscustomobject]@{ Label = 'manifest GENERIC_WRITE'; Path = $retainedManifest; Access = [uint32]0x40000000; Directory = $false; Property = 'ManifestGuard'; Kind = 'File'; Acl = $retainedFileAcl }
+        )) {
+        $pathAclBefore = (Get-Acl -LiteralPath $fixture.Path).Sddl
+        $manifestBytesBefore = [Convert]::ToBase64String([IO.File]::ReadAllBytes($retainedManifest))
+        $retainedHandle = [RevAgentOsPathSecurity.RetainedMutationHandle]::Open($fixture.Path, $fixture.Access, $fixture.Directory)
+        try {
+            Assert-ThrowsLike -Action {
+                & $permissionsModule {
+                    param($Paths, $GuardProperty, $Path, $Kind, $Acl)
+                    $context = New-RevitMcpCanonicalAddinMutationGuardContext -Paths $Paths
+                    try {
+                        Protect-RevitMcpCanonicalAddinItem -Context $context -Paths $Paths -GuardProperty $GuardProperty -Path $Path -Kind $Kind -Acl $Acl
+                    }
+                    finally {
+                        Close-RevitMcpCanonicalAddinMutationGuard -Context $context
+                    }
+                } $retainedPaths $fixture.Property $fixture.Path $fixture.Kind $fixture.Acl
+            } -Pattern 'mutation-capable filesystem handle|ACL mutation barrier|lock.*mutation|being used|used by another process|başka bir işlem' -Message "Canonical add-in guard accepted retained $($fixture.Label) access."
+        }
+        finally {
+            $retainedHandle.Dispose()
+        }
+        Assert-Equal (Get-Acl -LiteralPath $fixture.Path).Sddl $pathAclBefore "Rejected retained $($fixture.Label) handle changed the target ACL."
+        Assert-Equal ([Convert]::ToBase64String([IO.File]::ReadAllBytes($retainedManifest))) $manifestBytesBefore "Rejected retained $($fixture.Label) handle changed manifest bytes."
+    }
+
+    $permissionsText = Get-Text 'installer\lib\RevAgent.Permissions.psm1'
+    Assert-True ($permissionsText -match 'OpenAclMutationBarrier' -and $permissionsText -match 'AssertNoMutationHandles\(\$barrier' -and $permissionsText -match 'Assert-RevitMcpCanonicalAddinMutationGuard') "Canonical add-in ACL mutation must combine an exact-item barrier, retained-handle inventory, and held exact identity-set guard."
+    Assert-True ($selfContainedText -match '-RetainMutationGuard' -and $selfContainedText -match '-MutationGuardContext \$script:RevAgentCanonicalAddinMutationGuardContext' -and $selfContainedText -match 'finally \{[\s\S]*Close-RevAgentCanonicalAddinMutationGuard') "Self-contained installer must retain the exact add-in guard through manifest installation and dispose it in the outer finally."
+
+    Write-Host "Test canonical revAgent.addin deterministic content and skip-path tamper guard"
+    . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'New-RevAgentCanonicalAddinManifestContract')
+    . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'Write-AddinManifest')
+    . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'Assert-RevAgentCanonicalAddinManifestContent')
+    $canonicalManifestFixture = Join-Path $tempRoot 'canonical-manifest\revAgent.addin'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalManifestFixture) -Force | Out-Null
+    $canonicalAssemblyFixture = 'C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\revAgentPlugin.dll'
+    Write-AddinManifest -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture
+    $manifestAttestation = Assert-RevAgentCanonicalAddinManifestContent -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture
+    Assert-True ([bool]$manifestAttestation.verified -and [string]::Equals([string]$manifestAttestation.sha256, [string]$manifestAttestation.expectedSha256, [StringComparison]::OrdinalIgnoreCase)) "Fresh canonical manifest did not satisfy its deterministic signed-package contract."
+    $canonicalBytes = [IO.File]::ReadAllBytes($canonicalManifestFixture)
+    Assert-True ($canonicalBytes.Length -gt 3 -and -not ($canonicalBytes[0] -eq 0xEF -and $canonicalBytes[1] -eq 0xBB -and $canonicalBytes[2] -eq 0xBF)) "Canonical manifest must use BOM-free UTF-8 consistently across PowerShell engines."
+    $canonicalText = [Text.UTF8Encoding]::new($false, $true).GetString($canonicalBytes)
+    Assert-True ($canonicalText -notmatch "`r" -and $canonicalText.EndsWith("`n")) "Canonical manifest must use deterministic LF line endings."
+
+    [IO.File]::WriteAllText($canonicalManifestFixture, ($canonicalText -replace '090A4C8C-61DC-426D-87DF-E4BAE0F80EC1', '00000000-0000-0000-0000-000000000000'), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        Assert-RevAgentCanonicalAddinManifestContent -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture | Out-Null
+    } -Pattern 'expected deterministic manifest.*Install/Repair|Install/Repair.*untrusted manifest' -Message 'Tampered revAgent.addin ClientId must fail closed with Install/Repair guidance.'
+    [IO.File]::WriteAllText($canonicalManifestFixture, ($canonicalText -replace [regex]::Escape($canonicalAssemblyFixture), 'C:\Users\BT\evil.dll'), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        Assert-RevAgentCanonicalAddinManifestContent -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture | Out-Null
+    } -Pattern 'expected deterministic manifest.*Install/Repair|Install/Repair.*untrusted manifest' -Message 'Tampered revAgent.addin Assembly must fail closed with Install/Repair guidance.'
+    Write-AddinManifest -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture
+    $repairedManifestAttestation = Assert-RevAgentCanonicalAddinManifestContent -Path $canonicalManifestFixture -AssemblyPath $canonicalAssemblyFixture
+    Assert-True ([bool]$repairedManifestAttestation.verified) "Hard rebaseline manifest rewrite did not repair the tampered fixture."
+    Assert-True ($selfContainedText -match '(?s)if \(\$SkipRevitPayloadInstall\).*?Protect-RevAgentCanonicalAddinSurface.*?-ProtectManifestIfPresent.*?Assert-RevAgentCanonicalAddinManifestContent' -and $selfContainedText -match 'unchanged-payload update cannot safely recreate') "SkipRevitPayloadInstall must attest exact canonical manifest bytes/identity and fail closed instead of blessing a missing or attacker-modified file."
+    Assert-True ($selfContainedText -match '(?s)Write-AddinManifest.*?Protect-RevAgentCanonicalAddinSurface.*?-ProtectManifest.*?Assert-RevAgentCanonicalAddinManifestContent') "Hard Revit payload repair must rewrite, protect, and attest the canonical manifest in order."
+
+    Write-Host "Test protected installer-origin ACL masks distinguish read access from mutation rights"
+    $atomicMutationRights = @(
+        [Security.AccessControl.FileSystemRights]::WriteData,
+        [Security.AccessControl.FileSystemRights]::AppendData,
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes,
+        [Security.AccessControl.FileSystemRights]::WriteAttributes,
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles,
+        [Security.AccessControl.FileSystemRights]::Delete,
+        [Security.AccessControl.FileSystemRights]::ChangePermissions,
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    )
+    [int64]$expectedMutationMask = 0
+    foreach ($right in $atomicMutationRights) { $expectedMutationMask = $expectedMutationMask -bor [int64]$right }
+    $maskFixtures = @(
+        [pscustomobject]@{
+            Label = 'self-contained installer origin'
+            Path = $selfContainedPath
+            FunctionName = 'Test-RevAgentInstallerRightsAllowMutation'
+            VariableName = 'writeMask'
+        },
+        [pscustomobject]@{
+            Label = 'authenticated bootstrap evidence leaf'
+            Path = (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1')
+            FunctionName = 'Test-RevAgentBootstrapRightsAllowMutation'
+            VariableName = 'leafDangerMask'
+        }
+    )
+    foreach ($fixture in $maskFixtures) {
+        [int64]$actualMask = Get-FunctionAssignmentValue -Path $fixture.Path -FunctionName $fixture.FunctionName -VariableName $fixture.VariableName
+        Assert-Equal $actualMask $expectedMutationMask "$($fixture.Label) must use exactly the atomic mutation-right mask."
+
+        $usersSid = [Security.Principal.SecurityIdentifier]::new('S-1-5-32-545')
+        $readExecuteRule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $usersSid,
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+            [Security.AccessControl.AccessControlType]::Allow)
+        Assert-True (([int64]$readExecuteRule.FileSystemRights -band [int64][Security.AccessControl.FileSystemRights]::Synchronize) -ne 0) "$($fixture.Label) regression fixture did not reproduce the live ReadAndExecute, Synchronize ACE."
+        Assert-True (([int64]$readExecuteRule.FileSystemRights -band $actualMask) -eq 0) "$($fixture.Label) misclassified BUILTIN\Users ReadAndExecute, Synchronize as mutation-capable."
+        Assert-True (-not (Invoke-ExtractedRightsPredicate -Path $fixture.Path -FunctionName $fixture.FunctionName -Rights $readExecuteRule.FileSystemRights)) "$($fixture.Label) production predicate rejected the live BUILTIN\Users ReadAndExecute, Synchronize ACE."
+        foreach ($readOnlyRight in @(
+                [Security.AccessControl.FileSystemRights]::Read,
+                [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+                [Security.AccessControl.FileSystemRights]::ReadPermissions,
+                [Security.AccessControl.FileSystemRights]::Synchronize)) {
+            Assert-True (([int64]$readOnlyRight -band $actualMask) -eq 0) "$($fixture.Label) mutation mask overlaps read-only right $readOnlyRight."
+            Assert-True (-not (Invoke-ExtractedRightsPredicate -Path $fixture.Path -FunctionName $fixture.FunctionName -Rights $readOnlyRight)) "$($fixture.Label) production predicate rejected read-only right $readOnlyRight."
+        }
+        foreach ($mutationRight in $atomicMutationRights) {
+            Assert-True (([int64]$mutationRight -band $actualMask) -ne 0) "$($fixture.Label) does not reject mutation right $mutationRight."
+            Assert-True (Invoke-ExtractedRightsPredicate -Path $fixture.Path -FunctionName $fixture.FunctionName -Rights $mutationRight) "$($fixture.Label) production predicate accepted mutation right $mutationRight."
+        }
+        foreach ($aggregateMutationRight in @(
+                [Security.AccessControl.FileSystemRights]::Modify,
+                [Security.AccessControl.FileSystemRights]::FullControl)) {
+            Assert-True (([int64]$aggregateMutationRight -band $actualMask) -ne 0) "$($fixture.Label) does not reject aggregate mutation right $aggregateMutationRight through atomic bits."
+            Assert-True (Invoke-ExtractedRightsPredicate -Path $fixture.Path -FunctionName $fixture.FunctionName -Rights $aggregateMutationRight) "$($fixture.Label) production predicate accepted aggregate mutation right $aggregateMutationRight."
+        }
+    }
+    Assert-True ($selfContainedText -match 'Test-RevAgentInstallerRightsAllowMutation -Rights \$rule\.FileSystemRights') "Protected installer-origin ACL traversal must call the tested production mutation predicate."
+    $bootstrapText = Get-Text 'scripts\install-revagent-local-bootstrap.ps1'
+    Assert-True ($bootstrapText -match 'Test-RevAgentBootstrapRightsAllowMutation -Rights \$rule\.FileSystemRights') "Bootstrap evidence ACL traversal must call the tested production mutation predicate."
 
     Write-Host "Test self-contained restricted-token CreateNew/append native probe"
     $nativeTypeMatch = [regex]::Match($selfContainedText, "(?s)Add-Type -TypeDefinition @'\r?\n(?<code>.*?)\r?\n'@")
@@ -309,6 +686,7 @@ finally {
     }
     Remove-Module RevAgent.CodexRegistration -Force -ErrorAction SilentlyContinue
     Remove-Module RevAgent.SecureTemp -Force -ErrorAction SilentlyContinue
+    Remove-Module RevAgent.Permissions -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\REVAGENT_GUI_PREIMPORT_MARKER -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $tempRoot) {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue

@@ -988,7 +988,7 @@ function Start-InstallerOperation {
     }
 
     if ($Operation -eq "restore") {
-        $message = "Install/Repair installs the release target package with force.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nRelease: $($status.ChannelVersion)`r`n`r`nContinue?"
+        $message = "Install/Repair performs a canonical revAgent rebaseline from the signed release target.`r`n`r`nIt replaces managed package/runtime/update payloads and removes only positively identified legacy revAgent surfaces. Current revAgent Codex instructions, project data, spatial data, logs, telemetry, and add-ons are preserved. Retired RevitMCP logs and other unrecognized legacy-root children are also left in place for operator review.`r`n`r`nInstalled: $($status.InstalledVersion)`r`nRelease: $($status.ChannelVersion)`r`n`r`nContinue?"
         $choice = [System.Windows.Forms.MessageBox]::Show(
             $message,
             "revAgent Install/Repair",
@@ -1251,6 +1251,9 @@ $timer.Add_Tick({
                     "-UserPhaseOnly",
                     "-PhaseResultPath", $script:PendingUserPhaseResultPath
                 ) + @($script:PendingUserPhaseArguments)
+                if ([string]::Equals($script:PendingUserPhaseComponentKey, "updater", [System.StringComparison]::Ordinal)) {
+                    $userPhaseArguments += @("-MachinePhaseResultPath", [System.IO.Path]::GetFullPath($script:ActivePhaseResultPath))
+                }
                 $script:ActiveProcess = Start-GuiPhaseProcess `
                     -ScriptPath $verifiedUserPhasePath `
                     -Arguments $userPhaseArguments

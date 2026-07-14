@@ -55,6 +55,7 @@ param(
     [switch]$MachinePhaseOnly,
     [switch]$UserPhaseOnly,
     [string]$PhaseResultPath = "",
+    [string]$MachinePhaseResultPath = "",
     [string]$ExecutionSnapshotStatePath = "",
     [string]$TargetInteractiveUser = "",
     [string]$TargetInteractiveUserSid = "",
@@ -689,6 +690,116 @@ function Expand-ReleaseArchive {
     )
 
     Expand-RevAgentReleaseArchive -ZipPath $ZipPath -DestinationPath $DestinationPath
+}
+
+function Expand-ReleaseArchiveStream {
+    param(
+        [System.IO.Stream]$ArchiveStream,
+        [string]$DestinationPath
+    )
+
+    Expand-RevAgentReleaseArchiveStream -ArchiveStream $ArchiveStream -DestinationPath $DestinationPath
+}
+
+function New-RevAgentAuthenticatedPackageCacheStream {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$CacheRoot
+    )
+
+    $cacheRootFull = [System.IO.Path]::GetFullPath($CacheRoot).TrimEnd("\")
+    $sourceFull = [System.IO.Path]::GetFullPath($SourcePath)
+    if (-not (Test-Path -LiteralPath $cacheRootFull -PathType Container)) {
+        throw "Authenticated package cache root was not found: $cacheRootFull"
+    }
+
+    # This retained root handle rejects pre-existing child hardlinks/reparse
+    # points and pins the protected cache directory against rename/delete while
+    # the unique package file is created, verified, and extracted.
+    $cacheGuard = Open-RevAgentManagedMutationGuard -Path $cacheRootFull
+    $sourceStream = $null
+    $destinationStream = $null
+    $destinationPath = ""
+    try {
+        $sourceItem = Get-Item -LiteralPath $sourceFull -Force -ErrorAction Stop
+        if ([bool]$sourceItem.PSIsContainer -or
+            ($sourceItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            -not [string]::IsNullOrWhiteSpace([string]$sourceItem.LinkType)) {
+            throw "Authenticated package source must be an ordinary file: $sourceFull"
+        }
+        $sourceStream = [System.IO.FileStream]::new(
+            $sourceFull,
+            [System.IO.FileMode]::Open,
+            [System.IO.FileAccess]::Read,
+            [System.IO.FileShare]::Read)
+        $sourceAttributes = [System.IO.FileAttributes][RevAgent.PermissionNativeFileInfo]::GetAttributes($sourceStream.SafeFileHandle)
+        if (($sourceAttributes -band ([System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint)) -ne 0 -or
+            [int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($sourceStream.SafeFileHandle) -ne 1) {
+            throw "Authenticated package source changed topology or is hard-linked: $sourceFull"
+        }
+        $sourceIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($sourceStream.SafeFileHandle)
+        if (-not [string]::Equals(
+                $sourceIdentity,
+                [RevAgent.PermissionNativeFileInfo]::GetIdentity($sourceFull, $false),
+                [System.StringComparison]::Ordinal)) {
+            throw "Authenticated package source changed exact identity while it was opened: $sourceFull"
+        }
+
+        for ($attempt = 0; $attempt -lt 4 -and $null -eq $destinationStream; $attempt++) {
+            $destinationPath = Join-Path $cacheRootFull ("revagent-authenticated-{0}.zip" -f [guid]::NewGuid().ToString("N"))
+            try {
+                # CreateNew is atomic and never follows a deterministic
+                # pre-existing cache leaf into an attacker-planted hardlink.
+                $destinationStream = [System.IO.FileStream]::new(
+                    $destinationPath,
+                    [System.IO.FileMode]::CreateNew,
+                    [System.IO.FileAccess]::ReadWrite,
+                    [System.IO.FileShare]::Read)
+            }
+            catch [System.IO.IOException] {
+                if ($attempt -ge 3) { throw }
+            }
+        }
+        if ($null -eq $destinationStream) {
+            throw "Authenticated package cache file could not be created uniquely under: $cacheRootFull"
+        }
+
+        $sourceStream.CopyTo($destinationStream)
+        $destinationStream.Flush($true)
+        $destinationAttributes = [System.IO.FileAttributes][RevAgent.PermissionNativeFileInfo]::GetAttributes($destinationStream.SafeFileHandle)
+        if (($destinationAttributes -band ([System.IO.FileAttributes]::Directory -bor [System.IO.FileAttributes]::ReparsePoint)) -ne 0 -or
+            [int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($destinationStream.SafeFileHandle) -ne 1) {
+            throw "Authenticated package cache destination is not an ordinary single-link file: $destinationPath"
+        }
+        $destinationIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($destinationStream.SafeFileHandle)
+        if (-not [string]::Equals(
+                $destinationIdentity,
+                [RevAgent.PermissionNativeFileInfo]::GetIdentity($destinationPath, $false),
+                [System.StringComparison]::Ordinal)) {
+            throw "Authenticated package cache destination changed exact identity during copy: $destinationPath"
+        }
+        [void]$destinationStream.Seek(0, [System.IO.SeekOrigin]::Begin)
+
+        $sourceStream.Dispose()
+        $sourceStream = $null
+        $result = [pscustomobject][ordered]@{
+            Path = $destinationPath
+            Stream = $destinationStream
+            CacheGuard = $cacheGuard
+            Identity = $destinationIdentity
+        }
+        $destinationStream = $null
+        $cacheGuard = $null
+        return $result
+    }
+    catch {
+        if ($null -ne $destinationStream) { $destinationStream.Dispose() }
+        if ($null -ne $cacheGuard) { $cacheGuard.Dispose() }
+        throw
+    }
+    finally {
+        if ($null -ne $sourceStream) { $sourceStream.Dispose() }
+    }
 }
 
 function Assert-ManagedDirectoryTarget {
@@ -4015,6 +4126,165 @@ function Write-UpdateReport {
     $script:RevAgentRemoteReportsRoot = if ($MachinePhaseOnly) { "" } else { $RemoteReportsRoot }
 }
 
+function Assert-RevAgentPendingMachineUpdateBinding {
+    param(
+        [Parameter(Mandatory = $true)][object]$Report,
+        [Parameter(Mandatory = $true)][object]$MachinePhase,
+        [Parameter(Mandatory = $true)][object]$ExpectedSnapshotState,
+        [Parameter(Mandatory = $true)][string]$ExpectedSnapshotStatePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedMachinePhaseResultPath,
+        [Parameter(Mandatory = $true)][string]$ExpectedWorkRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedOperationMethod,
+        [Parameter(Mandatory = $true)][string]$ExpectedComputerName
+    )
+
+    if ([int](Get-JsonPropertyValue -Object $Report -Name "schemaVersion") -ne 1 -or
+        -not [string]::Equals([string](Get-JsonPropertyValue -Object $Report -Name "app"), "revAgent", [System.StringComparison]::Ordinal)) {
+        throw "Pending machine update report has an invalid schema or application identity."
+    }
+    $operation = [string](Get-JsonPropertyValue -Object $Report -Name "operation")
+    if ($operation -notin @("install", "reinstall", "update", "source-free-migration")) {
+        throw "Pending machine update report has an unsupported operation: $operation"
+    }
+    $actualOperationMethod = [string](Get-JsonPropertyValue -Object $Report -Name "operationMethod")
+    if (-not [string]::Equals($actualOperationMethod, $ExpectedOperationMethod, [System.StringComparison]::Ordinal)) {
+        throw "Pending machine update report operation method mismatch. Expected=$ExpectedOperationMethod Actual=$actualOperationMethod"
+    }
+    $actualComputerName = [string](Get-JsonPropertyValue -Object $Report -Name "computerName")
+    if (-not [string]::Equals($actualComputerName, $ExpectedComputerName, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pending machine update report computer identity mismatch. Expected=$ExpectedComputerName Actual=$actualComputerName"
+    }
+
+    $snapshotRelease = Get-JsonPropertyValue -Object $ExpectedSnapshotState -Name "release"
+    $expectedSnapshotId = [string](Get-JsonPropertyValue -Object $ExpectedSnapshotState -Name "snapshotId")
+    $expectedVersion = [string](Get-JsonPropertyValue -Object $snapshotRelease -Name "version")
+    $expectedPackageSha256 = [string](Get-JsonPropertyValue -Object $snapshotRelease -Name "packageSha256")
+    $expectedReleaseSequenceText = [string](Get-JsonPropertyValue -Object $snapshotRelease -Name "releaseSequence")
+    [long]$expectedReleaseSequence = 0
+    if ($expectedSnapshotId -notmatch '^[a-f0-9]{32}$' -or
+        [string]::IsNullOrWhiteSpace($expectedVersion) -or
+        $expectedPackageSha256 -notmatch '^[A-Fa-f0-9]{64}$' -or
+        -not [long]::TryParse($expectedReleaseSequenceText, [ref]$expectedReleaseSequence) -or
+        $expectedReleaseSequence -le 0) {
+        throw "The authenticated execution snapshot binding is incomplete."
+    }
+
+    try {
+        $expectedWorkRootFull = [System.IO.Path]::GetFullPath($ExpectedWorkRoot).TrimEnd("\")
+        $expectedStatePathFull = [System.IO.Path]::GetFullPath($ExpectedSnapshotStatePath)
+        $expectedMachinePhasePathFull = [System.IO.Path]::GetFullPath($ExpectedMachinePhaseResultPath)
+        $reportedWorkRootFull = [System.IO.Path]::GetFullPath([string](Get-JsonPropertyValue -Object (Get-JsonPropertyValue -Object $Report -Name "paths") -Name "workRoot")).TrimEnd("\")
+        $reportedMachinePhasePathFull = [System.IO.Path]::GetFullPath([string](Get-JsonPropertyValue -Object (Get-JsonPropertyValue -Object $Report -Name "diagnostics") -Name "machinePhaseResultPath"))
+    }
+    catch {
+        throw "Pending machine update binding contains an invalid path. $($_.Exception.Message)"
+    }
+    $machineStateRoot = [System.IO.Path]::GetFullPath((Join-Path $expectedWorkRootFull "machine-state")).TrimEnd("\")
+    if (-not [string]::Equals($reportedWorkRootFull, $expectedWorkRootFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pending machine update report WorkRoot mismatch. Expected=$expectedWorkRootFull Actual=$reportedWorkRootFull"
+    }
+    if (-not (Test-RevAgentPathUnderRoot -Path $expectedMachinePhasePathFull -Root $machineStateRoot) -or
+        [System.IO.Path]::GetFileName($expectedMachinePhasePathFull) -notmatch '^gui-machine-phase-[a-f0-9]{32}\.json$') {
+        throw "Pending machine phase identity is not an exact GUI machine-phase path: $expectedMachinePhasePathFull"
+    }
+    if (-not [string]::Equals($reportedMachinePhasePathFull, $expectedMachinePhasePathFull, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Pending machine update report phase identity mismatch. Expected=$expectedMachinePhasePathFull Actual=$reportedMachinePhasePathFull"
+    }
+
+    $diagnostics = Get-JsonPropertyValue -Object $Report -Name "diagnostics"
+    $release = Get-JsonPropertyValue -Object $Report -Name "release"
+    $localInstall = Get-JsonPropertyValue -Object $Report -Name "localInstall"
+    $actualReleaseSequenceText = [string](Get-JsonPropertyValue -Object $diagnostics -Name "executionSnapshotReleaseSequence")
+    [long]$actualReleaseSequence = 0
+    if (-not [long]::TryParse($actualReleaseSequenceText, [ref]$actualReleaseSequence) -or
+        $actualReleaseSequence -ne $expectedReleaseSequence) {
+        throw "Pending machine update report release sequence mismatch. Expected=$expectedReleaseSequence Actual=$actualReleaseSequenceText"
+    }
+    foreach ($binding in @(
+            [pscustomobject]@{ Name = "snapshot id"; Actual = [string](Get-JsonPropertyValue -Object $diagnostics -Name "executionSnapshotId"); Expected = $expectedSnapshotId; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "snapshot version"; Actual = [string](Get-JsonPropertyValue -Object $diagnostics -Name "executionSnapshotVersion"); Expected = $expectedVersion; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "target version"; Actual = [string](Get-JsonPropertyValue -Object $Report -Name "targetVersion"); Expected = $expectedVersion; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "installed version"; Actual = [string](Get-JsonPropertyValue -Object $Report -Name "installedVersion"); Expected = $expectedVersion; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "release version"; Actual = [string](Get-JsonPropertyValue -Object $release -Name "version"); Expected = $expectedVersion; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "local install version"; Actual = [string](Get-JsonPropertyValue -Object $localInstall -Name "version"); Expected = $expectedVersion; Comparison = [System.StringComparison]::Ordinal },
+            [pscustomobject]@{ Name = "snapshot package SHA256"; Actual = [string](Get-JsonPropertyValue -Object $diagnostics -Name "executionSnapshotPackageSha256"); Expected = $expectedPackageSha256; Comparison = [System.StringComparison]::OrdinalIgnoreCase },
+            [pscustomobject]@{ Name = "release package SHA256"; Actual = [string](Get-JsonPropertyValue -Object $release -Name "packageSha256"); Expected = $expectedPackageSha256; Comparison = [System.StringComparison]::OrdinalIgnoreCase },
+            [pscustomobject]@{ Name = "local install package SHA256"; Actual = [string](Get-JsonPropertyValue -Object $localInstall -Name "packageSha256"); Expected = $expectedPackageSha256; Comparison = [System.StringComparison]::OrdinalIgnoreCase }
+        )) {
+        if (-not [string]::Equals([string]$binding.Actual, [string]$binding.Expected, [System.StringComparison]$binding.Comparison)) {
+            throw "Pending machine update report $($binding.Name) mismatch. Expected=$($binding.Expected) Actual=$($binding.Actual)"
+        }
+    }
+
+    $reportStatus = [string](Get-JsonPropertyValue -Object $Report -Name "status")
+    $phaseStatus = [string](Get-JsonPropertyValue -Object $MachinePhase -Name "status")
+    $phaseSuccessValue = Get-JsonPropertyValue -Object $MachinePhase -Name "success"
+    $phaseContinueValue = Get-JsonPropertyValue -Object $MachinePhase -Name "continueUserPhase"
+    if ([int](Get-JsonPropertyValue -Object $MachinePhase -Name "schemaVersion") -ne 1 -or
+        -not [string]::Equals([string](Get-JsonPropertyValue -Object $MachinePhase -Name "phase"), "machine", [System.StringComparison]::OrdinalIgnoreCase) -or
+        $null -eq $phaseSuccessValue -or -not [bool]$phaseSuccessValue -or
+        $null -eq $phaseContinueValue -or -not [bool]$phaseContinueValue -or
+        $phaseStatus -notin @("completed", "current") -or
+        ($phaseStatus -eq "completed" -and $reportStatus -ne "updated") -or
+        ($phaseStatus -eq "current" -and $reportStatus -ne "current")) {
+        throw "Pending machine update phase/report terminal state mismatch. phaseStatus=$phaseStatus reportStatus=$reportStatus"
+    }
+
+    $phaseSnapshot = Get-JsonPropertyValue -Object $MachinePhase -Name "executionSnapshot"
+    $phaseSnapshotStatePath = [string](Get-JsonPropertyValue -Object $phaseSnapshot -Name "statePath")
+    try { $phaseSnapshotStatePath = [System.IO.Path]::GetFullPath($phaseSnapshotStatePath) }
+    catch { throw "Pending machine phase contains an invalid execution snapshot state path. $($_.Exception.Message)" }
+    $phaseReleaseSequenceText = [string](Get-JsonPropertyValue -Object $phaseSnapshot -Name "releaseSequence")
+    [long]$phaseReleaseSequence = 0
+    if (-not [long]::TryParse($phaseReleaseSequenceText, [ref]$phaseReleaseSequence) -or
+        $phaseReleaseSequence -ne $expectedReleaseSequence -or
+        -not [string]::Equals([string](Get-JsonPropertyValue -Object $phaseSnapshot -Name "snapshotId"), $expectedSnapshotId, [System.StringComparison]::Ordinal) -or
+        -not [string]::Equals($phaseSnapshotStatePath, $expectedStatePathFull, [System.StringComparison]::OrdinalIgnoreCase) -or
+        -not [string]::Equals([string](Get-JsonPropertyValue -Object $phaseSnapshot -Name "targetComponentKey"), "updater", [System.StringComparison]::Ordinal)) {
+        throw "Pending machine phase execution snapshot identity does not match this user-phase run."
+    }
+
+    return [pscustomobject][ordered]@{
+        success = $true
+        snapshotId = $expectedSnapshotId
+        releaseSequence = $expectedReleaseSequence
+        version = $expectedVersion
+        packageSha256 = $expectedPackageSha256
+        operationMethod = $ExpectedOperationMethod
+        machinePhaseResultPath = $expectedMachinePhasePathFull
+    }
+}
+
+function Read-RevAgentPendingMachineUpdateOutcome {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReportPath,
+        [Parameter(Mandatory = $true)][string]$ReportAllowedRoot,
+        [Parameter(Mandatory = $true)][string]$MachinePhaseResultPath,
+        [Parameter(Mandatory = $true)][object]$ExpectedSnapshotState,
+        [Parameter(Mandatory = $true)][string]$ExpectedSnapshotStatePath,
+        [Parameter(Mandatory = $true)][string]$ExpectedWorkRoot,
+        [Parameter(Mandatory = $true)][string]$ExpectedOperationMethod,
+        [Parameter(Mandatory = $true)][string]$ExpectedComputerName
+    )
+
+    $report = Read-RevAgentJsonReportFile -Path $ReportPath -AllowedRoot $ReportAllowedRoot
+    $phase = Read-RevAgentJsonReportFile -Path $MachinePhaseResultPath -AllowedRoot $ReportAllowedRoot
+    $binding = Assert-RevAgentPendingMachineUpdateBinding `
+        -Report $report `
+        -MachinePhase $phase `
+        -ExpectedSnapshotState $ExpectedSnapshotState `
+        -ExpectedSnapshotStatePath $ExpectedSnapshotStatePath `
+        -ExpectedMachinePhaseResultPath $MachinePhaseResultPath `
+        -ExpectedWorkRoot $ExpectedWorkRoot `
+        -ExpectedOperationMethod $ExpectedOperationMethod `
+        -ExpectedComputerName $ExpectedComputerName
+    return [pscustomobject][ordered]@{
+        report = $report
+        phase = $phase
+        binding = $binding
+    }
+}
+
 function Publish-RevAgentPendingMachineUpdateReport {
     param(
         [Parameter(Mandatory = $true)][string]$ReportPath,
@@ -4023,7 +4293,14 @@ function Publish-RevAgentPendingMachineUpdateReport {
         [Parameter(Mandatory = $true)][string]$RemoteReportsRoot,
         [Parameter(Mandatory = $true)][string]$IntegrationStatus,
         [Parameter(Mandatory = $true)][string]$IntegrationMessage,
-        [object]$IntegrationDetails = $null
+        [object]$IntegrationDetails = $null,
+        [switch]$RequireExactBinding,
+        [string]$MachinePhaseResultPath = "",
+        [object]$ExpectedSnapshotState = $null,
+        [string]$ExpectedSnapshotStatePath = "",
+        [string]$ExpectedWorkRoot = "",
+        [string]$ExpectedOperationMethod = "",
+        [string]$ExpectedComputerName = ""
     )
 
     if ([string]::IsNullOrWhiteSpace($RemoteReportsRoot)) {
@@ -4033,7 +4310,21 @@ function Publish-RevAgentPendingMachineUpdateReport {
         throw "The machine phase did not leave its local update report: $ReportPath"
     }
 
-    $pendingReport = Read-RevAgentJsonReportFile -Path $ReportPath -AllowedRoot $ReportAllowedRoot
+    $pendingReport = if ($RequireExactBinding) {
+        $pendingOutcome = Read-RevAgentPendingMachineUpdateOutcome `
+            -ReportPath $ReportPath `
+            -ReportAllowedRoot $ReportAllowedRoot `
+            -MachinePhaseResultPath $MachinePhaseResultPath `
+            -ExpectedSnapshotState $ExpectedSnapshotState `
+            -ExpectedSnapshotStatePath $ExpectedSnapshotStatePath `
+            -ExpectedWorkRoot $ExpectedWorkRoot `
+            -ExpectedOperationMethod $ExpectedOperationMethod `
+            -ExpectedComputerName $ExpectedComputerName
+        $pendingOutcome.report
+    }
+    else {
+        Read-RevAgentJsonReportFile -Path $ReportPath -AllowedRoot $ReportAllowedRoot
+    }
     $diagnostics = [ordered]@{}
     $existingDiagnostics = Get-JsonPropertyValue -Object $pendingReport -Name "diagnostics"
     if ($existingDiagnostics) {
@@ -4081,7 +4372,7 @@ function Publish-RevAgentPendingMachineUpdateReport {
 
 function New-CurrentUpdateDiagnostics {
     $running = @($runningRevit)
-    return [ordered]@{
+    $diagnostics = [ordered]@{
         distributionIntegrity = $script:RevAgentDistributionIntegrity
         license = $script:RevAgentLicense
         allowSignedReleaseRollback = [bool]$AllowSignedReleaseRollback
@@ -4104,7 +4395,96 @@ function New-CurrentUpdateDiagnostics {
         revitPayloadChangedComponents = @($revitPayloadChanges | ForEach-Object { [string]$_.key })
         localPackageBackupPolicy = $localPackageBackupPolicyState
         desktopLauncherCleanup = $desktopLauncherCleanupState
+        canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
+    }
+    $snapshotRelease = Get-JsonPropertyValue -Object $script:RevAgentExecutionSnapshotState -Name "release"
+    if ($null -ne $script:RevAgentExecutionSnapshotState -and $null -ne $snapshotRelease) {
+        $diagnostics["executionSnapshotId"] = [string](Get-JsonPropertyValue -Object $script:RevAgentExecutionSnapshotState -Name "snapshotId")
+        $diagnostics["executionSnapshotVersion"] = [string](Get-JsonPropertyValue -Object $snapshotRelease -Name "version")
+        $diagnostics["executionSnapshotPackageSha256"] = [string](Get-JsonPropertyValue -Object $snapshotRelease -Name "packageSha256")
+        $diagnostics["executionSnapshotReleaseSequence"] = [long](Get-JsonPropertyValue -Object $snapshotRelease -Name "releaseSequence")
+    }
+    if ($MachinePhaseOnly -and -not [string]::IsNullOrWhiteSpace($PhaseResultPath)) {
+        $diagnostics["machinePhaseResultPath"] = [System.IO.Path]::GetFullPath($PhaseResultPath)
+    }
+    return $diagnostics
+}
+
+function Test-RevAgentCanonicalCleanupActionRequired {
+    param([object]$Result)
+
+    if ($null -eq $Result) {
+        return $true
+    }
+
+    $success = [bool](Get-JsonPropertyValue -Object $Result -Name "success")
+    $actionRequired = [bool](Get-JsonPropertyValue -Object $Result -Name "actionRequired")
+    $failedCount = [int](Get-JsonPropertyValue -Object $Result -Name "failedCount")
+    $remainingCount = [int](Get-JsonPropertyValue -Object $Result -Name "remainingCount")
+
+    return ((-not $success) -or $actionRequired -or $failedCount -gt 0 -or $remainingCount -gt 0)
+}
+
+function Test-RevAgentCanonicalRebaselineOperationMethod {
+    param([string]$Method)
+
+    $normalized = if ([string]::IsNullOrWhiteSpace($Method)) { "" } else { $Method.Trim() }
+    do {
+        $beforeSuffixRemoval = $normalized
+        $normalized = $normalized -replace '(?i)-(?:machine|machine-phase|user|user-phase|user-integration|initial-update|bootstrap)$', ''
+    } while (-not [string]::Equals($beforeSuffixRemoval, $normalized, [System.StringComparison]::Ordinal))
+
+    return (@(
+            "gui-install",
+            "gui-install-repair",
+            "install",
+            "install-repair",
+            "source-free",
+            "source-free-migration"
+        ) -contains $normalized.ToLowerInvariant())
+}
+
+function New-RevAgentCanonicalCleanupFailureEvidence {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet("machine", "user")][string]$Scope,
+        [object]$PreviousState,
+        [Parameter(Mandatory = $true)][string]$Message
+    )
+
+    $matched = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "matched") } else { @() }
+    $removed = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "removed") } else { @() }
+    $previousFailed = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "failed") } else { @() }
+    $preserved = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "preserved") } else { @() }
+    $blockingPreserved = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "blockingPreserved") } else { @() }
+    $remaining = if ($PreviousState) { @(Get-JsonPropertyValue -Object $PreviousState -Name "remaining") } else { @() }
+    $failed = @($previousFailed) + @([pscustomobject][ordered]@{
+            scope = $Scope
+            surface = "canonical_legacy_surface_cleanup"
+            reason = "cleanup_execution_failed"
+            path = ""
+            error = $Message
+        })
+
+    return [pscustomobject][ordered]@{
+        enabled = $true
+        requested = $true
+        scope = $Scope
+        mode = "failed"
+        success = $false
+        actionRequired = $true
+        matchedCount = $matched.Count
+        removedCount = $removed.Count
+        failedCount = $failed.Count
+        preservedCount = $preserved.Count
+        blockingPreservedCount = $blockingPreserved.Count
+        remainingCount = $remaining.Count
+        matched = @($matched)
+        removed = @($removed)
+        failed = @($failed)
+        preserved = @($preserved)
+        blockingPreserved = @($blockingPreserved)
+        remaining = @($remaining)
     }
 }
 
@@ -4285,39 +4665,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [bool]$Required = $true
+        [bool]$Required = $true,
+        [Microsoft.Win32.SafeHandles.SafeFileHandle]$MutationGuard
     )
 
-    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-        return
-    }
-
-    try {
-        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
-        return
-    }
-    catch {
-        $copyError = $_.Exception.Message
-        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            if ($Required) {
-                throw
-            }
-            Write-Warning "Could not refresh optional updater tool '$Destination'. Copy error: $copyError"
-            return
-        }
-        try {
-            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
-            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
-            Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
-        }
-        catch {
-            $message = "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
-            if ($Required) {
-                throw $message
-            }
-            Write-Warning $message
-        }
-    }
+    [void](Install-RevAgentManagedUpdaterFile -Source $Source -Destination $Destination -Required:$Required -MutationGuard $MutationGuard)
 }
 
 function Install-UpdaterToolsFromPackage {
@@ -4329,27 +4681,42 @@ function Install-UpdaterToolsFromPackage {
 
     if ([string]::IsNullOrWhiteSpace($SourceRoot) -or
         -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
-        return
+        throw "Managed updater tool source directory is missing: $SourceRoot"
     }
 
-    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $DestinationRoot -PathType Container)) {
+        throw "Protected managed updater destination directory is missing: $DestinationRoot"
+    }
+    $managedMutationTargets = @(
+        "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1",
+        "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1",
+        "lib", "config", "Update-revAgent-Now.cmd", "Show-revAgent-Version.cmd",
+        "Run-revAgent-Update-Hidden.vbs", "Update-Revit-MCP-Now.cmd",
+        "Show-Revit-MCP-Version.cmd", "Run-Revit-MCP-Update-Hidden.vbs"
+    )
+    $managedInstallRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($DestinationRoot).TrimEnd("\"))
+    [void](Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot $managedInstallRoot)
+    $installBoundaryGuard = Open-RevAgentManagedMutationGuard -Path $managedInstallRoot -ProtectedPaths @($DestinationRoot) -ExactProtectedPaths
+    $mutationGuard = $null
+    try {
+    $mutationGuard = Open-RevAgentManagedMutationGuard -Path $DestinationRoot -ProtectedPaths $managedMutationTargets
     foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         $source = Join-Path $SourceRoot $toolName
-        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:($toolName -ne "migrate-source-free-install.ps1")
+        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:$true -MutationGuard $mutationGuard
     }
     $libSource = Join-Path (Split-Path -Parent $SourceRoot) "lib"
-    if (Test-Path -LiteralPath $libSource -PathType Container) {
-        $libDestination = Join-Path $DestinationRoot "lib"
-        if (Test-Path -LiteralPath $libDestination) {
-            Remove-Item -LiteralPath $libDestination -Recurse -Force
-        }
-        Copy-Item -LiteralPath $libSource -Destination $libDestination -Recurse -Force
+    if (-not (Test-Path -LiteralPath $libSource -PathType Container)) {
+        throw "Managed updater library source directory is missing: $libSource"
     }
+    [void](Sync-RevAgentManagedUpdaterDirectory -SourceRoot $libSource -DestinationRoot (Join-Path $DestinationRoot "lib") -MutationGuard $mutationGuard)
     $configSource = Join-Path (Split-Path -Parent $SourceRoot) "config"
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
+    if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
+        throw "Managed updater config source directory is missing: $configSource"
+    }
+    [void](Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config") -MutationGuard $mutationGuard)
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
@@ -4380,6 +4747,13 @@ function Install-UpdaterToolsFromPackage {
             Remove-Item -LiteralPath $legacyLauncherPath -Force
             Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
         }
+    }
+
+    [void](Assert-RevAgentManagedTreeLinkSafe -Root $DestinationRoot)
+    }
+    finally {
+        if ($null -ne $mutationGuard) { $mutationGuard.Dispose() }
+        $installBoundaryGuard.Dispose()
     }
 
     Write-Host "Updater tools refreshed: $DestinationRoot"
@@ -4824,6 +5198,18 @@ $desktopLauncherCleanupState = [ordered]@{
     removed = @()
     failed = @()
 }
+$exactStartupLauncherCleanupState = [ordered]@{
+    enabled = $true
+    mode = "not-run"
+    startupRoot = ""
+    matchedCount = 0
+    removedCount = 0
+    failedCount = 0
+    matched = @()
+    removed = @()
+    failed = @()
+    removedPaths = @()
+}
 $revAgentCleanInstallTransitionState = [ordered]@{
     enabled = $false
     required = $false
@@ -4837,17 +5223,58 @@ $revAgentCleanInstallTransitionState = [ordered]@{
     removedCacheItemCount = 0
     failedCacheItemCount = 0
 }
+$canonicalRebaselineMethodMatched = Test-RevAgentCanonicalRebaselineOperationMethod -Method $OperationMethod
+$canonicalRebaselineRequested = (
+    $Force -or
+    $SourceFreeMigration -or
+    $canonicalRebaselineMethodMatched
+)
+$canonicalLegacySurfaceCleanupState = [ordered]@{
+    enabled = $true
+    requested = [bool]$canonicalRebaselineRequested
+    scope = if ($MachinePhaseOnly) { "machine" } elseif ($UserPhaseOnly) { "user" } else { "legacy" }
+    mode = if ($canonicalRebaselineRequested) { "pending" } else { "not-requested" }
+    success = (-not $canonicalRebaselineRequested)
+    actionRequired = [bool]$canonicalRebaselineRequested
+    matchedCount = 0
+    removedCount = 0
+    failedCount = 0
+    preservedCount = 0
+    blockingPreservedCount = 0
+    remainingCount = 0
+    matched = @()
+    removed = @()
+    failed = @()
+    preserved = @()
+    blockingPreserved = @()
+    remaining = @()
+}
 
 try {
     if ($MachinePhaseOnly) {
         $desktopLauncherCleanupState.mode = "deferred-to-user-phase"
+        $exactStartupLauncherCleanupState.mode = "deferred-to-user-phase"
         Write-Host "Desktop launchers: user-profile cleanup deferred to unelevated user phase."
     }
     elseif ($AuditOnly) {
         $desktopLauncherCleanupState.mode = "skipped-audit-only"
+        $exactStartupLauncherCleanupState.mode = "skipped-audit-only"
     }
     else {
-        $desktopLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup
+        $launcherRoots = [System.Collections.Generic.List[string]]::new()
+        foreach ($launcherRoot in @(Get-RevAgentDefaultDesktopLauncherRoots)) {
+            if (-not [string]::IsNullOrWhiteSpace($launcherRoot)) { [void]$launcherRoots.Add($launcherRoot) }
+        }
+        $startupRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::Startup)
+        if (-not [string]::IsNullOrWhiteSpace($startupRoot)) { [void]$launcherRoots.Add($startupRoot) }
+        # Exact historical Startup names are installer-owned launchers. Remove
+        # them before the broader content-based scan so even a stale launcher
+        # whose body was edited away from legacy tokens remains attributable.
+        $exactStartupLauncherCleanupState = Invoke-RevAgentExactLegacyStartupLauncherCleanup -StartupRoot $startupRoot
+        $contentBasedLauncherCleanupState = Invoke-RevAgentLegacyDesktopLauncherCleanup -LauncherRoots @($launcherRoots.ToArray() | Select-Object -Unique)
+        $desktopLauncherCleanupState = Merge-RevAgentDesktopLauncherCleanupEvidence `
+            -NestedUpdaterCleanup $contentBasedLauncherCleanupState `
+            -ExactStartupCleanup $exactStartupLauncherCleanupState
     }
     if ([int]$desktopLauncherCleanupState.removedCount -gt 0) {
         Write-Host ("Desktop launchers: removed {0} legacy revAgent launcher shortcut(s)." -f $desktopLauncherCleanupState.removedCount) -ForegroundColor Green
@@ -4857,7 +5284,21 @@ try {
     }
 }
 catch {
-    $desktopLauncherCleanupState = [ordered]@{
+    if ([string]::Equals([string]$exactStartupLauncherCleanupState.mode, "not-run", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $exactStartupLauncherCleanupState = [ordered]@{
+            enabled = $true
+            mode = "failed"
+            startupRoot = ""
+            matchedCount = 0
+            removedCount = 0
+            failedCount = 1
+            matched = @()
+            removed = @()
+            failed = @([ordered]@{ path = ""; name = ""; extension = ""; source = "exact-legacy-startup-name"; error = $_.Exception.Message })
+            removedPaths = @()
+        }
+    }
+    $launcherCleanupInvocationFailure = [ordered]@{
         enabled = $true
         mode = "failed"
         matchedCount = 0
@@ -4867,6 +5308,9 @@ catch {
         removed = @()
         failed = @([ordered]@{ path = ""; name = ""; extension = ""; error = $_.Exception.Message })
     }
+    $desktopLauncherCleanupState = Merge-RevAgentDesktopLauncherCleanupEvidence `
+        -NestedUpdaterCleanup $launcherCleanupInvocationFailure `
+        -ExactStartupCleanup $exactStartupLauncherCleanupState
     Write-Warning "Desktop launcher cleanup failed: $($_.Exception.Message)"
 }
 if (-not $MachinePhaseOnly) {
@@ -4885,8 +5329,94 @@ if ($UserPhaseOnly) {
     $integrationResult = $null
     $reportPublishEvidence = $null
     $reportPublishError = ""
+    $pendingMachineUpdateOutcome = $null
+    $directMachineReportBindingRequired = -not ($OperationMethod -match '(?i)-user-integration$')
+    $targetProfileForCleanup = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+    $targetCodexHomeForCleanup = if ([string]::IsNullOrWhiteSpace($TargetCodexHome)) {
+        Join-Path $targetProfileForCleanup ".codex"
+    }
+    else {
+        $TargetCodexHome
+    }
+    $sourceFreeUserCleanupState = [ordered]@{
+        requested = [bool]$canonicalRebaselineRequested
+        scope = "user"
+        codexInstructionCleanupSkipped = [bool]$preserveLocalCodexInstructions
+        preCleanup = $null
+        postCleanup = $null
+        success = (-not $canonicalRebaselineRequested)
+    }
     try {
+        if ($directMachineReportBindingRequired) {
+            $pendingMachineUpdateOutcome = Read-RevAgentPendingMachineUpdateOutcome `
+                -ReportPath $machineReportPath `
+                -ReportAllowedRoot $machineStateRoot `
+                -MachinePhaseResultPath $MachinePhaseResultPath `
+                -ExpectedSnapshotState $script:RevAgentExecutionSnapshotState `
+                -ExpectedSnapshotStatePath $ExecutionSnapshotStatePath `
+                -ExpectedWorkRoot $WorkRoot `
+                -ExpectedOperationMethod $script:RevAgentOperationMethod `
+                -ExpectedComputerName $env:COMPUTERNAME
+            Write-Host "Machine report   : exact snapshot/run/phase binding validated before user integration." -ForegroundColor Green
+        }
         Initialize-RevAgentWorkstationProxy -ProxyUrl $ProxyUrl -ProxyBypass $ProxyBypass -Skip:$SkipProxySetup
+        if ($canonicalRebaselineRequested -and [int]$exactStartupLauncherCleanupState.failedCount -gt 0) {
+            $integrationResult = [pscustomobject][ordered]@{
+                success = $false
+                stage = "exact-legacy-startup-launcher-cleanup"
+                desktopLauncherCleanup = $desktopLauncherCleanupState
+                exactStartupCleanup = $exactStartupLauncherCleanupState
+            }
+            throw "Canonical user rebaseline cleanup failed closed because an exact historical Startup launcher could not be removed. Failed=$($exactStartupLauncherCleanupState.failedCount)."
+        }
+        if ($canonicalRebaselineRequested) {
+            try {
+                $canonicalLegacySurfaceCleanupState = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
+                    -Scope user `
+                    -InstallRoot $InstallRoot `
+                    -UserProfileRoot $targetProfileForCleanup `
+                    -RoamingAppDataRoot (Join-Path $targetProfileForCleanup "AppData\Roaming") `
+                    -CommonAppDataRoot $script:RevAgentOsCommonAppData `
+                    -TargetCodexHome $targetCodexHomeForCleanup `
+                    -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+                    -Commit
+            }
+            catch {
+                $canonicalLegacySurfaceCleanupState = New-RevAgentCanonicalCleanupFailureEvidence -Scope user -PreviousState $canonicalLegacySurfaceCleanupState -Message $_.Exception.Message
+                $integrationResult = [pscustomobject][ordered]@{
+                    success = $false
+                    stage = "canonical-user-rebaseline-cleanup"
+                    canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+                }
+                throw
+            }
+            if (Test-RevAgentCanonicalCleanupActionRequired -Result $canonicalLegacySurfaceCleanupState) {
+                $integrationResult = [pscustomobject][ordered]@{
+                    success = $false
+                    stage = "canonical-user-rebaseline-cleanup"
+                    canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+                }
+                $cleanupSuccess = [bool](Get-JsonPropertyValue -Object $canonicalLegacySurfaceCleanupState -Name "success")
+                $cleanupActionRequired = [bool](Get-JsonPropertyValue -Object $canonicalLegacySurfaceCleanupState -Name "actionRequired")
+                throw "Canonical user rebaseline cleanup failed closed. Success=$cleanupSuccess actionRequired=$cleanupActionRequired failed=$($canonicalLegacySurfaceCleanupState.failedCount) remaining=$($canonicalLegacySurfaceCleanupState.remainingCount)."
+            }
+            Write-Host ("Canonical cleanup: removed {0} user legacy surface(s); preserved {1}." -f $canonicalLegacySurfaceCleanupState.removedCount, $canonicalLegacySurfaceCleanupState.preservedCount) -ForegroundColor Green
+
+            $sourceFreeUserCleanupState.preCleanup = Invoke-RevAgentSourceFreeArtifactCleanup `
+                -InstallRoot $InstallRoot `
+                -PackageTarget $PackageTarget `
+                -ServerTarget $ServerTarget `
+                -UserProfileRoot $targetProfileForCleanup `
+                -TargetCodexHome $targetCodexHomeForCleanup `
+                -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+                -Scope user `
+                -Commit
+            if ([int]$sourceFreeUserCleanupState.preCleanup.failedCount -gt 0 -or
+                [int]$sourceFreeUserCleanupState.preCleanup.remainingCount -gt 0) {
+                throw "Unelevated user source-free cleanup failed closed before Codex integration. Failed=$($sourceFreeUserCleanupState.preCleanup.failedCount) remaining=$($sourceFreeUserCleanupState.preCleanup.remainingCount)."
+            }
+            Write-Host ("Source cleanup  : unelevated user scope removed {0} pre-integration artifact item(s)." -f $sourceFreeUserCleanupState.preCleanup.removedCount) -ForegroundColor Green
+        }
         $docsServerPath = Join-Path $PackageTarget "installer\revit-api-docs-mcp"
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
         $installedStateForUserPhase = Read-InstalledState -Path $statePath
@@ -4957,15 +5487,48 @@ if ($UserPhaseOnly) {
         if ($null -eq $integrationResult -or -not [bool]$integrationResult.success) {
             throw "Codex user integration did not return a successful attestation result."
         }
+        if ($canonicalRebaselineRequested) {
+            $sourceFreeUserCleanupState.postCleanup = Invoke-RevAgentSourceFreeArtifactCleanup `
+                -InstallRoot $InstallRoot `
+                -PackageTarget $PackageTarget `
+                -ServerTarget $ServerTarget `
+                -UserProfileRoot $targetProfileForCleanup `
+                -TargetCodexHome $targetCodexHomeForCleanup `
+                -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
+                -Scope user `
+                -Commit
+            if ([int]$sourceFreeUserCleanupState.postCleanup.failedCount -gt 0 -or
+                [int]$sourceFreeUserCleanupState.postCleanup.remainingCount -gt 0) {
+                throw "Unelevated user source-free verification failed closed after Codex integration. Failed=$($sourceFreeUserCleanupState.postCleanup.failedCount) remaining=$($sourceFreeUserCleanupState.postCleanup.remainingCount)."
+            }
+            $sourceFreeUserCleanupState.success = $true
+            Write-Host "Source verify   : unelevated user scope is source-free." -ForegroundColor Green
+        }
+        $integrationResult | Add-Member -NotePropertyName canonicalLegacySurfaceCleanup -NotePropertyValue $canonicalLegacySurfaceCleanupState -Force
+        $integrationResult | Add-Member -NotePropertyName sourceFreeUserCleanup -NotePropertyValue $sourceFreeUserCleanupState -Force
+        if ($directMachineReportBindingRequired) {
+            $integrationResult | Add-Member -NotePropertyName pendingMachineReportBinding -NotePropertyValue $pendingMachineUpdateOutcome.binding -Force
+        }
 
-        $publishedReport = Publish-RevAgentPendingMachineUpdateReport `
-            -ReportPath $machineReportPath `
-            -ReportAllowedRoot $machineStateRoot `
-            -LogAllowedRoot (Join-Path $WorkRoot "machine-logs") `
-            -RemoteReportsRoot $ReportsRoot `
-            -IntegrationStatus "completed" `
-            -IntegrationMessage "Unelevated Codex user integration completed and was attested." `
-            -IntegrationDetails $integrationResult
+        $publishArgs = @{
+            ReportPath = $machineReportPath
+            ReportAllowedRoot = $machineStateRoot
+            LogAllowedRoot = (Join-Path $WorkRoot "machine-logs")
+            RemoteReportsRoot = $ReportsRoot
+            IntegrationStatus = "completed"
+            IntegrationMessage = "Unelevated Codex user integration completed and was attested."
+            IntegrationDetails = $integrationResult
+        }
+        if ($directMachineReportBindingRequired) {
+            $publishArgs["RequireExactBinding"] = $true
+            $publishArgs["MachinePhaseResultPath"] = $MachinePhaseResultPath
+            $publishArgs["ExpectedSnapshotState"] = $script:RevAgentExecutionSnapshotState
+            $publishArgs["ExpectedSnapshotStatePath"] = $ExecutionSnapshotStatePath
+            $publishArgs["ExpectedWorkRoot"] = $WorkRoot
+            $publishArgs["ExpectedOperationMethod"] = $script:RevAgentOperationMethod
+            $publishArgs["ExpectedComputerName"] = $env:COMPUTERNAME
+        }
+        $publishedReport = Publish-RevAgentPendingMachineUpdateReport @publishArgs
         $reportPublishEvidence = [ordered]@{
             latestPath = [string]$publishedReport.LatestPath
             operationLatestPath = [string]$publishedReport.OperationLatestPath
@@ -4974,6 +5537,9 @@ if ($UserPhaseOnly) {
         }
         Write-RevAgentPhaseResult -Status "completed" -ContinueUserPhase:$false -Message "Unelevated Codex user integration completed and the machine report was published." -Details ([ordered]@{
                 integration = $integrationResult
+                desktopLauncherCleanup = $desktopLauncherCleanupState
+                canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+                sourceFreeUserCleanup = $sourceFreeUserCleanupState
                 reportPublished = $true
                 reportEvidence = $reportPublishEvidence
             })
@@ -4981,15 +5547,40 @@ if ($UserPhaseOnly) {
     }
     catch {
         $phaseMessage = $_.Exception.Message
+        if ($null -eq $integrationResult) {
+            $integrationResult = [pscustomobject][ordered]@{
+                success = $false
+                stage = "user-phase"
+                canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+                sourceFreeUserCleanup = $sourceFreeUserCleanupState
+            }
+        }
+        elseif ($null -eq $integrationResult.PSObject.Properties["canonicalLegacySurfaceCleanup"]) {
+            $integrationResult | Add-Member -NotePropertyName canonicalLegacySurfaceCleanup -NotePropertyValue $canonicalLegacySurfaceCleanupState -Force
+        }
+        if ($null -eq $integrationResult.PSObject.Properties["sourceFreeUserCleanup"]) {
+            $integrationResult | Add-Member -NotePropertyName sourceFreeUserCleanup -NotePropertyValue $sourceFreeUserCleanupState -Force
+        }
         try {
-            $failedPublish = Publish-RevAgentPendingMachineUpdateReport `
-                -ReportPath $machineReportPath `
-                -ReportAllowedRoot $machineStateRoot `
-                -LogAllowedRoot (Join-Path $WorkRoot "machine-logs") `
-                -RemoteReportsRoot $ReportsRoot `
-                -IntegrationStatus "failed" `
-                -IntegrationMessage $phaseMessage `
-                -IntegrationDetails $integrationResult
+            $failedPublishArgs = @{
+                ReportPath = $machineReportPath
+                ReportAllowedRoot = $machineStateRoot
+                LogAllowedRoot = (Join-Path $WorkRoot "machine-logs")
+                RemoteReportsRoot = $ReportsRoot
+                IntegrationStatus = "failed"
+                IntegrationMessage = $phaseMessage
+                IntegrationDetails = $integrationResult
+            }
+            if ($directMachineReportBindingRequired) {
+                $failedPublishArgs["RequireExactBinding"] = $true
+                $failedPublishArgs["MachinePhaseResultPath"] = $MachinePhaseResultPath
+                $failedPublishArgs["ExpectedSnapshotState"] = $script:RevAgentExecutionSnapshotState
+                $failedPublishArgs["ExpectedSnapshotStatePath"] = $ExecutionSnapshotStatePath
+                $failedPublishArgs["ExpectedWorkRoot"] = $WorkRoot
+                $failedPublishArgs["ExpectedOperationMethod"] = $script:RevAgentOperationMethod
+                $failedPublishArgs["ExpectedComputerName"] = $env:COMPUTERNAME
+            }
+            $failedPublish = Publish-RevAgentPendingMachineUpdateReport @failedPublishArgs
             $reportPublishEvidence = [ordered]@{
                 latestPath = [string]$failedPublish.LatestPath
                 operationLatestPath = [string]$failedPublish.OperationLatestPath
@@ -5004,6 +5595,9 @@ if ($UserPhaseOnly) {
         try {
             Write-RevAgentPhaseResult -Status "failed" -ContinueUserPhase:$false -Message $phaseMessage -Details ([ordered]@{
                     integration = $integrationResult
+                    desktopLauncherCleanup = $desktopLauncherCleanupState
+                    canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+                    sourceFreeUserCleanup = $sourceFreeUserCleanupState
                     reportPublished = ($null -ne $reportPublishEvidence)
                     reportEvidence = $reportPublishEvidence
                     reportPublishError = $reportPublishError
@@ -5188,7 +5782,7 @@ try {
 
     $installedManifest = Get-InstalledReleaseManifest -InstalledState $installedState -PackageTarget $PackageTarget
     $revitPayloadChanges = @(Get-RevitPayloadChanges -TargetManifest $releaseManifest -InstalledManifest $installedManifest -PackageTarget $PackageTarget -InstallRoot $InstallRoot -RevitVersion $RevitVersion)
-    $effectiveRevitPayloadChangeCount = if ($SourceFreeMigration -or $revAgentCleanInstallTransitionRequired) {
+    $effectiveRevitPayloadChangeCount = if ($SourceFreeMigration -or $revAgentCleanInstallTransitionRequired -or $canonicalRebaselineRequested) {
         [Math]::Max(1, $revitPayloadChanges.Count)
     }
     else {
@@ -5221,15 +5815,24 @@ try {
     if ($SourceFreeMigration -and $revitChangeLabels.Count -eq 0) {
         $revitChangeLabels = @("source-free migration full Revit payload repair")
     }
+    elseif ($canonicalRebaselineRequested -and $revitChangeLabels.Count -eq 0) {
+        $revitChangeLabels = @("canonical rebaseline full Revit payload repair")
+    }
     $isPackageCurrent = ($installedVersion -eq $targetVersion -and $installedSha -eq $targetSha)
 
     if (-not $SourceFreeMigration) {
+        $sourceFreeInventoryScope = if ($MachinePhaseOnly) { "machine" } else { "all" }
+        $sourceFreeInventoryProfileRoot = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+        $sourceFreeInventoryCodexHome = if ([string]::IsNullOrWhiteSpace($TargetCodexHome)) { Join-Path $sourceFreeInventoryProfileRoot ".codex" } else { $TargetCodexHome }
         $sourceFreeGuardArtifacts = @(Get-RevAgentSourceFreeArtifactInventory `
                 -InstallRoot $InstallRoot `
                 -PackageTarget $PackageTarget `
                 -ServerTarget $ServerTarget `
+                -UserProfileRoot $sourceFreeInventoryProfileRoot `
+                -TargetCodexHome $sourceFreeInventoryCodexHome `
                 -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
-                -SkipCodexUserIntegration:$SkipCodexUserIntegration)
+                -SkipCodexUserIntegration:$SkipCodexUserIntegration `
+                -Scope $sourceFreeInventoryScope)
         if ($sourceFreeGuardArtifacts.Count -gt 0) {
             $sampleArtifacts = @($sourceFreeGuardArtifacts |
                     Select-Object -First 20 |
@@ -5243,7 +5846,7 @@ try {
                             path = [string]$_.path
                         }
                     })
-            $message = "Source-free migration is required before normal update. Found $($sourceFreeGuardArtifacts.Count) managed source/developer artifact item(s). Run migrate-source-free-install.ps1 -Mode dryRun first, review the report, then run -Mode commit."
+            $message = "Source-free migration is required before normal update. Found $($sourceFreeGuardArtifacts.Count) managed source/developer artifact item(s). Run migrate-source-free-install.ps1 -Mode dryRun for inventory, review the report, then start the protected revAgent Updater GUI and choose Migrate or Install/Repair."
             Write-Warning $message
             Write-UpdateReport `
                 -Status "source-free-migration-required" `
@@ -5257,7 +5860,7 @@ try {
                     sourceFreeMigrationArtifactCount = $sourceFreeGuardArtifacts.Count
                     sourceFreeMigrationSampleArtifacts = $sampleArtifacts
                     migrationDryRunCommand = "migrate-source-free-install.ps1 -Mode dryRun"
-                    migrationCommitCommand = "migrate-source-free-install.ps1 -Mode commit"
+                    migrationCommitRoute = "protected GUI Migrate or Install/Repair through the authenticated split-phase broker"
                 }) `
                 -PreviousVersion $installedVersion `
                 -InstalledVersion $installedVersion `
@@ -5274,7 +5877,7 @@ try {
         [void](Set-CodexMemoryConfig)
     }
 
-    if (-not $MachinePhaseOnly -and -not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and $isPackageCurrent -and -not $requiresRevitClosed) {
+    if (-not $MachinePhaseOnly -and -not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and -not $canonicalRebaselineRequested -and $isPackageCurrent -and -not $requiresRevitClosed) {
         $message = "Already up to date."
         Write-Host $message -ForegroundColor Green
         Write-UpdateReport -Status "current" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
@@ -5337,6 +5940,21 @@ try {
             Write-Host "revAgent transition: full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
         }
     }
+    elseif ($canonicalRebaselineRequested) {
+        $skipRevitPayloadInstall = $false
+        $skipRuntimePayloadInstall = $false
+        $skipDocsPayloadWork = $false
+        $skipCodexMcpRegistrationForThisUpdate = $false
+        if (-not $preserveLocalCodexInstructions) {
+            $skipCodexSkillInstallForThisUpdate = $false
+        }
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "Canonical rebaseline: full managed Revit/runtime repair forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Canonical rebaseline: full managed Revit/runtime/Codex payload repair forced." -ForegroundColor Yellow
+        }
+    }
 
     $runningRevit = Get-Process -Name "Revit" -ErrorAction SilentlyContinue
     $runningDecision = Get-RevAgentUpdateDecision `
@@ -5356,7 +5974,10 @@ try {
         Write-Warning $message
         Write-UpdateReport -Status "deferred-revit-close-required" -Message $message -Channel $channel -InstalledState $installedState -Diagnostics (New-CurrentUpdateDiagnostics) -PreviousVersion $installedVersion -InstalledVersion $installedVersion -LocalReportPath $localReportPath -RemoteReportsRoot $ReportsRoot
         Show-UserNotification -Title "revAgent update requires Revit to close" -Message $message -Key ("deferred-revit-close-required|{0}" -f $targetVersion) -Icon "Warning"
-        Write-RevAgentPhaseResult -Status "blocked" -ContinueUserPhase:$false -Message $message
+        Write-RevAgentPhaseResult -Status "blocked" -ContinueUserPhase:$false -Message $message -Details ([ordered]@{
+                desktopLauncherCleanup = $desktopLauncherCleanupState
+                canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+            })
         return
     }
     elseif ($runningDecision.SkipRevitPayloadInstall) {
@@ -5373,17 +5994,34 @@ try {
         throw "PackageTarget is a git working tree. Refusing to replace it without -AllowReplaceGitPackageTarget: $PackageTarget"
     }
 
-    $cachedPackage = Join-Path $cacheRoot ("revit-mcp-skill-{0}.zip" -f $targetVersion)
-    Copy-Item -LiteralPath $packagePath -Destination $cachedPackage -Force
+    $authenticatedPackageCache = New-RevAgentAuthenticatedPackageCacheStream `
+        -SourcePath $packagePath `
+        -CacheRoot $cacheRoot
+    $cachedPackage = [string]$authenticatedPackageCache.Path
+    # The CreateNew destination stream remains no-write/no-delete-share from
+    # copy through signed-manifest SHA256 verification and ZIP extraction.
+    $verifiedPackageStream = $authenticatedPackageCache.Stream
+    try {
+        $sha256 = [System.Security.Cryptography.SHA256]::Create()
+        try {
+            $actualSha = [System.BitConverter]::ToString($sha256.ComputeHash($verifiedPackageStream)).Replace("-", "")
+        }
+        finally {
+            $sha256.Dispose()
+        }
+        if (-not [string]::IsNullOrWhiteSpace($targetSha) -and $actualSha -ne $targetSha) {
+            throw "Package hash mismatch. Expected $targetSha but got $actualSha"
+        }
 
-    $actualSha = (Get-FileHash -Algorithm SHA256 -LiteralPath $cachedPackage).Hash
-    if (-not [string]::IsNullOrWhiteSpace($targetSha) -and $actualSha -ne $targetSha) {
-        throw "Package hash mismatch. Expected $targetSha but got $actualSha"
+        $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
+        $extractRoot = Join-Path $stagingRoot ("extract-" + $targetVersion + "-" + $stamp)
+        [void]$verifiedPackageStream.Seek(0, [System.IO.SeekOrigin]::Begin)
+        Expand-ReleaseArchiveStream -ArchiveStream $verifiedPackageStream -DestinationPath $extractRoot
     }
-
-    $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
-    $extractRoot = Join-Path $stagingRoot ("extract-" + $targetVersion + "-" + $stamp)
-    Expand-ReleaseArchive -ZipPath $cachedPackage -DestinationPath $extractRoot
+    finally {
+        try { $verifiedPackageStream.Dispose() }
+        finally { $authenticatedPackageCache.CacheGuard.Dispose() }
+    }
 
     $packageLayout = Resolve-PackageLayout -Root $extractRoot -ReleaseManifest $releaseManifest
 
@@ -5401,6 +6039,14 @@ try {
         }
         else {
             Write-Host "revAgent transition: runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
+        }
+    }
+    elseif ($canonicalRebaselineRequested) {
+        if ($preserveLocalCodexInstructions) {
+            Write-Host "Canonical rebaseline: runtime, docs, and MCP registration refresh forced; Codex instructions preserved by policy." -ForegroundColor Yellow
+        }
+        else {
+            Write-Host "Canonical rebaseline: runtime, docs, Codex skill, and MCP registration refresh forced." -ForegroundColor Yellow
         }
     }
     else {
@@ -5443,9 +6089,8 @@ try {
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
-            -UserProfileRoot $(if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }) `
             -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
-            -SkipCodexUserIntegration:$SkipCodexUserIntegration `
+            -Scope machine `
             -Commit
         Write-Host ("Source cleanup  : removed {0} pre-install source/developer artifact item(s); {1} failed." -f $sourceFreeMigrationPreCleanup.removedCount, $sourceFreeMigrationPreCleanup.failedCount) -ForegroundColor Yellow
         if ([int]$sourceFreeMigrationPreCleanup.failedCount -gt 0) {
@@ -5621,14 +6266,33 @@ try {
             -InstallRoot $InstallRoot `
             -PackageTarget $PackageTarget `
             -ServerTarget $ServerTarget `
-            -UserProfileRoot $(if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }) `
             -PreserveLocalCodexInstructions:$preserveLocalCodexInstructions `
-            -SkipCodexUserIntegration:$SkipCodexUserIntegration `
+            -Scope machine `
             -Commit
         Write-Host ("Source verify   : remaining managed source/developer artifact item(s): {0}; cleanup failures: {1}" -f $sourceFreeMigrationPostCleanup.remainingCount, $sourceFreeMigrationPostCleanup.failedCount) -ForegroundColor Yellow
         if ([int]$sourceFreeMigrationPostCleanup.failedCount -gt 0 -or [int]$sourceFreeMigrationPostCleanup.remainingCount -gt 0) {
             throw "Source-free migration verification failed. Remaining: $($sourceFreeMigrationPostCleanup.remainingCount); failed cleanup: $($sourceFreeMigrationPostCleanup.failedCount)"
         }
+    }
+
+    if ($canonicalRebaselineRequested) {
+        try {
+            $canonicalLegacySurfaceCleanupState = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
+                -Scope machine `
+                -InstallRoot $InstallRoot `
+                -CommonAppDataRoot $script:RevAgentOsCommonAppData `
+                -Commit
+        }
+        catch {
+            $canonicalLegacySurfaceCleanupState = New-RevAgentCanonicalCleanupFailureEvidence -Scope machine -PreviousState $canonicalLegacySurfaceCleanupState -Message $_.Exception.Message
+            throw
+        }
+        if (Test-RevAgentCanonicalCleanupActionRequired -Result $canonicalLegacySurfaceCleanupState) {
+            $cleanupSuccess = [bool](Get-JsonPropertyValue -Object $canonicalLegacySurfaceCleanupState -Name "success")
+            $cleanupActionRequired = [bool](Get-JsonPropertyValue -Object $canonicalLegacySurfaceCleanupState -Name "actionRequired")
+            throw "Canonical machine rebaseline cleanup failed closed. Success=$cleanupSuccess actionRequired=$cleanupActionRequired failed=$($canonicalLegacySurfaceCleanupState.failedCount) remaining=$($canonicalLegacySurfaceCleanupState.remainingCount)."
+        }
+        Write-Host ("Canonical cleanup: removed {0} machine legacy surface(s); preserved {1}." -f $canonicalLegacySurfaceCleanupState.removedCount, $canonicalLegacySurfaceCleanupState.preservedCount) -ForegroundColor Green
     }
 
     $sourceFreeMigrationState = if ($SourceFreeMigration) {
@@ -5746,6 +6410,8 @@ try {
         previousVersion = $installedVersion
         installedVersion = $targetVersion
         packageSha256 = $actualSha
+        desktopLauncherCleanup = $desktopLauncherCleanupState
+        canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
     })
 }
 catch {
@@ -5767,7 +6433,10 @@ catch {
         Write-Host "Update log: $script:RevAgentLogPath" -ForegroundColor Yellow
     }
     try {
-        Write-RevAgentPhaseResult -Status "failed" -ContinueUserPhase:$false -Message $message
+        Write-RevAgentPhaseResult -Status "failed" -ContinueUserPhase:$false -Message $message -Details ([ordered]@{
+                desktopLauncherCleanup = $desktopLauncherCleanupState
+                canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+            })
     }
     catch {
         Write-Warning "Could not write machine-phase result: $($_.Exception.Message)"
