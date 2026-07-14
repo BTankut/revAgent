@@ -11,7 +11,9 @@ All notable revAgent workstation deployment changes are tracked here.
   reporting rollback uses the same PS5-compatible contract. Cross-engine
   smoke tests exercise both a real existing-file overwrite and a rollback-like
   rewrite while verifying exact bytes, single-link identity, and no leftover
-  temporary or backup artifacts.
+  temporary or backup artifacts. Codex integration file hashing now uses a
+  handle-bound .NET SHA-256 stream so PS5 security checks and production
+  attestation do not depend on `Get-FileHash` module autoload state.
 - Fixed protected updater bootstrap startup failing before the GUI when
   `RevAgent.SourceFreeMigration.psm1` was staged without its required
   `RevAgent.Permissions.psm1` sibling. Prestage evidence, its closed schema,
