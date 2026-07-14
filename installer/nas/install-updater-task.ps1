@@ -752,8 +752,11 @@ function Write-RevAgentAtomicBytes {
         if ($linkCount -ne 1) { throw "Managed atomic destination is hard-linked (link count $linkCount): $fullPath" }
     }
 
-    $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f [System.IO.Path]::GetFileName($fullPath), [guid]::NewGuid().ToString("N"))
+    $leaf = [System.IO.Path]::GetFileName($fullPath)
+    $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f $leaf, [guid]::NewGuid().ToString("N"))
+    $backupPath = Join-Path $directory (".{0}.{1}.bak" -f $leaf, [guid]::NewGuid().ToString("N"))
     $stream = $null
+    $cleanupTemporary = $true
     try {
         $stream = [System.IO.File]::Open($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $stream.Write($Bytes, 0, $Bytes.Length)
@@ -761,7 +764,36 @@ function Write-RevAgentAtomicBytes {
         $stream.Dispose()
         $stream = $null
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
-            [System.IO.File]::Replace($temporaryPath, $fullPath, $null, $true)
+            $cleanupTemporary = $false
+            try {
+                [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+                $cleanupTemporary = $true
+            }
+            catch {
+                $replaceError = $_.Exception.Message
+                $backupExists = Test-Path -LiteralPath $backupPath -PathType Leaf
+                $destinationExists = Test-Path -LiteralPath $fullPath -PathType Leaf
+                if (-not $backupExists -and $destinationExists) { $cleanupTemporary = $true }
+                if ($backupExists -or -not $destinationExists) {
+                    throw "Managed atomic replacement may have partially displaced the destination; recovery artifacts were preserved. destination='$fullPath' temporary='$temporaryPath' backup='$backupPath'. $replaceError"
+                }
+                throw
+            }
+            $installed = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+            $installedLinkType = if ($installed.PSObject.Properties["LinkType"]) { [string]$installed.LinkType } else { "" }
+            if (($installed.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($installedLinkType)) {
+                throw "Managed atomic destination became a link/reparse file; backup was preserved: $fullPath"
+            }
+            if ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($fullPath) -ne 1) {
+                throw "Managed atomic destination did not remain single-link; backup was preserved: $fullPath"
+            }
+            $backup = Get-Item -LiteralPath $backupPath -Force -ErrorAction Stop
+            $backupLinkType = if ($backup.PSObject.Properties["LinkType"]) { [string]$backup.LinkType } else { "" }
+            if (($backup.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($backupLinkType) -or
+                [int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($backupPath) -ne 1) {
+                throw "Managed atomic backup is not an ordinary single-link file and was preserved: $backupPath"
+            }
+            [System.IO.File]::Delete($backupPath)
         }
         else {
             [System.IO.File]::Move($temporaryPath, $fullPath)
@@ -769,7 +801,9 @@ function Write-RevAgentAtomicBytes {
     }
     finally {
         if ($null -ne $stream) { $stream.Dispose() }
-        if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue }
+        if ($cleanupTemporary -and (Test-Path -LiteralPath $temporaryPath)) {
+            Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

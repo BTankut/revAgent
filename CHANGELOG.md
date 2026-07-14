@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed protected Install/Repair on Windows PowerShell 5.1 failing while
+  atomically overwriting an existing updater configuration because
+  `File.Replace` received a null backup path. Installer writes now use a
+  unique same-directory backup and clean it after replacement; the guarded
+  reporting rollback uses the same PS5-compatible contract. Cross-engine
+  smoke tests exercise both a real existing-file overwrite and a rollback-like
+  rewrite while verifying exact bytes, single-link identity, and no leftover
+  temporary or backup artifacts.
 - Fixed protected updater bootstrap startup failing before the GUI when
   `RevAgent.SourceFreeMigration.psm1` was staged without its required
   `RevAgent.Permissions.psm1` sibling. Prestage evidence, its closed schema,
