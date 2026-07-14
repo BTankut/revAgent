@@ -918,16 +918,24 @@ function Assert-RevAgentProtectedSnapshotParent {
 
 function Get-RevAgentDirectoryTreeHash {
     param([Parameter(Mandatory = $true)][string]$Path)
-    $files = Get-ChildItem -LiteralPath $Path -Recurse -File -Force | Where-Object {
+    $relativePaths = [Collections.Generic.List[string]]::new()
+    Get-ChildItem -LiteralPath $Path -Recurse -File -Force | Where-Object {
         $relative = $_.FullName.Substring($Path.Length).TrimStart('\', '/')
         $parts = $relative -split '[\\/]'
         $_.Name -notin @('.revagent-npm-dependencies.json', '.npm-deps.sha256') -and
             -not (@($parts | Where-Object { $_ -in @('node_modules', '.git') }).Count -gt 0)
-    } | Sort-Object FullName
+    } | ForEach-Object {
+        [void]$relativePaths.Add($_.FullName.Substring($Path.Length).TrimStart('\', '/').Replace('\', '/'))
+    }
+    # Match the signed producer independent of PowerShell/.NET collation rules.
+    $orderedRelativePaths = $relativePaths.ToArray()
+    [Array]::Sort($orderedRelativePaths, [StringComparer]::Ordinal)
     $lines = [Collections.Generic.List[string]]::new()
-    foreach ($file in $files) {
-        $relative = $file.FullName.Substring($Path.Length).TrimStart('\', '/').Replace('\', '/')
-        $lines.Add(("{0}|{1}|{2}" -f $relative, $file.Length, (Get-RevAgentSnapshotFileSha256 -Path $file.FullName)))
+    foreach ($relative in $orderedRelativePaths) {
+        $relativeOnDisk = $relative.Replace([char]'/', [IO.Path]::DirectorySeparatorChar)
+        $filePath = Join-Path $Path $relativeOnDisk
+        $file = Get-Item -LiteralPath $filePath -Force
+        $lines.Add(("{0}|{1}|{2}" -f $relative, $file.Length, (Get-RevAgentSnapshotFileSha256 -Path $filePath)))
     }
     return [pscustomobject]@{ sha256 = Get-RevAgentSnapshotSha256Bytes -Bytes ([Text.Encoding]::UTF8.GetBytes(($lines.ToArray() -join "`n"))); fileCount = $lines.Count }
 }

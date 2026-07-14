@@ -60,6 +60,89 @@ function Assert-ThrowsLike {
     }
 }
 
+function Invoke-ReleaseSnapshotTreeHashProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$SnapshotModulePath,
+        [Parameter(Mandatory = $true)][string]$PayloadPath
+    )
+
+    $modulePathBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($SnapshotModulePath))
+    $payloadPathBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($PayloadPath))
+    $probeScript = @"
+`$ErrorActionPreference = 'Stop'
+`$modulePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$modulePathBase64'))
+`$payloadPath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$payloadPathBase64'))
+`$module = Import-Module `$modulePath -Force -PassThru -WarningAction SilentlyContinue
+`$tree = & `$module { param(`$Path) Get-RevAgentDirectoryTreeHash -Path `$Path } `$payloadPath
+`$result = [pscustomobject]@{
+    engineVersion = `$PSVersionTable.PSVersion.ToString()
+    sha256 = [string]`$tree.sha256
+    fileCount = [int]`$tree.fileCount
+}
+[Console]::Out.WriteLine('REVAGENT_RESULT=' + (`$result | ConvertTo-Json -Compress))
+"@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
+    $output = & $PowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encodedCommand 2>&1
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0) {
+        throw "Release snapshot tree-hash probe failed. engine=$PowerShellPath exit=$exitCode output=$($output -join ' ')"
+    }
+
+    $outputText = $output -join [Environment]::NewLine
+    $resultMatch = [regex]::Match($outputText, 'REVAGENT_RESULT=(\{[^\r\n]+\})')
+    if (-not $resultMatch.Success) {
+        throw "Release snapshot tree-hash probe returned no result marker. engine=$PowerShellPath output=$outputText"
+    }
+    try { return ($resultMatch.Groups[1].Value | ConvertFrom-Json -ErrorAction Stop) }
+    catch { throw "Release snapshot tree-hash probe returned invalid result JSON. engine=$PowerShellPath output=$outputText" }
+}
+
+function Invoke-UpdaterTreeHashProbe {
+    param(
+        [Parameter(Mandatory = $true)][string]$PowerShellPath,
+        [Parameter(Mandatory = $true)][string]$UpdaterPath,
+        [Parameter(Mandatory = $true)][string]$PayloadRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath
+    )
+
+    $argumentsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((([ordered]@{
+                    updaterPath = $UpdaterPath
+                    payloadRoot = $PayloadRoot
+                    relativePath = $RelativePath
+                }) | ConvertTo-Json -Compress)))
+    $probeScript = @"
+`$ErrorActionPreference = 'Stop'
+`$argumentsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$argumentsBase64'))
+`$arguments = `$argumentsJson | ConvertFrom-Json -ErrorAction Stop
+`$tokens = `$null
+`$errors = `$null
+`$ast = [Management.Automation.Language.Parser]::ParseFile([string]`$arguments.updaterPath, [ref]`$tokens, [ref]`$errors)
+if (`$errors.Count -gt 0) { throw `$errors[0] }
+`$functionAst = `$ast.Find({ param(`$node) `$node -is [Management.Automation.Language.FunctionDefinitionAst] -and `$node.Name -eq 'Get-DirectoryTreeSha256OrNull' }, `$true)
+if (`$null -eq `$functionAst) { throw 'Updater tree-hash function was not found.' }
+Set-Item -LiteralPath Function:\Get-DirectoryTreeSha256OrNull -Value ([scriptblock]::Create(`$functionAst.Body.EndBlock.Extent.Text))
+`$result = [pscustomobject]@{
+    engineVersion = `$PSVersionTable.PSVersion.ToString()
+    sha256 = [string](Get-DirectoryTreeSha256OrNull -Root ([string]`$arguments.payloadRoot) -RelativePath ([string]`$arguments.relativePath))
+}
+[Console]::Out.WriteLine('REVAGENT_RESULT=' + (`$result | ConvertTo-Json -Compress))
+"@
+    $encodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
+    $output = & $PowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encodedCommand 2>&1
+    $exitCode = $LASTEXITCODE
+    $outputText = $output -join [Environment]::NewLine
+    if ($exitCode -ne 0) {
+        throw "Updater tree-hash probe failed. engine=$PowerShellPath exit=$exitCode output=$outputText"
+    }
+    $resultMatch = [regex]::Match($outputText, 'REVAGENT_RESULT=(\{[^\r\n]+\})')
+    if (-not $resultMatch.Success) {
+        throw "Updater tree-hash probe returned no result marker. engine=$PowerShellPath output=$outputText"
+    }
+    try { return ($resultMatch.Groups[1].Value | ConvertFrom-Json -ErrorAction Stop) }
+    catch { throw "Updater tree-hash probe returned invalid result JSON. engine=$PowerShellPath output=$outputText" }
+}
+
 function New-TestRsaProvider {
     $cspParameters = [System.Security.Cryptography.CspParameters]::new(24)
     $cspParameters.Flags = [System.Security.Cryptography.CspProviderFlags]::CreateEphemeralKey
@@ -163,6 +246,40 @@ try {
     $releaseNodeMsiPath = Join-Path (Split-Path -Parent $manifestPath) ([string]$manifest.externalDependencies.nodeMsi.relativePath)
     Assert-True (Test-Path -LiteralPath $releaseNodeMsiPath -PathType Leaf) 'Versioned release-owned Node MSI sidecar was not published.'
     Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseNodeMsiPath).Hash $nodeMsiHash 'Versioned Node MSI sidecar hash must match the signed manifest.'
+
+    Write-Host 'Test signed directory-tree hashes across PowerShell engines'
+    $publishedPackagePath = Join-Path (Split-Path -Parent $manifestPath) ([string]$manifest.package.fileName)
+    $treeHashProbeRoot = Join-Path $tempRoot 'tree-hash-probe'
+    Expand-Archive -LiteralPath $publishedPackagePath -DestinationPath $treeHashProbeRoot
+    $snapshotModulePath = Join-Path $treeHashProbeRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1'
+    $updaterPath = Join-Path $treeHashProbeRoot 'installer\nas\update-from-nas.ps1'
+    Assert-True (Test-Path -LiteralPath $snapshotModulePath -PathType Leaf) 'Published package is missing its signed snapshot verifier module.'
+    Assert-True (Test-Path -LiteralPath $updaterPath -PathType Leaf) 'Published package is missing its signed updater consumer.'
+    $windowsPowerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $powerShellCorePath = (Get-Command pwsh.exe -ErrorAction Stop).Source
+    Assert-True (Test-Path -LiteralPath $windowsPowerShellPath -PathType Leaf) 'Windows PowerShell 5.1 is required for cross-engine signed tree-hash verification.'
+    foreach ($componentName in @('runtimePayload', 'docsServerPayload')) {
+        $component = $manifest.components.PSObject.Properties[$componentName].Value
+        Assert-True ($null -ne $component) "Signed manifest is missing directory component '$componentName'."
+        $componentPath = Join-Path $treeHashProbeRoot ([string]$component.path)
+        Assert-True (Test-Path -LiteralPath $componentPath -PathType Container) "Published package is missing directory component '$componentName'."
+        foreach ($collationTrigger in @('package-lock.json', 'package.json')) {
+            Assert-True (Test-Path -LiteralPath (Join-Path $componentPath $collationTrigger) -PathType Leaf) "$componentName cross-engine fixture lost required collation trigger '$collationTrigger'."
+        }
+        foreach ($engine in @(
+                [pscustomobject]@{ name = 'Windows PowerShell 5.1'; path = $windowsPowerShellPath; minimumMajor = 5; maximumMajor = 5 },
+                [pscustomobject]@{ name = 'PowerShell Core'; path = $powerShellCorePath; minimumMajor = 7; maximumMajor = [int]::MaxValue }
+            )) {
+            $probe = Invoke-ReleaseSnapshotTreeHashProbe -PowerShellPath $engine.path -SnapshotModulePath $snapshotModulePath -PayloadPath $componentPath
+            $engineMajor = [int]([Version]$probe.engineVersion).Major
+            Assert-True ($engineMajor -ge [int]$engine.minimumMajor -and $engineMajor -le [int]$engine.maximumMajor) "$($engine.name) tree-hash probe used the wrong engine major: $engineMajor."
+            Assert-Equal ([string]$probe.sha256) ([string]$component.sha256) "$componentName signed tree hash must verify under $($engine.name)."
+            Assert-Equal ([int]$probe.fileCount) ([int]$component.fileCount) "$componentName signed tree file count must verify under $($engine.name)."
+            $updaterProbe = Invoke-UpdaterTreeHashProbe -PowerShellPath $engine.path -UpdaterPath $updaterPath -PayloadRoot $treeHashProbeRoot -RelativePath ([string]$component.path)
+            Assert-Equal ([int]([Version]$updaterProbe.engineVersion).Major) $engineMajor "$componentName updater tree-hash probe used a different engine."
+            Assert-Equal ([string]$updaterProbe.sha256) ([string]$component.sha256) "$componentName installed-tree hash must match the signed producer under $($engine.name)."
+        }
+    }
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "Public trusted release keys should be copied to NAS tools config when supplied."
     Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $releaseRoot 'tools\dependencies\node-v24.14.1-x64.msi')).Hash $nodeMsiHash 'Legacy stable-compatibility tools copy must derive from the same authenticated sidecar.'
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "Dashboard admin add-on installer should be published under tools\\addons."

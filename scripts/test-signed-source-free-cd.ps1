@@ -648,6 +648,7 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $snapshotModule = Import-Module (Join-Path $RepoRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1') -Force -PassThru
     $newInboxCommand = Get-Command ("{0}\New-RevAgentAuthenticatedReleaseInbox" -f $snapshotModule.Name) -ErrorAction Stop
     $newSnapshotCommand = Get-Command ("{0}\New-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
+    $assertSnapshotCommand = Get-Command ("{0}\Assert-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
     $pilotInboxRoot = Join-Path $tempRoot 'pilot-inbox'
     New-Item -ItemType Directory -Path $pilotInboxRoot -Force | Out-Null
     $inboxProbe = [pscustomobject]@{ called = $false }
@@ -666,6 +667,63 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     } -Pattern 'pilot_machine_not_allowed' -Message 'Protected snapshot creation accepted an unauthorized pilot machine.'
     Assert-True (-not $snapshotProbe.called -and -not (Test-Path -LiteralPath (Join-Path $tempRoot 'unauthorized-pilot-snapshots'))) 'Unauthorized pilot snapshot crossed its parent/child creation boundary.'
     Write-Host '  unauthorized snapshot: PASS'
+
+    Write-Host 'Test signed pilot snapshot directory components across PowerShell engines'
+    $authorizedSnapshot = & $newSnapshotCommand `
+        -InboxPath $authorizedInbox.inboxRoot `
+        -Channel pilot `
+        -TrustedKeysPath $trustedKeysPath `
+        -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') `
+        -SnapshotParent (Join-Path $tempRoot 'authorized-pilot-snapshots-current') `
+        -ExpectedNodeMsiSha256 $nodeMsiHash `
+        -AllowTestRoot `
+        -TestMachineName 'TESTPILOT01'
+    Assert-True ([bool]$authorizedSnapshot.success) 'Current PowerShell engine could not create an authorized signed pilot snapshot.'
+    foreach ($componentName in @('runtimePayload', 'docsServerPayload')) {
+        $componentState = $authorizedSnapshot.state.components.PSObject.Properties[$componentName].Value
+        Assert-True ($null -ne $componentState) "Authorized snapshot is missing '$componentName' component state."
+        Assert-True (Test-Path -LiteralPath (Join-Path $authorizedSnapshot.snapshotRoot ([string]$componentState.snapshotRelativePath)) -PathType Container) "Authorized snapshot did not extract '$componentName'."
+    }
+    Assert-True ([bool](& $assertSnapshotCommand -SnapshotRoot $authorizedSnapshot.snapshotRoot -AllowTestRoot)) 'Current-engine authorized snapshot failed protected-root reattestation.'
+
+    $windowsPowerShellPath = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Assert-True (Test-Path -LiteralPath $windowsPowerShellPath -PathType Leaf) 'Windows PowerShell 5.1 is required for the signed snapshot cross-engine regression.'
+    $childArguments = [ordered]@{
+        snapshotModulePath = (Join-Path $RepoRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1')
+        integrityModulePath = (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1')
+        inboxPath = [string]$authorizedInbox.inboxRoot
+        trustedKeysPath = $trustedKeysPath
+        snapshotParent = (Join-Path $tempRoot 'authorized-pilot-snapshots-ps5')
+        expectedNodeMsiSha256 = $nodeMsiHash
+    }
+    $childArgumentsBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($childArguments | ConvertTo-Json -Compress)))
+    $childScript = @"
+`$ErrorActionPreference = 'Stop'
+`$argumentsJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$childArgumentsBase64'))
+`$arguments = `$argumentsJson | ConvertFrom-Json -ErrorAction Stop
+Import-Module `$arguments.integrityModulePath -Force -WarningAction SilentlyContinue
+Import-Module `$arguments.snapshotModulePath -Force -WarningAction SilentlyContinue
+`$snapshot = New-RevAgentProtectedReleaseSnapshot -InboxPath `$arguments.inboxPath -Channel pilot -TrustedKeysPath `$arguments.trustedKeysPath -IntegrityModulePath `$arguments.integrityModulePath -SnapshotParent `$arguments.snapshotParent -ExpectedNodeMsiSha256 `$arguments.expectedNodeMsiSha256 -AllowTestRoot -TestMachineName 'TESTPILOT01'
+foreach (`$componentName in @('runtimePayload', 'docsServerPayload')) {
+    `$component = `$snapshot.state.components.PSObject.Properties[`$componentName].Value
+    if (`$null -eq `$component) { throw "Windows PowerShell snapshot is missing '`$componentName' component state." }
+    if (-not (Test-Path -LiteralPath (Join-Path `$snapshot.snapshotRoot ([string]`$component.snapshotRelativePath)) -PathType Container)) { throw "Windows PowerShell snapshot did not extract '`$componentName'." }
+}
+if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snapshotRoot -AllowTestRoot)) { throw 'Windows PowerShell snapshot reattestation failed.' }
+`$result = [pscustomobject]@{ engineVersion = `$PSVersionTable.PSVersion.ToString(); success = [bool]`$snapshot.success; snapshotRoot = [string]`$snapshot.snapshotRoot }
+[Console]::Out.WriteLine('REVAGENT_RESULT=' + (`$result | ConvertTo-Json -Compress))
+"@
+    $encodedChildScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($childScript))
+    $childOutput = & $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $encodedChildScript 2>&1
+    $childExitCode = $LASTEXITCODE
+    $childText = $childOutput -join [Environment]::NewLine
+    Assert-Equal ([int]$childExitCode) 0 "Windows PowerShell signed snapshot consumer failed. output=$childText"
+    $childMatch = [regex]::Match($childText, 'REVAGENT_RESULT=(\{[^\r\n]+\})')
+    Assert-True $childMatch.Success "Windows PowerShell signed snapshot consumer did not return its result marker. output=$childText"
+    $childResult = $childMatch.Groups[1].Value | ConvertFrom-Json
+    Assert-Equal ([int]([Version]$childResult.engineVersion).Major) 5 'Signed snapshot cross-engine consumer did not use Windows PowerShell 5.1.'
+    Assert-True ([bool]$childResult.success) 'Windows PowerShell 5.1 could not consume the pwsh-produced signed pilot tree hashes.'
+    Write-Host '  pwsh producer -> Windows PowerShell 5.1 snapshot consumer: PASS'
 
     $stableRollbackAlias = Join-Path $tempRoot 'stable-signature-hardlink-alias.json'
     $stableRollbackHook = {
