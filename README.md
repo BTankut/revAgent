@@ -437,23 +437,54 @@ updater package backups. Use the migration tool before broad rollout:
 powershell -ExecutionPolicy Bypass -File "C:\ProgramData\DPE\revAgent\updater\migrate-source-free-install.ps1" -Mode dryRun
 ```
 
-Commit mode calls the updater with `-SourceFreeMigration`, forces a full
-managed payload repair instead of using unchanged-payload skips, cleans managed
-source/developer artifacts, and writes a JSON report. It does not delete Codex
-sessions, history, memory, Revit models, or user project folders.
+The standalone helper is inventory-only. Its retained `-Mode commit` value
+fails closed; mutating migration must start from the protected local GUI so the
+authenticated snapshot broker can split administrator-only machine work from
+the original unelevated user continuation. Start
+`C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd` and choose
+`Migrate`, or use `Install/Repair` for a canonical signed rebaseline when the
+local updater also needs to be rebuilt. The brokered path forces a full managed
+payload repair instead of using unchanged-payload skips and cleans managed
+source/developer artifacts. It does not delete Codex sessions, history, memory,
+Revit models, user project folders, spatial data, add-ons, or unknown legacy-root
+children.
+
+`Install/Repair` is also the bounded hard-migration path for mixed-generation
+workstations. After the signed release and protected execution snapshot are
+verified, its machine phase replaces the canonical package/runtime/updater
+payloads and removes only exact retired `RevitMCP` roots, Revit add-in names,
+and the old npm namespace. Its unelevated user phase removes only exact retired
+per-user add-ins, Startup launchers, and a legacy Codex skill junction that
+still targets the retired machine skill root. Unknown legacy-root children,
+custom/real Codex skill directories, current revAgent state, spatial data,
+telemetry, add-ons, and current logs remain untouched. Reparse points,
+unexpected item types, incomplete inventory, or a failed removal are
+action-required results; the rebaseline does not report success while an exact
+managed legacy execution surface remains.
 On developer workstations with `codexInstructionPolicy=preserve-local`, the
-migration inventory and cleanup skip Codex instruction roots and record
-`codexInstructionCleanupSkipped=true`; managed package, runtime, and updater
-backup cleanup still applies.
+migration does not traverse or replace current Codex instruction roots. It may
+inspect and unlink only the exact `.codex\skills\revit-mcp` leaf when that leaf
+is a legacy reparse point to the retired machine skill root; the current
+`.codex\skills\revAgent`, `AGENTS.md`, configuration, sessions, and memory stay
+untouched. Managed package, runtime, updater, and backup cleanup still applies.
+
+The hard rebaseline treats every shipped updater tool as required. Tool files
+are copied atomically and verified by length and SHA-256; the managed `lib` and
+`config` trees are staged and verified before replacement. Reparse points,
+non-unit hardlinks, missing shipped config, or an already-open write/delete
+handle stop the update before the replacement is trusted. The canonical Revit
+`Addins` parent, exact year root, and `revAgent.addin` manifest are protected
+with administrator/SYSTEM write access and Users read/execute access; other
+vendor child trees are not traversed or rewritten.
 
 Normal stable updater entrypoints now check the same managed source/developer
 artifact inventory before install/update work starts. If artifacts remain, the
 GUI shows a one-time migration path. When the installed local updater already
-supports source-free migration, the GUI runs that local updater with
-`-SourceFreeMigration` after operator confirmation. When the installed local
-updater is too old or is missing the migration helper, the GUI bootstraps the
-current updater tools through `install-updater-task.ps1 -RunSourceFreeMigration`
-and then runs the migration in the same confirmed flow. If the inventory is
+supports source-free migration, the GUI runs the authenticated updater snapshot
+with `-SourceFreeMigration` after operator confirmation. When the installed
+local updater is too old or is missing the migration helper, the GUI bootstraps
+the current signed updater tools through the protected broker and then runs the
+migration in the same confirmed flow. If the inventory is
 already clean, migration does not run again and the machine follows the normal
 stable update path. Non-GUI updater runs still stop with a migration-required
 report instead of replacing the package without that explicit migration mode.

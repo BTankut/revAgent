@@ -1153,20 +1153,50 @@ used as a source-free bypass for package/runtime/updater cleanup or signed
 release verification.
 
 For existing workstations that may already contain source-bearing managed
-payloads, run `migrate-source-free-install.ps1 -Mode dryRun` first. Commit mode
-launches `update-from-nas.ps1 -SourceFreeMigration` in a child PowerShell
-`-File` process, disables unchanged-payload skips, refreshes runtime/docs and,
-unless policy preserves local instructions, Codex instruction integration, cleans
-managed source/developer artifacts from package/runtime/Codex skill/updater backup
-locations, and writes a JSON migration report. The child
-`-File` launch keeps updater transcript headers readable even when migration is
-orchestrated remotely. If `revAgent Auto Update` was already disabled before
-migration, commit mode restores that disabled state after the updater/installer
-refresh. It must not delete Codex sessions, memory, Revit models, or user
-project folders.
-When `codexInstructionPolicy=preserve-local`, migration omits Codex instruction
-roots from inventory/cleanup and records `codexInstructionCleanupSkipped=true`
-while still cleaning package/runtime/updater backup artifacts.
+payloads, run `migrate-source-free-install.ps1 -Mode dryRun` first. The
+standalone tool is inventory-only; its retained `-Mode commit` compatibility
+value fails closed without launching an updater or requesting elevation. Start
+`C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd` and choose
+`Migrate` in the protected GUI. If the installed updater is missing or too old,
+use the GUI `Install/Repair` path, which bootstraps the current signed updater
+before running migration. Only this GUI path owns the authenticated release
+inbox, privileged snapshot broker, administrator-only machine phase, and
+original unelevated user continuation required for a mutating migration.
+
+The brokered migration disables unchanged-payload skips, refreshes runtime/docs
+and, unless policy preserves local instructions, Codex instruction integration,
+then cleans managed source/developer artifacts from package/runtime/Codex
+skill/updater backup locations. It must not delete Codex sessions, memory,
+Revit models, or user project folders.
+
+For a mixed-generation or damaged workstation, use the same protected GUI's
+`Install/Repair` action as the canonical rebaseline. This is intentionally more
+complete than an ordinary version update: after signed snapshot verification it
+replaces the managed package/runtime/updater payloads, removes only allowlisted
+retired `RevitMCP` machine and per-user surfaces, and then rebuilds the current
+user integration. The exact cleanup contract preserves current revAgent state,
+spatial data, telemetry, add-ons and logs, unknown legacy-root children, and
+custom/real Codex skill directories. Unsafe reparse topology, an unexpected
+item type, incomplete inventory, or an exact managed legacy surface that cannot
+be removed is a failed/action-required rebaseline, not a warning-only success.
+Because exact Revit add-in surfaces participate in this cleanup, Revit must be
+closed even when the signed package's current add-in hashes are otherwise
+unchanged.
+When `codexInstructionPolicy=preserve-local`, migration does not traverse or
+replace current Codex instruction roots. The only instruction-side legacy
+exception is the exact `.codex\skills\revit-mcp` leaf when it is a reparse
+point to the retired machine skill root; the current `revAgent` skill,
+`AGENTS.md`, configuration, sessions, and memory are preserved. Package,
+runtime, updater, and backup cleanup still applies.
+
+All shipped updater tools are mandatory during this rebaseline. Tool files are
+atomically replaced and length/SHA-256 verified; `lib` and `config` are staged,
+verified, and swapped as complete trees. A missing source, stale optional
+destination, reparse point, non-unit hardlink, or conflicting write/delete
+handle is a fail-closed result. The installer also protects the canonical
+Revit `Addins` parent, exact year root, and `revAgent.addin` manifest with
+SYSTEM/Administrators FullControl and Users ReadAndExecute, without recursively
+rewriting unrelated vendor add-in children.
 
 Workstation rollback uses the signed NAS release archive, not local workstation
 package backups. Every normal updater run clears the updater package backup

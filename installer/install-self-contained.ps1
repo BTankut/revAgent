@@ -149,6 +149,25 @@ $protectedInstallerModuleNames = @(
 )
 $protectedInstallerOriginFiles = @($actualInstallerPath) + @($protectedInstallerModuleNames | ForEach-Object { Join-Path $installerLibRoot $_ })
 
+function Test-RevAgentInstallerRightsAllowMutation {
+    param([Parameter(Mandatory = $true)][Security.AccessControl.FileSystemRights]$Rights)
+
+    # Use only atomic mutation rights. Modify and FullControl are aggregate
+    # values that also contain read/execute/synchronize bits, so OR-ing them
+    # into the probe mask would misclassify the intentional BUILTIN\Users
+    # ReadAndExecute grant as writable. Modify/FullControl ACEs are still
+    # rejected through the atomic mutation bits they contain.
+    $writeMask = [int64]([Security.AccessControl.FileSystemRights]::WriteData -bor
+        [Security.AccessControl.FileSystemRights]::AppendData -bor
+        [Security.AccessControl.FileSystemRights]::WriteExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::WriteAttributes -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership)
+    return (([int64]$Rights -band $writeMask) -ne 0)
+}
+
 function Assert-RevAgentProtectedInstallerOriginAcl {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -164,13 +183,6 @@ function Assert-RevAgentProtectedInstallerOriginAcl {
     [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $fullPath)
 
     $trustedOwnerSids = @("S-1-5-18", "S-1-5-32-544")
-    $writeMask = [int64]([Security.AccessControl.FileSystemRights]::Write -bor
-        [Security.AccessControl.FileSystemRights]::Modify -bor
-        [Security.AccessControl.FileSystemRights]::FullControl -bor
-        [Security.AccessControl.FileSystemRights]::Delete -bor
-        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
-        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
-        [Security.AccessControl.FileSystemRights]::TakeOwnership)
     $cursor = $fullPath
     while (($cursor + "\").StartsWith($fullRoot + "\", [StringComparison]::OrdinalIgnoreCase)) {
         if (-not (Microsoft.PowerShell.Management\Test-Path -LiteralPath $cursor)) {
@@ -194,7 +206,7 @@ function Assert-RevAgentProtectedInstallerOriginAcl {
             $sid = [string]$rule.IdentityReference.Value
             if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
                 $trustedOwnerSids -notcontains $sid -and
-                (([int64]$rule.FileSystemRights -band $writeMask) -ne 0)) {
+                (Test-RevAgentInstallerRightsAllowMutation -Rights $rule.FileSystemRights)) {
                 throw "Protected installer origin grants write-capable access to a foreign principal. path=$cursor principal=$sid rights=$($rule.FileSystemRights)"
             }
         }
@@ -525,6 +537,8 @@ function Import-RevAgentProtectedInstallerModule {
 [void](Assert-RevAgentProtectedInstallerOriginFile -Path $actualInstallerPath -ProtectedRoot $protectedInstallRoot -ExpectedEvidence $protectedInstallerOriginEvidence[$actualInstallerPath])
 Import-RevAgentProtectedInstallerModule -Path (Join-Path $installerLibRoot "RevAgent.SecureTemp.psm1")
 $script:RevAgentSecureMachineTempContext = $null
+$script:RevAgentCanonicalAddinMutationGuardContext = $null
+$script:RevAgentCanonicalAddinManifestAttestation = $null
 $earlyIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $earlyPrincipal = [Security.Principal.WindowsPrincipal]::new($earlyIdentity)
 if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -841,6 +855,53 @@ function Resolve-RevitInstallRoot {
     return Resolve-RevAgentInstallRoot -RequestedRoot $RequestedRoot -Version $Version -RepoRoot $repoRoot -RequireXmlDocs
 }
 
+function New-RevAgentCanonicalAddinManifestContract {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$AssemblyPath
+    )
+
+    $canonicalAssemblyPath = [System.IO.Path]::GetFullPath($AssemblyPath)
+    $escapedAssembly = [System.Security.SecurityElement]::Escape($canonicalAssemblyPath)
+    # Keep the generated manifest byte-identical across Windows PowerShell 5.1
+    # and PowerShell 7. Set-Content -Encoding UTF8 has different BOM behavior
+    # across those engines, and source-file line endings must not become part
+    # of the trust contract.
+    $content = [string]::Join("`n", @(
+            '<?xml version="1.0" encoding="utf-8"?>',
+            '<RevitAddIns>',
+            '  <AddIn Type="Application">',
+            '    <Name>revAgent</Name>',
+            "    <Assembly>$escapedAssembly</Assembly>",
+            '    <FullClassName>RevAgentPlugin.Core.Application</FullClassName>',
+            '    <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>',
+            '    <VendorId>DPE</VendorId>',
+            '    <VendorDescription>DPE internal revAgent add-in</VendorDescription>',
+            '  </AddIn>',
+            '</RevitAddIns>',
+            ''
+        ))
+    $encoding = [System.Text.UTF8Encoding]::new($false, $true)
+    $bytes = $encoding.GetBytes($content)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $sha256 = ([System.BitConverter]::ToString($algorithm.ComputeHash($bytes))).Replace('-', '')
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+
+    return [pscustomobject][ordered]@{
+        assemblyPath = $canonicalAssemblyPath
+        clientId = '090A4C8C-61DC-426D-87DF-E4BAE0F80EC1'
+        fullClassName = 'RevAgentPlugin.Core.Application'
+        vendorId = 'DPE'
+        content = $content
+        bytes = $bytes
+        sha256 = $sha256
+    }
+}
+
 function Write-AddinManifest {
     param(
         [Parameter(Mandatory = $true)]
@@ -849,22 +910,78 @@ function Write-AddinManifest {
         [string]$AssemblyPath
     )
 
-    $escapedAssembly = [System.Security.SecurityElement]::Escape($AssemblyPath)
-    $content = @"
-<?xml version="1.0" encoding="utf-8"?>
-<RevitAddIns>
-  <AddIn Type="Application">
-    <Name>revAgent</Name>
-    <Assembly>$escapedAssembly</Assembly>
-    <FullClassName>RevAgentPlugin.Core.Application</FullClassName>
-    <ClientId>090A4C8C-61DC-426D-87DF-E4BAE0F80EC1</ClientId>
-    <VendorId>DPE</VendorId>
-    <VendorDescription>DPE internal revAgent add-in</VendorDescription>
-  </AddIn>
-</RevitAddIns>
-"@
+    $contract = New-RevAgentCanonicalAddinManifestContract -AssemblyPath $AssemblyPath
+    [System.IO.File]::WriteAllBytes($Path, [byte[]]$contract.bytes)
+}
 
-    Set-Content -LiteralPath $Path -Value $content -Encoding UTF8
+function Assert-RevAgentCanonicalAddinManifestContent {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$AssemblyPath
+    )
+
+    $contract = New-RevAgentCanonicalAddinManifestContract -AssemblyPath $AssemblyPath
+    if (-not [System.IO.File]::Exists($Path)) {
+        throw "Canonical revAgent.addin manifest is missing. Close Revit and run Install/Repair so the signed package can rebuild the Revit add-in surface: $Path"
+    }
+    $actualBytes = [System.IO.File]::ReadAllBytes($Path)
+    $algorithm = [System.Security.Cryptography.SHA256]::Create()
+    try {
+        $actualSha256 = ([System.BitConverter]::ToString($algorithm.ComputeHash($actualBytes))).Replace('-', '')
+    }
+    finally {
+        $algorithm.Dispose()
+    }
+    if (-not [string]::Equals($actualSha256, [string]$contract.sha256, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Canonical revAgent.addin content is not the signed package's expected deterministic manifest. Close Revit and run Install/Repair; refusing to protect or retain untrusted manifest bytes. path=$Path expectedSha256=$($contract.sha256) actualSha256=$actualSha256"
+    }
+
+    $settings = [System.Xml.XmlReaderSettings]::new()
+    $settings.DtdProcessing = [System.Xml.DtdProcessing]::Prohibit
+    $settings.XmlResolver = $null
+    $reader = $null
+    $stringReader = $null
+    try {
+        $utf8 = [System.Text.UTF8Encoding]::new($false, $true)
+        $stringReader = [System.IO.StringReader]::new($utf8.GetString($actualBytes))
+        $reader = [System.Xml.XmlReader]::Create($stringReader, $settings)
+        $document = [System.Xml.XmlDocument]::new()
+        $document.XmlResolver = $null
+        $document.Load($reader)
+        $nodes = @($document.SelectNodes('/RevitAddIns/AddIn'))
+        if ($nodes.Count -ne 1) {
+            throw "Canonical revAgent.addin must contain exactly one AddIn entry. found=$($nodes.Count)"
+        }
+        $addin = $nodes[0]
+        $actualAssembly = [string]$addin.SelectSingleNode('Assembly').InnerText
+        $actualClientId = [string]$addin.SelectSingleNode('ClientId').InnerText
+        $actualClassName = [string]$addin.SelectSingleNode('FullClassName').InnerText
+        $actualVendorId = [string]$addin.SelectSingleNode('VendorId').InnerText
+        $actualName = [string]$addin.SelectSingleNode('Name').InnerText
+        if (-not [string]::Equals([string]$addin.GetAttribute('Type'), 'Application', [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals($actualName, 'revAgent', [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals([System.IO.Path]::GetFullPath($actualAssembly), [string]$contract.assemblyPath, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($actualClientId, [string]$contract.clientId, [System.StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($actualClassName, [string]$contract.fullClassName, [System.StringComparison]::Ordinal) -or
+            -not [string]::Equals($actualVendorId, [string]$contract.vendorId, [System.StringComparison]::Ordinal)) {
+            throw "Canonical revAgent.addin semantic identity does not match the signed package contract. Close Revit and run Install/Repair. path=$Path"
+        }
+    }
+    finally {
+        if ($null -ne $reader) { $reader.Dispose() }
+        if ($null -ne $stringReader) { $stringReader.Dispose() }
+    }
+
+    return [pscustomobject][ordered]@{
+        path = [System.IO.Path]::GetFullPath($Path)
+        sha256 = $actualSha256
+        expectedSha256 = [string]$contract.sha256
+        assemblyPath = [string]$contract.assemblyPath
+        clientId = [string]$contract.clientId
+        verified = $true
+    }
 }
 
 function New-ReparsePointOrCopyDirectory {
@@ -972,39 +1089,11 @@ function Copy-RevAgentManagedUpdaterToolFile {
     param(
         [Parameter(Mandatory = $true)][string]$Source,
         [Parameter(Mandatory = $true)][string]$Destination,
-        [bool]$Required = $true
+        [bool]$Required = $true,
+        [Microsoft.Win32.SafeHandles.SafeFileHandle]$MutationGuard
     )
 
-    if (-not (Test-Path -LiteralPath $Source -PathType Leaf)) {
-        return
-    }
-
-    try {
-        Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
-        return
-    }
-    catch {
-        $copyError = $_.Exception.Message
-        if (-not (Test-Path -LiteralPath $Destination -PathType Leaf)) {
-            if ($Required) {
-                throw
-            }
-            Write-Warning "Could not refresh optional updater tool '$Destination'. Copy error: $copyError"
-            return
-        }
-        try {
-            Remove-Item -LiteralPath $Destination -Force -ErrorAction Stop
-            Copy-Item -LiteralPath $Source -Destination $Destination -Force -ErrorAction Stop
-            Write-Warning "Replaced updater tool after removing stale destination ACL: $Destination"
-        }
-        catch {
-            $message = "Could not refresh updater tool '$Destination'. Initial copy error: $copyError; replace error: $($_.Exception.Message)"
-            if ($Required) {
-                throw $message
-            }
-            Write-Warning $message
-        }
-    }
+    [void](Install-RevAgentManagedUpdaterFile -Source $Source -Destination $Destination -Required:$Required -MutationGuard $MutationGuard)
 }
 
 function Install-UpdaterToolsFromPackage {
@@ -1016,27 +1105,42 @@ function Install-UpdaterToolsFromPackage {
 
     if ([string]::IsNullOrWhiteSpace($SourceRoot) -or
         -not (Test-Path -LiteralPath $SourceRoot -PathType Container)) {
-        return
+        throw "Managed updater tool source directory is missing: $SourceRoot"
     }
 
-    New-Item -ItemType Directory -Path $DestinationRoot -Force | Out-Null
+    if (-not (Test-Path -LiteralPath $DestinationRoot -PathType Container)) {
+        throw "Protected managed updater destination directory is missing: $DestinationRoot"
+    }
+    $managedMutationTargets = @(
+        "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1",
+        "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1",
+        "lib", "config", "Update-revAgent-Now.cmd", "Show-revAgent-Version.cmd",
+        "Run-revAgent-Update-Hidden.vbs", "Update-Revit-MCP-Now.cmd",
+        "Show-Revit-MCP-Version.cmd", "Run-Revit-MCP-Update-Hidden.vbs"
+    )
+    $managedInstallRoot = Split-Path -Parent ([System.IO.Path]::GetFullPath($DestinationRoot).TrimEnd("\"))
+    [void](Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot $managedInstallRoot)
+    $installBoundaryGuard = Open-RevAgentManagedMutationGuard -Path $managedInstallRoot -ProtectedPaths @($DestinationRoot) -ExactProtectedPaths
+    $mutationGuard = $null
+    try {
+    $mutationGuard = Open-RevAgentManagedMutationGuard -Path $DestinationRoot -ProtectedPaths $managedMutationTargets
     foreach ($toolName in @("update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         $source = Join-Path $SourceRoot $toolName
-        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:($toolName -ne "migrate-source-free-install.ps1")
+        Copy-RevAgentManagedUpdaterToolFile -Source $source -Destination (Join-Path $DestinationRoot $toolName) -Required:$true -MutationGuard $mutationGuard
     }
     $libSource = Join-Path (Split-Path -Parent $SourceRoot) "lib"
-    if (Test-Path -LiteralPath $libSource -PathType Container) {
-        $libDestination = Join-Path $DestinationRoot "lib"
-        if (Test-Path -LiteralPath $libDestination) {
-            Remove-Item -LiteralPath $libDestination -Recurse -Force
-        }
-        Copy-Item -LiteralPath $libSource -Destination $libDestination -Recurse -Force
+    if (-not (Test-Path -LiteralPath $libSource -PathType Container)) {
+        throw "Managed updater library source directory is missing: $libSource"
     }
+    [void](Sync-RevAgentManagedUpdaterDirectory -SourceRoot $libSource -DestinationRoot (Join-Path $DestinationRoot "lib") -MutationGuard $mutationGuard)
     $configSource = Join-Path (Split-Path -Parent $SourceRoot) "config"
     if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
         $configSource = Join-Path (Split-Path -Parent (Split-Path -Parent $SourceRoot)) "config"
     }
-    Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config")
+    if (-not (Test-Path -LiteralPath $configSource -PathType Container)) {
+        throw "Managed updater config source directory is missing: $configSource"
+    }
+    [void](Sync-RevAgentUpdaterConfigDirectory -SourceRoot $configSource -DestinationRoot (Join-Path $DestinationRoot "config") -MutationGuard $mutationGuard)
 
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
@@ -1067,6 +1171,13 @@ function Install-UpdaterToolsFromPackage {
             Remove-Item -LiteralPath $legacyLauncherPath -Force
             Write-Host "Removed legacy hidden updater launcher: $legacyLauncherPath"
         }
+    }
+
+    [void](Assert-RevAgentManagedTreeLinkSafe -Root $DestinationRoot)
+    }
+    finally {
+        if ($null -ne $mutationGuard) { $mutationGuard.Dispose() }
+        $installBoundaryGuard.Dispose()
     }
 
     Write-Host "Updater tools refreshed: $DestinationRoot"
@@ -1516,8 +1627,6 @@ function Repair-RevAgentManagedInstallPermissions {
         -WorkRoot $updaterRoot `
         -PackageTarget (Join-Path $InstallRoot "package") `
         -ServerTarget $ServerTarget `
-        -AllUsersAddinRoot $addinRoot `
-        -RevitVersion $RevitVersion `
         -IncludeExistingPayloadTrees:$IncludeExistingPayloadTrees
     Invoke-RevAgentManagedPermissionRepair -Targets $targets
     if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
@@ -1597,6 +1706,38 @@ function Invoke-RevAgentCleanup {
 }
 
 Repair-RevAgentManagedInstallPermissions -IncludeExistingPayloadTrees:((-not $SkipRevitPayloadInstall) -and (-not $SkipRuntimePayloadInstall))
+if (-not ($Uninstall -and $SkipRevitPayloadInstall)) {
+    $retainCanonicalAddinGuard = (-not $Uninstall)
+    if ($SkipRevitPayloadInstall) {
+        # An unchanged/running Revit payload still needs the machine ACL
+        # rebaseline. Never bless formerly user-writable manifest bytes merely
+        # by replacing their ACL: the deterministic signed-package contract
+        # must already match, otherwise a full Install/Repair is required.
+        $addinAclBoundary = Protect-RevAgentCanonicalAddinSurface `
+            -AddinRoot $addinRoot `
+            -RevitVersion $RevitVersion `
+            -ProtectManifestIfPresent `
+            -RetainMutationGuard:$retainCanonicalAddinGuard
+        $script:RevAgentCanonicalAddinMutationGuardContext = $addinAclBoundary.mutationGuardContext
+        if (-not [bool]$addinAclBoundary.manifestProtected) {
+            throw "Canonical revAgent.addin is missing. Close Revit and run Install/Repair; an unchanged-payload update cannot safely recreate the Revit manifest."
+        }
+        $script:RevAgentCanonicalAddinManifestAttestation = Assert-RevAgentCanonicalAddinManifestContent `
+            -Path (Join-Path $addinRoot $addinManifestFileName) `
+            -AssemblyPath (Join-Path $pluginTarget $pluginDllFileName)
+    }
+    else {
+        $addinAclBoundary = Protect-RevAgentCanonicalAddinSurface `
+            -AddinRoot $addinRoot `
+            -RevitVersion $RevitVersion `
+            -CreateMissing:(-not $Uninstall) `
+            -RetainMutationGuard:$retainCanonicalAddinGuard
+        $script:RevAgentCanonicalAddinMutationGuardContext = $addinAclBoundary.mutationGuardContext
+    }
+    if ([bool]$addinAclBoundary.protected) {
+        Write-Host "Revit add-in ACL boundary protected: $($addinAclBoundary.addinsParent) -> $($addinAclBoundary.addinRoot)" -ForegroundColor Green
+    }
+}
 Invoke-RevAgentCleanup -ForUninstall:$Uninstall
 
 if ($Uninstall) {
@@ -1611,7 +1752,6 @@ New-Item -ItemType Directory -Path $stateRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $ServerTarget -Force | Out-Null
 
 if (-not $SkipRevitPayloadInstall) {
-    New-Item -ItemType Directory -Path $addinRoot -Force | Out-Null
     if ($earlyPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
         [void](Assert-RevAgentCanonicalAddinPathLinkSafe -Path $addinRoot)
     }
@@ -1622,6 +1762,16 @@ if (-not $SkipRevitPayloadInstall) {
     }
     Copy-Item -LiteralPath (Join-Path $pluginSource $pluginFolderName) -Destination $pluginRoot -Recurse -Force
     Write-AddinManifest -Path (Join-Path $addinRoot $addinManifestFileName) -AssemblyPath (Join-Path $pluginTarget $pluginDllFileName)
+    $addinAclBoundary = Protect-RevAgentCanonicalAddinSurface `
+            -AddinRoot $addinRoot `
+            -RevitVersion $RevitVersion `
+            -ProtectManifest `
+            -MutationGuardContext $script:RevAgentCanonicalAddinMutationGuardContext `
+            -RetainMutationGuard
+    $script:RevAgentCanonicalAddinMutationGuardContext = $addinAclBoundary.mutationGuardContext
+    $script:RevAgentCanonicalAddinManifestAttestation = Assert-RevAgentCanonicalAddinManifestContent `
+        -Path (Join-Path $addinRoot $addinManifestFileName) `
+        -AssemblyPath (Join-Path $pluginTarget $pluginDllFileName)
 }
 else {
     Write-Host "Revit add-in payload install skipped; existing Revit files were left untouched." -ForegroundColor Yellow
@@ -1877,6 +2027,7 @@ function New-HiddenUpdaterScheduledTaskAction {
 
 $nasToolsSource = Join-Path $PSScriptRoot "nas"
 Repair-RevAgentManagedInstallPermissions
+[void](Protect-RevAgentManagedExecutionTree -InstallRoot $InstallRoot)
 Install-UpdaterToolsFromPackage -SourceRoot $nasToolsSource -DestinationRoot $updaterRoot -ConfigPath $updaterConfigPath
 $retentionLogsRoot = if ($SkipUserProfileCleanup) {
     # Secure machine phase never enumerates/deletes the concurrently
@@ -1963,6 +2114,10 @@ if (-not $SuppressNextSteps) {
 }
 }
 finally {
+    if ($null -ne $script:RevAgentCanonicalAddinMutationGuardContext) {
+        Close-RevAgentCanonicalAddinMutationGuard -Context $script:RevAgentCanonicalAddinMutationGuardContext
+        $script:RevAgentCanonicalAddinMutationGuardContext = $null
+    }
     if ($null -ne $script:RevAgentSecureMachineTempContext) {
         Complete-RevAgentSecureMachineTemp -Context $script:RevAgentSecureMachineTempContext
     }
