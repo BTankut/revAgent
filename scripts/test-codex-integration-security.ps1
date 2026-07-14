@@ -15,6 +15,46 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+$inheritedPsModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
+
+function Initialize-RevAgentTestTrustedPowerShellModules {
+    # A self-hosted runner launched from PowerShell 7 can pass its module roots
+    # to a later Windows PowerShell 5.1 step. Sanitize before any cmdlet
+    # autoload so PS5 never selects an incompatible PS7 built-in manifest.
+    $systemDirectory = [Environment]::SystemDirectory
+    $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
+    $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    [void]$candidateRoots.Add([IO.Path]::Combine($PSHOME, 'Modules'))
+    [void]$candidateRoots.Add([IO.Path]::Combine($systemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
+    foreach ($programFilesRoot in @($programFiles, $programFilesX86)) {
+        if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
+        [void]$candidateRoots.Add([IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        [void]$candidateRoots.Add([IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
+    }
+
+    $trustedRoots = [System.Collections.Generic.List[string]]::new()
+    $seen = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($candidate in $candidateRoots) {
+        $fullPath = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
+        if (-not [IO.Directory]::Exists($fullPath) -or -not $seen.Add($fullPath)) { continue }
+        if (([IO.File]::GetAttributes($fullPath) -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Trusted PowerShell module root is a reparse point: $fullPath"
+        }
+        [void]$trustedRoots.Add($fullPath)
+    }
+    if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
+    $env:PSModulePath = [string]::Join([IO.Path]::PathSeparator, $trustedRoots.ToArray())
+
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+        $manifestPath = [IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
+        if (-not [IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
+        Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
+    }
+    return $env:PSModulePath
+}
+
+$trustedPsModulePath = Initialize-RevAgentTestTrustedPowerShellModules
 
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
@@ -64,7 +104,7 @@ $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ("revagent-codex-security-" + [
 New-Item -ItemType Directory -Path $tempRoot -Force | Out-Null
 $previousCodexHome = [Environment]::GetEnvironmentVariable("CODEX_HOME", "Process")
 $previousPath = $env:PATH
-$previousPsModulePath = $env:PSModulePath
+$previousPsModulePath = $trustedPsModulePath
 $profileListFixtureRoot = "Registry::HKEY_CURRENT_USER\Software\revAgent\Tests\InteractiveIdentity-$([Guid]::NewGuid().ToString('N'))"
 
 try {
@@ -1377,6 +1417,7 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     Assert-True ($snapshotBrokerText -match 'Global\\DPE\.revAgent\.PrivilegedSnapshotBroker' -and $snapshotBrokerText -match 'Invoke-RevAgentBrokerSnapshotRetention' -and $snapshotBrokerText -match '\[IO\.File\]::Replace\(\$tempPath, \$Path, \$backupPath' -and $brokerSecureTempIndex -ge 0 -and $brokerSnapshotImportIndex -gt $brokerSecureTempIndex -and $brokerLedgerIndex -ge 0 -and $brokerLaunchIndex -gt $brokerLedgerIndex) "Privileged broker must serialize executions, compile only in protected Windows TEMP, persist anti-rollback high-water state before launch, and retain snapshots with a bounded policy."
     Assert-True ($permissionsText -notmatch '(?m)^\s*&\s+icacls(?:\.exe)?\b' -and $permissionsText -match 'Join-Path \(\[Environment\]::SystemDirectory\) "icacls\.exe"') "Elevated permission work must invoke only the trusted known-folder System32 icacls path."
     Assert-True ($codexRegistrationText -match 'OpenAI OpCo, LLC' -and $codexRegistrationText -match 'CN=OpenJS Foundation' -and $codexRegistrationText -notmatch 'trustedVendor') "CLI and Node runtime selection must pin exact OpenAI/OpenJS signer subjects."
+    Assert-True ($codexRegistrationText -match '\[System\.Security\.Cryptography\.SHA256\]::Create\(\)' -and $codexRegistrationText -match '\[System\.IO\.File\]::Open\(\$Path,\s*\[System\.IO\.FileMode\]::Open' -and $codexRegistrationText -notmatch '(?m)^\s*return\s+\(Get-FileHash') "Codex integration hashing must use a handle-bound .NET SHA-256 stream instead of depending on PowerShell cmdlet autoload."
     Assert-True ($codexRegistrationText -match 'querySucceeded' -and $codexRegistrationText -match 'absenceConfirmed' -and $codexRegistrationText -match 'Store package query failed closed' -and $codexRegistrationText -match 'standalone_disabled_no_authenticated_receipt' -and $codexRegistrationText -match 'no authenticated installed-package receipt/hash chain exists') "Codex discovery must distinguish AppX failure from confirmed absence and keep unauthenticated Windows standalone execution disabled."
     Assert-True ($codexRegistrationText -match 'Test-RevAgentAppxBlockMapFileContent' -and $codexRegistrationText -match 'all_signed_blocks_match' -and $codexRegistrationText -match 'localMirrorDiagnosticOnly' -and $codexRegistrationText -match 'diagnosticOnly = \$true') "Store CLI identity must verify every signed AppxBlockMap block while LocalAppData mirrors remain diagnostics only."
     Assert-True ($codexRegistrationText -match 'function Install-RevAgentProtectedCodexCliFromStore' -and $codexRegistrationText -match 'sourceExecuted = \$false' -and $codexRegistrationText -match "'protected-active-store-copy'" -and $codexRegistrationText -match '-RequireProtectedPath') "Machine phase must materialize, and user phase must execute, only the exact protected ProgramData copy bound to the active Store package."
@@ -1415,7 +1456,7 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
 }
 finally {
     $env:PATH = $previousPath
-    $env:PSModulePath = $previousPsModulePath
+    $env:PSModulePath = $inheritedPsModulePath
     Remove-Item Env:\REVAGENT_POISON_MODULE_MARKER -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $profileListFixtureRoot) { Remove-Item -LiteralPath $profileListFixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
     if ($null -eq $previousCodexHome) { Remove-Item Env:\CODEX_HOME -ErrorAction SilentlyContinue }

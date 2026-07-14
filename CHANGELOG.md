@@ -4,6 +4,19 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed protected Install/Repair on Windows PowerShell 5.1 failing while
+  atomically overwriting an existing updater configuration because
+  `File.Replace` received a null backup path. Installer writes now use a
+  unique same-directory backup and clean it after replacement; the guarded
+  reporting rollback uses the same PS5-compatible contract. Cross-engine
+  smoke tests exercise both a real existing-file overwrite and a rollback-like
+  rewrite while verifying exact bytes, single-link identity, and no leftover
+  temporary or backup artifacts. Codex integration file hashing now uses a
+  handle-bound .NET SHA-256 stream so PS5 security checks and production
+  attestation do not depend on `Get-FileHash` module autoload state. The PS5
+  compatibility harness also discards inherited PowerShell 7 module roots and
+  imports exact host manifests before trust checks, preventing self-hosted
+  runner startup context from selecting incompatible built-in modules.
 - Fixed protected updater bootstrap startup failing before the GUI when
   `RevAgent.SourceFreeMigration.psm1` was staged without its required
   `RevAgent.Permissions.psm1` sibling. Prestage evidence, its closed schema,

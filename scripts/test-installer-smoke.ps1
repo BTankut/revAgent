@@ -190,6 +190,7 @@ try {
         "Set-RevAgentInstallRunReport",
         "Test-InstallPhasePathUnderRoot",
         "Assert-InstallPhasePathNoReparse",
+        "Write-RevAgentAtomicBytes",
         "Assert-InstallPhaseOutputPaths",
         "Write-RevAgentInstallLocalReport",
         "Write-RevAgentInstallPhaseResult",
@@ -206,6 +207,29 @@ try {
     & {
         param([string]$FunctionText, [string]$HarnessRoot)
         . ([scriptblock]::Create($FunctionText))
+
+        $atomicRoot = Join-Path $HarnessRoot "atomic-write"
+        New-Item -ItemType Directory -Path $atomicRoot -Force | Out-Null
+        $atomicPath = Join-Path $atomicRoot "updater-config.json"
+        $encoding = New-Object System.Text.UTF8Encoding($false)
+        $originalBytes = $encoding.GetBytes('{"state":"original"}')
+        $replacementBytes = $encoding.GetBytes('{"state":"replacement"}')
+
+        [System.IO.File]::WriteAllBytes($atomicPath, $originalBytes)
+        Write-RevAgentAtomicBytes -Path $atomicPath -Bytes $replacementBytes
+        Assert-Equal `
+            ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($atomicPath))) `
+            ([Convert]::ToBase64String($replacementBytes)) `
+            "Atomic overwrite did not persist the replacement bytes."
+
+        Write-RevAgentAtomicBytes -Path $atomicPath -Bytes $originalBytes
+        Assert-Equal `
+            ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($atomicPath))) `
+            ([Convert]::ToBase64String($originalBytes)) `
+            "Rollback-like atomic rewrite did not restore the original bytes."
+        Assert-Equal ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($atomicPath)) 1 "Atomic rewrite destination must remain a single-link ordinary file."
+        $atomicArtifacts = @(Get-ChildItem -LiteralPath $atomicRoot -Force -File | Where-Object { $_.Name -like ".updater-config.json.*" })
+        Assert-Equal $atomicArtifacts.Count 0 "Atomic overwrite left a temporary or backup artifact."
 
         function Read-OptionalJsonFile {
             param([string]$Path)
@@ -1458,7 +1482,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installTaskText -match 'trustedKeysPath = \$localTrustedReleaseKeysPath' -and $installTaskText -match 'policy = "enforce"') "Updater installer must pin the local trusted release key path and enforce distribution integrity."
     Assert-True ($installTaskText -notmatch 'previousTrustedReleaseKeysPath' -and $installTaskText -match 'Authenticated snapshot release key is unavailable; refusing updater repair' -and $installTaskText -match 'InstallVerifiedTrustedKeysSha256' -and $installTaskText -match 'InstallExecutionSnapshotState\.trust\.trustedKeysRelativePath') "Updater installer must never copy a trusted-key path from old config and must fail closed on the authenticated snapshot release key."
     Assert-True ($installTaskText -match '-UserPhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match '-MachinePhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match 'Authenticated snapshot updater changed after pre-import verification') "Nested updater machine/user phases must execute the exact hash-bound snapshot entrypoint with the broker-owned snapshot state."
-    Assert-True ($installTaskText -match 'function Write-RevAgentAtomicBytes' -and $installTaskText -match '\[System\.IO\.File\]::Replace' -and $installTaskText -match 'PermissionNativeFileInfo\]::GetLinkCount') "Updater installer config/tool file writes must use atomic replacement after reparse and hardlink guards."
+    Assert-True ($installTaskText -match 'function Write-RevAgentAtomicBytes' -and $installTaskText -match '\[System\.IO\.File\]::Replace\(\$temporaryPath,\s*\$fullPath,\s*\$backupPath,\s*\$true\)' -and $installTaskText -notmatch '\[System\.IO\.File\]::Replace\([^\r\n]*\$null' -and $installTaskText -match 'PermissionNativeFileInfo\]::GetLinkCount' -and $installTaskText -match 'may have partially displaced the destination; recovery artifacts were preserved' -and $installTaskText -notmatch 'Remove-Item -LiteralPath \$backupPath') "Updater installer config/tool file writes must use PS5-compatible atomic replacement, preserve partial-failure recovery evidence, and retain reparse/hardlink guards."
     Assert-True ($installTaskText -match 'Assert-InstallEarlyAuthenticatedSnapshot' -and $installTaskText.IndexOf('Assert-InstallEarlyAuthenticatedSnapshot') -lt $installTaskText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated installer must reverify protected snapshot state before sibling imports."
     Assert-True ($installTaskText -match 'Split-phase updater installation requires -ExecutionSnapshotStatePath before sibling-module import' -and $installTaskText -match 'Execution snapshot contains a filesystem link') "Elevated installer must require a link-safe authenticated snapshot instead of a sealed NAS source."
     Assert-True ($installTaskText -match 'Installer entrypoint does not match the authenticated snapshot component' -and $installTaskText -match 'GetFullPath\(\$PSCommandPath\).*GetFullPath\(\$componentPath\)') "Elevated installer must bind PSCommandPath to the exact authenticated local snapshot component."
@@ -2590,10 +2614,50 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     $reportJson = Get-Content -Raw -LiteralPath $reportPath | ConvertFrom-Json
     Assert-Equal $reportJson.app "revAgent" "Report JSON app identity must use revAgent."
     Assert-Equal $reportJson.status "current" "Report JSON status was not written."
+    $reportOriginalBytes = [System.IO.File]::ReadAllBytes($reportPath)
+    $reportingModule = Get-Module -Name "RevAgent.Reporting" | Select-Object -First 1
+    Assert-True ($null -ne $reportingModule) "Reporting module was not loaded for atomic rollback testing."
+    & $reportingModule {
+        $script:RevAgentTestOriginalReportingPathGuard = ${function:Assert-RevAgentExistingPathNoLink}
+        $script:RevAgentTestRejectReportingBackup = $true
+        Set-Item -LiteralPath Function:\Assert-RevAgentExistingPathNoLink -Force -Value {
+            param(
+                [Parameter(Mandatory = $true)][string]$Path,
+                [Parameter(Mandatory = $true)][string]$GuardRoot,
+                [switch]$RequireLeaf,
+                [switch]$RequireLeafSingleLink
+            )
+            if ($script:RevAgentTestRejectReportingBackup -and $RequireLeafSingleLink -and $Path -like "*.bak") {
+                throw "Injected unsafe displaced report backup."
+            }
+            return & $script:RevAgentTestOriginalReportingPathGuard @PSBoundParameters
+        }
+    }
+    try {
+        $replacementReport = New-RevAgentUpdateReport -Status "failed" -Message "must roll back" -PreviousVersion "1" -InstalledVersion "2"
+        Assert-ThrowsLike {
+            Write-RevAgentJsonFile -Path $reportPath -Value $replacementReport
+        } "refused an unsafe displaced destination and restored it" "Reporting atomic rollback must restore the original file after rejecting displaced backup evidence."
+    }
+    finally {
+        & $reportingModule {
+            Set-Item -LiteralPath Function:\Assert-RevAgentExistingPathNoLink -Force -Value $script:RevAgentTestOriginalReportingPathGuard
+            Remove-Variable -Name RevAgentTestOriginalReportingPathGuard -Scope Script -ErrorAction SilentlyContinue
+            Remove-Variable -Name RevAgentTestRejectReportingBackup -Scope Script -ErrorAction SilentlyContinue
+        }
+    }
+    Assert-Equal `
+        ([Convert]::ToBase64String([System.IO.File]::ReadAllBytes($reportPath))) `
+        ([Convert]::ToBase64String($reportOriginalBytes)) `
+        "Reporting atomic rollback did not restore the exact original bytes."
+    Assert-Equal ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($reportPath)) 1 "Restored reporting destination must remain a single-link ordinary file."
+    $reportAtomicArtifacts = @(Get-ChildItem -LiteralPath (Split-Path -Parent $reportPath) -Force -File | Where-Object { $_.Name -like ".report.json.*" })
+    Assert-Equal $reportAtomicArtifacts.Count 0 "Successful reporting rollback left a temporary, backup, or restore-discard artifact."
     $reportingText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Reporting.psm1")
     Assert-True ($reportingText -match 'app = "revAgent"' -and $reportingText -notmatch 'app = "revit-mcp-skill"') "Machine report helper must default to the revAgent app identity."
     Assert-True ($reportingText -match '\$operationLatestPath = Join-Path \$machineRoot \("\{0\}-latest\.json" -f \$safeOperation\)' -and $reportingText -match 'Write-RevitMcpJsonFile -Path \$operationLatestPath -Value \$published') "Machine report publishing must emit operation-specific latest files used by dashboard version fallback."
     Assert-True ($reportingText -match 'Remote report publishing is forbidden in an elevated process' -and $reportingText -match 'FileMode\]::CreateNew' -and $reportingText -match 'File\]::Replace' -and $reportingText -match 'GetLinkCount') "Remote reporting must reject elevation and use create-new atomic writes with hardlink checks."
+    Assert-True ($reportingText -match '\[System\.IO\.File\]::Replace\(\$backupPath,\s*\$fullPath,\s*\$restoreDiscardPath,\s*\$true\)' -and $reportingText -notmatch '\[System\.IO\.File\]::Replace\([^\r\n]*\$null' -and $reportingText -match 'restoration failed; recovery artifacts were preserved') "Report rollback must use a PS5-compatible non-null same-directory discard path and preserve partial-failure recovery evidence."
     Assert-True ($reportingText -notmatch 'Copy-Item -LiteralPath \$LogPath' -and $reportingText -notmatch 'Set-Content -LiteralPath \$Path') "Remote reporting must not use direct Copy-Item or Set-Content writes."
     $safePathCases = @(
         @{ input = "HAFIZE"; expected = "HAFIZE" },

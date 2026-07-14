@@ -248,7 +248,9 @@ function Write-RevAgentGuardedAtomicBytes {
     $leaf = [System.IO.Path]::GetFileName($fullPath)
     $temporaryPath = Join-Path $directory (".{0}.{1}.tmp" -f $leaf, [guid]::NewGuid().ToString("N"))
     $backupPath = Join-Path $directory (".{0}.{1}.bak" -f $leaf, [guid]::NewGuid().ToString("N"))
+    $restoreDiscardPath = Join-Path $directory (".{0}.{1}.restore-discard" -f $leaf, [guid]::NewGuid().ToString("N"))
     $stream = $null
+    $cleanupTemporary = $true
     try {
         $stream = [System.IO.FileStream]::new($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
         $stream.Write($Bytes, 0, $Bytes.Length)
@@ -260,7 +262,22 @@ function Write-RevAgentGuardedAtomicBytes {
 
         if (Test-Path -LiteralPath $fullPath -PathType Leaf) {
             [void](Assert-RevAgentExistingPathNoLink -Path $fullPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
-            [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+            $cleanupTemporary = $false
+            try {
+                [System.IO.File]::Replace($temporaryPath, $fullPath, $backupPath, $true)
+                $cleanupTemporary = $true
+            }
+            catch {
+                $replaceError = $_.Exception.Message
+                $backupExists = Test-Path -LiteralPath $backupPath -PathType Leaf
+                $destinationExists = Test-Path -LiteralPath $fullPath -PathType Leaf
+                if (-not $backupExists -and $destinationExists) { $cleanupTemporary = $true }
+                if ($backupExists -or -not $destinationExists) {
+                    throw "Atomic report replacement may have partially displaced the destination; recovery artifacts were preserved. destination='$fullPath' temporary='$temporaryPath' backup='$backupPath'. $replaceError"
+                }
+                throw
+            }
+            [void](Assert-RevAgentExistingPathNoLink -Path $fullPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
             try {
                 [void](Assert-RevAgentExistingPathNoLink -Path $backupPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
             }
@@ -268,11 +285,14 @@ function Write-RevAgentGuardedAtomicBytes {
                 $unsafeDestination = $_.Exception.Message
                 try {
                     if (Test-Path -LiteralPath $backupPath -PathType Leaf) {
-                        [System.IO.File]::Replace($backupPath, $fullPath, $null, $true)
+                        [System.IO.File]::Replace($backupPath, $fullPath, $restoreDiscardPath, $true)
+                        [void](Assert-RevAgentExistingPathNoLink -Path $fullPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
+                        [void](Assert-RevAgentExistingPathNoLink -Path $restoreDiscardPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
+                        [System.IO.File]::Delete($restoreDiscardPath)
                     }
                 }
                 catch {
-                    throw "Atomic report replacement detected an unsafe displaced destination and restoration failed. unsafe=$unsafeDestination restore=$($_.Exception.Message)"
+                    throw "Atomic report replacement detected an unsafe displaced destination and restoration failed; recovery artifacts were preserved. unsafe=$unsafeDestination restore=$($_.Exception.Message) backup='$backupPath' discard='$restoreDiscardPath'"
                 }
                 throw "Atomic report replacement refused an unsafe displaced destination and restored it. $unsafeDestination"
             }
@@ -285,14 +305,12 @@ function Write-RevAgentGuardedAtomicBytes {
     }
     finally {
         if ($null -ne $stream) { $stream.Dispose() }
-        foreach ($cleanupPath in @($temporaryPath, $backupPath)) {
-            if (Test-Path -LiteralPath $cleanupPath -PathType Leaf) {
-                try {
-                    [void](Assert-RevAgentExistingPathNoLink -Path $cleanupPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
-                    [System.IO.File]::Delete($cleanupPath)
-                }
-                catch {}
+        if ($cleanupTemporary -and (Test-Path -LiteralPath $temporaryPath -PathType Leaf)) {
+            try {
+                [void](Assert-RevAgentExistingPathNoLink -Path $temporaryPath -GuardRoot $fullRoot -RequireLeaf -RequireLeafSingleLink)
+                [System.IO.File]::Delete($temporaryPath)
             }
+            catch {}
         }
     }
 }
