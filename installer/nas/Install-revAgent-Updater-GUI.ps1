@@ -145,7 +145,7 @@ if (-not $SmokeTest) {
     if (-not [string]::Equals([IO.Path]::GetFullPath($ChannelManifestPath), $expectedGuiChannelPath, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Protected GUI channel path does not match the bootstrap state channel. expected=$expectedGuiChannelPath actual=$ChannelManifestPath"
     }
-    foreach ($role in @("updaterGui", "distributionIntegrity", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys")) {
+    foreach ($role in @("updaterGui", "distributionIntegrity", "permissions", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys")) {
         $evidence = $script:GuiBootstrapState.files.$role
         if ($null -eq $evidence -or [string]::IsNullOrWhiteSpace([string]$evidence.relativePath) -or [string]::IsNullOrWhiteSpace([string]$evidence.sha256)) {
             throw "Protected local GUI bootstrap state is missing required file evidence: $role"

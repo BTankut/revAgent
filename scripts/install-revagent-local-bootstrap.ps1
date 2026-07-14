@@ -534,6 +534,7 @@ try {
         -LauncherPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd") `
         -GuiPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1") `
         -DistributionIntegrityModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") `
+        -PermissionsModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1") `
         -SourceFreeMigrationModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1") `
         -ReleaseSnapshotModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1") `
         -PrivilegedSnapshotUpdatePath (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") `

@@ -48,6 +48,7 @@ $sources = [ordered]@{
     launcher = Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd"
     updaterGui = Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1"
     distributionIntegrity = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
+    permissions = Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1"
     sourceFreeMigration = Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1"
     releaseSnapshot = Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1"
     privilegedSnapshotUpdate = Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
@@ -133,6 +134,60 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     Assert-True (Test-Path -LiteralPath (Join-Path $bootstrapRoot "bootstrap-state.json")) "Protected bootstrap state was not installed."
     Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Start-revAgent-Update.cmd") -PathType Leaf) -and $null -ne $state.files.launcher) "Protected local clickable launcher and its hash evidence were not installed."
     Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $bootstrapRoot "lib\RevAgent.ReleaseSnapshot.psm1") -PathType Leaf)) "Protected snapshot broker/module were not installed."
+    $protectedPermissionsPath = Join-Path $bootstrapRoot "lib\RevAgent.Permissions.psm1"
+    Assert-True ($null -ne $state.files.permissions -and [string]::Equals([string]$state.files.permissions.relativePath, "lib\RevAgent.Permissions.psm1", [StringComparison]::OrdinalIgnoreCase)) "Protected bootstrap state does not bind the permissions sibling."
+    Assert-True ((Test-Path -LiteralPath $protectedPermissionsPath -PathType Leaf) -and [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $protectedPermissionsPath).Hash, [string]$hashes.permissions, [StringComparison]::OrdinalIgnoreCase)) "Protected permissions sibling is missing or does not match authenticated evidence."
+
+    Write-Host "Test protected SourceFreeMigration dependency closure in fresh PS5 and PS7 processes"
+    $protectedMigrationPath = Join-Path $bootstrapRoot "lib\RevAgent.SourceFreeMigration.psm1"
+    $missingSiblingRoot = Join-Path $temp "missing-permissions-sibling"
+    New-Item -ItemType Directory -Path $missingSiblingRoot -Force | Out-Null
+    $missingSiblingMigrationPath = Join-Path $missingSiblingRoot "RevAgent.SourceFreeMigration.psm1"
+    Copy-Item -LiteralPath $protectedMigrationPath -Destination $missingSiblingMigrationPath
+    $protectedMigrationPathBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($protectedMigrationPath))
+    $missingSiblingPathBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($missingSiblingMigrationPath))
+    $positiveClosureProbe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    if ('RevAgent.PermissionNativeFileInfo' -as [type]) { throw 'Fresh dependency probe unexpectedly started with the permissions type loaded.' }
+    `$modulePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$protectedMigrationPathBase64'))
+    Import-Module -Name `$modulePath -Force -ErrorAction Stop
+    if (-not ('RevAgent.PermissionNativeFileInfo' -as [type])) { throw 'Permissions native type was not initialized.' }
+    if (`$null -eq (Get-Command Get-RevAgentSourceFreeArtifactInventory -ErrorAction Stop)) { throw 'Source-free inventory command was not exported.' }
+    exit 0
+}
+catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
+"@
+    $maskedMissingSiblingProbe = @"
+`$ErrorActionPreference = 'Stop'
+try {
+    Add-Type -TypeDefinition 'namespace RevAgent { public static class PermissionNativeFileInfo { } }'
+    `$modulePath = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('$missingSiblingPathBase64'))
+    try {
+        Import-Module -Name `$modulePath -Force -ErrorAction Stop
+        throw 'A preloaded same-named type masked the missing permissions sibling.'
+    }
+    catch {
+        if (`$_.Exception.Message -notmatch 'requires the sibling permissions module') { throw }
+    }
+    exit 0
+}
+catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
+"@
+    $closureRuntimes = @((Join-Path ([Environment]::SystemDirectory) "WindowsPowerShell\v1.0\powershell.exe"))
+    $pwshCommand = Get-Command pwsh -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $pwshCommand) { $closureRuntimes += [string]$pwshCommand.Source }
+    foreach ($closureRuntime in @($closureRuntimes | Select-Object -Unique)) {
+        foreach ($probeCase in @(
+                [pscustomobject]@{ Name = "positive"; Script = $positiveClosureProbe },
+                [pscustomobject]@{ Name = "masked-missing-sibling"; Script = $maskedMissingSiblingProbe }
+            )) {
+            $encodedClosureProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes([string]$probeCase.Script))
+            $closureOutput = & $closureRuntime -NoLogo -NoProfile -NonInteractive -EncodedCommand $encodedClosureProbe 2>&1
+            $closureExitCode = $LASTEXITCODE
+            Assert-True ($closureExitCode -eq 0) ("Fresh bootstrap dependency closure probe failed. runtime={0} case={1} output={2}" -f $closureRuntime, $probeCase.Name, (@($closureOutput) -join " | "))
+        }
+    }
     $caught = $null
     try { & (Join-Path $bootstrapRoot "Start-revAgent-Update.ps1") -BootstrapRoot $bootstrapRoot -ChannelManifestPath (Join-Path $fakeRelease "channels\stable.json") -VerificationOnly -AllowTestRoot | Out-Null } catch { $caught = $_ }
     Assert-True ($null -ne $caught -and [string]$caught.Exception.Message -match "Bootstrap path is missing") ("Bootstrap execution did not reach fail-closed signed-channel validation. actual={0}" -f $(if ($null -eq $caught) { '<none>' } else { [string]$caught.Exception.Message }))
@@ -254,6 +309,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     foreach ($relativePath in @(
             "installer\lib\RevAgent.LocalBootstrap.psm1",
             "installer\lib\RevAgent.DistributionIntegrity.psm1",
+            "installer\lib\RevAgent.Permissions.psm1",
             "installer\lib\RevAgent.SourceFreeMigration.psm1",
             "installer\lib\RevAgent.ReleaseSnapshot.psm1",
             "installer\nas\Start-revAgent-Update.ps1",
@@ -268,6 +324,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
         launcher = Join-Path $swapRepo "installer\nas\Start-revAgent-Update.cmd"
         updaterGui = Join-Path $swapRepo "installer\nas\Install-revAgent-Updater-GUI.ps1"
         distributionIntegrity = Join-Path $swapRepo "installer\lib\RevAgent.DistributionIntegrity.psm1"
+        permissions = Join-Path $swapRepo "installer\lib\RevAgent.Permissions.psm1"
         sourceFreeMigration = Join-Path $swapRepo "installer\lib\RevAgent.SourceFreeMigration.psm1"
         releaseSnapshot = Join-Path $swapRepo "installer\lib\RevAgent.ReleaseSnapshot.psm1"
         privilegedSnapshotUpdate = Join-Path $swapRepo "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"

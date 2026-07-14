@@ -478,9 +478,14 @@ Production NAS `tools` contains no `.cmd` launcher. A stale local launcher is
 still checked against its signed manifest component and returns
 `bootstrap_refresh_required`; repeat this two-shell procedure.
 
-The prestage evidence and protected bootstrap now include two additional signed
-components:
+The prestage evidence and protected bootstrap include the complete signed
+module closure needed before the GUI can start:
 
+- `lib\RevAgent.Permissions.psm1`, the authenticated sibling required by
+  `RevAgent.SourceFreeMigration.psm1`. Its path and SHA-256 are recorded as the
+  `permissions` role in `bootstrap-state.json`, verified against
+  `installerLibPermissions` on every launch, and checked by the GUI before the
+  migration module is imported;
 - `lib\RevAgent.ReleaseSnapshot.psm1`, which copies and re-verifies the signed
   transport set into a user-local authenticated inbox before UAC, then creates
   the administrator-owned execution snapshot. For current releases this set

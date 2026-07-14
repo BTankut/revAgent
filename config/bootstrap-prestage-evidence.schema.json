@@ -72,12 +72,13 @@
     "sources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bootstrap", "launcher", "updaterGui", "distributionIntegrity", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys"],
+      "required": ["bootstrap", "launcher", "updaterGui", "distributionIntegrity", "permissions", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys"],
       "properties": {
         "bootstrap": { "$ref": "#/$defs/sha256" },
         "launcher": { "$ref": "#/$defs/sha256" },
         "updaterGui": { "$ref": "#/$defs/sha256" },
         "distributionIntegrity": { "$ref": "#/$defs/sha256" },
+        "permissions": { "$ref": "#/$defs/sha256" },
         "sourceFreeMigration": { "$ref": "#/$defs/sha256" },
         "releaseSnapshot": { "$ref": "#/$defs/sha256" },
         "privilegedSnapshotUpdate": { "$ref": "#/$defs/sha256" },

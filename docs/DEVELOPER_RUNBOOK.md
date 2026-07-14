@@ -1100,9 +1100,12 @@ prestages an independently authenticated bootstrap and records exact source
 SHA-256 evidence in protected `bootstrap-state.json`. The bootstrap root and
 state are SYSTEM/Administrators-owned, standard-user read/execute only,
 link/hardlink guarded, and checked with effective directory and file-write
-probes. The local bootstrap, GUI, integrity verifier, and migration verifier
-must also match their current signed release-manifest components exactly;
-otherwise `bootstrap_refresh_required` requires a new authenticated prestage.
+probes. The local bootstrap, GUI, integrity verifier, permissions helper, and
+migration verifier must also match their current signed release-manifest
+components exactly. `RevAgent.Permissions.psm1` is a required protected sibling
+of `RevAgent.SourceFreeMigration.psm1`; both are independently hash-bound in
+`bootstrap-state.json` before the GUI imports either module. Otherwise,
+`bootstrap_refresh_required` requires a new authenticated prestage.
 The repository-side prestage installer must never itself be elevated. Its bytes
 must first be matched to the independent evidence and copied with OS/admin-only
 commands to
