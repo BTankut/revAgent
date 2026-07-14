@@ -258,10 +258,15 @@ runs the user phase without elevation. The elevated phase never executes
 and it never writes Codex user configuration or skills.
 
 First-install and legacy bootstrap code must come from the protected local
-bootstrap root. That bootstrap acquires the signed canonical release set into
-an administrator-protected local snapshot, re-attests the signed
-channel/manifest and every pre-import component there, and only then launches
-the local GUI. If the local bootstrap/GUI/verifiers do not match the current signed
+bootstrap root. The root includes both
+`lib\RevAgent.SourceFreeMigration.psm1` and its required authenticated sibling
+`lib\RevAgent.Permissions.psm1`; their separate state hashes must match the
+current `installerLibSourceFreeMigration` and `installerLibPermissions` signed
+manifest components before the GUI starts. That bootstrap acquires the signed
+canonical release set into an administrator-protected local snapshot,
+re-attests the signed channel/manifest and every pre-import component there,
+and only then launches the local GUI. If the local bootstrap/GUI/verifiers or
+either protected migration dependency do not match the current signed
 manifest, `bootstrap_refresh_required` fails closed until another authenticated
 administrator prestage. Do not elevate a copied desktop script body, NAS GUI,
 or local user-writable updater. After installation, machine code, package,

@@ -4,6 +4,13 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed protected updater bootstrap startup failing before the GUI when
+  `RevAgent.SourceFreeMigration.psm1` was staged without its required
+  `RevAgent.Permissions.psm1` sibling. Prestage evidence, its closed schema,
+  protected copy/state, signed-component freshness checks, and GUI pre-import
+  verification now bind both modules. SourceFreeMigration always requires the
+  exact sibling even if a same-named native type was preloaded, and fresh PS5/
+  PS7 child-process regression tests prove the complete dependency closure.
 - Fixed signed pilot updates failing before UAC when the pinned Node.js MSI was
   absent from shared NAS tools. Signed CD now downloads and verifies the exact
   official Node v24.14.1 MSI, binds its path/hash/size/OpenJS signature evidence

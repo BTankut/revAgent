@@ -266,7 +266,8 @@ try {
                 "installer/nas/bootstrap-prestage-evidence.example.json",
                 "installer/nas/Start-revAgent-Update.cmd",
                 "installer/nas/Start-revAgent-Update.ps1",
-                "installer/lib/RevAgent.LocalBootstrap.psm1"
+                "installer/lib/RevAgent.LocalBootstrap.psm1",
+                "installer/lib/RevAgent.Permissions.psm1"
             )) {
             Assert-Equal @($sourceArchive.Entries | Where-Object { [string]::Equals($_.FullName.Replace("\", "/"), $entryName, [StringComparison]::OrdinalIgnoreCase) }).Count 1 "Signed user pack entry '$entryName' must exist exactly once."
         }
@@ -307,7 +308,7 @@ try {
     finally { [IO.File]::WriteAllBytes($sourceNodeMsiSidecar, $sourceNodeMsiBytes) }
     Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceNodeMsiSidecar).Hash $nodeMsiSha256 'Node.js MSI sidecar fixture was not restored after fail-closed readiness tests.'
 
-    foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap")) {
+    foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap", "installerLibPermissions")) {
         Assert-True ($null -ne $sourceManifest.components.$componentKey -and -not [string]::IsNullOrWhiteSpace([string]$sourceManifest.components.$componentKey.sha256)) "Signed manifest is missing bootstrap component '$componentKey'."
     }
     $evidencePath = Join-Path $tempRoot "bootstrap-prestage-evidence.json"
@@ -321,6 +322,7 @@ try {
     $evidenceDocument = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
     Assert-Equal ([string]$evidenceDocument.localBootstrapInstallerScript) ([string]$sourceManifest.components.localBootstrapInstaller.sha256) "Evidence producer did not bind its own signed prestage installer."
     Assert-Equal ([string]$evidenceDocument.sources.launcher) ([string]$sourceManifest.components.localBootstrapLauncher.sha256) "Evidence producer did not bind the protected local launcher."
+    Assert-Equal ([string]$evidenceDocument.sources.permissions) ([string]$sourceManifest.components.installerLibPermissions.sha256) "Evidence producer did not bind the protected permissions sibling."
 
     Write-Host "Test bootstrap evidence verifier executes the exact pinned bytes after pathname swap"
     $evidenceSwapRepo = Join-Path $tempRoot "bootstrap-evidence-verifier-swap-repo"

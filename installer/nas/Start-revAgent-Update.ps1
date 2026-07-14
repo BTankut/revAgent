@@ -266,6 +266,7 @@ $localCurrentReleaseBindings = [ordered]@{
     launcher = @("localBootstrapLauncher", "installer\nas\Start-revAgent-Update.cmd")
     updaterGui = @("updaterGui", "installer\nas\Install-revAgent-Updater-GUI.ps1")
     distributionIntegrity = @("installerLibDistributionIntegrity", "installer\lib\RevAgent.DistributionIntegrity.psm1")
+    permissions = @("installerLibPermissions", "installer\lib\RevAgent.Permissions.psm1")
     sourceFreeMigration = @("installerLibSourceFreeMigration", "installer\lib\RevAgent.SourceFreeMigration.psm1")
     releaseSnapshot = @("installerLibReleaseSnapshot", "installer\lib\RevAgent.ReleaseSnapshot.psm1")
     privilegedSnapshotUpdate = @("privilegedSnapshotUpdate", "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")

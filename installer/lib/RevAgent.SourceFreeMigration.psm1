@@ -1,11 +1,16 @@
 Set-StrictMode -Version Latest
 
+$permissionsModulePath = Join-Path $PSScriptRoot "RevAgent.Permissions.psm1"
+if (-not (Test-Path -LiteralPath $permissionsModulePath -PathType Leaf)) {
+    throw "Source-free cleanup requires the sibling permissions module: $permissionsModulePath"
+}
+$permissionsModule = Import-Module $permissionsModulePath -ErrorAction Stop -PassThru
+if ($null -eq $permissionsModule -or
+    -not [string]::Equals([IO.Path]::GetFullPath([string]$permissionsModule.Path), [IO.Path]::GetFullPath($permissionsModulePath), [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Source-free cleanup did not load the exact sibling permissions module: $permissionsModulePath"
+}
 if (-not ("RevAgent.PermissionNativeFileInfo" -as [type])) {
-    $permissionsModulePath = Join-Path $PSScriptRoot "RevAgent.Permissions.psm1"
-    if (-not (Test-Path -LiteralPath $permissionsModulePath -PathType Leaf)) {
-        throw "Source-free cleanup requires the sibling permissions module: $permissionsModulePath"
-    }
-    Import-Module $permissionsModulePath -ErrorAction Stop
+    throw "Source-free cleanup could not initialize the sibling permissions module: $permissionsModulePath"
 }
 
 if (-not ("RevAgent.SourceFreeMigrationNative" -as [type])) {

@@ -501,6 +501,7 @@ function Install-RevAgentLocalBootstrap {
         [Parameter(Mandatory = $true)][string]$LauncherPath,
         [Parameter(Mandatory = $true)][string]$GuiPath,
         [Parameter(Mandatory = $true)][string]$DistributionIntegrityModulePath,
+        [Parameter(Mandatory = $true)][string]$PermissionsModulePath,
         [Parameter(Mandatory = $true)][string]$SourceFreeMigrationModulePath,
         [Parameter(Mandatory = $true)][string]$ReleaseSnapshotModulePath,
         [Parameter(Mandatory = $true)][string]$PrivilegedSnapshotUpdatePath,
@@ -568,6 +569,7 @@ function Install-RevAgentLocalBootstrap {
         launcher = [IO.Path]::GetFullPath($LauncherPath)
         updaterGui = [IO.Path]::GetFullPath($GuiPath)
         distributionIntegrity = [IO.Path]::GetFullPath($DistributionIntegrityModulePath)
+        permissions = [IO.Path]::GetFullPath($PermissionsModulePath)
         sourceFreeMigration = [IO.Path]::GetFullPath($SourceFreeMigrationModulePath)
         releaseSnapshot = [IO.Path]::GetFullPath($ReleaseSnapshotModulePath)
         privilegedSnapshotUpdate = [IO.Path]::GetFullPath($PrivilegedSnapshotUpdatePath)
@@ -632,6 +634,7 @@ function Install-RevAgentLocalBootstrap {
             launcher = "Start-revAgent-Update.cmd"
             updaterGui = "Install-revAgent-Updater-GUI.ps1"
             distributionIntegrity = "lib\RevAgent.DistributionIntegrity.psm1"
+            permissions = "lib\RevAgent.Permissions.psm1"
             sourceFreeMigration = "lib\RevAgent.SourceFreeMigration.psm1"
             releaseSnapshot = "lib\RevAgent.ReleaseSnapshot.psm1"
             privilegedSnapshotUpdate = "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"

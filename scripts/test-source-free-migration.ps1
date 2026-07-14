@@ -879,6 +879,7 @@ public static class RevAgentSourceFreeForeignHandle {
 
     New-Item -ItemType Directory -Path $harnessLib -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1") -Destination (Join-Path $harnessLib "RevAgent.CodexRegistration.psm1") -Force
+    Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1") -Destination (Join-Path $harnessLib "RevAgent.Permissions.psm1") -Force
     Copy-Item -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1") -Destination (Join-Path $harnessLib "RevAgent.SourceFreeMigration.psm1") -Force
 
     $harnessReportPath = Join-Path $harnessRoot "migration-report.json"
