@@ -712,6 +712,11 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     $installerFinalGrantIndex = $installTaskText.IndexOf('[void](Grant-RevAgentUserStateAccess', $installerProtectIndex)
     Assert-True ($updaterProtectIndex -ge 0 -and $updaterFinalGrantIndex -gt $updateText.LastIndexOf('finally {') -and $installerProtectIndex -ge 0 -and $installerFinalGrantIndex -gt $installTaskText.LastIndexOf('finally {')) "User-writable state ACLs must be restored only in the outermost machine workflow finalization after all elevated traversal."
     $publishText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
+    Assert-True (
+        $publishText -match '\[System\.Array\]::Sort\(\$orderedRelativePaths,\s*\[System\.StringComparer\]::Ordinal\)' -and
+        $releaseSnapshotText -match '\[Array\]::Sort\(\$orderedRelativePaths,\s*\[StringComparer\]::Ordinal\)' -and
+        $updateText -match '\[System\.Array\]::Sort\(\$orderedRelativePaths,\s*\[System\.StringComparer\]::Ordinal\)'
+    ) "Publisher, protected snapshot verifier, and updater must share the ordinal relative-path tree-hash contract across PowerShell engines."
     Assert-True ($publishText -match '\$components\["runtimePayload"\] = Get-DirectoryTreeHash') "Release manifest must include a runtime payload fingerprint."
     Assert-True ($publishText -match '\$components\["docsServerPayload"\] = Get-DirectoryTreeHash') "Release manifest must include a docs payload fingerprint."
     Assert-True ($publishText -match 'foreach \(\$payloadRoot in @\("installer\\revit-plugin", "installer\\command-payload"\)\)') "Release manifest must classify Revit add-in and command payload trees as Revit-close-required."

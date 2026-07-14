@@ -1058,7 +1058,8 @@ function Get-DirectoryTreeHash {
         }
     }
 
-    $files = Get-ChildItem -LiteralPath $path -Recurse -File -Force |
+    $relativePaths = [System.Collections.Generic.List[string]]::new()
+    Get-ChildItem -LiteralPath $path -Recurse -File -Force |
         Where-Object {
             if ($excludedFiles.Contains($_.Name)) {
                 return $false
@@ -1073,12 +1074,21 @@ function Get-DirectoryTreeHash {
             }
             return $true
         } |
-        Sort-Object FullName
+        ForEach-Object {
+            [void]$relativePaths.Add($_.FullName.Substring($path.Length).TrimStart("\", "/").Replace("\", "/"))
+        }
+
+    # This digest is signed by pwsh in CD and consumed by Windows PowerShell 5.1.
+    # Sort-Object uses runtime/culture collation, so keep the wire contract ordinal.
+    $orderedRelativePaths = $relativePaths.ToArray()
+    [System.Array]::Sort($orderedRelativePaths, [System.StringComparer]::Ordinal)
 
     $lines = [System.Collections.Generic.List[string]]::new()
-    foreach ($file in $files) {
-        $relative = $file.FullName.Substring($path.Length).TrimStart("\", "/").Replace("\", "/")
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash
+    foreach ($relative in $orderedRelativePaths) {
+        $relativeOnDisk = $relative.Replace([char]"/", [System.IO.Path]::DirectorySeparatorChar)
+        $filePath = Join-Path $path $relativeOnDisk
+        $file = Get-Item -LiteralPath $filePath -Force
+        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $filePath).Hash
         [void]$lines.Add(("{0}|{1}|{2}" -f $relative, $file.Length, $hash))
     }
 
