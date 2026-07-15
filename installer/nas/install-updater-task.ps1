@@ -2532,6 +2532,26 @@ function Assert-UpdaterCommandFilesInstalled {
     return $manualCommandPath
 }
 
+function Assert-HiddenUpdaterLauncherInstalled {
+    param(
+        [string]$LauncherPath,
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath
+    )
+
+    if (-not (Test-Path -LiteralPath $LauncherPath -PathType Leaf)) {
+        throw "Machine phase did not leave the expected hidden updater launcher: $LauncherPath"
+    }
+    $launcherText = Get-Content -Raw -LiteralPath $LauncherPath
+    foreach ($requiredText in @($UpdaterPath, $UpdaterConfigPath, "scheduled-update-audit")) {
+        if ([string]::IsNullOrWhiteSpace($requiredText) -or
+            $launcherText.IndexOf($requiredText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
+            throw "Machine phase left an unexpected hidden updater launcher: $LauncherPath"
+        }
+    }
+    return $LauncherPath
+}
+
 function Register-RevAgentInteractiveUpdateTask {
     param(
         [string]$UpdaterPath,
@@ -2540,11 +2560,17 @@ function Register-RevAgentInteractiveUpdateTask {
         [string]$UpdaterWorkRoot,
         [string]$Name,
         [string]$RunAt,
-        [int]$IntervalMinutes
+        [int]$IntervalMinutes,
+        [switch]$UseExistingHiddenLauncher
     )
 
     $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $UpdaterConfigPath
-    Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $UpdaterPath -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-AuditOnly", "-NotifyUser", "-OperationMethod", "scheduled-update-audit") -WaitForExit
+    if ($UseExistingHiddenLauncher) {
+        Assert-HiddenUpdaterLauncherInstalled -LauncherPath $hiddenLauncherPath -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath | Out-Null
+    }
+    else {
+        Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $UpdaterPath -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-AuditOnly", "-NotifyUser", "-OperationMethod", "scheduled-update-audit") -WaitForExit
+    }
     $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
     $dailyTrigger = New-RevAgentDailyUpdateTrigger -DailyAt $RunAt
     $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
@@ -2573,6 +2599,9 @@ function Register-RevAgentInteractiveUpdateTask {
     }
     catch {
         Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
+        if ($UseExistingHiddenLauncher) {
+            throw
+        }
         Write-UpdaterCommandFiles -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -UpdaterWorkRoot $UpdaterWorkRoot -VersionToolPath $VersionToolPath -DailyAt $RunAt -CheckIntervalMinutes $IntervalMinutes -InstallStartupFallback | Out-Null
     }
 }
@@ -2843,7 +2872,7 @@ if ($UserPhaseOnly) {
 
     $script:RevAgentInstalledUpdaterSurface = Invoke-RevAgentFinalUpdaterSurfaceAttestation -UpdaterRoot $WorkRoot
     if (-not $NoScheduledTask) {
-        Register-RevAgentInteractiveUpdateTask -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -VersionToolPath $localVersionTool -UpdaterWorkRoot $WorkRoot -Name $TaskName -RunAt $DailyAt -IntervalMinutes $CheckIntervalMinutes
+        Register-RevAgentInteractiveUpdateTask -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -VersionToolPath $localVersionTool -UpdaterWorkRoot $WorkRoot -Name $TaskName -RunAt $DailyAt -IntervalMinutes $CheckIntervalMinutes -UseExistingHiddenLauncher
     }
     Write-Host "User integration : completed as $($currentIdentity.Name)" -ForegroundColor Green
     Write-Host "Run manually     : $manualCommandPath" -ForegroundColor Green

@@ -2358,7 +2358,10 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         "Merge-RevAgentDesktopLauncherCleanupEvidence",
         "Test-RevAgentTextFileLinesEqual",
         "Set-RevAgentAsciiContentIfChanged",
-        "Write-UpdaterCommandFiles"
+        "Write-UpdaterCommandFiles",
+        "Get-HiddenUpdaterLauncherPath",
+        "Assert-HiddenUpdaterLauncherInstalled",
+        "Register-RevAgentInteractiveUpdateTask"
     )
     $startupCleanupFunctionAsts = @($installTaskAst.FindAll({
                 param($node)
@@ -2372,6 +2375,8 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         . ([scriptblock]::Create($FunctionText))
 
         function Get-RevAgentLegacyHiddenUpdaterLauncherPaths { param([string]$ConfigPath) return @() }
+        $script:HiddenLauncherWriteCount = 0
+        $script:RegisteredTaskAction = $null
         function Write-HiddenPowerShellLauncher {
             param(
                 [string]$LauncherPath,
@@ -2379,7 +2384,42 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
                 [string[]]$ScriptArguments = @(),
                 [switch]$WaitForExit
             )
+            $script:HiddenLauncherWriteCount++
             "launcher" | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+        }
+        function New-HiddenUpdaterScheduledTaskAction {
+            param([string]$LauncherPath)
+            return [pscustomobject]@{ Execute = "wscript.exe"; Argument = "//B //Nologo `"$LauncherPath`"" }
+        }
+        function New-RevAgentDailyUpdateTrigger { param([string]$DailyAt) return [pscustomobject]@{ DailyAt = $DailyAt } }
+        function New-ScheduledTaskSettingsSet {
+            param(
+                [switch]$AllowStartIfOnBatteries,
+                [switch]$DontStopIfGoingOnBatteries
+            )
+            return [pscustomobject]@{}
+        }
+        function New-ScheduledTaskPrincipal { param([string]$UserId, [string]$LogonType, [string]$RunLevel) return [pscustomobject]@{ UserId = $UserId; LogonType = $LogonType; RunLevel = $RunLevel } }
+        function Register-ScheduledTask {
+            param(
+                [string]$TaskName,
+                [object]$Action,
+                [object[]]$Trigger,
+                [object]$Settings,
+                [object]$Principal,
+                [string]$Description,
+                [switch]$Force
+            )
+            $script:RegisteredTaskAction = $Action
+        }
+        function Get-ScheduledTask {
+            [CmdletBinding()]
+            param([string]$TaskName)
+            return $null
+        }
+        function Unregister-ScheduledTask {
+            [CmdletBinding()]
+            param([string]$TaskName, [switch]$Confirm)
         }
         $script:RevAgentStartupLauncherCleanup = [ordered]@{
             enabled = $true
@@ -2428,6 +2468,13 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         Write-UpdaterCommandFiles -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -UpdaterWorkRoot $workRoot -StartupRoot $scheduledStartupRoot -SkipStartupCleanup | Out-Null
         Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.cmd") -PathType Leaf) "Machine-only command generation must not traverse or clean the interactive user's Startup folder."
         Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.vbs") -PathType Leaf) "Machine-only command generation must preserve user Startup files for the unelevated phase."
+
+        $hiddenLauncherPath = Join-Path $workRoot "Run-revAgent-Update-Hidden.vbs"
+        Set-Content -LiteralPath $hiddenLauncherPath -Value "powershell $updaterPath -ConfigPath $configPath -OperationMethod scheduled-update-audit" -Encoding ASCII
+        $script:HiddenLauncherWriteCount = 0
+        Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase task registration must not rewrite the protected hidden updater launcher."
+        Assert-True ($null -ne $script:RegisteredTaskAction -and [string]$script:RegisteredTaskAction.Argument -match [regex]::Escape($hiddenLauncherPath)) "User-phase task registration must bind the scheduled task to the machine-written hidden launcher."
 
         $fallbackStartupRoot = Join-Path $HarnessRoot "fallback-startup"
         New-Item -ItemType Directory -Path $fallbackStartupRoot -Force | Out-Null
