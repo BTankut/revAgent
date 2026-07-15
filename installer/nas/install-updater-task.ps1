@@ -2498,6 +2498,40 @@ function Write-UpdaterCommandFiles {
     return $manualCommandPath
 }
 
+function Assert-UpdaterCommandFilesInstalled {
+    param(
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath,
+        [string]$UpdaterWorkRoot,
+        [string]$VersionToolPath = ""
+    )
+
+    $manualCommandPath = Join-Path $UpdaterWorkRoot "Update-revAgent-Now.cmd"
+    $manualCommandLines = @(
+        "@echo off",
+        "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
+        "echo Machine updates require the unelevated revAgent Updater GUI and its scoped UAC machine phase.",
+        "pause"
+    )
+    if (-not (Test-RevAgentTextFileLinesEqual -LiteralPath $manualCommandPath -Lines $manualCommandLines)) {
+        throw "Machine phase did not leave the expected updater helper command file: $manualCommandPath"
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($VersionToolPath)) {
+        $versionCommandPath = Join-Path $UpdaterWorkRoot "Show-revAgent-Version.cmd"
+        $versionCommandLines = @(
+            "@echo off",
+            "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$VersionToolPath`" -ConfigPath `"$UpdaterConfigPath`"",
+            "pause"
+        )
+        if (-not (Test-RevAgentTextFileLinesEqual -LiteralPath $versionCommandPath -Lines $versionCommandLines)) {
+            throw "Machine phase did not leave the expected version helper command file: $versionCommandPath"
+        }
+    }
+
+    return $manualCommandPath
+}
+
 function Register-RevAgentInteractiveUpdateTask {
     param(
         [string]$UpdaterPath,
@@ -2776,7 +2810,7 @@ if ($UserPhaseOnly) {
     if (-not (Test-Path -LiteralPath $localUpdater -PathType Leaf)) {
         throw "Machine phase did not install the local updater: $localUpdater"
     }
-    $manualCommandPath = Write-UpdaterCommandFiles -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool -DailyAt $DailyAt -CheckIntervalMinutes $CheckIntervalMinutes
+    $manualCommandPath = Assert-UpdaterCommandFilesInstalled -UpdaterPath $localUpdater -UpdaterConfigPath $configPath -UpdaterWorkRoot $WorkRoot -VersionToolPath $localVersionTool
     $releaseUpdater = Join-Path $PSScriptRoot "update-from-nas.ps1"
     if (-not (Test-Path -LiteralPath $releaseUpdater -PathType Leaf)) {
         throw "Authenticated snapshot updater was not found beside install-updater-task.ps1: $releaseUpdater"
