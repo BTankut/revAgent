@@ -2543,7 +2543,7 @@ function Assert-HiddenUpdaterLauncherInstalled {
         throw "Machine phase did not leave the expected hidden updater launcher: $LauncherPath"
     }
     $launcherText = Get-Content -Raw -LiteralPath $LauncherPath
-    foreach ($requiredText in @($UpdaterPath, $UpdaterConfigPath, "scheduled-update-audit")) {
+    foreach ($requiredText in @($UpdaterPath, $UpdaterConfigPath, "scheduled-update")) {
         if ([string]::IsNullOrWhiteSpace($requiredText) -or
             $launcherText.IndexOf($requiredText, [System.StringComparison]::OrdinalIgnoreCase) -lt 0) {
             throw "Machine phase left an unexpected hidden updater launcher: $LauncherPath"
