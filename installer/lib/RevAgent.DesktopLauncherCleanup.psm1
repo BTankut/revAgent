@@ -526,6 +526,51 @@ function Test-RevAgentTextContainsAny {
     return $false
 }
 
+function Test-RevAgentDesktopLauncherContainerPath {
+    param([string]$Path)
+
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        return $false
+    }
+    try {
+        return [bool](Test-Path -LiteralPath $Path -PathType Container -ErrorAction Stop)
+    }
+    catch {
+        return $false
+    }
+}
+
+function Get-RevAgentDesktopLauncherDirectories {
+    param(
+        [string]$Path,
+        [string]$Filter = "*"
+    )
+
+    if (-not (Test-RevAgentDesktopLauncherContainerPath -Path $Path)) {
+        return @()
+    }
+    try {
+        return @(Get-ChildItem -LiteralPath $Path -Directory -Filter $Filter -ErrorAction Stop)
+    }
+    catch {
+        return @()
+    }
+}
+
+function Get-RevAgentDesktopLauncherFileChildren {
+    param([string]$Path)
+
+    if (-not (Test-RevAgentDesktopLauncherContainerPath -Path $Path)) {
+        return @()
+    }
+    try {
+        return @(Get-ChildItem -LiteralPath $Path -File -ErrorAction Stop)
+    }
+    catch {
+        return @()
+    }
+}
+
 function Get-RevAgentDefaultDesktopLauncherRoots {
     param([string]$ProfilesRoot = "")
 
@@ -559,20 +604,20 @@ function Get-RevAgentDefaultDesktopLauncherRoots {
             $ProfilesRoot = "C:\Users"
         }
     }
-    if (Test-Path -LiteralPath $ProfilesRoot -PathType Container) {
-        foreach ($profile in @(Get-ChildItem -LiteralPath $ProfilesRoot -Directory -ErrorAction SilentlyContinue)) {
+    if (Test-RevAgentDesktopLauncherContainerPath -Path $ProfilesRoot) {
+        foreach ($profile in @(Get-RevAgentDesktopLauncherDirectories -Path $ProfilesRoot)) {
             [void]$profileRoots.Add($profile.FullName)
             $desktop = Join-Path $profile.FullName "Desktop"
-            if (Test-Path -LiteralPath $desktop -PathType Container) {
+            if (Test-RevAgentDesktopLauncherContainerPath -Path $desktop) {
                 [void]$paths.Add($desktop)
             }
         }
     }
 
     foreach ($profileRoot in @($profileRoots.ToArray() | Select-Object -Unique)) {
-        foreach ($oneDriveFolder in @(Get-ChildItem -LiteralPath $profileRoot -Directory -Filter "OneDrive*" -ErrorAction SilentlyContinue)) {
+        foreach ($oneDriveFolder in @(Get-RevAgentDesktopLauncherDirectories -Path $profileRoot -Filter "OneDrive*")) {
             $oneDriveDesktop = Join-Path $oneDriveFolder.FullName "Desktop"
-            if (Test-Path -LiteralPath $oneDriveDesktop -PathType Container) {
+            if (Test-RevAgentDesktopLauncherContainerPath -Path $oneDriveDesktop) {
                 [void]$paths.Add($oneDriveDesktop)
             }
         }
@@ -590,10 +635,7 @@ function Get-RevAgentDesktopLauncherFiles {
     $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $files = [System.Collections.Generic.List[System.IO.FileInfo]]::new()
     foreach ($root in $LauncherRoots) {
-        if ([string]::IsNullOrWhiteSpace($root) -or -not (Test-Path -LiteralPath $root -PathType Container)) {
-            continue
-        }
-        foreach ($item in @(Get-ChildItem -LiteralPath $root -File -ErrorAction SilentlyContinue)) {
+        foreach ($item in @(Get-RevAgentDesktopLauncherFileChildren -Path $root)) {
             if ($script:RevAgentLauncherCandidateExtensions -contains $item.Extension.ToLowerInvariant() -and $seen.Add($item.FullName)) {
                 [void]$files.Add($item)
             }
