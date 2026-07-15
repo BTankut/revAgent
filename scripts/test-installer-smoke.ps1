@@ -2377,6 +2377,8 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         function Get-RevAgentLegacyHiddenUpdaterLauncherPaths { param([string]$ConfigPath) return @() }
         $script:HiddenLauncherWriteCount = 0
         $script:RegisteredTaskAction = $null
+        $script:RegisterTaskShouldFail = $false
+        $script:ExistingScheduledTask = $null
         function Write-HiddenPowerShellLauncher {
             param(
                 [string]$LauncherPath,
@@ -2410,11 +2412,18 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
                 [string]$Description,
                 [switch]$Force
             )
+            if ($script:RegisterTaskShouldFail) {
+                throw "Erisim engellendi."
+            }
             $script:RegisteredTaskAction = $Action
         }
         function Get-ScheduledTask {
             [CmdletBinding()]
             param([string]$TaskName)
+            if ([string]::Equals($TaskName, "revAgent Auto Update", [System.StringComparison]::OrdinalIgnoreCase) -and
+                $null -ne $script:ExistingScheduledTask) {
+                return $script:ExistingScheduledTask
+            }
             return $null
         }
         function Unregister-ScheduledTask {
@@ -2475,6 +2484,25 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
         Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase task registration must not rewrite the protected hidden updater launcher."
         Assert-True ($null -ne $script:RegisteredTaskAction -and [string]$script:RegisteredTaskAction.Argument -match [regex]::Escape($hiddenLauncherPath)) "User-phase task registration must bind the scheduled task to the machine-written hidden launcher."
+
+        $script:RegisteredTaskAction = $null
+        $script:RegisterTaskShouldFail = $true
+        $script:ExistingScheduledTask = [pscustomobject]@{
+            Actions = @([pscustomobject]@{
+                    Execute = "C:\Windows\System32\wscript.exe"
+                    Arguments = "//B //Nologo `"$hiddenLauncherPath`""
+                })
+            Principal = [pscustomobject]@{
+                UserId = "Net01"
+                LogonType = "Interactive"
+                RunLevel = "Limited"
+            }
+        }
+        Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase registration fallback must still avoid protected hidden updater launcher rewrites."
+        Assert-True ($null -eq $script:RegisteredTaskAction) "User-phase registration fallback must preserve a compatible existing scheduled task after access denial."
+        $script:RegisterTaskShouldFail = $false
+        $script:ExistingScheduledTask = $null
 
         $fallbackStartupRoot = Join-Path $HarnessRoot "fallback-startup"
         New-Item -ItemType Directory -Path $fallbackStartupRoot -Force | Out-Null
