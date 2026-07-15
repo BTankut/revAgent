@@ -503,10 +503,34 @@ namespace RevAgentOsPathSecurity {
     Assert-True ($permissionsText -match 'OpenAclMutationBarrier' -and $permissionsText -match 'AssertNoMutationHandles\(\$barrier' -and $permissionsText -match 'Assert-RevitMcpCanonicalAddinMutationGuard') "Canonical add-in ACL mutation must combine an exact-item barrier, retained-handle inventory, and held exact identity-set guard."
     Assert-True ($selfContainedText -match '-RetainMutationGuard' -and $selfContainedText -match '-MutationGuardContext \$script:RevAgentCanonicalAddinMutationGuardContext' -and $selfContainedText -match 'finally \{[\s\S]*Close-RevAgentCanonicalAddinMutationGuard') "Self-contained installer must retain the exact add-in guard through manifest installation and dispose it in the outer finally."
 
-    Write-Host "Test canonical revAgent.addin deterministic content and skip-path tamper guard"
     . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'New-RevAgentCanonicalAddinManifestContract')
     . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'Write-AddinManifest')
     . (Import-ScriptFunctionForTest -Path $selfContainedPath -FunctionName 'Assert-RevAgentCanonicalAddinManifestContent')
+
+    Write-Host "Test retained canonical manifest guard blocks delete but permits identity-preserving rewrite"
+    $guardedRewriteRoot = Join-Path $tempRoot 'retained-guard-rewrite'
+    $guardedRewriteManifest = Join-Path $guardedRewriteRoot 'revAgent.addin'
+    $guardedRewriteAssembly = 'C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\revAgentPlugin.dll'
+    New-Item -ItemType Directory -Path $guardedRewriteRoot -Force | Out-Null
+    [IO.File]::WriteAllText($guardedRewriteManifest, 'old manifest bytes', [Text.UTF8Encoding]::new($false))
+    $guardedRewriteHandle = [RevAgent.PermissionNativeFileInfo]::OpenNoMutation($guardedRewriteManifest, $false)
+    try {
+        $guardedRewriteIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($guardedRewriteHandle)
+        Assert-ThrowsLike -Action {
+            Remove-Item -LiteralPath $guardedRewriteManifest -Force -ErrorAction Stop
+        } -Pattern 'being used|used by another process|eri.emiyor' -Message 'Retained canonical manifest guard unexpectedly allowed the pinned file to be deleted.'
+
+        Write-AddinManifest -Path $guardedRewriteManifest -AssemblyPath $guardedRewriteAssembly
+        $guardedRewriteAttestation = Assert-RevAgentCanonicalAddinManifestContent -Path $guardedRewriteManifest -AssemblyPath $guardedRewriteAssembly
+        Assert-True ([bool]$guardedRewriteAttestation.verified -and [string]::Equals([string]$guardedRewriteAttestation.sha256, [string]$guardedRewriteAttestation.expectedSha256, [StringComparison]::OrdinalIgnoreCase)) "Production manifest writer did not produce the deterministic signed-package contract under the retained guard."
+        Assert-Equal ([RevAgent.PermissionNativeFileInfo]::GetIdentity($guardedRewriteManifest, $false)) $guardedRewriteIdentity "Guarded canonical manifest rewrite replaced the pinned file identity."
+    }
+    finally {
+        $guardedRewriteHandle.Dispose()
+    }
+    Assert-True ($selfContainedText -match '(?s)if \(\$ForUninstall\)\s*\{\s*#.*?Remove-RevAgentPath -Path \$canonicalAddinManifestPath.*?\}\s*elseif \(Test-Path -LiteralPath \$canonicalAddinManifestPath -PathType Leaf\).*?guarded in-place rewrite') "Install/Repair must retain the pinned canonical manifest for in-place rewrite while uninstall remains allowed to remove it."
+
+    Write-Host "Test canonical revAgent.addin deterministic content and skip-path tamper guard"
     $canonicalManifestFixture = Join-Path $tempRoot 'canonical-manifest\revAgent.addin'
     New-Item -ItemType Directory -Path (Split-Path -Parent $canonicalManifestFixture) -Force | Out-Null
     $canonicalAssemblyFixture = 'C:\ProgramData\DPE\revAgent\revit-plugin\revAgentPlugin\revAgentPlugin.dll'

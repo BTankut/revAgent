@@ -1640,7 +1640,19 @@ function Invoke-RevAgentCleanup {
     )
 
     if (-not $SkipRevitPayloadInstall) {
-        Remove-RevAgentPath -Path (Join-Path $addinRoot $addinManifestFileName) -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+        $canonicalAddinManifestPath = Join-Path $addinRoot $addinManifestFileName
+        if ($ForUninstall) {
+            # Uninstall does not retain the canonical manifest mutation guard,
+            # so the exact managed file can be removed normally.
+            Remove-RevAgentPath -Path $canonicalAddinManifestPath -Label "revAgent add-in manifest" -AllowedNamePattern "(?i)(^revAgent\.addin$)"
+        }
+        elseif (Test-Path -LiteralPath $canonicalAddinManifestPath -PathType Leaf) {
+            # Full Install/Repair deliberately pins the existing manifest
+            # identity with a no-delete mutation guard before cleanup. Keep
+            # that exact protected file and rewrite it in place later; trying
+            # to remove it here deterministically self-locks on Windows.
+            Write-Host "Retaining canonical revAgent add-in manifest for guarded in-place rewrite: $canonicalAddinManifestPath"
+        }
         Remove-RevAgentPath -Path (Join-Path $addinRoot $legacyAddinManifestFileName) -Label "legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^mcp[-_]servers?[-_]for[-_]revit\.addin$)"
         Remove-RevAgentPath -Path (Join-Path $addinRoot "revit-mcp.addin.disabled-self-contained") -Label "disabled legacy revAgent add-in manifest" -AllowedNamePattern "(?i)(^revit[-_]mcp\.addin(\.disabled-self-contained)?$)"
         if ((-not $SkipLegacyCleanup) -and (-not $SkipUserProfileCleanup)) {
