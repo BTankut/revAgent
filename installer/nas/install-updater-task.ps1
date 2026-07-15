@@ -2212,6 +2212,39 @@ function Resolve-WScriptPath {
     return Resolve-RevAgentWScriptPath
 }
 
+function Test-RevAgentTextFileLinesEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) { return $false }
+
+    $existing = @(Get-Content -LiteralPath $LiteralPath -ErrorAction Stop)
+    if ($existing.Count -ne $Lines.Count) { return $false }
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if (-not [string]::Equals([string]$existing[$i], [string]$Lines[$i], [System.StringComparison]::Ordinal)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Set-RevAgentAsciiContentIfChanged {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (Test-RevAgentTextFileLinesEqual -LiteralPath $LiteralPath -Lines $Lines) {
+        return
+    }
+
+    $Lines | Set-Content -LiteralPath $LiteralPath -Encoding ASCII
+}
+
 function Repair-RevAgentUpdaterPermissions {
     param([string]$Principal = "")
 
@@ -2367,7 +2400,7 @@ function Write-UpdaterCommandFiles {
         "echo Machine updates require the unelevated revAgent Updater GUI and its scoped UAC machine phase.",
         "pause"
     )
-    $manualCommandLines | Set-Content -LiteralPath $manualCommandPath -Encoding ASCII
+    Set-RevAgentAsciiContentIfChanged -LiteralPath $manualCommandPath -Lines $manualCommandLines
 
     if (-not [string]::IsNullOrWhiteSpace($VersionToolPath)) {
         $versionCommandPath = Join-Path $UpdaterWorkRoot "Show-revAgent-Version.cmd"
@@ -2376,7 +2409,7 @@ function Write-UpdaterCommandFiles {
             "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$VersionToolPath`" -ConfigPath `"$UpdaterConfigPath`"",
             "pause"
         )
-        $versionCommandLines | Set-Content -LiteralPath $versionCommandPath -Encoding ASCII
+        Set-RevAgentAsciiContentIfChanged -LiteralPath $versionCommandPath -Lines $versionCommandLines
     }
 
     foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {

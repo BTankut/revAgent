@@ -1438,6 +1438,75 @@ function Test-RevAgentRuntimeDirectory {
     }
 }
 
+function Stop-RevAgentManagedMcpNodeProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$EntrypointPaths,
+        [string]$Reason = "payload replacement",
+        [int]$TimeoutSeconds = 10
+    )
+
+    $entrypoints = @(
+        $EntrypointPaths |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { [System.IO.Path]::GetFullPath([string]$_) }
+    )
+    if ($entrypoints.Count -eq 0) {
+        return @()
+    }
+
+    $matches = [System.Collections.Generic.List[object]]::new()
+    foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue)) {
+        if ([int]$process.ProcessId -eq [int]$PID) { continue }
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+
+        foreach ($entrypoint in $entrypoints) {
+            if ($commandLine.IndexOf($entrypoint, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $matches.Add([pscustomobject][ordered]@{
+                        processId = [int]$process.ProcessId
+                        executablePath = [string]$process.ExecutablePath
+                        entrypoint = $entrypoint
+                        commandLine = $commandLine
+                    })
+                break
+            }
+        }
+    }
+
+    foreach ($match in $matches) {
+        Write-Host ("Stopping running revAgent MCP server before {0}: pid={1} entrypoint={2}" -f $Reason, $match.processId, $match.entrypoint) -ForegroundColor Yellow
+        try {
+            $process = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f [int]$match.processId) -ErrorAction Stop
+            if ($null -eq $process) {
+                continue
+            }
+            $termination = Invoke-CimMethod -InputObject $process -MethodName Terminate -Arguments @{ Reason = [uint32]0 } -ErrorAction Stop
+            if ($null -ne $termination -and [int]$termination.ReturnValue -ne 0 -and [int]$termination.ReturnValue -ne 5) {
+                throw "Terminate returned $($termination.ReturnValue)"
+            }
+        }
+        catch {
+            throw "Could not stop running revAgent MCP server pid=$($match.processId) before $Reason. Close Codex/revAgent on this workstation and retry. $($_.Exception.Message)"
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    foreach ($match in $matches) {
+        while ((Get-Date) -lt $deadline) {
+            if ($null -eq (Get-Process -Id ([int]$match.processId) -ErrorAction SilentlyContinue)) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        if ($null -ne (Get-Process -Id ([int]$match.processId) -ErrorAction SilentlyContinue)) {
+            throw "Timed out waiting for revAgent MCP server pid=$($match.processId) to exit before $Reason. Close Codex/revAgent on this workstation and retry."
+        }
+    }
+
+    return $matches.ToArray()
+}
+
 function Remove-CodexProfileBackupArtifacts {
     if (-not (Test-Path -LiteralPath $codexRoot)) {
         return
@@ -1749,6 +1818,9 @@ if (-not ($Uninstall -and $SkipRevitPayloadInstall)) {
     if ([bool]$addinAclBoundary.protected) {
         Write-Host "Revit add-in ACL boundary protected: $($addinAclBoundary.addinsParent) -> $($addinAclBoundary.addinRoot)" -ForegroundColor Green
     }
+}
+if (-not $SkipRuntimePayloadInstall) {
+    [void](Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths @((Join-Path $ServerTarget "build\index.js")) -Reason "runtime payload replacement")
 }
 Invoke-RevAgentCleanup -ForUninstall:$Uninstall
 

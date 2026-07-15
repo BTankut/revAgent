@@ -1826,6 +1826,75 @@ function Get-NodeRuntimeStatus {
     }
 }
 
+function Stop-RevAgentManagedMcpNodeProcesses {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$EntrypointPaths,
+        [string]$Reason = "payload replacement",
+        [int]$TimeoutSeconds = 10
+    )
+
+    $entrypoints = @(
+        $EntrypointPaths |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            ForEach-Object { [System.IO.Path]::GetFullPath([string]$_) }
+    )
+    if ($entrypoints.Count -eq 0) {
+        return @()
+    }
+
+    $matches = [System.Collections.Generic.List[object]]::new()
+    foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue)) {
+        if ([int]$process.ProcessId -eq [int]$PID) { continue }
+        $commandLine = [string]$process.CommandLine
+        if ([string]::IsNullOrWhiteSpace($commandLine)) { continue }
+
+        foreach ($entrypoint in $entrypoints) {
+            if ($commandLine.IndexOf($entrypoint, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                $matches.Add([pscustomobject][ordered]@{
+                        processId = [int]$process.ProcessId
+                        executablePath = [string]$process.ExecutablePath
+                        entrypoint = $entrypoint
+                        commandLine = $commandLine
+                    })
+                break
+            }
+        }
+    }
+
+    foreach ($match in $matches) {
+        Write-Host ("Stopping running revAgent MCP server before {0}: pid={1} entrypoint={2}" -f $Reason, $match.processId, $match.entrypoint) -ForegroundColor Yellow
+        try {
+            $process = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f [int]$match.processId) -ErrorAction Stop
+            if ($null -eq $process) {
+                continue
+            }
+            $termination = Invoke-CimMethod -InputObject $process -MethodName Terminate -Arguments @{ Reason = [uint32]0 } -ErrorAction Stop
+            if ($null -ne $termination -and [int]$termination.ReturnValue -ne 0 -and [int]$termination.ReturnValue -ne 5) {
+                throw "Terminate returned $($termination.ReturnValue)"
+            }
+        }
+        catch {
+            throw "Could not stop running revAgent MCP server pid=$($match.processId) before $Reason. Close Codex/revAgent on this workstation and retry. $($_.Exception.Message)"
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds([Math]::Max(1, $TimeoutSeconds))
+    foreach ($match in $matches) {
+        while ((Get-Date) -lt $deadline) {
+            if ($null -eq (Get-Process -Id ([int]$match.processId) -ErrorAction SilentlyContinue)) {
+                break
+            }
+            Start-Sleep -Milliseconds 250
+        }
+        if ($null -ne (Get-Process -Id ([int]$match.processId) -ErrorAction SilentlyContinue)) {
+            throw "Timed out waiting for revAgent MCP server pid=$($match.processId) to exit before $Reason. Close Codex/revAgent on this workstation and retry."
+        }
+    }
+
+    return $matches.ToArray()
+}
+
 function Install-NodeFromWinget {
     if (Test-CurrentProcessElevated) {
         Write-Host "winget Node.js install skipped in elevated machine phase; user-profile WindowsApps shims are not trusted."
@@ -2736,6 +2805,7 @@ function Invoke-RevAgentManagedCodexAgentsMachineCleanup {
     if (-not (Test-RevAgentPathUnder -ChildPath $codexHomeFull -ParentPath $targetProfileFull)) {
         throw "Refusing machine-phase Codex AGENTS cleanup outside the target user profile. target=$codexHomeFull profile=$targetProfileFull"
     }
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $codexHomeFull)
     if (-not (Test-Path -LiteralPath $codexHomeFull -PathType Container)) {
         $result.reason = "codex-home-missing"
         return [pscustomobject]$result
@@ -2745,6 +2815,7 @@ function Invoke-RevAgentManagedCodexAgentsMachineCleanup {
     }
     $targetPath = Join-Path $codexHomeFull "AGENTS.md"
     $result.targetPath = $targetPath
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $targetPath)
     if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
         $result.reason = "target-missing"
         return [pscustomobject]$result
@@ -4628,6 +4699,39 @@ function Resolve-WScriptPath {
     return Resolve-RevAgentWScriptPath
 }
 
+function Test-RevAgentTextFileLinesEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) { return $false }
+
+    $existing = @(Get-Content -LiteralPath $LiteralPath -ErrorAction Stop)
+    if ($existing.Count -ne $Lines.Count) { return $false }
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if (-not [string]::Equals([string]$existing[$i], [string]$Lines[$i], [System.StringComparison]::Ordinal)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Set-RevAgentAsciiContentIfChanged {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (Test-RevAgentTextFileLinesEqual -LiteralPath $LiteralPath -Lines $Lines) {
+        return
+    }
+
+    $Lines | Set-Content -LiteralPath $LiteralPath -Encoding ASCII
+}
+
 function Write-HiddenPowerShellLauncher {
     param(
         [Parameter(Mandatory = $true)]
@@ -4736,19 +4840,21 @@ function Install-UpdaterToolsFromPackage {
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
     if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
-        @(
+        $manualCommandLines = @(
             "@echo off",
             "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
             "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
+        )
+        Set-RevAgentAsciiContentIfChanged -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Lines $manualCommandLines
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
-        @(
+        $versionCommandLines = @(
             "@echo off",
             "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
+        )
+        Set-RevAgentAsciiContentIfChanged -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Lines $versionCommandLines
     }
     foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {
         $legacyCommandPath = Join-Path $DestinationRoot $legacyCommandName
@@ -5434,7 +5540,7 @@ if ($UserPhaseOnly) {
         }
         $docsServerPath = Join-Path $PackageTarget "installer\revit-api-docs-mcp"
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-        $installedStateForUserPhase = Read-InstalledState -Path $statePath
+        $installedStateForUserPhase = Get-InstalledState -Path $statePath
         $deferredDocsIndex = $false
         $installedAtUtc = [datetime]::MinValue
         if ($installedStateForUserPhase) {
@@ -6076,6 +6182,13 @@ try {
             throw "Source-free migration cleanup failed before package replacement. Failed items: $($sourceFreeMigrationPreCleanup.failedCount)"
         }
     }
+
+    $managedMcpEntrypointsToStop = [System.Collections.Generic.List[string]]::new()
+    [void]$managedMcpEntrypointsToStop.Add((Join-Path $PackageTarget "installer\revit-api-docs-mcp\build\index.js"))
+    if (-not $skipRuntimePayloadInstall) {
+        [void]$managedMcpEntrypointsToStop.Add((Join-Path $ServerTarget "build\index.js"))
+    }
+    [void](Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths $managedMcpEntrypointsToStop.ToArray() -Reason "package/runtime payload replacement")
 
     if (Test-Path -LiteralPath $PackageTarget) {
         Remove-Item -LiteralPath $PackageTarget -Recurse -Force -ErrorAction Stop

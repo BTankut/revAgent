@@ -695,6 +695,74 @@ Set-RevAgentInstallRunReport -Status "completed" -Message "cross-process user ph
         Assert-Equal $script:RacePublishCount 0 "A foreign second-GUI machine report must not reach the NAS report publisher."
     } $updaterBindingFunctionText (Join-Path $tempRoot "direct-update-report-race")
 
+    Write-Host "Test managed MCP stop uses CIM method invocation"
+    $updaterManagedStopAst = @($updaterBindingAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "Stop-RevAgentManagedMcpNodeProcesses"
+            }, $true))
+    Assert-Equal $updaterManagedStopAst.Count 1 "Updater managed MCP stop harness could not resolve the production function."
+    & {
+        param([string]$FunctionText, [string]$CaseRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        $entrypointPath = Join-Path $CaseRoot "runtime\build\index.js"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $entrypointPath) -Force | Out-Null
+        [System.IO.File]::WriteAllText($entrypointPath, "// harness")
+        $entrypointFullPath = [System.IO.Path]::GetFullPath($entrypointPath)
+        $script:mockTerminated = $false
+        $script:mockTerminateCalls = 0
+
+        function Get-CimInstance {
+            [CmdletBinding()]
+            param(
+                [string]$ClassName,
+                [string]$Filter
+            )
+
+            Assert-Equal $ClassName "Win32_Process" "Managed stop must query Win32_Process."
+            if ($Filter -eq "Name = 'node.exe'") {
+                return ,([pscustomobject]@{
+                        ProcessId = 4242
+                        ExecutablePath = "C:\Program Files\nodejs\node.exe"
+                        CommandLine = "node `"$entrypointFullPath`""
+                    })
+            }
+            if ($Filter -eq "ProcessId = 4242") {
+                return [pscustomobject]@{ ProcessId = 4242 }
+            }
+            throw "Unexpected CIM filter: $Filter"
+        }
+
+        function Invoke-CimMethod {
+            [CmdletBinding()]
+            param(
+                [object]$InputObject,
+                [string]$MethodName,
+                [hashtable]$Arguments
+            )
+
+            Assert-Equal $MethodName "Terminate" "Managed stop must terminate through Invoke-CimMethod."
+            Assert-True ($Arguments.ContainsKey("Reason") -and $Arguments["Reason"] -eq [uint32]0) "Managed stop must pass a uint32 zero terminate reason."
+            $script:mockTerminateCalls++
+            $script:mockTerminated = $true
+            return [pscustomobject]@{ ReturnValue = 0 }
+        }
+
+        function Get-Process {
+            [CmdletBinding()]
+            param([int]$Id)
+
+            Assert-Equal $Id 4242 "Managed stop must poll the terminated process id."
+            if ($script:mockTerminated) { return $null }
+            return [pscustomobject]@{ Id = $Id }
+        }
+
+        $matches = @(Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths @($entrypointFullPath) -Reason "smoke test" -TimeoutSeconds 1)
+        Assert-Equal $matches.Count 1 "Managed stop must return the matched managed node process."
+        Assert-Equal $script:mockTerminateCalls 1 "Managed stop must invoke exactly one CIM termination."
+    } $updaterManagedStopAst[0].Extent.Text (Join-Path $tempRoot "managed-stop")
+
     $guiUpdaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
     Assert-True ($guiUpdaterText -match '-MachinePhaseResultPath' -and $guiUpdaterText -match 'PendingUserPhaseComponentKey, "updater"') "Direct GUI user handoff must pass the exact protected machine phase identity to the updater."
 
@@ -1392,6 +1460,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match '\$installArgs\["SkipCodexSkillInstall"\] = \$true') "Updater must skip unchanged Codex skill integration when the existing install is present."
     Assert-True ($updateText -match '\$CodexInstructionPolicy = Resolve-CodexInstructionPolicy' -and $updateText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve Codex instruction policy and pass it to the self-contained installer."
     Assert-True ($updateText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $updateText -match 'codexInstructionCleanupSkipped') "Updater reports and installed state must expose Codex instruction policy behavior."
+    Assert-True ($updateText -match '\$installedStateForUserPhase = Get-InstalledState -Path \$statePath' -and $updateText -notmatch 'Read-InstalledState') "Updater user phase must call the canonical installed-state reader."
     Assert-True ($updateText -match 'Codex MCP registration: skipped; runtime/docs entry points unchanged') "Updater must skip MCP registration when runtime/docs entry points are unchanged."
     Assert-True ($updateText -match 'Revit API index: skipped; docs payload unchanged') "Updater must skip docs index rebuild when docs payload is unchanged and the cache exists."
     Assert-True ($updateText -match 'Fast update path : package/updater metadata only; self-contained installer skipped') "Updater must bypass the self-contained installer when all payload surfaces are unchanged."
@@ -1407,6 +1476,12 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match 'Fast update path failed; falling back to the full repair/install path') "Fast update failures must warn and fall back to the full repair/install path."
     Assert-True ($updateText -match '\$runSelfContainedInstaller = \$true') "Fast update failure must enable the self-contained installer fallback."
     Assert-True ($updateText -match 'fastUpdateFallbackUsed') "Updater reports must record whether the fast path fell back."
+    Assert-True ($updateText -match 'function Stop-RevAgentManagedMcpNodeProcesses' -and $updateText -match 'Name = ''node\.exe''' -and $updateText -match 'revit-api-docs-mcp\\build\\index\.js' -and $updateText -match '\$ServerTarget "build\\index\.js"') "Updater must stop only exact managed revAgent MCP node entrypoints before replacing package/runtime payloads."
+    Assert-True ($updateText -match 'Invoke-CimMethod -InputObject \$process -MethodName Terminate -Arguments @\{ Reason = \[uint32\]0 \}' -and $updateText -notmatch '\$process\.Terminate\(') "Updater managed MCP stop must invoke the Win32_Process Terminate method through CIM, not through inert CimInstance methods."
+    $updateManagedStopIndex = $updateText.IndexOf('Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths $managedMcpEntrypointsToStop.ToArray()')
+    $updatePackageRemoveIndex = $updateText.IndexOf('Remove-Item -LiteralPath $PackageTarget')
+    Assert-True ($updateManagedStopIndex -ge 0 -and $updatePackageRemoveIndex -gt $updateManagedStopIndex) "Updater must stop managed MCP node processes before deleting the package target."
+    Assert-True ($updateText -match 'Assert-RevAgentPathHasNoReparseComponents -Path \$codexHomeFull' -and $updateText -match 'Assert-RevAgentPathHasNoReparseComponents -Path \$targetPath') "Updater machine-phase Codex AGENTS cleanup must reject reparse Codex home and target paths before elevated hashing or deletion."
     Assert-True ($updateText -match 'operationMethod = \$script:RevAgentOperationMethod') "Updater reports must record the install/update method used."
     Assert-True ($updateText -match 'release = \[ordered\]@') "Updater reports must include release version, commit, and package SHA metadata."
     Assert-True ($updateText -match 'localInstall = if \(\$InstalledState\)') "Updater reports must include a local install state summary."
@@ -1482,6 +1557,15 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installTaskText -match 'trustedKeysPath = \$localTrustedReleaseKeysPath' -and $installTaskText -match 'policy = "enforce"') "Updater installer must pin the local trusted release key path and enforce distribution integrity."
     Assert-True ($installTaskText -notmatch 'previousTrustedReleaseKeysPath' -and $installTaskText -match 'Authenticated snapshot release key is unavailable; refusing updater repair' -and $installTaskText -match 'InstallVerifiedTrustedKeysSha256' -and $installTaskText -match 'InstallExecutionSnapshotState\.trust\.trustedKeysRelativePath') "Updater installer must never copy a trusted-key path from old config and must fail closed on the authenticated snapshot release key."
     Assert-True ($installTaskText -match '-UserPhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match '-MachinePhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match 'Authenticated snapshot updater changed after pre-import verification') "Nested updater machine/user phases must execute the exact hash-bound snapshot entrypoint with the broker-owned snapshot state."
+    $installerHelperWritesAreIdempotent = (
+        $installTaskText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \$manualCommandPath -Lines \$manualCommandLines' -and
+        $installTaskText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \$versionCommandPath -Lines \$versionCommandLines'
+    )
+    $updaterHelperWritesAreIdempotent = (
+        $updateText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \(Join-Path \$DestinationRoot "Update-revAgent-Now\.cmd"\) -Lines \$manualCommandLines' -and
+        $updateText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \(Join-Path \$DestinationRoot "Show-revAgent-Version\.cmd"\) -Lines \$versionCommandLines'
+    )
+    Assert-True ($installerHelperWritesAreIdempotent -and $updaterHelperWritesAreIdempotent) "Split-phase user integration must not rewrite unchanged protected helper commands before Codex/report user work."
     Assert-True ($installTaskText -match 'function Write-RevAgentAtomicBytes' -and $installTaskText -match '\[System\.IO\.File\]::Replace\(\$temporaryPath,\s*\$fullPath,\s*\$backupPath,\s*\$true\)' -and $installTaskText -notmatch '\[System\.IO\.File\]::Replace\([^\r\n]*\$null' -and $installTaskText -match 'PermissionNativeFileInfo\]::GetLinkCount' -and $installTaskText -match 'may have partially displaced the destination; recovery artifacts were preserved' -and $installTaskText -notmatch 'Remove-Item -LiteralPath \$backupPath') "Updater installer config/tool file writes must use PS5-compatible atomic replacement, preserve partial-failure recovery evidence, and retain reparse/hardlink guards."
     Assert-True ($installTaskText -match 'Assert-InstallEarlyAuthenticatedSnapshot' -and $installTaskText.IndexOf('Assert-InstallEarlyAuthenticatedSnapshot') -lt $installTaskText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated installer must reverify protected snapshot state before sibling imports."
     Assert-True ($installTaskText -match 'Split-phase updater installation requires -ExecutionSnapshotStatePath before sibling-module import' -and $installTaskText -match 'Execution snapshot contains a filesystem link') "Elevated installer must require a link-safe authenticated snapshot instead of a sealed NAS source."
@@ -2271,6 +2355,8 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         "Remove-RevAgentLegacyStartupLaunchers",
         "Merge-RevAgentLauncherCleanupEvidence",
         "Merge-RevAgentDesktopLauncherCleanupEvidence",
+        "Test-RevAgentTextFileLinesEqual",
+        "Set-RevAgentAsciiContentIfChanged",
         "Write-UpdaterCommandFiles"
     )
     $startupCleanupFunctionAsts = @($installTaskAst.FindAll({
@@ -2541,6 +2627,11 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installerText -match 'New-RevAgentProtectedInstallerSubdirectory' -and $installerText -match 'FileSystemAclExtensions\]::CreateDirectory' -and $installerText -match 'preimport-') "Self-contained origin native helper must compile from an ACL-at-create protected machine temp across PowerShell runtimes."
     Assert-True ($installerText -match 'Set-RevAgentCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installerText -match '\[bool\]\$Required = \$true' -and $installerText -match 'Install-RevAgentManagedUpdaterFile -Source \$Source -Destination \$Destination -Required:\$Required -MutationGuard \$MutationGuard' -and $installerText -match 'Protect-RevAgentManagedExecutionTree -InstallRoot \$InstallRoot' -and $installerText -match 'Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot \$managedInstallRoot' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$managedInstallRoot -ProtectedPaths @\(\$DestinationRoot\) -ExactProtectedPaths' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$DestinationRoot' -and $installerText -match 'Sync-RevAgentManagedUpdaterDirectory -SourceRoot \$libSource' -and $installerText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\$true -MutationGuard \$mutationGuard') "Self-contained installer must protect and guard the canonical install-parent boundary before shared guarded file/tree refresh."
+    Assert-True ($installerText -match 'function Stop-RevAgentManagedMcpNodeProcesses' -and $installerText -match 'Name = ''node\.exe''' -and $installerText -match '\$ServerTarget "build\\index\.js"') "Self-contained installer must stop only exact managed runtime MCP node entrypoints before runtime payload replacement."
+    Assert-True ($installerText -match 'Invoke-CimMethod -InputObject \$process -MethodName Terminate -Arguments @\{ Reason = \[uint32\]0 \}' -and $installerText -notmatch '\$process\.Terminate\(') "Self-contained installer managed MCP stop must invoke the Win32_Process Terminate method through CIM, not through inert CimInstance methods."
+    $installerManagedStopIndex = $installerText.IndexOf('Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths @((Join-Path $ServerTarget "build\index.js"))')
+    $installerCleanupIndex = $installerText.IndexOf('Invoke-RevAgentCleanup -ForUninstall:$Uninstall')
+    Assert-True ($installerManagedStopIndex -ge 0 -and $installerCleanupIndex -gt $installerManagedStopIndex) "Self-contained installer must stop managed runtime MCP node processes before runtime cleanup."
     Assert-True ($installerText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installerText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup') "Self-contained installer must remove legacy revAgent desktop launchers."
     Assert-True ($installTaskText -notmatch 'legacy Revit MCP launcher shortcut' -and $updaterText -notmatch 'legacy Revit MCP launcher shortcut' -and $installerText -notmatch 'legacy Revit MCP launcher shortcut') "Active installer/updater launcher cleanup messages must use revAgent wording."
     Assert-True ($installerText -match 'Remove-CodexProfileBackupArtifacts') "Installer must clean old Codex profile backup artifacts."
