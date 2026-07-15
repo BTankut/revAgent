@@ -1392,6 +1392,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match '\$installArgs\["SkipCodexSkillInstall"\] = \$true') "Updater must skip unchanged Codex skill integration when the existing install is present."
     Assert-True ($updateText -match '\$CodexInstructionPolicy = Resolve-CodexInstructionPolicy' -and $updateText -match 'CodexInstructionPolicy = \$CodexInstructionPolicy') "Updater must resolve Codex instruction policy and pass it to the self-contained installer."
     Assert-True ($updateText -match 'codexInstructionPolicy = \$CodexInstructionPolicy' -and $updateText -match 'codexInstructionCleanupSkipped') "Updater reports and installed state must expose Codex instruction policy behavior."
+    Assert-True ($updateText -match '\$installedStateForUserPhase = Get-InstalledState -Path \$statePath' -and $updateText -notmatch 'Read-InstalledState') "Updater user phase must call the canonical installed-state reader."
     Assert-True ($updateText -match 'Codex MCP registration: skipped; runtime/docs entry points unchanged') "Updater must skip MCP registration when runtime/docs entry points are unchanged."
     Assert-True ($updateText -match 'Revit API index: skipped; docs payload unchanged') "Updater must skip docs index rebuild when docs payload is unchanged and the cache exists."
     Assert-True ($updateText -match 'Fast update path : package/updater metadata only; self-contained installer skipped') "Updater must bypass the self-contained installer when all payload surfaces are unchanged."
@@ -1486,6 +1487,15 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installTaskText -match 'trustedKeysPath = \$localTrustedReleaseKeysPath' -and $installTaskText -match 'policy = "enforce"') "Updater installer must pin the local trusted release key path and enforce distribution integrity."
     Assert-True ($installTaskText -notmatch 'previousTrustedReleaseKeysPath' -and $installTaskText -match 'Authenticated snapshot release key is unavailable; refusing updater repair' -and $installTaskText -match 'InstallVerifiedTrustedKeysSha256' -and $installTaskText -match 'InstallExecutionSnapshotState\.trust\.trustedKeysRelativePath') "Updater installer must never copy a trusted-key path from old config and must fail closed on the authenticated snapshot release key."
     Assert-True ($installTaskText -match '-UserPhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match '-MachinePhaseOnly -PhaseResultPath \$phaseResultFullPath -ExecutionSnapshotStatePath \$ExecutionSnapshotStatePath' -and $installTaskText -match 'Authenticated snapshot updater changed after pre-import verification') "Nested updater machine/user phases must execute the exact hash-bound snapshot entrypoint with the broker-owned snapshot state."
+    $installerHelperWritesAreIdempotent = (
+        $installTaskText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \$manualCommandPath -Lines \$manualCommandLines' -and
+        $installTaskText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \$versionCommandPath -Lines \$versionCommandLines'
+    )
+    $updaterHelperWritesAreIdempotent = (
+        $updateText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \(Join-Path \$DestinationRoot "Update-revAgent-Now\.cmd"\) -Lines \$manualCommandLines' -and
+        $updateText -match 'Set-RevAgentAsciiContentIfChanged -LiteralPath \(Join-Path \$DestinationRoot "Show-revAgent-Version\.cmd"\) -Lines \$versionCommandLines'
+    )
+    Assert-True ($installerHelperWritesAreIdempotent -and $updaterHelperWritesAreIdempotent) "Split-phase user integration must not rewrite unchanged protected helper commands before Codex/report user work."
     Assert-True ($installTaskText -match 'function Write-RevAgentAtomicBytes' -and $installTaskText -match '\[System\.IO\.File\]::Replace\(\$temporaryPath,\s*\$fullPath,\s*\$backupPath,\s*\$true\)' -and $installTaskText -notmatch '\[System\.IO\.File\]::Replace\([^\r\n]*\$null' -and $installTaskText -match 'PermissionNativeFileInfo\]::GetLinkCount' -and $installTaskText -match 'may have partially displaced the destination; recovery artifacts were preserved' -and $installTaskText -notmatch 'Remove-Item -LiteralPath \$backupPath') "Updater installer config/tool file writes must use PS5-compatible atomic replacement, preserve partial-failure recovery evidence, and retain reparse/hardlink guards."
     Assert-True ($installTaskText -match 'Assert-InstallEarlyAuthenticatedSnapshot' -and $installTaskText.IndexOf('Assert-InstallEarlyAuthenticatedSnapshot') -lt $installTaskText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated installer must reverify protected snapshot state before sibling imports."
     Assert-True ($installTaskText -match 'Split-phase updater installation requires -ExecutionSnapshotStatePath before sibling-module import' -and $installTaskText -match 'Execution snapshot contains a filesystem link') "Elevated installer must require a link-safe authenticated snapshot instead of a sealed NAS source."
@@ -2275,6 +2285,8 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         "Remove-RevAgentLegacyStartupLaunchers",
         "Merge-RevAgentLauncherCleanupEvidence",
         "Merge-RevAgentDesktopLauncherCleanupEvidence",
+        "Test-RevAgentTextFileLinesEqual",
+        "Set-RevAgentAsciiContentIfChanged",
         "Write-UpdaterCommandFiles"
     )
     $startupCleanupFunctionAsts = @($installTaskAst.FindAll({

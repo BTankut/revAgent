@@ -4694,6 +4694,39 @@ function Resolve-WScriptPath {
     return Resolve-RevAgentWScriptPath
 }
 
+function Test-RevAgentTextFileLinesEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (-not (Test-Path -LiteralPath $LiteralPath -PathType Leaf)) { return $false }
+
+    $existing = @(Get-Content -LiteralPath $LiteralPath -ErrorAction Stop)
+    if ($existing.Count -ne $Lines.Count) { return $false }
+
+    for ($i = 0; $i -lt $Lines.Count; $i++) {
+        if (-not [string]::Equals([string]$existing[$i], [string]$Lines[$i], [System.StringComparison]::Ordinal)) {
+            return $false
+        }
+    }
+
+    return $true
+}
+
+function Set-RevAgentAsciiContentIfChanged {
+    param(
+        [Parameter(Mandatory = $true)][string]$LiteralPath,
+        [Parameter(Mandatory = $true)][string[]]$Lines
+    )
+
+    if (Test-RevAgentTextFileLinesEqual -LiteralPath $LiteralPath -Lines $Lines) {
+        return
+    }
+
+    $Lines | Set-Content -LiteralPath $LiteralPath -Encoding ASCII
+}
+
 function Write-HiddenPowerShellLauncher {
     param(
         [Parameter(Mandatory = $true)]
@@ -4802,19 +4835,21 @@ function Install-UpdaterToolsFromPackage {
     $updaterPath = Join-Path $DestinationRoot "update-from-nas.ps1"
     $versionToolPath = Join-Path $DestinationRoot "show-installed-version.ps1"
     if (Test-Path -LiteralPath $updaterPath -PathType Leaf) {
-        @(
+        $manualCommandLines = @(
             "@echo off",
             "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$updaterPath`" -ConfigPath `"$ConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
             "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Encoding ASCII
+        )
+        Set-RevAgentAsciiContentIfChanged -LiteralPath (Join-Path $DestinationRoot "Update-revAgent-Now.cmd") -Lines $manualCommandLines
     }
     if (Test-Path -LiteralPath $versionToolPath -PathType Leaf) {
-        @(
+        $versionCommandLines = @(
             "@echo off",
             "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$versionToolPath`" -ConfigPath `"$ConfigPath`"",
             "pause"
-        ) | Set-Content -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Encoding ASCII
+        )
+        Set-RevAgentAsciiContentIfChanged -LiteralPath (Join-Path $DestinationRoot "Show-revAgent-Version.cmd") -Lines $versionCommandLines
     }
     foreach ($legacyCommandName in @("Update-Revit-MCP-Now.cmd", "Show-Revit-MCP-Version.cmd")) {
         $legacyCommandPath = Join-Path $DestinationRoot $legacyCommandName
@@ -5500,7 +5535,7 @@ if ($UserPhaseOnly) {
         }
         $docsServerPath = Join-Path $PackageTarget "installer\revit-api-docs-mcp"
         $docsCachePath = Join-Path $InstallRoot ("state\revit-api-docs\cache\revit-api-docs-{0}.json" -f $RevitVersion)
-        $installedStateForUserPhase = Read-InstalledState -Path $statePath
+        $installedStateForUserPhase = Get-InstalledState -Path $statePath
         $deferredDocsIndex = $false
         $installedAtUtc = [datetime]::MinValue
         if ($installedStateForUserPhase) {
