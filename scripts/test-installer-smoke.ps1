@@ -2470,7 +2470,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.vbs") -PathType Leaf) "Machine-only command generation must preserve user Startup files for the unelevated phase."
 
         $hiddenLauncherPath = Join-Path $workRoot "Run-revAgent-Update-Hidden.vbs"
-        Set-Content -LiteralPath $hiddenLauncherPath -Value "powershell $updaterPath -ConfigPath $configPath -OperationMethod scheduled-update-audit" -Encoding ASCII
+        Set-Content -LiteralPath $hiddenLauncherPath -Value "powershell $updaterPath -ConfigPath $configPath -OperationMethod scheduled-update" -Encoding ASCII
         $script:HiddenLauncherWriteCount = 0
         Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
         Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase task registration must not rewrite the protected hidden updater launcher."
