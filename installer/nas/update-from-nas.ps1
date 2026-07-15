@@ -532,6 +532,7 @@ $script:RevAgentLicense = [ordered]@{
     message = "License verification is disabled."
     policy = $script:RevAgentLicensePolicy
 }
+$script:RevAgentCodexUserIntegrationResult = $null
 $script:RevAgentOperation = if ($AuditOnly) { "audit" } elseif ($SourceFreeMigration) { "source-free-migration" } elseif ($Force) { "reinstall" } else { "update" }
 $script:RevAgentOperationMethod = if (-not [string]::IsNullOrWhiteSpace($OperationMethod)) {
     $OperationMethod
@@ -2645,116 +2646,126 @@ function Resolve-NpmCommand {
     )
 }
 
-function ConvertTo-TomlString {
-    param([string]$Value)
-
-    if ($null -eq $Value) {
-        return "''"
-    }
-
-    if ($Value -notmatch "'") {
-        return "'" + $Value + "'"
-    }
-
-    $escaped = $Value.Replace("\", "\\").Replace('"', '\"')
-    $escaped = $escaped -replace "`r", "\r" -replace "`n", "\n"
-    return '"' + $escaped + '"'
-}
-
-function New-CodexMcpServerTomlBlock {
+function Invoke-InstalledCodexUserIntegration {
     param(
-        [string]$Name,
-        [string]$Command,
-        [string[]]$McpArgs
-    )
-
-    $argText = (@($McpArgs) | ForEach-Object { ConvertTo-TomlString -Value $_ }) -join ", "
-    return @(
-        "[mcp_servers.$Name]",
-        ("command = {0}" -f (ConvertTo-TomlString -Value $Command)),
-        ("args = [{0}]" -f $argText),
-        ""
-    ) -join "`r`n"
-}
-
-function Set-CodexMcpServerConfig {
-    param(
-        [string]$Name,
-        [string]$Command,
-        [string[]]$McpArgs
-    )
-
-    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
-    New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
-    $configPath = Join-Path $configRoot "config.toml"
-    $content = ""
-    if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        $content = Get-Content -Raw -LiteralPath $configPath
-    }
-
-    $block = New-CodexMcpServerTomlBlock -Name $Name -Command $Command -McpArgs $McpArgs
-    $pattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($Name))\]\r?\n.*?(?=^\[|\z)"
-    if ($content -match $pattern) {
-        $content = [regex]::Replace($content, $pattern, $block)
-    }
-    else {
-        if (-not [string]::IsNullOrWhiteSpace($content) -and -not $content.EndsWith("`n")) {
-            $content += "`r`n"
-        }
-        if (-not [string]::IsNullOrWhiteSpace($content)) {
-            $content += "`r`n"
-        }
-        $content += $block
-    }
-
-    Set-Content -LiteralPath $configPath -Value $content -Encoding UTF8
-    return $configPath
-}
-
-function Remove-CodexMcpServerConfig {
-    param(
-        [string]$Name
-    )
-
-    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
-    $configPath = Join-Path $configRoot "config.toml"
-    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-        return $configPath
-    }
-
-    $content = Get-Content -Raw -LiteralPath $configPath
-    $pattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($Name))\]\r?\n.*?(?=^\[|\z)"
-    $updated = [regex]::Replace($content, $pattern, "")
-    $updated = [regex]::Replace($updated, '(\r?\n){3,}', "`r`n`r`n").TrimEnd() + "`r`n"
-    if ($updated -ne $content) {
-        Set-Content -LiteralPath $configPath -Value $updated -Encoding UTF8
-    }
-    return $configPath
-}
-
-function Register-CodexMcpServersInConfig {
-    param(
-        [string]$NodePath,
         [string]$RuntimeServerPath,
         [string]$DocsServerPath
     )
 
-    foreach ($legacyName in @("revit-mcp", "revit-api-docs")) {
-        [void](Remove-CodexMcpServerConfig -Name $legacyName)
+    Ensure-CodexDesktop
+
+    $userIntegrationScript = Join-Path $PackageTarget "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
+    if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
+        $userIntegrationScript = Join-Path $PSScriptRoot "Invoke-revAgent-CodexUserIntegration.ps1"
+    }
+    if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
+        throw "Unelevated Codex user-integration entrypoint was not found in the installed package or updater tools."
     }
 
-    $configPath = Set-CodexMcpServerConfig -Name "revAgent" -Command $NodePath -McpArgs @($RuntimeServerPath)
-    [void](Set-CodexMcpServerConfig -Name "revAgent-api-docs" -Command $NodePath -McpArgs @($DocsServerPath))
-    [void](Set-RevAgentCodexMemoryConfig -ConfigPath $configPath)
-    Write-Host "Codex MCP config : $configPath"
+    $targetProfile = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+    $targetSid = if ([string]::IsNullOrWhiteSpace($TargetInteractiveUserSid)) {
+        [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+    }
+    else {
+        $TargetInteractiveUserSid
+    }
+    $integrationArgs = @{
+        InstallRoot = $InstallRoot
+        CodexInstructionPolicy = $CodexInstructionPolicy
+        TargetUserProfileRoot = $targetProfile
+        TargetUserSid = $targetSid
+        RuntimeServerPath = $RuntimeServerPath
+        DocsServerPath = $DocsServerPath
+        SkillSourcePath = (Join-Path $InstallRoot "codex\skills\revAgent")
+        AgentsSourcePath = (Join-Path $InstallRoot "codex\AGENTS.md")
+        PassThru = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TargetCodexHome)) {
+        $integrationArgs["CodexHome"] = $TargetCodexHome
+    }
+
+    $integrationOutput = @(& $userIntegrationScript @integrationArgs)
+    $integrationResult = $integrationOutput | Where-Object {
+        $null -ne $_ -and $null -ne $_.PSObject.Properties["success"]
+    } | Select-Object -Last 1
+    if ($null -eq $integrationResult -or -not [bool]$integrationResult.success) {
+        throw "Codex user integration did not return a successful attestation result."
+    }
+    Write-Host "Codex user integration: completed with atomic config, readback, and handshake attestation." -ForegroundColor Green
+    return $integrationResult
 }
 
-function Set-CodexMemoryConfig {
-    $configRoot = Join-Path $script:RevAgentOsUserProfile ".codex"
-    $configPath = Join-Path $configRoot "config.toml"
-    [void](Set-RevAgentCodexMemoryConfig -ConfigPath $configPath)
-    Write-Host "Codex memory config: enabled"
-    return $configPath
+function Invoke-RevAgentManagedCodexAgentsMachineCleanup {
+    param(
+        [string]$TargetProfileRoot,
+        [string]$TargetCodexHome,
+        [string]$AgentsSourcePath,
+        [string]$InstructionPolicy
+    )
+
+    $result = [ordered]@{
+        enabled = $false
+        mode = "not-run"
+        targetPath = ""
+        sourcePath = $AgentsSourcePath
+        sourceSha256 = ""
+        targetSha256 = ""
+        removed = $false
+        reason = ""
+    }
+    if (-not $MachinePhaseOnly) {
+        $result.reason = "not-machine-phase"
+        return [pscustomobject]$result
+    }
+    if (-not [string]::Equals($InstructionPolicy, "managed-user-pack", [System.StringComparison]::OrdinalIgnoreCase)) {
+        $result.mode = "skipped"
+        $result.reason = "preserve-local-policy"
+        return [pscustomobject]$result
+    }
+    $result.enabled = $true
+    $result.mode = "checked"
+    if ([string]::IsNullOrWhiteSpace($TargetProfileRoot) -or -not (Test-Path -LiteralPath $TargetProfileRoot -PathType Container)) {
+        $result.reason = "target-profile-missing"
+        return [pscustomobject]$result
+    }
+    if ([string]::IsNullOrWhiteSpace($TargetCodexHome)) {
+        $TargetCodexHome = Join-Path $TargetProfileRoot ".codex"
+    }
+    $targetProfileFull = [System.IO.Path]::GetFullPath($TargetProfileRoot).TrimEnd("\")
+    $codexHomeFull = [System.IO.Path]::GetFullPath($TargetCodexHome)
+    if (-not (Test-RevAgentPathUnder -ChildPath $codexHomeFull -ParentPath $targetProfileFull)) {
+        throw "Refusing machine-phase Codex AGENTS cleanup outside the target user profile. target=$codexHomeFull profile=$targetProfileFull"
+    }
+    if (-not (Test-Path -LiteralPath $codexHomeFull -PathType Container)) {
+        $result.reason = "codex-home-missing"
+        return [pscustomobject]$result
+    }
+    if ([string]::IsNullOrWhiteSpace($AgentsSourcePath) -or -not (Test-Path -LiteralPath $AgentsSourcePath -PathType Leaf)) {
+        throw "Managed AGENTS cleanup source was not found: $AgentsSourcePath"
+    }
+    $targetPath = Join-Path $codexHomeFull "AGENTS.md"
+    $result.targetPath = $targetPath
+    if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+        $result.reason = "target-missing"
+        return [pscustomobject]$result
+    }
+    $targetItem = Get-Item -LiteralPath $targetPath -Force -ErrorAction Stop
+    if (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Refusing machine-phase Codex AGENTS cleanup over a reparse point: $targetPath"
+    }
+    $sourceHash = Get-RevAgentFileSha256 -Path $AgentsSourcePath
+    $targetHash = Get-RevAgentFileSha256 -Path $targetPath
+    $result.sourceSha256 = $sourceHash
+    $result.targetSha256 = $targetHash
+    if (-not [string]::Equals($sourceHash, $targetHash, [System.StringComparison]::OrdinalIgnoreCase)) {
+        $result.reason = "target-not-current-managed-source"
+        return [pscustomobject]$result
+    }
+
+    Remove-Item -LiteralPath $targetPath -Force -ErrorAction Stop
+    $result.removed = $true
+    $result.reason = "removed-current-managed-source"
+    return [pscustomobject]$result
 }
 
 function Remove-CodexProfileBackupArtifacts {
@@ -4397,6 +4408,7 @@ function New-CurrentUpdateDiagnostics {
         desktopLauncherCleanup = $desktopLauncherCleanupState
         canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
+        managedCodexAgentsMachineCleanup = $managedCodexAgentsMachineCleanup
     }
     $snapshotRelease = Get-JsonPropertyValue -Object $script:RevAgentExecutionSnapshotState -Name "release"
     if ($null -ne $script:RevAgentExecutionSnapshotState -and $null -ne $snapshotRelease) {
@@ -4407,6 +4419,9 @@ function New-CurrentUpdateDiagnostics {
     }
     if ($MachinePhaseOnly -and -not [string]::IsNullOrWhiteSpace($PhaseResultPath)) {
         $diagnostics["machinePhaseResultPath"] = [System.IO.Path]::GetFullPath($PhaseResultPath)
+    }
+    if ($null -ne $script:RevAgentCodexUserIntegrationResult) {
+        $diagnostics["codexUserIntegration"] = $script:RevAgentCodexUserIntegrationResult
     }
     return $diagnostics
 }
@@ -5448,45 +5463,9 @@ if ($UserPhaseOnly) {
         elseif ($deferredDocsIndex) {
             Write-Host "Revit API index: deferred marker satisfied by a current unelevated cache." -ForegroundColor Green
         }
-        Ensure-CodexDesktop
-
-        $userIntegrationScript = Join-Path $PackageTarget "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"
-        if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
-            $userIntegrationScript = Join-Path $PSScriptRoot "Invoke-revAgent-CodexUserIntegration.ps1"
-        }
-        if (-not (Test-Path -LiteralPath $userIntegrationScript -PathType Leaf)) {
-            throw "Unelevated Codex user-integration entrypoint was not found in the installed package or updater tools."
-        }
-
-        $targetProfile = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
-        $targetSid = if ([string]::IsNullOrWhiteSpace($TargetInteractiveUserSid)) {
-            [string]([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
-        }
-        else {
-            $TargetInteractiveUserSid
-        }
-        $integrationArgs = @{
-            InstallRoot = $InstallRoot
-            CodexInstructionPolicy = $CodexInstructionPolicy
-            TargetUserProfileRoot = $targetProfile
-            TargetUserSid = $targetSid
-            RuntimeServerPath = (Join-Path $ServerTarget "build\index.js")
-            DocsServerPath = (Join-Path $docsServerPath "build\index.js")
-            SkillSourcePath = (Join-Path $InstallRoot "codex\skills\revAgent")
-            AgentsSourcePath = (Join-Path $InstallRoot "codex\AGENTS.md")
-            PassThru = $true
-        }
-        if (-not [string]::IsNullOrWhiteSpace($TargetCodexHome)) {
-            $integrationArgs["CodexHome"] = $TargetCodexHome
-        }
-
-        $integrationOutput = @(& $userIntegrationScript @integrationArgs)
-        $integrationResult = $integrationOutput | Where-Object {
-            $null -ne $_ -and $null -ne $_.PSObject.Properties["success"]
-        } | Select-Object -Last 1
-        if ($null -eq $integrationResult -or -not [bool]$integrationResult.success) {
-            throw "Codex user integration did not return a successful attestation result."
-        }
+        $integrationResult = Invoke-InstalledCodexUserIntegration `
+            -RuntimeServerPath (Join-Path $ServerTarget "build\index.js") `
+            -DocsServerPath (Join-Path $docsServerPath "build\index.js")
         if ($canonicalRebaselineRequested) {
             $sourceFreeUserCleanupState.postCleanup = Invoke-RevAgentSourceFreeArtifactCleanup `
                 -InstallRoot $InstallRoot `
@@ -5626,6 +5605,7 @@ $highestAcceptedReleaseSequence = [long]0
 $channel = $null
 $persistentUpdaterChannelMutation = $null
 $protectedCodexCliProvision = $null
+$managedCodexAgentsMachineCleanup = $null
 
 try {
     Initialize-DistributionIntegrityConfig -Config $config
@@ -5874,7 +5854,6 @@ try {
 
     if ((-not $AuditOnly) -and (-not $SkipCodexUserIntegration)) {
         Remove-CodexProfileBackupArtifacts
-        [void](Set-CodexMemoryConfig)
     }
 
     if (-not $MachinePhaseOnly -and -not $Force -and -not $SourceFreeMigration -and -not $revAgentCleanInstallTransitionRequired -and -not $canonicalRebaselineRequested -and $isPackageCurrent -and -not $requiresRevitClosed) {
@@ -6252,12 +6231,12 @@ try {
             if ($MachinePhaseOnly) {
                 throw "Codex MCP registration cannot run in the elevated machine phase; it must be completed by the authenticated unelevated user-integration phase."
             }
-            Ensure-CodexDesktop
-            $nodePath = [string]$nodeRuntimeStatus.nodePath
             $runtimeServerPath = Join-Path $ServerTarget "build\index.js"
             $docsServerEntryPath = Join-Path $docsServerPath "build\index.js"
-            Write-Host "Codex MCP registration: updating the authenticated user's config.toml without executing a mutable LocalAppData CLI mirror."
-            Register-CodexMcpServersInConfig -NodePath $nodePath -RuntimeServerPath $runtimeServerPath -DocsServerPath $docsServerEntryPath
+            Write-Host "Codex MCP registration: running the authenticated unelevated user-integration contract."
+            $script:RevAgentCodexUserIntegrationResult = Invoke-InstalledCodexUserIntegration `
+                -RuntimeServerPath $runtimeServerPath `
+                -DocsServerPath $docsServerEntryPath
         }
     }
 
@@ -6314,6 +6293,19 @@ try {
     }
 
     if ($MachinePhaseOnly) {
+        $targetProfileForMachineCodexCleanup = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+        $targetCodexHomeForMachineCodexCleanup = if ([string]::IsNullOrWhiteSpace($TargetCodexHome)) {
+            Join-Path $targetProfileForMachineCodexCleanup ".codex"
+        }
+        else {
+            $TargetCodexHome
+        }
+        $managedCodexAgentsMachineCleanup = Invoke-RevAgentManagedCodexAgentsMachineCleanup `
+            -TargetProfileRoot $targetProfileForMachineCodexCleanup `
+            -TargetCodexHome $targetCodexHomeForMachineCodexCleanup `
+            -AgentsSourcePath (Join-Path $InstallRoot "codex\AGENTS.md") `
+            -InstructionPolicy $CodexInstructionPolicy
+
         # Provision from the authenticated Store package into the protected
         # machine tree before any successful state/report is committed. The
         # protected CodexRegistration module copies WindowsApps bytes without
@@ -6373,6 +6365,7 @@ try {
         revAgentCleanInstallTransition = $revAgentCleanInstallTransitionState
         updaterVersion = $updaterVersion
         codexInstructionPolicy = $CodexInstructionPolicy
+        managedCodexAgentsMachineCleanup = $managedCodexAgentsMachineCleanup
         protectedCodexCli = $protectedCodexCliProvision
         machineRole = $MachineRole
         skipCodexUserIntegration = [bool]$SkipCodexUserIntegration
@@ -6412,6 +6405,7 @@ try {
         packageSha256 = $actualSha
         desktopLauncherCleanup = $desktopLauncherCleanupState
         canonicalLegacySurfaceCleanup = $canonicalLegacySurfaceCleanupState
+        managedCodexAgentsMachineCleanup = $managedCodexAgentsMachineCleanup
     })
 }
 catch {
