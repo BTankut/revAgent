@@ -54,6 +54,7 @@ Assert-True ($installTaskText -match 'Invoke-RevAgentExactLegacyStartupLauncherC
 Assert-True ($installerText -match 'RevAgent\.DesktopLauncherCleanup\.psm1' -and $installerText -match 'Invoke-RevAgentLegacyDesktopLauncherCleanup') "Self-contained installer must remove legacy desktop launchers."
 Assert-True ($moduleText -match 'FILE_FLAG_OPEN_REPARSE_POINT' -and $moduleText -match 'NumberOfLinks' -and $moduleText -match '\[System\.IO\.File\]::Delete\(\$legacyStartupPath\)') "Exact Startup cleanup must inspect leaf metadata without following reparses, require hardlink evidence, and delete without Force attribute mutation."
 Assert-True ($moduleText -notmatch 'Remove-Item\s+-LiteralPath\s+\$legacyStartupPath\s+-Force') "Exact Startup cleanup must never use Force deletion against a potentially shared file record."
+Assert-True ($moduleText -match 'function Test-RevAgentDesktopLauncherContainerPath' -and $moduleText -match 'Test-Path -LiteralPath \$Path -PathType Container -ErrorAction Stop' -and $moduleText -match 'catch \{\s*return \$false\s*\}' -and $moduleText -match 'Get-RevAgentDesktopLauncherFileChildren -Path \$root') "Content-based desktop launcher cleanup must tolerate inaccessible profile/Desktop roots without failing exact Startup cleanup."
 
 foreach ($commandName in @(
         "Invoke-RevAgentExactLegacyStartupLauncherCleanup",
@@ -121,6 +122,11 @@ call "%RELEASE_ROOT%\tools\revAgent Updater STABLE.cmd"
     # Recreate one content-matching historical file for the broader cleanup
     # fixture below. The exact-name behavior is tested independently above.
     Set-Content -LiteralPath $legacyStartup -Value '@echo off & powershell -File "C:\ProgramData\DPE\RevitMCP\updater\update-from-nas.ps1"' -Encoding ASCII
+
+    $missingRootResult = Invoke-RevAgentLegacyDesktopLauncherCleanup -LauncherRoots @((Join-Path $tempRoot "MissingDesktopRoot"))
+    Assert-Equal ([int]$missingRootResult.matchedCount) 0 "Missing launcher roots must not produce matches."
+    Assert-Equal ([int]$missingRootResult.removedCount) 0 "Missing launcher roots must not remove files."
+    Assert-Equal ([int]$missingRootResult.failedCount) 0 "Missing launcher roots must not produce cleanup failures."
 
     $preview = Invoke-RevAgentLegacyDesktopLauncherCleanup -LauncherRoots @($desktopRoot, $startupRoot) -WhatIfOnly
     Assert-Equal ([int]$preview.matchedCount) 3 "WhatIf cleanup must match legacy desktop and Startup launchers."
