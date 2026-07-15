@@ -1866,7 +1866,10 @@ function Stop-RevAgentManagedMcpNodeProcesses {
         Write-Host ("Stopping running revAgent MCP server before {0}: pid={1} entrypoint={2}" -f $Reason, $match.processId, $match.entrypoint) -ForegroundColor Yellow
         try {
             $process = Get-CimInstance -ClassName Win32_Process -Filter ("ProcessId = {0}" -f [int]$match.processId) -ErrorAction Stop
-            $termination = $process.Terminate(0)
+            if ($null -eq $process) {
+                continue
+            }
+            $termination = Invoke-CimMethod -InputObject $process -MethodName Terminate -Arguments @{ Reason = [uint32]0 } -ErrorAction Stop
             if ($null -ne $termination -and [int]$termination.ReturnValue -ne 0 -and [int]$termination.ReturnValue -ne 5) {
                 throw "Terminate returned $($termination.ReturnValue)"
             }
@@ -2802,6 +2805,7 @@ function Invoke-RevAgentManagedCodexAgentsMachineCleanup {
     if (-not (Test-RevAgentPathUnder -ChildPath $codexHomeFull -ParentPath $targetProfileFull)) {
         throw "Refusing machine-phase Codex AGENTS cleanup outside the target user profile. target=$codexHomeFull profile=$targetProfileFull"
     }
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $codexHomeFull)
     if (-not (Test-Path -LiteralPath $codexHomeFull -PathType Container)) {
         $result.reason = "codex-home-missing"
         return [pscustomobject]$result
@@ -2811,6 +2815,7 @@ function Invoke-RevAgentManagedCodexAgentsMachineCleanup {
     }
     $targetPath = Join-Path $codexHomeFull "AGENTS.md"
     $result.targetPath = $targetPath
+    [void](Assert-RevAgentPathHasNoReparseComponents -Path $targetPath)
     if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
         $result.reason = "target-missing"
         return [pscustomobject]$result

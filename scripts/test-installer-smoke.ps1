@@ -695,6 +695,74 @@ Set-RevAgentInstallRunReport -Status "completed" -Message "cross-process user ph
         Assert-Equal $script:RacePublishCount 0 "A foreign second-GUI machine report must not reach the NAS report publisher."
     } $updaterBindingFunctionText (Join-Path $tempRoot "direct-update-report-race")
 
+    Write-Host "Test managed MCP stop uses CIM method invocation"
+    $updaterManagedStopAst = @($updaterBindingAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "Stop-RevAgentManagedMcpNodeProcesses"
+            }, $true))
+    Assert-Equal $updaterManagedStopAst.Count 1 "Updater managed MCP stop harness could not resolve the production function."
+    & {
+        param([string]$FunctionText, [string]$CaseRoot)
+        . ([scriptblock]::Create($FunctionText))
+
+        $entrypointPath = Join-Path $CaseRoot "runtime\build\index.js"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $entrypointPath) -Force | Out-Null
+        [System.IO.File]::WriteAllText($entrypointPath, "// harness")
+        $entrypointFullPath = [System.IO.Path]::GetFullPath($entrypointPath)
+        $script:mockTerminated = $false
+        $script:mockTerminateCalls = 0
+
+        function Get-CimInstance {
+            [CmdletBinding()]
+            param(
+                [string]$ClassName,
+                [string]$Filter
+            )
+
+            Assert-Equal $ClassName "Win32_Process" "Managed stop must query Win32_Process."
+            if ($Filter -eq "Name = 'node.exe'") {
+                return ,([pscustomobject]@{
+                        ProcessId = 4242
+                        ExecutablePath = "C:\Program Files\nodejs\node.exe"
+                        CommandLine = "node `"$entrypointFullPath`""
+                    })
+            }
+            if ($Filter -eq "ProcessId = 4242") {
+                return [pscustomobject]@{ ProcessId = 4242 }
+            }
+            throw "Unexpected CIM filter: $Filter"
+        }
+
+        function Invoke-CimMethod {
+            [CmdletBinding()]
+            param(
+                [object]$InputObject,
+                [string]$MethodName,
+                [hashtable]$Arguments
+            )
+
+            Assert-Equal $MethodName "Terminate" "Managed stop must terminate through Invoke-CimMethod."
+            Assert-True ($Arguments.ContainsKey("Reason") -and $Arguments["Reason"] -eq [uint32]0) "Managed stop must pass a uint32 zero terminate reason."
+            $script:mockTerminateCalls++
+            $script:mockTerminated = $true
+            return [pscustomobject]@{ ReturnValue = 0 }
+        }
+
+        function Get-Process {
+            [CmdletBinding()]
+            param([int]$Id)
+
+            Assert-Equal $Id 4242 "Managed stop must poll the terminated process id."
+            if ($script:mockTerminated) { return $null }
+            return [pscustomobject]@{ Id = $Id }
+        }
+
+        $matches = @(Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths @($entrypointFullPath) -Reason "smoke test" -TimeoutSeconds 1)
+        Assert-Equal $matches.Count 1 "Managed stop must return the matched managed node process."
+        Assert-Equal $script:mockTerminateCalls 1 "Managed stop must invoke exactly one CIM termination."
+    } $updaterManagedStopAst[0].Extent.Text (Join-Path $tempRoot "managed-stop")
+
     $guiUpdaterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
     Assert-True ($guiUpdaterText -match '-MachinePhaseResultPath' -and $guiUpdaterText -match 'PendingUserPhaseComponentKey, "updater"') "Direct GUI user handoff must pass the exact protected machine phase identity to the updater."
 
@@ -1409,9 +1477,11 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match '\$runSelfContainedInstaller = \$true') "Fast update failure must enable the self-contained installer fallback."
     Assert-True ($updateText -match 'fastUpdateFallbackUsed') "Updater reports must record whether the fast path fell back."
     Assert-True ($updateText -match 'function Stop-RevAgentManagedMcpNodeProcesses' -and $updateText -match 'Name = ''node\.exe''' -and $updateText -match 'revit-api-docs-mcp\\build\\index\.js' -and $updateText -match '\$ServerTarget "build\\index\.js"') "Updater must stop only exact managed revAgent MCP node entrypoints before replacing package/runtime payloads."
+    Assert-True ($updateText -match 'Invoke-CimMethod -InputObject \$process -MethodName Terminate -Arguments @\{ Reason = \[uint32\]0 \}' -and $updateText -notmatch '\$process\.Terminate\(') "Updater managed MCP stop must invoke the Win32_Process Terminate method through CIM, not through inert CimInstance methods."
     $updateManagedStopIndex = $updateText.IndexOf('Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths $managedMcpEntrypointsToStop.ToArray()')
     $updatePackageRemoveIndex = $updateText.IndexOf('Remove-Item -LiteralPath $PackageTarget')
     Assert-True ($updateManagedStopIndex -ge 0 -and $updatePackageRemoveIndex -gt $updateManagedStopIndex) "Updater must stop managed MCP node processes before deleting the package target."
+    Assert-True ($updateText -match 'Assert-RevAgentPathHasNoReparseComponents -Path \$codexHomeFull' -and $updateText -match 'Assert-RevAgentPathHasNoReparseComponents -Path \$targetPath') "Updater machine-phase Codex AGENTS cleanup must reject reparse Codex home and target paths before elevated hashing or deletion."
     Assert-True ($updateText -match 'operationMethod = \$script:RevAgentOperationMethod') "Updater reports must record the install/update method used."
     Assert-True ($updateText -match 'release = \[ordered\]@') "Updater reports must include release version, commit, and package SHA metadata."
     Assert-True ($updateText -match 'localInstall = if \(\$InstalledState\)') "Updater reports must include a local install state summary."
@@ -2558,6 +2628,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installerText -match 'Set-RevAgentCurrentProcessUtf8Console') "Self-contained installer entrypoint must force UTF-8 output even when launched with -NoProfile."
     Assert-True ($installerText -match 'function Copy-RevAgentManagedUpdaterToolFile' -and $installerText -match '\[bool\]\$Required = \$true' -and $installerText -match 'Install-RevAgentManagedUpdaterFile -Source \$Source -Destination \$Destination -Required:\$Required -MutationGuard \$MutationGuard' -and $installerText -match 'Protect-RevAgentManagedExecutionTree -InstallRoot \$InstallRoot' -and $installerText -match 'Assert-RevAgentCanonicalManagedInstallBoundary -InstallRoot \$managedInstallRoot' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$managedInstallRoot -ProtectedPaths @\(\$DestinationRoot\) -ExactProtectedPaths' -and $installerText -match 'Open-RevAgentManagedMutationGuard -Path \$DestinationRoot' -and $installerText -match 'Sync-RevAgentManagedUpdaterDirectory -SourceRoot \$libSource' -and $installerText -match 'Copy-RevAgentManagedUpdaterToolFile -Source \$source -Destination \(Join-Path \$DestinationRoot \$toolName\) -Required:\$true -MutationGuard \$mutationGuard') "Self-contained installer must protect and guard the canonical install-parent boundary before shared guarded file/tree refresh."
     Assert-True ($installerText -match 'function Stop-RevAgentManagedMcpNodeProcesses' -and $installerText -match 'Name = ''node\.exe''' -and $installerText -match '\$ServerTarget "build\\index\.js"') "Self-contained installer must stop only exact managed runtime MCP node entrypoints before runtime payload replacement."
+    Assert-True ($installerText -match 'Invoke-CimMethod -InputObject \$process -MethodName Terminate -Arguments @\{ Reason = \[uint32\]0 \}' -and $installerText -notmatch '\$process\.Terminate\(') "Self-contained installer managed MCP stop must invoke the Win32_Process Terminate method through CIM, not through inert CimInstance methods."
     $installerManagedStopIndex = $installerText.IndexOf('Stop-RevAgentManagedMcpNodeProcesses -EntrypointPaths @((Join-Path $ServerTarget "build\index.js"))')
     $installerCleanupIndex = $installerText.IndexOf('Invoke-RevAgentCleanup -ForUninstall:$Uninstall')
     Assert-True ($installerManagedStopIndex -ge 0 -and $installerCleanupIndex -gt $installerManagedStopIndex) "Self-contained installer must stop managed runtime MCP node processes before runtime cleanup."
