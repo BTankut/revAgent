@@ -2397,7 +2397,7 @@ function Write-UpdaterCommandFiles {
     $manualCommandLines = @(
         "@echo off",
         "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
-        "echo Machine updates require the unelevated revAgent Updater GUI and its scoped UAC machine phase.",
+        "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
         "pause"
     )
     Set-RevAgentAsciiContentIfChanged -LiteralPath $manualCommandPath -Lines $manualCommandLines
@@ -2510,7 +2510,7 @@ function Assert-UpdaterCommandFilesInstalled {
     $manualCommandLines = @(
         "@echo off",
         "%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe -NoProfile -ExecutionPolicy Bypass -File `"$UpdaterPath`" -ConfigPath `"$UpdaterConfigPath`" -AuditOnly -NotifyUser -OperationMethod manual-update-audit",
-        "echo Machine updates require the unelevated revAgent Updater GUI and its scoped UAC machine phase.",
+        "echo Machine updates require the protected local revAgent launcher and its scoped UAC machine phase.",
         "pause"
     )
     if (-not (Test-RevAgentTextFileLinesEqual -LiteralPath $manualCommandPath -Lines $manualCommandLines)) {
