@@ -2600,6 +2600,35 @@ function Register-RevAgentInteractiveUpdateTask {
     catch {
         Write-Warning "Scheduled task could not be registered: $($_.Exception.Message)"
         if ($UseExistingHiddenLauncher) {
+            $existingTask = Get-ScheduledTask -TaskName $Name -ErrorAction SilentlyContinue
+            $existingAction = $null
+            if ($existingTask -and $existingTask.Actions) {
+                $existingAction = @($existingTask.Actions)[0]
+            }
+            $existingArgument = ""
+            if ($existingAction) {
+                if ($null -ne $existingAction.Arguments) {
+                    $existingArgument = [string]$existingAction.Arguments
+                }
+                elseif ($null -ne $existingAction.Argument) {
+                    $existingArgument = [string]$existingAction.Argument
+                }
+            }
+            $existingExecute = if ($existingAction -and $null -ne $existingAction.Execute) { [string]$existingAction.Execute } else { "" }
+            $existingPrincipal = if ($existingTask) { $existingTask.Principal } else { $null }
+            $existingLogonType = if ($existingPrincipal -and $null -ne $existingPrincipal.LogonType) { [string]$existingPrincipal.LogonType } else { "" }
+            $existingRunLevel = if ($existingPrincipal -and $null -ne $existingPrincipal.RunLevel) { [string]$existingPrincipal.RunLevel } else { "" }
+            $existingTaskIsCompatible = (
+                $existingTask -and
+                $existingExecute.EndsWith("wscript.exe", [System.StringComparison]::OrdinalIgnoreCase) -and
+                $existingArgument.IndexOf($hiddenLauncherPath, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+                [string]::Equals($existingLogonType, "Interactive", [System.StringComparison]::OrdinalIgnoreCase) -and
+                [string]::Equals($existingRunLevel, "Limited", [System.StringComparison]::OrdinalIgnoreCase)
+            )
+            if ($existingTaskIsCompatible) {
+                Write-Warning "Existing scheduled task is already bound to the machine-written hidden updater launcher; preserving it after registration access denial."
+                return
+            }
             throw
         }
         Write-UpdaterCommandFiles -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath -UpdaterWorkRoot $UpdaterWorkRoot -VersionToolPath $VersionToolPath -DailyAt $RunAt -CheckIntervalMinutes $IntervalMinutes -InstallStartupFallback | Out-Null
