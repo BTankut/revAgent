@@ -108,10 +108,6 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceChannelSha256) -and $Expect
 if (-not $AllowTestRoot -and [string]::IsNullOrWhiteSpace($ExpectedSourceChannelSha256)) {
     throw 'Production publish requires ExpectedSourceChannelSha256 from the exact downloaded workflow artifact handoff.'
 }
-if ([string]::Equals($Channel, 'stable', [StringComparison]::Ordinal) -and -not $AllowTestRoot) {
-    throw 'Stable NAS publish is temporarily fail-closed: shared tools replacement is not yet implemented with the required handle-bound no-follow transaction. Use the signed pilot channel for DESKTOP-OKNV128/NET01 validation; do not bypass this gate.'
-}
-
 if (-not ("RevAgent.SignedTransportNativeFileInfo" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -888,6 +884,82 @@ function New-RevAgentGuardedFileStream {
     }
 }
 
+function Get-RevAgentStableLauncherBytes {
+    param([Parameter(Mandatory = $true)][string]$ReleaseRoot)
+
+    $releaseRootFullPath = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\', '/')
+    $lines = @(
+        '@echo off',
+        'setlocal',
+        '',
+        'set "POWERSHELL=%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe"',
+        ('set "RELEASE_ROOT={0}"' -f $releaseRootFullPath),
+        'set "BOOTSTRAP=%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1"',
+        'set "CHANNEL=%RELEASE_ROOT%\channels\stable.json"',
+        '',
+        'if not exist "%BOOTSTRAP%" (',
+        '  echo SECURITY STOP: protected local revAgent bootstrap is not installed.',
+        '  pause',
+        '  exit /b 1',
+        ')',
+        '',
+        'if not exist "%CHANNEL%" (',
+        '  echo revAgent stable channel manifest was not found:',
+        '  echo %CHANNEL%',
+        '  pause',
+        '  exit /b 1',
+        ')',
+        '',
+        'start "revAgent Stable" "%POWERSHELL%" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%"',
+        'exit /b 0'
+    )
+    return [Text.Encoding]::ASCII.GetBytes(($lines -join "`r`n") + "`r`n")
+}
+
+function Set-RevAgentStableLauncherExact {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolsRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+    )
+
+    $launcherPath = [IO.Path]::GetFullPath((Join-Path $ToolsRoot 'revAgent Updater STABLE.cmd'))
+    Assert-RevAgentChildPath -Path $launcherPath -Root $ReleaseRoot
+    $launcherBytes = Get-RevAgentStableLauncherBytes -ReleaseRoot $ReleaseRoot
+    $launcherSha256 = Get-RevAgentBytesSha256 -Bytes $launcherBytes
+    $created = -not (Test-Path -LiteralPath $launcherPath -PathType Leaf)
+    $guard = if ($created) {
+        New-RevAgentGuardedFileStream -Path $launcherPath -CreateNew
+    }
+    else {
+        New-RevAgentGuardedFileStream -Path $launcherPath
+    }
+    try {
+        $baselineBytes = Read-RevAgentStreamBytes -Stream $guard.stream -MaxBytes 65536
+        $baselineSha256 = Get-RevAgentBytesSha256 -Bytes $baselineBytes
+        $writtenSha256 = Set-RevAgentStreamBytesVerified `
+            -Stream $guard.stream `
+            -Bytes $launcherBytes `
+            -ExpectedSha256 $launcherSha256 `
+            -Label 'stable updater launcher'
+        return [pscustomobject][ordered]@{
+            path = $launcherPath
+            created = $created
+            changed = (-not [string]::Equals($baselineSha256, $writtenSha256, [StringComparison]::OrdinalIgnoreCase))
+            baselineBytes = $baselineBytes
+            baselineSha256 = $baselineSha256
+            sha256 = $writtenSha256
+            stream = $guard.stream
+            identity = $guard.identity
+        }
+    }
+    catch {
+        if ($null -ne $guard) {
+            try { $guard.stream.Dispose() } catch {}
+        }
+        throw
+    }
+}
+
 function Enter-RevAgentChannelPairGuard {
     param(
         [Parameter(Mandatory = $true)][string]$ChannelPath,
@@ -1351,7 +1423,18 @@ function Get-RevAgentDeterministicTreeDigest {
             throw "Digest tree contains a filesystem link: $($file.FullName)"
         }
         $relative = $file.FullName.Substring($prefixLength).Replace('\', '/')
-        $hash = (Get-FileHash -Algorithm SHA256 -LiteralPath $file.FullName).Hash.ToUpperInvariant()
+        $hash = ''
+        Invoke-RevAgentFileSystemRetry -Label "Hash digest file $relative" -Action {
+            $stream = [IO.File]::Open($file.FullName, [IO.FileMode]::Open, [IO.FileAccess]::Read, ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete))
+            try {
+                $sha = [Security.Cryptography.SHA256]::Create()
+                try { $script:RevAgentDigestFileHash = ([BitConverter]::ToString($sha.ComputeHash($stream))).Replace('-', '') }
+                finally { $sha.Dispose() }
+            }
+            finally { $stream.Dispose() }
+        }
+        $hash = [string]$script:RevAgentDigestFileHash
+        Remove-Variable -Name RevAgentDigestFileHash -Scope Script -ErrorAction SilentlyContinue
         [void]$rows.Add(("F`t{0}`t{1}`t{2}" -f $relative, [long]$file.Length, $hash))
         $fileCount++
     }
@@ -1492,6 +1575,11 @@ $sourceChannelPairGuard = $null
 $sourceReleaseTreeGuards = @()
 $sourceToolsTreeGuards = @()
 $ownedPilotReleaseTree = $null
+$ownedStableReleaseTree = $null
+$stableToolsBaseline = $null
+$stableToolsFinal = $null
+$stableLauncherUpdate = $null
+$stableLauncherEvidence = $null
 $sourceReleaseDigest = $null
 $candidateReadiness = $null
 $candidateArtifactIdentity = $null
@@ -1867,14 +1955,38 @@ try {
             }
         }
         else {
-            # Disposable local fixtures retain the legacy stable payload swap so
-            # recovery/race tests can exercise channel semantics. Production
-            # stable publish is rejected before any filesystem mutation.
-            $hadToolsDir = Backup-RevAgentDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
-            $hadReleaseDir = Backup-RevAgentDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
-            $payloadCopyStarted = $true
-            Copy-RevAgentDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
-            Copy-RevAgentDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+            if ($AllowTestRoot) {
+                # Disposable local fixtures retain the legacy stable payload
+                # swap so recovery/race tests can exercise channel semantics.
+                $hadToolsDir = Backup-RevAgentDirectoryForRollback -Source $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot
+                $hadReleaseDir = Backup-RevAgentDirectoryForRollback -Source $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot
+                $payloadCopyStarted = $true
+                Copy-RevAgentDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
+                Copy-RevAgentDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+            }
+            else {
+                $sourceReleaseDigest = Get-RevAgentDeterministicTreeDigest -Root $sourceReleaseDir
+                $stableToolsBaseline = Get-RevAgentDeterministicTreeDigest -Root $nasToolsDir
+                if (-not [bool]$stableToolsBaseline.exists) { throw 'Stable publish requires the existing shared NAS tools tree.' }
+                if ((Test-Path -LiteralPath $nasReleaseDir) -and -not $Force) {
+                    throw "Stable release target already exists: $nasReleaseDir. Pass -Force only for an explicitly reviewed repair."
+                }
+                if (Test-Path -LiteralPath $nasReleaseDir) {
+                    throw 'Production stable repair over an existing release directory is not supported by the handle-bound create-new transaction.'
+                }
+                $payloadCopyStarted = $true
+                $ownedStableReleaseTree = Copy-RevAgentDirectoryCreateNewGuarded `
+                    -Source $sourceReleaseDir `
+                    -Destination $nasReleaseDir `
+                    -Root $NasReleaseRoot `
+                    -Label 'stable versioned release'
+                if ($ownedStableReleaseTree.fileCount -ne $sourceReleaseDigest.fileCount -or
+                    $ownedStableReleaseTree.directoryCount -ne $sourceReleaseDigest.directoryCount -or
+                    -not [string]::Equals([string]$ownedStableReleaseTree.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Handle-bound stable release tree digest does not match the locked source tree.'
+                }
+                $stableLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot
+            }
         }
 
         $candidatePairGuard = Enter-RevAgentChannelPairGuard `
@@ -1897,7 +2009,8 @@ try {
             state = 'locked-source-verified-and-handle-bound-copy'
             releaseSequence = $candidateReleaseSequence
             sourceReadiness = $lockedSourceReadiness
-            releaseTree = if ($null -ne $ownedPilotReleaseTree) { [pscustomobject]@{ fileCount = $ownedPilotReleaseTree.fileCount; sha256 = $ownedPilotReleaseTree.sha256 } } else { $null }
+            releaseTree = if ($null -ne $ownedPilotReleaseTree) { [pscustomobject]@{ fileCount = $ownedPilotReleaseTree.fileCount; sha256 = $ownedPilotReleaseTree.sha256 } } elseif ($null -ne $ownedStableReleaseTree) { [pscustomobject]@{ fileCount = $ownedStableReleaseTree.fileCount; sha256 = $ownedStableReleaseTree.sha256 } } else { $null }
+            stableLauncher = if ($null -ne $stableLauncherUpdate) { [pscustomobject]@{ path = $stableLauncherUpdate.path; sha256 = $stableLauncherUpdate.sha256; changed = [bool]$stableLauncherUpdate.changed } } else { $null }
             channelSha256 = $candidateChannelHash
             channelSignatureSha256 = $candidateSignatureHash
         }
@@ -1987,6 +2100,30 @@ try {
                 throw 'Pilot destination release tree changed before publish completion.'
             }
         }
+        elseif ($null -ne $ownedStableReleaseTree) {
+            [void](Assert-RevAgentOwnedTreeIntact -Tree $ownedStableReleaseTree -Label 'stable destination release')
+            $stableReleaseFinal = Get-RevAgentOwnedTreeDigest -Tree $ownedStableReleaseTree -Label 'stable destination release'
+            if (-not [bool]$stableReleaseFinal.exists -or
+                $stableReleaseFinal.fileCount -ne $sourceReleaseDigest.fileCount -or
+                $stableReleaseFinal.directoryCount -ne $sourceReleaseDigest.directoryCount -or
+                -not [string]::Equals([string]$stableReleaseFinal.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                throw 'Stable destination release tree changed before publish completion.'
+            }
+            if ($null -ne $stableLauncherUpdate) {
+                [void](Assert-RevAgentExactFileHandleIdentity -Handle $stableLauncherUpdate.stream.SafeFileHandle -ExpectedIdentity $stableLauncherUpdate.identity -Label 'stable updater launcher final')
+                if (-not [string]::Equals((Get-RevAgentStreamSha256 -Stream $stableLauncherUpdate.stream), [string]$stableLauncherUpdate.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Stable updater launcher changed before publish completion.'
+                }
+                $stableLauncherEvidence = [pscustomobject][ordered]@{
+                    path = [string]$stableLauncherUpdate.path
+                    sha256 = [string]$stableLauncherUpdate.sha256
+                    changed = [bool]$stableLauncherUpdate.changed
+                    created = [bool]$stableLauncherUpdate.created
+                }
+            }
+            $stableToolsFinal = Get-RevAgentDeterministicTreeDigest -Root $nasToolsDir
+            if (-not [bool]$stableToolsFinal.exists) { throw 'Stable publish lost the shared NAS tools tree.' }
+        }
         $destinationTransportLinkSafetyAfter = Assert-RevAgentTransportTreeLinkSafe -Root $NasReleaseRoot -Label "NAS signed transport after publish" -ExcludeReportsContents
         if ($null -ne $ownedPilotReleaseTree) {
             # Close inside the rollback-protected body. If a final handle
@@ -1994,6 +2131,14 @@ try {
             # error can escape this transaction.
             Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree
             $ownedPilotReleaseTree = $null
+        }
+        if ($null -ne $ownedStableReleaseTree) {
+            Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree
+            $ownedStableReleaseTree = $null
+        }
+        if ($null -ne $stableLauncherUpdate) {
+            $stableLauncherUpdate.stream.Dispose()
+            $stableLauncherUpdate = $null
         }
     }
     catch {
@@ -2030,6 +2175,25 @@ try {
                     Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree -Delete
                     $ownedPilotReleaseTree = $null
                 }
+                if ($null -ne $ownedStableReleaseTree) {
+                    Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree -Delete
+                    $ownedStableReleaseTree = $null
+                }
+                if ($null -ne $stableLauncherUpdate) {
+                    if ([bool]$stableLauncherUpdate.created) {
+                        [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($stableLauncherUpdate.stream.SafeFileHandle)
+                    }
+                    else {
+                        [void](Restore-RevAgentStreamBytesByStableHandle `
+                            -Stream $stableLauncherUpdate.stream `
+                            -ExpectedIdentity $stableLauncherUpdate.identity `
+                            -Bytes ([byte[]]$stableLauncherUpdate.baselineBytes) `
+                            -ExpectedSha256 ([string]$stableLauncherUpdate.baselineSha256) `
+                            -Label 'stable updater launcher rollback')
+                    }
+                    $stableLauncherUpdate.stream.Dispose()
+                    $stableLauncherUpdate = $null
+                }
                 elseif ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
                     Restore-RevAgentDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
                     Restore-RevAgentDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
@@ -2061,6 +2225,14 @@ try {
         if ($null -ne $ownedPilotReleaseTree) {
             Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree
             $ownedPilotReleaseTree = $null
+        }
+        if ($null -ne $ownedStableReleaseTree) {
+            Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree
+            $ownedStableReleaseTree = $null
+        }
+        if ($null -ne $stableLauncherUpdate) {
+            $stableLauncherUpdate.stream.Dispose()
+            $stableLauncherUpdate = $null
         }
         if ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal) -and -not $rollbackFailed -and (Test-Path -LiteralPath $payloadBackupRoot)) {
             Remove-Item -LiteralPath $payloadBackupRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -2144,6 +2316,15 @@ $result = [pscustomobject][ordered]@{
             sharedToolsAfter = $pilotToolsFinal
             activeStableReleaseBefore = $pilotStableReleaseBaseline
             activeStableReleaseAfter = $pilotStableReleaseFinal
+        }
+    } else { $null }
+    stablePublish = if ([string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
+        [pscustomobject][ordered]@{
+            releaseTreeCreateNew = -not $AllowTestRoot
+            sharedToolsTreeReplaced = [bool]$AllowTestRoot
+            stableLauncher = $stableLauncherEvidence
+            sharedToolsBefore = $stableToolsBaseline
+            sharedToolsAfter = $stableToolsFinal
         }
     } else { $null }
     transportBoundary = [pscustomobject][ordered]@{

@@ -31,6 +31,8 @@ param(
 
     [string]$TargetArgumentsBase64 = '',
 
+    [string]$BrokerLogPath = '',
+
     [string]$PhaseResultPath = '',
 
     [string]$TargetInteractiveUserSid = '',
@@ -40,6 +42,8 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+
+$script:RevAgentBrokerLogPath = ''
 
 $systemDirectory = [Environment]::SystemDirectory
 $trustedModuleRoots = @((Join-Path $PSHOME 'Modules'), (Join-Path $systemDirectory 'WindowsPowerShell\v1.0\Modules')) |
@@ -58,6 +62,48 @@ function Test-RevAgentBrokerPathUnderRoot {
     $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
     return [string]::Equals($fullPath, $fullRoot, [StringComparison]::OrdinalIgnoreCase) -or
         $fullPath.StartsWith($fullRoot + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Write-RevAgentBrokerLog {
+    param([Parameter(Mandatory = $true)][string]$Message)
+    if ([string]::IsNullOrWhiteSpace($script:RevAgentBrokerLogPath)) { return }
+    try {
+        $timestamp = [DateTime]::UtcNow.ToString('o')
+        Add-Content -LiteralPath $script:RevAgentBrokerLogPath -Value ("[{0}] {1}" -f $timestamp, $Message) -Encoding UTF8
+    }
+    catch {
+        # Broker logging is diagnostic only. Never let it change the protected
+        # installer outcome after the path has already been validated.
+    }
+}
+
+function Initialize-RevAgentBrokerLogPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$CanonicalInstallRoot
+    )
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    $expectedLogRoot = [IO.Path]::GetFullPath((Join-Path (Join-Path $CanonicalInstallRoot 'updater') 'machine-logs')).TrimEnd('\')
+    $logPath = [IO.Path]::GetFullPath($Path)
+    if (-not (Test-RevAgentBrokerPathUnderRoot -Path $logPath -Root $expectedLogRoot) -or
+        [IO.Path]::GetFileName($logPath) -notmatch '^gui-broker-\d{8}-\d{6}-[a-f0-9]{32}\.log$') {
+        throw "BrokerLogPath is outside the canonical per-run broker log pattern: $logPath"
+    }
+    [void][IO.Directory]::CreateDirectory($expectedLogRoot)
+    Assert-RevAgentBrokerProtectedPath -Path $expectedLogRoot -Root $CanonicalInstallRoot
+    if (Test-Path -LiteralPath $logPath -PathType Leaf) {
+        Assert-RevAgentBrokerProtectedPath -Path $logPath -Root $CanonicalInstallRoot
+    }
+    $script:RevAgentBrokerLogPath = $logPath
+    Write-RevAgentBrokerLog "Privileged snapshot broker started. target=$Target channel=$Channel"
+}
+
+trap {
+    Write-RevAgentBrokerLog ("ERROR: {0}" -f $_.Exception.Message)
+    if ($null -ne $_.InvocationInfo -and -not [string]::IsNullOrWhiteSpace([string]$_.InvocationInfo.PositionMessage)) {
+        Write-RevAgentBrokerLog ("ERROR_POSITION: {0}" -f ([string]$_.InvocationInfo.PositionMessage -replace "`r?`n", ' | '))
+    }
+    break
 }
 
 function Assert-RevAgentBrokerNoLinks {
@@ -442,6 +488,8 @@ $snapshotModulePath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'lib\RevA
 $trustedKeysPath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'config\release-trusted-keys.json'))
 $integrityModulePath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'lib\RevAgent.DistributionIntegrity.psm1'))
 
+Initialize-RevAgentBrokerLogPath -Path $BrokerLogPath -CanonicalInstallRoot $canonicalInstallRoot
+
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Privileged release snapshot broker requires elevation.' }
@@ -467,6 +515,7 @@ if (-not (Test-RevAgentBrokerPathUnderRoot -Path $InboxPath -Root $allowedInboxR
 
 $arguments = @(ConvertFrom-RevAgentBrokerArguments -Encoded $TargetArgumentsBase64)
 $argumentContract = Assert-RevAgentBrokerTargetArguments -Arguments $arguments -TargetName $Target -CanonicalInstallRoot $canonicalInstallRoot -InteractiveSid $TargetInteractiveUserSid -InteractiveProfileRoot $validatedProfileRoot
+Write-RevAgentBrokerLog "Validated broker arguments and target user context."
 $canonicalWorkRoot = Join-Path $canonicalInstallRoot 'updater'
 $canonicalMachineStateRoot = Join-Path $canonicalWorkRoot 'machine-state'
 if ([string]::IsNullOrWhiteSpace($PhaseResultPath)) { throw 'Launching a machine target requires PhaseResultPath.' }
@@ -487,6 +536,7 @@ catch [Threading.AbandonedMutexException] {
     $brokerMutexAcquired = $true
 }
 if (-not $brokerMutexAcquired) { throw 'Timed out waiting for the global privileged snapshot broker mutex.' }
+Write-RevAgentBrokerLog "Acquired global broker mutex."
 [void](Initialize-RevAgentBrokerProtectedDirectory -Path $brokerStateRoot -Parent $canonicalInstallRoot)
 
 $highest = [long]0
@@ -542,6 +592,7 @@ $secureBrokerTemp = New-RevAgentBrokerSecureTemp
 $env:TEMP = $secureBrokerTemp
 $env:TMP = $secureBrokerTemp
 Import-Module $snapshotModulePath -Force
+Write-RevAgentBrokerLog "Promoting authenticated user inbox into protected release snapshot."
 $snapshot = New-RevAgentProtectedReleaseSnapshot `
     -InboxPath $InboxPath `
     -Channel $Channel `
@@ -554,6 +605,7 @@ $snapshot = New-RevAgentProtectedReleaseSnapshot `
 $acceptedHighWater = [Math]::Max($highest, [long]$snapshot.releaseSequence)
 Write-RevAgentBrokerHighWaterLedger -Path $brokerLedgerPath -ReleaseSequence $acceptedHighWater -Snapshot $snapshot
 $snapshotRetention = Invoke-RevAgentBrokerSnapshotRetention -Parent $SnapshotParent -CurrentSnapshotRoot $snapshot.snapshotRoot
+Write-RevAgentBrokerLog "Accepted snapshot $($snapshot.snapshotId) version=$($snapshot.state.release.version) releaseSequence=$($snapshot.releaseSequence)."
 
 $targetRelativePath = if ($Target -eq 'updater') { 'payload\installer\nas\update-from-nas.ps1' } else { 'payload\installer\nas\install-updater-task.ps1' }
 $targetComponentKey = if ($Target -eq 'updater') { 'updater' } else { 'updaterTaskInstaller' }
@@ -565,6 +617,7 @@ if ($null -eq $component -or
     -not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $targetPath).Hash, [string]$component.sha256, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Protected snapshot target component failed exact path/hash binding: $targetComponentKey"
 }
+Write-RevAgentBrokerLog "Verified target component $targetComponentKey at $targetPath."
 
 $result = [ordered]@{
     success = $true
@@ -604,11 +657,13 @@ $psi.UseShellExecute = $false
 $psi.CreateNoWindow = $true
 $process = [Diagnostics.Process]::new()
 $process.StartInfo = $psi
+Write-RevAgentBrokerLog "Launching machine target process."
 [void]$process.Start()
 $process.WaitForExit()
 $result.launched = $true
 $result.exitCode = [int]$process.ExitCode
 $process.Dispose()
+Write-RevAgentBrokerLog "Machine target exited with code $($result.exitCode)."
 
 if ($result.exitCode -ne 0) { throw "Protected snapshot machine target exited with code $($result.exitCode)." }
 if (-not (Test-Path -LiteralPath $PhaseResultPath -PathType Leaf)) {
@@ -630,6 +685,7 @@ if ($null -eq $phaseSuccess -or -not [bool]$phaseSuccess.Value -or
     throw "Machine phase child attestation is not a successful handoff. phase=$($phase.phase) status=$($phase.status)"
 }
 $phase | Add-Member -NotePropertyName executionSnapshot -NotePropertyValue ([pscustomobject]$result.executionSnapshot) -Force
+Write-RevAgentBrokerLog "Machine phase attestation accepted. status=$($phase.status) continueUserPhase=$($phase.continueUserPhase)."
 $resultParent = Split-Path -Parent $PhaseResultPath
 $tempResult = Join-Path $resultParent ('.snapshot-phase-result-{0}.json' -f [Guid]::NewGuid().ToString('N'))
 $backupResult = Join-Path $resultParent ('.snapshot-phase-backup-{0}.json' -f [Guid]::NewGuid().ToString('N'))

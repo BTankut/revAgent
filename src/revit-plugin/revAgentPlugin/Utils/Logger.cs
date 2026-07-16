@@ -11,7 +11,16 @@ namespace RevAgentPlugin.Utils
 
         public Logger()
         {
-            _logFilePath = Path.Combine(PathManager.GetLogsDirectoryPath(), $"mcp_{DateTime.Now:yyyyMMdd}.log");
+            try
+            {
+                _logFilePath = Path.Combine(PathManager.GetLogsDirectoryPath(), $"mcp_{DateTime.Now:yyyyMMdd}.log");
+            }
+            catch
+            {
+                string fallbackRoot = Path.Combine(Path.GetTempPath(), "DPE", "revAgent", "Logs", "revit-plugin");
+                Directory.CreateDirectory(fallbackRoot);
+                _logFilePath = Path.Combine(fallbackRoot, $"mcp_{DateTime.Now:yyyyMMdd}.log");
+            }
 
         }
 

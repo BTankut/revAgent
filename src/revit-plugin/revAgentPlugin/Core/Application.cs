@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using Autodesk.Revit.UI;
 using System.Reflection;
 using System.Windows.Media.Imaging;
@@ -78,23 +79,34 @@ namespace RevAgentPlugin.Core
         {
             try
             {
-                if (IsAutoStartDisabled() || uiApplication == null)
+                if (IsAutoStartDisabled())
                 {
+                    WriteStartupDiagnostic("revAgent bridge autostart skipped: autostart disabled by environment.");
                     return;
                 }
 
+                if (uiApplication == null)
+                {
+                    WriteStartupDiagnostic("revAgent bridge autostart skipped: UIApplication was not available.");
+                    return;
+                }
+
+                WriteStartupDiagnostic("revAgent bridge autostart starting.");
                 SocketService service = SocketService.Instance;
                 if (service.IsRunning)
                 {
+                    WriteStartupDiagnostic("revAgent bridge autostart skipped: socket service already running.");
                     return;
                 }
 
                 service.Initialize(uiApplication);
                 service.Start();
+                WriteStartupDiagnostic("revAgent bridge autostart completed. running=" + service.IsRunning + "; port=" + service.Port);
             }
             catch (Exception ex)
             {
                 System.Diagnostics.Trace.WriteLine($"Failed to auto-start revAgent bridge service: {ex}");
+                WriteStartupDiagnostic("revAgent bridge autostart failed.", ex);
             }
         }
 
@@ -102,6 +114,30 @@ namespace RevAgentPlugin.Core
         {
             string value = RevAgentEnvironment.Get("REVAGENT_AUTOSTART", "REVIT_MCP_AUTOSTART");
             return RevAgentEnvironment.IsFalseLike(value);
+        }
+
+        private static void WriteStartupDiagnostic(string message, Exception exception = null)
+        {
+            try
+            {
+                string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                string root = string.IsNullOrWhiteSpace(localAppData)
+                    ? Path.Combine(Path.GetTempPath(), "DPE", "revAgent", "Logs", "revit-plugin")
+                    : Path.Combine(localAppData, "DPE", "revAgent", "Logs", "revit-plugin");
+                Directory.CreateDirectory(root);
+                string path = Path.Combine(root, $"startup_{DateTime.Now:yyyyMMdd}.log");
+                string line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}";
+                if (exception != null)
+                {
+                    line += Environment.NewLine + exception;
+                }
+
+                File.AppendAllText(path, line + Environment.NewLine);
+            }
+            catch
+            {
+                // Startup diagnostics must never affect Revit loading.
+            }
         }
     }
 }
