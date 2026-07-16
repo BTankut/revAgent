@@ -166,6 +166,7 @@ if (-not $SmokeTest) {
 }
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
+$script:ActiveBrokerLogPath = ""
 $script:LastLogLength = -1
 $script:ActivePhase = ""
 $script:ActivePhaseResultPath = ""
@@ -230,9 +231,9 @@ function Join-CommandLine {
 }
 
 function New-RunLogPath {
-    param([ValidateSet("machine", "user")][string]$Phase = "machine")
+    param([ValidateSet("broker", "machine", "user")][string]$Phase = "machine")
 
-    $logsRoot = Join-Path $workRoot $(if ($Phase -eq "machine") { "machine-logs" } else { "logs" })
+    $logsRoot = Join-Path $workRoot $(if ($Phase -in @("broker", "machine")) { "machine-logs" } else { "logs" })
     # On first install the unelevated GUI may not yet have permission to create
     # ProgramData\DPE\revAgent. Each phase creates its own managed log directory;
     # machine logs stay read-only to the interactive user, user logs are writable.
@@ -893,6 +894,17 @@ function Read-GuiPhaseResult {
     }
 }
 
+function Read-GuiLogTail {
+    param(
+        [string]$Path,
+        [int]$MaxCharacters = 4000
+    )
+
+    $text = Read-LogFileText -Path $Path
+    if ($text.Length -le $MaxCharacters) { return $text }
+    return $text.Substring($text.Length - $MaxCharacters)
+}
+
 function Remove-GuiAuthenticatedInbox {
     param([string]$Path)
     if ([string]::IsNullOrWhiteSpace($Path)) { return $false }
@@ -1000,6 +1012,7 @@ function Start-InstallerOperation {
     }
 
     $script:ActiveLogPath = New-RunLogPath -Phase "machine"
+    $script:ActiveBrokerLogPath = New-RunLogPath -Phase "broker"
     $userLogPath = New-RunLogPath -Phase "user"
     $script:LastLogLength = -1
     $codexInstructionPolicy = Get-CodexInstructionPolicyForGui
@@ -1017,7 +1030,7 @@ function Start-InstallerOperation {
         "gui-update"
     }
     $operationLabel = if ($operationMethod -eq "source-free-migration") { "Source-free migration" } elseif ($operationMethod -eq "gui-install-repair") { "Install/repair" } elseif ($operationMethod -eq "gui-install") { "Install" } else { "Update" }
-    $logBox.Text = "$operationLabel starting...`r`n"
+    $logBox.Text = "$operationLabel starting...`r`nWaiting for administrator approval and protected broker startup...`r`n"
     $statusLabel.Text = "Running."
     $progress.Style = "Marquee"
     Set-ButtonsEnabled -Enabled $false
@@ -1114,6 +1127,7 @@ function Start-InstallerOperation {
             "-Target", $machineComponentKey,
             "-Channel", $script:GuiChannel,
             "-InboxPath", [string]$inbox.inboxRoot,
+            "-BrokerLogPath", $script:ActiveBrokerLogPath,
             "-TargetArgumentsBase64", $targetArgumentsBase64,
             "-PhaseResultPath", $machinePhaseResultPath,
             "-TargetInteractiveUserSid", $interactiveUserSid,
@@ -1173,11 +1187,20 @@ function Read-LogFileText {
 }
 
 function Refresh-LogBox {
-    if ([string]::IsNullOrWhiteSpace($script:ActiveLogPath)) {
+    if ([string]::IsNullOrWhiteSpace($script:ActiveLogPath) -and [string]::IsNullOrWhiteSpace($script:ActiveBrokerLogPath)) {
         return
     }
 
-    $text = Read-LogFileText -Path $script:ActiveLogPath
+    $brokerText = Read-GuiLogTail -Path $script:ActiveBrokerLogPath -MaxCharacters 80000
+    $phaseText = Read-GuiLogTail -Path $script:ActiveLogPath -MaxCharacters 170000
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($brokerText.Length -gt 0) {
+        [void]$parts.Add("=== Protected broker ===`r`n$brokerText")
+    }
+    if ($phaseText.Length -gt 0) {
+        [void]$parts.Add("=== Active phase ===`r`n$phaseText")
+    }
+    $text = [string]::Join("`r`n", $parts.ToArray())
     if ($text.Length -eq 0) {
         return
     }
@@ -1301,6 +1324,9 @@ $timer.Add_Tick({
             $resultMessage = if ($null -ne $phaseResult -and -not [string]::IsNullOrWhiteSpace([string]$phaseResult.message)) {
                 [string]$phaseResult.message
             }
+            elseif (-not [string]::IsNullOrWhiteSpace((Read-GuiLogTail -Path $script:ActiveBrokerLogPath -MaxCharacters 1200))) {
+                (Read-GuiLogTail -Path $script:ActiveBrokerLogPath -MaxCharacters 1200).Trim()
+            }
             elseif ($exitCode -eq 0) {
                 "The phase did not produce a valid completion result."
             }
@@ -1347,11 +1373,27 @@ $versionButton.Add_Click({
 })
 
 $openLogsButton.Add_Click({
-    if (-not (Test-Path -LiteralPath $workRoot)) {
+    $candidateFolder = if (-not [string]::IsNullOrWhiteSpace($script:ActiveLogPath)) {
+        Split-Path -Parent $script:ActiveLogPath
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($script:ActiveBrokerLogPath)) {
+        Split-Path -Parent $script:ActiveBrokerLogPath
+    }
+    else {
+        $workRoot
+    }
+    if (-not (Test-Path -LiteralPath $candidateFolder)) {
+        if (-not (Test-Path -LiteralPath $workRoot)) {
+            [System.Windows.Forms.MessageBox]::Show("The revAgent updater folder does not exist yet.", "revAgent") | Out-Null
+            return
+        }
+        $candidateFolder = $workRoot
+    }
+    if (-not (Test-Path -LiteralPath $candidateFolder)) {
         [System.Windows.Forms.MessageBox]::Show("The revAgent updater folder does not exist yet.", "revAgent") | Out-Null
         return
     }
-    Start-Process explorer.exe $workRoot
+    Start-Process explorer.exe $candidateFolder
 })
 
 $closeButton.Add_Click({
