@@ -1216,6 +1216,7 @@ namespace RevAgentInstallerSmoke {
     $runtimePackageText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\package.json")
     $revAgentEnvironmentText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\RevAgentEnvironment.cs")
     $applicationText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\Application.cs")
+    $pathManagerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Utils\PathManager.cs")
     $socketServiceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\SocketService.cs")
     $versionInfoText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\Core\McpVersionInfo.cs")
     Assert-True ($connectionManagerText -match 'REVAGENT_HOST' -and $connectionManagerText -match 'REVIT_MCP_HOST') "Runtime connection manager must keep revAgent env names with legacy fallbacks."
@@ -1227,6 +1228,8 @@ namespace RevAgentInstallerSmoke {
     Assert-True ($runtimePackageText -match 'env-alias-test') "Runtime npm test must include the environment alias contract test."
     Assert-True ($revAgentEnvironmentText -match 'class RevAgentEnvironment' -and $revAgentEnvironmentText -match 'Environment\.GetEnvironmentVariable') "Revit add-in must centralize env alias reads."
     Assert-True ($applicationText -match 'REVAGENT_AUTOSTART' -and $applicationText -match 'REVIT_MCP_AUTOSTART') "Revit add-in autostart must support revAgent and legacy env names."
+    Assert-True ($applicationText -match 'WriteStartupDiagnostic') "Revit add-in autostart must write startup diagnostics before the socket logger exists."
+    Assert-True ($pathManagerText -match 'SpecialFolder\.LocalApplicationData' -and $pathManagerText -match 'Logs\", \"revit-plugin' -and $pathManagerText -notmatch 'Path\.Combine\(appDataDirectory, \"Logs\"\)') "Revit add-in logs must be written to a user-writable profile path, not the protected installed plugin directory."
     Assert-True ($socketServiceText -match 'REVAGENT_MAX_MESSAGE_BYTES' -and $socketServiceText -match 'REVIT_MCP_MAX_MESSAGE_BYTES') "Revit add-in message size override must support revAgent and legacy env names."
     Assert-True ($socketServiceText -match 'REVAGENT_PLUGIN_PORT' -and $socketServiceText -match 'REVAGENT_PORT' -and $socketServiceText -match 'REVIT_MCP_PLUGIN_PORT' -and $socketServiceText -match 'REVIT_MCP_PORT') "Revit add-in port override must support revAgent and legacy env names."
     Assert-True ($versionInfoText -match 'REVAGENT_INSTALLED_STATE' -and $versionInfoText -match 'REVIT_MCP_INSTALLED_STATE') "Revit add-in installed-state override must support revAgent and legacy env names."

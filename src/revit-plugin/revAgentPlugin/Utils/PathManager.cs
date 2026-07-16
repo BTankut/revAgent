@@ -33,10 +33,20 @@ namespace RevAgentPlugin.Utils
         /// </summary>
         public static string GetLogsDirectoryPath()
         {
-            string appDataDirectory = GetAppDataDirectoryPath();
-            string logsDirectory = Path.Combine(appDataDirectory, "Logs");
+            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string logsDirectory = string.IsNullOrWhiteSpace(localAppData)
+                ? Path.Combine(Path.GetTempPath(), "DPE", "revAgent", "Logs", "revit-plugin")
+                : Path.Combine(localAppData, "DPE", "revAgent", "Logs", "revit-plugin");
 
-            EnsureDirectoryExists(logsDirectory);
+            try
+            {
+                EnsureDirectoryExists(logsDirectory);
+            }
+            catch
+            {
+                logsDirectory = Path.Combine(Path.GetTempPath(), "DPE", "revAgent", "Logs", "revit-plugin");
+                EnsureDirectoryExists(logsDirectory);
+            }
 
             return logsDirectory;
         }

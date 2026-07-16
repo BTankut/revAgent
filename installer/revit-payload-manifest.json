@@ -45,7 +45,7 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revAgentPlugin/Core/Application.cs",
-                                                "gitBlobSha":  "7bf7a8d941549f29cb2ced0acd8bd173e82be43e"
+                                                "gitBlobSha":  "d0e8835627815bee7dee96b9985d8d552dcee257"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revAgentPlugin/Core/BridgeResultContract.cs",
@@ -137,18 +137,18 @@
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revAgentPlugin/Utils/Logger.cs",
-                                                "gitBlobSha":  "4b7c1f162d63af87201788a2bfc804e521cf0677"
+                                                "gitBlobSha":  "f8f22c75dcb10cd371691ebbfb7eb47dd74fd96d"
                                             },
                                             {
                                                 "path":  "src/revit-plugin/revAgentPlugin/Utils/PathManager.cs",
-                                                "gitBlobSha":  "b0b3d1e9c806d1984266b19501b83ed5e15611a7"
+                                                "gitBlobSha":  "015e21e8a90153f782724db006fee269ff3c99f0"
                                             }
                                         ],
                              "payloads":  [
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-                                                  "sha256":  "b3ca66523aefdd81454d313e01541d38c12308b6fef99731235b199047233c0b",
-                                                  "sizeBytes":  118272
+                                                  "sha256":  "4aa4a7c080c36bfe970ba4bc55542ae0c0f20e9271e28dbb146f782b8f78d7e8",
+                                                  "sizeBytes":  120320
                                               }
                                           ]
                          },
@@ -394,12 +394,12 @@
                              "payloads":  [
                                               {
                                                   "path":  "installer/command-payload/revAgentCommandSet.dll",
-                                                  "sha256":  "209dc6ec0f0aff06b3a15527223db70a6f32b46beff210d2d27458bae9b7f650",
+                                                  "sha256":  "cc0b3d8e27fb8103181390cd8d3214a945bbbff396ac95270f173fb6071517d8",
                                                   "sizeBytes":  507392
                                               },
                                               {
                                                   "path":  "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-                                                  "sha256":  "209dc6ec0f0aff06b3a15527223db70a6f32b46beff210d2d27458bae9b7f650",
+                                                  "sha256":  "cc0b3d8e27fb8103181390cd8d3214a945bbbff396ac95270f173fb6071517d8",
                                                   "sizeBytes":  507392
                                               }
                                           ]
