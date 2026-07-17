@@ -1963,7 +1963,7 @@ function Get-RevAgentCanonicalLegacyAclOwnerSid {
     }
 }
 
-function Assert-RevAgentCanonicalLegacyProtectedAcl {
+function Test-RevAgentCanonicalLegacyProtectedAcl {
     param(
         [Parameter(Mandatory = $true)]
         [string]$Path,
@@ -1972,14 +1972,29 @@ function Assert-RevAgentCanonicalLegacyProtectedAcl {
         [object]$Policy
     )
 
-    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    try {
+        $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    }
+    catch {
+        return [pscustomobject][ordered]@{
+            success = $false
+            error = $_.Exception.Message
+        }
+    }
+
     if (-not $acl.AreAccessRulesProtected) {
-        throw "Canonical legacy cleanup ACL is not protected: $Path"
+        return [pscustomobject][ordered]@{
+            success = $false
+            error = "Canonical legacy cleanup ACL is not protected: $Path"
+        }
     }
 
     $ownerSid = Get-RevAgentCanonicalLegacyAclOwnerSid -Acl $acl
     if (-not $ownerSid.Equals([System.Security.Principal.SecurityIdentifier]$Policy.ownerSid)) {
-        throw "Canonical legacy cleanup owner is not the exact protected owner: $Path"
+        return [pscustomobject][ordered]@{
+            success = $false
+            error = "Canonical legacy cleanup owner is not the exact protected owner: $Path"
+        }
     }
 
     $allowedSids = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -2002,10 +2017,16 @@ function Assert-RevAgentCanonicalLegacyProtectedAcl {
     foreach ($rule in @($acl.GetAccessRules($true, $false, [System.Security.Principal.SecurityIdentifier]))) {
         $sidValue = [string]$rule.IdentityReference.Value
         if (-not $allowedSids.Contains($sidValue)) {
-            throw "Canonical legacy cleanup ACL contains an unexpected explicit principal '$sidValue': $Path"
+            return [pscustomobject][ordered]@{
+                success = $false
+                error = "Canonical legacy cleanup ACL contains an unexpected explicit principal '$sidValue': $Path"
+            }
         }
         if ($rule.AccessControlType -ne [System.Security.AccessControl.AccessControlType]::Allow) {
-            throw "Canonical legacy cleanup ACL contains an unexpected deny rule for '$sidValue': $Path"
+            return [pscustomobject][ordered]@{
+                success = $false
+                error = "Canonical legacy cleanup ACL contains an unexpected deny rule for '$sidValue': $Path"
+            }
         }
         $rawRights = [int]$rule.FileSystemRights
         if (-not $rightsBySid.ContainsKey($sidValue)) {
@@ -2013,7 +2034,10 @@ function Assert-RevAgentCanonicalLegacyProtectedAcl {
         }
         $rightsBySid[$sidValue] = [int]$rightsBySid[$sidValue] -bor $rawRights
         if ($sidValue -eq [string]$Policy.usersSid.Value -and (($rawRights -band $mutationMask) -ne 0)) {
-            throw "Canonical legacy cleanup ACL grants write-capable access to BUILTIN\Users: $Path"
+            return [pscustomobject][ordered]@{
+                success = $false
+                error = "Canonical legacy cleanup ACL grants write-capable access to BUILTIN\Users: $Path"
+            }
         }
     }
 
@@ -2021,21 +2045,50 @@ function Assert-RevAgentCanonicalLegacyProtectedAcl {
         $sidValue = [string]$fullControlSid.Value
         if (-not $rightsBySid.ContainsKey($sidValue) -or
             (([int]$rightsBySid[$sidValue] -band [int][System.Security.AccessControl.FileSystemRights]::FullControl) -ne [int][System.Security.AccessControl.FileSystemRights]::FullControl)) {
-            throw "Canonical legacy cleanup ACL lacks exact trusted FullControl for '$sidValue': $Path"
+            return [pscustomobject][ordered]@{
+                success = $false
+                error = "Canonical legacy cleanup ACL lacks exact trusted FullControl for '$sidValue': $Path"
+            }
         }
     }
     $usersSidValue = [string]$Policy.usersSid.Value
     $requiredReadRights = [int][System.Security.AccessControl.FileSystemRights]::ReadAndExecute -bor [int][System.Security.AccessControl.FileSystemRights]::Synchronize
     if (-not $rightsBySid.ContainsKey($usersSidValue) -or
         (([int]$rightsBySid[$usersSidValue] -band $requiredReadRights) -ne $requiredReadRights)) {
-        throw "Canonical legacy cleanup ACL lacks BUILTIN\Users ReadAndExecute/Synchronize: $Path"
+        return [pscustomobject][ordered]@{
+            success = $false
+            error = "Canonical legacy cleanup ACL lacks BUILTIN\Users ReadAndExecute/Synchronize: $Path"
+        }
     }
     if (-not [bool]$Policy.elevated) {
         $currentSidValue = [string]$Policy.currentSid.Value
         if (-not $rightsBySid.ContainsKey($currentSidValue) -or
             (([int]$rightsBySid[$currentSidValue] -band [int][System.Security.AccessControl.FileSystemRights]::FullControl) -ne [int][System.Security.AccessControl.FileSystemRights]::FullControl)) {
-            throw "Canonical legacy cleanup fixture ACL lacks current-user FullControl: $Path"
+            return [pscustomobject][ordered]@{
+                success = $false
+                error = "Canonical legacy cleanup fixture ACL lacks current-user FullControl: $Path"
+            }
         }
+    }
+
+    return [pscustomobject][ordered]@{
+        success = $true
+        error = ""
+    }
+}
+
+function Assert-RevAgentCanonicalLegacyProtectedAcl {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [object]$Policy
+    )
+
+    $result = Test-RevAgentCanonicalLegacyProtectedAcl -Path $Path -Policy $Policy
+    if (-not [bool]$result.success) {
+        throw ([string]$result.error)
     }
 }
 
@@ -2059,16 +2112,14 @@ function Set-RevAgentCanonicalLegacyProtectedAcl {
         }
     }
 
-    try {
-        Assert-RevAgentCanonicalLegacyProtectedAcl -Path $Path -Policy $Policy
+    $protectionProbe = Test-RevAgentCanonicalLegacyProtectedAcl -Path $Path -Policy $Policy
+    if ([bool]$protectionProbe.success) {
         return
     }
-    catch {
-        # Replace only a descriptor that is not already the exact policy. Apart
-        # from avoiding needless churn, this keeps PS5/non-admin fixtures from
-        # requesting SACL privileges on a second Set-Acl of the same object.
-    }
 
+    # Replace only a descriptor that is not already the exact policy. Apart
+    # from avoiding needless churn, this keeps PS5/non-admin fixtures from
+    # requesting SACL privileges on a second Set-Acl of the same object.
     $originalAcl = Get-Acl -LiteralPath $Path -ErrorAction Stop
     $security = New-RevAgentCanonicalLegacyProtectedAcl -ItemType $ItemType -Policy $Policy
     Set-Acl -LiteralPath $Path -AclObject $security -ErrorAction Stop

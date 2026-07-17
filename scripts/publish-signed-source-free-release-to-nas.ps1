@@ -910,6 +910,15 @@ function Get-RevAgentStableLauncherBytes {
         '  exit /b 1',
         ')',
         '',
+        '"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%" -VerificationOnly >nul',
+        'if errorlevel 1 (',
+        '  echo.',
+        '  echo revAgent stable updater could not verify the protected local bootstrap.',
+        '  echo If this workstation was prestaged for pilot or an older release, run the administrator bootstrap prestage for stable first.',
+        '  pause',
+        '  exit /b 1',
+        ')',
+        '',
         'start "revAgent Stable" "%POWERSHELL%" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%"',
         'exit /b 0'
     )
