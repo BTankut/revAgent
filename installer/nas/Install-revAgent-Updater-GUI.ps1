@@ -814,7 +814,7 @@ $versionButton.Height = 32
 $buttonPanel.Controls.Add($versionButton)
 
 $openLogsButton = New-Object System.Windows.Forms.Button
-$openLogsButton.Text = "Log Folder"
+$openLogsButton.Text = "Open Log"
 $openLogsButton.Width = 110
 $openLogsButton.Height = 32
 $buttonPanel.Controls.Add($openLogsButton)
@@ -903,6 +903,34 @@ function Read-GuiLogTail {
     $text = Read-LogFileText -Path $Path
     if ($text.Length -le $MaxCharacters) { return $text }
     return $text.Substring($text.Length - $MaxCharacters)
+}
+
+function Open-GuiLogSnapshot {
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if (-not [string]::IsNullOrWhiteSpace($script:ActiveBrokerLogPath)) {
+        [void]$parts.Add("=== Protected broker ===`r`nPath: $script:ActiveBrokerLogPath`r`n$(Read-GuiLogTail -Path $script:ActiveBrokerLogPath -MaxCharacters 120000)")
+    }
+    if (-not [string]::IsNullOrWhiteSpace($script:ActiveLogPath)) {
+        [void]$parts.Add("=== Active phase ===`r`nPath: $script:ActiveLogPath`r`n$(Read-GuiLogTail -Path $script:ActiveLogPath -MaxCharacters 180000)")
+    }
+
+    $snapshotText = [string]::Join("`r`n`r`n", $parts.ToArray())
+    if ([string]::IsNullOrWhiteSpace($snapshotText)) {
+        $snapshotText = "No active revAgent GUI log has been created yet.`r`n`r`nUpdater root: $workRoot`r`n"
+    }
+
+    $snapshotRoot = Join-Path ([System.IO.Path]::GetTempPath()) "revAgent-gui-log-snapshots"
+    New-Item -ItemType Directory -Path $snapshotRoot -Force | Out-Null
+    $snapshotPath = Join-Path $snapshotRoot ("revAgent-gui-log-{0}.txt" -f (Get-Date -Format "yyyyMMdd-HHmmss"))
+    [System.IO.File]::WriteAllText($snapshotPath, $snapshotText, [System.Text.Encoding]::UTF8)
+
+    $notepad = Join-Path ([Environment]::SystemDirectory) "notepad.exe"
+    if (Test-Path -LiteralPath $notepad -PathType Leaf) {
+        Start-Process -FilePath $notepad -ArgumentList @($snapshotPath) | Out-Null
+    }
+    else {
+        Start-Process -FilePath $snapshotPath | Out-Null
+    }
 }
 
 function Remove-GuiAuthenticatedInbox {
@@ -1337,9 +1365,9 @@ $timer.Add_Tick({
             if (-not $logBox.Text.EndsWith("`r`n")) {
                 $logBox.AppendText("`r`n")
             }
-            $logBox.AppendText("Install/update did not complete: $resultMessage`r`nUse Log Folder for diagnostic details.`r`n")
+            $logBox.AppendText("Install/update did not complete: $resultMessage`r`nUse Open Log for diagnostic details.`r`n")
             [System.Windows.Forms.MessageBox]::Show(
-                "Install/update did not complete.`r`n`r`n$resultMessage`r`n`r`nOpen the log folder for details.",
+                "Install/update did not complete.`r`n`r`n$resultMessage`r`n`r`nUse Open Log for diagnostic details.",
                 "revAgent",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 $(if ($null -ne $phaseResult -and [string]$phaseResult.status -eq "blocked") { [System.Windows.Forms.MessageBoxIcon]::Warning } else { [System.Windows.Forms.MessageBoxIcon]::Error })) | Out-Null
@@ -1373,27 +1401,16 @@ $versionButton.Add_Click({
 })
 
 $openLogsButton.Add_Click({
-    $candidateFolder = if (-not [string]::IsNullOrWhiteSpace($script:ActiveLogPath)) {
-        Split-Path -Parent $script:ActiveLogPath
+    try {
+        Open-GuiLogSnapshot
     }
-    elseif (-not [string]::IsNullOrWhiteSpace($script:ActiveBrokerLogPath)) {
-        Split-Path -Parent $script:ActiveBrokerLogPath
+    catch {
+        [System.Windows.Forms.MessageBox]::Show(
+            "The revAgent GUI log snapshot could not be opened.`r`n$($_.Exception.Message)",
+            "revAgent",
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error) | Out-Null
     }
-    else {
-        $workRoot
-    }
-    if (-not (Test-Path -LiteralPath $candidateFolder)) {
-        if (-not (Test-Path -LiteralPath $workRoot)) {
-            [System.Windows.Forms.MessageBox]::Show("The revAgent updater folder does not exist yet.", "revAgent") | Out-Null
-            return
-        }
-        $candidateFolder = $workRoot
-    }
-    if (-not (Test-Path -LiteralPath $candidateFolder)) {
-        [System.Windows.Forms.MessageBox]::Show("The revAgent updater folder does not exist yet.", "revAgent") | Out-Null
-        return
-    }
-    Start-Process explorer.exe $candidateFolder
 })
 
 $closeButton.Add_Click({
