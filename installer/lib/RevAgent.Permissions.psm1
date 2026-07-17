@@ -384,7 +384,9 @@ namespace RevAgent {
                         // holders are rejected conservatively because their exact
                         // granted access cannot be proven without weakening this gate.
                         throw new InvalidOperationException(
-                            "Another process already retains a handle to the managed mutation identity set. pid=" + processId);
+                            "Another process already retains a handle to the managed mutation identity set. " +
+                            DescribeProcess(processId) +
+                            ". Close File Explorer windows or tools viewing revAgent install/updater folders, then retry.");
                     }
                 }
             }
@@ -495,6 +497,39 @@ namespace RevAgent {
                     Marshal.FreeHGlobal(buffer);
                 }
             }
+        }
+
+        private static string DescribeProcess(long processId) {
+            string fallback = "pid=" + processId;
+            if (processId <= 0 || processId > Int32.MaxValue) {
+                return fallback;
+            }
+
+            try {
+                using (System.Diagnostics.Process process = System.Diagnostics.Process.GetProcessById((int)processId)) {
+                    string name = process.ProcessName;
+                    string path = "";
+                    try {
+                        if (process.MainModule != null) {
+                            path = process.MainModule.FileName;
+                        }
+                    }
+                    catch {
+                        path = "";
+                    }
+
+                    if (!String.IsNullOrWhiteSpace(name) && !String.IsNullOrWhiteSpace(path)) {
+                        return fallback + " name=" + name + " path=" + path;
+                    }
+                    if (!String.IsNullOrWhiteSpace(name)) {
+                        return fallback + " name=" + name;
+                    }
+                }
+            }
+            catch {
+            }
+
+            return fallback;
         }
 
         public static void ApplyOwnerAndProtectedDacl(SafeFileHandle handle, byte[] securityDescriptor) {
