@@ -166,8 +166,9 @@ try {
     $env:PATH = (Join-Path $env:WINDIR "System32")
     $installedUnifiedPackages = @(Appx\Get-AppxPackage -Name 'OpenAI.Codex' -ErrorAction SilentlyContinue)
     $expectedUnsignedFailure = if ($installedUnifiedPackages.Count -gt 0) { 'No Codex CLI candidate passed origin' } else { 'No OpenAI\.Codex Store package is installed' }
+    $isolatedUnsignedInstallRoot = Join-Path $tempRoot "isolated-install-root-without-protected-codex"
     Assert-ThrowsLike -Action {
-        Resolve-RevAgentCodexCli -ExplicitPath $unsignedCli -CodexHome $defaultHome.path -LocalAppData $isolatedLocalAppData | Out-Null
+        Resolve-RevAgentCodexCli -ExplicitPath $unsignedCli -CodexHome $defaultHome.path -InstallRoot $isolatedUnsignedInstallRoot -LocalAppData $isolatedLocalAppData | Out-Null
     } -Pattern $expectedUnsignedFailure -Message "Unsigned Codex CLI or a package-present attestation failure must fail closed without a user-writable fallback."
     Assert-True (-not (Test-Path -LiteralPath $unsignedMarker)) "Unsigned Codex CLI fixture was executed."
     $env:PATH = $previousPath
