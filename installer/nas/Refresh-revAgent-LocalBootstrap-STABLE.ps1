@@ -161,6 +161,92 @@ function Start-ElevatedApply {
     if ($exitCode -ne 0) { throw "Elevated bootstrap refresh exited with code $exitCode." }
 }
 
+function Resolve-ReleaseRootChildPath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$BaseDirectory
+    )
+
+    $releaseRootFullPath = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\')
+    $resolved = if ([IO.Path]::IsPathRooted($Path)) {
+        [IO.Path]::GetFullPath($Path)
+    }
+    else {
+        [IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
+    }
+    $resolvedTrimmed = $resolved.TrimEnd('\')
+    if (-not [string]::Equals($resolvedTrimmed, $releaseRootFullPath, [StringComparison]::OrdinalIgnoreCase) -and
+        -not $resolvedTrimmed.StartsWith($releaseRootFullPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Signed release path escaped ReleaseRoot: $resolved"
+    }
+    return $resolved
+}
+
+function New-CleanInstallBootstrapInput {
+    $channelPath = Join-Path (Join-Path $ReleaseRoot 'channels') "$Channel.json"
+    $trustedKeys = Join-Path (Join-Path $ReleaseRoot 'tools\config') 'release-trusted-keys.json'
+    if (-not (Test-Path -LiteralPath $channelPath -PathType Leaf)) {
+        throw "Signed stable channel manifest was not found: $channelPath"
+    }
+    if (-not (Test-Path -LiteralPath $trustedKeys -PathType Leaf)) {
+        throw "Trusted release keys were not found: $trustedKeys"
+    }
+
+    $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+    if (-not [string]::Equals([string]$channel.channel, $Channel, [StringComparison]::Ordinal)) {
+        throw "Signed channel identity mismatch. requested=$Channel actual=$($channel.channel)"
+    }
+    $channelDirectory = Split-Path -Parent $channelPath
+    $packagePath = Resolve-ReleaseRootChildPath -Path ([string]$channel.packagePath) -BaseDirectory $channelDirectory
+    if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
+        throw "Signed release package was not found: $packagePath"
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$channel.sha256)) {
+        throw "Signed stable channel does not contain a package SHA-256."
+    }
+    $actualPackageSha256 = Get-Sha256Hex -Path $packagePath
+    if (-not [string]::Equals($actualPackageSha256, [string]$channel.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Signed release package changed before bootstrap evidence production."
+    }
+
+    $sourceRoot = Join-Path $env:TEMP ("revagent-bootstrap-install-source-" + [Guid]::NewGuid().ToString('N'))
+    $evidencePath = Join-Path $env:TEMP ("revagent-bootstrap-install-evidence-" + [Guid]::NewGuid().ToString('N') + ".json")
+    New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
+    Expand-Archive -LiteralPath $packagePath -DestinationPath $sourceRoot -Force
+    if (-not [string]::Equals((Get-Sha256Hex -Path $packagePath), $actualPackageSha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Signed release package changed during extraction."
+    }
+
+    $evidenceTool = Join-Path $sourceRoot 'installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1'
+    if (-not (Test-Path -LiteralPath $evidenceTool -PathType Leaf)) {
+        throw "Signed release package does not contain the bootstrap evidence producer: $evidenceTool"
+    }
+
+    Write-Host "Preparing authenticated first-install bootstrap evidence..."
+    $evidenceResult = & $evidenceTool `
+        -ReleaseRoot $ReleaseRoot `
+        -TrustedKeysPath $trustedKeys `
+        -OutputPath $evidencePath `
+        -RepoRoot $sourceRoot `
+        -Channel $Channel
+    $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
+    if (-not [bool]$evidence.release.signatureVerified -or
+        -not [string]::Equals([string]$evidence.release.channel, $Channel, [StringComparison]::Ordinal)) {
+        throw "Bootstrap first-install evidence does not prove a signed stable release."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$evidence.localBootstrapInstallerScript)) {
+        throw "Bootstrap first-install evidence is missing the local bootstrap installer hash."
+    }
+
+    return [pscustomobject][ordered]@{
+        SourceRoot = $sourceRoot
+        EvidenceSource = $evidencePath
+        EvidenceSha256 = [string]$evidenceResult.outputSha256
+        InstallerSha256 = [string]$evidence.localBootstrapInstallerScript
+        TrustedKeysSource = $trustedKeys
+    }
+}
+
 if ($ElevatedApply) {
     if (-not (Test-IsAdmin)) { throw "Elevated bootstrap refresh requires administrator permission." }
     foreach ($required in @($SourceRoot, $EvidenceSource, $ExpectedEvidenceSha256, $ExpectedInstallerSha256, $TrustedKeysSource)) {
@@ -198,6 +284,25 @@ if ($ElevatedApply) {
 
 if (Test-IsAdmin) {
     throw "Start this refresh normally, not as administrator. It will request administrator permission for the protected refresh phase."
+}
+
+$programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
+$bootstrapStatePath = Join-Path $programData 'DPE\revAgent\bootstrap\bootstrap-state.json'
+if (-not (Test-Path -LiteralPath $bootstrapStatePath -PathType Leaf)) {
+    Write-Host "No protected local bootstrap was found. Preparing first-time revAgent bootstrap..."
+    $cleanInstall = New-CleanInstallBootstrapInput
+    Write-Host "Requesting administrator approval to install the protected local bootstrap..."
+    Start-ElevatedApply `
+        -SourceRoot ([string]$cleanInstall.SourceRoot) `
+        -EvidenceSource ([string]$cleanInstall.EvidenceSource) `
+        -EvidenceSha256 ([string]$cleanInstall.EvidenceSha256) `
+        -InstallerSha256 ([string]$cleanInstall.InstallerSha256) `
+        -TrustedKeysSource ([string]$cleanInstall.TrustedKeysSource)
+
+    Write-Host "Protected local bootstrap installed. Starting revAgent updater..."
+    $localLauncher = Join-Path $programData 'DPE\revAgent\bootstrap\Start-revAgent-Update.cmd'
+    Start-Process -FilePath $localLauncher -WorkingDirectory (Split-Path -Parent $localLauncher) | Out-Null
+    exit 0
 }
 
 $bootstrap = Get-ProtectedBootstrapState

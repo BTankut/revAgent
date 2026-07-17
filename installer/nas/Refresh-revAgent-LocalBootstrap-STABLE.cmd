@@ -14,7 +14,7 @@ if not exist "%SCRIPT%" (
 "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT%"
 if errorlevel 1 (
   echo.
-  echo revAgent bootstrap refresh did not complete.
+  echo revAgent bootstrap install/refresh did not complete.
   pause
   exit /b 1
 )

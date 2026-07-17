@@ -899,9 +899,23 @@ function Get-RevAgentStableLauncherBytes {
         'set "REFRESH=%RELEASE_ROOT%\tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd"',
         '',
         'if not exist "%BOOTSTRAP%" (',
-        '  echo SECURITY STOP: protected local revAgent bootstrap is not installed.',
-        '  pause',
-        '  exit /b 1',
+        '  echo revAgent stable updater needs to install the protected local bootstrap first.',
+        '  if not exist "%REFRESH%" (',
+        '    echo revAgent stable bootstrap install tool was not found:',
+        '    echo %REFRESH%',
+        '    pause',
+        '    exit /b 1',
+        '  )',
+        '  call "%REFRESH%"',
+        '  if errorlevel 1 (',
+        '    echo.',
+        '    echo revAgent stable bootstrap install did not complete.',
+        '    pause',
+        '    exit /b 1',
+        '  )',
+        '  echo.',
+        '  echo revAgent stable bootstrap install completed. The updater should open now.',
+        '  exit /b 0',
         ')',
         '',
         'if not exist "%CHANNEL%" (',
@@ -981,6 +995,79 @@ function Set-RevAgentStableLauncherExact {
         }
         throw
     }
+}
+
+function Set-RevAgentStableToolFileExact {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolsRoot,
+        [Parameter(Mandatory = $true)][string]$ToolName,
+        [Parameter(Mandatory = $true)][string]$SourcePath,
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+    )
+
+    $toolPath = [IO.Path]::GetFullPath((Join-Path $ToolsRoot $ToolName))
+    Assert-RevAgentChildPath -Path $toolPath -Root $ReleaseRoot
+    $sourceFullPath = [IO.Path]::GetFullPath($SourcePath)
+    if (-not (Test-Path -LiteralPath $sourceFullPath -PathType Leaf)) {
+        throw "Stable bootstrap tool source was not found: $sourceFullPath"
+    }
+    $toolBytes = [IO.File]::ReadAllBytes($sourceFullPath)
+    if ($toolBytes.Length -lt 1 -or $toolBytes.Length -gt 1048576) {
+        throw "Stable bootstrap tool size is outside the bounded policy: $sourceFullPath size=$($toolBytes.Length)"
+    }
+    $toolSha256 = Get-RevAgentBytesSha256 -Bytes $toolBytes
+    $created = -not (Test-Path -LiteralPath $toolPath -PathType Leaf)
+    $guard = if ($created) {
+        New-RevAgentGuardedFileStream -Path $toolPath -CreateNew
+    }
+    else {
+        New-RevAgentGuardedFileStream -Path $toolPath
+    }
+    try {
+        $baselineBytes = Read-RevAgentStreamBytes -Stream $guard.stream -MaxBytes 1048576
+        $baselineSha256 = Get-RevAgentBytesSha256 -Bytes $baselineBytes
+        $writtenSha256 = Set-RevAgentStreamBytesVerified `
+            -Stream $guard.stream `
+            -Bytes $toolBytes `
+            -ExpectedSha256 $toolSha256 `
+            -Label "stable bootstrap tool $ToolName"
+        return [pscustomobject][ordered]@{
+            path = $toolPath
+            toolName = $ToolName
+            created = $created
+            changed = (-not [string]::Equals($baselineSha256, $writtenSha256, [StringComparison]::OrdinalIgnoreCase))
+            baselineBytes = $baselineBytes
+            baselineSha256 = $baselineSha256
+            sha256 = $writtenSha256
+            stream = $guard.stream
+            identity = $guard.identity
+        }
+    }
+    catch {
+        if ($null -ne $guard) {
+            try { $guard.stream.Dispose() } catch {}
+        }
+        throw
+    }
+}
+
+function Set-RevAgentStableBootstrapToolsExact {
+    param(
+        [Parameter(Mandatory = $true)][string]$ToolsRoot,
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+    )
+
+    $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+    $sourceNasRoot = Join-Path $repoRoot 'installer\nas'
+    $updates = [Collections.Generic.List[object]]::new()
+    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1')) {
+        $updates.Add((Set-RevAgentStableToolFileExact `
+                    -ToolsRoot $ToolsRoot `
+                    -ToolName $toolName `
+                    -SourcePath (Join-Path $sourceNasRoot $toolName) `
+                    -ReleaseRoot $ReleaseRoot)) | Out-Null
+    }
+    return @($updates.ToArray())
 }
 
 function Enter-RevAgentChannelPairGuard {
@@ -1603,6 +1690,8 @@ $stableToolsBaseline = $null
 $stableToolsFinal = $null
 $stableLauncherUpdate = $null
 $stableLauncherEvidence = $null
+$stableBootstrapToolUpdates = @()
+$stableBootstrapToolEvidence = @()
 $sourceReleaseDigest = $null
 $candidateReadiness = $null
 $candidateArtifactIdentity = $null
@@ -2008,6 +2097,7 @@ try {
                     -not [string]::Equals([string]$ownedStableReleaseTree.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
                     throw 'Handle-bound stable release tree digest does not match the locked source tree.'
                 }
+                $stableBootstrapToolUpdates = @(Set-RevAgentStableBootstrapToolsExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot)
                 $stableLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot
             }
         }
@@ -2034,6 +2124,7 @@ try {
             sourceReadiness = $lockedSourceReadiness
             releaseTree = if ($null -ne $ownedPilotReleaseTree) { [pscustomobject]@{ fileCount = $ownedPilotReleaseTree.fileCount; sha256 = $ownedPilotReleaseTree.sha256 } } elseif ($null -ne $ownedStableReleaseTree) { [pscustomobject]@{ fileCount = $ownedStableReleaseTree.fileCount; sha256 = $ownedStableReleaseTree.sha256 } } else { $null }
             stableLauncher = if ($null -ne $stableLauncherUpdate) { [pscustomobject]@{ path = $stableLauncherUpdate.path; sha256 = $stableLauncherUpdate.sha256; changed = [bool]$stableLauncherUpdate.changed } } else { $null }
+            stableBootstrapTools = @($stableBootstrapToolUpdates | ForEach-Object { [pscustomobject]@{ path = $_.path; sha256 = $_.sha256; changed = [bool]$_.changed } })
             channelSha256 = $candidateChannelHash
             channelSignatureSha256 = $candidateSignatureHash
         }
@@ -2144,6 +2235,21 @@ try {
                     created = [bool]$stableLauncherUpdate.created
                 }
             }
+            foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
+                [void](Assert-RevAgentExactFileHandleIdentity -Handle $toolUpdate.stream.SafeFileHandle -ExpectedIdentity $toolUpdate.identity -Label ("stable bootstrap tool final: {0}" -f $toolUpdate.toolName))
+                if (-not [string]::Equals((Get-RevAgentStreamSha256 -Stream $toolUpdate.stream), [string]$toolUpdate.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw "Stable bootstrap tool changed before publish completion: $($toolUpdate.toolName)"
+                }
+            }
+            $stableBootstrapToolEvidence = @($stableBootstrapToolUpdates | ForEach-Object {
+                    [pscustomobject][ordered]@{
+                        path = [string]$_.path
+                        toolName = [string]$_.toolName
+                        sha256 = [string]$_.sha256
+                        changed = [bool]$_.changed
+                        created = [bool]$_.created
+                    }
+                })
             $stableToolsFinal = Get-RevAgentDeterministicTreeDigest -Root $nasToolsDir
             if (-not [bool]$stableToolsFinal.exists) { throw 'Stable publish lost the shared NAS tools tree.' }
         }
@@ -2163,6 +2269,10 @@ try {
             $stableLauncherUpdate.stream.Dispose()
             $stableLauncherUpdate = $null
         }
+        foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
+            $toolUpdate.stream.Dispose()
+        }
+        $stableBootstrapToolUpdates = @()
     }
     catch {
         $publishError = $_
@@ -2217,7 +2327,22 @@ try {
                     $stableLauncherUpdate.stream.Dispose()
                     $stableLauncherUpdate = $null
                 }
-                elseif ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
+                foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
+                    if ([bool]$toolUpdate.created) {
+                        [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($toolUpdate.stream.SafeFileHandle)
+                    }
+                    else {
+                        [void](Restore-RevAgentStreamBytesByStableHandle `
+                            -Stream $toolUpdate.stream `
+                            -ExpectedIdentity $toolUpdate.identity `
+                            -Bytes ([byte[]]$toolUpdate.baselineBytes) `
+                            -ExpectedSha256 ([string]$toolUpdate.baselineSha256) `
+                            -Label ("stable bootstrap tool rollback: {0}" -f $toolUpdate.toolName))
+                    }
+                    $toolUpdate.stream.Dispose()
+                }
+                $stableBootstrapToolUpdates = @()
+                if ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
                     Restore-RevAgentDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
                     Restore-RevAgentDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
                 }
@@ -2257,6 +2382,10 @@ try {
             $stableLauncherUpdate.stream.Dispose()
             $stableLauncherUpdate = $null
         }
+        foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
+            try { $toolUpdate.stream.Dispose() } catch {}
+        }
+        $stableBootstrapToolUpdates = @()
         if ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal) -and -not $rollbackFailed -and (Test-Path -LiteralPath $payloadBackupRoot)) {
             Remove-Item -LiteralPath $payloadBackupRoot -Recurse -Force -ErrorAction SilentlyContinue
         }
@@ -2346,6 +2475,7 @@ $result = [pscustomobject][ordered]@{
             releaseTreeCreateNew = -not $AllowTestRoot
             sharedToolsTreeReplaced = [bool]$AllowTestRoot
             stableLauncher = $stableLauncherEvidence
+            stableBootstrapTools = @($stableBootstrapToolEvidence)
             sharedToolsBefore = $stableToolsBaseline
             sharedToolsAfter = $stableToolsFinal
         }
