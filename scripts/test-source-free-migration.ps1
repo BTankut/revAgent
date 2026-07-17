@@ -593,13 +593,26 @@ public static class RevAgentSourceFreeForeignHandle {
     [System.IO.File]::SetAttributes($canonicalOutsideHardlink, [System.IO.FileAttributes]::Normal)
     [System.IO.File]::Delete($canonicalManagedHardlink)
 
-    $machineCommit = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
-        -Scope machine `
-        -InstallRoot $canonicalInstallRoot `
-        -UserProfileRoot $canonicalUserRoot `
-        -RoamingAppDataRoot $canonicalRoamingRoot `
-        -CommonAppDataRoot $canonicalCommonRoot `
-        -Commit
+    $canonicalTranscriptPath = Join-Path $tempRoot "canonical-cleanup-transcript.txt"
+    $canonicalTranscriptStarted = $false
+    try {
+        Start-Transcript -LiteralPath $canonicalTranscriptPath -Force | Out-Null
+        $canonicalTranscriptStarted = $true
+        $machineCommit = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
+            -Scope machine `
+            -InstallRoot $canonicalInstallRoot `
+            -UserProfileRoot $canonicalUserRoot `
+            -RoamingAppDataRoot $canonicalRoamingRoot `
+            -CommonAppDataRoot $canonicalCommonRoot `
+            -Commit
+    }
+    finally {
+        if ($canonicalTranscriptStarted) {
+            Stop-Transcript | Out-Null
+        }
+    }
+    $canonicalTranscript = Get-Content -LiteralPath $canonicalTranscriptPath -Raw
+    Assert-True ($canonicalTranscript -notmatch 'PS>TerminatingError\(\): "Canonical legacy cleanup ACL is not protected') "Canonical cleanup must not use caught ACL assertion failures as normal probe control flow."
     Assert-Equal ([string]$machineCommit.mode) "commit" "Canonical machine commit must report commit mode."
     Assert-True ([bool]$machineCommit.success) "Canonical machine fixture cleanup must report success after blockers are removed."
     Assert-Equal ([int]$machineCommit.failedCount) 0 "Canonical machine fixture cleanup must not fail."
