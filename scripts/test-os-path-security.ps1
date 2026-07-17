@@ -697,6 +697,7 @@ namespace RevAgentOsPathSecurity {
             "installer\nas\Install-Revit-MCP-Updater-GUI.cmd",
             "installer\nas\Install-revAgent-Updater-GUI.cmd",
             "installer\nas\Install-revAgent-Updater.cmd",
+            "installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.cmd",
             "installer\nas\Revit MCP Updater STABLE.cmd",
             "installer\nas\revAgent Updater STABLE.cmd"
         )) {
