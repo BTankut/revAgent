@@ -492,6 +492,87 @@ function New-RevAgentProtectedBootstrapDirectory {
     return (Get-Item -LiteralPath $path -Force -ErrorAction Stop).FullName
 }
 
+function Resolve-RevAgentLocalBootstrapDesktopShortcutRoot {
+    param([string]$DesktopShortcutRoot, [switch]$AllowTestRoot)
+
+    if (-not [string]::IsNullOrWhiteSpace($DesktopShortcutRoot)) {
+        return [IO.Path]::GetFullPath($DesktopShortcutRoot).TrimEnd("\")
+    }
+    if ($AllowTestRoot) { return "" }
+    $desktopRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDesktopDirectory)
+    if ([string]::IsNullOrWhiteSpace($desktopRoot) -and -not [string]::IsNullOrWhiteSpace($env:PUBLIC)) {
+        $desktopRoot = Join-Path $env:PUBLIC "Desktop"
+    }
+    if ([string]::IsNullOrWhiteSpace($desktopRoot)) { return "" }
+    return [IO.Path]::GetFullPath($desktopRoot).TrimEnd("\")
+}
+
+function Set-RevAgentLocalBootstrapDesktopShortcut {
+    param(
+        [string]$DesktopShortcutRoot,
+        [Parameter(Mandatory = $true)][string]$BootstrapRoot,
+        [switch]$AllowTestRoot
+    )
+
+    $workingDirectory = [IO.Path]::GetFullPath($BootstrapRoot).TrimEnd("\")
+    $targetPath = Join-Path $workingDirectory "Start-revAgent-Update.cmd"
+    $shortcutRoot = Resolve-RevAgentLocalBootstrapDesktopShortcutRoot -DesktopShortcutRoot $DesktopShortcutRoot -AllowTestRoot:$AllowTestRoot
+    $shortcutName = "revAgent Updater.lnk"
+    $shortcutPath = if ([string]::IsNullOrWhiteSpace($shortcutRoot)) { "" } else { Join-Path $shortcutRoot $shortcutName }
+    $result = [ordered]@{
+        schemaVersion = 1
+        name = $shortcutName
+        attempted = $false
+        success = $false
+        shortcutRoot = $shortcutRoot
+        path = $shortcutPath
+        targetPath = $targetPath
+        workingDirectory = $workingDirectory
+        reason = ""
+    }
+    if ([string]::IsNullOrWhiteSpace($shortcutRoot)) {
+        $result.reason = if ($AllowTestRoot) { "test_root_shortcut_root_not_requested" } else { "desktop_shortcut_root_unavailable" }
+        return [pscustomobject]$result
+    }
+
+    $result.attempted = $true
+    try {
+        Assert-RevAgentBootstrapLinkSafe -Path $shortcutRoot
+        if (-not (Test-Path -LiteralPath $shortcutRoot -PathType Container)) {
+            New-Item -ItemType Directory -Path $shortcutRoot -Force | Out-Null
+        }
+        Assert-RevAgentBootstrapLinkSafe -Path $shortcutRoot
+        if (-not (Test-Path -LiteralPath $targetPath -PathType Leaf)) {
+            throw "Protected local bootstrap launcher was not found: $targetPath"
+        }
+
+        $shell = New-Object -ComObject WScript.Shell
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $targetPath
+        $shortcut.WorkingDirectory = $workingDirectory
+        $shortcut.Description = "Open the revAgent updater GUI through the protected local bootstrap."
+        $shortcut.Save()
+
+        $verifiedShortcut = $shell.CreateShortcut($shortcutPath)
+        if (-not (Test-Path -LiteralPath $shortcutPath -PathType Leaf)) {
+            throw "Desktop shortcut was not created: $shortcutPath"
+        }
+        if (-not [string]::Equals([IO.Path]::GetFullPath([string]$verifiedShortcut.TargetPath), [IO.Path]::GetFullPath($targetPath), [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Desktop shortcut target verification failed: $shortcutPath"
+        }
+        if (-not [string]::Equals([IO.Path]::GetFullPath([string]$verifiedShortcut.WorkingDirectory).TrimEnd("\"), $workingDirectory, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Desktop shortcut working-directory verification failed: $shortcutPath"
+        }
+        $result.success = $true
+        $result.reason = "created_or_updated"
+    }
+    catch {
+        $result.reason = [string]$_.Exception.Message
+        Write-Warning ("revAgent desktop updater shortcut could not be created: {0}" -f $result.reason)
+    }
+    return [pscustomobject]$result
+}
+
 function Install-RevAgentLocalBootstrap {
     [CmdletBinding()]
     param(
@@ -509,6 +590,7 @@ function Install-RevAgentLocalBootstrap {
         [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ExpectedSourceHashes,
         [Parameter(Mandatory = $true)][object]$AuthenticatedRelease,
         [Parameter(Mandatory = $true)][string]$SourceAuthenticationMethod,
+        [string]$DesktopShortcutRoot = "",
         [switch]$ConfirmIndependentlyAuthenticatedSource,
         [switch]$AllowTestRoot
     )
@@ -686,7 +768,10 @@ function Install-RevAgentLocalBootstrap {
         $orderedItems = @(Get-ChildItem -LiteralPath $BootstrapRoot -Recurse -Force) + @(Get-Item -LiteralPath $BootstrapRoot -Force)
         foreach ($item in @($orderedItems | Sort-Object { $_.FullName.Length } -Descending)) { Set-RevAgentBootstrapDacl -Path $item.FullName -SetAdministratorsOwner:(-not $AllowTestRoot) }
         if (Test-Path -LiteralPath $backup) { Assert-RevAgentBootstrapLinkSafe -Path $backup -Recurse; Remove-Item -LiteralPath $backup -Recurse -Force }
-        return Get-Content -Raw -LiteralPath (Join-Path $BootstrapRoot "bootstrap-state.json") | ConvertFrom-Json
+        $desktopShortcut = Set-RevAgentLocalBootstrapDesktopShortcut -DesktopShortcutRoot $DesktopShortcutRoot -BootstrapRoot $BootstrapRoot -AllowTestRoot:$AllowTestRoot
+        $installedState = Get-Content -Raw -LiteralPath (Join-Path $BootstrapRoot "bootstrap-state.json") | ConvertFrom-Json
+        $installedState | Add-Member -NotePropertyName "desktopShortcut" -NotePropertyValue $desktopShortcut -Force
+        return $installedState
     }
     catch {
         if ((-not (Test-Path -LiteralPath $BootstrapRoot)) -and (Test-Path -LiteralPath $backup)) {

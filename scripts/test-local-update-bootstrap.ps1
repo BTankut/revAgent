@@ -35,6 +35,7 @@ function Restore-TestAcl {
 
 $temp = Join-Path ([IO.Path]::GetTempPath()) ("revagent-local-bootstrap-test-" + [Guid]::NewGuid().ToString("N"))
 $bootstrapRoot = Join-Path $temp "bootstrap"
+$desktopShortcutRoot = Join-Path $temp "desktop"
 $fakeRelease = Join-Path $temp "revAgent-deploy"
 $expectedPath = Join-Path $temp "expected.json"
 $junctionParent = Join-Path $temp "preplanted-parent"
@@ -129,10 +130,17 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
         sources = $hashes
     }
     [IO.File]::WriteAllText($expectedPath, ($expected | ConvertTo-Json -Depth 5), [Text.UTF8Encoding]::new($false))
-    $state = & (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1") -RepoRoot $RepoRoot -ReleaseRoot $fakeRelease -TrustedKeysPath $trustedKeys -ExpectedHashesPath $expectedPath -BootstrapRoot $bootstrapRoot -ConfirmIndependentlyAuthenticatedSource -AllowTestRoot
+    $state = & (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1") -RepoRoot $RepoRoot -ReleaseRoot $fakeRelease -TrustedKeysPath $trustedKeys -ExpectedHashesPath $expectedPath -BootstrapRoot $bootstrapRoot -DesktopShortcutRoot $desktopShortcutRoot -ConfirmIndependentlyAuthenticatedSource -AllowTestRoot
     Assert-True ([bool]$state.sourceAuthentication.independentlyAuthenticated) "Prestage state lacks independent-authentication evidence."
     Assert-True (Test-Path -LiteralPath (Join-Path $bootstrapRoot "bootstrap-state.json")) "Protected bootstrap state was not installed."
     Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Start-revAgent-Update.cmd") -PathType Leaf) -and $null -ne $state.files.launcher) "Protected local clickable launcher and its hash evidence were not installed."
+    $expectedShortcutPath = Join-Path $desktopShortcutRoot "revAgent Updater.lnk"
+    $expectedShortcutTarget = Join-Path $bootstrapRoot "Start-revAgent-Update.cmd"
+    Assert-True ([bool]$state.desktopShortcut.success -and (Test-Path -LiteralPath $expectedShortcutPath -PathType Leaf)) "Protected bootstrap install did not create the desktop GUI shortcut."
+    Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$state.desktopShortcut.targetPath), [IO.Path]::GetFullPath($expectedShortcutTarget), [StringComparison]::OrdinalIgnoreCase) -and [string]::Equals([IO.Path]::GetFullPath([string]$state.desktopShortcut.path), [IO.Path]::GetFullPath($expectedShortcutPath), [StringComparison]::OrdinalIgnoreCase)) "Desktop shortcut state does not bind to the protected local launcher."
+    $shortcutShell = New-Object -ComObject WScript.Shell
+    $shortcut = $shortcutShell.CreateShortcut($expectedShortcutPath)
+    Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$shortcut.TargetPath), [IO.Path]::GetFullPath($expectedShortcutTarget), [StringComparison]::OrdinalIgnoreCase) -and [string]::Equals([IO.Path]::GetFullPath([string]$shortcut.WorkingDirectory).TrimEnd("\"), [IO.Path]::GetFullPath($bootstrapRoot).TrimEnd("\"), [StringComparison]::OrdinalIgnoreCase)) "Desktop shortcut does not open the protected local bootstrap launcher."
     Assert-True ((Test-Path -LiteralPath (Join-Path $bootstrapRoot "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") -PathType Leaf) -and (Test-Path -LiteralPath (Join-Path $bootstrapRoot "lib\RevAgent.ReleaseSnapshot.psm1") -PathType Leaf)) "Protected snapshot broker/module were not installed."
     $protectedPermissionsPath = Join-Path $bootstrapRoot "lib\RevAgent.Permissions.psm1"
     Assert-True ($null -ne $state.files.permissions -and [string]::Equals([string]$state.files.permissions.relativePath, "lib\RevAgent.Permissions.psm1", [StringComparison]::OrdinalIgnoreCase)) "Protected bootstrap state does not bind the permissions sibling."

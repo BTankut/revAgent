@@ -5,6 +5,7 @@ param(
     [Parameter(Mandatory = $true)][string]$TrustedKeysPath,
     [Parameter(Mandatory = $true)][string]$ExpectedHashesPath,
     [string]$BootstrapRoot = "",
+    [string]$DesktopShortcutRoot = "",
     [switch]$ConfirmIndependentlyAuthenticatedSource,
     [switch]$AllowTestRoot,
     [scriptblock]$ModuleStageTestHook = $null
@@ -542,6 +543,7 @@ try {
         -ExpectedSourceHashes $expected `
         -AuthenticatedRelease $expectedDocument.release `
         -SourceAuthenticationMethod "coordinator-admin-independent-prestage" `
+        -DesktopShortcutRoot $DesktopShortcutRoot `
         -ConfirmIndependentlyAuthenticatedSource `
         -AllowTestRoot:$AllowTestRoot
 }
