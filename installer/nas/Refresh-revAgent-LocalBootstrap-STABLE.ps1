@@ -266,13 +266,21 @@ function New-CleanInstallBootstrapInput {
     if ([string]::IsNullOrWhiteSpace([string]$evidence.localBootstrapInstallerScript)) {
         throw "Bootstrap first-install evidence is missing the local bootstrap installer hash."
     }
+    if ([string]::IsNullOrWhiteSpace([string]$evidence.sources.trustedKeys)) {
+        throw "Bootstrap first-install evidence is missing the trusted keys hash."
+    }
+    $trustedKeysLocal = Join-Path $env:TEMP ("revagent-bootstrap-trusted-keys-" + [Guid]::NewGuid().ToString('N') + ".json")
+    Copy-Item -LiteralPath $trustedKeys -Destination $trustedKeysLocal -Force
+    if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $trustedKeysLocal) -Right ([string]$evidence.sources.trustedKeys) -IgnoreCase)) {
+        throw "Trusted release keys changed before bootstrap elevation."
+    }
 
     return [pscustomobject][ordered]@{
         SourceRoot = $sourceRoot
         EvidenceSource = $evidencePath
         EvidenceSha256 = [string]$evidenceResult.outputSha256
         InstallerSha256 = [string]$evidence.localBootstrapInstallerScript
-        TrustedKeysSource = $trustedKeys
+        TrustedKeysSource = $trustedKeysLocal
     }
 }
 
@@ -282,12 +290,23 @@ if ($ElevatedApply) {
         if ([string]::IsNullOrWhiteSpace($required)) { throw "Elevated bootstrap refresh is missing a required authenticated input." }
     }
     if ((Get-Sha256Hex -Path $EvidenceSource) -ne $ExpectedEvidenceSha256) { throw "Bootstrap refresh evidence changed before elevation." }
+    $evidenceDocument = Get-Content -Raw -LiteralPath $EvidenceSource | ConvertFrom-Json
+    if ([string]::IsNullOrWhiteSpace([string]$evidenceDocument.sources.trustedKeys)) {
+        throw "Bootstrap refresh evidence is missing the trusted keys hash."
+    }
+    if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $TrustedKeysSource) -Right ([string]$evidenceDocument.sources.trustedKeys) -IgnoreCase)) {
+        throw "Bootstrap refresh trusted keys changed before elevation."
+    }
     $installerSource = Join-Path $SourceRoot 'installer\nas\install-revagent-local-bootstrap.ps1'
     if ((Get-Sha256Hex -Path $installerSource) -ne $ExpectedInstallerSha256) { throw "Bootstrap refresh installer changed before elevation." }
 
     $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    $productRoot = Join-Path $programData 'DPE\revAgent'
+    $dpeRoot = Join-Path $programData 'DPE'
+    $productRoot = Join-Path $dpeRoot 'revAgent'
     $prestageRoot = Join-Path $productRoot 'prestage'
+    New-Item -ItemType Directory -Path $dpeRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $productRoot -Force | Out-Null
+    Set-AdminOnlyAcl -Path $productRoot
     New-Item -ItemType Directory -Path $prestageRoot -Force | Out-Null
     Set-AdminOnlyAcl -Path $prestageRoot
 
