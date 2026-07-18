@@ -221,20 +221,20 @@ function New-CleanInstallBootstrapInput {
         throw "Trusted release keys were not found: $trustedKeys"
     }
 
-    $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
-    if (-not (Test-RevAgentStringEquals -Left ([string]$channel.channel) -Right $Channel)) {
-        throw "Signed channel identity mismatch. requested=$Channel actual=$($channel.channel)"
+    $channelManifest = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
+    if (-not (Test-RevAgentStringEquals -Left ([string]$channelManifest.channel) -Right $Channel)) {
+        throw "Signed channel identity mismatch. requested=$Channel actual=$($channelManifest.channel)"
     }
     $channelDirectory = Split-Path -Parent $channelPath
-    $packagePath = Resolve-ReleaseRootChildPath -Path ([string]$channel.packagePath) -BaseDirectory $channelDirectory
+    $packagePath = Resolve-ReleaseRootChildPath -Path ([string]$channelManifest.packagePath) -BaseDirectory $channelDirectory
     if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
         throw "Signed release package was not found: $packagePath"
     }
-    if ([string]::IsNullOrWhiteSpace([string]$channel.sha256)) {
+    if ([string]::IsNullOrWhiteSpace([string]$channelManifest.sha256)) {
         throw "Signed stable channel does not contain a package SHA-256."
     }
     $actualPackageSha256 = Get-Sha256Hex -Path $packagePath
-    if (-not (Test-RevAgentStringEquals -Left $actualPackageSha256 -Right ([string]$channel.sha256) -IgnoreCase)) {
+    if (-not (Test-RevAgentStringEquals -Left $actualPackageSha256 -Right ([string]$channelManifest.sha256) -IgnoreCase)) {
         throw "Signed release package changed before bootstrap evidence production."
     }
 
