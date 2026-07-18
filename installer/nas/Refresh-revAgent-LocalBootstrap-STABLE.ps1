@@ -12,7 +12,8 @@ param(
     [string]$EvidenceSource = "",
     [string]$ExpectedEvidenceSha256 = "",
     [string]$ExpectedInstallerSha256 = "",
-    [string]$TrustedKeysSource = ""
+    [string]$TrustedKeysSource = "",
+    [switch]$CoordinatorRelaunchedFromAdmin
 )
 
 $ErrorActionPreference = "Stop"
@@ -295,6 +296,69 @@ function New-CleanInstallBootstrapInput {
     }
 }
 
+function Start-LimitedCoordinatorFromAdministrator {
+    if ($CoordinatorRelaunchedFromAdmin) {
+        throw "revAgent stable bootstrap coordinator is still running as administrator after a limited relaunch attempt. Start the STABLE updater from File Explorer or a normal user command prompt."
+    }
+
+    $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $arguments = Join-CommandLine -Arguments @(
+        '-NoProfile',
+        '-ExecutionPolicy', 'Bypass',
+        '-File', $PSCommandPath,
+        '-ReleaseRoot', $ReleaseRoot,
+        '-Channel', $Channel,
+        '-CoordinatorRelaunchedFromAdmin'
+    )
+    $taskName = "revAgent Bootstrap Coordinator {0}" -f [Guid]::NewGuid().ToString('N')
+    $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+    try {
+        Microsoft.PowerShell.Core\Import-Module -Name ScheduledTasks -ErrorAction Stop
+        foreach ($oldTask in @(Get-ScheduledTask -TaskName 'revAgent Bootstrap Coordinator *' -ErrorAction SilentlyContinue)) {
+            try {
+                if ($null -eq $oldTask.State -or -not (Test-RevAgentStringEquals -Left ([string]$oldTask.State) -Right 'Running' -IgnoreCase)) {
+                    Unregister-ScheduledTask -TaskName ([string]$oldTask.TaskName) -Confirm:$false -ErrorAction Stop | Out-Null
+                }
+            }
+            catch {
+                Write-Warning "Could not remove old revAgent bootstrap coordinator task '$($oldTask.TaskName)': $($_.Exception.Message)"
+            }
+        }
+
+        $action = New-ScheduledTaskAction `
+            -Execute $powershell `
+            -Argument $arguments `
+            -WorkingDirectory (Split-Path -Parent $powershell)
+        $triggerAt = (Get-Date).AddYears(10)
+        $trigger = New-ScheduledTaskTrigger -Once -At $triggerAt
+        $settings = New-ScheduledTaskSettingsSet `
+            -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 45)
+        $principal = New-ScheduledTaskPrincipal `
+            -UserId $currentUser `
+            -LogonType Interactive `
+            -RunLevel Limited
+
+        Register-ScheduledTask `
+            -TaskName $taskName `
+            -Action $action `
+            -Trigger $trigger `
+            -Settings $settings `
+            -Principal $principal `
+            -Description "Runs the revAgent stable bootstrap coordinator at normal user privilege when the STABLE updater was started elevated." `
+            -Force | Out-Null
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    }
+    catch {
+        throw "Administrator-launched revAgent stable bootstrap could not start a normal limited coordinator for '$currentUser': $($_.Exception.Message)"
+    }
+
+    Write-Host "Administrator session detected. Started the revAgent stable bootstrap coordinator as a normal limited interactive task."
+    Write-Host "The coordinator will verify the signed release before requesting administrator approval for the protected bootstrap phase."
+}
+
 function Invoke-AuthenticatedBootstrapApply {
     param(
         [Parameter(Mandatory = $true)][string]$SourceRoot,
@@ -355,6 +419,11 @@ if ($ElevatedApply) {
         -ExpectedEvidenceSha256 $ExpectedEvidenceSha256 `
         -ExpectedInstallerSha256 $ExpectedInstallerSha256 `
         -TrustedKeysSource $TrustedKeysSource
+    exit 0
+}
+
+if (Test-IsAdmin) {
+    Start-LimitedCoordinatorFromAdministrator
     exit 0
 }
 
