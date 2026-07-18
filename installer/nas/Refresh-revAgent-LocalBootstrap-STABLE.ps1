@@ -40,6 +40,35 @@ function Get-Sha256Hex {
     return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
 }
 
+function Test-RevAgentStringEquals {
+    param(
+        [AllowNull()][string]$Left,
+        [AllowNull()][string]$Right,
+        [switch]$IgnoreCase
+    )
+
+    if ($null -eq $Left -or $null -eq $Right) {
+        return ($null -eq $Left -and $null -eq $Right)
+    }
+    if ($IgnoreCase) {
+        return $Left.ToUpperInvariant() -eq $Right.ToUpperInvariant()
+    }
+    return $Left -ceq $Right
+}
+
+function Test-RevAgentStringStartsWith {
+    param(
+        [AllowNull()][string]$Value,
+        [AllowNull()][string]$Prefix,
+        [switch]$IgnoreCase
+    )
+
+    if ($null -eq $Value -or $null -eq $Prefix) { return $false }
+    if ($Prefix.Length -eq 0) { return $true }
+    if ($Value.Length -lt $Prefix.Length) { return $false }
+    return Test-RevAgentStringEquals -Left ($Value.Substring(0, $Prefix.Length)) -Right $Prefix -IgnoreCase:([bool]$IgnoreCase)
+}
+
 function Quote-Arg {
     param([Parameter(Mandatory = $true)][string]$Value)
     return '"' + ($Value -replace '"', '\"') + '"'
@@ -118,7 +147,7 @@ function Get-ProtectedBootstrapState {
         }
         $path = Join-Path $bootstrapRoot ([string]$evidence.relativePath)
         if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Protected local bootstrap file was not found: $path" }
-        if (-not [string]::Equals((Get-Sha256Hex -Path $path), [string]$evidence.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+        if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $path) -Right ([string]$evidence.sha256) -IgnoreCase)) {
             throw "Protected local bootstrap file hash mismatch: $role"
         }
     }
@@ -175,8 +204,8 @@ function Resolve-ReleaseRootChildPath {
         [IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
     }
     $resolvedTrimmed = $resolved.TrimEnd('\')
-    if (-not [string]::Equals($resolvedTrimmed, $releaseRootFullPath, [StringComparison]::OrdinalIgnoreCase) -and
-        -not $resolvedTrimmed.StartsWith($releaseRootFullPath + '\', [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not (Test-RevAgentStringEquals -Left $resolvedTrimmed -Right $releaseRootFullPath -IgnoreCase) -and
+        -not (Test-RevAgentStringStartsWith -Value $resolvedTrimmed -Prefix ($releaseRootFullPath + '\') -IgnoreCase)) {
         throw "Signed release path escaped ReleaseRoot: $resolved"
     }
     return $resolved
@@ -193,7 +222,7 @@ function New-CleanInstallBootstrapInput {
     }
 
     $channel = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
-    if (-not [string]::Equals([string]$channel.channel, $Channel, [StringComparison]::Ordinal)) {
+    if (-not (Test-RevAgentStringEquals -Left ([string]$channel.channel) -Right $Channel)) {
         throw "Signed channel identity mismatch. requested=$Channel actual=$($channel.channel)"
     }
     $channelDirectory = Split-Path -Parent $channelPath
@@ -205,7 +234,7 @@ function New-CleanInstallBootstrapInput {
         throw "Signed stable channel does not contain a package SHA-256."
     }
     $actualPackageSha256 = Get-Sha256Hex -Path $packagePath
-    if (-not [string]::Equals($actualPackageSha256, [string]$channel.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not (Test-RevAgentStringEquals -Left $actualPackageSha256 -Right ([string]$channel.sha256) -IgnoreCase)) {
         throw "Signed release package changed before bootstrap evidence production."
     }
 
@@ -213,7 +242,7 @@ function New-CleanInstallBootstrapInput {
     $evidencePath = Join-Path $env:TEMP ("revagent-bootstrap-install-evidence-" + [Guid]::NewGuid().ToString('N') + ".json")
     New-Item -ItemType Directory -Path $sourceRoot -Force | Out-Null
     Expand-Archive -LiteralPath $packagePath -DestinationPath $sourceRoot -Force
-    if (-not [string]::Equals((Get-Sha256Hex -Path $packagePath), $actualPackageSha256, [StringComparison]::OrdinalIgnoreCase)) {
+    if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $packagePath) -Right $actualPackageSha256 -IgnoreCase)) {
         throw "Signed release package changed during extraction."
     }
 
@@ -231,7 +260,7 @@ function New-CleanInstallBootstrapInput {
         -Channel $Channel
     $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
     if (-not [bool]$evidence.release.signatureVerified -or
-        -not [string]::Equals([string]$evidence.release.channel, $Channel, [StringComparison]::Ordinal)) {
+        -not (Test-RevAgentStringEquals -Left ([string]$evidence.release.channel) -Right $Channel)) {
         throw "Bootstrap first-install evidence does not prove a signed stable release."
     }
     if ([string]::IsNullOrWhiteSpace([string]$evidence.localBootstrapInstallerScript)) {
@@ -345,7 +374,7 @@ $evidenceResult = & (Join-Path $sourceRoot 'installer\nas\New-RevAgentBootstrapP
     -RepoRoot $sourceRoot `
     -Channel stable
 $evidence = Get-Content -Raw -LiteralPath $evidencePath | ConvertFrom-Json
-if (-not [bool]$evidence.release.signatureVerified -or -not [string]::Equals([string]$evidence.release.channel, 'stable', [StringComparison]::Ordinal)) {
+if (-not [bool]$evidence.release.signatureVerified -or -not (Test-RevAgentStringEquals -Left ([string]$evidence.release.channel) -Right 'stable')) {
     throw "Bootstrap refresh evidence does not prove a signed stable release."
 }
 
