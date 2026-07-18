@@ -163,6 +163,17 @@ function Start-ElevatedApply {
         [Parameter(Mandatory = $true)][string]$TrustedKeysSource
     )
 
+    if (Test-IsAdmin) {
+        Write-Host "Administrator session detected. Applying the protected local bootstrap without a second UAC prompt..."
+        Invoke-AuthenticatedBootstrapApply `
+            -SourceRoot $SourceRoot `
+            -EvidenceSource $EvidenceSource `
+            -ExpectedEvidenceSha256 $EvidenceSha256 `
+            -ExpectedInstallerSha256 $InstallerSha256 `
+            -TrustedKeysSource $TrustedKeysSource
+        return
+    }
+
     $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     $args = @(
         '-NoProfile',
@@ -284,7 +295,15 @@ function New-CleanInstallBootstrapInput {
     }
 }
 
-if ($ElevatedApply) {
+function Invoke-AuthenticatedBootstrapApply {
+    param(
+        [Parameter(Mandatory = $true)][string]$SourceRoot,
+        [Parameter(Mandatory = $true)][string]$EvidenceSource,
+        [Parameter(Mandatory = $true)][string]$ExpectedEvidenceSha256,
+        [Parameter(Mandatory = $true)][string]$ExpectedInstallerSha256,
+        [Parameter(Mandatory = $true)][string]$TrustedKeysSource
+    )
+
     if (-not (Test-IsAdmin)) { throw "Elevated bootstrap refresh requires administrator permission." }
     foreach ($required in @($SourceRoot, $EvidenceSource, $ExpectedEvidenceSha256, $ExpectedInstallerSha256, $TrustedKeysSource)) {
         if ([string]::IsNullOrWhiteSpace($required)) { throw "Elevated bootstrap refresh is missing a required authenticated input." }
@@ -327,11 +346,16 @@ if ($ElevatedApply) {
         -TrustedKeysPath $stagedTrustedKeys `
         -ExpectedHashesPath $stagedEvidence `
         -ConfirmIndependentlyAuthenticatedSource | Out-Host
-    exit 0
 }
 
-if (Test-IsAdmin) {
-    throw "Start this refresh normally, not as administrator. It will request administrator permission for the protected refresh phase."
+if ($ElevatedApply) {
+    Invoke-AuthenticatedBootstrapApply `
+        -SourceRoot $SourceRoot `
+        -EvidenceSource $EvidenceSource `
+        -ExpectedEvidenceSha256 $ExpectedEvidenceSha256 `
+        -ExpectedInstallerSha256 $ExpectedInstallerSha256 `
+        -TrustedKeysSource $TrustedKeysSource
+    exit 0
 }
 
 $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
