@@ -5491,6 +5491,7 @@ if ($UserPhaseOnly) {
             throw "Canonical user rebaseline cleanup failed closed because an exact historical Startup launcher could not be removed. Failed=$($exactStartupLauncherCleanupState.failedCount)."
         }
         if ($canonicalRebaselineRequested) {
+            Write-Host "Canonical cleanup: checking user legacy surfaces." -ForegroundColor Yellow
             try {
                 $canonicalLegacySurfaceCleanupState = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
                     -Scope user `
@@ -6368,6 +6369,7 @@ try {
     }
 
     if ($canonicalRebaselineRequested) {
+        Write-Host "Canonical cleanup: checking machine legacy surfaces." -ForegroundColor Yellow
         try {
             $canonicalLegacySurfaceCleanupState = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
                 -Scope machine `
@@ -6413,6 +6415,7 @@ try {
         else {
             $TargetCodexHome
         }
+        Write-Host "Codex AGENTS cleanup: checking target user's managed AGENTS.md state." -ForegroundColor Yellow
         $managedCodexAgentsMachineCleanup = Invoke-RevAgentManagedCodexAgentsMachineCleanup `
             -TargetProfileRoot $targetProfileForMachineCodexCleanup `
             -TargetCodexHome $targetCodexHomeForMachineCodexCleanup `
@@ -6423,9 +6426,11 @@ try {
         # machine tree before any successful state/report is committed. The
         # protected CodexRegistration module copies WindowsApps bytes without
         # executing them and fails closed for a missing/foreign target SID.
+        Write-Host "Protected Codex CLI: materializing authenticated Store executable copy." -ForegroundColor Yellow
         $protectedCodexCliProvision = Install-RevAgentProtectedCodexCliFromStore `
             -InstallRoot $InstallRoot `
             -TargetUserSid $TargetInteractiveUserSid
+        Write-Host "Protected Codex CLI: materialized authenticated Store executable copy." -ForegroundColor Green
     }
 
     $integrityReleaseSequence = ConvertTo-Int64OrZero -Value $script:RevAgentDistributionIntegrity.releaseSequence

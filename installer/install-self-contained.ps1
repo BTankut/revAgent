@@ -1024,14 +1024,8 @@ function New-HardLinkOrCopyFile {
     }
 
     New-Item -ItemType Directory -Path (Split-Path -Parent $Destination) -Force | Out-Null
-    try {
-        New-Item -ItemType HardLink -Path $Destination -Target $Source -Force | Out-Null
-        Write-Host "Linked Codex AGENTS.md to machine install: $Destination -> $Source"
-    }
-    catch {
-        Write-Warning "Could not create AGENTS.md hard link; copying instead. $($_.Exception.Message)"
-        Copy-Item -LiteralPath $Source -Destination $Destination -Force
-    }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    Write-Host "Copied Codex AGENTS.md from machine install: $Destination"
 }
 
 function Copy-RevAgentFilePayload {

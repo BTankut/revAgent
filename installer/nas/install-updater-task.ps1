@@ -2245,6 +2245,64 @@ function Set-RevAgentAsciiContentIfChanged {
     $Lines | Set-Content -LiteralPath $LiteralPath -Encoding ASCII
 }
 
+function Repair-RevAgentLegacyManagedAgentsHardlink {
+    $machineAgents = [System.IO.Path]::GetFullPath((Join-Path (Join-Path $InstallRoot "codex") "AGENTS.md"))
+    if (-not (Test-Path -LiteralPath $machineAgents -PathType Leaf)) { return }
+
+    $targetProfile = if ([string]::IsNullOrWhiteSpace($TargetUserProfileRoot)) { $script:RevAgentOsUserProfile } else { $TargetUserProfileRoot }
+    $targetProfile = [System.IO.Path]::GetFullPath($targetProfile).TrimEnd("\")
+    $targetCodexHome = if ([string]::IsNullOrWhiteSpace($TargetCodexHome)) { Join-Path $targetProfile ".codex" } else { $TargetCodexHome }
+    $targetCodexHome = [System.IO.Path]::GetFullPath($targetCodexHome).TrimEnd("\")
+    if (-not (Test-InstallPhasePathUnderRoot -Path $targetCodexHome -Root $targetProfile)) {
+        throw "TargetCodexHome must remain under the authenticated target profile before repairing AGENTS.md hardlinks: $targetCodexHome"
+    }
+
+    $userAgents = [System.IO.Path]::GetFullPath((Join-Path $targetCodexHome "AGENTS.md"))
+    if (-not (Test-Path -LiteralPath $userAgents -PathType Leaf)) { return }
+    foreach ($path in @($machineAgents, $userAgents)) {
+        $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+        $linkType = [string]$item.LinkType
+        if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            (-not [string]::IsNullOrWhiteSpace($linkType) -and -not [string]::Equals($linkType, "HardLink", [System.StringComparison]::OrdinalIgnoreCase))) {
+            throw "Refusing to repair AGENTS.md hardlink through a reparse/non-hardlink path: $path"
+        }
+    }
+
+    $machineLinkCount = [int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($machineAgents)
+    if ($machineLinkCount -le 1) { return }
+    $machineIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($machineAgents, $false)
+    $userIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($userAgents, $false)
+    if (-not [string]::Equals($machineIdentity, $userIdentity, [System.StringComparison]::Ordinal)) { return }
+
+    $parent = Split-Path -Parent $machineAgents
+    $temporaryPath = Join-Path $parent (".AGENTS.md.revagent-hardlink-break-{0}.tmp" -f [Guid]::NewGuid().ToString("N"))
+    $backupPath = Join-Path $parent (".AGENTS.md.revagent-hardlink-break-{0}.bak" -f [Guid]::NewGuid().ToString("N"))
+    try {
+        [System.IO.File]::WriteAllBytes($temporaryPath, [System.IO.File]::ReadAllBytes($machineAgents))
+        if ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($temporaryPath) -ne 1) {
+            throw "Temporary AGENTS.md hardlink repair file is not single-link: $temporaryPath"
+        }
+        [System.IO.File]::Replace($temporaryPath, $machineAgents, $backupPath, $true)
+        if ([int][RevAgent.PermissionNativeFileInfo]::GetLinkCount($machineAgents) -ne 1) {
+            throw "Machine AGENTS.md remained hard-linked after repair: $machineAgents"
+        }
+        if ([string]::Equals(
+                [RevAgent.PermissionNativeFileInfo]::GetIdentity($machineAgents, $false),
+                [RevAgent.PermissionNativeFileInfo]::GetIdentity($userAgents, $false),
+                [System.StringComparison]::Ordinal)) {
+            throw "Machine and user AGENTS.md still share the same file identity after repair."
+        }
+        Write-Host "Legacy AGENTS.md hardlink repaired: $machineAgents"
+    }
+    finally {
+        foreach ($cleanupPath in @($temporaryPath, $backupPath)) {
+            if (Test-Path -LiteralPath $cleanupPath -PathType Leaf) {
+                Remove-Item -LiteralPath $cleanupPath -Force -ErrorAction SilentlyContinue
+            }
+        }
+    }
+}
+
 function Repair-RevAgentUpdaterPermissions {
     param([string]$Principal = "")
 
@@ -2940,6 +2998,7 @@ if (-not $MachinePhaseOnly) {
 $RevitInstallRoot = Resolve-RevitInstallRoot -RequestedRoot $RevitInstallRoot -Version $RevitVersion
 
 New-Item -ItemType Directory -Path $WorkRoot -Force | Out-Null
+Repair-RevAgentLegacyManagedAgentsHardlink
 Repair-RevAgentUpdaterPermissions
 
 $localUpdater = Join-Path $WorkRoot "update-from-nas.ps1"
