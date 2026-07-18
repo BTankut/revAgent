@@ -232,6 +232,101 @@ function Initialize-RevAgentBrokerProtectedDirectory {
     return $fullPath
 }
 
+function New-RevAgentBrokerUserWritableDirectorySecurity {
+    param([Parameter(Mandatory = $true)][string]$TargetUserSid)
+
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($entry in @(
+            [pscustomobject]@{ Sid = 'S-1-5-18'; Rights = [Security.AccessControl.FileSystemRights]::FullControl },
+            [pscustomobject]@{ Sid = 'S-1-5-32-544'; Rights = [Security.AccessControl.FileSystemRights]::FullControl },
+            [pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute },
+            [pscustomobject]@{ Sid = $TargetUserSid; Rights = [Security.AccessControl.FileSystemRights]::Modify }
+        )) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new([string]$entry.Sid),
+                [Security.AccessControl.FileSystemRights]$entry.Rights,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    return $security
+}
+
+function Set-RevAgentBrokerDirectorySecurity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][Security.AccessControl.DirectorySecurity]$Security,
+        [Parameter(Mandatory = $true)][string]$StopRoot
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not [IO.Directory]::Exists($fullPath)) { throw "Protected broker directory is missing: $fullPath" }
+    Assert-RevAgentBrokerNoLinks -Path $fullPath -StopRoot $StopRoot
+    $item = Get-Item -LiteralPath $fullPath -Force
+    if (-not $item.PSIsContainer) { throw "Protected broker path is not a directory: $fullPath" }
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, $Security)
+    }
+    else {
+        ([IO.DirectoryInfo]$item).SetAccessControl($Security)
+    }
+}
+
+function Initialize-RevAgentBrokerDirectoryWithSecurity {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$Parent,
+        [Parameter(Mandatory = $true)][Security.AccessControl.DirectorySecurity]$Security
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $fullParent = [IO.Path]::GetFullPath($Parent).TrimEnd('\')
+    if (-not (Test-RevAgentBrokerPathUnderRoot -Path $fullPath -Root $fullParent) -or
+        [string]::Equals($fullPath, $fullParent, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected broker directory must be one exact child of its parent: $fullPath"
+    }
+    Assert-RevAgentBrokerNoLinks -Path $fullParent
+    if (-not [IO.Directory]::Exists($fullPath)) {
+        [void]([IO.DirectoryInfo]::new($fullParent).CreateSubdirectory((Split-Path -Leaf $fullPath), $Security))
+    }
+    else {
+        Set-RevAgentBrokerDirectorySecurity -Path $fullPath -Security $Security -StopRoot $fullParent
+    }
+    return $fullPath
+}
+
+function Repair-RevAgentBrokerLegacyWorkRoot {
+    param(
+        [Parameter(Mandatory = $true)][string]$CanonicalInstallRoot,
+        [Parameter(Mandatory = $true)][string]$TargetUserSid
+    )
+
+    $installRoot = [IO.Path]::GetFullPath($CanonicalInstallRoot).TrimEnd('\')
+    $installParent = Split-Path -Parent $installRoot
+    if (-not [IO.Directory]::Exists($installRoot)) { throw "Canonical install root is missing: $installRoot" }
+    Assert-RevAgentBrokerNoLinks -Path $installRoot -StopRoot $installParent
+    Set-RevAgentBrokerDirectorySecurity -Path $installRoot -Security (New-RevAgentBrokerProtectedDirectorySecurity) -StopRoot $installParent
+    Assert-RevAgentBrokerProtectedPath -Path $installRoot -Root $installRoot
+
+    $workRoot = Join-Path $installRoot 'updater'
+    [void](Initialize-RevAgentBrokerDirectoryWithSecurity -Path $workRoot -Parent $installRoot -Security (New-RevAgentBrokerProtectedDirectorySecurity))
+    Assert-RevAgentBrokerProtectedPath -Path $workRoot -Root $installRoot
+
+    foreach ($protectedLeaf in @('machine-logs', 'machine-state')) {
+        $protectedPath = Join-Path $workRoot $protectedLeaf
+        [void](Initialize-RevAgentBrokerDirectoryWithSecurity -Path $protectedPath -Parent $workRoot -Security (New-RevAgentBrokerProtectedDirectorySecurity))
+        Assert-RevAgentBrokerProtectedPath -Path $protectedPath -Root $workRoot
+    }
+
+    foreach ($userLeaf in @('logs', 'user-state')) {
+        $userPath = Join-Path $workRoot $userLeaf
+        [void](Initialize-RevAgentBrokerDirectoryWithSecurity -Path $userPath -Parent $workRoot -Security (New-RevAgentBrokerUserWritableDirectorySecurity -TargetUserSid $TargetUserSid))
+    }
+}
+
 function Write-RevAgentBrokerHighWaterLedger {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -488,8 +583,6 @@ $snapshotModulePath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'lib\RevA
 $trustedKeysPath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'config\release-trusted-keys.json'))
 $integrityModulePath = [IO.Path]::GetFullPath((Join-Path $BootstrapRoot 'lib\RevAgent.DistributionIntegrity.psm1'))
 
-Initialize-RevAgentBrokerLogPath -Path $BrokerLogPath -CanonicalInstallRoot $canonicalInstallRoot
-
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { throw 'Privileged release snapshot broker requires elevation.' }
@@ -498,6 +591,10 @@ foreach ($path in @($brokerPath, $snapshotModulePath, $trustedKeysPath, $integri
 if ([string]::IsNullOrWhiteSpace($TargetInteractiveUserSid) -or $TargetInteractiveUserSid -notmatch '^S-\d-\d+-(?:\d+-){1,14}\d+$') {
     throw 'Production broker requires a valid TargetInteractiveUserSid.'
 }
+
+Repair-RevAgentBrokerLegacyWorkRoot -CanonicalInstallRoot $canonicalInstallRoot -TargetUserSid $TargetInteractiveUserSid
+Initialize-RevAgentBrokerLogPath -Path $BrokerLogPath -CanonicalInstallRoot $canonicalInstallRoot
+
 $profileRegistryPath = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList\$TargetInteractiveUserSid"
 $profileRegistryValue = (Get-ItemProperty -LiteralPath $profileRegistryPath -Name ProfileImagePath -ErrorAction Stop).ProfileImagePath
 $systemDrive = [IO.Path]::GetPathRoot($systemDirectory).TrimEnd('\')
