@@ -2661,6 +2661,25 @@ function Assert-HiddenUpdaterLauncherInstalled {
     return $LauncherPath
 }
 
+function Install-RevAgentHiddenUpdaterLauncher {
+    param(
+        [string]$UpdaterPath,
+        [string]$UpdaterConfigPath
+    )
+
+    $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $UpdaterConfigPath
+    Write-HiddenPowerShellLauncher `
+        -LauncherPath $hiddenLauncherPath `
+        -ScriptPath $UpdaterPath `
+        -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-AuditOnly", "-NotifyUser", "-OperationMethod", "scheduled-update-audit") `
+        -WaitForExit
+    Assert-HiddenUpdaterLauncherInstalled `
+        -LauncherPath $hiddenLauncherPath `
+        -UpdaterPath $UpdaterPath `
+        -UpdaterConfigPath $UpdaterConfigPath | Out-Null
+    return $hiddenLauncherPath
+}
+
 function Register-RevAgentInteractiveUpdateTask {
     param(
         [string]$UpdaterPath,
@@ -2678,7 +2697,7 @@ function Register-RevAgentInteractiveUpdateTask {
         Assert-HiddenUpdaterLauncherInstalled -LauncherPath $hiddenLauncherPath -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath | Out-Null
     }
     else {
-        Write-HiddenPowerShellLauncher -LauncherPath $hiddenLauncherPath -ScriptPath $UpdaterPath -ScriptArguments @("-ConfigPath", $UpdaterConfigPath, "-AuditOnly", "-NotifyUser", "-OperationMethod", "scheduled-update-audit") -WaitForExit
+        $hiddenLauncherPath = Install-RevAgentHiddenUpdaterLauncher -UpdaterPath $UpdaterPath -UpdaterConfigPath $UpdaterConfigPath
     }
     $action = New-HiddenUpdaterScheduledTaskAction -LauncherPath $hiddenLauncherPath
     $dailyTrigger = New-RevAgentDailyUpdateTrigger -DailyAt $RunAt
@@ -3243,6 +3262,14 @@ if ($MachinePhaseOnly) {
         if (-not [bool]$nestedOutcome.accepted) {
             throw "Nested updater machine phase did not leave a successful handoff attestation. phase=$($nestedOutcome.phase) status=$($nestedOutcome.status)"
         }
+    }
+    if (-not $NoScheduledTask) {
+        $machineHiddenLauncherPath = Install-RevAgentHiddenUpdaterLauncher -UpdaterPath $localUpdater -UpdaterConfigPath $configPath
+        Repair-RevAgentUpdaterPermissions
+        Assert-HiddenUpdaterLauncherInstalled `
+            -LauncherPath $machineHiddenLauncherPath `
+            -UpdaterPath $localUpdater `
+            -UpdaterConfigPath $configPath | Out-Null
     }
     $script:RevAgentInstalledUpdaterSurface = Invoke-RevAgentFinalUpdaterSurfaceAttestation -UpdaterRoot $WorkRoot
     Set-RevAgentInstallRunReport -Status "completed" -Message ("Elevated machine phase completed by {0}; user integration remains pending." -f $script:RevAgentOperationMethod)

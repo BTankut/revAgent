@@ -1647,6 +1647,58 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($installTaskText -match '-not \$MachinePhaseOnly -and \$script:RevAgentTranscriptStarted' -and $installTaskText -match 'Read-RevAgentJsonReportFile -Path \$ReportPath') "Installer machine phase must not publish remotely and the user phase must re-read the guarded local report."
     Assert-True ($installTaskText -match 'RevAgentCodexUserIntegrationPhase = Read-RevAgentJsonReportFile -Path \$phaseResultFullPath' -and $installTaskText -match 'updaterUserPhase = \$script:RevAgentCodexUserIntegrationPhase' -and $installTaskText -match 'codexUserIntegration = \$script:RevAgentCodexUserIntegrationPhase') "Installer final reports and phase results must preserve the actual nested updater/Codex user-integration attestation before replacing the shared phase-result file."
     Assert-True ($installTaskText -match '-AuditOnly' -and $installTaskText -match '-OperationMethod", "scheduled-update-audit"') "Scheduled updater launcher must be audit-only and tag background audits in logs."
+    $machineLauncherAssignments = @($installTaskAst.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                [string]::Equals($node.Left.Extent.Text, '$machineHiddenLauncherPath', [System.StringComparison]::Ordinal) -and
+                $node.Right.Extent.Text -match '^Install-RevAgentHiddenUpdaterLauncher\b'
+            }, $true))
+    Assert-Equal $machineLauncherAssignments.Count 1 "Installer must have exactly one machine-phase hidden launcher producer assignment."
+    $machineLauncherAssignment = $machineLauncherAssignments[0]
+    $machineLauncherCondition = $machineLauncherAssignment.Parent.Parent
+    $machinePhaseCondition = $machineLauncherCondition.Parent.Parent
+    Assert-True (
+        $machineLauncherCondition -is [System.Management.Automation.Language.IfStatementAst] -and
+        [string]::Equals($machineLauncherCondition.Clauses[0].Item1.Extent.Text, '-not $NoScheduledTask', [System.StringComparison]::Ordinal)
+    ) "Machine hidden launcher producer must be directly guarded by -not NoScheduledTask."
+    Assert-True (
+        $machinePhaseCondition -is [System.Management.Automation.Language.IfStatementAst] -and
+        [string]::Equals($machinePhaseCondition.Clauses[0].Item1.Extent.Text, '$MachinePhaseOnly', [System.StringComparison]::Ordinal)
+    ) "Machine hidden launcher producer must remain directly inside MachinePhaseOnly and outside the optional RunNow block."
+
+    $machineLauncherCommands = @($machineLauncherCondition.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.CommandAst]
+            }, $true))
+    $machineLauncherInstallCommands = @($machineLauncherCommands | Where-Object { $_.GetCommandName() -eq 'Install-RevAgentHiddenUpdaterLauncher' })
+    $machineLauncherPermissionCommands = @($machineLauncherCommands | Where-Object { $_.GetCommandName() -eq 'Repair-RevAgentUpdaterPermissions' })
+    $machineLauncherAttestationCommands = @($machineLauncherCommands | Where-Object { $_.GetCommandName() -eq 'Assert-HiddenUpdaterLauncherInstalled' })
+    Assert-True (
+        $machineLauncherInstallCommands.Count -eq 1 -and
+        $machineLauncherPermissionCommands.Count -eq 1 -and
+        $machineLauncherAttestationCommands.Count -eq 1 -and
+        $machineLauncherInstallCommands[0].Extent.StartOffset -lt $machineLauncherPermissionCommands[0].Extent.StartOffset -and
+        $machineLauncherPermissionCommands[0].Extent.StartOffset -lt $machineLauncherAttestationCommands[0].Extent.StartOffset
+    ) "Machine phase must create, protect, and re-attest the hidden updater launcher in that exact order."
+
+    $nestedMachineUpdateCommands = @($machinePhaseCondition.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.CommandAst] -and
+                $node.GetCommandName() -eq 'Invoke-InitialUpdateCheck' -and
+                $node.Extent.Text -match '-MachinePhaseOnly\b'
+            }, $true))
+    $machineFinalSurfaceAssignments = @($machinePhaseCondition.FindAll({
+                param($node)
+                $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+                [string]::Equals($node.Left.Extent.Text, '$script:RevAgentInstalledUpdaterSurface', [System.StringComparison]::Ordinal) -and
+                $node.Right.Extent.Text -match '^Invoke-RevAgentFinalUpdaterSurfaceAttestation\b'
+            }, $true))
+    Assert-True (
+        $nestedMachineUpdateCommands.Count -eq 1 -and
+        $machineFinalSurfaceAssignments.Count -eq 1 -and
+        $nestedMachineUpdateCommands[0].Extent.StartOffset -lt $machineLauncherAssignment.Extent.StartOffset -and
+        $machineLauncherAssignment.Extent.StartOffset -lt $machineFinalSurfaceAssignments[0].Extent.StartOffset
+    ) "Machine launcher finalization must follow the optional nested update block and precede the successful surface handoff."
     Assert-True ($installTaskText -match 'trustedKeysPath = \$localTrustedReleaseKeysPath' -and $installTaskText -match 'policy = "enforce"') "Updater installer must pin the local trusted release key path and enforce distribution integrity."
     Assert-True ($installTaskText -notmatch 'previousTrustedReleaseKeysPath' -and $installTaskText -match 'Authenticated snapshot release key is unavailable; refusing updater repair' -and $installTaskText -match 'InstallVerifiedTrustedKeysSha256' -and $installTaskText -match 'InstallExecutionSnapshotState\.trust\.trustedKeysRelativePath') "Updater installer must never copy a trusted-key path from old config and must fail closed on the authenticated snapshot release key."
     Assert-True ($installTaskText -match 'function Repair-RevAgentLegacyManagedAgentsHardlink' -and $installTaskText -match 'TargetCodexHome must remain under the authenticated target profile' -and $installTaskText -match '\[System\.IO\.File\]::Replace\(\$temporaryPath, \$machineAgents, \$backupPath, \$true\)' -and $installTaskText -match 'Repair-RevAgentLegacyManagedAgentsHardlink\s+Repair-RevAgentUpdaterPermissions') "Updater installer must break the exact legacy machine/user AGENTS.md hardlink before protected permission repair scans the managed codex tree."
@@ -2458,6 +2510,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         "Write-UpdaterCommandFiles",
         "Get-HiddenUpdaterLauncherPath",
         "Assert-HiddenUpdaterLauncherInstalled",
+        "Install-RevAgentHiddenUpdaterLauncher",
         "Register-RevAgentInteractiveUpdateTask"
     )
     $startupCleanupFunctionAsts = @($installTaskAst.FindAll({
@@ -2473,6 +2526,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
 
         function Get-RevAgentLegacyHiddenUpdaterLauncherPaths { param([string]$ConfigPath) return @() }
         $script:HiddenLauncherWriteCount = 0
+        $script:LastHiddenLauncherWrite = $null
         $script:RegisteredTaskAction = $null
         $script:RegisterTaskShouldFail = $false
         $script:ExistingScheduledTask = $null
@@ -2484,7 +2538,13 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
                 [switch]$WaitForExit
             )
             $script:HiddenLauncherWriteCount++
-            "launcher" | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
+            $script:LastHiddenLauncherWrite = [pscustomobject]@{
+                LauncherPath = $LauncherPath
+                ScriptPath = $ScriptPath
+                ScriptArguments = @($ScriptArguments)
+                WaitForExit = [bool]$WaitForExit
+            }
+            ((@("powershell", $ScriptPath) + @($ScriptArguments)) -join " ") | Set-Content -LiteralPath $LauncherPath -Encoding ASCII
         }
         function New-HiddenUpdaterScheduledTaskAction {
             param([string]$LauncherPath)
@@ -2575,11 +2635,28 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
         Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.cmd") -PathType Leaf) "Machine-only command generation must not traverse or clean the interactive user's Startup folder."
         Assert-True (Test-Path -LiteralPath (Join-Path $scheduledStartupRoot "Revit MCP Auto Update.vbs") -PathType Leaf) "Machine-only command generation must preserve user Startup files for the unelevated phase."
 
-        $hiddenLauncherPath = Join-Path $workRoot "Run-revAgent-Update-Hidden.vbs"
-        Set-Content -LiteralPath $hiddenLauncherPath -Value "powershell $updaterPath -ConfigPath $configPath -OperationMethod scheduled-update" -Encoding ASCII
-        $script:HiddenLauncherWriteCount = 0
+        $hiddenLauncherPath = Get-HiddenUpdaterLauncherPath -UpdaterConfigPath $configPath
+        Assert-True (-not (Test-Path -LiteralPath $hiddenLauncherPath)) "Fresh split-phase fixture must begin without a hidden updater launcher."
+        $missingHiddenLauncherCaught = $false
+        try {
+            Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
+        }
+        catch {
+            $missingHiddenLauncherCaught = $_.Exception.Message -match "Machine phase did not leave the expected hidden updater launcher"
+        }
+        Assert-True $missingHiddenLauncherCaught "User phase must fail closed when the machine phase did not create the hidden updater launcher."
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "Missing-launcher validation must not write into the protected updater root."
+
+        $installedHiddenLauncherPath = Install-RevAgentHiddenUpdaterLauncher -UpdaterPath $updaterPath -UpdaterConfigPath $configPath
+        Assert-Equal ([string]$installedHiddenLauncherPath) ([string]$hiddenLauncherPath) "Machine launcher producer must use the canonical hidden updater path."
+        Assert-True (Test-Path -LiteralPath $hiddenLauncherPath -PathType Leaf) "Machine launcher producer must create the canonical hidden updater launcher."
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 1 "Machine launcher producer must write the protected hidden updater launcher exactly once."
+        Assert-Equal ([string]$script:LastHiddenLauncherWrite.ScriptPath) ([string]$updaterPath) "Machine launcher producer must bind the installed updater script."
+        Assert-Equal (($script:LastHiddenLauncherWrite.ScriptArguments -join "|")) ("-ConfigPath|$configPath|-AuditOnly|-NotifyUser|-OperationMethod|scheduled-update-audit") "Machine launcher producer must use the canonical audit-only scheduled-update arguments."
+        Assert-True ([bool]$script:LastHiddenLauncherWrite.WaitForExit) "Machine launcher producer must wait for the scheduled updater process to exit."
+
         Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
-        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase task registration must not rewrite the protected hidden updater launcher."
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 1 "User-phase task registration must not rewrite the machine-created hidden updater launcher."
         Assert-True ($null -ne $script:RegisteredTaskAction -and [string]$script:RegisteredTaskAction.Argument -match [regex]::Escape($hiddenLauncherPath)) "User-phase task registration must bind the scheduled task to the machine-written hidden launcher."
 
         $script:RegisteredTaskAction = $null
@@ -2596,7 +2673,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
             }
         }
         Register-RevAgentInteractiveUpdateTask -UpdaterPath $updaterPath -UpdaterConfigPath $configPath -VersionToolPath (Join-Path $workRoot "show-installed-version.ps1") -UpdaterWorkRoot $workRoot -Name "revAgent Auto Update" -RunAt "12:00" -IntervalMinutes 30 -UseExistingHiddenLauncher
-        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 0 "User-phase registration fallback must still avoid protected hidden updater launcher rewrites."
+        Assert-Equal ([int]$script:HiddenLauncherWriteCount) 1 "User-phase registration fallback must still avoid protected hidden updater launcher rewrites."
         Assert-True ($null -eq $script:RegisteredTaskAction) "User-phase registration fallback must preserve a compatible existing scheduled task after access denial."
         $script:RegisterTaskShouldFail = $false
         $script:ExistingScheduledTask = $null
