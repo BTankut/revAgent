@@ -4,6 +4,15 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Fixed split-privilege Install/Repair reaching the final user phase without
+  the protected `Run-revAgent-Update-Hidden.vbs` scheduled-audit launcher.
+  After a successful machine update, the elevated phase now creates the
+  canonical audit-only launcher, repairs its managed permissions, and
+  re-attests it before reporting a successful handoff; the unelevated phase
+  still only verifies and binds that file. The regression fixture no longer
+  seeds a fake launcher and now proves the absent-to-machine-created lifecycle,
+  zero user-phase rewrites, canonical arguments, and the exact
+  `MachinePhaseOnly`/`NoScheduledTask`/`RunNow` control-flow placement.
 - Added bounded STABLE refresh-coordinator transport and race hardening for a
   future independently authenticated elevation anchor: standard-user release
   acquisition, local staging, a read-only held script, elevated self-hash,
