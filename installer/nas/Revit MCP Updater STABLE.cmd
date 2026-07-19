@@ -8,6 +8,13 @@ set "BOOTSTRAP=%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1"
 set "CHANNEL=%RELEASE_ROOT%\channels\stable.json"
 set "REFRESH=%RELEASE_ROOT%\tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd"
 
+if not exist "%CHANNEL%" (
+  echo revAgent release manifest was not found:
+  echo %CHANNEL%
+  pause
+  exit /b 1
+)
+
 if not exist "%BOOTSTRAP%" (
   echo revAgent stable updater needs to install the protected local bootstrap first.
   if not exist "%REFRESH%" (
@@ -23,16 +30,17 @@ if not exist "%BOOTSTRAP%" (
     pause
     exit /b 1
   )
+  if not exist "%BOOTSTRAP%" (
+    echo.
+    echo revAgent stable bootstrap install returned without creating the protected local bootstrap:
+    echo %BOOTSTRAP%
+    echo If an administrator approval or bootstrap coordinator window is still open, finish it and run this updater again.
+    pause
+    exit /b 1
+  )
   echo.
   echo revAgent stable bootstrap install completed. The updater should open now.
   exit /b 0
-)
-
-if not exist "%CHANNEL%" (
-  echo revAgent release manifest was not found:
-  echo %CHANNEL%
-  pause
-  exit /b 1
 )
 
 "%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%" -VerificationOnly >nul 2>nul
@@ -49,6 +57,14 @@ if errorlevel 1 (
   if errorlevel 1 (
     echo.
     echo revAgent stable bootstrap refresh did not complete.
+    pause
+    exit /b 1
+  )
+  if not exist "%BOOTSTRAP%" (
+    echo.
+    echo revAgent stable bootstrap refresh returned without creating the protected local bootstrap:
+    echo %BOOTSTRAP%
+    echo If an administrator approval or bootstrap coordinator window is still open, finish it and run this updater again.
     pause
     exit /b 1
   )
