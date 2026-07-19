@@ -1076,7 +1076,7 @@ function Set-RevAgentStableBootstrapToolsExact {
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     $sourceNasRoot = Join-Path $repoRoot 'installer\nas'
     $updates = [Collections.Generic.List[object]]::new()
-    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1')) {
+    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1', 'Revit MCP Updater STABLE.cmd')) {
         $updates.Add((Set-RevAgentStableToolFileExact `
                     -ToolsRoot $ToolsRoot `
                     -ToolName $toolName `
