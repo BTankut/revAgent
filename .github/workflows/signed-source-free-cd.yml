@@ -47,7 +47,7 @@ on:
         default: false
 
 permissions:
-  actions: read
+  actions: write
   checks: read
   contents: read
 
@@ -290,7 +290,7 @@ jobs:
           path: ${{ env.REVAGENT_SIGNED_BUILD_ROOT }}
           if-no-files-found: error
           retention-days: 1
-          compression-level: 0
+          compression-level: 6
           overwrite: false
           include-hidden-files: true
 
@@ -547,3 +547,29 @@ jobs:
           }
 
           .\scripts\publish-signed-source-free-release-to-nas.ps1 @publishArgs
+
+      - name: Delete signed release artifact to reclaim Actions storage quota
+        if: ${{ success() }}
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.build-signed-release.outputs.artifact_id }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          [long]$artifactId = 0
+          if (-not [long]::TryParse($env:ARTIFACT_ID, [ref]$artifactId) -or $artifactId -le 0) {
+            throw "Build job did not expose one positive immutable artifact ID."
+          }
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+          }
+          $artifactUri = "$env:GITHUB_API_URL/repos/$env:GITHUB_REPOSITORY/actions/artifacts/$artifactId"
+          try {
+            Invoke-RestMethod -Method Delete -Uri $artifactUri -Headers $headers | Out-Null
+            Write-Host "Deleted signed release artifact $artifactId immediately after publish to free Actions storage quota."
+          }
+          catch {
+            Write-Warning "Failed to delete signed release artifact $artifactId after publish (non-fatal; retention-days=1 will still expire it): $($_.Exception.Message)"
+          }
