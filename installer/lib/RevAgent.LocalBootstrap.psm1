@@ -387,7 +387,10 @@ function Assert-RevAgentBootstrapSharedAncestorSafe {
         [Security.AccessControl.FileSystemRights]::TakeOwnership
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         $sid = [string]$rule.IdentityReference.Value
-        if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+        $inheritOnly = ($null -ne $rule.PSObject.Properties['PropagationFlags'] -and
+            (($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0))
+        if (-not $inheritOnly -and
+            $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
             $sid -notin @('S-1-5-18', 'S-1-5-32-544') -and
             (($rule.FileSystemRights -band $dangerousMask) -ne 0)) {
             throw "bootstrap_parent_not_protected: shared ancestor grants delete/ACL/owner capability to a non-administrator principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"

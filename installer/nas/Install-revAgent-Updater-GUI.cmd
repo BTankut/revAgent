@@ -1,19 +1,20 @@
 @echo off
 setlocal
 
-set "POWERSHELL=%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe"
 set "BOOTSTRAP=%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1"
-set "CHANNEL=%~dp0..\channels\stable.json"
+set "STABLE=%~dp0revAgent Updater STABLE.cmd"
+if not exist "%STABLE%" set "STABLE=%~dp0tools\revAgent Updater STABLE.cmd"
+if not exist "%STABLE%" if defined RELEASE_ROOT set "STABLE=%RELEASE_ROOT%\tools\revAgent Updater STABLE.cmd"
 
-if not exist "%BOOTSTRAP%" (
-    echo SECURITY STOP: protected local revAgent bootstrap is not installed.
-    echo An administrator/coordinator must prestage an independently authenticated bootstrap at:
-    echo %BOOTSTRAP%
-    echo NAS scripts cannot bootstrap their own trust.
-    echo.
-    pause
-    exit /b 1
+if not exist "%BOOTSTRAP%" echo This launcher is deprecated; opening revAgent Updater STABLE...
+
+if not exist "%STABLE%" (
+  echo ERROR: revAgent Updater STABLE was not found.
+  echo Expected beside this launcher or under the release root tools directory.
+  echo.
+  pause
+  exit /b 1
 )
 
-start "revAgent" "%POWERSHELL%" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%"
-exit /b 0
+call "%STABLE%" %*
+exit /b %ERRORLEVEL%

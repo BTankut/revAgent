@@ -43,5 +43,10 @@ jobs:
           .\scripts\test-os-path-security.ps1
           .\scripts\test-source-free-migration.ps1
           .\scripts\test-installer-smoke.ps1
+          .\scripts\test-shared-ancestor-acl.ps1
+          .\scripts\test-updater-stabilization-g7-g9.ps1
           .\scripts\test-local-update-bootstrap.ps1
+          .\scripts\test-clean-install-bootstrap.ps1
+          .\scripts\test-signed-stable-readiness.ps1
+          .\scripts\test-signed-source-free-cd.ps1
           .\scripts\test-desktop-launcher-cleanup.ps1

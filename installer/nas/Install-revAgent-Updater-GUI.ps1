@@ -9,25 +9,150 @@ param(
     [string]$InstallRoot = "",
     [string]$BootstrapStatePath = "",
     [switch]$SmokeTest,
-    [switch]$ModulePathSecuritySmokeTest
+    [switch]$ModulePathSecuritySmokeTest,
+    [Parameter(DontShow = $true)][switch]$PreWindowBootstrapSmokeTest,
+    [Parameter(DontShow = $true)][switch]$SuppressStartupFailureDialogForTest,
+    [Parameter(DontShow = $true)][string]$TestStartupFailureMessage = ""
 )
 
+if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
+    Write-Host "revAgent updater cannot run: PowerShell is in $($ExecutionContext.SessionState.LanguageMode) mode."
+    Write-Host "This is typically caused by Smart App Control or a WDAC/AppLocker policy on this machine."
+    Write-Host "Ask IT to exempt/sign the revAgent deployment scripts or disable Smart App Control, then retry."
+    exit 78
+}
+
 $ErrorActionPreference = "Stop"
+$script:GuiStartupCompleted = $false
+
+function Write-RevAgentGuiStartupFailure {
+    param([Parameter(Mandatory = $true)][Management.Automation.ErrorRecord]$ErrorRecord)
+
+    $logPath = ""
+    $logWriteError = ""
+    try {
+        $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+        if ([string]::IsNullOrWhiteSpace($localAppDataRoot)) { throw 'Windows LocalApplicationData could not be resolved.' }
+        $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
+        [void][IO.Directory]::CreateDirectory($logDirectory)
+        $logName = 'gui-startup-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
+        $logPath = [IO.Path]::Combine($logDirectory, $logName)
+        $lines = [System.Collections.Generic.List[string]]::new()
+        [void]$lines.Add('revAgent GUI startup failure')
+        [void]$lines.Add('timestampUtc=' + [DateTime]::UtcNow.ToString('o'))
+        [void]$lines.Add('languageMode=' + [string]$ExecutionContext.SessionState.LanguageMode)
+        [void]$lines.Add('psVersion=' + [string]$PSVersionTable.PSVersion)
+        [void]$lines.Add('psEdition=' + [string]$PSVersionTable.PSEdition)
+        [void]$lines.Add('clrVersion=' + [string]$PSVersionTable.CLRVersion)
+        [void]$lines.Add('error=' + [string]$ErrorRecord)
+        [void]$lines.Add('category=' + [string]$ErrorRecord.CategoryInfo)
+        [void]$lines.Add('position=' + [string]$ErrorRecord.InvocationInfo.PositionMessage)
+        [void]$lines.Add('scriptStackTrace=' + [string]$ErrorRecord.ScriptStackTrace)
+        if ($null -ne $ErrorRecord.Exception) { [void]$lines.Add('exception=' + $ErrorRecord.Exception.ToString()) }
+        [IO.File]::WriteAllLines($logPath, $lines.ToArray(), [Text.UTF8Encoding]::new($false))
+    }
+    catch {
+        $logWriteError = $_.Exception.Message
+        $logPath = ""
+    }
+
+    $summary = if ([string]::IsNullOrWhiteSpace($logPath)) {
+        "revAgent could not start the updater window. Startup error: $ErrorRecord"
+    }
+    else {
+        "revAgent could not start the updater window. Diagnostic log: $logPath"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($logWriteError)) { $summary += " Log write error: $logWriteError" }
+    try { [Console]::Error.WriteLine($summary) } catch { }
+    if (-not $SmokeTest -and -not $PreWindowBootstrapSmokeTest -and -not $SuppressStartupFailureDialogForTest -and [string]::IsNullOrWhiteSpace($TestStartupFailureMessage)) {
+        try {
+            [void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+            [void][System.Windows.Forms.MessageBox]::Show(
+                $summary,
+                'revAgent startup error',
+                [System.Windows.Forms.MessageBoxButtons]::OK,
+                [System.Windows.Forms.MessageBoxIcon]::Error)
+        }
+        catch { }
+    }
+    return $logPath
+}
+
+trap {
+    $startupError = $_
+    if (-not $script:GuiStartupCompleted) {
+        [void](Write-RevAgentGuiStartupFailure -ErrorRecord $startupError)
+        exit 1
+    }
+    throw $startupError
+}
 
 $scriptDir = $PSScriptRoot
 $osSystemDirectory = [Environment]::SystemDirectory
 $osProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
 $osProgramFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
 
+function Resolve-RevAgentTrustedArchiveManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$PsHomeModulesRoot,
+        [Parameter(Mandatory = $true)][string[]]$ProgramFilesModuleRoots
+    )
+
+    $searchedPaths = [System.Collections.Generic.List[string]]::new()
+    $psHomeManifest = [System.IO.Path]::Combine($PsHomeModulesRoot, 'Microsoft.PowerShell.Archive', 'Microsoft.PowerShell.Archive.psd1')
+    [void]$searchedPaths.Add($psHomeManifest)
+    if ([System.IO.File]::Exists($psHomeManifest)) {
+        return [System.IO.Path]::GetFullPath($psHomeManifest)
+    }
+
+    foreach ($moduleRoot in @($ProgramFilesModuleRoots | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($moduleRoot)) { continue }
+        $fullModuleRoot = [System.IO.Path]::GetFullPath($moduleRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        $archiveRoot = [System.IO.Path]::Combine($fullModuleRoot, 'Microsoft.PowerShell.Archive')
+        $directManifest = [System.IO.Path]::Combine($archiveRoot, 'Microsoft.PowerShell.Archive.psd1')
+        [void]$searchedPaths.Add($directManifest)
+        if (-not [System.IO.Directory]::Exists($fullModuleRoot)) { continue }
+        if (([System.IO.File]::GetAttributes($fullModuleRoot) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Trusted PowerShell module root is a reparse point: $fullModuleRoot"
+        }
+        if (-not [System.IO.Directory]::Exists($archiveRoot)) { continue }
+        if (([System.IO.File]::GetAttributes($archiveRoot) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Trusted PowerShell Archive module root is a reparse point: $archiveRoot"
+        }
+        if ([System.IO.File]::Exists($directManifest)) { return $directManifest }
+
+        $versionedManifests = [System.Collections.Generic.List[object]]::new()
+        foreach ($versionDirectory in [System.IO.Directory]::EnumerateDirectories($archiveRoot)) {
+            if (([System.IO.File]::GetAttributes($versionDirectory) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw "Trusted PowerShell Archive version directory is a reparse point: $versionDirectory"
+            }
+            $parsedVersion = $null
+            if (-not [version]::TryParse([System.IO.Path]::GetFileName($versionDirectory), [ref]$parsedVersion)) { continue }
+            $manifest = [System.IO.Path]::Combine($versionDirectory, 'Microsoft.PowerShell.Archive.psd1')
+            [void]$searchedPaths.Add($manifest)
+            if ([System.IO.File]::Exists($manifest)) {
+                [void]$versionedManifests.Add([pscustomobject]@{ Version = $parsedVersion; Path = $manifest })
+            }
+        }
+        $selected = @($versionedManifests | Sort-Object Version -Descending | Select-Object -First 1)
+        if ($selected.Count -eq 1) { return [string]$selected[0].Path }
+    }
+
+    throw "Required built-in PowerShell Archive module manifest was not found. Searched paths: $([string]::Join('; ', $searchedPaths.ToArray()))"
+}
+
 function Initialize-GuiTrustedPowerShellModules {
     # The RunAs child inherits this process environment. Sanitize it here and
     # require each child entrypoint to repeat the same bootstrap independently.
     $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    $archiveProgramFilesRoots = [System.Collections.Generic.List[string]]::new()
     [void]$candidateRoots.Add([System.IO.Path]::Combine($PSHOME, 'Modules'))
     [void]$candidateRoots.Add([System.IO.Path]::Combine($osSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
     foreach ($programFilesRoot in @($osProgramFiles, $osProgramFilesX86)) {
         if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
-        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        $windowsPowerShellRoot = [System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules')
+        [void]$candidateRoots.Add($windowsPowerShellRoot)
+        [void]$archiveProgramFilesRoots.Add($windowsPowerShellRoot)
         [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
     }
 
@@ -44,11 +169,13 @@ function Initialize-GuiTrustedPowerShellModules {
     if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
     $env:PSModulePath = [string]::Join([System.IO.Path]::PathSeparator, $trustedRoots.ToArray())
 
-    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'CimCmdlets')) {
         $manifestPath = [System.IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
         if (-not [System.IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
         Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
     }
+    $archiveManifestPath = Resolve-RevAgentTrustedArchiveManifest -PsHomeModulesRoot ([System.IO.Path]::Combine($PSHOME, 'Modules')) -ProgramFilesModuleRoots $archiveProgramFilesRoots.ToArray()
+    Microsoft.PowerShell.Core\Import-Module -Name $archiveManifestPath -Force -ErrorAction Stop
     $scheduledTasksManifest = [System.IO.Path]::Combine($osSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules', 'ScheduledTasks', 'ScheduledTasks.psd1')
     if (-not [System.IO.File]::Exists($scheduledTasksManifest)) { throw "Required ScheduledTasks module manifest was not found: $scheduledTasksManifest" }
     Microsoft.PowerShell.Core\Import-Module -Name $scheduledTasksManifest -Force -ErrorAction Stop
@@ -68,6 +195,9 @@ if ($ModulePathSecuritySmokeTest) {
     } | ConvertTo-Json -Compress
     return
 }
+if (-not [string]::IsNullOrWhiteSpace($TestStartupFailureMessage)) {
+    throw "revAgent GUI startup test failure: $TestStartupFailureMessage"
+}
 
 # Refuse an elevated or copied GUI before reading bootstrap-selected paths or
 # importing any local product module. The supported launcher always starts the
@@ -78,13 +208,20 @@ $earlyGuiPrincipal = [System.Security.Principal.WindowsPrincipal]::new($earlyGui
 if ($earlyGuiPrincipal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) {
     throw "The revAgent updater GUI refuses elevated execution before local bootstrap module import. Start revAgent Updater STABLE.cmd normally."
 }
-if (-not $SmokeTest) {
+if (-not $SmokeTest -and -not $PreWindowBootstrapSmokeTest) {
     $earlyGuiProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
     if ([string]::IsNullOrWhiteSpace($earlyGuiProgramData)) { throw "Windows CommonApplicationData could not be resolved before GUI module import." }
     $earlyCanonicalGuiPath = [System.IO.Path]::GetFullPath((Join-Path $earlyGuiProgramData "DPE\revAgent\bootstrap\Install-revAgent-Updater-GUI.ps1"))
     $earlyActualGuiPath = [System.IO.Path]::GetFullPath($PSCommandPath)
     if (-not [string]::Equals($earlyActualGuiPath, $earlyCanonicalGuiPath, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Updater GUI must run from the protected local bootstrap before module import. expected=$earlyCanonicalGuiPath actual=$earlyActualGuiPath"
+    }
+}
+elseif ($PreWindowBootstrapSmokeTest) {
+    $testRootPrefix = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\') + '\'
+    $earlyActualGuiPath = [IO.Path]::GetFullPath($PSCommandPath)
+    if (-not $earlyActualGuiPath.StartsWith($testRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "PreWindowBootstrapSmokeTest is limited to a disposable path below the current TEMP directory."
     }
 }
 
@@ -163,6 +300,18 @@ if (-not $SmokeTest) {
     $script:GuiPrivilegedSnapshotBrokerPath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.privilegedSnapshotUpdate.relativePath)
     $script:GuiDistributionIntegrityModulePath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.distributionIntegrity.relativePath)
     $script:GuiTrustedKeysPath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.trustedKeys.relativePath)
+}
+if ($PreWindowBootstrapSmokeTest) {
+    [pscustomobject][ordered]@{
+        success = $true
+        action = 'pre-window-bootstrap-smoke-test'
+        bootstrapStatePath = [IO.Path]::GetFullPath($BootstrapStatePath)
+        channelManifestPath = [IO.Path]::GetFullPath($ChannelManifestPath)
+        sourceFreeMigrationModule = [IO.Path]::GetFullPath($localSourceFreeMigrationModule)
+        releaseSnapshotModule = [IO.Path]::GetFullPath($script:GuiReleaseSnapshotModulePath)
+        trustedKeysPath = [IO.Path]::GetFullPath($script:GuiTrustedKeysPath)
+    } | ConvertTo-Json -Compress
+    return
 }
 $script:ActiveProcess = $null
 $script:ActiveLogPath = ""
@@ -1438,4 +1587,5 @@ $form.Add_FormClosing({
 
 Set-ButtonsEnabled -Enabled $true
 
+$form.Add_Shown({ $script:GuiStartupCompleted = $true })
 [void][System.Windows.Forms.Application]::Run($form)

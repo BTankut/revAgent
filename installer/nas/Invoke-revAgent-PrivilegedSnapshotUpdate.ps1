@@ -40,6 +40,13 @@ param(
     [string]$TargetUserProfileRoot = ''
 )
 
+if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
+    Write-Host "revAgent updater cannot run: PowerShell is in $($ExecutionContext.SessionState.LanguageMode) mode."
+    Write-Host "This is typically caused by Smart App Control or a WDAC/AppLocker policy on this machine."
+    Write-Host "Ask IT to exempt/sign the revAgent deployment scripts or disable Smart App Control, then retry."
+    exit 78
+}
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
