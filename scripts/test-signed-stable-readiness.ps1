@@ -45,6 +45,39 @@ function New-TestRsaProvider {
     return [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $cspParameters)
 }
 
+function Set-TestPublishedStableSurface {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [Parameter(Mandatory = $true)][string]$TrustedKeysPath
+    )
+
+    $toolsRoot = Join-Path $ReleaseRoot 'tools'
+    $configRoot = Join-Path $toolsRoot 'config'
+    New-Item -ItemType Directory -Path $configRoot -Force | Out-Null
+    $templateBytes = [IO.File]::ReadAllBytes((Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd'))
+    $templateText = [Text.Encoding]::ASCII.GetString($templateBytes)
+    $launcherBytes = [Text.Encoding]::ASCII.GetBytes($templateText.Replace(
+            'set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"',
+            ('set "RELEASE_ROOT={0}"' -f ([IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\', '/')))))
+    foreach ($launcherName in @('revAgent Updater STABLE.cmd', 'Revit MCP Updater STABLE.cmd')) {
+        [IO.File]::WriteAllBytes((Join-Path $toolsRoot $launcherName), $launcherBytes)
+    }
+    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1')) {
+        Copy-Item -LiteralPath (Join-Path (Join-Path $RepoRoot 'installer\nas') $toolName) -Destination (Join-Path $toolsRoot $toolName) -Force
+    }
+    Copy-Item -LiteralPath $TrustedKeysPath -Destination (Join-Path $configRoot 'release-trusted-keys.json') -Force
+    foreach ($legacyLauncherName in @(
+            'Install-revAgent-Updater-GUI.cmd',
+            'Install-Revit-MCP-Updater-GUI.cmd',
+            'Install-revAgent-Updater.cmd',
+            'Install-Revit-MCP-Updater.cmd'
+        )) {
+        $sourcePath = Join-Path (Join-Path $RepoRoot 'installer\nas') $legacyLauncherName
+        Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $toolsRoot $legacyLauncherName) -Force
+        Copy-Item -LiteralPath $sourcePath -Destination (Join-Path $ReleaseRoot $legacyLauncherName) -Force
+    }
+}
+
 Write-Host "Test signed stable readiness preflight"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-signed-stable-readiness-test-" + [Guid]::NewGuid().ToString("N"))
 $signedRoot = Join-Path $tempRoot "signed-release-root"
@@ -101,6 +134,162 @@ try {
     Assert-Equal ([long]$signedReport.nodeMsi.actualSizeBytes) ([long]$signedReport.nodeMsi.signedSizeBytes) "Readiness must bind the actual Node MSI size to signed metadata."
     Assert-Equal ([string]$signedReport.nodeMsi.authenticodeStatus) "TestBypass" "Disposable test-signing readiness should report its bounded Authenticode bypass."
     Assert-True (@($signedReport.checks | Where-Object { $_.name -like "node_msi_*" -and -not $_.success }).Count -eq 0) "A valid signed test Node MSI sidecar should pass every Node MSI readiness check."
+
+    Assert-Equal @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter '*.cmd').Count 0 'Source release fixture must remain free of unsigned CMD first-hop entry points.'
+    $unpublishedSurfaceReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -AllowTestSigningIdentity `
+        -ArtifactScanScope activeRelease `
+        -RequirePublishedSurface `
+        -ReportOnly
+    Assert-True (-not [bool]$unpublishedSurfaceReport.success) 'Published-surface readiness accepted a source-only release root.'
+    Assert-True (@($unpublishedSurfaceReport.checks | Where-Object { $_.name -like 'published_surface_*_present' -and -not [bool]$_.success }).Count -gt 0) 'Source-only readiness did not identify missing published entry points.'
+
+    Set-TestPublishedStableSurface -ReleaseRoot $signedRoot -TrustedKeysPath $trustedKeysPath
+    $publishedSurfaceReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -AllowTestSigningIdentity `
+        -ArtifactScanScope activeRelease `
+        -RequirePublishedSurface
+    Assert-True ([bool]$publishedSurfaceReport.success -and [bool]$publishedSurfaceReport.publishedSurface.success) 'Exact managed published surface should pass readiness.'
+    Assert-Equal @($publishedSurfaceReport.publishedSurface.managedFiles).Count 13 'Published-surface readiness must verify four STABLE files, trusted keys, and four legacy stubs in both tools and the NAS root.'
+    Assert-True (@($publishedSurfaceReport.publishedSurface.managedFiles | Where-Object { -not [bool]$_.sha256Matches }).Count -eq 0) 'Published-surface readiness left an exact managed file hash unmatched.'
+    Assert-True (@($publishedSurfaceReport.publishedSurface.managedFiles | Where-Object { -not [bool]$_.safe -or [uint32]$_.linkCount -ne 1 -or [string]::IsNullOrWhiteSpace([string]$_.identity) }).Count -eq 0) 'Published-surface readiness did not prove every managed leaf through an exact single-link held-handle identity.'
+
+    $publishedTrustedKeysRelativePath = 'tools\config\release-trusted-keys.json'
+    $publishedTrustedKeysPath = Join-Path $signedRoot $publishedTrustedKeysRelativePath
+    $publishedConfigPath = Split-Path -Parent $publishedTrustedKeysPath
+    $junctionTarget = Join-Path $tempRoot 'published-config-junction-target'
+    $tempRootPrefix = [IO.Path]::GetFullPath($tempRoot).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    foreach ($movePath in @($publishedConfigPath, $junctionTarget)) {
+        if (-not [IO.Path]::GetFullPath($movePath).StartsWith($tempRootPrefix, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Junction fixture move path escaped its disposable temp root: $movePath"
+        }
+    }
+    [IO.Directory]::Move($publishedConfigPath, $junctionTarget)
+    try {
+        New-Item -ItemType Junction -Path $publishedConfigPath -Target $junctionTarget -ErrorAction Stop | Out-Null
+        $junctionReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $signedRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -ReportOnly
+        $junctionEvidence = @($junctionReport.publishedSurface.managedFiles | Where-Object { [string]::Equals([string]$_.relativePath, $publishedTrustedKeysRelativePath, [StringComparison]::OrdinalIgnoreCase) })[0]
+        Assert-True (-not [bool]$junctionReport.success) 'Published-surface readiness accepted a managed leaf reached through a junction.'
+        Assert-True ($null -ne $junctionEvidence -and -not [bool]$junctionEvidence.safe -and [string]$junctionEvidence.reason -eq 'published_surface_reparse_path') 'Managed junction fixture did not fail with the no-reparse reason.'
+    }
+    finally {
+        if (Test-Path -LiteralPath $publishedConfigPath) {
+            $publishedConfigItem = Get-Item -LiteralPath $publishedConfigPath -Force
+            if (($publishedConfigItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                [IO.Directory]::Delete($publishedConfigPath)
+            }
+        }
+        if (-not (Test-Path -LiteralPath $publishedConfigPath -PathType Container)) {
+            [IO.Directory]::Move($junctionTarget, $publishedConfigPath)
+        }
+    }
+
+    $hardlinkRelativePath = 'Install-revAgent-Updater.cmd'
+    $hardlinkTargetPath = Join-Path $signedRoot $hardlinkRelativePath
+    $hardlinkAliasPath = Join-Path $tempRoot 'managed-published-leaf-hardlink-alias.cmd'
+    try {
+        New-Item -ItemType HardLink -Path $hardlinkAliasPath -Target $hardlinkTargetPath -ErrorAction Stop | Out-Null
+        $hardlinkReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $signedRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -ReportOnly
+        $hardlinkEvidence = @($hardlinkReport.publishedSurface.managedFiles | Where-Object { [string]::Equals([string]$_.relativePath, $hardlinkRelativePath, [StringComparison]::OrdinalIgnoreCase) })[0]
+        Assert-True (-not [bool]$hardlinkReport.success) 'Published-surface readiness accepted a multiply-linked managed leaf.'
+        Assert-True ($null -ne $hardlinkEvidence -and -not [bool]$hardlinkEvidence.safe -and [string]$hardlinkEvidence.reason -eq 'published_surface_hardlink' -and [uint32]$hardlinkEvidence.linkCount -eq 2) 'Managed hardlink fixture did not fail the exact single-link policy with the observed link count.'
+    }
+    finally {
+        Remove-Item -LiteralPath $hardlinkAliasPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $raceRelativePath = 'tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+    $raceTargetPath = Join-Path $signedRoot $raceRelativePath
+    $raceOriginalBytes = [IO.File]::ReadAllBytes($raceTargetPath)
+    $raceReplacementPath = Join-Path $tempRoot 'managed-published-leaf-race-replacement.cmd'
+    $raceBackupPath = Join-Path $tempRoot 'managed-published-leaf-race-backup.cmd'
+    [IO.File]::WriteAllText($raceReplacementPath, 'RACE REPLACEMENT', [Text.Encoding]::ASCII)
+    $raceState = [pscustomobject]@{ attempted = $false; blocked = $false; error = '' }
+    $raceHook = {
+        param([string]$Path, [string]$RelativePath)
+        if ([string]::Equals($RelativePath, $raceRelativePath, [StringComparison]::OrdinalIgnoreCase)) {
+            $raceState.attempted = $true
+            try {
+                [IO.File]::Replace($raceReplacementPath, $Path, $raceBackupPath)
+            }
+            catch {
+                $raceState.blocked = $true
+                $raceState.error = $_.Exception.Message
+            }
+        }
+    }.GetNewClosure()
+    try {
+        $raceReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $signedRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -ManagedPublishedLeafAfterOpenTestHook $raceHook
+        Assert-True ([bool]$raceState.attempted) 'Managed pathname-race fixture did not execute after the exact leaf handle opened.'
+        Assert-True ([bool]$raceState.blocked) "Managed pathname replacement was not blocked while the exact leaf handle was held. $($raceState.error)"
+        Assert-True ([bool]$raceReport.success) 'A blocked pathname-replacement attempt changed readiness evidence.'
+        Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($raceTargetPath), [byte[]]$raceOriginalBytes)) 'Blocked pathname replacement changed the managed target bytes.'
+    }
+    finally {
+        [IO.File]::WriteAllBytes($raceTargetPath, $raceOriginalBytes)
+        Remove-Item -LiteralPath $raceReplacementPath -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $raceBackupPath -Force -ErrorAction SilentlyContinue
+    }
+
+    $publishedRefreshPath = Join-Path $signedRoot 'tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+    $publishedRefreshBytes = [IO.File]::ReadAllBytes($publishedRefreshPath)
+    try {
+        [IO.File]::AppendAllText($publishedRefreshPath, 'TAMPERED', [Text.Encoding]::ASCII)
+        $tamperedPublishedToolReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $signedRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -ReportOnly
+        Assert-True (-not [bool]$tamperedPublishedToolReport.success) 'Published-surface readiness accepted a tampered refresh launcher.'
+        Assert-True (@($tamperedPublishedToolReport.checks | Where-Object { $_.name -eq 'published_surface_tools_refresh_revagent_localbootstrap_stable_cmd_sha256' -and -not [bool]$_.success }).Count -eq 1) 'Tampered refresh launcher did not fail its exact published hash check.'
+    }
+    finally { [IO.File]::WriteAllBytes($publishedRefreshPath, $publishedRefreshBytes) }
+
+    $unexpectedCommandPath = Join-Path $signedRoot 'tools\Unexpected Legacy Entry.cmd'
+    try {
+        [IO.File]::WriteAllText($unexpectedCommandPath, '@echo off', [Text.Encoding]::ASCII)
+        $unexpectedCommandReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $signedRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestSigningIdentity `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -ReportOnly
+        Assert-True (-not [bool]$unexpectedCommandReport.success) 'Published-surface readiness accepted an unmanaged CMD entry point.'
+        Assert-True (@($unexpectedCommandReport.checks | Where-Object { $_.name -eq 'published_surface_no_unmanaged_cmd_entry_points' -and -not [bool]$_.success }).Count -eq 1) 'Unmanaged CMD entry point did not fail the exact managed-list check.'
+    }
+    finally { Remove-Item -LiteralPath $unexpectedCommandPath -Force -ErrorAction SilentlyContinue }
 
     $signedJson = & (Join-Path $RepoRoot "scripts\check-signed-stable-readiness.ps1") `
         -ReleaseRoot $signedRoot `
@@ -384,6 +573,9 @@ try {
     Assert-True ($scriptText -match 'no_private_signing_material_in_release_root') "Readiness preflight must include private signing material checks."
     Assert-True ($scriptText -match 'no_source_or_developer_artifacts_in_release_root') "Readiness preflight must include source/developer artifact checks."
     Assert-True ($scriptText -match 'node_msi_signed_metadata_present' -and $scriptText -match 'node_msi_sha256_matches_signed_metadata' -and $scriptText -match 'node_msi_authenticode_valid') "Readiness preflight must enforce the signed Node MSI sidecar contract."
+    Assert-True ($scriptText -match '\[switch\]\$RequirePublishedSurface' -and $scriptText -match '\$canonicalPublishedSurface' -and $scriptText -match '\$publishedSurfaceRequired\s*=\s*\[bool\]\$RequirePublishedSurface\s*-or\s*\(\$canonicalPublishedSurface' -and $scriptText -match 'published_surface_trusted_key_identity' -and $scriptText -match 'published_surface_no_unmanaged_cmd_entry_points') 'Readiness preflight must auto-require the exact published surface on the canonical production root while preserving explicit fixture coverage.'
+    Assert-True ($scriptText -match 'SkipPublishedSurface is limited to the authenticated existing-channel baseline repair path') 'Published-surface bypass must remain limited to the internal authenticated stable-baseline repair path.'
+    Assert-True ($scriptText -match 'ReadinessManagedLeafGuard' -and $scriptText -match 'FILE_FLAG_OPEN_REPARSE_POINT' -and $scriptText -match 'managed_leaf_hardlink' -and $scriptText -match 'ManagedPublishedLeafAfterOpenTestHook') 'Published managed leaves must use the no-reparse exact single-link held-handle verifier with deterministic race coverage.'
 }
 finally {
     $rsa.Dispose()

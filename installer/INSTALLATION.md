@@ -1,8 +1,10 @@
 # revAgent Self-Contained Installation
 
 This folder contains the installable workstation payload for revAgent. End
-users should normally install through the NAS updater rather than running these
-scripts manually.
+users with a current, verified protected bootstrap should normally update
+through its local/NAS entry rather than running these scripts manually. A
+pristine or stale-bootstrap workstation first requires the supervised manual
+high-assurance prestage/refresh procedure described below.
 
 The implementation still contains legacy cleanup names and external SDK names
 such as `RevitMCPSDK`; do not rename those when documenting exact compatibility
@@ -29,21 +31,42 @@ appear as `C:\ProgramData\DPE\revAgent`, `revAgent`, and `revAgent-api-docs`.
 
 ## Recommended Office Install
 
-The production NAS `tools` tree publishes no CMD launcher. Before the first run (and
-after any `bootstrap_refresh_required` result), a coordinator must copy the
-hash-authenticated prestage installer itself to
-`C:\ProgramData\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`
-with OS/admin-only commands, protect that path, and only then execute the staged
-copy with the independently authenticated SHA-256 evidence document. Never
-elevate the repository-side script. The staged installer places the signed
-bootstrap and clickable launcher under
-`C:\ProgramData\DPE\revAgent\bootstrap`.
-Follow [`docs/BOOTSTRAP_PRESTAGE.md`](../docs/BOOTSTRAP_PRESTAGE.md) for the
-exact pre-elevation evidence command and built-in-only administrative staging
-block. The evidence producer, schema, and example are signed user-pack
-components.
+The production NAS publisher exact-manages the clean-machine operator entry:
 
-On a workstation, close Revit and run the protected local updater launcher:
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
+```
+
+On the current release, this is intentionally not a self-service bootstrap
+installer or refresher. If the protected bootstrap is missing or fails current
+verification as stale, any NAS Refresh path that would elevate returns exit 84
+before requesting UAC; direct `-ElevatedApply` is disabled by the same guard.
+The operator is directed to the supervised manual high-assurance/recovery
+procedure in
+[`docs/BOOTSTRAP_PRESTAGE.md`](../docs/BOOTSTRAP_PRESTAGE.md). Only a current,
+verified protected bootstrap bypasses Refresh and starts the protected local
+GUI normally. Do not interpret the published launcher or clean-install fixtures
+as successful O4 acceptance.
+
+The repository/workflow has detached RS256 release signing and validates the
+third-party Node MSI Authenticode signature, but it has no revAgent Windows
+Authenticode signing certificate/service or signed bootstrap broker. A future
+signed broker, or an equivalent IT-prestaged machine verifier and pinned
+production key, may re-enable self-service bootstrap install/refresh after
+independently revalidating the release in the elevated phase. The NAS tree is
+not itself that trust anchor; do not elevate a loose NAS GUI, installer, or
+module.
+
+The supervised procedure copies the hash-authenticated prestage installer to
+`C:\ProgramData\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`
+with OS/admin-only commands, protects the path, and executes only the staged
+copy with independently obtained evidence. Never elevate the repository-side
+script. The staged installer places the signed bootstrap and clickable launcher
+under `C:\ProgramData\DPE\revAgent\bootstrap`.
+
+After supervised prestage/refresh, or on a workstation that already has a
+current and verified protected bootstrap, close Revit and run the protected
+local updater launcher:
 
 ```text
 C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd

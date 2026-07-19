@@ -138,6 +138,7 @@ $canonicalProgramData = [Environment]::GetFolderPath([Environment+SpecialFolder]
 $canonicalProgramFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
 $canonicalInstallRoot = Join-Path $canonicalProgramData "DPE\revAgent"
 $guiPath = Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1"
+$windowsPowerShellPath = Join-Path $systemDirectory 'WindowsPowerShell\v1.0\powershell.exe'
 $channelFixture = Join-Path $RepoRoot "README.md"
 $codexModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.CodexRegistration.psm1"
 $secureTempModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.SecureTemp.psm1"
@@ -169,9 +170,36 @@ try {
     $guiOutput = (& $guiPath -ChannelManifestPath $channelFixture -SmokeTest 6>&1 | Out-String)
     Assert-True ($guiOutput -match [regex]::Escape("Install  : $canonicalInstallRoot")) "GUI smoke test did not keep the canonical ProgramData install root under poisoned environment variables. Output: $guiOutput"
     Assert-True ($guiOutput -notmatch [regex]::Escape($poisonRoot)) "GUI smoke test exposed a poisoned machine root. Output: $guiOutput"
-    Assert-ThrowsLike -Action {
-        & $guiPath -ChannelManifestPath $channelFixture -InstallRoot (Join-Path $poisonRoot "DPE\revAgent") -SmokeTest | Out-Null
-    } -Pattern "InstallRoot must be the canonical revAgent machine root" -Message "GUI must reject an environment-poisoned InstallRoot."
+    foreach ($name in $poisonNames) {
+        [Environment]::SetEnvironmentVariable($name, $savedEnvironment[$name], 'Process')
+    }
+    $guiLogDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DPE\revAgent\logs'
+    $guiLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $guiLogsBefore[$_.FullName] = $true }
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $global:LASTEXITCODE = 0
+        $invalidInstallRootOutput = @(& $windowsPowerShellPath `
+            -NoLogo `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File $guiPath `
+            -ChannelManifestPath $channelFixture `
+            -InstallRoot (Join-Path $poisonRoot 'DPE\revAgent') `
+            -SmokeTest 2>&1 | ForEach-Object { [string]$_ })
+        $invalidInstallRootExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $newGuiLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $guiLogsBefore.ContainsKey($_.FullName) })
+    Assert-True ($invalidInstallRootExitCode -ne 0) "GUI accepted an environment-poisoned InstallRoot."
+    Assert-Equal $newGuiLogs.Count 1 "GUI rejected an environment-poisoned InstallRoot without exactly one startup diagnostic log."
+    $invalidInstallRootLog = Get-Content -Raw -LiteralPath $newGuiLogs[0].FullName
+    Assert-True ($invalidInstallRootLog -match 'InstallRoot must be the canonical revAgent machine root') "GUI startup log did not preserve the poisoned InstallRoot rejection reason."
+    Remove-Item -LiteralPath $newGuiLogs[0].FullName -Force
 
     Write-Host "Test copied GUI fails canonical-origin guard before bootstrap-selected module import"
     $copiedGuiRoot = Join-Path $tempRoot "copied-gui"
@@ -191,9 +219,32 @@ try {
                 }
             } | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
     $env:REVAGENT_GUI_PREIMPORT_MARKER = $copiedPoisonMarker
-    Assert-ThrowsLike -Action {
-        & $copiedGuiPath -ChannelManifestPath $channelFixture -BootstrapStatePath $copiedStatePath | Out-Null
-    } -Pattern "protected local bootstrap before module import" -Message "Copied GUI must fail before loading its attacker-selected module."
+    $copiedGuiLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $copiedGuiLogsBefore[$_.FullName] = $true }
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $global:LASTEXITCODE = 0
+        $copiedGuiOutput = @(& $windowsPowerShellPath `
+            -NoLogo `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File $copiedGuiPath `
+            -ChannelManifestPath $channelFixture `
+            -BootstrapStatePath $copiedStatePath `
+            -SuppressStartupFailureDialogForTest 2>&1 | ForEach-Object { [string]$_ })
+        $copiedGuiExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $newCopiedGuiLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $copiedGuiLogsBefore.ContainsKey($_.FullName) })
+    Assert-True ($copiedGuiExitCode -ne 0) "Copied GUI did not fail before loading its attacker-selected module."
+    Assert-Equal $newCopiedGuiLogs.Count 1 "Copied GUI canonical-origin rejection did not create exactly one startup diagnostic log."
+    $copiedGuiLog = Get-Content -Raw -LiteralPath $newCopiedGuiLogs[0].FullName
+    Assert-True ($copiedGuiLog -match 'protected local bootstrap before module import') "Copied GUI startup log did not preserve the canonical-origin rejection reason."
+    Remove-Item -LiteralPath $newCopiedGuiLogs[0].FullName -Force
     Assert-True (-not (Test-Path -LiteralPath $copiedPoisonMarker)) "Copied GUI executed a bootstrap-selected module before canonical-origin rejection."
     Remove-Item Env:\REVAGENT_GUI_PREIMPORT_MARKER -ErrorAction SilentlyContinue
 
@@ -221,23 +272,37 @@ try {
 
     Write-Host "Test WINDIR/SystemRoot poisoning fails closed without redirecting the canonical host path"
     $fakeWindows = Join-Path $poisonRoot "Windows"
-    $env:WINDIR = $fakeWindows
-    $env:SystemRoot = $fakeWindows
-    $rootPoisonError = $null
+    $rootPoisonLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $rootPoisonLogsBefore[$_.FullName] = $true }
+    }
+    $escapedFakeWindows = $fakeWindows.Replace("'", "''")
+    $escapedGuiPath = $guiPath.Replace("'", "''")
+    $escapedChannelFixture = $channelFixture.Replace("'", "''")
+    $rootPoisonChildScript = @"
+`$env:WINDIR = '$escapedFakeWindows'
+`$env:SystemRoot = '$escapedFakeWindows'
+& '$escapedGuiPath' -ChannelManifestPath '$escapedChannelFixture' -SmokeTest
+exit `$LASTEXITCODE
+"@
+    $rootPoisonEncodedCommand = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($rootPoisonChildScript))
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
     try {
-        & $guiPath -ChannelManifestPath $channelFixture -SmokeTest | Out-Null
+        $global:LASTEXITCODE = 0
+        $rootPoisonOutput = @(& $windowsPowerShellPath -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand $rootPoisonEncodedCommand 2>&1 | ForEach-Object { [string]$_ })
+        $rootPoisonExitCode = $LASTEXITCODE
     }
-    catch {
-        $rootPoisonError = [string]$_.Exception.Message
-    }
-    finally {
-        [Environment]::SetEnvironmentVariable("WINDIR", $savedEnvironment["WINDIR"], "Process")
-        [Environment]::SetEnvironmentVariable("SystemRoot", $savedEnvironment["SystemRoot"], "Process")
-    }
-    if (-not [string]::IsNullOrWhiteSpace($rootPoisonError)) {
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $newRootPoisonLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $rootPoisonLogsBefore.ContainsKey($_.FullName) })
+    if ($rootPoisonExitCode -ne 0) {
+        Assert-Equal $newRootPoisonLogs.Count 1 "Root-poisoning failure did not create exactly one startup diagnostic log."
+        $rootPoisonError = Get-Content -Raw -LiteralPath $newRootPoisonLogs[0].FullName
         Assert-True ($rootPoisonError -match [regex]::Escape($systemDirectory)) "Root-poisoning failure did not cite the canonical SystemDirectory host. Error: $rootPoisonError"
         Assert-True ($rootPoisonError -notmatch [regex]::Escape($fakeWindows)) "Root-poisoning redirected the GUI to the attacker Windows root. Error: $rootPoisonError"
+        Remove-Item -LiteralPath $newRootPoisonLogs[0].FullName -Force
     }
+    else { Assert-Equal $newRootPoisonLogs.Count 0 "Successful canonical host resolution unexpectedly produced a GUI startup log." }
 
     Write-Host "Test secure machine TEMP/TMP contract and pre-import ordering"
     Remove-Module RevAgent.SecureTemp -Force -ErrorAction SilentlyContinue
@@ -694,15 +759,23 @@ namespace RevAgentOsPathSecurity {
         Assert-True ($writerText -match '(?i)%__APPDIR__%WindowsPowerShell\\v1\.0\\powershell\.exe') "$commandWriter does not emit helper commands through cmd.exe __APPDIR__."
     }
     foreach ($launcher in @(
-            "installer\nas\Install-Revit-MCP-Updater-GUI.cmd",
-            "installer\nas\Install-revAgent-Updater-GUI.cmd",
-            "installer\nas\Install-revAgent-Updater.cmd",
             "installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.cmd",
             "installer\nas\Revit MCP Updater STABLE.cmd",
             "installer\nas\revAgent Updater STABLE.cmd"
         )) {
         $launcherText = Get-Text $launcher
         Assert-True ($launcherText -match '(?i)%__APPDIR__%WindowsPowerShell\\v1\.0\\powershell\.exe') "$launcher does not pin Windows PowerShell through the cmd.exe __APPDIR__ root."
+    }
+    foreach ($legacyStub in @(
+            "installer\nas\Install-revAgent-Updater-GUI.cmd",
+            "installer\nas\Install-Revit-MCP-Updater-GUI.cmd",
+            "installer\nas\Install-revAgent-Updater.cmd",
+            "installer\nas\Install-Revit-MCP-Updater.cmd"
+        )) {
+        $stubText = Get-Text $legacyStub
+        Assert-True ($stubText -match '(?im)^call\s+"%(STABLE|TARGET)%"\s+%\*') "$legacyStub does not delegate through the exact managed STABLE compatibility chain."
+        Assert-True ($stubText -notmatch '(?i)powershell(?:\.exe)?') "$legacyStub duplicates PowerShell launch logic instead of remaining a thin STABLE delegate."
+        Assert-True ($stubText -notmatch 'SECURITY STOP') "$legacyStub still exposes the retired clean-machine SECURITY STOP dead end."
     }
 }
 finally {

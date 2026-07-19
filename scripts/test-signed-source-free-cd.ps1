@@ -432,7 +432,8 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
         -TrustedKeysPath $trustedKeysPath `
         -Force `
         -RepoRoot $RepoRoot `
-        -AllowTestRoot
+        -AllowTestRoot `
+        -TestUseProductionPublishedSurface
     Assert-True ([bool]$publishResult.success) "NAS publish wrapper should return success."
     Assert-Equal ([string]$publishResult.version) $version "NAS publish wrapper should report the published version."
     Assert-Equal ([string]$publishResult.transportTrust) "signed_local_snapshot" "NAS publish must report the signed local snapshot transport boundary."
@@ -446,6 +447,10 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     Assert-True (-not [bool]$publishResult.releaseAcl.required -and -not [bool]$publishResult.releaseAcl.mutationPerformed) "NAS publish must not require or perform DACL mutation."
     Assert-Equal ([string]$publishResult.aclTelemetry.status) "not_requested_optional" "NAS publish must leave ACL telemetry opt-in by default."
     Assert-Equal (Get-Acl -LiteralPath $nasRoot).Sddl $nasRootAclBeforePublish "NAS publisher changed the release-root DACL even though ACL mutation is optional."
+    Assert-True ([bool]$publishResult.stablePublish.exactPublishedSurface) 'AllowTestRoot production-surface mode did not exercise exact-managed stable publication.'
+    Assert-True ([bool]$publishResult.stablePublish.publishedSurfaceReadiness.success) 'Publisher did not return successful final published-surface readiness evidence.'
+    Assert-Equal ([string]$publishResult.stablePublish.publishedSurfaceReadiness.mode) 'transactional-exact-handles' 'Publisher published-surface evidence must come from the rollback-capable exact-handle transaction.'
+    Assert-Equal ([int]$publishResult.stablePublish.publishedSurfaceReadiness.managedFileCount) 13 'Publisher transaction must verify all 13 exact-managed stable surface files.'
 
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.json") -PathType Leaf) "NAS stable channel should exist after publish."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "channels\stable.sig.json") -PathType Leaf) "NAS stable channel signature should exist after publish."
@@ -509,7 +514,46 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\collect-rollout-evidence.ps1") -PathType Leaf) "NAS publish should carry the SSH rollout evidence collector."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\invoke-live-smoke-over-ssh.ps1") -PathType Leaf) "NAS publish should carry the SSH live smoke runner."
     Assert-True (Test-Path -LiteralPath (Join-Path $nasRoot "tools\test-commandset-live.ps1") -PathType Leaf) "NAS publish should carry the live smoke evidence helper."
-    Assert-Equal @(Get-ChildItem -LiteralPath (Join-Path $nasRoot "tools") -Recurse -File -Filter "*.cmd").Count 0 "NAS publish must not restore unsigned CMD aliases into production tools."
+    $legacyLauncherNames = @(
+        'Install-revAgent-Updater-GUI.cmd',
+        'Install-Revit-MCP-Updater-GUI.cmd',
+        'Install-revAgent-Updater.cmd',
+        'Install-Revit-MCP-Updater.cmd'
+    )
+    $expectedManagedCommandPaths = @(
+        'tools\revAgent Updater STABLE.cmd',
+        'tools\Revit MCP Updater STABLE.cmd',
+        'tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+    ) + @($legacyLauncherNames | ForEach-Object { "tools\$_" }) + @($legacyLauncherNames)
+    $nasRootPrefix = $nasRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $actualManagedCommandPaths = @(
+        @(Get-ChildItem -LiteralPath $nasRoot -File -Filter '*.cmd') +
+        @(Get-ChildItem -LiteralPath (Join-Path $nasRoot 'tools') -Recurse -File -Filter '*.cmd') |
+            ForEach-Object { $_.FullName.Substring($nasRootPrefix.Length) } |
+            Sort-Object
+    )
+    Assert-Equal $actualManagedCommandPaths.Count $expectedManagedCommandPaths.Count 'Published NAS surface exposed an unexpected number of CMD entry points.'
+    Assert-Equal @($actualManagedCommandPaths | Where-Object { $_ -notin $expectedManagedCommandPaths }).Count 0 'Published NAS surface exposed an unmanaged CMD entry point.'
+    Assert-Equal @($expectedManagedCommandPaths | Where-Object { $_ -notin $actualManagedCommandPaths }).Count 0 'Published NAS surface omitted a required managed CMD entry point.'
+
+    $stableTemplateBytes = [IO.File]::ReadAllBytes((Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd'))
+    $stableTemplateText = [Text.Encoding]::ASCII.GetString($stableTemplateBytes)
+    $expectedFixtureLauncherBytes = [Text.Encoding]::ASCII.GetBytes($stableTemplateText.Replace(
+            'set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"',
+            ('set "RELEASE_ROOT={0}"' -f $nasRoot.TrimEnd('\', '/'))))
+    foreach ($stableLauncherName in @('revAgent Updater STABLE.cmd', 'Revit MCP Updater STABLE.cmd')) {
+        $publishedLauncherBytes = [IO.File]::ReadAllBytes((Join-Path (Join-Path $nasRoot 'tools') $stableLauncherName))
+        Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]]$publishedLauncherBytes, [byte[]]$expectedFixtureLauncherBytes)) "Published $stableLauncherName bytes drifted from the repo STABLE template after fixture-root substitution."
+    }
+    foreach ($legacyLauncherName in $legacyLauncherNames) {
+        $sourceLegacyBytes = [IO.File]::ReadAllBytes((Join-Path (Join-Path $RepoRoot 'installer\nas') $legacyLauncherName))
+        foreach ($publishedLegacyPath in @((Join-Path (Join-Path $nasRoot 'tools') $legacyLauncherName), (Join-Path $nasRoot $legacyLauncherName))) {
+            Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($publishedLegacyPath), [byte[]]$sourceLegacyBytes)) "Published legacy launcher stub drifted from its exact repo source: $publishedLegacyPath"
+        }
+    }
+    $publishedTrustedKeysPath = Join-Path $nasRoot 'tools\config\release-trusted-keys.json'
+    Assert-True (Test-Path -LiteralPath $publishedTrustedKeysPath -PathType Leaf) 'Stable publisher did not publish release-trusted-keys.json.'
+    Assert-Equal (Get-FileHash -LiteralPath $publishedTrustedKeysPath -Algorithm SHA256).Hash (Get-FileHash -LiteralPath $trustedKeysPath -Algorithm SHA256).Hash 'Published trusted keys did not match the verified publisher input.'
 
     $publisherJunction = Join-Path $nasRoot "tools\unsafe-publisher-junction"
     New-Item -ItemType Junction -Path $publisherJunction -Target $secretRoot | Out-Null
@@ -547,10 +591,43 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
         -ReleaseRoot $nasRoot `
         -TrustedKeysPath $trustedKeysPath `
         -ArtifactScanScope activeRelease `
+        -RequirePublishedSurface `
         -AllowTestSigningIdentity `
         -RepoRoot $RepoRoot
     Assert-True ([bool]$nasReadiness.success) "Published NAS root should pass signed stable readiness."
     Assert-Equal ([string]$nasReadiness.artifactScanScope) "activeRelease" "NAS publish readiness should use the active release artifact scan scope."
+    Assert-True ([bool]$nasReadiness.publishedSurface.required -and [bool]$nasReadiness.publishedSurface.success) 'Published NAS readiness did not verify the exact user-clickable surface.'
+
+    $publishedTrustedKeysBytes = [IO.File]::ReadAllBytes($publishedTrustedKeysPath)
+    try {
+        Remove-Item -LiteralPath $publishedTrustedKeysPath -Force
+        $missingPublishedKeysReadiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $nasRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -AllowTestSigningIdentity `
+            -RepoRoot $RepoRoot `
+            -ReportOnly
+        Assert-True (-not [bool]$missingPublishedKeysReadiness.success) 'Published-surface readiness accepted missing NAS trusted keys.'
+        Assert-True (@($missingPublishedKeysReadiness.checks | Where-Object { $_.name -eq 'published_surface_tools_config_release_trusted_keys_json_present' -and -not [bool]$_.success }).Count -eq 1) 'Missing NAS trusted keys did not fail the dedicated published-surface presence check.'
+    }
+    finally { [IO.File]::WriteAllBytes($publishedTrustedKeysPath, $publishedTrustedKeysBytes) }
+
+    try {
+        [IO.File]::WriteAllText($publishedTrustedKeysPath, '{"trustedKeys":', [Text.UTF8Encoding]::new($false))
+        $brokenPublishedKeysReadiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+            -ReleaseRoot $nasRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -ArtifactScanScope activeRelease `
+            -RequirePublishedSurface `
+            -AllowTestSigningIdentity `
+            -RepoRoot $RepoRoot `
+            -ReportOnly
+        Assert-True (-not [bool]$brokenPublishedKeysReadiness.success) 'Published-surface readiness accepted malformed NAS trusted keys.'
+        Assert-True (@($brokenPublishedKeysReadiness.checks | Where-Object { $_.name -in @('published_surface_tools_config_release_trusted_keys_json_sha256', 'published_surface_trusted_key_identity') -and -not [bool]$_.success }).Count -eq 2) 'Malformed NAS trusted keys did not fail both exact-hash and identity checks.'
+    }
+    finally { [IO.File]::WriteAllBytes($publishedTrustedKeysPath, $publishedTrustedKeysBytes) }
 
     Write-Host 'Test exact two-machine pilot isolation and rollback guards'
     $pilotReleaseRoot = Join-Path $tempRoot 'pilot-release-root'
@@ -735,12 +812,62 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     }.GetNewClosure()
     try {
         Assert-ThrowsLike -Action {
-            & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $releaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel stable -Force -AllowRollback -RepoRoot $RepoRoot -AllowTestRoot -TestAfterSignatureWriteHook $stableRollbackHook | Out-Null
+            & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') -SourceReleaseRoot $releaseRoot -NasReleaseRoot $nasRoot -TrustedKeysPath $trustedKeysPath -Channel stable -Force -AllowRollback -RepoRoot $RepoRoot -AllowTestRoot -TestUseProductionPublishedSurface -TestAfterSignatureWriteHook $stableRollbackHook | Out-Null
         } -Pattern 'injected signature rollback fixture' -Message 'Same-handle rollback fixture did not fail at the injected boundary.'
     }
     finally { if (Test-Path -LiteralPath $stableRollbackAlias) { Remove-Item -LiteralPath $stableRollbackAlias -Force } }
     Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableChannelPath), [byte[]]$stableChannelBytes) -and [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableSignaturePath), [byte[]]$stableSignatureBytes)) 'Stable same-handle rollback did not restore exact baseline bytes after a hardlink anomaly.'
+    $stableToolsAfterPublishedSurfaceRollback = Get-TestTreeDigest -Root (Join-Path $nasRoot 'tools')
+    Assert-True ($stableToolsAfterPublishedSurfaceRollback.itemCount -eq $stableToolsDigest.itemCount -and $stableToolsAfterPublishedSurfaceRollback.sha256 -eq $stableToolsDigest.sha256) 'Stable exact-managed published surface was not restored after a post-write failure.'
     Write-Host '  same-handle hardlink rollback: PASS'
+
+    $independentRollbackStepsSeen = [Collections.Generic.List[string]]::new()
+    $independentRollbackPrimaryHook = {
+        param($channelPath, $signaturePath)
+        throw 'injected independent rollback primary failure'
+    }
+    $independentRollbackStepHook = {
+        param($stepName)
+        $independentRollbackStepsSeen.Add([string]$stepName) | Out-Null
+        if ([string]::Equals([string]$stepName, 'stable bootstrap tool rollback: config\release-trusted-keys.json', [StringComparison]::Ordinal)) {
+            throw 'injected independent rollback step failure'
+        }
+    }.GetNewClosure()
+    Assert-ThrowsLike -Action {
+        & (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') `
+            -SourceReleaseRoot $releaseRoot `
+            -NasReleaseRoot $nasRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -Channel stable `
+            -Force `
+            -AllowRollback `
+            -RepoRoot $RepoRoot `
+            -AllowTestRoot `
+            -TestUseProductionPublishedSurface `
+            -TestAfterSignatureWriteHook $independentRollbackPrimaryHook `
+            -TestBeforeRollbackStepHook $independentRollbackStepHook | Out-Null
+    } -Pattern '(?s)injected independent rollback primary failure.*injected independent rollback step failure' -Message 'Independent rollback fixture did not aggregate the original publish error and injected rollback-step error.'
+
+    $rollbackStepNames = @($independentRollbackStepsSeen.ToArray())
+    foreach ($requiredRollbackStep in @(
+            'active channel signature rollback',
+            'active channel manifest rollback',
+            'stable updater launcher rollback',
+            'legacy stable updater launcher rollback',
+            'test fixture tools directory rollback',
+            'test fixture release directory rollback'
+        )) {
+        Assert-True ($rollbackStepNames -contains $requiredRollbackStep) "Independent rollback skipped '$requiredRollbackStep' after another step failed."
+    }
+    $publishedToolRollbackSteps = @($rollbackStepNames | Where-Object { $_ -like 'stable bootstrap tool rollback:*' })
+    Assert-Equal ([int]$publishedToolRollbackSteps.Count) 11 'Independent rollback did not attempt all 11 exact-managed bootstrap tool surfaces.'
+    Assert-True ($publishedToolRollbackSteps -contains 'stable bootstrap tool rollback: Install-Revit-MCP-Updater.cmd') 'Independent rollback stopped before the final exact-managed compatibility surface.'
+    Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableChannelPath), [byte[]]$stableChannelBytes) -and [Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($nasStableSignaturePath), [byte[]]$stableSignatureBytes)) 'Independent rollback aggregation did not restore the exact stable channel-pair baseline.'
+    $stableToolsAfterIndependentRollback = Get-TestTreeDigest -Root (Join-Path $nasRoot 'tools')
+    Assert-True ($stableToolsAfterIndependentRollback.itemCount -eq $stableToolsDigest.itemCount -and $stableToolsAfterIndependentRollback.sha256 -eq $stableToolsDigest.sha256) 'Independent rollback aggregation did not restore the stable tools baseline.'
+    $stableReleaseAfterIndependentRollback = Get-TestTreeDigest -Root $stableReleaseRoot
+    Assert-True ($stableReleaseAfterIndependentRollback.itemCount -eq $stableReleaseDigest.itemCount -and $stableReleaseAfterIndependentRollback.sha256 -eq $stableReleaseDigest.sha256) 'Independent rollback aggregation did not restore the stable release baseline.'
+    Write-Host '  independent rollback aggregation: PASS'
 
     $newPairRaceBytes = [Text.Encoding]::UTF8.GetBytes('{"external":"new-pair-race"}')
     $newPairRaceHook = { param($channelPath, $signaturePath); [IO.File]::WriteAllBytes($signaturePath, $newPairRaceBytes) }.GetNewClosure()
@@ -949,10 +1076,13 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
+    $readinessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1')
     $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     $bootstrapEvidenceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\New-RevAgentBootstrapPrestageEvidence.ps1")
     $retiredPromoterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\promote-nas-release.ps1")
     $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
+    $stableLauncherSourceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd')
+    $stableRefreshCmdSourceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.cmd')
     $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
     $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
@@ -962,8 +1092,14 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     }
     Assert-True ($producerText -match 'trustedProperties\.Count -ne 1' -and $publisherText -match 'properties\.Count -ne 1' -and $legacyPublisherText -match 'properties\.Count -ne 1' -and $bootstrapEvidenceText -match 'trustedKeyProperties\.Count -ne 1') "Production producer, publishers, and prestage evidence must reject multi-key trusted-key documents."
     Assert-True ($producerText -match 'CdStagingNative' -and $producerText -match 'CreateDirectoryRelativeNoDelete' -and $producerText -match 'StagingRootGuard' -and $legacyPublisherText -match 'Assert-RevAgentAtomicStagingGuard') "CD generation must atomically create and hold one exact local staging leaf and reject unguarded production generation."
-    Assert-True ($publisherText -match '\[ValidateSet\("stable", "pilot"\)\]' -and $publisherText -match 'DESKTOP-OKNV128' -and $publisherText -match 'NET01' -and $publisherText -match 'stable versioned release' -and $publisherText -match 'Set-RevAgentStableLauncherExact' -and $publisherText -match 'sharedToolsTreeReplaced = \[bool\]\$AllowTestRoot') "Production stable publish must use handle-bound create-new release copy, repair only the stable launcher through an exact handle, and keep the pilot cohort restricted."
-    Assert-True ($publisherText -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $publisherText -match 'Revit MCP Updater STABLE\.cmd' -and $publisherText -match 'Set-RevAgentStableBootstrapToolsExact' -and $publisherText -match 'bootstrap install completed' -and $publisherText -match 'VerificationOnly >nul 2>nul' -and $publisherText -match 'call "%REFRESH%"' -and $publisherText -match 'stable bootstrap refresh completed' -and $publisherText -match 'returned without creating the protected local bootstrap') "Production stable launcher template must install missing clean-machine bootstraps, auto-refresh stale protected local bootstraps, fail visibly if refresh returns without a bootstrap, and publish the matching bootstrap helper tools and legacy launcher alias."
+    Assert-True ($publisherText -match '\[ValidateSet\("stable", "pilot"\)\]' -and $publisherText -match 'DESKTOP-OKNV128' -and $publisherText -match 'NET01' -and $publisherText -match 'stable versioned release' -and $publisherText -match 'Set-RevAgentStableLauncherExact' -and $publisherText -match 'Set-RevAgentStableBootstrapToolsExact' -and $publisherText -match 'TestUseProductionPublishedSurface' -and $publisherText -match 'transactional-exact-handles') "Production stable publish must use handle-bound create-new release copy, exact-manage the complete published surface transactionally, expose a bounded production-path fixture mode, and keep the pilot cohort restricted."
+    Assert-True ($publisherText -match 'config\\release-trusted-keys\.json' -and $publisherText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publisherText -match 'Install-Revit-MCP-Updater-GUI\.cmd' -and $publisherText -match 'Install-revAgent-Updater\.cmd' -and $publisherText -match 'Install-Revit-MCP-Updater\.cmd') 'Stable publisher must exact-manage verified trusted keys and all four legacy compatibility stubs in tools and the NAS root.'
+    Assert-True ($readinessText -match 'required-canonical-production' -and $publisherText -match '\$stableSurfaceRepairBaseline\s*=\s*\[string\]::Equals\(\$Channel, ''stable''' -and $publisherText -match '-SkipPublishedSurface:\$stableSurfaceRepairBaseline') 'Canonical readiness must auto-require the published surface, with a narrowly scoped publisher exception only for the authenticated stable baseline being repaired.'
+    Assert-True ($stableLauncherSourceText -match 'if not exist "%BOOTSTRAP%"' -and $stableLauncherSourceText -match 'VerificationOnly >nul 2>nul' -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('call "%REFRESH%"'))).Count -eq 2 -and $stableLauncherSourceText -match 'if "%REVAGENT_FAILURE_CODE%"=="84" goto stable_signing_trust_unavailable' -and $stableLauncherSourceText -match 'independent Windows signing trust anchor is unavailable') "Production stable launcher template must route missing and stale bootstraps through the fail-closed refresh boundary, preserve exact exit 84 guidance, and allow only an already-current verified bootstrap to reach normal GUI launch."
+    Assert-True ($stableLauncherSourceText -match [regex]::Escape('setlocal EnableExtensions EnableDelayedExpansion') -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('set "REFRESH_EXIT=!ERRORLEVEL!"'))).Count -eq 2 -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('exit /b !REFRESH_EXIT!'))).Count -eq 2) 'Published STABLE launcher template must preserve refresh exit codes safely across both parenthesized call paths.'
+    foreach ($publishedExitCode in @(79, 80, 81, 82, 84)) {
+        Assert-True ($stableLauncherSourceText -match [regex]::Escape(('if "%REVAGENT_FAILURE_CODE%"=="{0}"' -f $publishedExitCode)) -and $stableRefreshCmdSourceText -match [regex]::Escape(('if "%REFRESH_EXIT%"=="{0}"' -f $publishedExitCode))) "Published launcher surface lost exact exit-code $publishedExitCode routing."
+    }
     Assert-True ($publisherText -match 'Get-RevAgentNasPublishMutexName' -and $publisherText -match '\.WaitOne\(0, \$false\)' -and $publisherText -match 'Enter-RevAgentNasPublishLease' -and $publisherText -match 'ReleaseMutex' -and $publisherText -match 'publishLease\.stream\.Dispose') "NAS publisher must hold and release both its named mutex and NAS lease."
     Assert-True ($publisherText -match 'Get-RevAgentSignedStableIdentity' -and $publisherText -match 'AllowLegacyMissingNodeMsi' -and ([regex]::Matches($publisherText, 'AllowLegacyMissingNodeMsi').Count -eq 1) -and $publisherText -match 'never passed to candidate/source readiness') 'Only an already-active signed destination channel baseline may use the transitional missing-sidecar readiness allowance.'
     Assert-True ($publisherText -match '\$candidateReleaseSequence\s*=\s*ConvertTo-RevAgentInt64OrZero -Value \$sourceArtifactIdentity\.releaseSequence' -and $publisherText -match '\$candidateReleaseSequence -ne \$readinessReleaseSequence') "NAS publisher anti-rollback guard must bind readiness releaseSequence to the post-readiness signed source identity."

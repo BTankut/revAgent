@@ -79,7 +79,10 @@ try {
     & (Join-Path $RepoRoot "scripts\test-signed-source-free-cd.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-release-snapshot.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-nas-release-acl.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-shared-ancestor-acl.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-updater-stabilization-g7-g9.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-local-update-bootstrap.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-clean-install-bootstrap.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-rollout-readiness.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-repo-rename-readiness.ps1") -RepoRoot $RepoRoot
 

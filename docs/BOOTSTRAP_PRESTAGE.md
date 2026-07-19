@@ -1,25 +1,70 @@
 # Protected local bootstrap prestage
 
-Use this production two-shell procedure. Signed-release verification and
-evidence production happen before elevation. The elevated shell only stages
-the already verified bytes and runs the canonical ProgramData consumer; it
-must not derive replacement hashes.
+This document covers the normal STABLE entry point and the supervised manual
+high-assurance/recovery procedure.
 
 The contract is `config/bootstrap-prestage-evidence.schema.json`; the adjacent
 example contains non-production placeholder hashes.
 
-The signed NAS tree is a data transport, not an execution root. The coordinator
-verifies detached channel/release signatures and the package hash with the
-pinned local verifier/key fingerprint, then derives every bootstrap source hash
-from the signed package. The evidence producer opens that verifier without
-write/delete sharing, hashes the acquired bytes, and executes only those exact
-bytes as an in-memory module; it never imports the pathname after hashing.
-Neither the normal launcher nor the GUI imports or executes a loose
-script/module from `\\dpe-nas`. A writable Samba tree therefore does not become
-an executable trust boundary and no NAS `sealed` ACL claim is required for this
-flow.
+The signed NAS tree is a data transport and bounded non-elevated coordinator
+surface, not an elevated trust root. The exact-managed STABLE/refresh
+coordinator may run from NAS, but no loose NAS GUI, installer, or module may be
+elevated or installed as a trust anchor.
 
-## 1. Normal coordinator shell
+Current production behavior is deliberately fail-closed: when the protected
+bootstrap is missing or its verification says it is stale, any NAS Refresh path
+that would elevate returns exit 84 before requesting UAC. Direct
+`-ElevatedApply` is disabled by the same guard. The STABLE CMD reports that
+independent Windows signing trust is unavailable and points to the supervised
+procedure in this document instead of attempting an elevated bootstrap apply.
+
+## Normal STABLE entry point
+
+After a signed stable publication passes canonical published-surface readiness,
+a standard user runs only:
+
+```text
+\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater STABLE.cmd
+```
+
+If the protected bootstrap is current and verified, STABLE bypasses Refresh,
+opens the protected local GUI, and the normal split-privilege updater proceeds
+unchanged. If the bootstrap is missing or stale, STABLE enters Refresh and the
+current unanchored path stops with exit 84 before UAC; a stale verifier/key may
+not authorize its own replacement. Exit codes 79, 80, 81, and 82 remain the
+coordinator contract for UAC decline, an existing coordinator, timeout, and a
+disabled/non-de-elevatable UAC configuration after a future independent anchor
+re-enables that path. Current missing-or-stale Refresh does not reach them.
+
+The local staged-script hash, pre-execution read lock, elevated self-hash, and
+nonce-bound result are defense-in-depth for that future independently anchored
+coordinator and its fixtures; they do not currently authorize elevation. The
+release workflow signs JSON metadata with a detached RS256 key and verifies the
+third-party Node MSI's Authenticode signature, but it does not provide a
+revAgent Authenticode code-signing certificate/service or signed bootstrap
+broker. Self-service bootstrap install/refresh may be re-enabled only when an
+Authenticode-signed broker, or an equivalent IT-prestaged machine verifier and
+pinned production key, independently revalidates the detached release signature
+after elevation. Until then, use the manual procedure below for administrator-
+side trust establishment or refresh.
+
+## Manual high-assurance/recovery prestage
+
+Use this two-shell procedure only with a clean merged checkout and verifier/key
+material obtained by the administrator or IT through a channel independent of
+the standard user being bootstrapped. Signed-release verification and evidence
+production happen before elevation. The elevated shell only stages the already
+verified bytes and runs the canonical ProgramData consumer; it must not derive
+replacement hashes.
+
+The coordinator verifies detached channel/release signatures and the package
+hash with the pinned verifier/key fingerprint, then derives every bootstrap
+source hash from the signed package. The evidence producer opens that verifier
+without write/delete sharing, hashes the acquired bytes, and executes only
+those exact bytes as an in-memory module; it never imports the pathname after
+hashing.
+
+### 1. Trusted coordinator shell
 
 Run from a clean merged checkout after the selected signed channel has passed
 its release gates. Use `pilot` only for the exact signed developer/NET01 cohort;
@@ -53,7 +98,7 @@ if ((Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash -ne [string]
 }
 ```
 
-## 2. Fresh elevated Windows PowerShell shell
+### 2. Fresh elevated Windows PowerShell shell
 
 Open `%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe` with **Run as
 administrator**. Paste the following built-in-only block directly into that
@@ -474,9 +519,12 @@ After success, close Revit and run only:
 C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-Production NAS `tools` contains no `.cmd` launcher. A stale local launcher is
-still checked against its signed manifest component and returns
-`bootstrap_refresh_required`; repeat this two-shell procedure.
+Production NAS `tools` contains only the exact managed CMD allowlist documented
+in `installer\nas\README.md`. Only a current, verified protected bootstrap stays
+on the normal local GUI path. A missing bootstrap or a local launcher that is
+stale against its signed manifest component enters Refresh and stops with exit
+84 before UAC. Complete this supervised two-shell prestage/refresh procedure,
+then rerun the protected local launcher.
 
 The prestage evidence and protected bootstrap include the complete signed
 module closure needed before the GUI can start:
@@ -500,4 +548,6 @@ The broker writes the immutable snapshot identity/path/hash binding into the
 machine phase result. The unelevated GUI reads that binding, verifies
 `snapshot-state.json`, and runs the exact local snapshot user entrypoint with
 the snapshot-local `channels\stable.json`. It never falls back to a loose NAS
-tool or a user-writable installed updater.
+tool or a user-writable installed updater. This post-bootstrap snapshot broker
+does not supply the missing clean-machine Authenticode trust anchor described
+above.

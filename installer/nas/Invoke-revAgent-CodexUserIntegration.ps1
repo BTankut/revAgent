@@ -18,6 +18,13 @@ param(
     [switch]$ModulePathSecuritySmokeTest
 )
 
+if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
+    Write-Host "revAgent updater cannot run: PowerShell is in $($ExecutionContext.SessionState.LanguageMode) mode."
+    Write-Host "This is typically caused by Smart App Control or a WDAC/AppLocker policy on this machine."
+    Write-Host "Ask IT to exempt/sign the revAgent deployment scripts or disable Smart App Control, then retry."
+    exit 78
+}
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
@@ -26,15 +33,57 @@ $script:RevAgentOsProgramFiles = [Environment]::GetFolderPath([Environment+Speci
 $script:RevAgentOsProgramFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
 $script:RevAgentOsCommonAppData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 
+function Resolve-RevAgentTrustedArchiveManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$PsHomeModulesRoot,
+        [Parameter(Mandatory = $true)][string[]]$ProgramFilesModuleRoots
+    )
+
+    $searchedPaths = [System.Collections.Generic.List[string]]::new()
+    $psHomeManifest = [System.IO.Path]::Combine($PsHomeModulesRoot, 'Microsoft.PowerShell.Archive', 'Microsoft.PowerShell.Archive.psd1')
+    [void]$searchedPaths.Add($psHomeManifest)
+    if ([System.IO.File]::Exists($psHomeManifest)) { return [System.IO.Path]::GetFullPath($psHomeManifest) }
+
+    foreach ($moduleRoot in @($ProgramFilesModuleRoots | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($moduleRoot)) { continue }
+        $fullModuleRoot = [System.IO.Path]::GetFullPath($moduleRoot).TrimEnd([System.IO.Path]::DirectorySeparatorChar)
+        $archiveRoot = [System.IO.Path]::Combine($fullModuleRoot, 'Microsoft.PowerShell.Archive')
+        $directManifest = [System.IO.Path]::Combine($archiveRoot, 'Microsoft.PowerShell.Archive.psd1')
+        [void]$searchedPaths.Add($directManifest)
+        if (-not [System.IO.Directory]::Exists($fullModuleRoot)) { continue }
+        if (([System.IO.File]::GetAttributes($fullModuleRoot) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell module root is a reparse point: $fullModuleRoot" }
+        if (-not [System.IO.Directory]::Exists($archiveRoot)) { continue }
+        if (([System.IO.File]::GetAttributes($archiveRoot) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell Archive module root is a reparse point: $archiveRoot" }
+        if ([System.IO.File]::Exists($directManifest)) { return $directManifest }
+
+        $versionedManifests = [System.Collections.Generic.List[object]]::new()
+        foreach ($versionDirectory in [System.IO.Directory]::EnumerateDirectories($archiveRoot)) {
+            if (([System.IO.File]::GetAttributes($versionDirectory) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell Archive version directory is a reparse point: $versionDirectory" }
+            $parsedVersion = $null
+            if (-not [version]::TryParse([System.IO.Path]::GetFileName($versionDirectory), [ref]$parsedVersion)) { continue }
+            $manifest = [System.IO.Path]::Combine($versionDirectory, 'Microsoft.PowerShell.Archive.psd1')
+            [void]$searchedPaths.Add($manifest)
+            if ([System.IO.File]::Exists($manifest)) { [void]$versionedManifests.Add([pscustomobject]@{ Version = $parsedVersion; Path = $manifest }) }
+        }
+        $selected = @($versionedManifests | Sort-Object Version -Descending | Select-Object -First 1)
+        if ($selected.Count -eq 1) { return [string]$selected[0].Path }
+    }
+
+    throw "Required built-in PowerShell Archive module manifest was not found. Searched paths: $([string]::Join('; ', $searchedPaths.ToArray()))"
+}
+
 function Initialize-RevAgentTrustedPowerShellModules {
     # The user phase is unelevated, but its config/skill integrity checks must
     # not autoload a same-name module from Documents or another user root.
     $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    $archiveProgramFilesRoots = [System.Collections.Generic.List[string]]::new()
     [void]$candidateRoots.Add([System.IO.Path]::Combine($PSHOME, 'Modules'))
     [void]$candidateRoots.Add([System.IO.Path]::Combine($script:RevAgentOsSystemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
     foreach ($programFilesRoot in @($script:RevAgentOsProgramFiles, $script:RevAgentOsProgramFilesX86)) {
         if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
-        [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        $windowsPowerShellRoot = [System.IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules')
+        [void]$candidateRoots.Add($windowsPowerShellRoot)
+        [void]$archiveProgramFilesRoots.Add($windowsPowerShellRoot)
         [void]$candidateRoots.Add([System.IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
     }
 
@@ -51,11 +100,13 @@ function Initialize-RevAgentTrustedPowerShellModules {
     if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
     $env:PSModulePath = [string]::Join([System.IO.Path]::PathSeparator, $trustedRoots.ToArray())
 
-    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'CimCmdlets')) {
         $manifestPath = [System.IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
         if (-not [System.IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
         Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
     }
+    $archiveManifestPath = Resolve-RevAgentTrustedArchiveManifest -PsHomeModulesRoot ([System.IO.Path]::Combine($PSHOME, 'Modules')) -ProgramFilesModuleRoots $archiveProgramFilesRoots.ToArray()
+    Microsoft.PowerShell.Core\Import-Module -Name $archiveManifestPath -Force -ErrorAction Stop
     return $env:PSModulePath
 }
 

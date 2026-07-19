@@ -55,6 +55,7 @@ $sources = [ordered]@{
     privilegedSnapshotUpdate = Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
     trustedKeys = $trustedKeys
 }
+New-Item -ItemType Directory -Path $temp -Force | Out-Null
 try {
     $runtimeSmoke = & (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1") -RuntimePathSmokeTest
     Assert-True ([bool]$runtimeSmoke.success -and [IO.Path]::IsPathRooted([string]$runtimeSmoke.powershellPath) -and (Test-Path -LiteralPath $runtimeSmoke.powershellPath -PathType Leaf)) "Bootstrap runtime path smoke test failed."
@@ -63,7 +64,67 @@ try {
     Assert-True ([string]::Equals([string]$runtimeSmoke.workingDirectory, $expectedRuntimeDirectory, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI runtime does not use the trusted Windows PowerShell working directory."
     Assert-True ([string]$runtimeSmoke.arguments -match '-STA\s+-NoProfile\s+-WindowStyle\s+Hidden' -and [string]$runtimeSmoke.arguments -match '"C:\\Program Files\\revAgent Bootstrap Smoke\\Install-revAgent-Updater-GUI\.ps1"') "Bootstrap GUI runtime smoke test did not preserve the exact hidden STA argument contract."
     Assert-True ([string]::IsNullOrWhiteSpace([string]$runtimeSmoke.verb) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.userName) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.domain) -and -not [bool]$runtimeSmoke.hasPassword) "Bootstrap GUI runtime must preserve the current interactive token without a verb or alternate credentials."
-    Assert-True (-not [bool]$runtimeSmoke.redirectStandardInput -and -not [bool]$runtimeSmoke.redirectStandardOutput -and -not [bool]$runtimeSmoke.redirectStandardError) "Production bootstrap GUI runtime unexpectedly redirects standard streams."
+    Assert-True (-not [bool]$runtimeSmoke.redirectStandardInput -and -not [bool]$runtimeSmoke.redirectStandardOutput -and [bool]$runtimeSmoke.redirectStandardError) "Production bootstrap GUI runtime must redirect startup stderr without redirecting stdin/stdout."
+
+    Write-Host "Test GUI pre-window failure log and nonzero exit"
+    $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+    $guiStartupMarker = 'gui-startup-fixture-' + [Guid]::NewGuid().ToString('N')
+    $guiLogDirectory = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)) 'DPE\revAgent\logs'
+    $guiLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | ForEach-Object { $guiLogsBefore[$_.FullName] = $true }
+    }
+    $previousErrorActionPreference = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $guiFailureOutput = @(& $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File (Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1') -TestStartupFailureMessage $guiStartupMarker 2>&1 | ForEach-Object { [string]$_ })
+        $guiFailureExitCode = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previousErrorActionPreference }
+    $newGuiStartupLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-startup-*.log' -File | Where-Object { -not $guiLogsBefore.ContainsKey($_.FullName) })
+    Assert-True ($guiFailureExitCode -ne 0) "Injected GUI pre-window startup failure returned success."
+    Assert-True ($newGuiStartupLogs.Count -eq 1) "Injected GUI pre-window startup failure did not create exactly one diagnostic log."
+    $guiStartupLogText = Get-Content -Raw -LiteralPath $newGuiStartupLogs[0].FullName
+    Assert-True ($guiStartupLogText -match [regex]::Escape($guiStartupMarker) -and $guiStartupLogText -match 'languageMode=FullLanguage' -and $guiStartupLogText -match 'psVersion=') "GUI startup diagnostic log is missing failure/runtime evidence."
+    Assert-True ((@($guiFailureOutput) -join ' | ') -match [regex]::Escape($newGuiStartupLogs[0].FullName)) "GUI startup stderr did not disclose the diagnostic log path."
+    Remove-Item -LiteralPath $newGuiStartupLogs[0].FullName -Force
+
+    Write-Host "Test bootstrap captures quick GUI stderr and exit code"
+    $bootstrapSourcePath = Join-Path $RepoRoot 'installer\nas\Start-revAgent-Update.ps1'
+    $bootstrapTokens = $null
+    $bootstrapParseErrors = $null
+    $bootstrapAst = [Management.Automation.Language.Parser]::ParseFile($bootstrapSourcePath, [ref]$bootstrapTokens, [ref]$bootstrapParseErrors)
+    Assert-True (@($bootstrapParseErrors).Count -eq 0) "Bootstrap source did not parse for launch-failure coverage."
+    $launchFunctionNames = @('New-RevAgentGuiLaunchStderrLogPath', 'Write-RevAgentGuiLaunchFailureLog', 'Show-RevAgentGuiLaunchFailure', 'Start-RevAgentBootstrapGuiProcess')
+    $launchFunctionAsts = @($bootstrapAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $launchFunctionNames }, $true))
+    Assert-True ($launchFunctionAsts.Count -eq $launchFunctionNames.Count) "Bootstrap GUI launch-failure functions could not be loaded for executable coverage."
+    $launchModule = New-Module -ScriptBlock ([scriptblock]::Create((@($launchFunctionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
+    $quickFailureScript = Join-Path $temp 'gui-quick-failure.ps1'
+    $quickFailureMarker = 'quick-gui-stderr-' + [Guid]::NewGuid().ToString('N')
+    [IO.File]::WriteAllText($quickFailureScript, "[Console]::Error.WriteLine('$quickFailureMarker'); exit 23", [Text.UTF8Encoding]::new($false))
+    $quickFailureStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $quickFailureStartInfo.FileName = $windowsPowerShell
+    $quickFailureStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $quickFailureScript + '"'
+    $quickFailureStartInfo.UseShellExecute = $false
+    $quickFailureStartInfo.CreateNoWindow = $true
+    $quickFailureStartInfo.RedirectStandardError = $true
+    $quickFailureStartInfo.WorkingDirectory = Split-Path -Parent $windowsPowerShell
+    $stderrLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-launch-stderr-*.log' -File | ForEach-Object { $stderrLogsBefore[$_.FullName] = $true }
+    }
+    $quickFailureCaught = $null
+    try {
+        & $launchModule { Start-RevAgentBootstrapGuiProcess -StartInfo $args[0] -StartupWaitMilliseconds 5000 -SuppressNotification } $quickFailureStartInfo
+    }
+    catch { $quickFailureCaught = $_ }
+    $newStderrLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-launch-stderr-*.log' -File | Where-Object { -not $stderrLogsBefore.ContainsKey($_.FullName) })
+    Assert-True ($null -ne $quickFailureCaught -and [string]$quickFailureCaught.Exception.Message -match 'code 23') "Bootstrap did not propagate the quick GUI startup exit code."
+    Assert-True ($newStderrLogs.Count -eq 1) "Bootstrap quick GUI failure did not create exactly one stderr diagnostic log."
+    $quickFailureLogText = Get-Content -Raw -LiteralPath $newStderrLogs[0].FullName
+    Assert-True ($quickFailureLogText -match [regex]::Escape($quickFailureMarker) -and $quickFailureLogText -match 'exitCode=23') "Bootstrap GUI stderr log is missing exit/stderr evidence."
+    Remove-Item -LiteralPath $newStderrLogs[0].FullName -Force
+    Remove-Module $launchModule -Force
 
     Write-Host "Test direct GUI child process identity and working-directory semantics"
     $probeScript = @'
@@ -145,6 +206,32 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     $protectedPermissionsPath = Join-Path $bootstrapRoot "lib\RevAgent.Permissions.psm1"
     Assert-True ($null -ne $state.files.permissions -and [string]::Equals([string]$state.files.permissions.relativePath, "lib\RevAgent.Permissions.psm1", [StringComparison]::OrdinalIgnoreCase)) "Protected bootstrap state does not bind the permissions sibling."
     Assert-True ((Test-Path -LiteralPath $protectedPermissionsPath -PathType Leaf) -and [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $protectedPermissionsPath).Hash, [string]$hashes.permissions, [StringComparison]::OrdinalIgnoreCase)) "Protected permissions sibling is missing or does not match authenticated evidence."
+
+    Write-Host "Test valid protected GUI pre-window bootstrap chain in a fresh PS5 child"
+    $fakeStableChannelPath = Join-Path $fakeRelease 'channels\stable.json'
+    [IO.File]::WriteAllText($fakeStableChannelPath, '{"channel":"stable"}', [Text.UTF8Encoding]::new($false))
+    $protectedGuiPath = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
+    $protectedStatePath = Join-Path $bootstrapRoot 'bootstrap-state.json'
+    $preWindowOutput = @(& $windowsPowerShell `
+            -NoLogo `
+            -NoProfile `
+            -NonInteractive `
+            -ExecutionPolicy Bypass `
+            -File $protectedGuiPath `
+            -ChannelManifestPath $fakeStableChannelPath `
+            -BootstrapStatePath $protectedStatePath `
+            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
+    $preWindowExitCode = $LASTEXITCODE
+    Assert-True ($preWindowExitCode -eq 0) "Valid protected GUI pre-window PS5 child failed. output=$($preWindowOutput -join ' | ')"
+    $preWindowJsonLine = @($preWindowOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
+    Assert-True ($preWindowJsonLine.Count -eq 1) "Valid protected GUI pre-window PS5 child did not return its smoke result. output=$($preWindowOutput -join ' | ')"
+    $preWindowResult = $preWindowJsonLine[0] | ConvertFrom-Json
+    Assert-True ([bool]$preWindowResult.success -and [string]$preWindowResult.action -eq 'pre-window-bootstrap-smoke-test') "Valid protected GUI pre-window PS5 result was not successful."
+    Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$preWindowResult.bootstrapStatePath), [IO.Path]::GetFullPath($protectedStatePath), [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke did not parse the exact protected bootstrap state."
+    foreach ($loadedPath in @($preWindowResult.sourceFreeMigrationModule, $preWindowResult.releaseSnapshotModule, $preWindowResult.trustedKeysPath)) {
+        Assert-True ((Test-Path -LiteralPath ([string]$loadedPath) -PathType Leaf) -and [IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke loaded evidence outside the protected fixture bootstrap: $loadedPath"
+    }
+    Remove-Item -LiteralPath $fakeStableChannelPath -Force
 
     Write-Host "Test protected SourceFreeMigration dependency closure in fresh PS5 and PS7 processes"
     $protectedMigrationPath = Join-Path $bootstrapRoot "lib\RevAgent.SourceFreeMigration.psm1"
@@ -1044,9 +1131,53 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
     Assert-True ($elevatedBlock -match '-TrustedKeysPath \$stagedTrustedKeys' -and $elevatedBlock -notmatch '-TrustedKeysPath \$TrustedKeys(?:\s|`)') "Canonical elevated prestage still passes the UNC trusted-keys path into the local hardlink guard."
 
     $launcher = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\revAgent Updater STABLE.cmd")
-    Assert-True ($launcher -match '%ProgramData%\\DPE\\revAgent\\bootstrap\\Start-revAgent-Update\.ps1' -and $launcher -notmatch 'Install-revAgent-Updater-GUI\.ps1' -and $launcher -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $launcher -match 'call "%REFRESH%"') "Stable launcher is not local-bootstrap-only or does not auto-refresh a stale protected bootstrap."
+    Assert-True ($launcher -match '\[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::CommonApplicationData\)' -and $launcher -notmatch '%ProgramData%' -and $launcher -notmatch 'Install-revAgent-Updater-GUI\.ps1' -and $launcher -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $launcher -match 'call "%REFRESH%"' -and $launcher -match 'set "BOOTSTRAP_EXIT=!ERRORLEVEL!"' -and $launcher -notmatch 'start "revAgent"') "Stable launcher is not canonical-local-bootstrap-only or does not preserve the verified bootstrap result."
     $localLauncherSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd")
-    Assert-True ($localLauncherSource -match '-VerificationOnly' -and $localLauncherSource -match 'RefreshStableIfBound' -and $localLauncherSource -match 'bootstrap-state\.json' -and $localLauncherSource -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd') "Desktop local launcher does not detect stale protected bootstrap state and route stable-bound launchers through refresh."
+    Assert-True ($localLauncherSource -match '-VerificationOnly' -and $localLauncherSource -match 'RefreshStableIfBound' -and $localLauncherSource -match 'set "BOOTSTRAP=%~dp0Start-revAgent-Update\.ps1"' -and $localLauncherSource -match 'set "BOOTSTRAP_STATE=%~dp0bootstrap-state\.json"' -and $localLauncherSource -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $localLauncherSource -match '--post-refresh' -and $localLauncherSource -match 'exit /b 83' -and $localLauncherSource -match 'set "BOOTSTRAP_EXIT=!ERRORLEVEL!"' -and $localLauncherSource -notmatch 'start "revAgent"') "Desktop local launcher does not bind protected siblings, preserve child results, route stable refresh, and stop a post-refresh retry loop."
+    $stableRefreshSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1')
+    Assert-True ($stableRefreshSource -notmatch "Start-Process\s+-FilePath\s+\`$localLauncher\s+-ArgumentList\s+'--post-refresh'") "Fail-closed NAS bootstrap refresh must not launch the local updater after the trust-required stop."
+
+    Write-Host "Test post-refresh verification failure stops before another NAS refresh"
+    $postRefreshProgramData = Join-Path $temp 'post-refresh-programdata'
+    $postRefreshBootstrapRoot = Join-Path $postRefreshProgramData 'DPE\revAgent\bootstrap'
+    New-Item -ItemType Directory -Path $postRefreshBootstrapRoot -Force | Out-Null
+    $postRefreshBootstrap = Join-Path $postRefreshBootstrapRoot 'Start-revAgent-Update.ps1'
+    $postRefreshState = Join-Path $postRefreshBootstrapRoot 'bootstrap-state.json'
+    $postRefreshLauncher = Join-Path $postRefreshBootstrapRoot 'Start-revAgent-Update.cmd'
+    [IO.File]::WriteAllText($postRefreshBootstrap, @'
+param([switch]$VerificationOnly)
+if ($VerificationOnly) {
+    [Console]::Error.WriteLine('post-refresh-verification-fixture')
+    exit 1
+}
+exit 0
+'@, [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText($postRefreshState, '{"release":{"channel":"stable"}}', [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllBytes($postRefreshLauncher, [IO.File]::ReadAllBytes((Join-Path $RepoRoot 'installer\nas\Start-revAgent-Update.cmd')))
+    $postRefreshStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $postRefreshStartInfo.FileName = Join-Path ([Environment]::SystemDirectory) 'cmd.exe'
+    $postRefreshStartInfo.Arguments = '/d /c call "' + $postRefreshLauncher + '" --post-refresh'
+    $postRefreshStartInfo.WorkingDirectory = $RepoRoot
+    $postRefreshStartInfo.UseShellExecute = $false
+    $postRefreshStartInfo.CreateNoWindow = $true
+    $postRefreshStartInfo.RedirectStandardInput = $true
+    $postRefreshStartInfo.RedirectStandardOutput = $true
+    $postRefreshStartInfo.RedirectStandardError = $true
+    $postRefreshStartInfo.EnvironmentVariables['ProgramData'] = $postRefreshProgramData
+    $postRefreshProcess = [Diagnostics.Process]::Start($postRefreshStartInfo)
+    try {
+        $postRefreshProcess.StandardInput.Close()
+        $postRefreshStdout = $postRefreshProcess.StandardOutput.ReadToEnd()
+        $postRefreshStderr = $postRefreshProcess.StandardError.ReadToEnd()
+        Assert-True ($postRefreshProcess.WaitForExit(15000)) "Post-refresh loop-breaker fixture timed out."
+        Assert-True ($postRefreshProcess.ExitCode -eq 83) "Post-refresh verification failure did not use the dedicated loop-breaker exit code. actual=$($postRefreshProcess.ExitCode) stdout=$postRefreshStdout stderr=$postRefreshStderr"
+        $postRefreshOutput = $postRefreshStdout + "`n" + $postRefreshStderr
+        Assert-True ($postRefreshOutput -match 'verification still fails after a fresh refresh' -and $postRefreshOutput -match 'post-refresh-verification-fixture' -and $postRefreshOutput -match 'another automatic refresh was not started') "Post-refresh loop-breaker did not expose the verification reason and manual-diagnosis guidance. output=$postRefreshOutput"
+    }
+    finally {
+        if (-not $postRefreshProcess.HasExited) { try { $postRefreshProcess.Kill() } catch { } }
+        $postRefreshProcess.Dispose()
+    }
     $bootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1")
     Assert-True ($bootstrapSource -match '\[IO\.FileMode\]::Open' -and $bootstrapSource -match '\[IO\.FileMode\]::Append') "Protected bootstrap must probe both overwrite and append-only effective write access."
     Assert-True ($bootstrapSource -match '\$psi = New-RevAgentBootstrapGuiStartInfo -GuiPath \$guiPath -ChannelPath \$ChannelManifestPath -BootstrapStatePath \$statePath' -and $bootstrapSource -match '(?s)\$startInfo\.UseShellExecute = \$false.*\$startInfo\.CreateNoWindow = \$true.*\$startInfo\.WorkingDirectory = Split-Path -Parent \$powershellPath' -and $bootstrapSource -notmatch '\$startInfo\.WindowStyle\s*=') "Protected bootstrap GUI launch does not use the shared future-safe direct-CreateProcess configuration after release verification."

@@ -11,9 +11,14 @@ as exact release, server, legacy cleanup, or deep source identifiers.
 ## Deployment Model
 
 GitHub is the source history. The NAS share carries signed release data read by
-office workstations, but it is not an executable trust anchor. The first
-PowerShell hop is always the administrator-protected local bootstrap under
-`C:\ProgramData\DPE\revAgent\bootstrap`.
+office workstations, but it is not an independently authenticated elevated
+trust anchor. Installed workstations start from the administrator-protected
+local bootstrap under `C:\ProgramData\DPE\revAgent\bootstrap`. Only a current,
+verified bootstrap follows the normal local GUI path. On a clean workstation,
+or when that bootstrap is stale, the exact-managed
+`tools\revAgent Updater STABLE.cmd` enters Refresh and returns exit 84 before
+UAC. It directs the operator to supervised manual high-assurance
+prestage/refresh and does not perform self-service bootstrap elevation.
 
 ```text
 Code change
@@ -24,7 +29,8 @@ Code change
 -> manual workflow_dispatch with publish_to_pilot=true updates only the signed
    DESKTOP-OKNV128/NET01 pilot channel
 -> a later, separately approved publish_to_nas=true updates NAS stable/fleet
--> scheduled tasks audit; operators install through the split-privilege GUI
+-> scheduled tasks audit; current/prestaged workstations update through the
+   split-privilege GUI
 ```
 
 A normal feature-branch `git commit` or `git push` does not update the office by
@@ -33,13 +39,18 @@ release root but publishes neither channel. Pilot and stable publication are
 separate, mutually exclusive manual workflow dispatches.
 
 The daily workstation task reads stable in `-AuditOnly` mode and may notify the
-operator, but cannot install it. Production uptake begins only when an operator
-runs the split-privilege GUI and approves the bounded machine phase.
+operator, but cannot install it. After the protected bootstrap is current and
+verified, production uptake begins only when an operator runs the
+split-privilege GUI and approves the bounded machine phase.
 
 ## NAS Layout
 
 ```text
 \\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\
+  Install-revAgent-Updater-GUI.cmd
+  Install-Revit-MCP-Updater-GUI.cmd
+  Install-revAgent-Updater.cmd
+  Install-Revit-MCP-Updater.cmd
   channels\
     stable.json
     stable.sig.json
@@ -51,6 +62,14 @@ runs the split-privilege GUI and approves the bounded machine phase.
   reports\
     PC-01_USER22.json
   tools\
+    revAgent Updater STABLE.cmd
+    Revit MCP Updater STABLE.cmd
+    Refresh-revAgent-LocalBootstrap-STABLE.cmd
+    Refresh-revAgent-LocalBootstrap-STABLE.ps1
+    Install-revAgent-Updater-GUI.cmd
+    Install-Revit-MCP-Updater-GUI.cmd
+    Install-revAgent-Updater.cmd
+    Install-Revit-MCP-Updater.cmd
     Start-revAgent-Update.ps1
     Install-revAgent-Updater-GUI.ps1
     Install-Revit-MCP-Updater-GUI.ps1
@@ -58,6 +77,7 @@ runs the split-privilege GUI and approves the bounded machine phase.
       RevAgent.LocalBootstrap.psm1
       RevitMcp.*.psm1
     config\
+      release-trusted-keys.json
       revit-versions.json
     dependencies\
       node-v24.14.1-x64.msi
@@ -68,6 +88,36 @@ runs the split-privilege GUI and approves the bounded machine phase.
     collect-rollout-evidence.ps1
     test-commandset-live.ps1
 ```
+
+The signed source-free CD root deliberately contains no `.cmd` first-hop files.
+During an approved stable publish, the NAS publisher materializes the exact
+managed operator surface shown above: the two STABLE launcher names, the
+refresh CMD/PowerShell pair, the verified public trusted-key document, and four
+legacy compatibility stubs in both `tools\` and the NAS root. The legacy stubs
+contain no independent updater logic; they delegate to `revAgent Updater
+STABLE.cmd`. The publisher writes or repairs these files through held exact
+handles, verifies their SHA-256 identities before completing the channel
+promotion, and rolls them back through the same handles on failure. Pilot
+publication does not change this shared stable surface.
+
+The canonical published surface contains exactly 13 managed files: two STABLE
+launchers, the refresh CMD/PowerShell pair, one trusted-key document, and four
+legacy stub names in each of `tools\` and the NAS root. Eleven of those files
+are the complete CMD allowlist; no other CMD entry point is permitted. Do not
+manually delete the legacy names after publication: they are managed
+compatibility delegates, not frozen updater implementations. O2/O3 closure is
+proved by canonical published-surface readiness, not by ad-hoc file cleanup.
+
+`scripts\check-signed-stable-readiness.ps1 -RequirePublishedSurface` is the
+post-publication gate. It requires every managed file and exact hash, requires
+`tools\config\release-trusted-keys.json` to match the verified publisher input
+(and the pinned production key identity), and rejects unmanaged `.cmd` entry
+points. Do not use this mode against the source CD root; ordinary source-release
+readiness remains CMD-free and validates the signed payload before publication.
+The same gate is enabled automatically when `-ReleaseRoot` resolves to the
+canonical production `revAgent-deploy` root, so an operator cannot accidentally
+omit the published-surface check there. `-RequirePublishedSurface` remains the
+explicit form for disposable fixtures and noncanonical audit copies.
 
 After NAS root migration, the old
 `\\dpe-nas\Dpe-Ortak\Baris Tankut\revit-mcp-deploy` root is not a default
@@ -224,18 +274,35 @@ root already contains the compatibility copy under `tools\dependencies`, it is
 reused only after exact ordinary-file, single-link, hash, size, and signer
 revalidation; a mismatch fails closed without replacing the existing file.
 
-Before the first run on a workstation, a coordinator must prestage the exact
-bootstrap/GUI/verifier files from an independently authenticated merged build.
-The repository-side `scripts\install-revagent-local-bootstrap.ps1` is source
-material, not an elevated entrypoint. Copy its hash-authenticated bytes first to
-the admin-owned canonical prestage path under
-`C:\ProgramData\DPE\revAgent\prestage`, then execute only that protected staged
-copy with the separate SHA-256 evidence document. It installs the protected
-local launcher and records source hashes in `bootstrap-state.json`. NAS code is
-never allowed to bootstrap its own trust.
-Follow `docs/BOOTSTRAP_PRESTAGE.md` exactly: the normal-user producer verifies
-the signed release and emits schema-versioned evidence, while the fresh
-elevated shell only stages and consumes those already verified bytes.
+That OpenJS Authenticode check authenticates a third-party dependency only. The
+revAgent repository/workflow currently has no Windows code-signing
+certificate/service and no Authenticode-signed bootstrap EXE/MSI. Its production
+release signature is detached RS256 JSON metadata and cannot serve as Windows
+code-signing trust for the first elevated hop.
+
+On a clean workstation, a standard user runs only
+`\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater
+STABLE.cmd`. If the protected state is absent or stale, any NAS Refresh path
+that would elevate returns exit 84 before UAC and points to
+`docs/BOOTSTRAP_PRESTAGE.md`; direct `-ElevatedApply` is disabled by the same
+guard. It does not copy release inputs into an elevated bootstrap attempt. Exit
+codes 79, 80, 81, and 82 describe UAC decline, an existing coordinator, timeout,
+and disabled/non-de-elevatable UAC only after a future independent elevation
+anchor re-enables that coordinator path. Current missing-or-stale Refresh does
+not reach those outcomes.
+
+Existing protected-bootstrap operation remains normal only while that
+bootstrap is current and verified: STABLE bypasses Refresh and the protected
+local launcher opens the split-privilege GUI. A stale protected verifier/key
+may not authorize its own replacement. The locked-file verifier and associated
+staging/hash/nonce controls remain defense-in-depth for a future independently
+anchored coordinator; they are not current elevation authorization.
+Self-service bootstrap install/refresh may be re-enabled only when an
+Authenticode-signed bootstrap broker, or an equivalent IT-prestaged verifier
+and pinned key, independently revalidates the detached release signature after
+elevation. Until then, use the supervised manual high-assurance/recovery
+procedure. The repository-side `scripts\install-revagent-local-bootstrap.ps1`
+is source material, never a repo- or NAS-side elevated entrypoint.
 
 After prestage, close Revit and run:
 
@@ -257,8 +324,8 @@ runs the user phase without elevation. The elevated phase never executes
 `%LOCALAPPDATA%`, `%APPDATA%`, npm shims, or another user-writable executable,
 and it never writes Codex user configuration or skills.
 
-First-install and legacy bootstrap code must come from the protected local
-bootstrap root. The root includes both
+After trust is established, first-install and legacy bootstrap code runs only
+from the protected local bootstrap root. The root includes both
 `lib\RevAgent.SourceFreeMigration.psm1` and its required authenticated sibling
 `lib\RevAgent.Permissions.psm1`; their separate state hashes must match the
 current `installerLibSourceFreeMigration` and `installerLibPermissions` signed
@@ -267,9 +334,11 @@ canonical release set into an administrator-protected local snapshot,
 re-attests the signed channel/manifest and every pre-import component there,
 and only then launches the local GUI. If the local bootstrap/GUI/verifiers or
 either protected migration dependency do not match the current signed
-manifest, `bootstrap_refresh_required` fails closed until another authenticated
-administrator prestage. Do not elevate a copied desktop script body, NAS GUI,
-or local user-writable updater. After installation, machine code, package,
+manifest, the current managed Refresh path returns exit 84 before UAC and fails
+closed to supervised administrator prestage/refresh. A future independently
+authenticated broker may re-enable that path. Do not elevate a copied desktop
+script body, NAS GUI, or local user-writable updater. After installation,
+machine code, package,
 runtime, updater libraries/config, Revit payload, and machine Codex source are
 administrator-owned and read/execute-only for standard users. User write ACLs
 are limited to updater `logs`, `user-state`, the product data `state` root, and
@@ -289,14 +358,18 @@ standalone launcher instead:
 C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-The standalone STABLE launcher calls only
-`%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1`; the canonical
-`revAgent-deploy` channel is data verified by that local trust anchor. A missing
-or stale bootstrap is a security stop, not permission to fall back to NAS code.
+The NAS STABLE launcher delegates to
+`%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1` only when the
+protected bootstrap is current and verified; the canonical `revAgent-deploy`
+channel remains data rather than executable trust. A missing or stale bootstrap
+enters Refresh, stops with exit 84 before UAC, and requires supervised manual
+prestage/refresh. Direct `-ElevatedApply` is likewise disabled. No path permits
+elevating a loose NAS GUI/script.
 
-Production NAS `tools` publishes no `.cmd` launchers. The clickable CMD exists
-only inside the signed ZIP/component set and in the protected local prestage;
-use that protected local launcher.
+Production NAS `tools` publishes the exact managed CMD allowlist described in
+the NAS Layout section. After a current, verified bootstrap is installed,
+prefer the protected local launcher for desktop shortcuts and ordinary repeat
+use.
 
 The updater uses the standard machine-wide root:
 
@@ -360,7 +433,8 @@ audit also classifies each machine's latest `paths.channelManifestPath` as
 canonical, legacy, or unknown. The default production publish and STABLE
 launcher no longer target `revit-mcp-deploy`; use the audit evidence before any
 physical old-root cleanup or freeze.
-The NAS `tools` copy is transport/reference material, not an execution source.
+The NAS `tools` copy is transport/reference material and a bounded non-elevated
+coordinator surface, not an elevated execution or trust root.
 Run `scripts\test-commandset-live.ps1` from a clean repository checkout or an
 independently protected local coordinator copy, with `-ReleaseRoot`, to write
 `reports\rollout\live-smoke-latest.json`.

@@ -23,10 +23,15 @@ param(
     [switch]$OutputJson,
     [ValidateSet("releaseRoot", "activeRelease")]
     [string]$ArtifactScanScope = "releaseRoot",
+    [switch]$RequirePublishedSurface,
+    [Parameter(DontShow = $true)]
+    [switch]$SkipPublishedSurface,
     [Parameter(DontShow = $true)]
     [switch]$AllowTestSigningIdentity,
     [Parameter(DontShow = $true)]
     [switch]$AllowLegacyMissingNodeMsi,
+    [Parameter(DontShow = $true)]
+    [scriptblock]$ManagedPublishedLeafAfterOpenTestHook = $null,
     [string]$RepoRoot = ""
 )
 
@@ -48,15 +53,399 @@ if ($null -eq $publicKeyFingerprintCommand) {
 
 $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
 $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
+$canonicalProductionReleaseRoot = [System.IO.Path]::GetFullPath('\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy').TrimEnd('\', '/')
 $nodeMsiRelativePath = 'external\node-v24.14.1-x64.msi'
 $nodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
 $nodeMsiSizeBytes = [long]32387072
 $nodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
+$managedPublishedLeafMaxBytes = [long](4 * 1024 * 1024)
+if ($null -ne $ManagedPublishedLeafAfterOpenTestHook -and -not $AllowTestSigningIdentity) {
+    throw 'ManagedPublishedLeafAfterOpenTestHook is limited to disposable test-signing roots.'
+}
+
+if (-not ('RevAgent.ReadinessManagedLeafGuard' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.ComponentModel;
+using System.IO;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
+using Microsoft.Win32.SafeHandles;
+
+namespace RevAgent
+{
+    public sealed class ReadinessManagedLeafRead
+    {
+        public byte[] Bytes { get; private set; }
+        public string Sha256 { get; private set; }
+        public string Identity { get; private set; }
+        public uint LinkCount { get; private set; }
+        public long Length { get; private set; }
+
+        internal ReadinessManagedLeafRead(byte[] bytes, string sha256, string identity, uint linkCount, long length)
+        {
+            Bytes = bytes;
+            Sha256 = sha256;
+            Identity = identity;
+            LinkCount = linkCount;
+            Length = length;
+        }
+    }
+
+    public sealed class ReadinessManagedLeafGuard : IDisposable
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FILETIME
+        {
+            public uint LowDateTime;
+            public uint HighDateTime;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct BY_HANDLE_FILE_INFORMATION
+        {
+            public uint FileAttributes;
+            public FILETIME CreationTime;
+            public FILETIME LastAccessTime;
+            public FILETIME LastWriteTime;
+            public uint VolumeSerialNumber;
+            public uint FileSizeHigh;
+            public uint FileSizeLow;
+            public uint NumberOfLinks;
+            public uint FileIndexHigh;
+            public uint FileIndexLow;
+        }
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        private static extern SafeFileHandle CreateFileW(
+            string fileName,
+            uint desiredAccess,
+            uint shareMode,
+            IntPtr securityAttributes,
+            uint creationDisposition,
+            uint flagsAndAttributes,
+            IntPtr templateFile);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle file,
+            out BY_HANDLE_FILE_INFORMATION information);
+
+        private const uint FILE_READ_ATTRIBUTES = 0x00000080;
+        private const uint GENERIC_READ = 0x80000000;
+        private const uint FILE_SHARE_READ = 0x00000001;
+        private const uint FILE_SHARE_WRITE = 0x00000002;
+        private const uint OPEN_EXISTING = 3;
+        private const uint FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+        private const uint FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+        private const uint FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000;
+        private const uint FILE_FLAG_BACKUP_SEMANTICS = 0x02000000;
+        private const uint FILE_FLAG_SEQUENTIAL_SCAN = 0x08000000;
+
+        private readonly List<SafeFileHandle> directoryHandles;
+        private readonly FileStream stream;
+        private readonly string fullPath;
+        private readonly string identity;
+        private readonly long length;
+        private bool disposed;
+
+        public string FullPath { get { return fullPath; } }
+        public string Identity { get { return identity; } }
+        public long Length { get { return length; } }
+
+        private ReadinessManagedLeafGuard(List<SafeFileHandle> directoryHandles, FileStream stream, string fullPath, string identity, long length)
+        {
+            this.directoryHandles = directoryHandles;
+            this.stream = stream;
+            this.fullPath = fullPath;
+            this.identity = identity;
+            this.length = length;
+        }
+
+        private static SafeFileHandle OpenExact(string path, uint access, uint share, uint flags, string kind)
+        {
+            SafeFileHandle handle = CreateFileW(path, access, share, IntPtr.Zero, OPEN_EXISTING, flags, IntPtr.Zero);
+            if (handle == null || handle.IsInvalid)
+            {
+                int error = Marshal.GetLastWin32Error();
+                if (handle != null) handle.Dispose();
+                throw new Win32Exception(error, "Could not open exact managed published " + kind + ": " + path);
+            }
+            return handle;
+        }
+
+        private static BY_HANDLE_FILE_INFORMATION ReadInformation(SafeFileHandle handle)
+        {
+            if (handle == null || handle.IsInvalid) throw new ArgumentException("A valid managed published-surface handle is required.", "handle");
+            BY_HANDLE_FILE_INFORMATION information;
+            if (!GetFileInformationByHandle(handle, out information)) throw new Win32Exception(Marshal.GetLastWin32Error());
+            return information;
+        }
+
+        private static string FormatIdentity(BY_HANDLE_FILE_INFORMATION information)
+        {
+            return String.Format("{0:X8}:{1:X8}{2:X8}", information.VolumeSerialNumber, information.FileIndexHigh, information.FileIndexLow);
+        }
+
+        private static long GetLength(BY_HANDLE_FILE_INFORMATION information)
+        {
+            return ((long)information.FileSizeHigh << 32) | (long)information.FileSizeLow;
+        }
+
+        private static void AssertDirectory(string path, SafeFileHandle handle)
+        {
+            BY_HANDLE_FILE_INFORMATION information = ReadInformation(handle);
+            if ((information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                throw new InvalidDataException("managed_leaf_reparse_path: " + path);
+            if ((information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+                throw new InvalidDataException("managed_leaf_non_directory_ancestor: " + path);
+        }
+
+        private static void AssertOrdinarySingleLinkLeaf(string path, BY_HANDLE_FILE_INFORMATION information)
+        {
+            if ((information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+                throw new InvalidDataException("managed_leaf_reparse_path: " + path);
+            if ((information.FileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
+                throw new InvalidDataException("managed_leaf_not_file: " + path);
+            if (information.NumberOfLinks != 1)
+                throw new InvalidDataException("managed_leaf_hardlink: path=" + path + " linkCount=" + information.NumberOfLinks);
+        }
+
+        public static ReadinessManagedLeafGuard Open(string releaseRoot, string relativePath, long maxBytes)
+        {
+            if (String.IsNullOrWhiteSpace(releaseRoot)) throw new ArgumentException("Release root is required.", "releaseRoot");
+            if (String.IsNullOrWhiteSpace(relativePath) || Path.IsPathRooted(relativePath)) throw new ArgumentException("A non-rooted managed relative path is required.", "relativePath");
+            if (maxBytes < 1 || maxBytes > Int32.MaxValue) throw new ArgumentOutOfRangeException("maxBytes");
+
+            string fullRoot = Path.GetFullPath(releaseRoot);
+            string rootPath = Path.GetPathRoot(fullRoot);
+            while (fullRoot.Length > rootPath.Length && (fullRoot.EndsWith("\\", StringComparison.Ordinal) || fullRoot.EndsWith("/", StringComparison.Ordinal)))
+                fullRoot = fullRoot.Substring(0, fullRoot.Length - 1);
+            string[] parts = relativePath.Split(new char[] { '\\', '/' }, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length == 0) throw new ArgumentException("Managed relative path has no leaf.", "relativePath");
+            foreach (string part in parts)
+            {
+                if (part == "." || part == "..") throw new InvalidDataException("managed_leaf_path_escape: " + relativePath);
+            }
+            string fullPath = Path.GetFullPath(Path.Combine(fullRoot, relativePath));
+            string prefix = fullRoot + Path.DirectorySeparatorChar;
+            if (!fullPath.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException("managed_leaf_path_escape: " + relativePath);
+
+            List<SafeFileHandle> directoryHandles = new List<SafeFileHandle>();
+            FileStream stream = null;
+            try
+            {
+                string cursor = fullRoot;
+                SafeFileHandle rootHandle = OpenExact(cursor, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, "root");
+                directoryHandles.Add(rootHandle);
+                AssertDirectory(cursor, rootHandle);
+                for (int index = 0; index < parts.Length - 1; index++)
+                {
+                    cursor = Path.Combine(cursor, parts[index]);
+                    SafeFileHandle directoryHandle = OpenExact(cursor, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE, FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT, "directory");
+                    directoryHandles.Add(directoryHandle);
+                    AssertDirectory(cursor, directoryHandle);
+                }
+
+                SafeFileHandle leafHandle = OpenExact(fullPath, GENERIC_READ, FILE_SHARE_READ, FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN, "leaf");
+                BY_HANDLE_FILE_INFORMATION leafInformation;
+                try
+                {
+                    leafInformation = ReadInformation(leafHandle);
+                    AssertOrdinarySingleLinkLeaf(fullPath, leafInformation);
+                    long leafLength = GetLength(leafInformation);
+                    if (leafLength < 0 || leafLength > maxBytes)
+                        throw new InvalidDataException("managed_leaf_size_out_of_bounds: path=" + fullPath + " size=" + leafLength + " maxBytes=" + maxBytes);
+                    stream = new FileStream(leafHandle, FileAccess.Read, 65536, false);
+                    leafHandle = null;
+                    ReadinessManagedLeafGuard guard = new ReadinessManagedLeafGuard(directoryHandles, stream, fullPath, FormatIdentity(leafInformation), leafLength);
+                    guard.AssertStillNamed();
+                    directoryHandles = null;
+                    stream = null;
+                    return guard;
+                }
+                finally
+                {
+                    if (leafHandle != null) leafHandle.Dispose();
+                }
+            }
+            catch
+            {
+                if (stream != null) stream.Dispose();
+                if (directoryHandles != null)
+                {
+                    for (int index = directoryHandles.Count - 1; index >= 0; index--) directoryHandles[index].Dispose();
+                }
+                throw;
+            }
+        }
+
+        private void AssertStillNamed()
+        {
+            BY_HANDLE_FILE_INFORMATION heldInformation = ReadInformation(stream.SafeFileHandle);
+            AssertOrdinarySingleLinkLeaf(fullPath, heldInformation);
+            if (!String.Equals(FormatIdentity(heldInformation), identity, StringComparison.Ordinal) || GetLength(heldInformation) != length)
+                throw new InvalidDataException("managed_leaf_identity_mismatch: " + fullPath);
+
+            using (SafeFileHandle pathHandle = OpenExact(fullPath, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_FLAG_OPEN_REPARSE_POINT, "identity check"))
+            {
+                BY_HANDLE_FILE_INFORMATION pathInformation = ReadInformation(pathHandle);
+                AssertOrdinarySingleLinkLeaf(fullPath, pathInformation);
+                if (!String.Equals(FormatIdentity(pathInformation), identity, StringComparison.Ordinal) || GetLength(pathInformation) != length)
+                    throw new InvalidDataException("managed_leaf_identity_mismatch: " + fullPath);
+            }
+        }
+
+        public ReadinessManagedLeafRead ReadBounded()
+        {
+            if (disposed) throw new ObjectDisposedException("ReadinessManagedLeafGuard");
+            AssertStillNamed();
+            if (stream.Length != length) throw new InvalidDataException("managed_leaf_identity_mismatch: " + fullPath);
+            stream.Position = 0;
+            byte[] bytes = new byte[(int)length];
+            int offset = 0;
+            while (offset < bytes.Length)
+            {
+                int read = stream.Read(bytes, offset, bytes.Length - offset);
+                if (read <= 0) throw new EndOfStreamException("managed_leaf_unexpected_end: " + fullPath);
+                offset += read;
+            }
+            if (stream.ReadByte() != -1) throw new InvalidDataException("managed_leaf_grew_during_read: " + fullPath);
+            AssertStillNamed();
+            using (SHA256 algorithm = SHA256.Create())
+            {
+                string sha256 = BitConverter.ToString(algorithm.ComputeHash(bytes)).Replace("-", "");
+                return new ReadinessManagedLeafRead(bytes, sha256, identity, 1, length);
+            }
+        }
+
+        public void Dispose()
+        {
+            if (disposed) return;
+            disposed = true;
+            stream.Dispose();
+            for (int index = directoryHandles.Count - 1; index >= 0; index--) directoryHandles[index].Dispose();
+        }
+    }
+}
+'@
+}
 
 function Read-RevAgentJsonFile {
     param([Parameter(Mandatory = $true)][string]$Path)
 
     return Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+}
+
+function ConvertFrom-RevAgentJsonBytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $strictUtf8 = New-Object System.Text.UTF8Encoding($false, $true)
+    $offset = if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { 3 } else { 0 }
+    return $strictUtf8.GetString($Bytes, $offset, $Bytes.Length - $offset) | ConvertFrom-Json
+}
+
+function Read-RevAgentManagedPublishedLeaf {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [Parameter(Mandatory = $true)][long]$MaxBytes
+    )
+
+    $fullPath = [IO.Path]::GetFullPath((Join-Path $ReleaseRoot $RelativePath))
+    $guard = $null
+    try {
+        $guard = [RevAgent.ReadinessManagedLeafGuard]::Open($ReleaseRoot, $RelativePath, $MaxBytes)
+        if ($null -ne $ManagedPublishedLeafAfterOpenTestHook) {
+            & $ManagedPublishedLeafAfterOpenTestHook $fullPath $RelativePath
+        }
+        $read = $guard.ReadBounded()
+        return [pscustomobject][ordered]@{
+            path = $fullPath
+            present = $true
+            safe = $true
+            reason = ''
+            error = ''
+            bytes = [byte[]]$read.Bytes
+            sha256 = [string]$read.Sha256
+            identity = [string]$read.Identity
+            linkCount = [uint32]$read.LinkCount
+            length = [long]$read.Length
+            maxBytes = [long]$MaxBytes
+        }
+    }
+    catch {
+        $message = [string]$_.Exception.Message
+        $present = [IO.File]::Exists($fullPath)
+        $observedLinkCount = if ($message -match 'managed_leaf_hardlink:.*linkCount=([0-9]+)') { [uint32]$Matches[1] } else { [uint32]0 }
+        $reason = if (-not $present) {
+            'published_surface_file_missing'
+        }
+        elseif ($message -match 'managed_leaf_reparse_path') {
+            'published_surface_reparse_path'
+        }
+        elseif ($message -match 'managed_leaf_hardlink') {
+            'published_surface_hardlink'
+        }
+        elseif ($message -match 'managed_leaf_identity_mismatch') {
+            'published_surface_identity_mismatch'
+        }
+        elseif ($message -match 'managed_leaf_size_out_of_bounds') {
+            'published_surface_size_out_of_bounds'
+        }
+        else {
+            'published_surface_unsafe_leaf'
+        }
+        return [pscustomobject][ordered]@{
+            path = $fullPath
+            present = [bool]$present
+            safe = $false
+            reason = $reason
+            error = $message
+            bytes = $null
+            sha256 = ''
+            identity = ''
+            linkCount = $observedLinkCount
+            length = [long]0
+            maxBytes = [long]$MaxBytes
+        }
+    }
+    finally {
+        if ($null -ne $guard) { $guard.Dispose() }
+    }
+}
+
+function Get-RevAgentBytesSha256 {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $algorithm = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($algorithm.ComputeHash($Bytes))).Replace('-', '') }
+    finally { $algorithm.Dispose() }
+}
+
+function Get-RevAgentPublishedStableLauncherBytes {
+    param([Parameter(Mandatory = $true)][string]$PublishedReleaseRoot)
+
+    $releaseRootFullPath = [IO.Path]::GetFullPath($PublishedReleaseRoot).TrimEnd('\', '/')
+    if ($releaseRootFullPath -match '[\r\n"]') {
+        throw 'Published stable launcher release root contains unsupported command-file characters.'
+    }
+    $templatePath = Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd'
+    if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+        throw "Published stable launcher template was not found: $templatePath"
+    }
+    $templateBytes = [IO.File]::ReadAllBytes($templatePath)
+    $templateText = [Text.Encoding]::ASCII.GetString($templateBytes)
+    if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$templateBytes, [byte[]][Text.Encoding]::ASCII.GetBytes($templateText))) {
+        throw 'Published stable launcher template must contain ASCII bytes only.'
+    }
+    $canonicalRootLine = 'set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"'
+    if ([regex]::Matches($templateText, [regex]::Escape($canonicalRootLine)).Count -ne 1) {
+        throw 'Published stable launcher template must contain exactly one canonical RELEASE_ROOT assignment.'
+    }
+    return [Text.Encoding]::ASCII.GetBytes($templateText.Replace($canonicalRootLine, ('set "RELEASE_ROOT={0}"' -f $releaseRootFullPath)))
 }
 
 function Resolve-RevAgentReleasePath {
@@ -336,6 +725,15 @@ if ([string]::IsNullOrWhiteSpace($ReleaseRoot)) {
 }
 $ReleaseRoot = [System.IO.Path]::GetFullPath($ReleaseRoot)
 
+if ($RequirePublishedSurface -and $SkipPublishedSurface) {
+    throw 'RequirePublishedSurface and SkipPublishedSurface are mutually exclusive.'
+}
+if ($SkipPublishedSurface -and -not $AllowLegacyMissingNodeMsi) {
+    throw 'SkipPublishedSurface is limited to the authenticated existing-channel baseline repair path.'
+}
+$canonicalPublishedSurface = [string]::Equals($ReleaseRoot.TrimEnd('\', '/'), $canonicalProductionReleaseRoot, [StringComparison]::OrdinalIgnoreCase)
+$publishedSurfaceRequired = [bool]$RequirePublishedSurface -or ($canonicalPublishedSurface -and -not $SkipPublishedSurface)
+
 if ($AllowTestSigningIdentity) {
     $temporaryRootPrefix = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd("\", "/") + [System.IO.Path]::DirectorySeparatorChar
     if ($ReleaseRoot.StartsWith("\\", [System.StringComparison]::Ordinal) -or
@@ -394,6 +792,154 @@ if ($AllowTestSigningIdentity) {
     }
     if ($productionIdentityPresent) {
         throw 'AllowTestSigningIdentity cannot be used with the production signing identity.'
+    }
+}
+
+$publishedSurfaceEvidence = [pscustomobject][ordered]@{
+    required = [bool]$publishedSurfaceRequired
+    mode = if ($RequirePublishedSurface) { 'required-explicit' } elseif ($canonicalPublishedSurface -and -not $SkipPublishedSurface) { 'required-canonical-production' } elseif ($SkipPublishedSurface) { 'skipped-internal-baseline-repair' } else { 'not-required' }
+    success = $true
+    managedFiles = @()
+    unexpectedCommandFiles = @()
+    trustedKeys = $null
+}
+if ($publishedSurfaceRequired) {
+    $repoNasRoot = Join-Path $RepoRoot 'installer\nas'
+    $expectedPublishedFiles = [Collections.Generic.List[object]]::new()
+    $stableLauncherBytes = Get-RevAgentPublishedStableLauncherBytes -PublishedReleaseRoot $ReleaseRoot
+    foreach ($launcherName in @('revAgent Updater STABLE.cmd', 'Revit MCP Updater STABLE.cmd')) {
+        $expectedPublishedFiles.Add([pscustomobject]@{
+                relativePath = (Join-Path 'tools' $launcherName)
+                expectedBytes = $stableLauncherBytes
+                source = 'stable-launcher-template'
+            }) | Out-Null
+    }
+    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1')) {
+        $sourcePath = Join-Path $repoNasRoot $toolName
+        $expectedPublishedFiles.Add([pscustomobject]@{
+                relativePath = (Join-Path 'tools' $toolName)
+                expectedBytes = [IO.File]::ReadAllBytes($sourcePath)
+                source = $sourcePath
+            }) | Out-Null
+    }
+    $publishedTrustedKeysRelativePath = 'tools\config\release-trusted-keys.json'
+    $expectedPublishedFiles.Add([pscustomobject]@{
+            relativePath = $publishedTrustedKeysRelativePath
+            expectedBytes = [IO.File]::ReadAllBytes($TrustedKeysPath)
+            source = $TrustedKeysPath
+        }) | Out-Null
+    $legacyLauncherNames = @(
+        'Install-revAgent-Updater-GUI.cmd',
+        'Install-Revit-MCP-Updater-GUI.cmd',
+        'Install-revAgent-Updater.cmd',
+        'Install-Revit-MCP-Updater.cmd'
+    )
+    foreach ($legacyLauncherName in $legacyLauncherNames) {
+        $sourcePath = Join-Path $repoNasRoot $legacyLauncherName
+        $sourceBytes = [IO.File]::ReadAllBytes($sourcePath)
+        foreach ($relativePath in @((Join-Path 'tools' $legacyLauncherName), $legacyLauncherName)) {
+            $expectedPublishedFiles.Add([pscustomobject]@{
+                    relativePath = $relativePath
+                    expectedBytes = $sourceBytes
+                    source = $sourcePath
+                }) | Out-Null
+        }
+    }
+
+    $managedFileEvidence = [Collections.Generic.List[object]]::new()
+    $managedLeafReads = [Collections.Generic.Dictionary[string, object]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($expectedFile in $expectedPublishedFiles.ToArray()) {
+        $relativePath = [string]$expectedFile.relativePath
+        $publishedPath = [IO.Path]::GetFullPath((Join-Path $ReleaseRoot $relativePath))
+        $expectedSha256 = Get-RevAgentBytesSha256 -Bytes ([byte[]]$expectedFile.expectedBytes)
+        $leafRead = Read-RevAgentManagedPublishedLeaf -ReleaseRoot $ReleaseRoot -RelativePath $relativePath -MaxBytes $managedPublishedLeafMaxBytes
+        $managedLeafReads[$relativePath] = $leafRead
+        $present = [bool]$leafRead.present
+        $pathSafe = [bool]$leafRead.safe
+        $actualSha256 = [string]$leafRead.sha256
+        $hashMatches = $pathSafe -and [string]::Equals($actualSha256, $expectedSha256, [StringComparison]::OrdinalIgnoreCase)
+        $checkSlug = (($relativePath -replace '[^A-Za-z0-9]+', '_').Trim('_')).ToLowerInvariant()
+        Add-RevAgentReadinessCheck -Checks $checks -Name ("published_surface_{0}_present" -f $checkSlug) -Success $present -Reason $(if ($present) { '' } else { 'published_surface_file_missing' }) -Message "Exact managed published-surface file must exist." -Path $publishedPath
+        Add-RevAgentReadinessCheck -Checks $checks -Name ("published_surface_{0}_safe_leaf" -f $checkSlug) -Success $pathSafe -Reason $(if ($pathSafe) { '' } else { [string]$leafRead.reason }) -Message "Exact managed published-surface file must be a bounded ordinary single-link leaf reached through a no-reparse held-handle path." -Path $publishedPath
+        Add-RevAgentReadinessCheck -Checks $checks -Name ("published_surface_{0}_sha256" -f $checkSlug) -Success $hashMatches -Reason $(if ($hashMatches) { '' } elseif (-not $pathSafe) { [string]$leafRead.reason } elseif ($present) { 'published_surface_hash_mismatch' } else { 'published_surface_file_missing' }) -Message "Exact managed published-surface file must match its verified publisher source." -Path $publishedPath
+        $managedFileEvidence.Add([pscustomobject][ordered]@{
+                relativePath = $relativePath
+                path = $publishedPath
+                source = [string]$expectedFile.source
+                present = [bool]$present
+                safe = [bool]$pathSafe
+                reason = [string]$leafRead.reason
+                error = [string]$leafRead.error
+                identity = [string]$leafRead.identity
+                linkCount = [uint32]$leafRead.linkCount
+                length = [long]$leafRead.length
+                maxBytes = [long]$leafRead.maxBytes
+                expectedSha256 = $expectedSha256
+                actualSha256 = $actualSha256
+                sha256Matches = [bool]$hashMatches
+            }) | Out-Null
+    }
+
+    $releaseRootPrefix = $ReleaseRoot.TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
+    $actualCommandRelativePaths = [Collections.Generic.List[string]]::new()
+    foreach ($commandFile in @(Get-ChildItem -LiteralPath $ReleaseRoot -File -Filter '*.cmd' -ErrorAction SilentlyContinue)) {
+        $actualCommandRelativePaths.Add($commandFile.FullName.Substring($releaseRootPrefix.Length)) | Out-Null
+    }
+    $publishedToolsRoot = Join-Path $ReleaseRoot 'tools'
+    if (Test-Path -LiteralPath $publishedToolsRoot -PathType Container) {
+        foreach ($commandFile in @(Get-ChildItem -LiteralPath $publishedToolsRoot -Recurse -File -Filter '*.cmd' -ErrorAction SilentlyContinue)) {
+            $actualCommandRelativePaths.Add($commandFile.FullName.Substring($releaseRootPrefix.Length)) | Out-Null
+        }
+    }
+    $expectedCommandRelativePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($expectedFile in $expectedPublishedFiles.ToArray()) {
+        if ([string]::Equals([IO.Path]::GetExtension([string]$expectedFile.relativePath), '.cmd', [StringComparison]::OrdinalIgnoreCase)) {
+            [void]$expectedCommandRelativePaths.Add([string]$expectedFile.relativePath)
+        }
+    }
+    $unexpectedCommandFiles = @($actualCommandRelativePaths.ToArray() | Where-Object { -not $expectedCommandRelativePaths.Contains([string]$_) } | Sort-Object -Unique)
+    Add-RevAgentReadinessCheck -Checks $checks -Name 'published_surface_no_unmanaged_cmd_entry_points' -Success ($unexpectedCommandFiles.Count -eq 0) -Reason $(if ($unexpectedCommandFiles.Count -eq 0) { '' } else { 'unmanaged_cmd_entry_point' }) -Message 'Published stable surface may expose only the exact managed CMD entry-point list.' -Path $ReleaseRoot
+
+    $publishedTrustedKeysEvidence = @($managedFileEvidence.ToArray() | Where-Object { [string]::Equals([string]$_.relativePath, $publishedTrustedKeysRelativePath, [StringComparison]::OrdinalIgnoreCase) })[0]
+    $publishedKeyIdentityOk = $false
+    $publishedKeyIdentityError = ''
+    if ($null -ne $publishedTrustedKeysEvidence -and [bool]$publishedTrustedKeysEvidence.safe) {
+        try {
+            $publishedTrustedKeysRead = $managedLeafReads[$publishedTrustedKeysRelativePath]
+            $publishedKeyDocument = ConvertFrom-RevAgentJsonBytes -Bytes ([byte[]]$publishedTrustedKeysRead.bytes)
+            $publishedKeyProperty = $publishedKeyDocument.PSObject.Properties['trustedKeys']
+            $publishedKeyValues = if ($publishedKeyProperty) { $publishedKeyProperty.Value } else { $publishedKeyDocument }
+            $publishedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $publishedKeyValues
+            if ($AllowTestSigningIdentity) {
+                $publishedKeyIdentityOk = [bool]$publishedTrustedKeysEvidence.sha256Matches -and $publishedKeyMap.Count -eq $trustedKeyMap.Count -and $publishedKeyMap.Count -gt 0
+            }
+            else {
+                $publishedProperties = @($publishedKeyDocument.trustedKeys.PSObject.Properties)
+                if ($publishedProperties.Count -eq 1 -and [string]::Equals([string]$publishedProperties[0].Name, $productionSigningKeyId, [StringComparison]::Ordinal)) {
+                    $publishedKey = $publishedProperties[0].Value
+                    $computedFingerprint = & $publicKeyFingerprintCommand -PublicKeyXml ([string]$publishedKey.publicKeyXml)
+                    $publishedKeyIdentityOk = [string]::Equals([string]$publishedKey.algorithm, 'RS256', [StringComparison]::Ordinal) -and
+                        [string]::Equals([string]$publishedKey.publicKeyFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -and
+                        [string]::Equals([string]$computedFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)
+                }
+            }
+        }
+        catch { $publishedKeyIdentityError = $_.Exception.Message }
+    }
+    Add-RevAgentReadinessCheck -Checks $checks -Name 'published_surface_trusted_key_identity' -Success $publishedKeyIdentityOk -Reason $(if ($publishedKeyIdentityOk) { '' } else { 'published_trusted_key_identity_invalid' }) -Message $(if ($AllowTestSigningIdentity) { 'Published test trusted keys must exactly match the verified disposable fixture document.' } else { "Published trusted keys must contain exactly the pinned '$productionSigningKeyId' production identity and fingerprint." }) -Path (Join-Path $ReleaseRoot $publishedTrustedKeysRelativePath)
+
+    $publishedSurfaceEvidence = [pscustomobject][ordered]@{
+        required = $true
+        success = $false
+        managedFiles = @($managedFileEvidence.ToArray())
+        unexpectedCommandFiles = @($unexpectedCommandFiles)
+        trustedKeys = [pscustomobject][ordered]@{
+            path = Join-Path $ReleaseRoot $publishedTrustedKeysRelativePath
+            keyId = if ($AllowTestSigningIdentity) { '' } else { $productionSigningKeyId }
+            fingerprint = if ($AllowTestSigningIdentity) { '' } else { $productionSigningFingerprint }
+            identityValid = [bool]$publishedKeyIdentityOk
+            error = $publishedKeyIdentityError
+        }
     }
 }
 
@@ -619,6 +1165,8 @@ $artifactCheckPath = if ($artifactScanPaths.Count -gt 0) { ($artifactScanPaths -
 Add-RevAgentReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $artifactCheckPath
 
 $failedChecks = @($checks.ToArray() | Where-Object { -not [bool]$_.success })
+$publishedSurfaceFailures = @($failedChecks | Where-Object { [string]$_.name -like 'published_surface_*' })
+$publishedSurfaceEvidence.success = (-not [bool]$publishedSurfaceRequired) -or $publishedSurfaceFailures.Count -eq 0
 $ready = $failedChecks.Count -eq 0
 $report = [pscustomobject][ordered]@{
     success = $ready
@@ -636,6 +1184,7 @@ $report = [pscustomobject][ordered]@{
     nodeMsi = $nodeMsiReadiness
     privateMaterialFindings = $privateMaterial
     artifactScanScope = $ArtifactScanScope
+    publishedSurface = $publishedSurfaceEvidence
     artifactScanPaths = @($artifactScanPaths)
     artifactFindings = $artifactFindings
     checks = @($checks.ToArray())

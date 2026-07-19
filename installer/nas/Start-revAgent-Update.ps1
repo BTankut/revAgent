@@ -14,6 +14,13 @@ param(
     [Parameter(DontShow = $true)][scriptblock]$TestBeforeGuiLaunchHook = $null
 )
 
+if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
+    Write-Host "revAgent updater cannot run: PowerShell is in $($ExecutionContext.SessionState.LanguageMode) mode."
+    Write-Host "This is typically caused by Smart App Control or a WDAC/AppLocker policy on this machine."
+    Write-Host "Ask IT to exempt/sign the revAgent deployment scripts or disable Smart App Control, then retry."
+    exit 78
+}
+
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
@@ -32,8 +39,77 @@ function New-RevAgentBootstrapGuiStartInfo {
     $startInfo.Arguments = ($arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " "
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
+    $startInfo.RedirectStandardError = $true
     $startInfo.WorkingDirectory = Split-Path -Parent $powershellPath
     return $startInfo
+}
+
+function New-RevAgentGuiLaunchStderrLogPath {
+    $localAppDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
+    if ([string]::IsNullOrWhiteSpace($localAppDataRoot)) { throw 'Windows LocalApplicationData could not be resolved for GUI launch diagnostics.' }
+    $logDirectory = [IO.Path]::Combine($localAppDataRoot, 'DPE', 'revAgent', 'logs')
+    [void][IO.Directory]::CreateDirectory($logDirectory)
+    $logName = 'gui-launch-stderr-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss-fff') + '-' + [Guid]::NewGuid().ToString('N') + '.log'
+    return [IO.Path]::Combine($logDirectory, $logName)
+}
+
+function Write-RevAgentGuiLaunchFailureLog {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][int]$ExitCode,
+        [AllowEmptyString()][string]$StandardError
+    )
+
+    $content = @(
+        'revAgent GUI launch failure',
+        ('timestampUtc=' + [DateTime]::UtcNow.ToString('o')),
+        ('exitCode=' + [string]$ExitCode),
+        ('languageMode=' + [string]$ExecutionContext.SessionState.LanguageMode),
+        ('psVersion=' + [string]$PSVersionTable.PSVersion),
+        'stderr=',
+        [string]$StandardError
+    )
+    [IO.File]::WriteAllLines($Path, [string[]]$content, [Text.UTF8Encoding]::new($false))
+}
+
+function Show-RevAgentGuiLaunchFailure {
+    param([Parameter(Mandatory = $true)][string]$Message)
+
+    try { [Console]::Error.WriteLine($Message) } catch { }
+    try {
+        [void][Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+        [void][System.Windows.Forms.MessageBox]::Show(
+            $Message,
+            'revAgent startup error',
+            [System.Windows.Forms.MessageBoxButtons]::OK,
+            [System.Windows.Forms.MessageBoxIcon]::Error)
+    }
+    catch { }
+}
+
+function Start-RevAgentBootstrapGuiProcess {
+    param(
+        [Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$StartInfo,
+        [ValidateRange(100, 10000)][int]$StartupWaitMilliseconds = 10000,
+        [switch]$SuppressNotification
+    )
+
+    $guiProcess = [Diagnostics.Process]::Start($StartInfo)
+    if ($null -eq $guiProcess) { throw 'revAgent updater GUI process did not start.' }
+    $stderrReadTask = $guiProcess.StandardError.ReadToEndAsync()
+    if (-not $guiProcess.WaitForExit($StartupWaitMilliseconds)) { return }
+
+    $guiProcess.WaitForExit()
+    $guiExitCode = [int]$guiProcess.ExitCode
+    $guiStandardError = [string]$stderrReadTask.GetAwaiter().GetResult()
+    $guiProcess.Dispose()
+    if ($guiExitCode -eq 0) { return }
+
+    $stderrLogPath = New-RevAgentGuiLaunchStderrLogPath
+    Write-RevAgentGuiLaunchFailureLog -Path $stderrLogPath -ExitCode $guiExitCode -StandardError $guiStandardError
+    $launchFailureMessage = "revAgent updater window exited during startup with code $guiExitCode. Diagnostic log: $stderrLogPath"
+    if (-not $SuppressNotification) { Show-RevAgentGuiLaunchFailure -Message $launchFailureMessage }
+    throw $launchFailureMessage
 }
 
 $systemDirectory = [Environment]::SystemDirectory
@@ -337,5 +413,5 @@ if ($VerificationOnly) { $result; return }
 $guiPath = Join-Path $BootstrapRoot ([string]$state.files.updaterGui.relativePath)
 $psi = New-RevAgentBootstrapGuiStartInfo -GuiPath $guiPath -ChannelPath $ChannelManifestPath -BootstrapStatePath $statePath
 if ($null -ne $TestBeforeGuiLaunchHook) { & $TestBeforeGuiLaunchHook $psi }
-[Diagnostics.Process]::Start($psi) | Out-Null
+Start-RevAgentBootstrapGuiProcess -StartInfo $psi -SuppressNotification:($null -ne $TestBeforeGuiLaunchHook)
 $result

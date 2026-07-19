@@ -17,6 +17,45 @@ param(
 $ErrorActionPreference = "Stop"
 $inheritedPsModulePath = [Environment]::GetEnvironmentVariable("PSModulePath", "Process")
 
+function Resolve-RevAgentTestTrustedArchiveManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$PsHomeModulesRoot,
+        [Parameter(Mandatory = $true)][string[]]$ProgramFilesModuleRoots
+    )
+
+    $searchedPaths = [System.Collections.Generic.List[string]]::new()
+    $psHomeManifest = [IO.Path]::Combine($PsHomeModulesRoot, 'Microsoft.PowerShell.Archive', 'Microsoft.PowerShell.Archive.psd1')
+    [void]$searchedPaths.Add($psHomeManifest)
+    if ([IO.File]::Exists($psHomeManifest)) { return [IO.Path]::GetFullPath($psHomeManifest) }
+
+    foreach ($moduleRoot in @($ProgramFilesModuleRoots | Select-Object -Unique)) {
+        if ([string]::IsNullOrWhiteSpace($moduleRoot)) { continue }
+        $fullModuleRoot = [IO.Path]::GetFullPath($moduleRoot).TrimEnd([IO.Path]::DirectorySeparatorChar)
+        $archiveRoot = [IO.Path]::Combine($fullModuleRoot, 'Microsoft.PowerShell.Archive')
+        $directManifest = [IO.Path]::Combine($archiveRoot, 'Microsoft.PowerShell.Archive.psd1')
+        [void]$searchedPaths.Add($directManifest)
+        if (-not [IO.Directory]::Exists($fullModuleRoot)) { continue }
+        if (([IO.File]::GetAttributes($fullModuleRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell module root is a reparse point: $fullModuleRoot" }
+        if (-not [IO.Directory]::Exists($archiveRoot)) { continue }
+        if (([IO.File]::GetAttributes($archiveRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell Archive module root is a reparse point: $archiveRoot" }
+        if ([IO.File]::Exists($directManifest)) { return $directManifest }
+
+        $versionedManifests = [System.Collections.Generic.List[object]]::new()
+        foreach ($versionDirectory in [IO.Directory]::EnumerateDirectories($archiveRoot)) {
+            if (([IO.File]::GetAttributes($versionDirectory) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw "Trusted PowerShell Archive version directory is a reparse point: $versionDirectory" }
+            $parsedVersion = $null
+            if (-not [version]::TryParse([IO.Path]::GetFileName($versionDirectory), [ref]$parsedVersion)) { continue }
+            $manifest = [IO.Path]::Combine($versionDirectory, 'Microsoft.PowerShell.Archive.psd1')
+            [void]$searchedPaths.Add($manifest)
+            if ([IO.File]::Exists($manifest)) { [void]$versionedManifests.Add([pscustomobject]@{ Version = $parsedVersion; Path = $manifest }) }
+        }
+        $selected = @($versionedManifests | Sort-Object Version -Descending | Select-Object -First 1)
+        if ($selected.Count -eq 1) { return [string]$selected[0].Path }
+    }
+
+    throw "Required built-in PowerShell Archive module manifest was not found. Searched paths: $([string]::Join('; ', $searchedPaths.ToArray()))"
+}
+
 function Initialize-RevAgentTestTrustedPowerShellModules {
     # A self-hosted runner launched from PowerShell 7 can pass its module roots
     # to a later Windows PowerShell 5.1 step. Sanitize before any cmdlet
@@ -25,11 +64,14 @@ function Initialize-RevAgentTestTrustedPowerShellModules {
     $programFiles = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)
     $programFilesX86 = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
     $candidateRoots = [System.Collections.Generic.List[string]]::new()
+    $archiveProgramFilesRoots = [System.Collections.Generic.List[string]]::new()
     [void]$candidateRoots.Add([IO.Path]::Combine($PSHOME, 'Modules'))
     [void]$candidateRoots.Add([IO.Path]::Combine($systemDirectory, 'WindowsPowerShell', 'v1.0', 'Modules'))
     foreach ($programFilesRoot in @($programFiles, $programFilesX86)) {
         if ([string]::IsNullOrWhiteSpace($programFilesRoot)) { continue }
-        [void]$candidateRoots.Add([IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules'))
+        $windowsPowerShellRoot = [IO.Path]::Combine($programFilesRoot, 'WindowsPowerShell', 'Modules')
+        [void]$candidateRoots.Add($windowsPowerShellRoot)
+        [void]$archiveProgramFilesRoots.Add($windowsPowerShellRoot)
         [void]$candidateRoots.Add([IO.Path]::Combine($programFilesRoot, 'PowerShell', 'Modules'))
     }
 
@@ -46,11 +88,13 @@ function Initialize-RevAgentTestTrustedPowerShellModules {
     if ($trustedRoots.Count -eq 0) { throw 'No canonical administrator-owned PowerShell module root was found.' }
     $env:PSModulePath = [string]::Join([IO.Path]::PathSeparator, $trustedRoots.ToArray())
 
-    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'Microsoft.PowerShell.Archive', 'CimCmdlets')) {
+    foreach ($moduleName in @('Microsoft.PowerShell.Management', 'Microsoft.PowerShell.Utility', 'Microsoft.PowerShell.Security', 'CimCmdlets')) {
         $manifestPath = [IO.Path]::Combine($PSHOME, 'Modules', $moduleName, ($moduleName + '.psd1'))
         if (-not [IO.File]::Exists($manifestPath)) { throw "Required built-in PowerShell module manifest was not found: $manifestPath" }
         Microsoft.PowerShell.Core\Import-Module -Name $manifestPath -Force -ErrorAction Stop
     }
+    $archiveManifestPath = Resolve-RevAgentTestTrustedArchiveManifest -PsHomeModulesRoot ([IO.Path]::Combine($PSHOME, 'Modules')) -ProgramFilesModuleRoots $archiveProgramFilesRoots.ToArray()
+    Microsoft.PowerShell.Core\Import-Module -Name $archiveManifestPath -Force -ErrorAction Stop
     return $env:PSModulePath
 }
 
@@ -1331,7 +1375,12 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
         [pscustomobject]@{ Name = "Codex user integration"; Path = (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-CodexUserIntegration.ps1"); Extra = @() }
     )
     $expectedSecurityManifest = [IO.Path]::Combine($PSHOME, "Modules", "Microsoft.PowerShell.Security", "Microsoft.PowerShell.Security.psd1")
-    $expectedArchiveManifest = [IO.Path]::Combine($PSHOME, "Modules", "Microsoft.PowerShell.Archive", "Microsoft.PowerShell.Archive.psd1")
+    $archiveProgramFilesRoots = @(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86)
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | ForEach-Object { [IO.Path]::Combine($_, 'WindowsPowerShell', 'Modules') }
+    $expectedArchiveManifest = Resolve-RevAgentTestTrustedArchiveManifest -PsHomeModulesRoot ([IO.Path]::Combine($PSHOME, 'Modules')) -ProgramFilesModuleRoots $archiveProgramFilesRoots
+    $allowedArchiveModuleRoots = @((@([IO.Path]::Combine($PSHOME, 'Modules')) + @($archiveProgramFilesRoots)) | ForEach-Object { [IO.Path]::GetFullPath($_).TrimEnd('\') + '\' })
     foreach ($case in $modulePathCases) {
         $arguments = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", $case.Path, "-ModulePathSecuritySmokeTest") + @($case.Extra)
         $output = @(& $hostExecutable @arguments 2>&1 | ForEach-Object { [string]$_ })
@@ -1342,8 +1391,48 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
         Assert-True ([bool]$probe.success) "$($case.Name) module-path security probe did not succeed."
         Assert-True (([string]$probe.psModulePath).IndexOf($poisonModuleRoot, [StringComparison]::OrdinalIgnoreCase) -lt 0) "$($case.Name) retained the user-writable poison module root."
         Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$probe.getAclModulePath), [IO.Path]::GetFullPath($expectedSecurityManifest), [StringComparison]::OrdinalIgnoreCase)) "$($case.Name) did not bind Get-Acl to the exact PSHOME manifest."
-        Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$probe.expandArchiveModulePath), [IO.Path]::GetFullPath($expectedArchiveManifest), [StringComparison]::OrdinalIgnoreCase)) "$($case.Name) did not bind Expand-Archive to the exact PSHOME manifest."
+        $actualArchiveManifest = [IO.Path]::GetFullPath([string]$probe.expandArchiveModulePath)
+        Assert-True ([string]::Equals($actualArchiveManifest, [IO.Path]::GetFullPath($expectedArchiveManifest), [StringComparison]::OrdinalIgnoreCase)) "$($case.Name) did not bind Expand-Archive to the deterministic trusted Archive manifest."
+        Assert-True (@($allowedArchiveModuleRoots | Where-Object { $actualArchiveManifest.StartsWith($_, [StringComparison]::OrdinalIgnoreCase) }).Count -eq 1) "$($case.Name) bound Expand-Archive outside trusted WindowsPowerShell module roots."
         Assert-True (-not (Test-Path -LiteralPath $poisonMarker)) "$($case.Name) loaded or executed a fake module from poisoned PSModulePath."
+    }
+
+    Write-Host "Test Program Files Archive fallback resolver"
+    $archiveFallbackRoot = Join-Path $tempRoot 'archive-program-files-fixture'
+    $archiveFallbackModuleRoot = Join-Path $archiveFallbackRoot 'WindowsPowerShell\Modules'
+    $archiveFallbackPackageRoot = Join-Path $archiveFallbackModuleRoot 'Microsoft.PowerShell.Archive'
+    $olderArchiveManifest = Join-Path $archiveFallbackPackageRoot '1.0.1.0\Microsoft.PowerShell.Archive.psd1'
+    $newerArchiveManifest = Join-Path $archiveFallbackPackageRoot '9.2.0\Microsoft.PowerShell.Archive.psd1'
+    New-Item -ItemType Directory -Path (Split-Path -Parent $olderArchiveManifest) -Force | Out-Null
+    New-Item -ItemType Directory -Path (Split-Path -Parent $newerArchiveManifest) -Force | Out-Null
+    Write-Utf8NoBom -Path $olderArchiveManifest -Content '@{}'
+    Write-Utf8NoBom -Path $newerArchiveManifest -Content '@{}'
+    $archiveReparseModuleRoot = Join-Path $archiveFallbackRoot 'reparse-fixture\WindowsPowerShell\Modules'
+    $archiveReparseTarget = Join-Path $archiveFallbackRoot 'reparse-target'
+    $archiveReparseDirectManifest = Join-Path $archiveReparseTarget 'Microsoft.PowerShell.Archive.psd1'
+    New-Item -ItemType Directory -Path $archiveReparseModuleRoot -Force | Out-Null
+    New-Item -ItemType Directory -Path $archiveReparseTarget -Force | Out-Null
+    Write-Utf8NoBom -Path $archiveReparseDirectManifest -Content '@{}'
+    New-Item -ItemType Junction -Path (Join-Path $archiveReparseModuleRoot 'Microsoft.PowerShell.Archive') -Target $archiveReparseTarget | Out-Null
+    $archiveResolverCases = @($modulePathCases + [pscustomobject]@{ Name = 'bootstrap refresh'; Path = (Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1') })
+    foreach ($case in $archiveResolverCases) {
+        $resolverTokens = $null
+        $resolverErrors = $null
+        $resolverAst = [Management.Automation.Language.Parser]::ParseFile([string]$case.Path, [ref]$resolverTokens, [ref]$resolverErrors)
+        Assert-Equal @($resolverErrors).Count 0 "$($case.Name) Archive resolver source did not parse."
+        $resolverFunction = @($resolverAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Resolve-RevAgentTrustedArchiveManifest' }, $true))
+        Assert-Equal $resolverFunction.Count 1 "$($case.Name) must define exactly one trusted Archive resolver."
+        $resolverModule = New-Module -ScriptBlock ([scriptblock]::Create($resolverFunction[0].Extent.Text))
+        try {
+            $resolvedFallback = & $resolverModule { Resolve-RevAgentTrustedArchiveManifest -PsHomeModulesRoot $args[0] -ProgramFilesModuleRoots @($args[1]) } (Join-Path $tempRoot 'missing-pshome\Modules') $archiveFallbackModuleRoot
+            Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$resolvedFallback), [IO.Path]::GetFullPath($newerArchiveManifest), [StringComparison]::OrdinalIgnoreCase)) "$($case.Name) did not select the highest versioned Program Files Archive manifest."
+            Assert-ThrowsLike -Action {
+                & $resolverModule { Resolve-RevAgentTrustedArchiveManifest -PsHomeModulesRoot $args[0] -ProgramFilesModuleRoots @($args[1]) } (Join-Path $tempRoot 'missing-pshome\Modules') $archiveReparseModuleRoot | Out-Null
+            } -Pattern 'Archive module root is a reparse point' -Message "$($case.Name) accepted a direct Program Files Archive manifest through a reparse root."
+        }
+        finally {
+            Remove-Module $resolverModule -Force -ErrorAction SilentlyContinue
+        }
     }
     $env:PSModulePath = $previousPsModulePath
     Remove-Item Env:\REVAGENT_POISON_MODULE_MARKER -ErrorAction SilentlyContinue
