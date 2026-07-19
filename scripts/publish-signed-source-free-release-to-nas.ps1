@@ -67,6 +67,12 @@ param(
     [Parameter(DontShow = $true)]
     [scriptblock]$TestBeforePilotImmutableFinalVerificationHook,
 
+    [Parameter(DontShow = $true)]
+    [scriptblock]$TestBeforeRollbackStepHook,
+
+    [Parameter(DontShow = $true)]
+    [switch]$TestUseProductionPublishedSurface,
+
     [string]$RepoRoot = ""
 )
 
@@ -99,8 +105,15 @@ if (($null -ne $TestBeforeStablePromotionHook -or
         $null -ne $TestAfterBaselineReadinessHook -or
         $null -ne $TestAfterSignatureWriteHook -or
         $null -ne $TestBeforeNewPairCreateHook -or
-        $null -ne $TestBeforePilotImmutableFinalVerificationHook) -and -not $AllowTestRoot) {
+        $null -ne $TestBeforePilotImmutableFinalVerificationHook -or
+        $null -ne $TestBeforeRollbackStepHook) -and -not $AllowTestRoot) {
     throw "Publisher test hooks are limited to disposable -AllowTestRoot fixtures."
+}
+if ($TestUseProductionPublishedSurface -and -not $AllowTestRoot) {
+    throw 'TestUseProductionPublishedSurface is limited to disposable -AllowTestRoot fixtures.'
+}
+if ($TestUseProductionPublishedSurface -and -not [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
+    throw 'TestUseProductionPublishedSurface is limited to stable-channel fixtures.'
 }
 if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceChannelSha256) -and $ExpectedSourceChannelSha256 -notmatch '^[A-Fa-f0-9]{64}$') {
     throw 'ExpectedSourceChannelSha256 must be one exact SHA-256 value.'
@@ -108,6 +121,8 @@ if (-not [string]::IsNullOrWhiteSpace($ExpectedSourceChannelSha256) -and $Expect
 if (-not $AllowTestRoot -and [string]::IsNullOrWhiteSpace($ExpectedSourceChannelSha256)) {
     throw 'Production publish requires ExpectedSourceChannelSha256 from the exact downloaded workflow artifact handoff.'
 }
+$useExactStablePublishedSurface = [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal) -and
+    (-not $AllowTestRoot -or $TestUseProductionPublishedSurface)
 if (-not ("RevAgent.SignedTransportNativeFileInfo" -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
@@ -409,7 +424,7 @@ function Get-RevAgentStreamSha256 {
 }
 
 function Get-RevAgentBytesSha256 {
-    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+    param([Parameter(Mandatory = $true)][AllowEmptyCollection()][byte[]]$Bytes)
     $sha = [Security.Cryptography.SHA256]::Create()
     try { return ([BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '') }
     finally { $sha.Dispose() }
@@ -888,94 +903,69 @@ function Get-RevAgentStableLauncherBytes {
     param([Parameter(Mandatory = $true)][string]$ReleaseRoot)
 
     $releaseRootFullPath = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\', '/')
-    $lines = @(
-        '@echo off',
-        'setlocal',
-        '',
-        'set "POWERSHELL=%__APPDIR__%WindowsPowerShell\v1.0\powershell.exe"',
-        ('set "RELEASE_ROOT={0}"' -f $releaseRootFullPath),
-        'set "BOOTSTRAP=%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1"',
-        'set "CHANNEL=%RELEASE_ROOT%\channels\stable.json"',
-        'set "REFRESH=%RELEASE_ROOT%\tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd"',
-        '',
-        'if not exist "%CHANNEL%" (',
-        '  echo revAgent stable channel manifest was not found:',
-        '  echo %CHANNEL%',
-        '  pause',
-        '  exit /b 1',
-        ')',
-        '',
-        'if not exist "%BOOTSTRAP%" (',
-        '  echo revAgent stable updater needs to install the protected local bootstrap first.',
-        '  if not exist "%REFRESH%" (',
-        '    echo revAgent stable bootstrap install tool was not found:',
-        '    echo %REFRESH%',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  call "%REFRESH%"',
-        '  if errorlevel 1 (',
-        '    echo.',
-        '    echo revAgent stable bootstrap install did not complete.',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  if not exist "%BOOTSTRAP%" (',
-        '    echo.',
-        '    echo revAgent stable bootstrap install returned without creating the protected local bootstrap:',
-        '    echo %BOOTSTRAP%',
-        '    echo If an administrator approval or bootstrap coordinator window is still open, finish it and run this updater again.',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  echo.',
-        '  echo revAgent stable bootstrap install completed. The updater should open now.',
-        '  exit /b 0',
-        ')',
-        '',
-        '"%POWERSHELL%" -NoProfile -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%" -VerificationOnly >nul 2>nul',
-        'if errorlevel 1 (',
-        '  echo.',
-        '  echo revAgent stable updater needs to refresh the protected local bootstrap for this release.',
-        '  if not exist "%REFRESH%" (',
-        '    echo revAgent stable bootstrap refresh tool was not found:',
-        '    echo %REFRESH%',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  call "%REFRESH%"',
-        '  if errorlevel 1 (',
-        '    echo.',
-        '    echo revAgent stable bootstrap refresh did not complete.',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  if not exist "%BOOTSTRAP%" (',
-        '    echo.',
-        '    echo revAgent stable bootstrap refresh returned without creating the protected local bootstrap:',
-        '    echo %BOOTSTRAP%',
-        '    echo If an administrator approval or bootstrap coordinator window is still open, finish it and run this updater again.',
-        '    pause',
-        '    exit /b 1',
-        '  )',
-        '  echo.',
-        '  echo revAgent stable bootstrap refresh completed. The updater should open now.',
-        '  exit /b 0',
-        ')',
-        '',
-        'start "revAgent Stable" "%POWERSHELL%" -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%BOOTSTRAP%" -ChannelManifestPath "%CHANNEL%"',
-        'exit /b 0'
+    if ($releaseRootFullPath -match '[\r\n"]') {
+        throw 'Stable launcher release root contains unsupported command-file characters.'
+    }
+
+    $templatePath = Join-Path ([IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))) 'installer\nas\revAgent Updater STABLE.cmd'
+    if (-not (Test-Path -LiteralPath $templatePath -PathType Leaf)) {
+        throw "Stable launcher template was not found: $templatePath"
+    }
+    $templateBytes = [IO.File]::ReadAllBytes($templatePath)
+    $templateText = [Text.Encoding]::ASCII.GetString($templateBytes)
+    if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$templateBytes, [byte[]][Text.Encoding]::ASCII.GetBytes($templateText))) {
+        throw 'Stable launcher template must contain ASCII bytes only.'
+    }
+
+    $canonicalRootLine = 'set "RELEASE_ROOT=\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"'
+    if ([regex]::Matches($templateText, [regex]::Escape($canonicalRootLine)).Count -ne 1) {
+        throw 'Stable launcher template must contain exactly one canonical RELEASE_ROOT assignment.'
+    }
+    $fixtureRootLine = 'set "RELEASE_ROOT={0}"' -f $releaseRootFullPath
+    return [Text.Encoding]::ASCII.GetBytes($templateText.Replace($canonicalRootLine, $fixtureRootLine))
+}
+
+function Invoke-RevAgentIndependentRollbackStep {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][scriptblock]$Action,
+        [Parameter(Mandatory = $true)][AllowEmptyCollection()][Collections.Generic.List[string]]$Errors,
+        [scriptblock]$BeforeStepHook = $null
     )
-    return [Text.Encoding]::ASCII.GetBytes(($lines -join "`r`n") + "`r`n")
+
+    try {
+        if ($null -ne $BeforeStepHook) {
+            & $BeforeStepHook $Name | Out-Null
+        }
+        $value = & $Action
+        return [pscustomobject][ordered]@{
+            success = $true
+            name = $Name
+            value = $value
+            error = $null
+        }
+    }
+    catch {
+        $message = $_.Exception.Message
+        $Errors.Add(("{0}: {1}" -f $Name, $message)) | Out-Null
+        return [pscustomobject][ordered]@{
+            success = $false
+            name = $Name
+            value = $null
+            error = $message
+        }
+    }
 }
 
 function Set-RevAgentStableLauncherExact {
     param(
         [Parameter(Mandatory = $true)][string]$ToolsRoot,
-        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [ValidateSet('revAgent Updater STABLE.cmd', 'Revit MCP Updater STABLE.cmd')]
+        [string]$LauncherName = 'revAgent Updater STABLE.cmd'
     )
 
-    $launcherPath = [IO.Path]::GetFullPath((Join-Path $ToolsRoot 'revAgent Updater STABLE.cmd'))
+    $launcherPath = [IO.Path]::GetFullPath((Join-Path $ToolsRoot $LauncherName))
     Assert-RevAgentChildPath -Path $launcherPath -Root $ReleaseRoot
     $launcherBytes = Get-RevAgentStableLauncherBytes -ReleaseRoot $ReleaseRoot
     $launcherSha256 = Get-RevAgentBytesSha256 -Bytes $launcherBytes
@@ -986,6 +976,8 @@ function Set-RevAgentStableLauncherExact {
     else {
         New-RevAgentGuardedFileStream -Path $launcherPath
     }
+    $baselineBytes = $null
+    $baselineSha256 = $null
     try {
         $baselineBytes = Read-RevAgentStreamBytes -Stream $guard.stream -MaxBytes 65536
         $baselineSha256 = Get-RevAgentBytesSha256 -Bytes $baselineBytes
@@ -996,6 +988,7 @@ function Set-RevAgentStableLauncherExact {
             -Label 'stable updater launcher'
         return [pscustomobject][ordered]@{
             path = $launcherPath
+            toolName = $LauncherName
             created = $created
             changed = (-not [string]::Equals($baselineSha256, $writtenSha256, [StringComparison]::OrdinalIgnoreCase))
             baselineBytes = $baselineBytes
@@ -1006,10 +999,20 @@ function Set-RevAgentStableLauncherExact {
         }
     }
     catch {
+        $writeError = $_
         if ($null -ne $guard) {
-            try { $guard.stream.Dispose() } catch {}
+            try {
+                if ($created) {
+                    [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($guard.stream.SafeFileHandle)
+                }
+                elseif ($null -ne $baselineBytes -and -not [string]::IsNullOrWhiteSpace([string]$baselineSha256)) {
+                    [void](Restore-RevAgentStreamBytesByStableHandle -Stream $guard.stream -ExpectedIdentity $guard.identity -Bytes ([byte[]]$baselineBytes) -ExpectedSha256 ([string]$baselineSha256) -Label "stable launcher write rollback: $LauncherName")
+                }
+            }
+            catch { throw "Stable launcher write failed and exact-handle rollback also failed. original=$($writeError.Exception.Message) rollback=$($_.Exception.Message)" }
+            finally { try { $guard.stream.Dispose() } catch {} }
         }
-        throw
+        throw $writeError
     }
 }
 
@@ -1039,6 +1042,8 @@ function Set-RevAgentStableToolFileExact {
     else {
         New-RevAgentGuardedFileStream -Path $toolPath
     }
+    $baselineBytes = $null
+    $baselineSha256 = $null
     try {
         $baselineBytes = Read-RevAgentStreamBytes -Stream $guard.stream -MaxBytes 1048576
         $baselineSha256 = Get-RevAgentBytesSha256 -Bytes $baselineBytes
@@ -1060,30 +1065,129 @@ function Set-RevAgentStableToolFileExact {
         }
     }
     catch {
+        $writeError = $_
         if ($null -ne $guard) {
-            try { $guard.stream.Dispose() } catch {}
+            try {
+                if ($created) {
+                    [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($guard.stream.SafeFileHandle)
+                }
+                elseif ($null -ne $baselineBytes -and -not [string]::IsNullOrWhiteSpace([string]$baselineSha256)) {
+                    [void](Restore-RevAgentStreamBytesByStableHandle -Stream $guard.stream -ExpectedIdentity $guard.identity -Bytes ([byte[]]$baselineBytes) -ExpectedSha256 ([string]$baselineSha256) -Label "stable published tool write rollback: $ToolName")
+                }
+            }
+            catch { throw "Stable published tool write failed and exact-handle rollback also failed. original=$($writeError.Exception.Message) rollback=$($_.Exception.Message)" }
+            finally { try { $guard.stream.Dispose() } catch {} }
         }
-        throw
+        throw $writeError
     }
 }
 
 function Set-RevAgentStableBootstrapToolsExact {
     param(
         [Parameter(Mandatory = $true)][string]$ToolsRoot,
-        [Parameter(Mandatory = $true)][string]$ReleaseRoot
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [Parameter(Mandatory = $true)][string]$TrustedKeysPath
     )
 
     $repoRoot = [IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
     $sourceNasRoot = Join-Path $repoRoot 'installer\nas'
-    $updates = [Collections.Generic.List[object]]::new()
-    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1', 'Revit MCP Updater STABLE.cmd')) {
-        $updates.Add((Set-RevAgentStableToolFileExact `
-                    -ToolsRoot $ToolsRoot `
-                    -ToolName $toolName `
-                    -SourcePath (Join-Path $sourceNasRoot $toolName) `
-                    -ReleaseRoot $ReleaseRoot)) | Out-Null
+    $legacyLauncherNames = @(
+        'Install-revAgent-Updater-GUI.cmd',
+        'Install-Revit-MCP-Updater-GUI.cmd',
+        'Install-revAgent-Updater.cmd',
+        'Install-Revit-MCP-Updater.cmd'
+    )
+    $descriptors = [Collections.Generic.List[object]]::new()
+    foreach ($toolName in @('Refresh-revAgent-LocalBootstrap-STABLE.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE.ps1')) {
+        $descriptors.Add([pscustomobject]@{ targetRoot = $ToolsRoot; toolName = $toolName; sourcePath = (Join-Path $sourceNasRoot $toolName) }) | Out-Null
     }
-    return @($updates.ToArray())
+    $descriptors.Add([pscustomobject]@{ targetRoot = $ToolsRoot; toolName = 'config\release-trusted-keys.json'; sourcePath = $TrustedKeysPath }) | Out-Null
+    foreach ($legacyLauncherName in $legacyLauncherNames) {
+        $sourcePath = Join-Path $sourceNasRoot $legacyLauncherName
+        $descriptors.Add([pscustomobject]@{ targetRoot = $ToolsRoot; toolName = $legacyLauncherName; sourcePath = $sourcePath }) | Out-Null
+        $descriptors.Add([pscustomobject]@{ targetRoot = $ReleaseRoot; toolName = $legacyLauncherName; sourcePath = $sourcePath }) | Out-Null
+    }
+
+    $updates = [Collections.Generic.List[object]]::new()
+    try {
+        foreach ($descriptor in $descriptors.ToArray()) {
+            $updates.Add((Set-RevAgentStableToolFileExact `
+                        -ToolsRoot ([string]$descriptor.targetRoot) `
+                        -ToolName ([string]$descriptor.toolName) `
+                        -SourcePath ([string]$descriptor.sourcePath) `
+                        -ReleaseRoot $ReleaseRoot)) | Out-Null
+        }
+        return @($updates.ToArray())
+    }
+    catch {
+        $writeError = $_
+        $rollbackErrors = [Collections.Generic.List[string]]::new()
+        for ($index = $updates.Count - 1; $index -ge 0; $index--) {
+            $update = $updates[$index]
+            try {
+                if ([bool]$update.created) {
+                    [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($update.stream.SafeFileHandle)
+                }
+                else {
+                    [void](Restore-RevAgentStreamBytesByStableHandle `
+                            -Stream $update.stream `
+                            -ExpectedIdentity $update.identity `
+                            -Bytes ([byte[]]$update.baselineBytes) `
+                            -ExpectedSha256 ([string]$update.baselineSha256) `
+                            -Label ("stable published-surface rollback: {0}" -f $update.path))
+                }
+            }
+            catch { $rollbackErrors.Add($_.Exception.Message) | Out-Null }
+            finally { try { $update.stream.Dispose() } catch {} }
+        }
+        if ($rollbackErrors.Count -gt 0) {
+            throw "Stable published-surface update failed and partial exact-handle rollback also failed. original=$($writeError.Exception.Message) rollback=$($rollbackErrors -join ' | ')"
+        }
+        throw $writeError
+    }
+}
+
+function Assert-RevAgentStableManagedCommandSurface {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReleaseRoot,
+        [Parameter(Mandatory = $true)][string]$ToolsRoot
+    )
+
+    $legacyLauncherNames = @(
+        'Install-revAgent-Updater-GUI.cmd',
+        'Install-Revit-MCP-Updater-GUI.cmd',
+        'Install-revAgent-Updater.cmd',
+        'Install-Revit-MCP-Updater.cmd'
+    )
+    $expectedRelativePaths = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($relativePath in @(
+            'tools\revAgent Updater STABLE.cmd',
+            'tools\Revit MCP Updater STABLE.cmd',
+            'tools\Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+        ) + @($legacyLauncherNames | ForEach-Object { "tools\$_" }) + @($legacyLauncherNames)) {
+        [void]$expectedRelativePaths.Add([string]$relativePath)
+    }
+
+    $releaseRootFullPath = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\', '/')
+    $releaseRootPrefix = $releaseRootFullPath + [IO.Path]::DirectorySeparatorChar
+    $actualRelativePaths = [Collections.Generic.List[string]]::new()
+    foreach ($commandFile in @(Get-ChildItem -LiteralPath $releaseRootFullPath -File -Filter '*.cmd' -ErrorAction SilentlyContinue)) {
+        $actualRelativePaths.Add($commandFile.FullName.Substring($releaseRootPrefix.Length)) | Out-Null
+    }
+    foreach ($commandFile in @(Get-ChildItem -LiteralPath $ToolsRoot -Recurse -File -Filter '*.cmd' -ErrorAction SilentlyContinue)) {
+        $actualRelativePaths.Add($commandFile.FullName.Substring($releaseRootPrefix.Length)) | Out-Null
+    }
+    $unexpected = @($actualRelativePaths.ToArray() | Where-Object { -not $expectedRelativePaths.Contains([string]$_) } | Sort-Object -Unique)
+    $missing = @($expectedRelativePaths | Where-Object { -not $actualRelativePaths.Contains([string]$_) } | Sort-Object)
+    if ($unexpected.Count -gt 0 -or $missing.Count -gt 0) {
+        throw "Stable published CMD surface does not match the exact managed list. missing=$($missing -join ',') unexpected=$($unexpected -join ',')"
+    }
+    return [pscustomobject][ordered]@{
+        success = $true
+        expectedCount = $expectedRelativePaths.Count
+        actualCount = $actualRelativePaths.Count
+        relativePaths = @($actualRelativePaths.ToArray() | Sort-Object)
+    }
 }
 
 function Enter-RevAgentChannelPairGuard {
@@ -1154,10 +1258,20 @@ function Remove-RevAgentCreatedChannelPairThroughHandles {
     param([Parameter(Mandatory = $true)][object]$PairGuard)
 
     if ([bool]$PairGuard.existed) { throw 'Handle-bound cleanup is only valid for a newly created channel pair.' }
-    [void](Assert-RevAgentExactFileHandleIdentity -Handle $PairGuard.signature.stream.SafeFileHandle -ExpectedIdentity $PairGuard.signature.identity -Label 'created signature cleanup')
-    [void](Assert-RevAgentExactFileHandleIdentity -Handle $PairGuard.channel.stream.SafeFileHandle -ExpectedIdentity $PairGuard.channel.identity -Label 'created channel cleanup')
-    [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($PairGuard.signature.stream.SafeFileHandle)
-    [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($PairGuard.channel.stream.SafeFileHandle)
+    $cleanupErrors = [Collections.Generic.List[string]]::new()
+    foreach ($memberName in @('signature', 'channel')) {
+        $member = $PairGuard.$memberName
+        try {
+            [void](Assert-RevAgentExactFileHandleIdentity -Handle $member.stream.SafeFileHandle -ExpectedIdentity $member.identity -Label ("created {0} cleanup" -f $memberName))
+            [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($member.stream.SafeFileHandle)
+        }
+        catch {
+            $cleanupErrors.Add(("{0}: {1}" -f $memberName, $_.Exception.Message)) | Out-Null
+        }
+    }
+    if ($cleanupErrors.Count -gt 0) {
+        throw "Handle-bound created channel pair cleanup was incomplete. $($cleanupErrors -join ' | ')"
+    }
 }
 
 function Get-RevAgentPathPrefix {
@@ -1488,7 +1602,13 @@ function Get-RevAgentSignedStableIdentity {
     if (-not $hasChannel -or -not $hasSignature) { throw 'Current NAS stable channel is a partial/unsigned pair; refusing publish.' }
     # This helper is used only for an already-active destination channel. The
     # hidden transition allowance is never passed to candidate/source readiness.
-    $readiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') -ReleaseRoot $ReleaseRoot -ChannelManifestPath $ChannelPath -TrustedKeysPath $TrustedKeysPath -ArtifactScanScope activeRelease -AllowTestSigningIdentity:$AllowTestRoot -AllowLegacyMissingNodeMsi -RepoRoot $RepoRoot
+    # A stable publish may be the repair that first creates the managed NAS
+    # launcher/key surface. Authenticate that existing signed payload baseline
+    # without requiring the surface that this same transaction will repair.
+    # Pilot publication never gets this exception and therefore requires an
+    # already-healthy canonical stable published surface.
+    $stableSurfaceRepairBaseline = [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)
+    $readiness = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') -ReleaseRoot $ReleaseRoot -ChannelManifestPath $ChannelPath -TrustedKeysPath $TrustedKeysPath -ArtifactScanScope activeRelease -AllowTestSigningIdentity:$AllowTestRoot -AllowLegacyMissingNodeMsi -SkipPublishedSurface:$stableSurfaceRepairBaseline -RepoRoot $RepoRoot
     if (-not [bool]$readiness.success) { throw 'Current NAS stable channel failed signed readiness; refusing publish.' }
     return [pscustomobject][ordered]@{ exists = $true; artifact = (Get-RevAgentSignedArtifactIdentity -ReleaseRoot $ReleaseRoot -ChannelPath $ChannelPath -ChannelSignaturePath $SignaturePath); readiness = $readiness }
 }
@@ -1578,6 +1698,7 @@ if (-not (Test-Path -LiteralPath $TrustedKeysPath -PathType Leaf)) {
     throw "Trusted release keys file was not found: $TrustedKeysPath"
 }
 if (-not $AllowTestRoot) { Assert-RevAgentProductionTrustedKeysDocument -Path $TrustedKeysPath }
+$trustedKeysSourceSha256 = (Get-FileHash -LiteralPath $TrustedKeysPath -Algorithm SHA256).Hash
 
 $sourceChannelPath = Join-Path $SourceReleaseRoot "channels\$Channel.json"
 $sourceChannelSignaturePath = Join-Path $SourceReleaseRoot "channels\$Channel.sig.json"
@@ -1706,6 +1827,10 @@ $stableToolsBaseline = $null
 $stableToolsFinal = $null
 $stableLauncherUpdate = $null
 $stableLauncherEvidence = $null
+$stableLegacyLauncherUpdate = $null
+$stableLegacyLauncherEvidence = $null
+$stableManagedCommandSurfaceEvidence = $null
+$stablePublishedSurfaceReadinessEvidence = $null
 $stableBootstrapToolUpdates = @()
 $stableBootstrapToolEvidence = @()
 $sourceReleaseDigest = $null
@@ -2091,6 +2216,11 @@ try {
                 $payloadCopyStarted = $true
                 Copy-RevAgentDirectoryExact -Source $sourceReleaseDir -Destination $nasReleaseDir -Root $NasReleaseRoot -AllowReplace:$Force
                 Copy-RevAgentDirectoryExact -Source $sourceToolsDir -Destination $nasToolsDir -Root $NasReleaseRoot -AllowReplace:$true
+                if ($useExactStablePublishedSurface) {
+                    $stableBootstrapToolUpdates = @(Set-RevAgentStableBootstrapToolsExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot -TrustedKeysPath $TrustedKeysPath)
+                    $stableLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot
+                    $stableLegacyLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot -LauncherName 'Revit MCP Updater STABLE.cmd'
+                }
             }
             else {
                 $sourceReleaseDigest = Get-RevAgentDeterministicTreeDigest -Root $sourceReleaseDir
@@ -2113,9 +2243,14 @@ try {
                     -not [string]::Equals([string]$ownedStableReleaseTree.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
                     throw 'Handle-bound stable release tree digest does not match the locked source tree.'
                 }
-                $stableBootstrapToolUpdates = @(Set-RevAgentStableBootstrapToolsExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot)
+                $stableBootstrapToolUpdates = @(Set-RevAgentStableBootstrapToolsExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot -TrustedKeysPath $TrustedKeysPath)
                 $stableLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot
+                $stableLegacyLauncherUpdate = Set-RevAgentStableLauncherExact -ToolsRoot $nasToolsDir -ReleaseRoot $NasReleaseRoot -LauncherName 'Revit MCP Updater STABLE.cmd'
             }
+        }
+
+        if ($useExactStablePublishedSurface) {
+            $stableManagedCommandSurfaceEvidence = Assert-RevAgentStableManagedCommandSurface -ReleaseRoot $NasReleaseRoot -ToolsRoot $nasToolsDir
         }
 
         $candidatePairGuard = Enter-RevAgentChannelPairGuard `
@@ -2140,6 +2275,7 @@ try {
             sourceReadiness = $lockedSourceReadiness
             releaseTree = if ($null -ne $ownedPilotReleaseTree) { [pscustomobject]@{ fileCount = $ownedPilotReleaseTree.fileCount; sha256 = $ownedPilotReleaseTree.sha256 } } elseif ($null -ne $ownedStableReleaseTree) { [pscustomobject]@{ fileCount = $ownedStableReleaseTree.fileCount; sha256 = $ownedStableReleaseTree.sha256 } } else { $null }
             stableLauncher = if ($null -ne $stableLauncherUpdate) { [pscustomobject]@{ path = $stableLauncherUpdate.path; sha256 = $stableLauncherUpdate.sha256; changed = [bool]$stableLauncherUpdate.changed } } else { $null }
+            legacyStableLauncher = if ($null -ne $stableLegacyLauncherUpdate) { [pscustomobject]@{ path = $stableLegacyLauncherUpdate.path; sha256 = $stableLegacyLauncherUpdate.sha256; changed = [bool]$stableLegacyLauncherUpdate.changed } } else { $null }
             stableBootstrapTools = @($stableBootstrapToolUpdates | ForEach-Object { [pscustomobject]@{ path = $_.path; sha256 = $_.sha256; changed = [bool]$_.changed } })
             channelSha256 = $candidateChannelHash
             channelSignatureSha256 = $candidateSignatureHash
@@ -2230,19 +2366,26 @@ try {
                 throw 'Pilot destination release tree changed before publish completion.'
             }
         }
-        elseif ($null -ne $ownedStableReleaseTree) {
-            [void](Assert-RevAgentOwnedTreeIntact -Tree $ownedStableReleaseTree -Label 'stable destination release')
-            $stableReleaseFinal = Get-RevAgentOwnedTreeDigest -Tree $ownedStableReleaseTree -Label 'stable destination release'
-            if (-not [bool]$stableReleaseFinal.exists -or
-                $stableReleaseFinal.fileCount -ne $sourceReleaseDigest.fileCount -or
-                $stableReleaseFinal.directoryCount -ne $sourceReleaseDigest.directoryCount -or
-                -not [string]::Equals([string]$stableReleaseFinal.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
-                throw 'Stable destination release tree changed before publish completion.'
+        elseif ([string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
+            if ($null -ne $ownedStableReleaseTree) {
+                [void](Assert-RevAgentOwnedTreeIntact -Tree $ownedStableReleaseTree -Label 'stable destination release')
+                $stableReleaseFinal = Get-RevAgentOwnedTreeDigest -Tree $ownedStableReleaseTree -Label 'stable destination release'
+                if (-not [bool]$stableReleaseFinal.exists -or
+                    $stableReleaseFinal.fileCount -ne $sourceReleaseDigest.fileCount -or
+                    $stableReleaseFinal.directoryCount -ne $sourceReleaseDigest.directoryCount -or
+                    -not [string]::Equals([string]$stableReleaseFinal.sha256, [string]$sourceReleaseDigest.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Stable destination release tree changed before publish completion.'
+                }
             }
-            if ($null -ne $stableLauncherUpdate) {
-                [void](Assert-RevAgentExactFileHandleIdentity -Handle $stableLauncherUpdate.stream.SafeFileHandle -ExpectedIdentity $stableLauncherUpdate.identity -Label 'stable updater launcher final')
-                if (-not [string]::Equals((Get-RevAgentStreamSha256 -Stream $stableLauncherUpdate.stream), [string]$stableLauncherUpdate.sha256, [StringComparison]::OrdinalIgnoreCase)) {
-                    throw 'Stable updater launcher changed before publish completion.'
+            if ($useExactStablePublishedSurface) {
+                if ($null -eq $stableLauncherUpdate -or $null -eq $stableLegacyLauncherUpdate -or @($stableBootstrapToolUpdates).Count -eq 0) {
+                    throw 'Stable publish did not stage the complete exact-managed published surface.'
+                }
+                foreach ($launcherUpdate in @($stableLauncherUpdate, $stableLegacyLauncherUpdate)) {
+                    [void](Assert-RevAgentExactFileHandleIdentity -Handle $launcherUpdate.stream.SafeFileHandle -ExpectedIdentity $launcherUpdate.identity -Label ("stable launcher final: {0}" -f $launcherUpdate.toolName))
+                    if (-not [string]::Equals((Get-RevAgentStreamSha256 -Stream $launcherUpdate.stream), [string]$launcherUpdate.sha256, [StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Stable launcher changed before publish completion: $($launcherUpdate.toolName)"
+                    }
                 }
                 $stableLauncherEvidence = [pscustomobject][ordered]@{
                     path = [string]$stableLauncherUpdate.path
@@ -2250,6 +2393,13 @@ try {
                     changed = [bool]$stableLauncherUpdate.changed
                     created = [bool]$stableLauncherUpdate.created
                 }
+                $stableLegacyLauncherEvidence = [pscustomobject][ordered]@{
+                    path = [string]$stableLegacyLauncherUpdate.path
+                    sha256 = [string]$stableLegacyLauncherUpdate.sha256
+                    changed = [bool]$stableLegacyLauncherUpdate.changed
+                    created = [bool]$stableLegacyLauncherUpdate.created
+                }
+                $stableManagedCommandSurfaceEvidence = Assert-RevAgentStableManagedCommandSurface -ReleaseRoot $NasReleaseRoot -ToolsRoot $nasToolsDir
             }
             foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
                 [void](Assert-RevAgentExactFileHandleIdentity -Handle $toolUpdate.stream.SafeFileHandle -ExpectedIdentity $toolUpdate.identity -Label ("stable bootstrap tool final: {0}" -f $toolUpdate.toolName))
@@ -2266,6 +2416,34 @@ try {
                         created = [bool]$_.created
                     }
                 })
+            if ($useExactStablePublishedSurface) {
+                $publishedManagedFiles = @(
+                    [pscustomobject][ordered]@{ path = $stableLauncherEvidence.path; toolName = 'revAgent Updater STABLE.cmd'; sha256 = $stableLauncherEvidence.sha256; exactHandleIdentityVerified = $true }
+                    [pscustomobject][ordered]@{ path = $stableLegacyLauncherEvidence.path; toolName = 'Revit MCP Updater STABLE.cmd'; sha256 = $stableLegacyLauncherEvidence.sha256; exactHandleIdentityVerified = $true }
+                    @($stableBootstrapToolEvidence | ForEach-Object { [pscustomobject][ordered]@{ path = $_.path; toolName = $_.toolName; sha256 = $_.sha256; exactHandleIdentityVerified = $true } })
+                )
+                if ($publishedManagedFiles.Count -ne 13) {
+                    throw "Stable exact-managed published surface has an unexpected file count: $($publishedManagedFiles.Count)"
+                }
+                $publishedTrustedKeyFiles = @($publishedManagedFiles | Where-Object { [string]$_.toolName -eq 'config\release-trusted-keys.json' })
+                if ($publishedTrustedKeyFiles.Count -ne 1 -or -not [string]::Equals([string]$publishedTrustedKeyFiles[0].sha256, $trustedKeysSourceSha256, [StringComparison]::OrdinalIgnoreCase)) {
+                    throw 'Stable exact-managed published trusted keys do not match the verified publisher input SHA-256.'
+                }
+                $stablePublishedSurfaceReadinessEvidence = [pscustomobject][ordered]@{
+                    success = $true
+                    mode = 'transactional-exact-handles'
+                    exactHandleIdentityVerified = $true
+                    managedFileCount = $publishedManagedFiles.Count
+                    managedFiles = @($publishedManagedFiles)
+                    trustedKeys = [pscustomobject][ordered]@{
+                        path = [string]$publishedTrustedKeyFiles[0].path
+                        sha256 = [string]$publishedTrustedKeyFiles[0].sha256
+                        verifiedInputSha256 = $trustedKeysSourceSha256
+                        productionIdentityPinned = -not [bool]$AllowTestRoot
+                    }
+                    commandSurface = $stableManagedCommandSurfaceEvidence
+                }
+            }
             $stableToolsFinal = Get-RevAgentDeterministicTreeDigest -Root $nasToolsDir
             if (-not [bool]$stableToolsFinal.exists) { throw 'Stable publish lost the shared NAS tools tree.' }
         }
@@ -2285,6 +2463,10 @@ try {
             $stableLauncherUpdate.stream.Dispose()
             $stableLauncherUpdate = $null
         }
+        if ($null -ne $stableLegacyLauncherUpdate) {
+            $stableLegacyLauncherUpdate.stream.Dispose()
+            $stableLegacyLauncherUpdate = $null
+        }
         foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
             $toolUpdate.stream.Dispose()
         }
@@ -2292,82 +2474,200 @@ try {
     }
     catch {
         $publishError = $_
-        try {
-            if ($promotionStarted) {
-                if ([bool]$channelPairGuard.existed) {
-                    $signatureRollback = Restore-RevAgentStreamBytesByStableHandle `
-                        -Stream $channelPairGuard.signature.stream `
-                        -ExpectedIdentity $channelPairGuard.signature.identity `
-                        -Bytes ([byte[]]$channelPairGuard.baselineSignatureBytes) `
-                        -ExpectedSha256 ([string]$channelPairGuard.baselineSignatureSha256) `
-                        -Label 'active channel signature rollback'
-                    $channelRollback = Restore-RevAgentStreamBytesByStableHandle `
-                        -Stream $channelPairGuard.channel.stream `
-                        -ExpectedIdentity $channelPairGuard.channel.identity `
-                        -Bytes ([byte[]]$channelPairGuard.baselineChannelBytes) `
-                        -ExpectedSha256 ([string]$channelPairGuard.baselineChannelSha256) `
-                        -Label 'active channel manifest rollback'
-                    $channelRollbackEvidence = [pscustomobject][ordered]@{ signature = $signatureRollback; channel = $channelRollback }
+        $rollbackErrors = [Collections.Generic.List[string]]::new()
+
+        if ($promotionStarted) {
+            if ($null -ne $channelPairGuard -and [bool]$channelPairGuard.existed) {
+                $signatureRollbackAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'active channel signature rollback' `
+                    -Errors $rollbackErrors `
+                    -BeforeStepHook $TestBeforeRollbackStepHook `
+                    -Action {
+                        Restore-RevAgentStreamBytesByStableHandle `
+                            -Stream $channelPairGuard.signature.stream `
+                            -ExpectedIdentity $channelPairGuard.signature.identity `
+                            -Bytes ([byte[]]$channelPairGuard.baselineSignatureBytes) `
+                            -ExpectedSha256 ([string]$channelPairGuard.baselineSignatureSha256) `
+                            -Label 'active channel signature rollback'
+                    }
+                $channelRollbackAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'active channel manifest rollback' `
+                    -Errors $rollbackErrors `
+                    -BeforeStepHook $TestBeforeRollbackStepHook `
+                    -Action {
+                        Restore-RevAgentStreamBytesByStableHandle `
+                            -Stream $channelPairGuard.channel.stream `
+                            -ExpectedIdentity $channelPairGuard.channel.identity `
+                            -Bytes ([byte[]]$channelPairGuard.baselineChannelBytes) `
+                            -ExpectedSha256 ([string]$channelPairGuard.baselineChannelSha256) `
+                            -Label 'active channel manifest rollback'
+                    }
+                if ([bool]$signatureRollbackAttempt.success -and [bool]$channelRollbackAttempt.success) {
+                    $channelRollbackEvidence = [pscustomobject][ordered]@{
+                        signature = $signatureRollbackAttempt.value
+                        channel = $channelRollbackAttempt.value
+                    }
                     $channelRollbackPerformed = $true
                 }
-                else {
-                    Remove-RevAgentCreatedChannelPairThroughHandles -PairGuard $channelPairGuard
+            }
+            elseif ($null -ne $channelPairGuard) {
+                $createdPairCleanupAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'created active channel pair cleanup' `
+                    -Errors $rollbackErrors `
+                    -BeforeStepHook $TestBeforeRollbackStepHook `
+                    -Action { Remove-RevAgentCreatedChannelPairThroughHandles -PairGuard $channelPairGuard }
+                if ([bool]$createdPairCleanupAttempt.success) {
                     $createdChannelPairCleanupMarked = $true
                 }
             }
-            elseif ($null -ne $channelPairGuard -and -not [bool]$channelPairGuard.existed) {
-                Remove-RevAgentCreatedChannelPairThroughHandles -PairGuard $channelPairGuard
+        }
+        elseif ($null -ne $channelPairGuard -and -not [bool]$channelPairGuard.existed) {
+            $createdPairCleanupAttempt = Invoke-RevAgentIndependentRollbackStep `
+                -Name 'created active channel pair cleanup' `
+                -Errors $rollbackErrors `
+                -BeforeStepHook $TestBeforeRollbackStepHook `
+                -Action { Remove-RevAgentCreatedChannelPairThroughHandles -PairGuard $channelPairGuard }
+            if ([bool]$createdPairCleanupAttempt.success) {
                 $createdChannelPairCleanupMarked = $true
             }
-            if ($payloadCopyStarted) {
-                if ($null -ne $ownedPilotReleaseTree) {
-                    Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree -Delete
+        }
+
+        if ($payloadCopyStarted) {
+            if ($null -ne $ownedPilotReleaseTree) {
+                $pilotTreeRollbackAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'pilot release tree rollback' `
+                    -Errors $rollbackErrors `
+                    -BeforeStepHook $TestBeforeRollbackStepHook `
+                    -Action { Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree -Delete }
+                if ([bool]$pilotTreeRollbackAttempt.success) {
                     $ownedPilotReleaseTree = $null
                 }
-                if ($null -ne $ownedStableReleaseTree) {
-                    Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree -Delete
+            }
+            if ($null -ne $ownedStableReleaseTree) {
+                $stableTreeRollbackAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'stable release tree rollback' `
+                    -Errors $rollbackErrors `
+                    -BeforeStepHook $TestBeforeRollbackStepHook `
+                    -Action { Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree -Delete }
+                if ([bool]$stableTreeRollbackAttempt.success) {
                     $ownedStableReleaseTree = $null
                 }
-                if ($null -ne $stableLauncherUpdate) {
-                    if ([bool]$stableLauncherUpdate.created) {
-                        [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($stableLauncherUpdate.stream.SafeFileHandle)
-                    }
-                    else {
-                        [void](Restore-RevAgentStreamBytesByStableHandle `
-                            -Stream $stableLauncherUpdate.stream `
-                            -ExpectedIdentity $stableLauncherUpdate.identity `
-                            -Bytes ([byte[]]$stableLauncherUpdate.baselineBytes) `
-                            -ExpectedSha256 ([string]$stableLauncherUpdate.baselineSha256) `
-                            -Label 'stable updater launcher rollback')
-                    }
-                    $stableLauncherUpdate.stream.Dispose()
+            }
+            if ($null -ne $stableLauncherUpdate) {
+                $currentLauncherUpdate = $stableLauncherUpdate
+                [void](Invoke-RevAgentIndependentRollbackStep `
+                        -Name 'stable updater launcher rollback' `
+                        -Errors $rollbackErrors `
+                        -BeforeStepHook $TestBeforeRollbackStepHook `
+                        -Action {
+                            if ([bool]$currentLauncherUpdate.created) {
+                                [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($currentLauncherUpdate.stream.SafeFileHandle)
+                            }
+                            else {
+                                [void](Restore-RevAgentStreamBytesByStableHandle `
+                                        -Stream $currentLauncherUpdate.stream `
+                                        -ExpectedIdentity $currentLauncherUpdate.identity `
+                                        -Bytes ([byte[]]$currentLauncherUpdate.baselineBytes) `
+                                        -ExpectedSha256 ([string]$currentLauncherUpdate.baselineSha256) `
+                                        -Label 'stable updater launcher rollback')
+                            }
+                        })
+                $launcherCloseAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'stable updater launcher handle close' `
+                    -Errors $rollbackErrors `
+                    -Action { $currentLauncherUpdate.stream.Dispose() }
+                if ([bool]$launcherCloseAttempt.success) {
                     $stableLauncherUpdate = $null
                 }
-                foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
-                    if ([bool]$toolUpdate.created) {
-                        [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($toolUpdate.stream.SafeFileHandle)
-                    }
-                    else {
-                        [void](Restore-RevAgentStreamBytesByStableHandle `
-                            -Stream $toolUpdate.stream `
-                            -ExpectedIdentity $toolUpdate.identity `
-                            -Bytes ([byte[]]$toolUpdate.baselineBytes) `
-                            -ExpectedSha256 ([string]$toolUpdate.baselineSha256) `
-                            -Label ("stable bootstrap tool rollback: {0}" -f $toolUpdate.toolName))
-                    }
-                    $toolUpdate.stream.Dispose()
-                }
-                $stableBootstrapToolUpdates = @()
-                if ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
-                    Restore-RevAgentDirectoryFromRollback -Destination $nasToolsDir -Backup $toolsBackupDir -Root $NasReleaseRoot -HadOriginal $hadToolsDir
-                    Restore-RevAgentDirectoryFromRollback -Destination $nasReleaseDir -Backup $releaseBackupDir -Root $NasReleaseRoot -HadOriginal $hadReleaseDir
+            }
+            if ($null -ne $stableLegacyLauncherUpdate) {
+                $currentLegacyLauncherUpdate = $stableLegacyLauncherUpdate
+                [void](Invoke-RevAgentIndependentRollbackStep `
+                        -Name 'legacy stable updater launcher rollback' `
+                        -Errors $rollbackErrors `
+                        -BeforeStepHook $TestBeforeRollbackStepHook `
+                        -Action {
+                            if ([bool]$currentLegacyLauncherUpdate.created) {
+                                [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($currentLegacyLauncherUpdate.stream.SafeFileHandle)
+                            }
+                            else {
+                                [void](Restore-RevAgentStreamBytesByStableHandle `
+                                        -Stream $currentLegacyLauncherUpdate.stream `
+                                        -ExpectedIdentity $currentLegacyLauncherUpdate.identity `
+                                        -Bytes ([byte[]]$currentLegacyLauncherUpdate.baselineBytes) `
+                                        -ExpectedSha256 ([string]$currentLegacyLauncherUpdate.baselineSha256) `
+                                        -Label 'legacy stable updater launcher rollback')
+                            }
+                        })
+                $legacyLauncherCloseAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name 'legacy stable updater launcher handle close' `
+                    -Errors $rollbackErrors `
+                    -Action { $currentLegacyLauncherUpdate.stream.Dispose() }
+                if ([bool]$legacyLauncherCloseAttempt.success) {
+                    $stableLegacyLauncherUpdate = $null
                 }
             }
+
+            $unclosedToolUpdates = [Collections.Generic.List[object]]::new()
+            foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
+                $currentToolUpdate = $toolUpdate
+                $toolRollbackName = "stable bootstrap tool rollback: $($currentToolUpdate.toolName)"
+                [void](Invoke-RevAgentIndependentRollbackStep `
+                        -Name $toolRollbackName `
+                        -Errors $rollbackErrors `
+                        -BeforeStepHook $TestBeforeRollbackStepHook `
+                        -Action {
+                            if ([bool]$currentToolUpdate.created) {
+                                [RevAgent.SignedTransportNativeFileInfo]::MarkDeleteOnClose($currentToolUpdate.stream.SafeFileHandle)
+                            }
+                            else {
+                                [void](Restore-RevAgentStreamBytesByStableHandle `
+                                        -Stream $currentToolUpdate.stream `
+                                        -ExpectedIdentity $currentToolUpdate.identity `
+                                        -Bytes ([byte[]]$currentToolUpdate.baselineBytes) `
+                                        -ExpectedSha256 ([string]$currentToolUpdate.baselineSha256) `
+                                        -Label $toolRollbackName)
+                            }
+                        })
+                $toolCloseAttempt = Invoke-RevAgentIndependentRollbackStep `
+                    -Name ("stable bootstrap tool handle close: {0}" -f $currentToolUpdate.toolName) `
+                    -Errors $rollbackErrors `
+                    -Action { $currentToolUpdate.stream.Dispose() }
+                if (-not [bool]$toolCloseAttempt.success) {
+                    $unclosedToolUpdates.Add($currentToolUpdate) | Out-Null
+                }
+            }
+            $stableBootstrapToolUpdates = @($unclosedToolUpdates.ToArray())
+
+            if ($AllowTestRoot -and [string]::Equals($Channel, 'stable', [StringComparison]::Ordinal)) {
+                [void](Invoke-RevAgentIndependentRollbackStep `
+                        -Name 'test fixture tools directory rollback' `
+                        -Errors $rollbackErrors `
+                        -BeforeStepHook $TestBeforeRollbackStepHook `
+                        -Action {
+                            Restore-RevAgentDirectoryFromRollback `
+                                -Destination $nasToolsDir `
+                                -Backup $toolsBackupDir `
+                                -Root $NasReleaseRoot `
+                                -HadOriginal $hadToolsDir
+                        })
+                [void](Invoke-RevAgentIndependentRollbackStep `
+                        -Name 'test fixture release directory rollback' `
+                        -Errors $rollbackErrors `
+                        -BeforeStepHook $TestBeforeRollbackStepHook `
+                        -Action {
+                            Restore-RevAgentDirectoryFromRollback `
+                                -Destination $nasReleaseDir `
+                                -Backup $releaseBackupDir `
+                                -Root $NasReleaseRoot `
+                                -HadOriginal $hadReleaseDir
+                        })
+            }
         }
-        catch {
+
+        if ($rollbackErrors.Count -gt 0) {
             $rollbackFailed = $true
-            $rollbackError = $_
-            throw "NAS signed channel publish failed and exact-handle rollback/cleanup also failed. Original error: $($publishError.Exception.Message). Rollback error: $($rollbackError.Exception.Message). Manual recovery is required; no pathname-based overwrite was attempted."
+            throw "NAS signed channel publish failed and one or more independent rollback/cleanup steps also failed. Original error: $($publishError.Exception.Message). Rollback errors: $($rollbackErrors -join ' | '). Manual recovery is required; production exact-handle trust was not weakened."
         }
         throw $publishError
     }
@@ -2382,21 +2682,32 @@ try {
             }
         }
         if ($null -ne $channelPairGuard) {
-            $channelPairGuard.signature.stream.Dispose()
-            $channelPairGuard.channel.stream.Dispose()
-            $channelPairGuard = $null
+            try {
+                $channelPairGuard.signature.stream.Dispose()
+                $channelPairGuard.channel.stream.Dispose()
+            }
+            catch { if (-not $rollbackFailed) { throw } }
+            finally { $channelPairGuard = $null }
         }
         if ($null -ne $ownedPilotReleaseTree) {
-            Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree
-            $ownedPilotReleaseTree = $null
+            try { Close-RevAgentOwnedTree -Tree $ownedPilotReleaseTree }
+            catch { if (-not $rollbackFailed) { throw } }
+            finally { $ownedPilotReleaseTree = $null }
         }
         if ($null -ne $ownedStableReleaseTree) {
-            Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree
-            $ownedStableReleaseTree = $null
+            try { Close-RevAgentOwnedTree -Tree $ownedStableReleaseTree }
+            catch { if (-not $rollbackFailed) { throw } }
+            finally { $ownedStableReleaseTree = $null }
         }
         if ($null -ne $stableLauncherUpdate) {
-            $stableLauncherUpdate.stream.Dispose()
-            $stableLauncherUpdate = $null
+            try { $stableLauncherUpdate.stream.Dispose() }
+            catch { if (-not $rollbackFailed) { throw } }
+            finally { $stableLauncherUpdate = $null }
+        }
+        if ($null -ne $stableLegacyLauncherUpdate) {
+            try { $stableLegacyLauncherUpdate.stream.Dispose() }
+            catch { if (-not $rollbackFailed) { throw } }
+            finally { $stableLegacyLauncherUpdate = $null }
         }
         foreach ($toolUpdate in @($stableBootstrapToolUpdates)) {
             try { $toolUpdate.stream.Dispose() } catch {}
@@ -2490,8 +2801,12 @@ $result = [pscustomobject][ordered]@{
         [pscustomobject][ordered]@{
             releaseTreeCreateNew = -not $AllowTestRoot
             sharedToolsTreeReplaced = [bool]$AllowTestRoot
+            exactPublishedSurface = [bool]$useExactStablePublishedSurface
             stableLauncher = $stableLauncherEvidence
+            legacyStableLauncher = $stableLegacyLauncherEvidence
             stableBootstrapTools = @($stableBootstrapToolEvidence)
+            publishedSurfaceReadiness = $stablePublishedSurfaceReadinessEvidence
+            managedCommandSurface = $stableManagedCommandSurfaceEvidence
             sharedToolsBefore = $stableToolsBaseline
             sharedToolsAfter = $stableToolsFinal
         }
