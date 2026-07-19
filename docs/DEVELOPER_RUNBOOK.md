@@ -960,6 +960,13 @@ cannot be true. The publish job is separated behind the
 
 Chosen production signing model:
 
+This is detached RS256 signing for release JSON metadata, not Windows
+Authenticode code signing. The repository and protected workflow currently
+have no revAgent code-signing certificate/service, PFX-backed signing step, or
+signed bootstrap EXE/MSI project. `Get-AuthenticodeSignature` checks on the
+official Node MSI verify a third-party OpenJS artifact and do not provide a
+clean-machine revAgent trust anchor.
+
 - Use an office-controlled self-hosted Windows runner, normally selected with
   `["self-hosted","Windows","revagent-cd"]`.
 - Keep the private release signing key as a local file on that runner, outside
@@ -1091,21 +1098,38 @@ operator-only administration modes and are never invoked by the publisher. Do
 not treat a successful ACL preview, or the absence of ACL telemetry, as
 executable trust evidence.
 
-The first executable hop is local-only:
+After installation, the first executable hop is local-only:
 `%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd`, which invokes
-the sibling protected `Start-revAgent-Update.ps1`. The production NAS `tools`
-tree contains no CMD launcher. A clean install, or an existing fleet
-machine without this protected root, fails closed until a coordinator/admin
-prestages an independently authenticated bootstrap and records exact source
-SHA-256 evidence in protected `bootstrap-state.json`. The bootstrap root and
-state are SYSTEM/Administrators-owned, standard-user read/execute only,
-link/hardlink guarded, and checked with effective directory and file-write
-probes. The local bootstrap, GUI, integrity verifier, permissions helper, and
-migration verifier must also match their current signed release-manifest
-components exactly. `RevAgent.Permissions.psm1` is a required protected sibling
-of `RevAgent.SourceFreeMigration.psm1`; both are independently hash-bound in
-`bootstrap-state.json` before the GUI imports either module. Otherwise,
-`bootstrap_refresh_required` requires a new authenticated prestage.
+the sibling protected `Start-revAgent-Update.ps1`. When that bootstrap is current
+and verified, STABLE bypasses Refresh; the protected local GUI, signed
+inbox/snapshot verification, and bounded UAC machine phase of the ordinary
+package update continue to operate normally. When verification says the
+bootstrap itself is stale, its verifier/key may not authorize its own
+replacement: the unanchored NAS Refresh path stops before UAC.
+
+The production publisher also exact-manages
+`tools\revAgent Updater STABLE.cmd` as the only clean-workstation operator
+entry. It is currently a security-stop entry, not a successful O4 self-service
+installer: any missing or stale protected-bootstrap state that enters NAS
+Refresh returns exit 84 before UAC, prints the supervised prestage/refresh
+direction, and does not elevate locally staged release content. Direct
+`-ElevatedApply` is disabled by the same guard. This behavior prevents a
+standard user, a stale local verifier, or caller-supplied hashes from
+bootstrapping their own administrator-side trust.
+
+Self-service bootstrap install/refresh may be re-enabled only after an
+Authenticode-signed bootstrap broker, or an equivalent IT-prestaged machine
+verifier and pinned production key, independently revalidates the detached
+release signature after elevation. Until then, a missing or stale protected
+bootstrap fails closed to the supervised manual prestage/refresh below. The
+bootstrap root and state are
+SYSTEM/Administrators-owned, standard-user read/execute only, link/hardlink
+guarded, and checked with effective directory and file-write probes. The local
+bootstrap, GUI, integrity verifier, permissions helper, and migration verifier
+must also match their current signed release-manifest components exactly.
+`RevAgent.Permissions.psm1` is a required protected sibling of
+`RevAgent.SourceFreeMigration.psm1`; both are independently hash-bound in
+`bootstrap-state.json` before the GUI imports either module.
 The repository-side prestage installer must never itself be elevated. Its bytes
 must first be matched to the independent evidence and copied with OS/admin-only
 commands to
@@ -1334,12 +1358,14 @@ Stable workstation launcher:
 C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-Legacy `.cmd` aliases retained in the source checkout are not published to the
-production NAS `tools` tree. The protected local launcher is hash-bound in
+The four legacy `.cmd` aliases retained for compatibility are published only as
+exact-managed stubs in the production NAS root and `tools` tree; they delegate
+to the canonical STABLE entries. The protected local launcher is hash-bound in
 `bootstrap-state.json` and in the signed release manifest; the NAS channel is
 verified data, not executable trust.
 
-The GUI installs or refreshes the local updater and then runs an initial update.
+After the protected bootstrap is current and verified, the GUI installs or
+refreshes the local updater and then runs an initial update.
 The updater writes:
 
 ```text

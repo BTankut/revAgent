@@ -4,6 +4,30 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added bounded STABLE refresh-coordinator transport and race hardening for a
+  future independently authenticated elevation anchor: standard-user release
+  acquisition, local staging, a read-only held script, elevated self-hash,
+  nonce-bound results, bounded no-follow cleanup, and distinct 79-82
+  UAC/coordinator outcomes. PowerShell 5.1 fixtures exercise those internals,
+  but the current unanchored NAS Refresh path does not use them to authorize
+  elevation and they are not pristine-machine self-service evidence.
+- Stable publication now transactionally exact-manages the 13-file operator
+  surface: two STABLE launchers, the refresh CMD/PowerShell pair, pinned public
+  trusted keys, and four legacy compatibility stubs in both the NAS root and
+  `tools`. Canonical readiness verifies this surface and rejects unmanaged CMD
+  entry points, while the signed source CD remains CMD-free.
+- Enforced the G13 no-certificate decision: any NAS Refresh path that would
+  elevate, including a missing or stale protected bootstrap and direct
+  `-ElevatedApply`, now returns exit 84 before UAC and directs the operator to
+  supervised manual high-assurance prestage/refresh. Existing operation remains
+  normal only when the protected bootstrap is current and verified, so STABLE
+  bypasses Refresh and opens the protected local GUI. The current
+  repository/workflow has detached RS256 release signing and verifies the
+  third-party Node MSI Authenticode identity, but has no revAgent Windows
+  Authenticode signing certificate/service or signed bootstrap broker. A future
+  signed broker or equivalent IT-prestaged machine verifier/key may re-enable
+  self-service bootstrap install/refresh only after independent elevated
+  verification.
 - Fixed protected Install/Repair on Windows PowerShell 5.1 failing while
   atomically overwriting an existing updater configuration because
   `File.Replace` received a null backup path. Installer writes now use a

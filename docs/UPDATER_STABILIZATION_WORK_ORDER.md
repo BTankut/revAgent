@@ -305,9 +305,23 @@ maskesine vurur — aynı dosyanın ~270. satırındaki kardeş kontrol filtrele
 (GENERIC_ALL ham maskesi eşleşmiyor); spesifik-haklı bir inherit-only ACE üreten imajda ilk kurulum
 UAC onayından SONRA "bootstrap_parent_not_protected" ile ölür.
 
-**Yapılacak:** Her iki kontrole `PropagationFlags`'te `InheritOnly` olan ACE'leri atlama filtresi ekle
-(~270'teki kalıbı aynala) VE yükseltilmiş refresh `DPE` kökünü kendisi oluşturduğunda ona da
-`Set-AdminOnlyAcl` (koruma açık) uygula — iki katman birden.
+**2026-07-19 safety refinement (önceki `DPE` kökünü admin-only yapma şartını geçersiz kılar):**
+`C:\ProgramData\DPE` revAgent'a ait özel bir kök değil, DPE ürünlerinin ortak atasıdır. revAgent refresh'i
+bu ortak atanın DACL'ını `Set-AdminOnlyAcl` ile yeniden yazmamalıdır; böyle bir mutasyon başka DPE
+ürünlerinin erişim sözleşmesini fark edilmeden bozabilir. Güven sınırı bunun yerine üç parçalıdır:
+
+1. Her iki shared-ancestor validator, `PropagationFlags`'te `InheritOnly` olan ACE'leri atlar; fakat ortak
+   atanın owner'ını, reparse/link durumunu ve child silme/yeniden adlandırma ya da ACL/owner değiştirme
+   yetkisi veren **uygulanmış** güvensiz ACE'leri fail-closed doğrulamaya devam eder.
+2. Mevcut exact-path/identity guard'lar işlem boyunca beklenen dizin kimliğini ve link-siz yolu bağlar;
+   ortak atanın ACL'sini değiştirmeden path-swap/reparse ikamesini engeller.
+3. revAgent'a ait exact `DPE\revAgent` ve `DPE\revAgent\prestage` köklerine `Set-AdminOnlyAcl`
+   uygulanır. Böylece koruma ürün sınırında kalır ve ortak `DPE` atası mutate edilmez.
+
+**Güncel kabul kriterleri:** `scripts/test-shared-ancestor-acl.ps1`, iki validator'ın inherit-only ACE'yi
+kabul edip uygulanmış tehlikeli ACE'yi reddettiğini doğrular; ayrıca production apply fonksiyonunda
+`Set-AdminOnlyAcl -Path $dpeRoot` bulunmadığını, `$productRoot` ve `$prestageRoot` hedeflerinin ikisinin de
+korunduğunu statik olarak kilitler.
 
 ---
 
@@ -341,11 +355,12 @@ this machine needs manual diagnosis: <sebep metni>" ile dursun. R3 geçerli (lau
    karşılaştırılır (tercihen bayt-karşılaştırma; kozmetik metin farkları bilinçliyse şablonu repo ile
    bayta-bayt eşitle — gelecek denetimlerde sahte-drift görünümünü de yok eder). Sıfır-`.cmd`
    assertion'larını "yalnızca yönetilen listedekiler var" assertion'ına dönüştür (G5 ile koordine).
-2. Temiz-makine fixture testi: sahte release + fixture NAS köküyle
-   `Refresh-revAgent-LocalBootstrap-STABLE.ps1`'in en azından `New-CleanInstallBootstrapInput`'unu ve
-   (mock yükseltmeyle) apply zincirini çalıştır; GUI'yi gerçek `powershell.exe` 5.1 çocuğu olarak fixture
-   bootstrap'a karşı başlatıp pencere-öncesi bloğun (bootstrap-state parse + hash + Import-Module,
-   GUI ~132-166) hatasız geçtiğini doğrula. 5.1-çocuk kalıbı `test-local-update-bootstrap.ps1:185-198`'de hazır.
+2. Temiz-makine fixture testi iki sözleşmeyi ayrı doğrular: dormant/future signed-broker helper closure'ında
+   sahte release + fixture NAS köküyle `New-CleanInstallBootstrapInput` ve mock yükseltilmiş apply zincirini
+   çalıştırıp fixture bootstrap GUI'sinin pencere-öncesi bloğunu gerçek `powershell.exe` 5.1 çocuğunda
+   doğrular; production self-service çağrısında ise G13 kararına göre acquisition/UAC/apply başlamadan
+   benzersiz exit 84 ile fail-closed durduğunu doğrular. 5.1-çocuk kalıbı
+   `test-local-update-bootstrap.ps1:185-198`'de hazır.
 3. Bu testleri `.github/workflows/ci.yml`'deki PS 5.1 adımına ekle.
 
 ---
@@ -367,6 +382,22 @@ kanonik ReleaseRoot'a karşı yükseltilmiş bağlamda yeniden koşturulur — G
 dosyaların yerel-staged olduğuna dikkat). Mevcut kontrolleri ZAYIFLATMA; yalnız katman ekle. Bu görevi
 en sona bırak; tasarımı uygulamadan önce PR açıklamasında gerekçelendir.
 
+**2026-07-19 karar kaydı:** Mevcut dağıtımda yükseltilmiş fazın bağımsız doğrulayabileceği bir Windows
+Authenticode imzası veya IT-yönetimli trust anchor yoktur. NAS'tan gelen betik/evidence/hash zinciri kendi
+güven kökünü bootstrap edemez. Bu nedenle production sözleşmesi şimdilik fail-closed'dur:
+
+- Eksik bootstrap kurulumu, stale bootstrap refresh'i ve doğrudan `-ElevatedApply` çağrısı; coordinator,
+  UAC veya apply başlamadan benzersiz **exit 84** ile durur. UAC penceresinin çıkmaması beklenen güvenlik
+  davranışıdır.
+- Yalnız zaten kurulu olan, current release'e bağlı ve `-VerificationOnly` doğrulamasını geçen protected
+  local bootstrap normal STABLE → GUI yoluna devam edebilir.
+- Otomatik missing/stale bootstrap desteği ancak bağımsız imzalı bir broker veya IT-yönetimli trust anchor
+  sağlanıp yükseltilmiş faz bunu kendi güven köküyle doğruladığında yeniden etkinleştirilebilir. Dormant
+  helper closure bu gelecek yol içindir; bugün production yetkisi değildir.
+
+Bu karar G12 temiz-makine fixture'ındaki production negatif senaryoyu ve O4'ün iki aşamalı saha
+protokolünü belirler; O3 yayını veya O4 saha testi bu kayıtla yapılmış sayılmaz.
+
 ---
 
 ### G14 (P2) — Dokümantasyon ve CHANGELOG
@@ -377,8 +408,8 @@ en sona bırak; tasarımı uygulamadan önce PR açıklamasında gerekçelendir.
    README'ye göre NAS'ı "normalize eden" bir operatör her temiz kurulumu kırar.
 2. `docs/BOOTSTRAP_PRESTAGE.md`: #247 self-servis STABLE yolunu ekle/çapraz-referansla (şu an yalnız ağır
    manuel admin prestage akışı anlatılıyor).
-3. `CHANGELOG.md`: #233-#256 hiç kaydedilmemiş; temiz-makine desteği, launcher auto-refresh, publisher
-   hizalaması ve bu çalışma emrindeki değişiklikler için özet girdiler ekle.
+3. `CHANGELOG.md`: #233-#256 hiç kaydedilmemiş; fail-closed trust-anchor kararı, doğrulanmış-bootstrap
+   launcher yolu, publisher hizalaması ve bu çalışma emrindeki değişiklikler için özet girdiler ekle.
 
 ---
 
@@ -400,17 +431,27 @@ gelene kadar); `tools\config\release-trusted-keys.json` varlığını ve `revage
 `32F8BD0B...` parmak izini doğrula.
 
 ### O3 — Yeniden yayın
+**Durum: yapılmadı; aşağıdaki adım operatör onayı sonrası uygulanacaktır.**
+
 Repo düzeltmeleri kullanıcıya YALNIZCA yeni imzalı CD build (yeni sürüm + daha yüksek `releaseSequence`)
 → NAS publish ile ulaşır. Aynı sürüm üzerine repair publish yapısal olarak engellidir
 (`publish-signed-source-free-release-to-nas.ps1:2098-2104`; `-ExpectedSourceChannelSha256` taze workflow
 artifact handoff'u ister). "Sadece republish edeyim" deneme — çalışmaz.
 
 ### O4 — Temiz makine test protokolü
-Standart kullanıcı; YALNIZCA `revAgent Updater STABLE.cmd`; UAC'yi NAS erişimi olan bir admin onaylar;
-"did not complete" sırasında koordinatör/UAC penceresi açıksa önce onu bitir; **ChatGPT desktop'ı önceden
-kur + oturum aç, güncelleme sırasında kapat** (akış `OpenAI.Codex` Appx yoksa tasarım gereği manuel-kurulum
-uyarısında durur — `update-from-nas.ps1:~2005-2142`); pencere gelmezse yerel GUI'yi görünür çalıştır:
-`powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%ProgramData%\DPE\revAgent\bootstrap\Install-revAgent-Updater-GUI.ps1"`
+**Durum: yapılmadı; O3 ile yeni imzalı sürüm yayımlandıktan sonra operatör iki aşamayı da çalıştıracaktır.**
+
+1. **Pristine negatif kanıt:** Makinede protected local bootstrap yokken standart kullanıcı YALNIZCA
+   `revAgent Updater STABLE.cmd`'yi çalıştırır. Beklenen sonuç benzersiz exit 84'tür; UAC/coordinator/GUI
+   açılmaz ve `%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1` oluşmaz. Bu aşamada UAC
+   beklemek veya mevcut olmayan yerel GUI'yi elle çalıştırmak hata giderme adımı değildir; fail-closed
+   trust-anchor kararı doğru çalışmaktadır. Konsol metni, exit code ve `BootstrapExists=False` kaydedilir.
+2. **Supervised-prestage sonrası pozitif kanıt:** Bir yönetici/IT operatörü
+   `docs/BOOTSTRAP_PRESTAGE.md` içindeki supervised manual high-assurance prestage'i ayrı olarak tamamlar.
+   Ardından standart kullanıcı aynı STABLE launcher'ı çalıştırır. Mevcut bootstrap `-VerificationOnly`
+   kontrolünü geçmeli ve normal STABLE → GUI yolu açılmalıdır; bu launcher çalıştırmasında refresh veya
+   UAC beklenmez. `OpenAI.Codex` önceden kurulmuş ve oturum açılmış, güncelleme sırasında kapalı olmalıdır
+   (`update-from-nas.ps1:~2005-2142`). Bootstrap doğrulaması, GUI başlangıcı ve sonuç log'u kaydedilir.
 
 ---
 
