@@ -7,6 +7,22 @@
 > Buradaki her bulgu statik analizle doğrulanmış ve dosya:satır kanıtına bağlanmıştır.
 > **Satır numaraları `f7e5c7c` itibarıyladır — düzenlemeye başlamadan önce her referansı yeniden doğrula.**
 
+> **Superseded by:** `docs/UPDATER_CLOSURE_WORK_ORDER.md` (v2). Bu belge tarihsel
+> G1-G14 uygulama kaydıdır; kalan kapanış, tek-tık prestage ve self-healing
+> broker işleri v2 çalışma emrinden yürütülür.
+
+### 2026-07-20 K1 öncesi kapanış denetimi anlık görüntüsü
+
+| Görev | Doğrulanmış durum | Not |
+|---|---|---|
+| G1 | TAMAM (kod + fixture) | `Refresh-revAgent-LocalBootstrap-STABLE.ps1` içindeki `Initialize-TrustedPowerShellModules` çağrısı uyuyan yolda eksik; E2 yeniden etkinleştirmesinde zorunlu. |
+| G2, G3, G4, G5, G10, G12 | TAMAM | G3'ün uzun yaşayan GUI stderr yaşam döngüsü K3'te kapanır. |
+| G6, G7, G8, G9 | UYUYAN (dormant) | Exit 79-82 üretim dispatch'inden erişilemez; G8 tamamlanmış sayılmaz. |
+| G11 | KISMİ | `--post-refresh` tüketicisi canlı, üreticisi E2 öncesinde yoktur; exit 84 riski maskeler. |
+| G13 | DEVRE DIŞI BIRAKILDI; İNŞA EDİLMEDİ | Bağımsız doğrulama katmanı kurulmadı; self-service temiz kurulum exit 84 ile kapatıldı. E2, IT-prestaged verifier + pinli anahtar dalını uygular. |
+| G14 | KISMİ | Kalan kayıt ve dokümantasyon düzeltmeleri v2 K1'de kapanır. |
+| #259 | G görevlerine ait değil | Split-privilege makine fazının gizli audit launcher regresyon düzeltmesidir; G12 atfı yanlıştır. |
+
 ---
 
 ## 0. Bağlam ve ZORUNLU KURALLAR (önce bunu oku)
@@ -396,7 +412,8 @@ güven kökünü bootstrap edemez. Bu nedenle production sözleşmesi şimdilik 
   helper closure bu gelecek yol içindir; bugün production yetkisi değildir.
 
 Bu karar G12 temiz-makine fixture'ındaki production negatif senaryoyu ve O4'ün iki aşamalı saha
-protokolünü belirler; O3 yayını veya O4 saha testi bu kayıtla yapılmış sayılmaz.
+protokolünü belirledi; karar kaydı tek başına O3/O4 kanıtı değildi. Fiili 2026-07-20 sonuçları aşağıdaki
+O3/O4 durum kayıtlarında yer alır.
 
 ---
 
@@ -431,7 +448,10 @@ gelene kadar); `tools\config\release-trusted-keys.json` varlığını ve `revage
 `32F8BD0B...` parmak izini doğrula.
 
 ### O3 — Yeniden yayın
-**Durum: yapılmadı; aşağıdaki adım operatör onayı sonrası uygulanacaktır.**
+**Durum: tamamlandı (2026-07-20).** Operatör, O3/O4 saha kapanışını
+manuel olarak yaklaşık iki saatte yürüttü ve imzalı stable
+`2026.07.20.574-11020d1a` sürümünü yayımladı. Bu yayın filo kabulü değildir;
+K0'daki eski-bootstrap rebind riski kuruludur.
 
 Repo düzeltmeleri kullanıcıya YALNIZCA yeni imzalı CD build (yeni sürüm + daha yüksek `releaseSequence`)
 → NAS publish ile ulaşır. Aynı sürüm üzerine repair publish yapısal olarak engellidir
@@ -439,7 +459,11 @@ Repo düzeltmeleri kullanıcıya YALNIZCA yeni imzalı CD build (yeni sürüm + 
 artifact handoff'u ister). "Sadece republish edeyim" deneme — çalışmaz.
 
 ### O4 — Temiz makine test protokolü
-**Durum: yapılmadı; O3 ile yeni imzalı sürüm yayımlandıktan sonra operatör iki aşamayı da çalıştıracaktır.**
+**Durum: tamamlandı (2026-07-20, manuel, yaklaşık iki saat).** Operatör iki
+aşamalı protokolü bir yeni makinede yürüttü; supervised prestage sonrası
+STABLE → korumalı yerel launcher → GUI pozitif akışı doğrulandı, makine 574'e
+bağlandı ve sağlıklıdır. Bu tek-makine kanıtı diğer mevcut iş istasyonlarının
+prestage/rebind kabulü değildir.
 
 1. **Pristine negatif kanıt:** Makinede protected local bootstrap yokken standart kullanıcı YALNIZCA
    `revAgent Updater STABLE.cmd`'yi çalıştırır. Beklenen sonuç benzersiz exit 84'tür; UAC/coordinator/GUI
@@ -482,4 +506,6 @@ artifact handoff'u ister). "Sadece republish edeyim" deneme — çalışmaz.
 - **Tamamlanma tanımı:** Tüm görevler kapandığında (1) `scripts/test-all.ps1` + CI yeşil; (2) fixture
   publish sonrası NAS'ta tıklanabilir hiçbir çıkmaz-sokak `.cmd` yok; (3) temiz-makine E2E fixture testi
   geçiyor; (4) pencere-öncesi her hata ya konsola ya `%LOCALAPPDATA%` log'una düşüyor; (5) README/CHANGELOG
-  gerçek davranışı anlatıyor. Ardından O3 (yeni imzalı yayın) ve O4 (saha testi) operatöre kalır.
+  gerçek davranışı anlatıyor. O3 yeni imzalı yayın ve O4 tek-makine saha testi
+  operatör tarafından 2026-07-20'de manuel olarak tamamlandı; genel filo
+  prestage/rebind kabulü v2 çalışma emrindeki E2 sonrasına bırakıldı.

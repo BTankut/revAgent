@@ -161,9 +161,12 @@ DESKTOP-OKNV128 and NET01. The publisher creates a unique pilot-namespaced
 release and updates only `channels\pilot.json` plus its signature; it proves the
 stable pair, active stable release tree, and shared tools tree were unchanged.
 Set `publish_to_nas=true` only in a later, separately approved stable/fleet
-window. The two inputs are mutually exclusive, and stable publication is
-currently fail-closed until shared-tools replacement has a handle-bound
-transaction equivalent to the pilot path.
+window. The two inputs are mutually exclusive. Stable publication now uses the
+active transactional exact-handle replacement path for the complete 13-file
+managed shared-tools/operator surface. The release tree is created through
+handle-bound create-new operations, the signed stable channel pair uses
+same-handle compare-and-swap/rollback, and final identity checks close the
+transaction. Publication is no longer disabled by the former shared-tools gap.
 
 The publish job reads the exact downloaded and digest-verified release root and
 runs `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not
@@ -297,6 +300,32 @@ local launcher opens the split-privilege GUI. A stale protected verifier/key
 may not authorize its own replacement. The locked-file verifier and associated
 staging/hash/nonce controls remain defense-in-depth for a future independently
 anchored coordinator; they are not current elevation authorization.
+
+Current bootstrap freshness is a byte-binding contract over these eight signed
+release components:
+
+- `installer\nas\Start-revAgent-Update.ps1`
+- `installer\nas\Start-revAgent-Update.cmd`
+- `installer\nas\Install-revAgent-Updater-GUI.ps1`
+- `installer\lib\RevAgent.DistributionIntegrity.psm1`
+- `installer\lib\RevAgent.Permissions.psm1`
+- `installer\lib\RevAgent.SourceFreeMigration.psm1`
+- `installer\lib\RevAgent.ReleaseSnapshot.psm1`
+- `installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1`
+
+If any one changes, an older protected bootstrap reports
+`bootstrap_refresh_required` and enters Refresh. Until the E2 machine trust
+core and broker are live, Refresh stops at exit 84, so such a stable publication
+requires an explicit fleet re-prestage/refresh plan. The current
+`2026.07.20.574-11020d1a` stable release already has this condition armed for
+older workstation bootstraps because #258/#259 changed the bootstrap script,
+launcher, updater GUI, and privileged-snapshot updater. Installed revAgent
+operation continues, but the next operator-started STABLE/GUI update path is
+blocked until supervised rebind. Use the E1 kit only for an urgent individual
+machine and defer the general fleet pass until E2. Do not publish another
+eight-component change before E2 without the same warning in the PR and
+changelog and a separately approved rollout window.
+
 Self-service bootstrap install/refresh may be re-enabled only when an
 Authenticode-signed bootstrap broker, or an equivalent IT-prestaged verifier
 and pinned key, independently revalidates the detached release signature after
