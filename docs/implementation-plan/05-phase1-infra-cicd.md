@@ -1,0 +1,157 @@
+> Part of the RevAgent implementation plan (see `00-INDEX.md`).
+> Normativity: `docs/TARGET_ARCHITECTURE.md` → `00-INDEX.md` resolutions (RES-*/GAP-*) → this section.
+> Where this section conflicts with a resolution in `00-INDEX.md`, the index wins.
+
+# P5 — Phase-1 Office Infrastructure (Tenant #1), Gateway CI/CD Extension, and O10 Backup/Restore Runbook
+
+All file:line citations are repo-relative at commit 11020d1 (+ uncommitted docs/TARGET_ARCHITECTURE.md).
+
+## (a) Scope & Non-Goals
+
+**In scope**
+- The Phase-1 gateway host build per D10/Section 7 of docs/TARGET_ARCHITECTURE.md:189-198: dedicated spare office PC, Ubuntu Server, Docker Compose stack (gateway, Postgres, reverse proxy, object-storage volume), outbound tunnel, DNS discipline, 12-factor env/config layout.
+- CI/CD extension for the Gateway container per Section 9 ("CI/CD pattern: GitHub Actions + `revagent-cd` self-hosted runner, extended to Gateway CD (build → image → runner on the gateway host pulls & restarts)", docs/TARGET_ARCHITECTURE.md:215): new Linux build/deploy lane, GHCR registry, deploy/health-check/rollback flow, secrets handling.
+- Warm standby implementation satisfying RPO ≤ 5 min / RTO ≤ 30 min (docs/TARGET_ARCHITECTURE.md:185), including the cheap cloud VM and the traffic-switch procedure.
+- O10 backup/restore runbook DRAFT including the mandatory blank-VM restore drill (docs/TARGET_ARCHITECTURE.md:196, 233).
+- Phase-1 minimal monitoring (uptime + disk + backup success) and the LTE failover note (docs/TARGET_ARCHITECTURE.md:197).
+- Infrastructure-side pilot-machine readiness steps and the cutover-night runbook skeleton for ~12 machines (docs/TARGET_ARCHITECTURE.md:204-210), with a rollback criterion template that states the honest NAS-restore constraint.
+
+**Non-goals (owned by sibling packages)**
+- Gateway application code: O1 bridge↔gateway protocol, orchestration engine, tool registry, north MCP surface. P5 consumes a buildable gateway package and provides its container/CD conventions.
+- The workstation uninstaller ("P3") and the bridge installer/enrollment UX; P5's cutover runbook invokes them as black boxes.
+- O9 bridge self-update signing. The existing Windows detached-RS256 signing chain (.github/workflows/signed-source-free-cd.yml; keys at `C:\ProgramData\DPE\revAgentReleaseSigning\...`, docs/DEVELOPER_RUNBOOK.md:1000-1011) is explicitly NOT touched by this package — the signing key tree on the CD runner host survives cutover (E4 wipe list, "do NOT wipe").
+- Multi-tenant SaaS infrastructure, APS integration (O4), admin-plane migration (O11), and any change to the existing Windows CI gates (.github/workflows/ci.yml:35-52) or the NAS publisher (scripts/publish-signed-source-free-release-to-nas.ps1). Feature freeze applies: every workflow change in this package is additive (new files), never edits to the frozen Windows CD chain.
+
+## (b) Plan-Level Design Decisions
+
+**P-HOST-1 — OS/runtime: Ubuntu Server 24.04 LTS, Docker Engine + Compose plugin (pinned from Docker's apt repo), unattended-upgrades security-only.** D10 already mandates Ubuntu Server; 24.04 LTS gives 2029 support horizon so no OS migration mid-commercialization.
+
+**P-HOST-2 — Reverse proxy: Caddy (rejecting Traefik).** The Compose topology is static (3–4 services, one route); Traefik's core value is dynamic container discovery, which buys nothing here and adds label/config surface. Caddy is one static binary, a ~15-line Caddyfile, automatic TLS for both public ACME and internal-CA modes — and with Cloudflare Tunnel terminating public TLS, the proxy's remaining jobs are just one routing/logging chokepoint and optional LAN-direct TLS. Simplest tool that does both.
+
+**P-HOST-3 — Object storage Phase 1: plain bind-mounted volume (`/opt/revagent/data/objects`) behind an in-code storage-driver interface (`OBJECT_STORE_DRIVER=fs|s3`); no MinIO.** MinIO adds a stateful service, credential set, upgrade cadence, and backup surface for a single-tenant host with zero payoff; Section 7 itself says "object-storage volume" (docs/TARGET_ARCHITECTURE.md:194). The `s3` driver lands with the SaaS variant; the interface (write/read/delete/presign by `result_ref`) is defined now so migration is config, not code — 12-factor as required.
+
+**P-NET-1 — Outbound tunnel: Cloudflare Tunnel (`cloudflared`).** Decisive evidence: this exact pattern is already operationally proven in this fleet — the admin dashboard runs behind a managed cloudflared tunnel with a scheduled task and a legacy root `C:\ProgramData\DPE\RevitMCP\cloudflared` (addons/dashboard/installer/install-dashboard-tunnel.ps1:1-23; addons/dashboard/addon.json:11-12, 36-38). Team familiarity + free tier + no port-forwarding/static-IP + DNS and tunnel in one control plane beats alternatives (Tailscale Funnel: device-identity model awkward for a public MCP endpoint; frp/rathole: self-managed relay VM = more infrastructure than it removes; ngrok: cost + hostname instability on plan changes).
+
+**P-NET-2 — DNS discipline: clients configured ONLY with `gateway.<domain>` (Cloudflare-managed zone, CNAME → tunnel UUID); failover is a cloudflared tunnel *replica* on the standby VM, with the low-TTL DNS switch retained as documented fallback.** Cloudflared supports multiple connectors for one tunnel; the standby holds pre-provisioned credentials with the service stopped. Failover = restore DB + `docker compose up` on standby → same hostname serves traffic with zero DNS-propagation risk, which is strictly less to do at 2 a.m. than a DNS edit and satisfies Section 7's intent (docs/TARGET_ARCHITECTURE.md:196). Bridges re-attach via their reconnect logic (D3).
+
+**P-NET-3 — LTE failover: dual-WAN office router with LTE module, configured during Phase 1 but not blocking go-live.** Honest note: because bridges reach `gateway.<domain>` through the Cloudflare edge AND the gateway reaches the cloud LLM over WAN, an office WAN outage halts the assistant for LAN users regardless of local topology — LTE failover (or failover to the cloud standby) is the only mitigation; split-horizon LAN DNS only pays off in the future local-LLM configuration and is deferred.
+
+**P-CD-1 — Image registry: GHCR, private (`ghcr.io/<org>/revagent-gateway`, plus `ghcr.io/<org>/revagent-postgres` for the WAL-G-equipped Postgres image).** Same auth domain as the repo, no new vendor; images tagged `sha-<shortsha>` and `v<semver>`, deploys pinned by digest recorded in a host-side ledger.
+
+**P-CD-2 — Build & deploy runner: ONE new self-hosted Linux runner installed on the gateway host itself, labels `["self-hosted","Linux","revagent-gateway"]`; it builds the image, pushes to GHCR, and deploys locally.** This is the simplest option consistent with D10 and Section 9's stated pattern ("runner on the gateway host pulls & restarts", docs/TARGET_ARCHITECTURE.md:215). GitHub-hosted Linux runners are rejected for build to stay consistent with the repo's explicit budget stance — CI defaults to the office runner "to avoid GitHub-hosted Actions budget limits" (.github/workflows/ci.yml:13). Pushing to GHCR even though build and deploy share a host is deliberate: GHCR is the artifact of record and the standby VM must be able to pull images with the office host dead. The existing Windows runner (`["self-hosted","Windows","revagent-cd"]`, .github/workflows/ci.yml:20) keeps all current duties unchanged.
+
+**P-CD-3 — New workflow files `gateway-ci.yml` and `gateway-cd.yml`; the frozen `ci.yml` / `signed-source-free-cd.yml` are not edited.** Deploy is a manual `workflow_dispatch` job gated by a new GitHub environment `revagent-gateway-deploy`, mirroring the existing environment discipline (`revagent-release-signing` / `revagent-production-publish`, .github/workflows/signed-source-free-cd.yml:62, 302; docs/DEVELOPER_RUNBOOK.md:990-998). Note the known plan limitation: reviewer/wait-timer protection rules returned billing-plan 422s (docs/DEVELOPER_RUNBOOK.md:1038-1045), so — exactly as with `publish_to_nas` today — the human gate is protected-`main` merge + explicit manual dispatch.
+
+**P-CD-4 — Deploy flow: build → push → `docker compose pull && up -d` → health gate → automatic revert; rollback = redeploy previous digest.** The deploy job curls `/healthz` (liveness) and `/readyz` (DB + tunnel reachability) via localhost Caddy and via the public tunnel URL; on failure it re-deploys the previous digest from `/opt/revagent/releases.log` and fails the run. Corollary rule imposed on the gateway package: DB migrations must be expand/contract (backward-compatible one release) so image rollback never requires DB rollback.
+
+**P-SEC-1 — Secrets: LLM API keys and all runtime secrets exist ONLY in `/opt/revagent/env/*.env` on the gateway host (root-owned, 0640, group `revagent`), injected via Compose `env_file`; never in git, never in the image, and NOT in GitHub Actions secrets (the deploy job never needs them).** This implements "LLM API keys exist only at the Gateway" (docs/TARGET_ARCHITECTURE.md:183). Offline sealed copy in the office password manager; the standby VM is provisioned with its own copy once, rotated together. The only CI-side secret is a GHCR pull/push token scoped to packages. A `gitleaks` step in `gateway-ci.yml` enforces no-secrets-in-repo.
+
+**P-BCK-1 — Postgres warm standby: WAL archiving with WAL-G (nightly `backup-push` base backup + continuous `wal-push`, `archive_timeout=60s`); scheduled pg_dump rejected.** RPO ≤ 5 min (docs/TARGET_ARCHITECTURE.md:185) is arithmetically unreachable with pragmatic dump cadences as the DB grows (audit log + sessions are append-heavy per Section 5.9), while WAL archiving gives RPO ≈ 1–2 min at trivial steady-state cost. WAL-G ships as a binary baked into a thin `revagent-postgres` image (`FROM postgres:16` + wal-g), because `archive_command` executes inside the Postgres container. Retention: 14 daily base backups + covering WAL — symmetric with the 2-week NAS rollback-insurance window (docs/TARGET_ARCHITECTURE.md:207).
+
+**P-BCK-2 — Backup target: Cloudflare R2 (S3-compatible).** Zero egress fees make the weekly automated restore-verify and any real failover free to pull, and it consolidates on the vendor already chosen for tunnel + DNS (P-NET-1). (Tear-away risk accepted and listed in (e).)
+
+**P-BCK-3 — Object volume backup: `rclone sync` of `/opt/revagent/data/objects` to R2 every 5 min (host cron).** `result_ref` payloads are session-scoped caches and update artifacts are re-buildable from GHCR; eventual-consistency of this volume is acceptable, so no filesystem snapshotting complexity.
+
+**P-BCK-4 — Standby VM: cheapest ~2 vCPU / 4 GB / 40 GB class (e.g., Hetzner CX22, ~€4/mo), Ubuntu 24.04, same Compose file deployed by the same pipeline, cloudflared replica credential staged, WAL-G restore scripts pre-installed — and the standby IS the weekly restore-verify host.** Running the automated weekly restore ON the standby proves the backup chain and the standby machine in one motion; 4 GB comfortably serves ~12 users of an I/O-bound gateway (docs/TARGET_ARCHITECTURE.md:184).
+
+**P-MON-1 — Monitoring: Uptime Kuma container on the standby VM (external vantage: probes `https://gateway.<domain>/readyz`, cert expiry, tunnel liveness) + Healthchecks.io free-tier dead-man switches pinged by every backup/sync/verify cron + a host cron disk guard (alerts at 85% on `/` and the Postgres volume).** The monitor must not live on the monitored host; a Prometheus stack for 12 users fails the "minimal" bar. Alert delivery: e-mail + the team's existing chat via Uptime Kuma/Healthchecks native integrations.
+
+**P-CUT-1 — Cutover night uses canary-pair-first sequencing with an early, pre-signed rollback decision point, because NAS restore is NOT one script.** Honest constraint (from E4): workstation rollback uses the signed NAS release archive with no local package backups (docs/DEVELOPER_RUNBOOK.md:1228-1236; installer/nas/README.md:681-686), and after the P3 wipe a machine has no bootstrap/updater — restore = the supervised two-shell bootstrap prestage + install per machine (docs/BOOTSTRAP_PRESTAGE.md:53; installer/INSTALLATION.md procedure), realistically ~30 min supervised per machine ≈ a second full evening for 12 machines. Additionally, any machine NOT wiped that must accept an older signed release requires a manual updater run with `-AllowSignedReleaseRollback` since `highestAcceptedReleaseSequence` is never lowered (installer/nas/README.md:617-621; docs/DEVELOPER_RUNBOOK.md:1301-1307). Therefore the go/no-go is evaluated after the first two machines, not at the end.
+
+## (c) Work Breakdown
+
+| ID | Description | Depends on | Acceptance criteria | Est. (dev-days) |
+|---|---|---|---|---|
+| P5-T1 | **Provision gateway host.** Install Ubuntu 24.04 on the spare PC; BIOS auto-power-on after power loss; static LAN IP/DHCP reservation; SSH key-only + UFW (SSH from LAN only; no inbound 80/443 from WAN — tunnel is the only public path); Docker Engine + Compose plugin from Docker apt repo; create `revagent` service user; idempotent `deploy/office/provision.sh` committed so the standby uses the same script. | — | Re-running provision.sh is a no-op; `docker compose version` works as `revagent` user; machine returns to service unattended after a power pull. | 1.5 |
+| P5-T2 | **Compose stack + 12-factor layout.** `deploy/office/compose.yml` with services `gateway` (placeholder image until P5-T4), `postgres` (`revagent-postgres` image), `caddy`, `cloudflared`; volumes under `/opt/revagent/data/{postgres,objects,caddy}`; `env_file` refs to `/opt/revagent/env/{gateway,postgres}.env`; `caddy/Caddyfile` routing `→ gateway:8080`; documented config key list (`GATEWAY_PUBLIC_URL`, `DATABASE_URL`, `OBJECT_STORE_DRIVER=fs`, `OBJECT_STORE_ROOT`, `LLM_PROVIDER_BASE_URL`, `LLM_API_KEY`, `OIDC_*`, `LOG_LEVEL`); `restart: unless-stopped` + container healthchecks everywhere. | P5-T1 | `docker compose config` passes in CI; stack survives host reboot; no environment-specific value exists inside any image (verified by running the same compose on the standby later in P5-T8). | 2 |
+| P5-T3 | **Cloudflare Tunnel + DNS.** Create tunnel; `gateway.<domain>` CNAME→tunnel; cloudflared as Compose service (token in env file); route to Caddy; verify from LAN, from an external network, and from a bridged workstation. | P5-T2 | `https://gateway.<domain>/healthz` returns 200 from outside the office with no router port-forward; tunnel auto-reconnects after WAN flap (tested by pulling the WAN uplink). | 1 |
+| P5-T4 | **Gateway + Postgres images.** Multi-stage `Dockerfile` for the gateway (base `node:24-bookworm-slim`, matching the fleet-pinned Node 24.14.1 line — .github/workflows/signed-source-free-cd.yml:174-175; the runtime is ESM TS built by `tsc`, installer/runtime-mcp-server/package.json:6-16), non-root user, `HEALTHCHECK`; thin `revagent-postgres` image (postgres:16 + WAL-G). `gateway-ci.yml`: on PR/push touching gateway paths, run npm ci + tsc strict + unit tests + `docker build` + gitleaks on the `revagent-gateway` runner. | P5-T1; EXT: gateway package skeleton buildable | PR to main touching gateway paths gets a green Linux check without touching `ci.yml`; image runs `/healthz` green with stub env; both images pushed to GHCR with `sha-<shortsha>` tags. | 2 |
+| P5-T5 | **Linux runner + `gateway-cd.yml` deploy flow.** Register the self-hosted runner on the gateway host (labels `["self-hosted","Linux","revagent-gateway"]`, systemd service, runs as unprivileged user in `docker` group); deploy job (manual dispatch, environment `revagent-gateway-deploy`): pull digest → `compose up -d` → health gate (localhost + public URL) → append digest to `/opt/revagent/releases.log`; on health failure auto-revert to previous ledger digest; explicit `rollback` dispatch input redeploys any prior digest. | P5-T1, P5-T4 | A deliberately broken image is auto-reverted by the health gate with the run marked failed; a normal deploy completes in < 5 min; rollback-by-dispatch restores the previous version with zero manual SSH. | 1.5 |
+| P5-T6 | **Secrets handling.** Create `/opt/revagent/env/*.env` (0640 root:revagent); GHCR pull token for host + standby (packages:read); push token for the runner (packages:write); rotation procedure documented (LLM key, Postgres password, tunnel token, GHCR tokens); sealed offline copy in office password manager; gitleaks gate wired in P5-T4 confirmed. | P5-T2 | `docker inspect` of running containers shows no secret in image layers or compose file in git; documented rotation executed once end-to-end as a test. | 1 |
+| P5-T7 | **Backups.** WAL-G config (R2 bucket, `archive_mode=on`, `archive_command='wal-g wal-push %p'`, `archive_timeout=60s`); host cron: nightly `backup-push`, 5-min `rclone sync` of objects volume, 14-day `delete retain` after verify; every cron pings its Healthchecks.io check on success only. | P5-T2 | Kill -9 the Postgres container mid-write, restore latest chain on a scratch container: data loss measured < 5 min (RPO evidence recorded); missed backup fires a dead-man alert within its grace period. | 2 |
+| P5-T8 | **Standby VM.** Provision (same `provision.sh`); deploy same Compose from GHCR (services created, gateway/cloudflared stopped); stage cloudflared replica credential; install `bin/restore-latest.sh` (wal-g fetch + recovery + rclone pull of objects) and `bin/failover.sh` (restore → compose up → verify); document the fallback low-TTL DNS switch. | P5-T3, P5-T7 | `failover.sh` executed cold on the standby brings `https://gateway.<domain>` live with restored data, wall-clock measured ≤ 30 min (RTO evidence); a test bridge reconnects without reconfiguration. | 2 |
+| P5-T9 | **O10 runbook finalization + mandatory blank-VM restore drill.** Execute Appendix A's drill checklist on a brand-new VM (not the prepared standby) before go-live; record timings; finalize the runbook from the draft with measured numbers. | P5-T7, P5-T8 | Drill signed off with measured RPO/RTO both within Section 6 targets; runbook committed to `docs/`; second team member (not the author) can execute the restore from the doc alone. | 1.5 |
+| P5-T10 | **Monitoring.** Uptime Kuma on standby (probes `/readyz`, cert, tunnel; notification channels); Healthchecks.io checks for all crons incl. weekly restore-verify; disk-guard cron on both hosts. | P5-T8 | Stopping the gateway container produces an alert < 5 min; filling disk to 86% in test produces an alert; a skipped weekly restore-verify produces a dead-man alert. | 1 |
+| P5-T11 | **Weekly automated restore-verify.** Cron on standby: restore latest chain into a throwaway Postgres container, run verification queries (row counts on sessions/audit/registry tables vs. primary-side manifest emitted at backup time), report to Healthchecks; prune old backups only after verify passes. | P5-T8 | Two consecutive green weekly runs; a deliberately corrupted WAL segment in a test bucket turns the check red. | 1 |
+| P5-T12 | **Pilot readiness (infra side) + verification script.** Appendix B steps executed for the pilot workstation; a `verify-workstation.ps1`-style connect+execute probe (bridge enrolled → session visible at gateway → one `auto`-class read tool round-trips to live Revit) — this script is also the per-machine acceptance tool for cutover night. | P5-T3, P5-T5; EXT: bridge installer package, O1 protocol | Pilot machine passes connect+execute probe; gateway logs show session registration + tool audit event; probe script exits non-zero on any broken link in the chain. | 1 |
+| P5-T13 | **Cutover-night runbook + rehearsal.** Flesh out Appendix C with per-machine timings measured on the pilot; dry-run wipe→install→verify on one machine end-to-end (including one deliberate NAS-restore of that machine to time the honest rollback path); pre-sign the rollback criterion with the decision owner. | P5-T12; EXT: P3 uninstaller | Rehearsal machine completes wipe→install→verify ≤ 30 min; NAS restore of the same machine measured and recorded; runbook + rollback criterion signed before the cutover window is scheduled. | 1.5 |
+
+**Total: 19 dev-days** (senior dev + AI assistant). Critical path: T1→T2→T3→(T4,T5)→T7→T8→T9, interleavable with gateway-package development after T5.
+
+## (d) Test Strategy
+
+1. **Infra-as-code checks in CI (`gateway-ci.yml`):** `docker compose -f deploy/office/compose.yml config` (syntax/env-ref validation), Dockerfile lint (hadolint), gitleaks. These run on the Linux runner; the Windows gate suite (.github/workflows/ci.yml:35-52) is untouched.
+2. **Image tests:** container boots with stub env and reports healthy; `/healthz` (process) vs `/readyz` (DB reachable) contract tested; image runs as non-root; no writable layer dependencies (state only in volumes).
+3. **Deploy-gate tests (P5-T5 acceptance, repeated quarterly):** deliberately broken image → auto-revert; rollback dispatch → previous digest live. The deploy job's health gate doubles as the release test on every deploy.
+4. **Backup/restore verification (continuous):** dead-man alerts on every backup cron (P-MON-1); weekly automated restore-verify on the standby (P5-T11); measured-RPO chaos test (kill Postgres mid-write) at T7 acceptance and after any Postgres major upgrade.
+5. **DR drills:** mandatory blank-VM drill before go-live (P5-T9, Appendix A); timed failover drill to the standby (measure RTO ≤ 30 min) before cutover night and semi-annually after; each drill inserts a marker row immediately before failure injection to measure real RPO.
+6. **Network-failure tests:** WAN-pull test for tunnel reconnect (T3); bridge reconnect/resume through a tunnel restart (with the bridge package's idempotency tests — verifies the D3/5.4 reconnect story against real infrastructure).
+7. **Cutover rehearsal:** one full machine wipe→bridge install→verify plus one timed NAS restore of that machine (P5-T13) — the rollback path is tested before it is ever needed, and the measured timing feeds the rollback criterion.
+
+## (e) Risks Specific to This Package
+
+| # | Risk | Mitigation |
+|---|---|---|
+| R1 | **CI runner co-located with production gateway:** a hostile or runaway CI job can disturb the prod stack (shared Docker daemon). | Runner user unprivileged; jobs limited to this repo (no fork-PR execution on self-hosted — matches the repo's existing posture where PR CI already runs on the office Windows runner, .github/workflows/ci.yml:4-20); build resource limits; accepted for Phase 1 and revisited at SaaS phase. |
+| R2 | **Single-vendor concentration (Cloudflare: tunnel + DNS + R2).** A Cloudflare account/outage issue takes out ingress AND backup target simultaneously. | Backups are pull-restorable with plain S3 API (WAL-G is vendor-agnostic — bucket relocation is config); documented DNS-switch fallback (P-NET-2) works from any DNS host; risk accepted for Phase 1, noted for the SaaS variant. |
+| R3 | **Office WAN single line:** LAN users traverse the Cloudflare edge, so WAN loss = assistant down for everyone (and cloud-LLM egress dies regardless). | P-NET-3 LTE failover on the router; failover-to-standby covers remote users; explicitly communicated as residual risk per docs/TARGET_ARCHITECTURE.md:197. |
+| R4 | **Untested-restore rot:** backups green but unrestorable (bucket lifecycle misconfig, WAL gap). | Weekly automated restore-verify on the standby (P5-T11) + prune-only-after-verify + dead-man alerting; the go-live drill is mandatory and blocking (O10). |
+| R5 | **Compose/config drift between office host and standby.** | Single compose source in repo deployed by the same pipeline to both; env files are the only divergence and are enumerated in the runbook; weekly restore-verify would surface drift. |
+| R6 | **Deploy gate false-green:** `/readyz` passes but a protocol-level regression breaks bridges. | Post-deploy step of `gateway-cd.yml` runs the P5-T12 connect+execute probe against a designated always-on workstation bridge; failures trigger the same auto-revert. |
+| R7 | **DB migration vs. image rollback mismatch** (rollback re-runs old code on new schema). | P-CD-4 expand/contract rule enforced by review checklist in the gateway package; migrations applied by a one-shot compose job, never at container boot of the serving process. |
+| R8 | **Cutover-night overrun with the expensive rollback path:** NAS restore is ~30 min supervised per machine (P-CUT-1 evidence), so a late abort costs a second evening. | Canary-pair-first sequencing; go/no-go at T+90 min; pre-signed rollback criterion (Appendix C); NAS stays frozen-restorable 2 weeks (docs/TARGET_ARCHITECTURE.md:207); the timed rehearsal restore (P5-T13) makes the abort cost a known number, not a guess. |
+| R9 | **GHCR quota/retention:** private package storage grows with every sha-tagged image. | Monthly prune workflow keeping last 10 digests + all `v*` tags; mirrors the existing artifact-hygiene pattern (immediate artifact deletion, .github/workflows/signed-source-free-cd.yml:551-575). |
+
+---
+
+## Appendix A — O10 Backup/Restore Runbook (DRAFT)
+
+**A.1 What is backed up**
+- Postgres cluster (sessions, tool registry, tenants/users/devices, audit — Section 5.9): WAL-G, nightly base backup 02:00 + continuous WAL (`archive_timeout=60s`) → R2 bucket `revagent-backup/pg`.
+- Object volume `/opt/revagent/data/objects` (`result_ref` payloads, update artifacts): rclone sync every 5 min → `revagent-backup/objects`.
+- Host config `/opt/revagent/{compose.yml,caddy,env-INVENTORY}`: compose/Caddyfile come from git; env files are NOT backed up to cloud — they are reconstructed from the password-manager sealed copy (keeps LLM keys out of the backup bucket).
+- NOT backed up: GHCR images (registry is the artifact store), OS (reprovision via `deploy/office/provision.sh`).
+
+**A.2 Verification cadence**
+- Every backup cron pings Healthchecks.io on success only; missed ping alerts within grace (base backup: 26 h; WAL push: checked hourly via `wal-g wal-verify`; rclone: 15 min).
+- Weekly (Sun 03:00, on standby): full automated restore of the latest chain into a throwaway container + verification queries against the backup-time row-count manifest; prune (`retain 14`) only after green.
+- Quarterly: manual failover drill (A.4) with measured RPO/RTO logged in the runbook.
+
+**A.3 Restore drill on a blank VM — MANDATORY before go-live (checklist)**
+1. Provision a fresh VM (NOT the prepared standby) with `provision.sh`; record start time T0.
+2. Authenticate to GHCR with the read token; fetch compose from git at the production-deployed tag.
+3. Reconstruct env files from the password-manager sealed copy (this step proves the secret-recovery path).
+4. `restore-latest.sh`: wal-g fetch latest base backup + replay WAL to end; rclone pull objects volume.
+5. `docker compose up -d` (gateway + postgres + caddy; cloudflared with a TEST hostname, never the production tunnel during a drill).
+6. Verify: `/readyz` 200; marker row inserted on primary at drill start is present (RPO evidence); a test bridge pointed at the test hostname completes connect+execute.
+7. Record T_end; **pass = T_end − T0 ≤ 30 min and marker-row loss ≤ 5 min**; file the drill record; destroy the VM.
+8. Sign-off rule: drill executed by a team member who did not write the scripts, using only this runbook.
+
+**A.4 Failover procedure (office host lost)**
+1. Confirm primary actually down (Uptime Kuma + SSH attempt) — avoid split-brain; NEVER start the standby's cloudflared while the primary's is connected.
+2. On standby: `failover.sh` (restore latest → compose up incl. cloudflared replica → self-verify).
+3. Traffic moves via the tunnel replica automatically (P-NET-2); fallback: low-TTL DNS switch of `gateway.<domain>` documented inline.
+4. Announce; bridges re-attach automatically (D3 reconnect); verify with the connect+execute probe.
+5. Failback (office host repaired) is a mirror: back up on standby, stop standby cloudflared, restore on office host, start.
+
+## Appendix B — Pilot-Machine Setup Steps (infra view; migration step 2, docs/TARGET_ARCHITECTURE.md:205)
+
+1. Gateway pre-flight: current image deployed green; monitoring green; backup chain green ≥ 48 h.
+2. Enroll pilot machine device token (candidate: the existing pilot machine `DESKTOP-OKNV128` or `NET01`, already the signed-CD pilot channel machines — .github/workflows/signed-source-free-cd.yml:268).
+3. Install bridge alongside the untouched old stack (pilot coexists; old stack keeps working — Section 8 step 2). Bridge points at `https://gateway.<domain>`.
+4. Run the connect+execute probe (P5-T12); then several days of real work with daily probe + gateway-side audit review; exercise sleep/wake and WAN-flap reconnects.
+5. Exit criteria to schedule cutover: N consecutive workdays of pilot use with zero unexplained disconnects, idempotency journal clean on redeliveries, self-update path exercised once (with O9 package).
+
+## Appendix C — Cutover-Night Runbook Skeleton (~12 machines; migration step 3)
+
+**Pre-night (T−7 to T−1 days):** freeze confirmation; NAS stable channel frozen (no publishes — last `publish_to_nas` dispatch recorded); device tokens pre-enrolled for all 12 machines; bridge installer staged on local share/USB; rehearsal machine (P5-T13) results reviewed; rollback criterion signed; gateway backup drill green within last 7 days.
+
+**Per-machine procedure (target 20 min, plan 30):**
+1. Wipe old stack via P3 uninstaller (removes `C:\ProgramData\DPE\revAgent` tree, scheduled tasks, `.codex` managed sections, add-in manifest — per E4 wipe list).
+2. Install bridge (final fleet push ever) + verify device enrollment.
+3. Run connect+execute probe (P5-T12); record result on the cutover sheet (machine, operator, start/end, probe output).
+
+**Sequencing & timing (2 operators):** T+0 gateway pre-flight + probe from coordinator machine (15 min) → T+0:15 canary pair (2 machines, sequential, full verification + 30-min soak while operators prep the rest) → **T+1:30 GO/NO-GO against the rollback criterion** → remaining 10 machines in parallel pairs, ~5 rounds × 30 min ≈ 2.5 h → final sweep: all 12 probes green, gateway dashboard shows 12 connected bridges, spot-check one `confirm`-class tool with preview/approve. **Total ≈ 4.5–5 h; schedule a 6-hour evening window.**
+
+**Rollback criterion template (fill and sign before the night):**
+> If by T+1:30 either canary machine fails connect+execute, or any Severity-1 defect is observed (data-mutating tool executes without its policy-class gate, duplicate mutation on reconnect, or model corruption), STOP: no further wipes. Machines already wiped (max 2 at this point — the reason for canary-first) are restored from the frozen NAS via the supervised bootstrap-prestage procedure (docs/BOOTSTRAP_PRESTAGE.md two-shell; measured ~⟨rehearsal time⟩ min/machine in P5-T13). **Honest constraint: NAS restore is per-machine supervised work (no local package backups exist — docs/DEVELOPER_RUNBOOK.md:1228-1236; a full-fleet restore is a second full evening), and any non-wiped machine that must accept an older signed release requires a manual `-AllowSignedReleaseRollback` updater run (installer/nas/README.md:617-621).** If instead ≥ 10/12 machines are green by T+5:00 with no Severity-1, the remainder are finished next morning and the cutover stands. Decision owner: ⟨name⟩; scribe: ⟨name⟩. NAS remains frozen-restorable for 14 days from this date (docs/TARGET_ARCHITECTURE.md:207), then step 5 (retire/archive) executes.
