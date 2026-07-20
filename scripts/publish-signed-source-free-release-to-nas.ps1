@@ -1522,7 +1522,25 @@ function Assert-RevAgentProductionTrustedKeysDocument {
     if ($null -eq $validator) {
         throw 'Bootstrap-trust module does not export the production trusted-key validator.'
     }
-    $validation = & $validator -Bytes ([IO.File]::ReadAllBytes($Path))
+    $trustedKeysStream = $null
+    try {
+        # Enforce the producer's 64 KiB trust-document policy before allocating
+        # and hold the exact bytes stable through validation.
+        $trustedKeysStream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($trustedKeysStream.Length -lt 1 -or $trustedKeysStream.Length -gt 65536) {
+            throw "Production trusted-key document size is outside the bounded 1..65536 policy: $Path"
+        }
+        $trustedKeysBytes = New-Object byte[] ([int]$trustedKeysStream.Length)
+        $trustedKeysOffset = 0
+        while ($trustedKeysOffset -lt $trustedKeysBytes.Length) {
+            $trustedKeysRead = $trustedKeysStream.Read($trustedKeysBytes, $trustedKeysOffset, $trustedKeysBytes.Length - $trustedKeysOffset)
+            if ($trustedKeysRead -le 0) { throw "Production trusted-key document ended before its declared length: $Path" }
+            $trustedKeysOffset += $trustedKeysRead
+        }
+        if ($trustedKeysStream.ReadByte() -ne -1) { throw "Production trusted-key document grew while it was acquired: $Path" }
+    }
+    finally { if ($null -ne $trustedKeysStream) { $trustedKeysStream.Dispose() } }
+    $validation = & $validator -Bytes $trustedKeysBytes
     if (-not [bool]$validation.success -or
         @($validation.keys | Where-Object { [string]::Equals([string]$_.keyId, $productionSigningKeyId, [StringComparison]::Ordinal) -and [string]::Equals([string]$_.fingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) {
         throw 'Production trusted-key document does not contain the pinned q3 identity within the bounded two-key transition contract.'

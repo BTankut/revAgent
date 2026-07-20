@@ -317,6 +317,28 @@ Assert-RevAgentProductionTrustedKeysDocument -Path $Path
             path = Join-Path $secretRoot 'rotation-duplicate-property.json'
             raw = $duplicateKeyJson
             pattern = 'duplicate decoded (?:JSON )?property|empty or duplicate decoded property'
+        },
+        [pscustomobject]@{
+            name = 'non-literal-Z public metadata timestamp'
+            path = Join-Path $secretRoot 'rotation-metadata-offset.json'
+            value = [ordered]@{
+                schemaVersion = 1
+                app = 'revAgent'
+                generatedAtUtc = '2026-06-23T12:34:03+00:00'
+                trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $metadataQ3Record }
+            }
+            pattern = 'public metadata|trusted-key metadata|generatedAtUtc|ISO UTC'
+        },
+        [pscustomobject]@{
+            name = 'lowercase-z public metadata timestamp'
+            path = Join-Path $secretRoot 'rotation-metadata-lowercase-z.json'
+            value = [ordered]@{
+                schemaVersion = 1
+                app = 'revAgent'
+                generatedAtUtc = '2026-06-23T12:34:03z'
+                trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $metadataQ3Record }
+            }
+            pattern = 'public metadata|trusted-key metadata|generatedAtUtc|ISO UTC'
         }
     )
     foreach ($invalid in $invalidRotationDocuments) {
@@ -1223,11 +1245,41 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $newInboxCommand = Get-Command ("{0}\New-RevAgentAuthenticatedReleaseInbox" -f $snapshotModule.Name) -ErrorAction Stop
     $newSnapshotCommand = Get-Command ("{0}\New-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
     $assertSnapshotCommand = Get-Command ("{0}\Assert-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
+    if ($PSVersionTable.PSEdition -eq 'Core' -and $null -ne ('Newtonsoft.Json.JsonConvert' -as [type])) {
+        $snapshotFallbackEvidence = & $snapshotModule {
+            $script:RevAgentSnapshotJsonSupportsDateKind = $false
+            $script:RevAgentSnapshotJsonRequiresNewtonsoft = $true
+            try {
+                $parsed = ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json '{"createdAtUtc":"2026-07-20T00:00:00.0000000Z"}'
+                $collisionRejected = $false
+                try { [void](ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json '{"app":"revAgent","App":"evil"}') }
+                catch { $collisionRejected = [string]$_.Exception.Message -match 'case-insensitive duplicate JSON property' }
+                return [pscustomobject]@{ parsed = $parsed; collisionRejected = $collisionRejected }
+            }
+            finally {
+                $script:RevAgentSnapshotJsonSupportsDateKind = $null
+                $script:RevAgentSnapshotJsonRequiresNewtonsoft = $null
+            }
+        }
+        Assert-True ($snapshotFallbackEvidence.parsed.createdAtUtc -is [string] -and [string]$snapshotFallbackEvidence.parsed.createdAtUtc -ceq '2026-07-20T00:00:00.0000000Z') 'Release snapshot older-Core fallback did not preserve the exact ISO JSON string.'
+        Assert-True ([bool]$snapshotFallbackEvidence.collisionRejected) 'Release snapshot older-Core fallback collapsed a case-insensitive JSON property collision.'
+    }
     $pilotInboxRoot = Join-Path $tempRoot 'pilot-inbox'
     New-Item -ItemType Directory -Path $pilotInboxRoot -Force | Out-Null
     $inboxProbe = [pscustomobject]@{ called = $false }
     $inboxHook = { param($path, $source); $inboxProbe.called = $true }.GetNewClosure()
     $nodeMsiHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pilotNodeMsiSidecar).Hash
+    $invalidSnapshotTrustPath = Join-Path $secretRoot 'snapshot-trust-metadata-offset.json'
+    [ordered]@{
+        schemaVersion = 1
+        app = 'revAgent'
+        generatedAtUtc = '2026-07-20T00:00:00+00:00'
+        trustedKeys = $trustedKeys.trustedKeys
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $invalidSnapshotTrustPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $invalidSnapshotTrustPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'TESTPILOT01' | Out-Null
+    } -Pattern 'Protected trust metadata.*ISO UTC generatedAtUtc' -Message 'Authenticated inbox acquisition accepted a non-literal-Z protected trust timestamp.'
+    Assert-True (@(Get-ChildItem -LiteralPath $pilotInboxRoot -Force).Count -eq 0) 'Rejected protected trust metadata created an authenticated inbox child.'
     Assert-ThrowsLike -Action {
         & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'OUTSIDER01' -TestBeforeInboxChildCreateHook $inboxHook | Out-Null
     } -Pattern 'pilot_machine_not_allowed' -Message 'Authenticated inbox acquisition accepted an unauthorized pilot machine.'
@@ -1578,6 +1630,7 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     $bootstrapEvidenceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\New-RevAgentBootstrapPrestageEvidence.ps1")
     $prestageKitBuilderText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageKit.ps1')
+    $releaseSnapshotText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1')
     $retiredPromoterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\promote-nas-release.ps1")
     $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
     $stableLauncherSourceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd')
@@ -1585,6 +1638,10 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
     $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
+    Assert-True ($producerText -match '(?s)\$sourceStream\.Length\s+-lt\s+1.*?\$sourceStream\.Length\s+-gt\s+65536.*?New-Object byte\[\]' -and $producerText -notmatch '\[IO\.File\]::ReadAllBytes\(\$Path\)') 'CD producer must enforce the trusted-key size bound before allocating its byte snapshot.'
+    Assert-True ($publisherText -match '(?s)\$trustedKeysStream\.Length\s+-lt\s+1.*?\$trustedKeysStream\.Length\s+-gt\s+65536.*?New-Object byte\[\].*?\$validation\s*=\s*&\s*\$validator\s+-Bytes\s+\$trustedKeysBytes' -and $publisherText -notmatch '\[IO\.File\]::ReadAllBytes\(\$Path\)') 'NAS publisher must enforce the trusted-key size bound before allocating and validating its byte snapshot.'
+    Assert-True ($releaseSnapshotText -match '(?s)\$trustedKeysStream\.Length\s+-lt\s+1.*?\$trustedKeysStream\.Length\s+-gt\s+65536.*?New-Object byte\[\]' -and $releaseSnapshotText -notmatch '\[IO\.File\]::ReadAllBytes\(\$TrustedKeysPath\)') 'Release snapshot trust validation must enforce the trusted-key size bound before allocating its byte snapshot.'
+    Assert-True ($releaseSnapshotText -match '\$trustedKeysSha256\s*=\s*Get-RevAgentSnapshotSha256Bytes\s+-Bytes\s+\$trustedKeysBytes' -and $releaseSnapshotText -match 'trustedKeysSha256\s*=\s*\$trustedKeysSha256' -and $releaseSnapshotText -notmatch 'trustedKeysSha256\s*=\s*Get-RevAgentSnapshotFileSha256\s+-Path\s+\$TrustedKeysPath') 'Release snapshot must bind its returned trusted-key SHA to the exact held byte snapshot that was parsed and validated, without reopening the pathname.'
     Assert-True ($prestageKitBuilderText -match "'IT-Prestage-revAgent\.cmd'" -and $prestageKitBuilderText -match "'scripts/Invoke-RevAgentSupervisedPrestage\.ps1'" -and $prestageKitBuilderText -match "'scripts/New-RevAgentBootstrapPrestageEvidence\.ps1'" -and $prestageKitBuilderText -match "'installer/lib/RevAgent\.DistributionIntegrity\.psm1'" -and $prestageKitBuilderText -match "'config/release-trusted-keys\.json'" -and $prestageKitBuilderText -match 'FileMode\]::CreateNew' -and $prestageKitBuilderText -match '1980, 1, 1' -and $prestageKitBuilderText -match 'GetLinkCount' -and $prestageKitBuilderText -match 'RUNNER_TEMP' -and $prestageKitBuilderText -notmatch 'RUNNER_WORKSPACE' -and $prestageKitBuilderText -notmatch 'SigningPrivateKeyPath') 'Supervised prestage kit builder must enforce its deterministic exact public allowlist, TEMP-only output, no-link policy, and no-private-key input.'
     foreach ($forbiddenKitSurfaceName in @(
         'IT-Prestage-revAgent.cmd',

@@ -839,7 +839,27 @@ Add-RevAgentReadinessCheck -Checks $checks -Name "release_manifest_signature_pre
 Add-RevAgentReadinessCheck -Checks $checks -Name "package_present" -Success (Test-Path -LiteralPath $packagePath -PathType Leaf) -Message "Release ZIP must exist." -Path $packagePath
 
 $trustedKeyValidation = [pscustomobject][ordered]@{ success = $false; reason = 'trusted_key_validation_not_run'; error = '' }
-$trustedKeySourceBytes = [IO.File]::ReadAllBytes($TrustedKeysPath)
+$trustedKeySourceBytes = $null
+$trustedKeySourceStream = $null
+try {
+    # Hold one deny-write/delete handle while enforcing the size policy before
+    # allocation. Every later trust, publish-surface, and package comparison
+    # must reuse this exact byte snapshot rather than reopening the pathname.
+    $trustedKeySourceStream = [IO.File]::Open($TrustedKeysPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    if ($trustedKeySourceStream.Length -lt 1 -or $trustedKeySourceStream.Length -gt 65536) {
+        throw "Trusted release-key document size is outside the bounded 1..65536 policy: $TrustedKeysPath"
+    }
+    $trustedKeySourceBytes = New-Object byte[] ([int]$trustedKeySourceStream.Length)
+    $trustedKeySourceOffset = 0
+    while ($trustedKeySourceOffset -lt $trustedKeySourceBytes.Length) {
+        $trustedKeySourceRead = $trustedKeySourceStream.Read($trustedKeySourceBytes, $trustedKeySourceOffset, $trustedKeySourceBytes.Length - $trustedKeySourceOffset)
+        if ($trustedKeySourceRead -le 0) { throw "Trusted release-key document ended before its declared length: $TrustedKeysPath" }
+        $trustedKeySourceOffset += $trustedKeySourceRead
+    }
+    if ($trustedKeySourceStream.ReadByte() -ne -1) { throw "Trusted release-key document grew while it was acquired: $TrustedKeysPath" }
+}
+finally { if ($null -ne $trustedKeySourceStream) { $trustedKeySourceStream.Dispose() } }
+$validatedTrustedKeySet = $null
 try {
     $validatedTrustedKeySet = & $bootstrapTrustedKeysCommand `
         -Bytes $trustedKeySourceBytes `
@@ -851,7 +871,7 @@ catch {
 }
 Add-RevAgentReadinessCheck -Checks $checks -Name 'trusted_release_key_document_valid' -Success ([bool]$trustedKeyValidation.success) -Reason ([string]$trustedKeyValidation.reason) -Message $(if ([bool]$trustedKeyValidation.success) { 'Trusted release-key document satisfies the bounded public two-key transition contract.' } else { [string]$trustedKeyValidation.error }) -Path $TrustedKeysPath
 
-$trustedKeys = Read-RevAgentTrustedKeys -Path $TrustedKeysPath
+$trustedKeys = if ([bool]$trustedKeyValidation.success) { $validatedTrustedKeySet.document.trustedKeys } else { [pscustomobject]@{} }
 $trustedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $trustedKeys
 Add-RevAgentReadinessCheck -Checks $checks -Name "trusted_release_keys_present" -Success ($trustedKeyMap.Count -gt 0) -Message "At least one trusted public release key must be supplied." -Path $TrustedKeysPath
 
@@ -906,7 +926,7 @@ if ($publishedSurfaceRequired) {
     $publishedTrustedKeysRelativePath = 'tools\config\release-trusted-keys.json'
     $expectedPublishedFiles.Add([pscustomobject]@{
             relativePath = $publishedTrustedKeysRelativePath
-            expectedBytes = [IO.File]::ReadAllBytes($TrustedKeysPath)
+            expectedBytes = $trustedKeySourceBytes
             source = $TrustedKeysPath
         }) | Out-Null
     $legacyLauncherNames = @(

@@ -8,6 +8,8 @@ $script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231
 $script:RevAgentNodeMsiSizeBytes = [long]32387072
 $script:RevAgentSystemOnlySnapshotAccessPolicy = 'system-only-bootstrap-trust'
 $script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
+$script:RevAgentSnapshotJsonSupportsDateKind = $null
+$script:RevAgentSnapshotJsonRequiresNewtonsoft = $null
 
 if (-not ('RevAgent.ReleaseSnapshotNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -240,6 +242,56 @@ function Find-RevAgentSnapshotDuplicateJsonObjectKey {
     return [pscustomobject]@{ found = $false; key = '' }
 }
 
+function ConvertFrom-RevAgentSnapshotNewtonsoftToken {
+    param([AllowNull()][object]$Token)
+
+    if ($null -eq $Token) { return $null }
+    $runtimeType = $Token.GetType()
+    if ($Token -is [string] -or $Token -is [bool] -or $runtimeType.IsPrimitive -or $Token -is [decimal] -or $runtimeType.FullName -ceq 'System.Numerics.BigInteger') { return $Token }
+    if ($Token -is [Newtonsoft.Json.Linq.JObject]) {
+        $properties = [ordered]@{}
+        $propertyNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in @(([Newtonsoft.Json.Linq.JObject]$Token).Properties())) {
+            $propertyName = [string]$property.get_Name()
+            if (-not $propertyNames.Add($propertyName)) { throw "The PowerShell JSON runtime returned a case-insensitive duplicate JSON property '$propertyName'." }
+            $properties[$propertyName] = ConvertFrom-RevAgentSnapshotNewtonsoftToken -Token $property.get_Value()
+        }
+        return [pscustomobject]$properties
+    }
+    if ($Token -is [Newtonsoft.Json.Linq.JArray]) {
+        $items = [Collections.Generic.List[object]]::new()
+        foreach ($item in @(([Newtonsoft.Json.Linq.JArray]$Token).Children())) { $items.Add((ConvertFrom-RevAgentSnapshotNewtonsoftToken -Token $item)) }
+        return ,([object[]]$items.ToArray())
+    }
+    if ($Token -is [Newtonsoft.Json.Linq.JValue]) { return ([Newtonsoft.Json.Linq.JValue]$Token).get_Value() }
+    throw "The PowerShell JSON runtime returned an unsupported Newtonsoft token type '$($runtimeType.FullName)'."
+}
+
+function ConvertFrom-RevAgentSnapshotJsonPreservingStrings {
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    if ($null -eq $script:RevAgentSnapshotJsonSupportsDateKind) {
+        $command = Microsoft.PowerShell.Core\Get-Command -Name 'Microsoft.PowerShell.Utility\ConvertFrom-Json' -CommandType Cmdlet -ErrorAction Stop
+        $script:RevAgentSnapshotJsonSupportsDateKind = [bool]$command.Parameters.ContainsKey('DateKind')
+        $script:RevAgentSnapshotJsonRequiresNewtonsoft = $false
+        if (-not $script:RevAgentSnapshotJsonSupportsDateKind) {
+            $probe = '"2000-01-01T00:00:00.0000000Z"' | Microsoft.PowerShell.Utility\ConvertFrom-Json -ErrorAction Stop
+            $script:RevAgentSnapshotJsonRequiresNewtonsoft = -not ($probe -is [string])
+        }
+    }
+    if ($script:RevAgentSnapshotJsonSupportsDateKind) {
+        return $Json | Microsoft.PowerShell.Utility\ConvertFrom-Json -DateKind String -ErrorAction Stop
+    }
+    if (-not $script:RevAgentSnapshotJsonRequiresNewtonsoft) {
+        return $Json | Microsoft.PowerShell.Utility\ConvertFrom-Json -ErrorAction Stop
+    }
+    if ($null -eq ('Newtonsoft.Json.JsonConvert' -as [type])) { throw 'The PowerShell JSON runtime cannot preserve ISO date strings.' }
+    $settings = [Newtonsoft.Json.JsonSerializerSettings]::new()
+    $settings.DateParseHandling = [Newtonsoft.Json.DateParseHandling]::None
+    $token = [Newtonsoft.Json.JsonConvert]::DeserializeObject($Json, $settings)
+    return ConvertFrom-RevAgentSnapshotNewtonsoftToken -Token $token
+}
+
 function Read-RevAgentSnapshotLockedJson {
     param(
         [Parameter(Mandatory = $true)][IO.FileStream]$Stream,
@@ -264,7 +316,7 @@ function Read-RevAgentSnapshotLockedJson {
         if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) { $json = $json.Substring(1) }
         $duplicate = Find-RevAgentSnapshotDuplicateJsonObjectKey -Json $json
         if ([bool]$duplicate.found) { throw "Signed JSON contains a duplicate decoded object property: $($duplicate.key)" }
-        return $json | ConvertFrom-Json -ErrorAction Stop
+        return ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json $json
     }
     catch {
         throw "Signed JSON could not be parsed from its locked bytes. path=$Path error=$($_.Exception.Message)"
@@ -626,13 +678,56 @@ function Assert-RevAgentSnapshotTrustInputs {
     if (-not $AllowTestRoot -and -not [string]::Equals($integrityHash, $script:RevAgentIntegrityModuleSha256, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Protected release integrity verifier hash mismatch. expected=$($script:RevAgentIntegrityModuleSha256) actual=$integrityHash"
     }
-    $trustedKeysJson = Get-Content -Raw -LiteralPath $TrustedKeysPath -Encoding UTF8
+    $trustedKeysStream = $null
+    try {
+        $trustedKeysStream = [IO.File]::Open($TrustedKeysPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($trustedKeysStream.Length -lt 1 -or $trustedKeysStream.Length -gt 65536) {
+            throw "Protected trust document size is outside the bounded 1..65536 policy: $TrustedKeysPath"
+        }
+        $trustedKeysBytes = New-Object byte[] ([int]$trustedKeysStream.Length)
+        $trustedKeysOffset = 0
+        while ($trustedKeysOffset -lt $trustedKeysBytes.Length) {
+            $trustedKeysRead = $trustedKeysStream.Read($trustedKeysBytes, $trustedKeysOffset, $trustedKeysBytes.Length - $trustedKeysOffset)
+            if ($trustedKeysRead -le 0) { throw "Protected trust document ended before its declared length: $TrustedKeysPath" }
+            $trustedKeysOffset += $trustedKeysRead
+        }
+        if ($trustedKeysStream.ReadByte() -ne -1) { throw "Protected trust document grew while it was acquired: $TrustedKeysPath" }
+    }
+    finally { if ($null -ne $trustedKeysStream) { $trustedKeysStream.Dispose() } }
+    $trustedKeysSha256 = Get-RevAgentSnapshotSha256Bytes -Bytes $trustedKeysBytes
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $trustedKeysJson = $strictUtf8.GetString($trustedKeysBytes)
+    if ($trustedKeysJson.Length -gt 0 -and $trustedKeysJson[0] -eq [char]0xFEFF) { $trustedKeysJson = $trustedKeysJson.Substring(1) }
+
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Runtime.Serialization -ErrorAction Stop
+    $jsonBytes = $trustedKeysBytes
+    if ($trustedKeysBytes.Length -ge 3 -and $trustedKeysBytes[0] -eq 0xEF -and $trustedKeysBytes[1] -eq 0xBB -and $trustedKeysBytes[2] -eq 0xBF) {
+        $jsonBytes = New-Object byte[] ($trustedKeysBytes.Length - 3)
+        [Array]::Copy($trustedKeysBytes, 3, $jsonBytes, 0, $jsonBytes.Length)
+    }
+    $reader = $null
+    try {
+        $reader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader($jsonBytes, [Xml.XmlDictionaryReaderQuotas]::Max)
+        $tokenDocument = [Xml.XmlDocument]::new()
+        $tokenDocument.XmlResolver = $null
+        $tokenDocument.Load($reader)
+    }
+    catch { throw "Protected trust bytes are not strict JSON: $($_.Exception.Message)" }
+    finally { if ($null -ne $reader) { $reader.Dispose() } }
+    $tokenRoot = $tokenDocument.DocumentElement
+    if ($null -eq $tokenRoot -or
+        -not [string]::Equals([string]$tokenRoot.LocalName, 'root', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$tokenRoot.GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
+        throw 'Protected trust document must be one JSON object.'
+    }
+    $topLevelTokenNodes = @($tokenRoot.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+
     $trustedInputIntegrityModule = Import-Module $IntegrityModulePath -Force -PassThru
     $duplicateTrustedKeyProperty = & $trustedInputIntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $trustedKeysJson
     if ([bool]$duplicateTrustedKeyProperty.found) {
         throw "Protected trust document contains a duplicate decoded JSON property: $($duplicateTrustedKeyProperty.key)"
     }
-    $keys = $trustedKeysJson | ConvertFrom-Json
+    $keys = ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json $trustedKeysJson
     $topLevelProperties = @($keys.PSObject.Properties)
     $allowedTopLevelFields = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
     $minimalTopLevel = $topLevelProperties.Count -eq 1 -and [string]::Equals([string]$topLevelProperties[0].Name, 'trustedKeys', [StringComparison]::Ordinal)
@@ -643,14 +738,27 @@ function Assert-RevAgentSnapshotTrustInputs {
         throw 'Protected trust document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys.'
     }
     if ($metadataTopLevel) {
+        $generatedAtUtcNodes = @($topLevelTokenNodes | Where-Object {
+                $propertyName = if ([string]::Equals([string]$_.LocalName, 'item', [StringComparison]::Ordinal) -and $_.HasAttribute('item')) {
+                    [string]$_.GetAttribute('item')
+                }
+                else { [string]$_.LocalName }
+                [string]::Equals($propertyName, 'generatedAtUtc', [StringComparison]::Ordinal)
+            })
+        $generatedAtUtcText = if ($generatedAtUtcNodes.Count -eq 1 -and
+            [string]::Equals([string]$generatedAtUtcNodes[0].GetAttribute('type'), 'string', [StringComparison]::Ordinal)) {
+            [string]$generatedAtUtcNodes[0].InnerText
+        }
+        else { $null }
         $generatedAt = [DateTimeOffset]::MinValue
         if (($keys.schemaVersion -isnot [int] -and $keys.schemaVersion -isnot [long]) -or
             [long]$keys.schemaVersion -ne 1 -or
             $keys.app -isnot [string] -or
             ([string]$keys.app -cne 'revAgent' -and [string]$keys.app -cne 'revit-mcp-skill') -or
-            $keys.generatedAtUtc -isnot [string] -or
-            [string]$keys.generatedAtUtc -notmatch 'Z$' -or
-            -not [DateTimeOffset]::TryParse([string]$keys.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt)) {
+            [string]$generatedAtUtcText -cnotmatch 'Z$' -or
+            -not [DateTimeOffset]::TryParse([string]$generatedAtUtcText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt) -or
+            $generatedAt.Offset -ne [TimeSpan]::Zero -or
+            $generatedAt.UtcDateTime -gt [DateTime]::UtcNow.AddMinutes(5)) {
             throw 'Protected trust metadata must be schemaVersion 1, an accepted revAgent app identity, and ISO UTC generatedAtUtc.'
         }
     }
@@ -731,7 +839,7 @@ function Assert-RevAgentSnapshotTrustInputs {
     }
     return [pscustomobject][ordered]@{
         keys = $keys
-        trustedKeysSha256 = Get-RevAgentSnapshotFileSha256 -Path $TrustedKeysPath
+        trustedKeysSha256 = $trustedKeysSha256
         verifierSha256 = $integrityHash
         productionKeyFingerprint = if ($null -ne $productionKey) { $fingerprint } else { '' }
     }

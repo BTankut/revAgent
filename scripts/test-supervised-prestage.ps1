@@ -171,18 +171,35 @@ try {
     try {
         $swapPublicKeyXml = $swapRsa.ToXmlString($false)
         $swapPublicFingerprint = Get-Sha256ForBytes ([Text.Encoding]::UTF8.GetBytes(($swapPublicKeyXml.Trim() -replace '\s+', '')))
+        $originalKeyRecord = [ordered]@{
+            algorithm = 'RS256'
+            publicKeyFingerprint = $swapPublicFingerprint
+            publicKeyXml = $swapPublicKeyXml
+        }
         $originalKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes(([ordered]@{
+            schemaVersion = 1
+            app = 'revAgent'
+            generatedAtUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
             trustedKeys = [ordered]@{
-                original = [ordered]@{
-                    algorithm = 'RS256'
-                    publicKeyFingerprint = $swapPublicFingerprint
-                    publicKeyXml = $swapPublicKeyXml
-                }
+                original = $originalKeyRecord
             }
+        } | ConvertTo-Json -Depth 6))
+        $invalidMetadataKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes(([ordered]@{
+            schemaVersion = 1
+            app = 'revAgent'
+            generatedAtUtc = '2026-07-20T00:00:00+00:00'
+            trustedKeys = [ordered]@{ original = $originalKeyRecord }
         } | ConvertTo-Json -Depth 6))
     }
     finally { $swapRsa.Dispose() }
     $replacementKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes('{"trustedKeys":{"replacement":{"algorithm":"RS256"}}}')
+    [IO.File]::WriteAllBytes($swapKeysPath, $invalidMetadataKeyBytes)
+    $invalidMetadataError = Capture-Error {
+        & $producerPath -ReleaseRoot $swapReleaseRoot -TrustedKeysPath $swapKeysPath `
+            -OutputPath (Join-Path $keySwapFixture 'invalid-metadata-evidence.json') -RepoRoot $repoRoot `
+            -AllowTestRoot -SupervisedAdminPrestage -TestAdministratorState elevated
+    }
+    Assert-True ($invalidMetadataError -match 'Trusted-key public metadata is invalid') 'Evidence producer accepted a non-literal-Z generatedAtUtc value.'
     [IO.File]::WriteAllBytes($swapKeysPath, $originalKeyBytes)
     $hookState = [pscustomobject]@{ Sha256 = '' }
     $keySwapHook = {
@@ -400,6 +417,9 @@ $testPublicKeyXml = $testRsa.ToXmlString($false)
 $normalizedTestPublicKey = $testPublicKeyXml.Trim() -replace '\s+', ''
 $testPublicKeyFingerprint = Get-Sha256ForBytes ([Text.Encoding]::UTF8.GetBytes($normalizedTestPublicKey))
 $testTrustedKeys = [ordered]@{
+    schemaVersion = 1
+    app = 'revAgent'
+    generatedAtUtc = [DateTime]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffffffZ', [Globalization.CultureInfo]::InvariantCulture)
     trustedKeys = [ordered]@{
         fixture = [ordered]@{
             publicKeyXml = $testPublicKeyXml
@@ -410,6 +430,22 @@ $testTrustedKeys = [ordered]@{
 }
 $keysBytes = $utf8.GetBytes(($testTrustedKeys | ConvertTo-Json -Depth 6))
 [IO.File]::WriteAllBytes($trustedKeysPath, $keysBytes)
+$invalidKitTrustedKeysPath = Join-Path $fixtureRoot 'invalid-metadata-trusted-keys.json'
+$invalidKitTrustedKeys = [ordered]@{
+    schemaVersion = 1
+    app = 'revAgent'
+    generatedAtUtc = '2026-07-20T00:00:00+00:00'
+    trustedKeys = $testTrustedKeys.trustedKeys
+}
+[IO.File]::WriteAllBytes($invalidKitTrustedKeysPath, $utf8.GetBytes(($invalidKitTrustedKeys | ConvertTo-Json -Depth 6)))
+$invalidKitMetadataError = Capture-Error {
+    & $kitBuilderPath `
+        -OutputDirectory (Join-Path $fixtureRoot 'invalid-metadata-kit') `
+        -TrustedKeysPath $invalidKitTrustedKeysPath `
+        -RepoRoot $repoRoot `
+        -AllowTestTrustedKeys | Out-Null
+}
+Assert-True ($invalidKitMetadataError -match 'Prestage kit trusted-key public metadata is invalid') 'Prestage kit accepted a non-literal-Z generatedAtUtc value.'
 $packageTrustedKeysPath = Join-Path $packageSource 'config\release-trusted-keys.json'
 [void][IO.Directory]::CreateDirectory((Split-Path -Parent $packageTrustedKeysPath))
 [IO.File]::WriteAllBytes($packageTrustedKeysPath, $keysBytes)

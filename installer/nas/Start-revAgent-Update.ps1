@@ -320,7 +320,49 @@ if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $localInt
     throw "Protected local distribution-integrity verifier does not match the bootstrap pin."
 }
 $localTrustedKeysPath = Join-Path $BootstrapRoot ([string]$state.files.trustedKeys.relativePath)
-$trustedKeysJson = Get-Content -Raw -LiteralPath $localTrustedKeysPath -Encoding UTF8
+$trustedKeysStream = $null
+try {
+    $trustedKeysStream = [IO.File]::Open($localTrustedKeysPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    if ($trustedKeysStream.Length -lt 1 -or $trustedKeysStream.Length -gt 65536) {
+        throw "Protected trusted-key document size is outside the bounded 1..65536 policy: $localTrustedKeysPath"
+    }
+    $trustedKeysBytes = New-Object byte[] ([int]$trustedKeysStream.Length)
+    $trustedKeysOffset = 0
+    while ($trustedKeysOffset -lt $trustedKeysBytes.Length) {
+        $trustedKeysRead = $trustedKeysStream.Read($trustedKeysBytes, $trustedKeysOffset, $trustedKeysBytes.Length - $trustedKeysOffset)
+        if ($trustedKeysRead -le 0) { throw "Protected trusted-key document ended before its declared length: $localTrustedKeysPath" }
+        $trustedKeysOffset += $trustedKeysRead
+    }
+    if ($trustedKeysStream.ReadByte() -ne -1) { throw "Protected trusted-key document grew while it was acquired: $localTrustedKeysPath" }
+}
+finally { if ($null -ne $trustedKeysStream) { $trustedKeysStream.Dispose() } }
+$strictTrustedKeysUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$trustedKeysJson = $strictTrustedKeysUtf8.GetString($trustedKeysBytes)
+if ($trustedKeysJson.Length -gt 0 -and $trustedKeysJson[0] -eq [char]0xFEFF) { $trustedKeysJson = $trustedKeysJson.Substring(1) }
+
+Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Runtime.Serialization -ErrorAction Stop
+$trustedKeysJsonBytes = $trustedKeysBytes
+if ($trustedKeysBytes.Length -ge 3 -and $trustedKeysBytes[0] -eq 0xEF -and $trustedKeysBytes[1] -eq 0xBB -and $trustedKeysBytes[2] -eq 0xBF) {
+    $trustedKeysJsonBytes = New-Object byte[] ($trustedKeysBytes.Length - 3)
+    [Array]::Copy($trustedKeysBytes, 3, $trustedKeysJsonBytes, 0, $trustedKeysJsonBytes.Length)
+}
+$trustedKeysReader = $null
+try {
+    $trustedKeysReader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader($trustedKeysJsonBytes, [Xml.XmlDictionaryReaderQuotas]::Max)
+    $trustedKeysTokenDocument = [Xml.XmlDocument]::new()
+    $trustedKeysTokenDocument.XmlResolver = $null
+    $trustedKeysTokenDocument.Load($trustedKeysReader)
+}
+catch { throw "Protected trusted-key bytes are not strict JSON: $($_.Exception.Message)" }
+finally { if ($null -ne $trustedKeysReader) { $trustedKeysReader.Dispose() } }
+$trustedKeysTokenRoot = $trustedKeysTokenDocument.DocumentElement
+if ($null -eq $trustedKeysTokenRoot -or
+    -not [string]::Equals([string]$trustedKeysTokenRoot.LocalName, 'root', [StringComparison]::Ordinal) -or
+    -not [string]::Equals([string]$trustedKeysTokenRoot.GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
+    throw 'Protected trusted-key document must be one JSON object.'
+}
+$trustedKeysTopLevelTokenNodes = @($trustedKeysTokenRoot.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+
 $trustedInputIntegrityModule = Import-Module $localIntegrityModule -Force -PassThru
 $duplicateTrustedKeyProperty = & $trustedInputIntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $trustedKeysJson
 if ([bool]$duplicateTrustedKeyProperty.found) {
@@ -337,14 +379,27 @@ if (-not $trustedKeyMinimalTopLevel -and -not $trustedKeyMetadataTopLevel) {
     throw 'Protected trusted-key document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys.'
 }
 if ($trustedKeyMetadataTopLevel) {
+    $trustedKeysGeneratedAtNodes = @($trustedKeysTopLevelTokenNodes | Where-Object {
+            $propertyName = if ([string]::Equals([string]$_.LocalName, 'item', [StringComparison]::Ordinal) -and $_.HasAttribute('item')) {
+                [string]$_.GetAttribute('item')
+            }
+            else { [string]$_.LocalName }
+            [string]::Equals($propertyName, 'generatedAtUtc', [StringComparison]::Ordinal)
+        })
+    $trustedKeysGeneratedAtText = if ($trustedKeysGeneratedAtNodes.Count -eq 1 -and
+        [string]::Equals([string]$trustedKeysGeneratedAtNodes[0].GetAttribute('type'), 'string', [StringComparison]::Ordinal)) {
+        [string]$trustedKeysGeneratedAtNodes[0].InnerText
+    }
+    else { $null }
     $trustedKeysGeneratedAt = [DateTimeOffset]::MinValue
     if (($trustedKeyDocument.schemaVersion -isnot [int] -and $trustedKeyDocument.schemaVersion -isnot [long]) -or
         [long]$trustedKeyDocument.schemaVersion -ne 1 -or
         $trustedKeyDocument.app -isnot [string] -or
         ([string]$trustedKeyDocument.app -cne 'revAgent' -and [string]$trustedKeyDocument.app -cne 'revit-mcp-skill') -or
-        $trustedKeyDocument.generatedAtUtc -isnot [string] -or
-        [string]$trustedKeyDocument.generatedAtUtc -notmatch 'Z$' -or
-        -not [DateTimeOffset]::TryParse([string]$trustedKeyDocument.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$trustedKeysGeneratedAt)) {
+        [string]$trustedKeysGeneratedAtText -cnotmatch 'Z$' -or
+        -not [DateTimeOffset]::TryParse([string]$trustedKeysGeneratedAtText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$trustedKeysGeneratedAt) -or
+        $trustedKeysGeneratedAt.Offset -ne [TimeSpan]::Zero -or
+        $trustedKeysGeneratedAt.UtcDateTime -gt [DateTime]::UtcNow.AddMinutes(5)) {
         throw 'Protected trusted-key metadata must be schemaVersion 1, an accepted revAgent app identity, and ISO UTC generatedAtUtc.'
     }
 }

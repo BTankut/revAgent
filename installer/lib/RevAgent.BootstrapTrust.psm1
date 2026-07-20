@@ -6,6 +6,8 @@ $script:RevAgentBootstrapTrustProductionKeyFingerprint = '32F8BD0B4E905BB58606FB
 $script:RevAgentBootstrapTrustTaskName = 'revAgent Bootstrap Trust Broker'
 $script:RevAgentBootstrapTrustTaskPath = '\DPE\revAgent\'
 $script:RevAgentBootstrapTrustTaskSddl = 'O:SYG:SYD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;GRGX;;;AU)'
+$script:RevAgentBootstrapTrustJsonSupportsDateKind = $null
+$script:RevAgentBootstrapTrustJsonRequiresNewtonsoft = $null
 
 function Get-RevAgentBootstrapTrustCanonicalPath {
     param([Parameter(Mandatory = $true)][string]$Path)
@@ -249,9 +251,71 @@ function ConvertFrom-RevAgentBootstrapTrustJsonBytes {
         $text = $strictUtf8.GetString($Bytes)
         if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
         Assert-RevAgentBootstrapTrustJsonHasUniqueProperties -Json $text -Label $Label
-        return $text | Microsoft.PowerShell.Utility\ConvertFrom-Json -ErrorAction Stop
+        return ConvertFrom-RevAgentBootstrapTrustJsonText -Json $text
     }
     catch { throw "$Label is not strict UTF-8 JSON: $($_.Exception.Message)" }
+}
+
+function ConvertFrom-RevAgentBootstrapTrustJsonText {
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    # PowerShell 7.6 converts ISO-8601 JSON strings to DateTime by default. The
+    # trust validators require the signed wire value (including its literal Z
+    # suffix), so opt into string preservation when that runtime feature exists.
+    # Windows PowerShell 5.1 has no DateKind parameter and keeps strings as-is.
+    if ($null -eq $script:RevAgentBootstrapTrustJsonSupportsDateKind) {
+        $convertFromJson = Microsoft.PowerShell.Core\Get-Command -Name 'Microsoft.PowerShell.Utility\ConvertFrom-Json' -CommandType Cmdlet -ErrorAction Stop
+        $script:RevAgentBootstrapTrustJsonSupportsDateKind = [bool]$convertFromJson.Parameters.ContainsKey('DateKind')
+        $script:RevAgentBootstrapTrustJsonRequiresNewtonsoft = $false
+        if (-not $script:RevAgentBootstrapTrustJsonSupportsDateKind) {
+            $probeArguments = @{ ErrorAction = 'Stop' }
+            $dateProbe = '"2000-01-01T00:00:00.0000000Z"' | Microsoft.PowerShell.Utility\ConvertFrom-Json @probeArguments
+            $script:RevAgentBootstrapTrustJsonRequiresNewtonsoft = -not ($dateProbe -is [string])
+        }
+    }
+    $arguments = @{ ErrorAction = 'Stop' }
+    if ($script:RevAgentBootstrapTrustJsonSupportsDateKind) {
+        $arguments['DateKind'] = 'String'
+        return $Json | Microsoft.PowerShell.Utility\ConvertFrom-Json @arguments
+    }
+
+    # Older PowerShell Core releases do not expose DateKind but may still parse
+    # ISO strings as dates. Detect that behavior and use Core's own Newtonsoft
+    # parser with date parsing disabled. Fail closed if such a runtime does not
+    # expose the parser needed to preserve the signed JSON wire values.
+    if (-not $script:RevAgentBootstrapTrustJsonRequiresNewtonsoft) { return $Json | Microsoft.PowerShell.Utility\ConvertFrom-Json @arguments }
+    if ($null -eq ('Newtonsoft.Json.JsonConvert' -as [type])) { throw 'The PowerShell JSON runtime cannot preserve ISO date strings.' }
+    $settings = [Newtonsoft.Json.JsonSerializerSettings]::new()
+    $settings.DateParseHandling = [Newtonsoft.Json.DateParseHandling]::None
+    $token = [Newtonsoft.Json.JsonConvert]::DeserializeObject($Json, $settings)
+    return ConvertFrom-RevAgentBootstrapTrustNewtonsoftToken -Token $token
+}
+
+function ConvertFrom-RevAgentBootstrapTrustNewtonsoftToken {
+    param([AllowNull()][object]$Token)
+
+    if ($null -eq $Token) { return $null }
+    $runtimeType = $Token.GetType()
+    if ($Token -is [string] -or $Token -is [bool] -or $runtimeType.IsPrimitive -or $Token -is [decimal] -or $runtimeType.FullName -ceq 'System.Numerics.BigInteger') { return $Token }
+    if ($Token -is [Newtonsoft.Json.Linq.JObject]) {
+        $properties = [ordered]@{}
+        $propertyNames = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($property in @(([Newtonsoft.Json.Linq.JObject]$Token).Properties())) {
+            $propertyName = [string]$property.get_Name()
+            if (-not $propertyNames.Add($propertyName)) {
+                throw "The PowerShell JSON runtime returned a case-insensitive property collision '$propertyName'."
+            }
+            $properties[$propertyName] = ConvertFrom-RevAgentBootstrapTrustNewtonsoftToken -Token $property.get_Value()
+        }
+        return [pscustomobject]$properties
+    }
+    if ($Token -is [Newtonsoft.Json.Linq.JArray]) {
+        $items = [Collections.Generic.List[object]]::new()
+        foreach ($item in @(([Newtonsoft.Json.Linq.JArray]$Token).Children())) { $items.Add((ConvertFrom-RevAgentBootstrapTrustNewtonsoftToken -Token $item)) }
+        return ,([object[]]$items.ToArray())
+    }
+    if ($Token -is [Newtonsoft.Json.Linq.JValue]) { return ([Newtonsoft.Json.Linq.JValue]$Token).get_Value() }
+    throw "The PowerShell JSON runtime returned an unsupported Newtonsoft token type '$($runtimeType.FullName)'."
 }
 
 function Assert-RevAgentBootstrapTrustJsonHasUniqueProperties {
@@ -278,7 +342,7 @@ function Assert-RevAgentBootstrapTrustJsonHasUniqueProperties {
             if ($character -eq '\') { $escaped = $true; continue }
             if ($character -eq '"') {
                 $raw = $Json.Substring($start, $Position.Value - $start)
-                try { return [string]($raw | Microsoft.PowerShell.Utility\ConvertFrom-Json -ErrorAction Stop) }
+                try { return [string](ConvertFrom-RevAgentBootstrapTrustJsonText -Json $raw) }
                 catch { throw "$Label contains an invalid JSON string escape." }
             }
             if ([int][char]$character -lt 0x20) { throw "$Label contains an unescaped control character in a JSON string." }
@@ -547,7 +611,12 @@ function New-RevAgentBootstrapTrustProtectedDirectory {
     if (-not [IO.Directory]::Exists($parent)) { throw "Bootstrap trust protected directory parent is missing: $parent" }
     [void](Assert-RevAgentBootstrapTrustPathNoLinks -Path $parent)
     $security = New-RevAgentBootstrapTrustDirectorySecurity -Kind $Kind -ReaderSid $ReaderSid -AllowTestRoot:$AllowTestRoot
-    [void]([IO.DirectoryInfo]::new($parent).CreateSubdirectory((Split-Path -Leaf $Path), $security))
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [void][IO.FileSystemAclExtensions]::CreateDirectory($security, [IO.Path]::GetFullPath($Path))
+    }
+    else {
+        [void]([IO.DirectoryInfo]::new($parent).CreateSubdirectory((Split-Path -Leaf $Path), $security))
+    }
     [void](Assert-RevAgentBootstrapTrustPathNoLinks -Path $Path)
     return [IO.Path]::GetFullPath($Path)
 }

@@ -317,7 +317,7 @@ function Assert-RevAgentPublicTrustedKeys {
         throw "Prestage kit trusted-key raw JSON contains forbidden private RSA XML material."
     }
 
-    [void](Read-RevAgentStrictTrustedKeyJsonTokens -Bytes $Bytes)
+    $tokenDocument = Read-RevAgentStrictTrustedKeyJsonTokens -Bytes $Bytes
     $document = $text | ConvertFrom-Json
 
     if ($document -isnot [pscustomobject]) {
@@ -335,7 +335,18 @@ function Assert-RevAgentPublicTrustedKeys {
         foreach ($metadataName in @('schemaVersion', 'app', 'generatedAtUtc')) {
             if ($topLevelPropertyNames -cnotcontains $metadataName) { throw "Prestage kit trusted-key metadata is incomplete: $metadataName" }
         }
-        if ([int]$document.schemaVersion -ne 1 -or [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or [string]::IsNullOrWhiteSpace([string]$document.generatedAtUtc)) {
+        $tokenRoot = $tokenDocument.DocumentElement
+        $generatedAtUtcNodes = @(Get-RevAgentJsonMappedElementChildren -Element $tokenRoot | Where-Object {
+                [string]::Equals((Get-RevAgentJsonMappedPropertyName -Element $_), 'generatedAtUtc', [StringComparison]::Ordinal)
+            })
+        $generatedAtUtcText = if ($generatedAtUtcNodes.Count -eq 1) { [string]$generatedAtUtcNodes[0].InnerText } else { $null }
+        $generatedAt = [DateTime]::MinValue
+        if ([int]$document.schemaVersion -ne 1 -or
+            [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or
+            [string]$generatedAtUtcText -cnotmatch 'Z$' -or
+            -not [DateTime]::TryParse([string]$generatedAtUtcText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generatedAt) -or
+            $generatedAt.Kind -ne [DateTimeKind]::Utc -or
+            $generatedAt -gt [DateTime]::UtcNow.AddMinutes(5)) {
             throw 'Prestage kit trusted-key public metadata is invalid.'
         }
     }

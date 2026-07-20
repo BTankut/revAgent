@@ -1,12 +1,16 @@
 [CmdletBinding()]
-param([string]$RepoRoot = '')
+param(
+    [string]$RepoRoot = '',
+    [switch]$JsonParserOnly
+)
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 
-if ($PSVersionTable.PSVersion.Major -ne 5) {
+if (-not $JsonParserOnly -and $PSVersionTable.PSVersion.Major -ne 5) {
+    & $PSCommandPath -RepoRoot $RepoRoot -JsonParserOnly
     $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
     & $windowsPowerShell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $PSCommandPath -RepoRoot $RepoRoot
     exit $LASTEXITCODE
@@ -40,6 +44,94 @@ Assert-Equal @($parseErrors).Count 0 'Bootstrap trust broker must parse in Windo
 Import-Module $integrityModuleSource -Force
 Import-Module $snapshotModuleSource -Force
 $bootstrapTrustModule = Import-Module $trustModuleSource -Force -PassThru
+
+function Test-TrustedKeyMetadataJsonDates {
+    $testRsa = [Security.Cryptography.RSACryptoServiceProvider]::new(2048)
+    try {
+        $testPublicKeyXml = $testRsa.ToXmlString($false)
+        $testFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $testPublicKeyXml
+        $testRecord = [ordered]@{ publicKeyXml = $testPublicKeyXml; publicKeyFingerprint = $testFingerprint; algorithm = 'RS256'; purpose = 'release-signing' }
+        function ConvertTo-TestJsonBytes {
+            param([Parameter(Mandatory = $true)][object]$Value)
+            return [Text.UTF8Encoding]::new($false).GetBytes(($Value | ConvertTo-Json -Depth 10))
+        }
+        function Get-MetadataBytes {
+            param([Parameter(Mandatory = $true)][string]$GeneratedAtUtc)
+            $document = [ordered]@{
+                schemaVersion = 1
+                app = 'revAgent'
+                generatedAtUtc = $GeneratedAtUtc
+                trustedKeys = [ordered]@{ 'test-bootstrap-trust' = $testRecord }
+            }
+            return ConvertTo-TestJsonBytes -Value $document
+        }
+
+        $validTimestamp = [DateTime]::UtcNow.ToString('o')
+        Assert-True ($validTimestamp -cmatch 'Z$') 'Trusted-key metadata test fixture did not retain its exact uppercase-Z wire suffix.'
+        $validated = Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc $validTimestamp) -AllowTestRoot
+        Assert-True ([bool]$validated.success -and $validated.document.generatedAtUtc -is [string] -and [string]$validated.document.generatedAtUtc -ceq $validTimestamp) "PowerShell $($PSVersionTable.PSVersion) did not preserve and accept the exact uppercase-Z generatedAtUtc JSON string."
+
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc 'not-a-timestampZ') -AllowTestRoot) } 'generatedAtUtc must be a valid UTC timestamp' 'Malformed trusted-key metadata timestamp was accepted.'
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc $validTimestamp.TrimEnd('Z')) -AllowTestRoot) } 'generatedAtUtc must be a valid UTC timestamp' 'Trusted-key metadata timestamp without the exact Z suffix was accepted.'
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc ($validTimestamp.Substring(0, $validTimestamp.Length - 1) + 'z')) -AllowTestRoot) } 'generatedAtUtc must be a valid UTC timestamp' 'Trusted-key metadata timestamp with a lowercase-z suffix was accepted.'
+        $futureTimestamp = [DateTime]::UtcNow.AddHours(1).ToString('o')
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc $futureTimestamp) -AllowTestRoot) } 'generatedAtUtc must be a valid UTC timestamp' 'Future trusted-key metadata timestamp was accepted.'
+
+        $duplicateBytes = [Text.UTF8Encoding]::new($false).GetBytes('{"trustedKeys":{},"trusted\u004Beys":{}}')
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes $duplicateBytes -AllowTestRoot) } 'duplicate decoded JSON property' 'Date-preserving JSON parsing weakened escaped duplicate-property rejection.'
+        $invalidUtf8Bytes = [byte[]]@(0x7B, 0x22, 0x78, 0x22, 0x3A, 0x22, 0xC3, 0x28, 0x22, 0x7D)
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes $invalidUtf8Bytes -AllowTestRoot) } 'not strict UTF-8 JSON' 'Date-preserving JSON parsing weakened strict UTF-8 rejection.'
+
+        $secretRecord = [ordered]@{ publicKeyXml = $testPublicKeyXml; publicKeyFingerprint = $testFingerprint; algorithm = 'RS256'; purpose = 'release-signing'; privateKeyXml = 'forbidden' }
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (ConvertTo-TestJsonBytes -Value ([ordered]@{ trustedKeys = [ordered]@{ test = $secretRecord } })) -AllowTestRoot) } 'non-public|unknown' 'Date-preserving JSON parsing weakened the public-only trusted-key contract.'
+        $threeProductionKeys = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $testRecord; 'revagent-prod-rsa-2026q4' = $testRecord; 'revagent-prod-rsa-2027q1' = $testRecord } }
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (ConvertTo-TestJsonBytes -Value $threeProductionKeys)) } 'one or two public keys' 'Date-preserving JSON parsing weakened the q3 plus at-most-one-later key-count contract.'
+        $missingQ3 = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q4' = $testRecord } }
+        Assert-ThrowsLike { [void](Assert-RevAgentBootstrapTrustedKeySet -Bytes (ConvertTo-TestJsonBytes -Value $missingQ3)) } 'missing.*revagent-prod-rsa-2026q3' 'Date-preserving JSON parsing weakened the mandatory q3 production-key contract.'
+
+        if ($PSVersionTable.PSEdition -eq 'Core' -and $null -ne ('Newtonsoft.Json.JsonConvert' -as [type])) {
+            & $bootstrapTrustModule { $script:RevAgentBootstrapTrustJsonSupportsDateKind = $false; $script:RevAgentBootstrapTrustJsonRequiresNewtonsoft = $true }
+            try {
+                $fallbackValidated = Assert-RevAgentBootstrapTrustedKeySet -Bytes (Get-MetadataBytes -GeneratedAtUtc $validTimestamp) -AllowTestRoot
+                Assert-True ($fallbackValidated.document.generatedAtUtc -is [string] -and [string]$fallbackValidated.document.generatedAtUtc -ceq $validTimestamp) 'The older-PowerShell-Core Newtonsoft fallback did not preserve generatedAtUtc as its exact JSON string.'
+                $fallbackJson = '{"timestamp":"' + $validTimestamp + '","items":[1,null,{"value":"ok"}]}'
+                $fallbackParsed = & $bootstrapTrustModule { param($Json) ConvertFrom-RevAgentBootstrapTrustJsonText -Json $Json } $fallbackJson
+                Assert-True ($fallbackParsed.timestamp -is [string] -and [string]$fallbackParsed.timestamp -ceq $validTimestamp -and @($fallbackParsed.items).Count -eq 3 -and $null -eq $fallbackParsed.items[1] -and [string]$fallbackParsed.items[2].value -ceq 'ok') 'The older-PowerShell-Core Newtonsoft fallback did not preserve object/array/null/string JSON structure.'
+                $fallbackCollisionToken = [Newtonsoft.Json.Linq.JObject]::Parse('{"outer":{"app":"revAgent","App":"shadow"}}').Property('outer').Value
+                Assert-ThrowsLike { & $bootstrapTrustModule { param($Token) ConvertFrom-RevAgentBootstrapTrustNewtonsoftToken -Token $Token } $fallbackCollisionToken } 'case-insensitive property collision' 'The older-PowerShell-Core Newtonsoft mapper silently overwrote a case-colliding property.'
+            }
+            finally { & $bootstrapTrustModule { $script:RevAgentBootstrapTrustJsonSupportsDateKind = $null; $script:RevAgentBootstrapTrustJsonRequiresNewtonsoft = $null } }
+        }
+    }
+    finally { $testRsa.Dispose() }
+}
+
+function Test-ProtectedDirectoryCreationCompatibility {
+    $compatibilityRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-bootstrap-trust-directory-' + [Guid]::NewGuid().ToString('N'))
+    $protectedPath = Join-Path $compatibilityRoot 'system-only-child'
+    try {
+        [void][IO.Directory]::CreateDirectory($compatibilityRoot)
+        $createdPath = & $bootstrapTrustModule {
+            param($Path)
+            $created = New-RevAgentBootstrapTrustProtectedDirectory -Path $Path -Kind system-only -AllowTestRoot
+            [void](Test-RevAgentBootstrapTrustSystemOnlyAcl -Path $created -Directory -AllowTestRoot)
+            return $created
+        } $protectedPath
+        Assert-True ([IO.Directory]::Exists($createdPath) -and [IO.Path]::GetFullPath($createdPath) -ceq [IO.Path]::GetFullPath($protectedPath)) "PowerShell $($PSVersionTable.PSVersion) did not atomically create and attest the protected bootstrap directory."
+    }
+    finally {
+        if ([IO.Directory]::Exists($compatibilityRoot)) { Remove-Item -LiteralPath $compatibilityRoot -Recurse -Force }
+    }
+}
+
+Write-Host "Test trusted-key generatedAtUtc JSON preservation in PowerShell $($PSVersionTable.PSVersion)"
+Test-TrustedKeyMetadataJsonDates
+Write-Host "Test ACL-at-create protected directory compatibility in PowerShell $($PSVersionTable.PSVersion)"
+Test-ProtectedDirectoryCreationCompatibility
+if ($JsonParserOnly) {
+    Write-Host "PASS: Bootstrap trust parser/platform regressions (PowerShell $($PSVersionTable.PSVersion))."
+    return
+}
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-bootstrap-trust-test-' + [Guid]::NewGuid().ToString('N'))
 $programDataRoot = Join-Path $tempRoot 'programdata'

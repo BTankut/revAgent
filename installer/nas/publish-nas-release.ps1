@@ -1339,11 +1339,15 @@ function Read-RevAgentTrustedKeysEvidence {
         @($topNames | Where-Object { $allowedTopNames -cnotcontains $_ }).Count -ne 0 -or $top.Count -notin @(1, 4)) {
         throw 'Trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist.'
     }
+    $generatedAtUtcText = $null
     if ($top.Count -eq 4) {
         foreach ($metadata in @(@('schemaVersion', 'number'), @('app', 'string'), @('generatedAtUtc', 'string'))) {
             $metadataNode = @($top | Where-Object { [string]::Equals((Get-RevAgentTrustedKeyJsonPropertyName -Element $_), [string]$metadata[0], [StringComparison]::Ordinal) })
             if ($metadataNode.Count -ne 1 -or -not [string]::Equals([string]$metadataNode[0].GetAttribute('type'), [string]$metadata[1], [StringComparison]::Ordinal)) {
                 throw "Trusted-key metadata is incomplete or mistyped: $($metadata[0])"
+            }
+            if ([string]::Equals([string]$metadata[0], 'generatedAtUtc', [StringComparison]::Ordinal)) {
+                $generatedAtUtcText = [string]$metadataNode[0].InnerText
             }
         }
     }
@@ -1381,8 +1385,8 @@ function Read-RevAgentTrustedKeysEvidence {
         $generatedAt = [DateTime]::MinValue
         if ([int]$document.schemaVersion -ne 1 -or
             [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or
-            [string]$document.generatedAtUtc -cnotmatch 'Z$' -or
-            -not [DateTime]::TryParse([string]$document.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generatedAt) -or
+            [string]$generatedAtUtcText -cnotmatch 'Z$' -or
+            -not [DateTime]::TryParse([string]$generatedAtUtcText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generatedAt) -or
             $generatedAt.Kind -ne [DateTimeKind]::Utc -or
             $generatedAt -gt [DateTime]::UtcNow.AddMinutes(5)) {
             throw 'Trusted-key public metadata is invalid.'

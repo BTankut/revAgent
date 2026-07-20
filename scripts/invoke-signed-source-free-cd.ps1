@@ -47,7 +47,49 @@ function Assert-RevAgentCdProductionTrustedKeysDocument {
         [Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo]$IntegrityModule
     )
 
-    $json = Get-Content -Raw -LiteralPath $Path -Encoding UTF8
+    $sourceStream = $null
+    try {
+        $sourceStream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($sourceStream.Length -lt 1 -or $sourceStream.Length -gt 65536) {
+            throw "Production trusted-key document size is outside the bounded 1..65536 policy: $Path"
+        }
+        $sourceBytes = New-Object byte[] ([int]$sourceStream.Length)
+        $sourceOffset = 0
+        while ($sourceOffset -lt $sourceBytes.Length) {
+            $sourceRead = $sourceStream.Read($sourceBytes, $sourceOffset, $sourceBytes.Length - $sourceOffset)
+            if ($sourceRead -le 0) { throw "Production trusted-key document ended before its declared length: $Path" }
+            $sourceOffset += $sourceRead
+        }
+        if ($sourceStream.ReadByte() -ne -1) { throw "Production trusted-key document grew while it was acquired: $Path" }
+    }
+    finally { if ($null -ne $sourceStream) { $sourceStream.Dispose() } }
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $json = $strictUtf8.GetString($sourceBytes)
+    if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) { $json = $json.Substring(1) }
+
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Runtime.Serialization -ErrorAction Stop
+    $jsonBytes = $sourceBytes
+    if ($sourceBytes.Length -ge 3 -and $sourceBytes[0] -eq 0xEF -and $sourceBytes[1] -eq 0xBB -and $sourceBytes[2] -eq 0xBF) {
+        $jsonBytes = New-Object byte[] ($sourceBytes.Length - 3)
+        [Array]::Copy($sourceBytes, 3, $jsonBytes, 0, $jsonBytes.Length)
+    }
+    $reader = $null
+    try {
+        $reader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader($jsonBytes, [Xml.XmlDictionaryReaderQuotas]::Max)
+        $tokenDocument = [Xml.XmlDocument]::new()
+        $tokenDocument.XmlResolver = $null
+        $tokenDocument.Load($reader)
+    }
+    catch { throw "Production trusted-key bytes are not strict JSON: $($_.Exception.Message)" }
+    finally { if ($null -ne $reader) { $reader.Dispose() } }
+    $tokenRoot = $tokenDocument.DocumentElement
+    if ($null -eq $tokenRoot -or
+        -not [string]::Equals([string]$tokenRoot.LocalName, 'root', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$tokenRoot.GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
+        throw 'Production trusted-key document must be one JSON object.'
+    }
+    $topLevelTokenNodes = @($tokenRoot.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+
     $duplicate = & $IntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $json
     if ([bool]$duplicate.found) {
         throw "Production trusted-key document contains a duplicate decoded JSON property: $($duplicate.key)"
@@ -68,14 +110,27 @@ function Assert-RevAgentCdProductionTrustedKeysDocument {
         throw "Production trusted-key document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys."
     }
     if ($metadataTopLevel) {
+        $generatedAtUtcNodes = @($topLevelTokenNodes | Where-Object {
+                $propertyName = if ([string]::Equals([string]$_.LocalName, 'item', [StringComparison]::Ordinal) -and $_.HasAttribute('item')) {
+                    [string]$_.GetAttribute('item')
+                }
+                else { [string]$_.LocalName }
+                [string]::Equals($propertyName, 'generatedAtUtc', [StringComparison]::Ordinal)
+            })
+        $generatedAtUtcText = if ($generatedAtUtcNodes.Count -eq 1 -and
+            [string]::Equals([string]$generatedAtUtcNodes[0].GetAttribute('type'), 'string', [StringComparison]::Ordinal)) {
+            [string]$generatedAtUtcNodes[0].InnerText
+        }
+        else { $null }
         $generatedAt = [DateTimeOffset]::MinValue
         if (($document.schemaVersion -isnot [int] -and $document.schemaVersion -isnot [long]) -or
             [long]$document.schemaVersion -ne 1 -or
             $document.app -isnot [string] -or
             ([string]$document.app -cne 'revAgent' -and [string]$document.app -cne 'revit-mcp-skill') -or
-            $document.generatedAtUtc -isnot [string] -or
-            [string]$document.generatedAtUtc -notmatch 'Z$' -or
-            -not [DateTimeOffset]::TryParse([string]$document.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt)) {
+            [string]$generatedAtUtcText -cnotmatch 'Z$' -or
+            -not [DateTimeOffset]::TryParse([string]$generatedAtUtcText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt) -or
+            $generatedAt.Offset -ne [TimeSpan]::Zero -or
+            $generatedAt.UtcDateTime -gt [DateTime]::UtcNow.AddMinutes(5)) {
             throw 'Production trusted-key metadata must be schemaVersion 1, an accepted revAgent app identity, and an ISO UTC generatedAtUtc value.'
         }
     }
