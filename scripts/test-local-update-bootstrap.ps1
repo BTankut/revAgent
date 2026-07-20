@@ -228,7 +228,7 @@ $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     $preWindowResult = $preWindowJsonLine[0] | ConvertFrom-Json
     Assert-True ([bool]$preWindowResult.success -and [string]$preWindowResult.action -eq 'pre-window-bootstrap-smoke-test') "Valid protected GUI pre-window PS5 result was not successful."
     Assert-True ([string]::Equals([IO.Path]::GetFullPath([string]$preWindowResult.bootstrapStatePath), [IO.Path]::GetFullPath($protectedStatePath), [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke did not parse the exact protected bootstrap state."
-    foreach ($loadedPath in @($preWindowResult.sourceFreeMigrationModule, $preWindowResult.releaseSnapshotModule, $preWindowResult.trustedKeysPath)) {
+    foreach ($loadedPath in @($preWindowResult.permissionsModule, $preWindowResult.sourceFreeMigrationModule, $preWindowResult.releaseSnapshotModule, $preWindowResult.trustedKeysPath)) {
         Assert-True ((Test-Path -LiteralPath ([string]$loadedPath) -PathType Leaf) -and [IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "GUI pre-window smoke loaded evidence outside the protected fixture bootstrap: $loadedPath"
     }
     Remove-Item -LiteralPath $fakeStableChannelPath -Force

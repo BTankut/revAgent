@@ -264,8 +264,10 @@ $localVersionTool = Join-Path $workRoot "show-installed-version.ps1"
 $script:GuiPrivilegedSnapshotBrokerPath = ""
 $script:GuiReleaseSnapshotModulePath = ""
 $script:GuiDistributionIntegrityModulePath = ""
+$script:GuiPermissionsModulePath = ""
 $script:GuiTrustedKeysPath = ""
 $script:GuiNewReleaseInboxCommand = $null
+$script:GuiStaleBootstrapCleanupCommand = $null
 if (-not $SmokeTest) {
     if ([string]::IsNullOrWhiteSpace($BootstrapStatePath)) { throw "Protected local GUI requires BootstrapStatePath." }
     $expectedBootstrapStatePath = Join-Path $scriptDir "bootstrap-state.json"
@@ -292,6 +294,12 @@ if (-not $SmokeTest) {
             throw "Protected local GUI bootstrap hash mismatch: $role"
         }
     }
+    $script:GuiPermissionsModulePath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.permissions.relativePath)
+    $permissionsModule = Import-Module $script:GuiPermissionsModulePath -Force -PassThru
+    if (-not [string]::Equals([IO.Path]::GetFullPath([string]$permissionsModule.Path), [IO.Path]::GetFullPath($script:GuiPermissionsModulePath), [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected local GUI loaded permissions from an unexpected path: $($permissionsModule.Path)"
+    }
+    $script:GuiStaleBootstrapCleanupCommand = Get-Command ("{0}\Remove-StaleRevAgentBootstrapTemporaryItems" -f $permissionsModule.Name) -ErrorAction Stop
     $localSourceFreeMigrationModule = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.sourceFreeMigration.relativePath)
     Import-Module $localSourceFreeMigrationModule -Force
     $script:GuiReleaseSnapshotModulePath = Join-Path $scriptDir ([string]$script:GuiBootstrapState.files.releaseSnapshot.relativePath)
@@ -307,6 +315,7 @@ if ($PreWindowBootstrapSmokeTest) {
         action = 'pre-window-bootstrap-smoke-test'
         bootstrapStatePath = [IO.Path]::GetFullPath($BootstrapStatePath)
         channelManifestPath = [IO.Path]::GetFullPath($ChannelManifestPath)
+        permissionsModule = [IO.Path]::GetFullPath($script:GuiPermissionsModulePath)
         sourceFreeMigrationModule = [IO.Path]::GetFullPath($localSourceFreeMigrationModule)
         releaseSnapshotModule = [IO.Path]::GetFullPath($script:GuiReleaseSnapshotModulePath)
         trustedKeysPath = [IO.Path]::GetFullPath($script:GuiTrustedKeysPath)
@@ -324,6 +333,54 @@ $script:PendingUserPhaseArguments = @()
 $script:PendingUserPhaseResultPath = ""
 $script:PendingUserLogPath = ""
 $script:ActiveInboxRoot = ""
+$script:GuiStartupMaintenanceTimer = $null
+
+function Invoke-RevAgentGuiStartupMaintenance {
+    param(
+        [AllowNull()][object]$CleanupCommand = $script:GuiStaleBootstrapCleanupCommand,
+        [ValidateRange(1, 8760)][int]$MinimumAgeHours = 24
+    )
+
+    if ($null -eq $CleanupCommand) { return }
+    try {
+        & $CleanupCommand -MinimumAgeHours $MinimumAgeHours
+    }
+    catch {
+        # Startup maintenance is deliberately best-effort and must never
+        # replace the GUI's real startup or updater result.
+    }
+}
+
+function Start-RevAgentGuiStartupMaintenance {
+    if ($null -eq $script:GuiStaleBootstrapCleanupCommand) { return }
+
+    $maintenanceTimer = $null
+    try {
+        $maintenanceTimer = New-Object System.Windows.Forms.Timer
+        $maintenanceTimer.Interval = 250
+        $maintenanceTimer.Add_Tick({
+            $activeTimer = $script:GuiStartupMaintenanceTimer
+            if ($null -ne $activeTimer) {
+                try {
+                    $activeTimer.Stop()
+                    $activeTimer.Dispose()
+                }
+                catch { }
+                $script:GuiStartupMaintenanceTimer = $null
+            }
+            Invoke-RevAgentGuiStartupMaintenance
+        })
+        $script:GuiStartupMaintenanceTimer = $maintenanceTimer
+        $maintenanceTimer.Start()
+    }
+    catch {
+        if ($null -ne $maintenanceTimer) {
+            try { $maintenanceTimer.Dispose() }
+            catch { }
+        }
+        $script:GuiStartupMaintenanceTimer = $null
+    }
+}
 
 function Resolve-GuiProfileListImagePath {
     param(
@@ -1587,5 +1644,8 @@ $form.Add_FormClosing({
 
 Set-ButtonsEnabled -Enabled $true
 
-$form.Add_Shown({ $script:GuiStartupCompleted = $true })
+$form.Add_Shown({
+    $script:GuiStartupCompleted = $true
+    Start-RevAgentGuiStartupMaintenance
+})
 [void][System.Windows.Forms.Application]::Run($form)

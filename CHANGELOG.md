@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Activated bounded stale bootstrap TEMP cleanup from the hash-verified local
+  updater GUI after its `Shown` startup-complete marker. The one-shot maintenance
+  timer calls an exported protected-permissions primitive, preserves active-lock,
+  age, reparse, identity, item/depth/pass and mutex guards, and swallows cleanup-
+  only failures so it cannot replace the GUI's real result. **R9 delivery
+  warning:** this changes the manifest-bound updater GUI and permissions module;
+  publishing it before E2 would require fleet re-prestage/broker refresh and is
+  not authorized by this PR.
 - Recorded the #233-#244 updater closure arc: Codex integration rescue,
   split-privilege helper ownership and validation, inaccessible launcher/task
   tolerance, machine-owned hidden-launcher repair, GUI diagnostics, the desktop
