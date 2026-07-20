@@ -32,6 +32,11 @@ param(
     [switch]$AllowLegacyMissingNodeMsi,
     [Parameter(DontShow = $true)]
     [scriptblock]$ManagedPublishedLeafAfterOpenTestHook = $null,
+    [switch]$InspectLocalBootstrapTrust,
+    [Parameter(DontShow = $true)]
+    [string]$BootstrapTrustProgramDataRoot = "",
+    [Parameter(DontShow = $true)]
+    [scriptblock]$BootstrapTrustTaskProvider = $null,
     [string]$RepoRoot = ""
 )
 
@@ -49,6 +54,12 @@ if ($null -eq $integrityCommand) {
 $publicKeyFingerprintCommand = $integrityModule.ExportedCommands['Get-RevAgentPublicKeyFingerprint']
 if ($null -eq $publicKeyFingerprintCommand) {
     throw 'Pinned distribution-integrity module did not export Get-RevAgentPublicKeyFingerprint.'
+}
+$bootstrapTrustModule = Import-Module (Join-Path $RepoRoot 'installer\lib\RevAgent.BootstrapTrust.psm1') -Force -PassThru
+$bootstrapTrustedKeysCommand = $bootstrapTrustModule.ExportedCommands['Assert-RevAgentBootstrapTrustedKeySet']
+$bootstrapTrustHealthCommand = $bootstrapTrustModule.ExportedCommands['Test-RevAgentBootstrapTrustHealth']
+if ($null -eq $bootstrapTrustedKeysCommand -or $null -eq $bootstrapTrustHealthCommand) {
+    throw 'Bootstrap-trust module did not export its trusted-key validator and health probe.'
 }
 
 $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
@@ -425,6 +436,57 @@ function Get-RevAgentBytesSha256 {
     finally { $algorithm.Dispose() }
 }
 
+function Read-RevAgentReadinessZipEntry {
+    param(
+        [Parameter(Mandatory = $true)][string]$ZipPath,
+        [Parameter(Mandatory = $true)][string]$RelativePath,
+        [ValidateRange(1, 4194304)][long]$MaxBytes = 4194304
+    )
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = $null
+    try {
+        $archive = [IO.Compression.ZipFile]::OpenRead($ZipPath)
+        $normalizedPath = $RelativePath.Replace('\', '/')
+        $matches = @($archive.Entries | Where-Object { [string]::Equals($_.FullName.Replace('\', '/'), $normalizedPath, [StringComparison]::Ordinal) })
+        if ($matches.Count -ne 1) {
+            return [pscustomobject][ordered]@{ success = $false; reason = 'zip_entry_count_invalid'; path = $RelativePath; bytes = $null; sha256 = ''; sizeBytes = [long]0 }
+        }
+        $entry = $matches[0]
+        if ([long]$entry.Length -lt 1 -or [long]$entry.Length -gt $MaxBytes) {
+            return [pscustomobject][ordered]@{ success = $false; reason = 'zip_entry_size_invalid'; path = $RelativePath; bytes = $null; sha256 = ''; sizeBytes = [long]$entry.Length }
+        }
+        $stream = $null
+        $memory = [IO.MemoryStream]::new()
+        try {
+            $stream = $entry.Open()
+            $stream.CopyTo($memory)
+            $bytes = [byte[]]$memory.ToArray()
+        }
+        finally {
+            if ($null -ne $stream) { $stream.Dispose() }
+            $memory.Dispose()
+        }
+        if ([long]$bytes.Length -ne [long]$entry.Length) {
+            return [pscustomobject][ordered]@{ success = $false; reason = 'zip_entry_length_mismatch'; path = $RelativePath; bytes = $null; sha256 = ''; sizeBytes = [long]$entry.Length }
+        }
+        return [pscustomobject][ordered]@{
+            success = $true
+            reason = 'ok'
+            path = $RelativePath
+            bytes = $bytes
+            sha256 = Get-RevAgentBytesSha256 -Bytes $bytes
+            sizeBytes = [long]$bytes.Length
+        }
+    }
+    catch {
+        return [pscustomobject][ordered]@{ success = $false; reason = 'zip_entry_read_failed'; path = $RelativePath; bytes = $null; sha256 = ''; sizeBytes = [long]0; error = $_.Exception.Message }
+    }
+    finally {
+        if ($null -ne $archive) { $archive.Dispose() }
+    }
+}
+
 function Get-RevAgentPublishedStableLauncherBytes {
     param([Parameter(Mandatory = $true)][string]$PublishedReleaseRoot)
 
@@ -741,6 +803,12 @@ if ($AllowTestSigningIdentity) {
         throw 'AllowTestSigningIdentity is limited to disposable local release roots below TEMP.'
     }
 }
+if (($null -ne $BootstrapTrustTaskProvider -or -not [string]::IsNullOrWhiteSpace($BootstrapTrustProgramDataRoot)) -and -not $InspectLocalBootstrapTrust) {
+    throw 'Bootstrap-trust test overrides require -InspectLocalBootstrapTrust.'
+}
+if (($null -ne $BootstrapTrustTaskProvider -or -not [string]::IsNullOrWhiteSpace($BootstrapTrustProgramDataRoot)) -and -not $AllowTestSigningIdentity) {
+    throw 'Bootstrap-trust test overrides are limited to disposable test-signing fixtures.'
+}
 
 $checks = [System.Collections.Generic.List[object]]::new()
 
@@ -770,7 +838,40 @@ Add-RevAgentReadinessCheck -Checks $checks -Name "channel_signature_present" -Su
 Add-RevAgentReadinessCheck -Checks $checks -Name "release_manifest_signature_present" -Success (Test-Path -LiteralPath $releaseManifestSignaturePath -PathType Leaf) -Message "Release manifest detached signature must exist." -Path $releaseManifestSignaturePath
 Add-RevAgentReadinessCheck -Checks $checks -Name "package_present" -Success (Test-Path -LiteralPath $packagePath -PathType Leaf) -Message "Release ZIP must exist." -Path $packagePath
 
-$trustedKeys = Read-RevAgentTrustedKeys -Path $TrustedKeysPath
+$trustedKeyValidation = [pscustomobject][ordered]@{ success = $false; reason = 'trusted_key_validation_not_run'; error = '' }
+$trustedKeySourceBytes = $null
+$trustedKeySourceStream = $null
+try {
+    # Hold one deny-write/delete handle while enforcing the size policy before
+    # allocation. Every later trust, publish-surface, and package comparison
+    # must reuse this exact byte snapshot rather than reopening the pathname.
+    $trustedKeySourceStream = [IO.File]::Open($TrustedKeysPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    if ($trustedKeySourceStream.Length -lt 1 -or $trustedKeySourceStream.Length -gt 65536) {
+        throw "Trusted release-key document size is outside the bounded 1..65536 policy: $TrustedKeysPath"
+    }
+    $trustedKeySourceBytes = New-Object byte[] ([int]$trustedKeySourceStream.Length)
+    $trustedKeySourceOffset = 0
+    while ($trustedKeySourceOffset -lt $trustedKeySourceBytes.Length) {
+        $trustedKeySourceRead = $trustedKeySourceStream.Read($trustedKeySourceBytes, $trustedKeySourceOffset, $trustedKeySourceBytes.Length - $trustedKeySourceOffset)
+        if ($trustedKeySourceRead -le 0) { throw "Trusted release-key document ended before its declared length: $TrustedKeysPath" }
+        $trustedKeySourceOffset += $trustedKeySourceRead
+    }
+    if ($trustedKeySourceStream.ReadByte() -ne -1) { throw "Trusted release-key document grew while it was acquired: $TrustedKeysPath" }
+}
+finally { if ($null -ne $trustedKeySourceStream) { $trustedKeySourceStream.Dispose() } }
+$validatedTrustedKeySet = $null
+try {
+    $validatedTrustedKeySet = & $bootstrapTrustedKeysCommand `
+        -Bytes $trustedKeySourceBytes `
+        -AllowTestRoot:$AllowTestSigningIdentity
+    $trustedKeyValidation = [pscustomobject][ordered]@{ success = $true; reason = 'ok'; error = ''; evidence = $validatedTrustedKeySet }
+}
+catch {
+    $trustedKeyValidation = [pscustomobject][ordered]@{ success = $false; reason = 'trusted_key_document_invalid'; error = $_.Exception.Message }
+}
+Add-RevAgentReadinessCheck -Checks $checks -Name 'trusted_release_key_document_valid' -Success ([bool]$trustedKeyValidation.success) -Reason ([string]$trustedKeyValidation.reason) -Message $(if ([bool]$trustedKeyValidation.success) { 'Trusted release-key document satisfies the bounded public two-key transition contract.' } else { [string]$trustedKeyValidation.error }) -Path $TrustedKeysPath
+
+$trustedKeys = if ([bool]$trustedKeyValidation.success) { $validatedTrustedKeySet.document.trustedKeys } else { [pscustomobject]@{} }
 $trustedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $trustedKeys
 Add-RevAgentReadinessCheck -Checks $checks -Name "trusted_release_keys_present" -Success ($trustedKeyMap.Count -gt 0) -Message "At least one trusted public release key must be supplied." -Path $TrustedKeysPath
 
@@ -825,7 +926,7 @@ if ($publishedSurfaceRequired) {
     $publishedTrustedKeysRelativePath = 'tools\config\release-trusted-keys.json'
     $expectedPublishedFiles.Add([pscustomobject]@{
             relativePath = $publishedTrustedKeysRelativePath
-            expectedBytes = [IO.File]::ReadAllBytes($TrustedKeysPath)
+            expectedBytes = $trustedKeySourceBytes
             source = $TrustedKeysPath
         }) | Out-Null
     $legacyLauncherNames = @(
@@ -910,23 +1011,14 @@ if ($publishedSurfaceRequired) {
             $publishedKeyProperty = $publishedKeyDocument.PSObject.Properties['trustedKeys']
             $publishedKeyValues = if ($publishedKeyProperty) { $publishedKeyProperty.Value } else { $publishedKeyDocument }
             $publishedKeyMap = ConvertTo-RevAgentTrustedKeyMap -TrustedKeys $publishedKeyValues
-            if ($AllowTestSigningIdentity) {
-                $publishedKeyIdentityOk = [bool]$publishedTrustedKeysEvidence.sha256Matches -and $publishedKeyMap.Count -eq $trustedKeyMap.Count -and $publishedKeyMap.Count -gt 0
-            }
-            else {
-                $publishedProperties = @($publishedKeyDocument.trustedKeys.PSObject.Properties)
-                if ($publishedProperties.Count -eq 1 -and [string]::Equals([string]$publishedProperties[0].Name, $productionSigningKeyId, [StringComparison]::Ordinal)) {
-                    $publishedKey = $publishedProperties[0].Value
-                    $computedFingerprint = & $publicKeyFingerprintCommand -PublicKeyXml ([string]$publishedKey.publicKeyXml)
-                    $publishedKeyIdentityOk = [string]::Equals([string]$publishedKey.algorithm, 'RS256', [StringComparison]::Ordinal) -and
-                        [string]::Equals([string]$publishedKey.publicKeyFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -and
-                        [string]::Equals([string]$computedFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)
-                }
-            }
+            [void](& $bootstrapTrustedKeysCommand -Bytes ([byte[]]$publishedTrustedKeysRead.bytes) -AllowTestRoot:$AllowTestSigningIdentity)
+            $publishedKeyIdentityOk = [bool]$publishedTrustedKeysEvidence.sha256Matches -and
+                $publishedKeyMap.Count -eq $trustedKeyMap.Count -and
+                $publishedKeyMap.Count -gt 0
         }
         catch { $publishedKeyIdentityError = $_.Exception.Message }
     }
-    Add-RevAgentReadinessCheck -Checks $checks -Name 'published_surface_trusted_key_identity' -Success $publishedKeyIdentityOk -Reason $(if ($publishedKeyIdentityOk) { '' } else { 'published_trusted_key_identity_invalid' }) -Message $(if ($AllowTestSigningIdentity) { 'Published test trusted keys must exactly match the verified disposable fixture document.' } else { "Published trusted keys must contain exactly the pinned '$productionSigningKeyId' production identity and fingerprint." }) -Path (Join-Path $ReleaseRoot $publishedTrustedKeysRelativePath)
+    Add-RevAgentReadinessCheck -Checks $checks -Name 'published_surface_trusted_key_identity' -Success $publishedKeyIdentityOk -Reason $(if ($publishedKeyIdentityOk) { '' } else { 'published_trusted_key_identity_invalid' }) -Message $(if ($AllowTestSigningIdentity) { 'Published test trusted keys must exactly match the verified disposable fixture document.' } else { "Published trusted keys must contain pinned '$productionSigningKeyId' plus at most one later transition key, with exact verified bytes." }) -Path (Join-Path $ReleaseRoot $publishedTrustedKeysRelativePath)
 
     $publishedSurfaceEvidence = [pscustomobject][ordered]@{
         required = $true
@@ -937,6 +1029,7 @@ if ($publishedSurfaceRequired) {
             path = Join-Path $ReleaseRoot $publishedTrustedKeysRelativePath
             keyId = if ($AllowTestSigningIdentity) { '' } else { $productionSigningKeyId }
             fingerprint = if ($AllowTestSigningIdentity) { '' } else { $productionSigningFingerprint }
+            keyIds = if ($null -eq $publishedKeyMap) { @() } else { @($publishedKeyMap.Keys | Sort-Object) }
             identityValid = [bool]$publishedKeyIdentityOk
             error = $publishedKeyIdentityError
         }
@@ -980,6 +1073,48 @@ if (Test-Path -LiteralPath $packagePath -PathType Leaf) {
         [string]::Equals($actualHash, $manifestHash, [System.StringComparison]::OrdinalIgnoreCase)
 }
 Add-RevAgentReadinessCheck -Checks $checks -Name "package_sha256_matches_signed_metadata" -Success $packageHashOk -Message "Release ZIP SHA256 must match channel.sha256 and manifest.package.sha256." -Path $packagePath
+
+$packageTrustedKeysEvidence = [pscustomobject][ordered]@{
+    success = $false
+    relativePath = 'config\release-trusted-keys.json'
+    manifestSha256 = ''
+    packageSha256 = ''
+    publisherInputSha256 = Get-RevAgentBytesSha256 -Bytes $trustedKeySourceBytes
+    exactBytesMatch = $false
+    reason = 'release_trusted_keys_component_missing'
+}
+$releaseTrustedKeysComponent = $null
+if ($null -ne $releaseManifest -and $null -ne $releaseManifest.components) {
+    $releaseTrustedKeysProperty = $releaseManifest.components.PSObject.Properties['releaseTrustedKeys']
+    if ($null -ne $releaseTrustedKeysProperty) { $releaseTrustedKeysComponent = $releaseTrustedKeysProperty.Value }
+}
+$releaseTrustedKeysMetadataOk = $null -ne $releaseTrustedKeysComponent -and
+    [string]::Equals(([string]$releaseTrustedKeysComponent.path).Replace('/', '\'), 'config\release-trusted-keys.json', [StringComparison]::Ordinal) -and
+    [string]$releaseTrustedKeysComponent.sha256 -match '^[A-Fa-f0-9]{64}$' -and
+    [long]$releaseTrustedKeysComponent.sizeBytes -eq [long]$trustedKeySourceBytes.Length
+Add-RevAgentReadinessCheck -Checks $checks -Name 'package_trusted_keys_signed_component' -Success $releaseTrustedKeysMetadataOk -Reason $(if ($releaseTrustedKeysMetadataOk) { '' } else { 'release_trusted_keys_component_invalid' }) -Message 'The signed manifest must bind the exact packaged public trusted-key document.' -Path $releaseManifestPath
+
+if ($releaseTrustedKeysMetadataOk -and $packageHashOk) {
+    $packageTrustedKeysRead = Read-RevAgentReadinessZipEntry -ZipPath $packagePath -RelativePath 'config\release-trusted-keys.json'
+    $packageTrustedKeysHashOk = [bool]$packageTrustedKeysRead.success -and
+        [string]::Equals([string]$packageTrustedKeysRead.sha256, [string]$releaseTrustedKeysComponent.sha256, [StringComparison]::OrdinalIgnoreCase)
+    $packageTrustedKeysBytesOk = $packageTrustedKeysHashOk -and
+        [Linq.Enumerable]::SequenceEqual([byte[]]$packageTrustedKeysRead.bytes, [byte[]]$trustedKeySourceBytes)
+    if ($packageTrustedKeysBytesOk) {
+        try { [void](& $bootstrapTrustedKeysCommand -Bytes ([byte[]]$packageTrustedKeysRead.bytes) -AllowTestRoot:$AllowTestSigningIdentity) }
+        catch { $packageTrustedKeysBytesOk = $false }
+    }
+    $packageTrustedKeysEvidence = [pscustomobject][ordered]@{
+        success = [bool]$packageTrustedKeysBytesOk
+        relativePath = 'config\release-trusted-keys.json'
+        manifestSha256 = [string]$releaseTrustedKeysComponent.sha256
+        packageSha256 = [string]$packageTrustedKeysRead.sha256
+        publisherInputSha256 = Get-RevAgentBytesSha256 -Bytes $trustedKeySourceBytes
+        exactBytesMatch = [bool]$packageTrustedKeysBytesOk
+        reason = if ($packageTrustedKeysBytesOk) { 'ok' } elseif (-not [bool]$packageTrustedKeysRead.success) { [string]$packageTrustedKeysRead.reason } elseif (-not $packageTrustedKeysHashOk) { 'package_trusted_keys_hash_mismatch' } else { 'package_trusted_keys_identity_mismatch' }
+    }
+}
+Add-RevAgentReadinessCheck -Checks $checks -Name 'package_trusted_keys_exact_identity' -Success ([bool]$packageTrustedKeysEvidence.success) -Reason ([string]$packageTrustedKeysEvidence.reason) -Message 'Packaged trusted keys must be one exact entry whose signed hash and bytes equal the verified publisher input.' -Path $packagePath
 
 $nodeMsiMetadata = $null
 if ($null -ne $releaseManifest -and $releaseManifest.PSObject.Properties['externalDependencies']) {
@@ -1164,6 +1299,42 @@ $artifactFindings = @(Find-RevAgentReleaseArtifactFindings -Root $ReleaseRoot -S
 $artifactCheckPath = if ($artifactScanPaths.Count -gt 0) { ($artifactScanPaths -join ";") } else { $ReleaseRoot }
 Add-RevAgentReadinessCheck -Checks $checks -Name "no_source_or_developer_artifacts_in_release_root" -Success ($artifactFindings.Count -eq 0) -Reason $(if ($artifactFindings.Count -eq 0) { "" } else { "source_or_developer_artifacts_detected" }) -Message "Release root and release ZIP must not contain source, source maps, debug symbols, developer manifests, private key names, or license secret names." -Path $artifactCheckPath
 
+$machineTrustEvidence = [pscustomobject][ordered]@{
+    inspected = $false
+    reportOnly = $true
+    healthy = $null
+    reason = 'not_requested'
+    checks = @()
+}
+if ($InspectLocalBootstrapTrust) {
+    $healthArguments = @{
+        AllowTestRoot = [bool]$AllowTestSigningIdentity
+    }
+    if (-not [string]::IsNullOrWhiteSpace($BootstrapTrustProgramDataRoot)) { $healthArguments['ProgramDataRoot'] = $BootstrapTrustProgramDataRoot }
+    if ($null -ne $BootstrapTrustTaskProvider) { $healthArguments['TaskProvider'] = $BootstrapTrustTaskProvider }
+    try {
+        $health = & $bootstrapTrustHealthCommand @healthArguments
+        $machineTrustEvidence = [pscustomobject][ordered]@{
+            inspected = $true
+            reportOnly = $true
+            healthy = [bool]$health.healthy
+            reason = [string]$health.reason
+            checks = @($health.checks)
+            evidence = $health
+        }
+    }
+    catch {
+        $machineTrustEvidence = [pscustomobject][ordered]@{
+            inspected = $true
+            reportOnly = $true
+            healthy = $false
+            reason = 'machine_trust_health_probe_failed'
+            checks = @()
+            error = $_.Exception.Message
+        }
+    }
+}
+
 $failedChecks = @($checks.ToArray() | Where-Object { -not [bool]$_.success })
 $publishedSurfaceFailures = @($failedChecks | Where-Object { [string]$_.name -like 'published_surface_*' })
 $publishedSurfaceEvidence.success = (-not [bool]$publishedSurfaceRequired) -or $publishedSurfaceFailures.Count -eq 0
@@ -1178,10 +1349,13 @@ $report = [pscustomobject][ordered]@{
     packagePath = $packagePath
     trustedKeysPath = $TrustedKeysPath
     trustedKeyCount = $trustedKeyMap.Count
+    trustedKeyValidation = $trustedKeyValidation
     releaseSequence = if ($channel.PSObject.Properties["releaseSequence"]) { [long]$channel.releaseSequence } else { 0 }
     minimumAcceptedReleaseSequence = if ($channel.PSObject.Properties["minimumAcceptedReleaseSequence"]) { [long]$channel.minimumAcceptedReleaseSequence } else { 0 }
     integrity = $integrity
     nodeMsi = $nodeMsiReadiness
+    packageTrustedKeys = $packageTrustedKeysEvidence
+    machineTrust = $machineTrustEvidence
     privateMaterialFindings = $privateMaterial
     artifactScanScope = $ArtifactScanScope
     publishedSurface = $publishedSurfaceEvidence

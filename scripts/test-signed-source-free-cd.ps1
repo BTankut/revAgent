@@ -148,6 +148,27 @@ function Get-TestTreeDigest {
     return [pscustomobject]@{ itemCount = $rows.Count; sha256 = $digest }
 }
 
+function New-TestFunctionHarness {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$FunctionNames,
+        [Parameter(Mandatory = $true)][string]$ParameterDeclaration,
+        [Parameter(Mandatory = $true)][string]$Body
+    )
+
+    $tokens = $null
+    $errors = $null
+    $ast = [Management.Automation.Language.Parser]::ParseFile($Path, [ref]$tokens, [ref]$errors)
+    if ($errors.Count -gt 0) { throw "Could not parse validator source '$Path': $($errors[0].Message)" }
+    $definitions = [Collections.Generic.List[string]]::new()
+    foreach ($functionName in $FunctionNames) {
+        $matches = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and [string]::Equals($node.Name, $functionName, [StringComparison]::Ordinal) }, $true))
+        if ($matches.Count -ne 1) { throw "Validator harness expected one function '$functionName' in '$Path'; found $($matches.Count)." }
+        [void]$definitions.Add($matches[0].Extent.Text)
+    }
+    return [ScriptBlock]::Create($ParameterDeclaration + "`r`n" + ($definitions.ToArray() -join "`r`n`r`n") + "`r`n" + $Body)
+}
+
 Write-Host "Test signed source-free CD producer and NAS publish wrapper"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-signed-source-free-cd-test-" + [Guid]::NewGuid().ToString("N"))
 $releaseRoot = Join-Path $tempRoot "release-root"
@@ -158,20 +179,179 @@ $keyId = "test-cd-key"
 $releaseSequence = 3001
 $minimumAcceptedReleaseSequence = 3000
 $rsa = New-TestRsaProvider
+$futureRsa = $null
+$thirdRsa = $null
 
 try {
     New-Item -ItemType Directory -Path $secretRoot -Force | Out-Null
     $privateKeyPath = Join-Path $secretRoot "release-signing-private.xml"
     $rsa.ToXmlString($true) | Set-Content -LiteralPath $privateKeyPath -Encoding UTF8
     $publicKeyXml = $rsa.ToXmlString($false)
-    $trustedKeys = @{ trustedKeys = @{} }
+    $trustedKeys = [ordered]@{
+        schemaVersion = 1
+        app = 'revAgent'
+        generatedAtUtc = '2026-07-20T00:00:00.0000000Z'
+        trustedKeys = [ordered]@{}
+    }
     $trustedKeys.trustedKeys[$keyId] = [pscustomobject][ordered]@{
         publicKeyXml = $publicKeyXml
         publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
         algorithm = "RS256"
+        purpose = 'release-signing'
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
     $trustedKeys | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+
+    Write-Host 'Test production two-key rotation-window validators'
+    $futureRsa = New-TestRsaProvider
+    $thirdRsa = New-TestRsaProvider
+    $q3TestRecord = [ordered]@{
+        publicKeyXml = $publicKeyXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+        algorithm = 'RS256'
+    }
+    $futurePublicXml = $futureRsa.ToXmlString($false)
+    $futureTestRecord = [ordered]@{
+        publicKeyXml = $futurePublicXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $futurePublicXml
+        algorithm = 'RS256'
+    }
+    $thirdPublicXml = $thirdRsa.ToXmlString($false)
+    $thirdTestRecord = [ordered]@{
+        publicKeyXml = $thirdPublicXml
+        publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $thirdPublicXml
+        algorithm = 'RS256'
+    }
+    $rotationPath = Join-Path $secretRoot 'rotation-q3-q4.json'
+    [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $q3TestRecord; 'revagent-prod-rsa-2026q4' = $futureTestRecord } } |
+        ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $rotationPath -Encoding UTF8
+
+    $legacyPublisherHarness = New-TestFunctionHarness `
+        -Path (Join-Path $RepoRoot 'installer\nas\publish-nas-release.ps1') `
+        -FunctionNames @('Get-RevAgentTrustedKeyJsonPropertyName', 'Get-RevAgentTrustedKeyJsonChildren', 'Assert-RevAgentTrustedKeyJsonTree', 'Read-RevAgentTrustedKeysEvidence') `
+        -ParameterDeclaration 'param([string]$Path, [string]$PinnedFingerprint)' `
+        -Body @'
+$script:RevAgentProductionSigningKeyId = 'revagent-prod-rsa-2026q3'
+$script:RevAgentProductionSigningFingerprint = $PinnedFingerprint
+[void](Read-RevAgentTrustedKeysEvidence -Path $Path)
+'@
+    $cdProducerHarness = New-TestFunctionHarness `
+        -Path (Join-Path $RepoRoot 'scripts\invoke-signed-source-free-cd.ps1') `
+        -FunctionNames @('Assert-RevAgentCdProductionTrustedKeysDocument') `
+        -ParameterDeclaration 'param([string]$Path, [string]$PinnedFingerprint, [string]$RepoRoot)' `
+        -Body @'
+$productionSigningKeyId = 'revagent-prod-rsa-2026q3'
+$productionSigningFingerprint = $PinnedFingerprint
+$integrity = Import-Module (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -Force -PassThru
+[void](Assert-RevAgentCdProductionTrustedKeysDocument -Path $Path -IntegrityModule $integrity)
+'@
+    $nasPublisherTestRepo = Join-Path $tempRoot 'rotation-nas-publisher-repo'
+    $nasPublisherTestModuleRoot = Join-Path $nasPublisherTestRepo 'installer\lib'
+    [void][IO.Directory]::CreateDirectory($nasPublisherTestModuleRoot)
+    $bootstrapTrustSourcePath = Join-Path $RepoRoot 'installer\lib\RevAgent.BootstrapTrust.psm1'
+    $bootstrapTrustTestSource = Get-Content -Raw -LiteralPath $bootstrapTrustSourcePath
+    $productionPin = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
+    Assert-Equal ([regex]::Matches($bootstrapTrustTestSource, [regex]::Escape($productionPin)).Count) 1 'Bootstrap-trust validator production fingerprint pin multiplicity drifted.'
+    $bootstrapTrustTestSource = $bootstrapTrustTestSource.Replace($productionPin, [string]$q3TestRecord.publicKeyFingerprint)
+    [IO.File]::WriteAllText((Join-Path $nasPublisherTestModuleRoot 'RevAgent.BootstrapTrust.psm1'), $bootstrapTrustTestSource, [Text.UTF8Encoding]::new($false))
+    $nasPublisherHarness = New-TestFunctionHarness `
+        -Path (Join-Path $RepoRoot 'scripts\publish-signed-source-free-release-to-nas.ps1') `
+        -FunctionNames @('Assert-RevAgentProductionTrustedKeysDocument') `
+        -ParameterDeclaration 'param([string]$Path, [string]$PinnedFingerprint, [string]$RepoRoot)' `
+        -Body @'
+$productionSigningKeyId = 'revagent-prod-rsa-2026q3'
+$productionSigningFingerprint = $PinnedFingerprint
+Assert-RevAgentProductionTrustedKeysDocument -Path $Path
+'@
+    & $legacyPublisherHarness $rotationPath ([string]$q3TestRecord.publicKeyFingerprint)
+    & $cdProducerHarness $rotationPath ([string]$q3TestRecord.publicKeyFingerprint) $RepoRoot
+    & $nasPublisherHarness $rotationPath ([string]$q3TestRecord.publicKeyFingerprint) $nasPublisherTestRepo
+
+    $metadataQ3Path = Join-Path $secretRoot 'rotation-q3-canonical-public-metadata.json'
+    $metadataQ3Record = [ordered]@{
+        publicKeyXml = $q3TestRecord.publicKeyXml
+        publicKeyFingerprint = $q3TestRecord.publicKeyFingerprint
+        algorithm = 'RS256'
+        purpose = 'release-signing'
+    }
+    [ordered]@{
+        schemaVersion = 1
+        app = 'revit-mcp-skill'
+        generatedAtUtc = '2026-06-23T12:34:03.0000000Z'
+        trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $metadataQ3Record }
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $metadataQ3Path -Encoding UTF8
+    & $legacyPublisherHarness $metadataQ3Path ([string]$q3TestRecord.publicKeyFingerprint)
+    & $cdProducerHarness $metadataQ3Path ([string]$q3TestRecord.publicKeyFingerprint) $RepoRoot
+    & $nasPublisherHarness $metadataQ3Path ([string]$q3TestRecord.publicKeyFingerprint) $nasPublisherTestRepo
+
+    $duplicateKeyJson = ([ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $q3TestRecord } } | ConvertTo-Json -Depth 8 -Compress)
+    $duplicateKeyJson = [regex]::Replace($duplicateKeyJson, '"algorithm":"RS256"', '"algorithm":"RS256","algorithm":"RS256"', 1)
+
+    $invalidRotationDocuments = @(
+        [pscustomobject]@{
+            name = 'more than two production keys'
+            path = Join-Path $secretRoot 'rotation-too-many.json'
+            value = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $q3TestRecord; 'revagent-prod-rsa-2026q4' = $futureTestRecord; 'revagent-prod-rsa-2027q1' = $thirdTestRecord } }
+            pattern = 'one key or a two-key rotation window|one or two public keys|at most one transition key'
+        },
+        [pscustomobject]@{
+            name = 'missing q3 production key'
+            path = Join-Path $secretRoot 'rotation-q3-missing.json'
+            value = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q4' = $futureTestRecord } }
+            pattern = 'must contain.*revagent-prod-rsa-2026q3|missing.*revagent-prod-rsa-2026q3'
+        },
+        [pscustomobject]@{
+            name = 'private key field'
+            path = Join-Path $secretRoot 'rotation-private-field.json'
+            value = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = [ordered]@{ publicKeyXml=$q3TestRecord.publicKeyXml; publicKeyFingerprint=$q3TestRecord.publicKeyFingerprint; algorithm='RS256'; d='private' } } }
+            pattern = 'forbidden private|properties must exactly match|non-public or unknown property'
+        },
+        [pscustomobject]@{
+            name = 'older transition key'
+            path = Join-Path $secretRoot 'rotation-older-transition.json'
+            value = [ordered]@{ trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $q3TestRecord; 'revagent-prod-rsa-2026q2' = $futureTestRecord } }
+            pattern = 'rotation key must be later|transition key must be (?:strictly )?later'
+        },
+        [pscustomobject]@{
+            name = 'duplicate decoded property'
+            path = Join-Path $secretRoot 'rotation-duplicate-property.json'
+            raw = $duplicateKeyJson
+            pattern = 'duplicate decoded (?:JSON )?property|empty or duplicate decoded property'
+        },
+        [pscustomobject]@{
+            name = 'non-literal-Z public metadata timestamp'
+            path = Join-Path $secretRoot 'rotation-metadata-offset.json'
+            value = [ordered]@{
+                schemaVersion = 1
+                app = 'revAgent'
+                generatedAtUtc = '2026-06-23T12:34:03+00:00'
+                trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $metadataQ3Record }
+            }
+            pattern = 'public metadata|trusted-key metadata|generatedAtUtc|ISO UTC'
+        },
+        [pscustomobject]@{
+            name = 'lowercase-z public metadata timestamp'
+            path = Join-Path $secretRoot 'rotation-metadata-lowercase-z.json'
+            value = [ordered]@{
+                schemaVersion = 1
+                app = 'revAgent'
+                generatedAtUtc = '2026-06-23T12:34:03z'
+                trustedKeys = [ordered]@{ 'revagent-prod-rsa-2026q3' = $metadataQ3Record }
+            }
+            pattern = 'public metadata|trusted-key metadata|generatedAtUtc|ISO UTC'
+        }
+    )
+    foreach ($invalid in $invalidRotationDocuments) {
+        if ($null -ne $invalid.PSObject.Properties['raw']) {
+            [IO.File]::WriteAllText([string]$invalid.path, [string]$invalid.raw, [Text.UTF8Encoding]::new($false))
+        }
+        else {
+            $invalid.value | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $invalid.path -Encoding UTF8
+        }
+        Assert-ThrowsLike -Action { & $legacyPublisherHarness $invalid.path ([string]$q3TestRecord.publicKeyFingerprint) } -Pattern $invalid.pattern -Message "Legacy publisher accepted $($invalid.name)."
+        Assert-ThrowsLike -Action { & $cdProducerHarness $invalid.path ([string]$q3TestRecord.publicKeyFingerprint) $RepoRoot } -Pattern $invalid.pattern -Message "Signed-CD producer accepted $($invalid.name)."
+        Assert-ThrowsLike -Action { & $nasPublisherHarness $invalid.path ([string]$q3TestRecord.publicKeyFingerprint) $nasPublisherTestRepo } -Pattern $invalid.pattern -Message "NAS publisher accepted $($invalid.name)."
+    }
 
     Write-Host "Test deterministic IT-only supervised prestage kit artifact"
     $prestageKitBuilder = Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageKit.ps1'
@@ -180,7 +360,7 @@ try {
             -OutputDirectory (Join-Path $tempRoot 'prestage-kit-production-pin-rejection') `
             -TrustedKeysPath $trustedKeysPath `
             -RepoRoot $RepoRoot | Out-Null
-    } -Pattern 'exactly the pinned revagent-prod-rsa-2026q3|pinned RS256 identity' -Message 'Production prestage kit accepted a test signing-key identity.'
+    } -Pattern 'requires revagent-prod-rsa-2026q3|pinned RS256 identity' -Message 'Production prestage kit accepted a test signing-key identity.'
 
     $prestageKitRootA = Join-Path $tempRoot 'prestage-kit-a'
     $prestageKitRootB = Join-Path $tempRoot 'prestage-kit-b'
@@ -282,7 +462,7 @@ try {
             -TrustedKeysPath $extraTopLevelTrustedKeysPath `
             -RepoRoot $RepoRoot `
             -AllowTestTrustedKeys | Out-Null
-    } -Pattern 'properties must exactly match the public allowlist: trustedKeys' -Message 'Supervised prestage kit accepted a trusted-key top-level property outside the exact allowlist.'
+    } -Pattern 'properties must be trustedKeys alone|exact public metadata allowlist' -Message 'Supervised prestage kit accepted a trusted-key top-level property outside the exact allowlist.'
 
     $extraRecordTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-extra-record-property.json'
     [ordered]@{
@@ -301,7 +481,7 @@ try {
             -TrustedKeysPath $extraRecordTrustedKeysPath `
             -RepoRoot $RepoRoot `
             -AllowTestTrustedKeys | Out-Null
-    } -Pattern 'entry properties must exactly match the public allowlist' -Message 'Supervised prestage kit accepted a trusted-key record property outside the exact allowlist.'
+    } -Pattern 'entry properties must match the public allowlist' -Message 'Supervised prestage kit accepted a trusted-key record property outside the exact allowlist.'
 
     foreach ($privateJwkField in @('d', 'p', 'q', 'dp', 'dq', 'qi')) {
         $privateJwkTrustedKeysPath = Join-Path $secretRoot ("release-trusted-keys-private-jwk-$privateJwkField.json")
@@ -543,7 +723,9 @@ try {
     Assert-True (Test-Path -LiteralPath $sourceNodeMsiSidecar -PathType Leaf) 'Signed release must contain its release-owned Node.js MSI sidecar.'
     Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceNodeMsiSidecar).Hash $nodeMsiSha256 'Release-owned Node.js MSI sidecar hash must match signed metadata.'
     Assert-Equal ([long](Get-Item -LiteralPath $sourceNodeMsiSidecar).Length) $nodeMsiSizeBytes 'Release-owned Node.js MSI sidecar size must match signed metadata.'
-    Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\config\release-trusted-keys.json") -PathType Leaf) "CD release root should carry public trusted keys in tools config."
+    $toolsTrustedKeysPath = Join-Path $releaseRoot "tools\config\release-trusted-keys.json"
+    Assert-True (Test-Path -LiteralPath $toolsTrustedKeysPath -PathType Leaf) "CD release root should carry public trusted keys in tools config."
+    Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($toolsTrustedKeysPath), [byte[]][IO.File]::ReadAllBytes($trustedKeysPath))) 'CD tools config did not preserve exact trusted-key bytes.'
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\dashboard\installer\install-dashboard-addon.ps1") -PathType Leaf) "CD release root should carry dashboard admin add-on tools."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\installer\install-usage-intelligence-addon.ps1") -PathType Leaf) "CD release root should carry usage-intelligence admin add-on tools."
     Assert-True (Test-Path -LiteralPath (Join-Path $releaseRoot "tools\addons\usage-intelligence\skills\revagent-usage-analyst\SKILL.md") -PathType Leaf) "CD release root should carry the usage-intelligence analyst skill."
@@ -564,11 +746,21 @@ try {
                 "installer/nas/bootstrap-prestage-evidence.example.json",
                 "installer/nas/Start-revAgent-Update.cmd",
                 "installer/nas/Start-revAgent-Update.ps1",
+                "installer/nas/Invoke-RevAgent-BootstrapTrustBroker.ps1",
                 "installer/lib/RevAgent.LocalBootstrap.psm1",
+                "installer/lib/RevAgent.BootstrapTrust.psm1",
+                "config/release-trusted-keys.json",
                 "installer/lib/RevAgent.Permissions.psm1"
             )) {
             Assert-Equal @($sourceArchive.Entries | Where-Object { [string]::Equals($_.FullName.Replace("\", "/"), $entryName, [StringComparison]::OrdinalIgnoreCase) }).Count 1 "Signed user pack entry '$entryName' must exist exactly once."
         }
+        $packageTrustedKeyEntries = @($sourceArchive.Entries | Where-Object { [string]::Equals($_.FullName.Replace("\", "/"), 'config/release-trusted-keys.json', [StringComparison]::OrdinalIgnoreCase) })
+        $packageTrustedKeyStream = $packageTrustedKeyEntries[0].Open()
+        $packageTrustedKeyMemory = [IO.MemoryStream]::new()
+        try { $packageTrustedKeyStream.CopyTo($packageTrustedKeyMemory) }
+        finally { $packageTrustedKeyStream.Dispose() }
+        Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]]$packageTrustedKeyMemory.ToArray(), [byte[]][IO.File]::ReadAllBytes($trustedKeysPath))) 'Signed package did not embed the exact externally supplied trusted-key bytes.'
+        $packageTrustedKeyMemory.Dispose()
         Assert-Equal @($sourceArchive.Entries | Where-Object { $_.FullName -match '(?i)\.msi$' }).Count 0 'The external Node.js MSI must not be embedded in the source-free ZIP.'
     }
     finally { $sourceArchive.Dispose() }
@@ -606,7 +798,7 @@ try {
     finally { [IO.File]::WriteAllBytes($sourceNodeMsiSidecar, $sourceNodeMsiBytes) }
     Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $sourceNodeMsiSidecar).Hash $nodeMsiSha256 'Node.js MSI sidecar fixture was not restored after fail-closed readiness tests.'
 
-    foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap", "installerLibPermissions")) {
+    foreach ($componentKey in @("localBootstrapInstaller", "bootstrapPrestageEvidenceTool", "bootstrapPrestageEvidenceSchema", "bootstrapPrestageEvidenceExample", "localBootstrapLauncher", "localBootstrap", "installerLibLocalBootstrap", "installerLibBootstrapTrust", "bootstrapTrustBroker", "releaseTrustedKeys", "installerLibPermissions")) {
         Assert-True ($null -ne $sourceManifest.components.$componentKey -and -not [string]::IsNullOrWhiteSpace([string]$sourceManifest.components.$componentKey.sha256)) "Signed manifest is missing bootstrap component '$componentKey'."
     }
     $evidencePath = Join-Path $tempRoot "bootstrap-prestage-evidence.json"
@@ -621,6 +813,33 @@ try {
     Assert-Equal ([string]$evidenceDocument.localBootstrapInstallerScript) ([string]$sourceManifest.components.localBootstrapInstaller.sha256) "Evidence producer did not bind its own signed prestage installer."
     Assert-Equal ([string]$evidenceDocument.sources.launcher) ([string]$sourceManifest.components.localBootstrapLauncher.sha256) "Evidence producer did not bind the protected local launcher."
     Assert-Equal ([string]$evidenceDocument.sources.permissions) ([string]$sourceManifest.components.installerLibPermissions.sha256) "Evidence producer did not bind the protected permissions sibling."
+    Assert-Equal ([string]$evidenceDocument.sources.bootstrapTrust) ([string]$sourceManifest.components.installerLibBootstrapTrust.sha256) "Evidence producer did not bind the bootstrap trust module."
+    Assert-Equal ([string]$evidenceDocument.sources.bootstrapTrustBroker) ([string]$sourceManifest.components.bootstrapTrustBroker.sha256) "Evidence producer did not bind the bootstrap trust broker."
+    Assert-Equal ([string]$evidenceDocument.sources.trustedKeys) ([string]$sourceManifest.components.releaseTrustedKeys.sha256) "Evidence producer did not bind packaged trusted-key bytes."
+
+    $machineEvidencePath = Join-Path $tempRoot 'bootstrap-prestage-evidence-machine-broker.json'
+    $machineEvidenceResult = & (Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageEvidence.ps1') `
+        -ReleaseRoot $releaseRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -OutputPath $machineEvidencePath `
+        -RepoRoot $RepoRoot `
+        -AllowTestRoot `
+        -MachineTrustBroker `
+        -TestAdministratorState elevated `
+        -TestProducerSid 'S-1-5-18'
+    $machineEvidence = Get-Content -Raw -LiteralPath $machineEvidencePath | ConvertFrom-Json
+    Assert-True ([bool]$machineEvidenceResult.success -and [string]$machineEvidence.producerMode -eq 'machine-trust-broker' -and -not [bool]$machineEvidence.supervisedAdminPrestage -and [string]$machineEvidence.generatedBySid -eq 'S-1-5-18') 'Machine trust broker evidence did not preserve its LocalSystem-only producer contract.'
+
+    $reformattedTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-reformatted.json'
+    [IO.File]::WriteAllText($reformattedTrustedKeysPath, ($trustedKeys | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        & (Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageEvidence.ps1') `
+            -ReleaseRoot $releaseRoot `
+            -TrustedKeysPath $reformattedTrustedKeysPath `
+            -OutputPath (Join-Path $tempRoot 'bootstrap-prestage-evidence-key-byte-drift.json') `
+            -RepoRoot $RepoRoot `
+            -AllowTestRoot | Out-Null
+    } -Pattern 'trusted-key bytes differ' -Message 'Evidence producer accepted a semantically equivalent external trusted-key file whose bytes did not match the signed package.'
 
     Write-Host "Test bootstrap evidence verifier executes the exact pinned bytes after pathname swap"
     $evidenceSwapRepo = Join-Path $tempRoot "bootstrap-evidence-verifier-swap-repo"
@@ -1026,11 +1245,41 @@ Export-ModuleMember -Function Test-RevAgentReleaseDistributionIntegrity
     $newInboxCommand = Get-Command ("{0}\New-RevAgentAuthenticatedReleaseInbox" -f $snapshotModule.Name) -ErrorAction Stop
     $newSnapshotCommand = Get-Command ("{0}\New-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
     $assertSnapshotCommand = Get-Command ("{0}\Assert-RevAgentProtectedReleaseSnapshot" -f $snapshotModule.Name) -ErrorAction Stop
+    if ($PSVersionTable.PSEdition -eq 'Core' -and $null -ne ('Newtonsoft.Json.JsonConvert' -as [type])) {
+        $snapshotFallbackEvidence = & $snapshotModule {
+            $script:RevAgentSnapshotJsonSupportsDateKind = $false
+            $script:RevAgentSnapshotJsonRequiresNewtonsoft = $true
+            try {
+                $parsed = ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json '{"createdAtUtc":"2026-07-20T00:00:00.0000000Z"}'
+                $collisionRejected = $false
+                try { [void](ConvertFrom-RevAgentSnapshotJsonPreservingStrings -Json '{"app":"revAgent","App":"evil"}') }
+                catch { $collisionRejected = [string]$_.Exception.Message -match 'case-insensitive duplicate JSON property' }
+                return [pscustomobject]@{ parsed = $parsed; collisionRejected = $collisionRejected }
+            }
+            finally {
+                $script:RevAgentSnapshotJsonSupportsDateKind = $null
+                $script:RevAgentSnapshotJsonRequiresNewtonsoft = $null
+            }
+        }
+        Assert-True ($snapshotFallbackEvidence.parsed.createdAtUtc -is [string] -and [string]$snapshotFallbackEvidence.parsed.createdAtUtc -ceq '2026-07-20T00:00:00.0000000Z') 'Release snapshot older-Core fallback did not preserve the exact ISO JSON string.'
+        Assert-True ([bool]$snapshotFallbackEvidence.collisionRejected) 'Release snapshot older-Core fallback collapsed a case-insensitive JSON property collision.'
+    }
     $pilotInboxRoot = Join-Path $tempRoot 'pilot-inbox'
     New-Item -ItemType Directory -Path $pilotInboxRoot -Force | Out-Null
     $inboxProbe = [pscustomobject]@{ called = $false }
     $inboxHook = { param($path, $source); $inboxProbe.called = $true }.GetNewClosure()
     $nodeMsiHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $pilotNodeMsiSidecar).Hash
+    $invalidSnapshotTrustPath = Join-Path $secretRoot 'snapshot-trust-metadata-offset.json'
+    [ordered]@{
+        schemaVersion = 1
+        app = 'revAgent'
+        generatedAtUtc = '2026-07-20T00:00:00+00:00'
+        trustedKeys = $trustedKeys.trustedKeys
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $invalidSnapshotTrustPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $invalidSnapshotTrustPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'TESTPILOT01' | Out-Null
+    } -Pattern 'Protected trust metadata.*ISO UTC generatedAtUtc' -Message 'Authenticated inbox acquisition accepted a non-literal-Z protected trust timestamp.'
+    Assert-True (@(Get-ChildItem -LiteralPath $pilotInboxRoot -Force).Count -eq 0) 'Rejected protected trust metadata created an authenticated inbox child.'
     Assert-ThrowsLike -Action {
         & $newInboxCommand -ReleaseRoot $pilotReleaseRoot -Channel pilot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -InboxRoot $pilotInboxRoot -ExpectedNodeMsiSha256 $nodeMsiHash -AllowTestRoot -TestMachineName 'OUTSIDER01' -TestBeforeInboxChildCreateHook $inboxHook | Out-Null
     } -Pattern 'pilot_machine_not_allowed' -Message 'Authenticated inbox acquisition accepted an unauthorized pilot machine.'
@@ -1381,6 +1630,7 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     $bootstrapEvidenceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\New-RevAgentBootstrapPrestageEvidence.ps1")
     $prestageKitBuilderText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageKit.ps1')
+    $releaseSnapshotText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1')
     $retiredPromoterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\promote-nas-release.ps1")
     $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
     $stableLauncherSourceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd')
@@ -1388,6 +1638,10 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
     $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
+    Assert-True ($producerText -match '(?s)\$sourceStream\.Length\s+-lt\s+1.*?\$sourceStream\.Length\s+-gt\s+65536.*?New-Object byte\[\]' -and $producerText -notmatch '\[IO\.File\]::ReadAllBytes\(\$Path\)') 'CD producer must enforce the trusted-key size bound before allocating its byte snapshot.'
+    Assert-True ($publisherText -match '(?s)\$trustedKeysStream\.Length\s+-lt\s+1.*?\$trustedKeysStream\.Length\s+-gt\s+65536.*?New-Object byte\[\].*?\$validation\s*=\s*&\s*\$validator\s+-Bytes\s+\$trustedKeysBytes' -and $publisherText -notmatch '\[IO\.File\]::ReadAllBytes\(\$Path\)') 'NAS publisher must enforce the trusted-key size bound before allocating and validating its byte snapshot.'
+    Assert-True ($releaseSnapshotText -match '(?s)\$trustedKeysStream\.Length\s+-lt\s+1.*?\$trustedKeysStream\.Length\s+-gt\s+65536.*?New-Object byte\[\]' -and $releaseSnapshotText -notmatch '\[IO\.File\]::ReadAllBytes\(\$TrustedKeysPath\)') 'Release snapshot trust validation must enforce the trusted-key size bound before allocating its byte snapshot.'
+    Assert-True ($releaseSnapshotText -match '\$trustedKeysSha256\s*=\s*Get-RevAgentSnapshotSha256Bytes\s+-Bytes\s+\$trustedKeysBytes' -and $releaseSnapshotText -match 'trustedKeysSha256\s*=\s*\$trustedKeysSha256' -and $releaseSnapshotText -notmatch 'trustedKeysSha256\s*=\s*Get-RevAgentSnapshotFileSha256\s+-Path\s+\$TrustedKeysPath') 'Release snapshot must bind its returned trusted-key SHA to the exact held byte snapshot that was parsed and validated, without reopening the pathname.'
     Assert-True ($prestageKitBuilderText -match "'IT-Prestage-revAgent\.cmd'" -and $prestageKitBuilderText -match "'scripts/Invoke-RevAgentSupervisedPrestage\.ps1'" -and $prestageKitBuilderText -match "'scripts/New-RevAgentBootstrapPrestageEvidence\.ps1'" -and $prestageKitBuilderText -match "'installer/lib/RevAgent\.DistributionIntegrity\.psm1'" -and $prestageKitBuilderText -match "'config/release-trusted-keys\.json'" -and $prestageKitBuilderText -match 'FileMode\]::CreateNew' -and $prestageKitBuilderText -match '1980, 1, 1' -and $prestageKitBuilderText -match 'GetLinkCount' -and $prestageKitBuilderText -match 'RUNNER_TEMP' -and $prestageKitBuilderText -notmatch 'RUNNER_WORKSPACE' -and $prestageKitBuilderText -notmatch 'SigningPrivateKeyPath') 'Supervised prestage kit builder must enforce its deterministic exact public allowlist, TEMP-only output, no-link policy, and no-private-key input.'
     foreach ($forbiddenKitSurfaceName in @(
         'IT-Prestage-revAgent.cmd',
@@ -1403,16 +1657,20 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     foreach ($productionPinSurface in @($producerText, $publisherText, $legacyPublisherText, $bootstrapEvidenceText)) {
         Assert-True ($productionPinSurface -match [regex]::Escape($productionSigningKeyId) -and $productionPinSurface -match [regex]::Escape($productionSigningFingerprint)) "Every production signing/prestage surface must pin the exact production key id and fingerprint."
     }
-    Assert-True ($producerText -match 'trustedProperties\.Count -ne 1' -and $publisherText -match 'properties\.Count -ne 1' -and $legacyPublisherText -match 'properties\.Count -ne 1' -and $bootstrapEvidenceText -match 'trustedKeyProperties\.Count -ne 1') "Production producer, publishers, and prestage evidence must reject multi-key trusted-key documents."
+    foreach ($rotationAwareSurface in @($producerText, $legacyPublisherText, $bootstrapEvidenceText)) {
+        Assert-True ($rotationAwareSurface -match 'Count\s+-gt\s+2' -and $rotationAwareSurface -match '(?:rotation|transition) key must be (?:strictly )?later') 'Production producer, package publisher, and prestage evidence must permit only q3 plus one later rotation key.'
+    }
+    Assert-True ($publisherText -match 'Assert-RevAgentBootstrapTrustedKeySet' -and $publisherText -match 'bounded two-key transition contract') 'NAS publisher must delegate production rotation validation to the bootstrap-trust two-key contract.'
     Assert-True ($producerText -match 'CdStagingNative' -and $producerText -match 'CreateDirectoryRelativeNoDelete' -and $producerText -match 'StagingRootGuard' -and $legacyPublisherText -match 'Assert-RevAgentAtomicStagingGuard') "CD generation must atomically create and hold one exact local staging leaf and reject unguarded production generation."
     Assert-True ($publisherText -match '\[ValidateSet\("stable", "pilot"\)\]' -and $publisherText -match 'DESKTOP-OKNV128' -and $publisherText -match 'NET01' -and $publisherText -match 'stable versioned release' -and $publisherText -match 'Set-RevAgentStableLauncherExact' -and $publisherText -match 'Set-RevAgentStableBootstrapToolsExact' -and $publisherText -match 'TestUseProductionPublishedSurface' -and $publisherText -match 'transactional-exact-handles') "Production stable publish must use handle-bound create-new release copy, exact-manage the complete published surface transactionally, expose a bounded production-path fixture mode, and keep the pilot cohort restricted."
     Assert-True ($publisherText -match 'config\\release-trusted-keys\.json' -and $publisherText -match 'Install-revAgent-Updater-GUI\.cmd' -and $publisherText -match 'Install-Revit-MCP-Updater-GUI\.cmd' -and $publisherText -match 'Install-revAgent-Updater\.cmd' -and $publisherText -match 'Install-Revit-MCP-Updater\.cmd') 'Stable publisher must exact-manage verified trusted keys and all four legacy compatibility stubs in tools and the NAS root.'
     Assert-True ($readinessText -match 'required-canonical-production' -and $publisherText -match '\$stableSurfaceRepairBaseline\s*=\s*\[string\]::Equals\(\$Channel, ''stable''' -and $publisherText -match '-SkipPublishedSurface:\$stableSurfaceRepairBaseline') 'Canonical readiness must auto-require the published surface, with a narrowly scoped publisher exception only for the authenticated stable baseline being repaired.'
-    Assert-True ($stableLauncherSourceText -match 'if not exist "%BOOTSTRAP%"' -and $stableLauncherSourceText -match 'VerificationOnly >nul 2>nul' -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('call "%REFRESH%"'))).Count -eq 2 -and $stableLauncherSourceText -match 'if "%REVAGENT_FAILURE_CODE%"=="84" goto stable_signing_trust_unavailable' -and $stableLauncherSourceText -match 'independent Windows signing trust anchor is unavailable') "Production stable launcher template must route missing and stale bootstraps through the fail-closed refresh boundary, preserve exact exit 84 guidance, and allow only an already-current verified bootstrap to reach normal GUI launch."
+    Assert-True ($stableLauncherSourceText -match 'if not exist "%BOOTSTRAP%"' -and $stableLauncherSourceText -match 'VerificationOnly >nul 2>nul' -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('call "%REFRESH%"'))).Count -eq 2 -and $stableLauncherSourceText -match 'if "%REVAGENT_FAILURE_CODE%"=="84" goto stable_signing_trust_unavailable' -and $stableLauncherSourceText -match 'IT-prestaged revAgent machine trust core is missing or unhealthy') "Production stable launcher template must route missing and stale bootstraps through the broker refresh boundary, preserve exact exit 84 IT-prestage guidance, and allow only an already-current verified bootstrap to reach normal GUI launch."
     Assert-True ($stableLauncherSourceText -match [regex]::Escape('setlocal EnableExtensions EnableDelayedExpansion') -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('set "REFRESH_EXIT=!ERRORLEVEL!"'))).Count -eq 2 -and ([regex]::Matches($stableLauncherSourceText, [regex]::Escape('exit /b !REFRESH_EXIT!'))).Count -eq 2) 'Published STABLE launcher template must preserve refresh exit codes safely across both parenthesized call paths.'
-    foreach ($publishedExitCode in @(79, 80, 81, 82, 84)) {
+    foreach ($publishedExitCode in @(80, 81, 84)) {
         Assert-True ($stableLauncherSourceText -match [regex]::Escape(('if "%REVAGENT_FAILURE_CODE%"=="{0}"' -f $publishedExitCode)) -and $stableRefreshCmdSourceText -match [regex]::Escape(('if "%REFRESH_EXIT%"=="{0}"' -f $publishedExitCode))) "Published launcher surface lost exact exit-code $publishedExitCode routing."
     }
+    Assert-True ($stableLauncherSourceText -notmatch 'REVAGENT_FAILURE_CODE%"=="(?:79|82)"' -and $stableRefreshCmdSourceText -notmatch 'REFRESH_EXIT%"=="(?:79|82)"') 'Broker-only refresh transport must not retain unreachable UAC-decline/LUA exit routing.'
     Assert-True ($publisherText -match 'Get-RevAgentNasPublishMutexName' -and $publisherText -match '\.WaitOne\(0, \$false\)' -and $publisherText -match 'Enter-RevAgentNasPublishLease' -and $publisherText -match 'ReleaseMutex' -and $publisherText -match 'publishLease\.stream\.Dispose') "NAS publisher must hold and release both its named mutex and NAS lease."
     Assert-True ($publisherText -match 'Get-RevAgentSignedStableIdentity' -and $publisherText -match 'AllowLegacyMissingNodeMsi' -and ([regex]::Matches($publisherText, 'AllowLegacyMissingNodeMsi').Count -eq 1) -and $publisherText -match 'never passed to candidate/source readiness') 'Only an already-active signed destination channel baseline may use the transitional missing-sidecar readiness allowance.'
     Assert-True ($publisherText -match '\$candidateReleaseSequence\s*=\s*ConvertTo-RevAgentInt64OrZero -Value \$sourceArtifactIdentity\.releaseSequence' -and $publisherText -match '\$candidateReleaseSequence -ne \$readinessReleaseSequence') "NAS publisher anti-rollback guard must bind readiness releaseSequence to the post-readiness signed source identity."
@@ -1432,6 +1690,8 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
 }
 finally {
     $rsa.Dispose()
+    if ($null -ne $futureRsa) { $futureRsa.Dispose() }
+    if ($null -ne $thirdRsa) { $thirdRsa.Dispose() }
     if ($env:REVAGENT_KEEP_SIGNED_CD_TEST_TEMP -eq '1') {
         Write-Warning "Keeping signed CD test fixture for diagnosis: $tempRoot"
     }

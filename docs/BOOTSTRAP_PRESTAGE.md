@@ -11,12 +11,24 @@ surface, not an elevated trust root. The exact-managed STABLE/refresh
 coordinator may run from NAS, but no loose NAS GUI, installer, or module may be
 elevated or installed as a trust anchor.
 
-Current production behavior is deliberately fail-closed: when the protected
-bootstrap is missing or its verification says it is stale, any NAS Refresh path
-that would elevate returns exit 84 before requesting UAC. Direct
-`-ElevatedApply` is disabled by the same guard. The STABLE CMD reports that
-independent Windows signing trust is unavailable and points to the supervised
-procedure in this document instead of attempting an elevated bootstrap apply.
+E2 establishes the independent machine verifier required by G13. A one-time
+supervised IT prestage installs an administrator-owned trust core under
+`C:\ProgramData\DPE\revAgent\trust` and the fixed SYSTEM task
+`\DPE\revAgent\revAgent Bootstrap Trust Broker`. After that, missing or stale
+protected bootstrap files use a standard-user staging phase plus the fixed
+broker; they never elevate a NAS file or caller-supplied trust decision. A
+machine without a healthy core/task remains deliberately fail-closed at exit 84
+and is directed to the supervised kit.
+
+## Open decisions and non-goals
+
+E2 implements the currently selected independent machine verifier, but D2 --
+whether that is the final G13 release bar or publisher proof/E3 is additionally
+required -- remains an operator decision. D3, the actual MDM/GPO deployment
+authority available for fleet prestage, is also open. D4, the q3-to-future-key
+rotation date/window and two-key overlap, is open. The active signing identity
+remains `revagent-prod-rsa-2026q3`; `2026q4` is only a future placeholder and is
+not installed or activated. E3 Authenticode has not started.
 
 ## Normal STABLE entry point
 
@@ -29,24 +41,49 @@ a standard user runs only:
 
 If the protected bootstrap is current and verified, STABLE bypasses Refresh,
 opens the protected local GUI, and the normal split-privilege updater proceeds
-unchanged. If the bootstrap is missing or stale, STABLE enters Refresh and the
-current unanchored path stops with exit 84 before UAC; a stale verifier/key may
-not authorize its own replacement. Exit codes 79, 80, 81, and 82 remain the
-coordinator contract for UAC decline, an existing coordinator, timeout, and a
-disabled/non-de-elevatable UAC configuration after a future independent anchor
-re-enables that path. Current missing-or-stale Refresh does not reach them.
+unchanged. If it is missing or stale, Refresh first loads only its pinned local
+PowerShell modules, copies the complete signed release set into a user-local
+`%LOCALAPPDATA%\DPE\revAgent\release-inbox\<inboxId>`, writes
+`%LOCALAPPDATA%\DPE\revAgent\broker-requests\bootstrap-request-<nonce>.json`
+containing only schema/app/request type, nonce, requester SID, inbox id, and
+creation time, and starts the fixed task. The request carries no verifier path,
+trusted key, expected hash, release root, or installer command.
 
-The local staged-script hash, pre-execution read lock, elevated self-hash, and
-nonce-bound result are defense-in-depth for that future independently anchored
-coordinator and its fixtures; they do not currently authorize elevation. The
-release workflow signs JSON metadata with a detached RS256 key and verifies the
-third-party Node MSI's Authenticode signature, but it does not provide a
-revAgent Authenticode code-signing certificate/service or signed bootstrap
-broker. Self-service bootstrap install/refresh may be re-enabled only when an
-Authenticode-signed broker, or an equivalent IT-prestaged machine verifier and
-pinned production key, independently revalidates the detached release signature
-after elevation. Until then, use the supervised IT kit below for administrator-
-side trust establishment or refresh.
+The SYSTEM broker resolves profiles through the 64-bit HKLM
+`SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList` inventory, derives
+each inbox from the SID/profile path, reads only that local inbox, and never
+accesses NAS. Its round-robin queue scan is bounded to 128 profiles and 16
+candidates per profile. One invocation terminalizes at most two requests per
+SID and handles 16 total by default, with a hard maximum of 64. It independently
+verifies the detached channel and release signatures, rollback/release-sequence
+policy, package hash, exact embedded `config\release-trusted-keys.json`
+identity, and all signed bootstrap component hashes using the admin-owned trust
+core. It then applies the protected bootstrap and writes
+`%ProgramData%\DPE\revAgent\bootstrap-broker\results\principal-<SID>\bootstrap-result-<nonce>.json`.
+Result retention is bounded to 16 files per SID, 128 principal buckets, and
+2048 files globally. The broker reserves the requester's protected result
+bucket before snapshot acquisition or privileged apply. At exactly 128
+buckets, a new SID is rejected before apply without creating a 129th bucket;
+an existing SID can continue while its own 16-file bucket has capacity. Success
+cleans the user staging and starts the protected
+local launcher with `--post-refresh`; that continuation verifies the new
+binding before opening the GUI. This is the clean-machine and eight-file
+stale-bootstrap self-heal path.
+
+There is no ProgramData request queue. Any legacy
+`bootstrap-broker\requests` directory is ignored and is not an authority.
+`state\broker.lock`, `snapshots`, `apply`, and `trust-transactions` are
+SYSTEM/Administrators-only. The broker lock is the single-instance authority;
+snapshots and apply scratch are bounded private artifacts, not caller-selected
+paths.
+
+No UAC transport remains in Refresh. Exit 80 means another broker/coordinator
+instance owns the bounded operation, 81 means the broker result timed out, and
+84 means the machine trust core/task is absent or unhealthy and IT must use the
+exact five-file E1 kit below. All missing/unhealthy trust checks use this same
+exit-84 direction; the manual recovery procedure is not the primary exit-84
+response. The old 79 UAC-decline and 82 LUA outcomes were removed with their
+dormant transport. E3 Authenticode is not part of this flow.
 
 ## Primary path: supervised IT prestage kit
 
@@ -83,10 +120,32 @@ elevation prompt. The wrapper selects the canonical 64-bit Windows PowerShell
 5.1 host, rejects non-`FullLanguage` policy with exit 78, and runs the exact
 bundled driver. The driver performs evidence production, signed-package
 extraction, the legacy shared-`DPE` ACL migration when required, protected
-ProgramData staging, bootstrap installation, state verification, and shortcut
-verification without a repository checkout, pasted code, or hand-copied hash
-literals. Its supervised operating budget is under five minutes; record and
-investigate any target that exceeds it.
+ProgramData staging, trust-core/broker/task installation and immediate health
+attestation, then local-bootstrap installation, state/task verification, and
+shortcut verification without a repository checkout, pasted code, or
+hand-copied hash literals. The outer kit remains exactly five files; the signed
+release manifest/evidence supplies and binds `RevAgent.BootstrapTrust.psm1`,
+`RevAgent.ReleaseSnapshot.psm1`, the release-independent broker, and the exact
+embedded public trusted-key document. Its supervised operating budget is under
+five minutes; record and investigate any target that exceeds it.
+
+Trust replacement stages and retains its rollback candidate below the
+SYSTEM/Administrators-only `bootstrap-broker\trust-transactions` root. An exact,
+healthy fixed task is preserved; only a missing or broken task is registered or
+repaired. The installer must pass trust health before it starts local-bootstrap
+replacement, so a later bootstrap failure leaves a healthy retry authority. A
+single fixed `%ProgramData%\DPE\revAgent\.bootstrap-install.lock` is held from
+before trust installation through immediate trust health and local-bootstrap
+commit. A concurrent installer fails closed as `bootstrap_install_busy`
+without performing trust or bootstrap mutation; do not run supervised kit
+installs in parallel.
+The local candidate and prior root live together below the private
+SYSTEM/Administrators-only `.bootstrap-transactions\<random>` child. Candidate
+ACLs, hashes, state bindings, readability, and hardlink identity are fully
+attested before the rename promotion that commits it. Before that boundary, a
+failure restores the exact prior directory identity. After commit, inability to
+delete the prior root is a warning/deferred-cleanup condition and never rolls
+back the healthy new bootstrap.
 
 After success, use only the protected local launcher:
 
@@ -94,11 +153,11 @@ After success, use only the protected local launcher:
 C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
-This E1 kit does not re-enable self-service Refresh, alter exit 84, change any
-of the eight manifest-bound bootstrap components, authorize a pilot/stable NAS
-publish, or install a release-independent SYSTEM broker. Missing or stale
-bootstrap still fails closed and directs IT back to this kit until E2 is
-delivered.
+This E2-enabled kit is the one-time trust-establishment step. It does not
+authorize pilot/stable NAS publication and it does not carry private signing
+material. Existing fleet machines need one planned kit pass because E2 itself
+changes manifest-bound bootstrap components; after that pass, later changes to
+all eight bound files self-heal through the broker with no additional IT touch.
 
 ## Emergency fallback: manual high-assurance/recovery prestage
 
@@ -573,11 +632,15 @@ C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
 ```
 
 Production NAS `tools` contains only the exact managed CMD allowlist documented
-in `installer\nas\README.md`. Only a current, verified protected bootstrap stays
-on the normal local GUI path. A missing bootstrap or a local launcher that is
-stale against its signed manifest component enters Refresh and stops with exit
-84 before UAC. Complete the supervised kit path (or this emergency two-shell
-procedure), then rerun the protected local launcher.
+in `installer\nas\README.md`. A current, verified protected bootstrap stays on
+the normal local GUI path. A missing bootstrap or a local launcher that is stale
+against its signed manifest component enters Refresh; when the fixed machine
+trust core and SYSTEM broker task are healthy, Refresh stages an authenticated
+local inbox, submits a nonce-bound request, waits for the protected result, and
+self-heals through the local `--post-refresh` launcher without UAC. Exit 84 is
+reserved for a missing or unhealthy trust core/task. In that case, complete the
+supervised E1 kit path (or this emergency two-shell procedure), then rerun the
+protected local launcher.
 
 The prestage evidence and protected bootstrap include the complete signed
 module closure needed before the GUI can start:

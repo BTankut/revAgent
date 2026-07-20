@@ -292,7 +292,7 @@ function Assert-RevAgentEarlyReleaseSurface {
     try { $fingerprint = ([System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($normalizedKey)))).Replace("-", "") } finally { $sha.Dispose() }
     if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Pinned release key fingerprint mismatch." }
     $integrityModulePath = Join-Path $ToolsRoot "lib\RevAgent.DistributionIntegrity.psm1"
-    $pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
+    $pinnedIntegrityModuleHash = "C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6"
     $actualIntegrityModuleHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $integrityModulePath).Hash
     if (-not [string]::Equals($actualIntegrityModuleHash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Pinned pre-import integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash Actual=$actualIntegrityModuleHash"
@@ -438,11 +438,19 @@ function Assert-RevAgentEarlyAuthenticatedSnapshot {
     $productionKeyFingerprint = "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33"
     $trustedKeyDocument = Get-Content -Raw -LiteralPath $trustedKeysPath | ConvertFrom-Json
     $trustedKeyProperties = @($trustedKeyDocument.trustedKeys.PSObject.Properties)
-    if ($trustedKeyProperties.Count -ne 1 -or
-        -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [System.StringComparison]::Ordinal)) {
-        throw "Execution snapshot trust document must contain exactly '$productionKeyId' and no additional signing keys."
+    if ($trustedKeyProperties.Count -lt 1 -or $trustedKeyProperties.Count -gt 2 -or
+        $null -eq $trustedKeyDocument.trustedKeys.PSObject.Properties[$productionKeyId]) {
+        throw "Execution snapshot trust document must contain '$productionKeyId' and at most one transition key."
     }
-    $productionKey = $trustedKeyProperties[0].Value
+    if ($trustedKeyProperties.Count -eq 2) {
+        $transitionKeyId = [string](@($trustedKeyProperties | Where-Object { -not [string]::Equals([string]$_.Name, $productionKeyId, [System.StringComparison]::Ordinal) })[0].Name)
+        $transitionMatch = [regex]::Match($transitionKeyId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+        $transitionOrdinal = if ($transitionMatch.Success) { ([int]$transitionMatch.Groups['year'].Value * 4) + [int]$transitionMatch.Groups['quarter'].Value } else { 0 }
+        if (-not $transitionMatch.Success -or $transitionOrdinal -le ((2026 * 4) + 3)) {
+            throw "Execution snapshot transition key must be later than ${productionKeyId}: $transitionKeyId"
+        }
+    }
+    $productionKey = $trustedKeyDocument.trustedKeys.$productionKeyId
     if (-not [string]::Equals([string]$productionKey.algorithm, "RS256", [System.StringComparison]::Ordinal) -or
         -not [string]::Equals([string]$productionKey.publicKeyFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase) -or
         -not [string]::Equals([string]$state.trust.productionKeyFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
@@ -457,7 +465,7 @@ function Assert-RevAgentEarlyAuthenticatedSnapshot {
     if (-not [string]::Equals($actualProductionFingerprint, $productionKeyFingerprint, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Execution snapshot production release-key fingerprint mismatch."
     }
-    $pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
+    $pinnedIntegrityModuleHash = "C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6"
     if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $verifierPath).Hash, $pinnedIntegrityModuleHash, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Pinned snapshot integrity verifier hash mismatch. Expected=$pinnedIntegrityModuleHash"
     }

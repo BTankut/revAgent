@@ -5,6 +5,41 @@ $ErrorActionPreference = "Stop"
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
 function Assert-True([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 
+function Grant-TestTreeCleanupAccess {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root)) { return }
+    $cleanupSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $cleanupItems = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue) + @(Get-Item -LiteralPath $Root -Force)
+    foreach ($cleanupItem in @($cleanupItems | Sort-Object { $_.FullName.Length })) {
+        try {
+            $cleanupAcl = Get-Acl -LiteralPath $cleanupItem.FullName -ErrorAction Stop
+            $cleanupInheritance = if ($cleanupItem.PSIsContainer) { [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [Security.AccessControl.InheritanceFlags]::None }
+            $cleanupRule = [Security.AccessControl.FileSystemAccessRule]::new($cleanupSid, [Security.AccessControl.FileSystemRights]::FullControl, $cleanupInheritance, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)
+            $cleanupAcl.SetAccessRule($cleanupRule)
+            if ($cleanupItem.PSIsContainer) {
+                if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$cleanupItem, [Security.AccessControl.DirectorySecurity]$cleanupAcl) }
+                else { ([IO.DirectoryInfo]$cleanupItem).SetAccessControl([Security.AccessControl.DirectorySecurity]$cleanupAcl) }
+            }
+            else {
+                if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]$cleanupItem, [Security.AccessControl.FileSecurity]$cleanupAcl) }
+                else { ([IO.FileInfo]$cleanupItem).SetAccessControl([Security.AccessControl.FileSecurity]$cleanupAcl) }
+            }
+        }
+        catch { }
+    }
+}
+
+function Read-AllTextWithRetry {
+    param([Parameter(Mandatory = $true)][string]$Path, [int]$Attempts = 100)
+    $failure = $null
+    for ($attempt = 0; $attempt -lt $Attempts; $attempt++) {
+        try { return [IO.File]::ReadAllText($Path) }
+        catch [IO.IOException] { $failure = $_; Start-Sleep -Milliseconds 25 }
+    }
+    throw $failure
+}
+
 function Invoke-ExpectBootstrapFailure {
     param([string]$Pattern, [string]$Message)
     $caught = $null
@@ -53,6 +88,8 @@ $sources = [ordered]@{
     sourceFreeMigration = Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1"
     releaseSnapshot = Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1"
     privilegedSnapshotUpdate = Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
+    bootstrapTrust = Join-Path $RepoRoot "installer\lib\RevAgent.BootstrapTrust.psm1"
+    bootstrapTrustBroker = Join-Path $RepoRoot "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1"
     trustedKeys = $trustedKeys
 }
 New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -194,7 +231,7 @@ Start-RevAgentBootstrapGuiProcess -StartInfo $startInfo -StartupWaitMilliseconds
     Assert-True (Test-Path -LiteralPath $longLivedMarkerPath -PathType Leaf) "Long-lived GUI blocked after its bootstrap parent exited; direct stderr-file redirection did not drain the full payload."
     $longLivedLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-launch-stderr-*.log' -File | Where-Object { -not $longLivedLogsBefore.ContainsKey($_.FullName) })
     Assert-True ($longLivedLogs.Count -eq 1) "Long-lived GUI launch did not create exactly one direct stderr log."
-    $longLivedLogText = [IO.File]::ReadAllText($longLivedLogs[0].FullName)
+    $longLivedLogText = Read-AllTextWithRetry -Path $longLivedLogs[0].FullName
     Assert-True ($longLivedLogs[0].Length -gt 3000000 -and $longLivedLogText -match [regex]::Escape($longLivedMarker)) "Long-lived GUI direct stderr log is incomplete."
     Remove-Item -LiteralPath $longLivedLogs[0].FullName -Force
 
@@ -283,6 +320,240 @@ $result = [pscustomobject]@{
     $protectedPermissionsPath = Join-Path $bootstrapRoot "lib\RevAgent.Permissions.psm1"
     Assert-True ($null -ne $state.files.permissions -and [string]::Equals([string]$state.files.permissions.relativePath, "lib\RevAgent.Permissions.psm1", [StringComparison]::OrdinalIgnoreCase)) "Protected bootstrap state does not bind the permissions sibling."
     Assert-True ((Test-Path -LiteralPath $protectedPermissionsPath -PathType Leaf) -and [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $protectedPermissionsPath).Hash, [string]$hashes.permissions, [StringComparison]::OrdinalIgnoreCase)) "Protected permissions sibling is missing or does not match authenticated evidence."
+    Assert-True ($null -ne $state.bootstrapTrustInstall -and [bool]$state.bootstrapTrustInstall.success) "Disposable prestage did not install the machine bootstrap trust core."
+    Assert-True ($null -ne $state.bootstrapTrustHealth -and [bool]$state.bootstrapTrustHealth.success -and [bool]$state.bootstrapTrustHealth.healthy) "Disposable prestage machine trust core did not pass health attestation."
+    $machineInstallLockPath = Join-Path $temp '.bootstrap-install.lock'
+    Assert-True ($null -ne $state.machineInstallLock -and [string]::Equals([IO.Path]::GetFullPath([string]$state.machineInstallLock.path), [IO.Path]::GetFullPath($machineInstallLockPath), [StringComparison]::OrdinalIgnoreCase) -and [uint32]$state.machineInstallLock.hardlinkCount -eq 1) 'Prestage result does not expose the exact held machine-install lock attestation.'
+    Assert-True ([string]::Equals([IO.File]::ReadAllText($machineInstallLockPath), 'revAgent-bootstrap-install-lock-v1', [StringComparison]::Ordinal)) 'Persistent machine-install lock marker is not exact.'
+    $fixtureTrustRoot = Join-Path $temp 'DPE\revAgent\trust'
+    foreach ($trustLeaf in @('RevAgent.BootstrapTrust.psm1', 'Invoke-RevAgent-BootstrapTrustBroker.ps1', 'RevAgent.DistributionIntegrity.psm1', 'RevAgent.ReleaseSnapshot.psm1', 'release-trusted-keys.json', 'trust-state.json')) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $fixtureTrustRoot $trustLeaf) -PathType Leaf) "Disposable prestage trust core is missing: $trustLeaf"
+    }
+    Assert-True ([string]$state.bootstrapTrustInstall.task.userId -eq 'SYSTEM' -and [string]$state.bootstrapTrustInstall.task.taskPath -eq '\DPE\revAgent\') "Disposable prestage did not exercise the fixed SYSTEM task registrar seam."
+
+    Write-Host "Test trust-first local-bootstrap rollback and deferred prior-root cleanup"
+    $transactionModuleText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\lib\RevAgent.LocalBootstrap.psm1')
+    $prestageInstallerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1')
+    $candidateAclIndex = $transactionModuleText.IndexOf('Assert-RevAgentBootstrapTreeReadyForCommit `')
+    $previousRenameIndex = $transactionModuleText.IndexOf('Move-Item -LiteralPath $BootstrapRoot -Destination $backup')
+    $trustInstallIndex = $prestageInstallerText.IndexOf('$bootstrapTrustInstall = & $installTrustCommand')
+    $trustHealthIndex = $prestageInstallerText.IndexOf('$bootstrapTrustHealth = & $trustHealthCommand')
+    $localInstallIndex = $prestageInstallerText.IndexOf('$localBootstrapResult = & $localBootstrapCommand')
+    $machineLockAcquireIndex = $prestageInstallerText.IndexOf('$machineInstallLock = Enter-RevAgentPrestageMachineInstallLock')
+    $machineLockReleaseIndex = $prestageInstallerText.LastIndexOf('$machineInstallLock.stream.Dispose()')
+    Assert-True ($candidateAclIndex -ge 0 -and $previousRenameIndex -gt $candidateAclIndex) 'Local bootstrap candidate is promoted before its full ACL/readability/hash attestation.'
+    Assert-True ($transactionModuleText.Contains("Join-Path `$parent '.bootstrap-transactions'") -and $transactionModuleText -match 'Assert-RevAgentBootstrapPrivateTransactionRoot' -and $transactionModuleText -notmatch 'Join-Path \$parent \("\.bootstrap-previous-') 'Local bootstrap candidate/backup paths are not isolated below one fixed private container and random transaction child.'
+    Assert-True ($trustInstallIndex -ge 0 -and $trustHealthIndex -gt $trustInstallIndex -and $localInstallIndex -gt $trustHealthIndex) 'Prestage does not install and immediately attest release-independent trust before local-bootstrap commit.'
+    Assert-True ($machineLockAcquireIndex -ge 0 -and $machineLockAcquireIndex -lt $trustInstallIndex -and $machineLockReleaseIndex -gt $localInstallIndex) 'The separate machine-install lock does not span trust install, immediate health, and local-bootstrap commit.'
+    Assert-True ($prestageInstallerText -match 'Join-Path \$parentPath ''\.bootstrap-install\.lock''' -and $prestageInstallerText -notmatch 'broker\.lock' -and $prestageInstallerText -match 'GetLinkCount\(\$Stream\.SafeFileHandle\)' -and $prestageInstallerText -match 'revAgent-bootstrap-install-lock-v1' -and $prestageInstallerText -match 'Assert-RevAgentPrestageMachineInstallLockAcl') 'Machine-install lock is not a separate fixed marker/ACL/no-link/single-hardlink-attested lock.'
+
+    Write-Host 'Test concurrent PS5 machine-bootstrap installs serialize before trust/local commit'
+    $concurrentRoot = Join-Path $temp 'concurrent-clean-machine'
+    $concurrentBootstrapRoot = Join-Path $concurrentRoot 'bootstrap'
+    $concurrentDesktopRoot = Join-Path $concurrentRoot 'desktop'
+    $concurrentLockPath = Join-Path $concurrentRoot '.bootstrap-install.lock'
+    $concurrentReadyPath = Join-Path $temp 'concurrent-first-ready.marker'
+    $concurrentReleasePath = Join-Path $temp 'concurrent-first-release.marker'
+    $concurrentFirstResultPath = Join-Path $temp 'concurrent-first-result.json'
+    $concurrentFirstErrorPath = Join-Path $temp 'concurrent-first-error.txt'
+    $concurrentSecondErrorPath = Join-Path $temp 'concurrent-second-error.txt'
+    $concurrentFirstWrapper = Join-Path $temp 'concurrent-first-install.ps1'
+    $concurrentSecondWrapper = Join-Path $temp 'concurrent-second-install.ps1'
+    $firstWrapperTemplate = @'
+$ErrorActionPreference = 'Stop'
+$beforeCommit = {
+    [IO.File]::WriteAllText('__READY__', 'ready', [Text.UTF8Encoding]::new($false))
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
+    while (-not [IO.File]::Exists('__RELEASE__') -and [DateTime]::UtcNow -lt $deadline) { Start-Sleep -Milliseconds 50 }
+    if (-not [IO.File]::Exists('__RELEASE__')) { throw 'concurrent fixture release marker timed out' }
+}.GetNewClosure()
+try {
+    $result = & '__INSTALLER__' -RepoRoot '__REPO__' -ReleaseRoot '__RELEASE_ROOT__' -TrustedKeysPath '__KEYS__' -ExpectedHashesPath '__EVIDENCE__' -BootstrapRoot '__BOOTSTRAP__' -DesktopShortcutRoot '__DESKTOP__' -ConfirmIndependentlyAuthenticatedSource -AllowTestRoot -LocalBootstrapBeforeCommitTestHook $beforeCommit
+    [IO.File]::WriteAllText('__RESULT__', ($result | ConvertTo-Json -Depth 20), [Text.UTF8Encoding]::new($false))
+    exit 0
+}
+catch {
+    [IO.File]::WriteAllText('__ERROR__', [string]$_.Exception.ToString(), [Text.UTF8Encoding]::new($false))
+    exit 41
+}
+'@
+    $firstWrapperText = $firstWrapperTemplate
+    $firstWrapperText = $firstWrapperText.Replace('__READY__', $concurrentReadyPath.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__RELEASE__', $concurrentReleasePath.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__INSTALLER__', (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1').Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__REPO__', $RepoRoot.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__RELEASE_ROOT__', $fakeRelease.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__KEYS__', $trustedKeys.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__EVIDENCE__', $expectedPath.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__BOOTSTRAP__', $concurrentBootstrapRoot.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__DESKTOP__', $concurrentDesktopRoot.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__RESULT__', $concurrentFirstResultPath.Replace("'", "''"))
+    $firstWrapperText = $firstWrapperText.Replace('__ERROR__', $concurrentFirstErrorPath.Replace("'", "''"))
+    [IO.File]::WriteAllText($concurrentFirstWrapper, $firstWrapperText, [Text.UTF8Encoding]::new($false))
+
+    $secondWrapperTemplate = @'
+$ErrorActionPreference = 'Stop'
+try {
+    & '__INSTALLER__' -RepoRoot '__REPO__' -ReleaseRoot '__RELEASE_ROOT__' -TrustedKeysPath '__KEYS__' -ExpectedHashesPath '__EVIDENCE__' -BootstrapRoot '__BOOTSTRAP__' -DesktopShortcutRoot '__DESKTOP__' -ConfirmIndependentlyAuthenticatedSource -AllowTestRoot | Out-Null
+    exit 0
+}
+catch {
+    [IO.File]::WriteAllText('__ERROR__', [string]$_.Exception.ToString(), [Text.UTF8Encoding]::new($false))
+    exit 42
+}
+'@
+    $secondWrapperText = $secondWrapperTemplate
+    $secondWrapperText = $secondWrapperText.Replace('__INSTALLER__', (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1').Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__REPO__', $RepoRoot.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__RELEASE_ROOT__', $fakeRelease.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__KEYS__', $trustedKeys.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__EVIDENCE__', $expectedPath.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__BOOTSTRAP__', $concurrentBootstrapRoot.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__DESKTOP__', $concurrentDesktopRoot.Replace("'", "''"))
+    $secondWrapperText = $secondWrapperText.Replace('__ERROR__', $concurrentSecondErrorPath.Replace("'", "''"))
+    [IO.File]::WriteAllText($concurrentSecondWrapper, $secondWrapperText, [Text.UTF8Encoding]::new($false))
+
+    $firstStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $firstStartInfo.FileName = $windowsPowerShell
+    $firstStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $concurrentFirstWrapper + '"'
+    $firstStartInfo.UseShellExecute = $false
+    $firstStartInfo.CreateNoWindow = $true
+    $firstStartInfo.RedirectStandardOutput = $true
+    $firstStartInfo.RedirectStandardError = $true
+    $firstStartInfo.WorkingDirectory = Split-Path -Parent $windowsPowerShell
+    $firstProcess = $null
+    $secondProcess = $null
+    try {
+        $firstProcess = [Diagnostics.Process]::Start($firstStartInfo)
+        Assert-True ($null -ne $firstProcess) 'First concurrent PS5 bootstrap installer did not start.'
+        [void]$firstProcess.Handle
+        $readyDeadline = [DateTime]::UtcNow.AddSeconds(20)
+        while (-not [IO.File]::Exists($concurrentReadyPath) -and -not $firstProcess.HasExited -and [DateTime]::UtcNow -lt $readyDeadline) { Start-Sleep -Milliseconds 50 }
+        $firstEarlyOutput = if ($firstProcess.HasExited) { $firstProcess.StandardOutput.ReadToEnd() + $firstProcess.StandardError.ReadToEnd() } else { '' }
+        Assert-True ([IO.File]::Exists($concurrentReadyPath) -and -not $firstProcess.HasExited) "First concurrent PS5 installer did not reach the held local pre-commit gate. output=$firstEarlyOutput"
+        Assert-True (-not [IO.Directory]::Exists($concurrentBootstrapRoot)) 'First concurrent fixture unexpectedly committed the canonical bootstrap before the release gate.'
+
+        $heldLockStream = [IO.File]::Open($concurrentLockPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        try {
+            $heldMarkerBytes = New-Object byte[] ([int]$heldLockStream.Length)
+            [void]$heldLockStream.Read($heldMarkerBytes, 0, $heldMarkerBytes.Length)
+            $heldLockMarker = [Text.Encoding]::ASCII.GetString($heldMarkerBytes)
+            $heldLockLinks = [uint32][RevAgent.PrestageNativeFileInfo]::GetLinkCount($heldLockStream.SafeFileHandle)
+        }
+        finally { $heldLockStream.Dispose() }
+        $heldLockAcl = Get-Acl -LiteralPath $concurrentLockPath
+        Assert-True ([string]::Equals($heldLockMarker, 'revAgent-bootstrap-install-lock-v1', [StringComparison]::Ordinal) -and $heldLockLinks -eq 1 -and $heldLockAcl.AreAccessRulesProtected) 'Held machine-install lock failed external marker/single-hardlink/protected-DACL attestation.'
+
+        $secondStartInfo = [Diagnostics.ProcessStartInfo]::new()
+        $secondStartInfo.FileName = $windowsPowerShell
+        $secondStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $concurrentSecondWrapper + '"'
+        $secondStartInfo.UseShellExecute = $false
+        $secondStartInfo.CreateNoWindow = $true
+        $secondStartInfo.RedirectStandardOutput = $true
+        $secondStartInfo.RedirectStandardError = $true
+        $secondStartInfo.WorkingDirectory = Split-Path -Parent $windowsPowerShell
+        $secondProcess = [Diagnostics.Process]::Start($secondStartInfo)
+        Assert-True ($null -ne $secondProcess) 'Second concurrent PS5 bootstrap installer did not start.'
+        [void]$secondProcess.Handle
+        Assert-True ($secondProcess.WaitForExit(20000)) 'Second concurrent PS5 bootstrap installer did not fail closed within its bounded wait.'
+        $secondOutput = $secondProcess.StandardOutput.ReadToEnd() + $secondProcess.StandardError.ReadToEnd()
+        $secondError = if ([IO.File]::Exists($concurrentSecondErrorPath)) { [IO.File]::ReadAllText($concurrentSecondErrorPath) } else { '' }
+        Assert-True ($secondProcess.ExitCode -eq 42 -and $secondError -match 'bootstrap_install_busy') "Second concurrent PS5 bootstrap installer did not fail closed busy. exit=$($secondProcess.ExitCode) error=$secondError output=$secondOutput"
+        Assert-True (-not [IO.Directory]::Exists($concurrentBootstrapRoot)) 'Busy second installer created, promoted, or deleted the clean canonical bootstrap while the first installer held pre-commit.'
+
+        [IO.File]::WriteAllText($concurrentReleasePath, 'release', [Text.UTF8Encoding]::new($false))
+        Assert-True ($firstProcess.WaitForExit(30000)) 'First concurrent PS5 bootstrap installer did not complete after its release gate opened.'
+        $firstOutput = $firstProcess.StandardOutput.ReadToEnd() + $firstProcess.StandardError.ReadToEnd()
+        $firstError = if ([IO.File]::Exists($concurrentFirstErrorPath)) { [IO.File]::ReadAllText($concurrentFirstErrorPath) } else { '' }
+        Assert-True ($firstProcess.ExitCode -eq 0 -and [IO.File]::Exists($concurrentFirstResultPath)) "First concurrent PS5 bootstrap installer failed after the busy contender exited. exit=$($firstProcess.ExitCode) error=$firstError output=$firstOutput"
+        $concurrentResult = [IO.File]::ReadAllText($concurrentFirstResultPath) | ConvertFrom-Json
+        Assert-True ([bool]$concurrentResult.bootstrapTrustHealth.healthy -and [string]::Equals([IO.Path]::GetFullPath([string]$concurrentResult.machineInstallLock.path), [IO.Path]::GetFullPath($concurrentLockPath), [StringComparison]::OrdinalIgnoreCase)) 'First concurrent install did not return trust health and exact machine-lock evidence.'
+        $concurrentCommittedHandle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($concurrentBootstrapRoot)
+        try { $concurrentCommittedIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($concurrentCommittedHandle) }
+        finally { $concurrentCommittedHandle.Dispose() }
+        $concurrentCommittedStateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $concurrentBootstrapRoot 'bootstrap-state.json')).Hash
+        Assert-True (-not [string]::IsNullOrWhiteSpace($concurrentCommittedIdentity) -and $concurrentCommittedStateHash -match '^[A-F0-9]{64}$') 'First concurrent installer did not leave one committed canonical bootstrap after the busy contender exited.'
+    }
+    finally {
+        if (-not [IO.File]::Exists($concurrentReleasePath)) { [IO.File]::WriteAllText($concurrentReleasePath, 'release', [Text.UTF8Encoding]::new($false)) }
+        if ($null -ne $secondProcess) {
+            if (-not $secondProcess.HasExited) { try { $secondProcess.Kill() } catch { } }
+            $secondProcess.Dispose()
+        }
+        if ($null -ne $firstProcess) {
+            if (-not $firstProcess.HasExited) {
+                if (-not $firstProcess.WaitForExit(5000)) { try { $firstProcess.Kill() } catch { } }
+            }
+            $firstProcess.Dispose()
+        }
+    }
+
+    $previousHandle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($bootstrapRoot)
+    try { $previousBootstrapIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($previousHandle) }
+    finally { $previousHandle.Dispose() }
+    $previousStateHash = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $bootstrapRoot 'bootstrap-state.json')).Hash
+    $preCommitFailure = $null
+    try {
+        & (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1') `
+            -RepoRoot $RepoRoot `
+            -ReleaseRoot $fakeRelease `
+            -TrustedKeysPath $trustedKeys `
+            -ExpectedHashesPath $expectedPath `
+            -BootstrapRoot $bootstrapRoot `
+            -DesktopShortcutRoot $desktopShortcutRoot `
+            -ConfirmIndependentlyAuthenticatedSource `
+            -AllowTestRoot `
+            -LocalBootstrapBeforeCommitTestHook { throw 'injected local-bootstrap pre-commit failure' } | Out-Null
+    }
+    catch { $preCommitFailure = $_ }
+    Assert-True ($null -ne $preCommitFailure -and [string]$preCommitFailure.Exception.Message -match 'injected local-bootstrap pre-commit failure') 'Injected local-bootstrap pre-commit failure did not surface.'
+    Assert-True (Test-Path -LiteralPath $bootstrapRoot -PathType Container) 'Local-bootstrap pre-commit failure left the canonical root missing.'
+    $restoredHandle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($bootstrapRoot)
+    try { $restoredBootstrapIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($restoredHandle) }
+    finally { $restoredHandle.Dispose() }
+    Assert-True ([string]::Equals($restoredBootstrapIdentity, $previousBootstrapIdentity, [StringComparison]::Ordinal) -and [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $bootstrapRoot 'bootstrap-state.json')).Hash, $previousStateHash, [StringComparison]::OrdinalIgnoreCase)) 'Local-bootstrap pre-commit rollback did not restore the exact previous canonical root.'
+    $bootstrapTransactionParent = Join-Path (Split-Path -Parent $bootstrapRoot) '.bootstrap-transactions'
+    Assert-True ((Test-Path -LiteralPath $bootstrapTransactionParent -PathType Container) -and @(Get-ChildItem -LiteralPath $bootstrapTransactionParent -Directory -Force).Count -eq 0) 'Successful local-bootstrap rollback left a private transaction child behind.'
+
+    $postFailureTrustModule = Import-Module (Join-Path $fixtureTrustRoot 'RevAgent.BootstrapTrust.psm1') -Force -PassThru
+    try {
+        $postFailureTaskProvider = {
+            param($layout)
+            [pscustomobject][ordered]@{
+                exists = $true; taskName = [string]$layout.taskName; taskPath = [string]$layout.taskPath
+                execute = [string]$layout.taskPowerShellPath; arguments = [string]$layout.taskArguments; actionCount = 1
+                userId = 'SYSTEM'; logonType = 'ServiceAccount'; runLevel = 'Highest'; sddl = [string]$layout.taskSddl
+                state = 'Ready'; enabled = $true; allowDemandStart = $true; multipleInstances = 'IgnoreNew'; executionTimeLimit = 'PT30M'
+            }
+        }
+        $postFailureTrustHealth = & $postFailureTrustModule {
+            param($Root, $Provider)
+            Test-RevAgentBootstrapTrustHealth -ProgramDataRoot $Root -AllowTestRoot -TaskProvider $Provider
+        } $temp $postFailureTaskProvider
+    }
+    finally { Remove-Module $postFailureTrustModule.Name -Force -ErrorAction SilentlyContinue }
+    Assert-True ([bool]$postFailureTrustHealth.success -and [bool]$postFailureTrustHealth.healthy) 'A local-bootstrap pre-commit failure damaged the already-attested release-independent trust/task retry path.'
+
+    $cleanupState = & (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1') `
+        -RepoRoot $RepoRoot `
+        -ReleaseRoot $fakeRelease `
+        -TrustedKeysPath $trustedKeys `
+        -ExpectedHashesPath $expectedPath `
+        -BootstrapRoot $bootstrapRoot `
+        -DesktopShortcutRoot $desktopShortcutRoot `
+        -ConfirmIndependentlyAuthenticatedSource `
+        -AllowTestRoot `
+        -LocalBootstrapBackupCleanupTestHook { throw 'injected previous-root cleanup failure' }
+    Assert-True ([bool]$cleanupState.backupCleanup.attempted -and -not [bool]$cleanupState.backupCleanup.success -and [bool]$cleanupState.backupCleanup.deferred) 'Prior-root cleanup failure did not return a successful committed result with deferred cleanup evidence.'
+    Assert-True ([string]$cleanupState.backupCleanup.warning -match 'injected previous-root cleanup failure' -and (Test-Path -LiteralPath ([string]$cleanupState.backupCleanup.path) -PathType Container)) 'Deferred prior-root cleanup evidence does not identify the retained private backup.'
+    $committedHandle = [RevAgent.PrestageNativeFileInfo]::OpenDirectoryNoDeleteShare($bootstrapRoot)
+    try { $committedBootstrapIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($committedHandle) }
+    finally { $committedHandle.Dispose() }
+    Assert-True (-not [string]::Equals($committedBootstrapIdentity, $previousBootstrapIdentity, [StringComparison]::Ordinal) -and (Test-Path -LiteralPath (Join-Path $bootstrapRoot 'bootstrap-state.json') -PathType Leaf)) 'Prior-root cleanup failure rolled the committed healthy bootstrap back.'
+
+    $deferredTransactionRoot = Split-Path -Parent ([string]$cleanupState.backupCleanup.path)
+    Grant-TestTreeCleanupAccess -Root $deferredTransactionRoot
+    Remove-Item -LiteralPath $deferredTransactionRoot -Recurse -Force -ErrorAction Stop
 
     Write-Host "Test valid protected GUI pre-window bootstrap chain in a fresh PS5 child"
     $fakeStableChannelPath = Join-Path $fakeRelease 'channels\stable.json'
@@ -452,7 +723,7 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
         & (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1") -RepoRoot $RepoRoot -ReleaseRoot $fakeRelease -TrustedKeysPath $trustedKeys -ExpectedHashesPath $expectedPath -BootstrapRoot (Join-Path $junctionParent "bootstrap") -ConfirmIndependentlyAuthenticatedSource -AllowTestRoot | Out-Null
     }
     catch { $junctionCaught = $_ }
-    Assert-True ($null -ne $junctionCaught -and [string]$junctionCaught.Exception.Message -match "filesystem link") "Preplanted bootstrap parent junction was not rejected before destination writes."
+    Assert-True ($null -ne $junctionCaught -and [string]$junctionCaught.Exception.Message -match "filesystem link") "Preplanted bootstrap parent junction was not rejected before destination writes. actual=$(if ($null -eq $junctionCaught) { '<none>' } else { [string]$junctionCaught.Exception.Message })"
     Assert-True ((Test-Path -LiteralPath $junctionMarker -PathType Leaf) -and (Get-FileHash -Algorithm SHA256 -LiteralPath $junctionMarker).Hash -eq $markerHashBefore) "Preplanted junction target marker changed during rejected bootstrap install."
     $targetChildrenAfter = @((Get-ChildItem -LiteralPath $junctionTarget -Force | Select-Object -ExpandProperty Name) | Sort-Object)
     Assert-True ([string]::Join("|", $targetChildrenAfter) -eq [string]::Join("|", $targetChildrenBefore)) "Rejected bootstrap install wrote files through the preplanted parent junction."
@@ -484,10 +755,12 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
             "installer\lib\RevAgent.Permissions.psm1",
             "installer\lib\RevAgent.SourceFreeMigration.psm1",
             "installer\lib\RevAgent.ReleaseSnapshot.psm1",
+            "installer\lib\RevAgent.BootstrapTrust.psm1",
             "installer\nas\Start-revAgent-Update.ps1",
             "installer\nas\Start-revAgent-Update.cmd",
             "installer\nas\Install-revAgent-Updater-GUI.ps1",
-            "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
+            "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1",
+            "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1"
         )) {
         Copy-Item -LiteralPath (Join-Path $RepoRoot $relativePath) -Destination (Join-Path $swapRepo $relativePath)
     }
@@ -500,6 +773,8 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
         sourceFreeMigration = Join-Path $swapRepo "installer\lib\RevAgent.SourceFreeMigration.psm1"
         releaseSnapshot = Join-Path $swapRepo "installer\lib\RevAgent.ReleaseSnapshot.psm1"
         privilegedSnapshotUpdate = Join-Path $swapRepo "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
+        bootstrapTrust = Join-Path $swapRepo "installer\lib\RevAgent.BootstrapTrust.psm1"
+        bootstrapTrustBroker = Join-Path $swapRepo "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1"
         trustedKeys = $trustedKeys
     }
     $swapHashes = [ordered]@{}
@@ -1216,7 +1491,7 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
     $localLauncherSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd")
     Assert-True ($localLauncherSource -match '-VerificationOnly' -and $localLauncherSource -match 'RefreshStableIfBound' -and $localLauncherSource -match 'set "BOOTSTRAP=%~dp0Start-revAgent-Update\.ps1"' -and $localLauncherSource -match 'set "BOOTSTRAP_STATE=%~dp0bootstrap-state\.json"' -and $localLauncherSource -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $localLauncherSource -match '--post-refresh' -and $localLauncherSource -match 'exit /b 83' -and $localLauncherSource -match 'set "BOOTSTRAP_EXIT=!ERRORLEVEL!"' -and $localLauncherSource -notmatch 'start "revAgent"') "Desktop local launcher does not bind protected siblings, preserve child results, route stable refresh, and stop a post-refresh retry loop."
     $stableRefreshSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1')
-    Assert-True ($stableRefreshSource -notmatch "Start-Process\s+-FilePath\s+\`$localLauncher\s+-ArgumentList\s+'--post-refresh'") "Fail-closed NAS bootstrap refresh must not launch the local updater after the trust-required stop."
+    Assert-True ($stableRefreshSource -match 'return \[int\]\(Start-RevAgentPostRefreshLauncher\)' -and $stableRefreshSource -match '\$startInfo\.Arguments\s*=\s*''/d /s /c ""\{0\}" --post-refresh"''' -and $stableRefreshSource -match '(?s)if \(\[int\]\$waitResult\.exitCode -ne 0\).*?Start-RevAgentPostRefreshLauncher') "Successful broker refresh does not produce one protected local --post-refresh handoff after the broker result gate."
 
     Write-Host "Test post-refresh verification failure stops before another NAS refresh"
     $postRefreshProgramData = Join-Path $temp 'post-refresh-programdata'
@@ -1261,9 +1536,11 @@ exit 0
     }
     $bootstrapSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1")
     Assert-True ($bootstrapSource -match '\[IO\.FileMode\]::Open' -and $bootstrapSource -match '\[IO\.FileMode\]::Append') "Protected bootstrap must probe both overwrite and append-only effective write access."
+    Assert-True ($bootstrapSource -match 'JsonReaderWriterFactory' -and $bootstrapSource -match '\$trustedKeysGeneratedAtText\s+-cnotmatch\s+''Z\$''' -and $bootstrapSource -notmatch '\$trustedKeyDocument\.generatedAtUtc\s+-(?:isnot|notmatch|cnotmatch)') 'Protected bootstrap must validate generatedAtUtc from the strict raw JSON token rather than a PowerShell-version-dependent converted value.'
+    Assert-True ($bootstrapSource -match '(?s)\$trustedKeysStream\.Length\s+-lt\s+1.*?\$trustedKeysStream\.Length\s+-gt\s+65536.*?New-Object byte\[\]' -and $bootstrapSource -notmatch '\[IO\.File\]::ReadAllBytes\(\$localTrustedKeysPath\)') 'Protected bootstrap must enforce the trusted-key size bound before allocating its byte snapshot.'
     Assert-True ($bootstrapSource -match '\$psi = New-RevAgentBootstrapGuiStartInfo -GuiPath \$guiPath -ChannelPath \$ChannelManifestPath -BootstrapStatePath \$statePath' -and $bootstrapSource -match '(?s)\$startInfo\.UseShellExecute = \$false.*\$startInfo\.CreateNoWindow = \$true.*\$startInfo\.WorkingDirectory = Split-Path -Parent \$powershellPath' -and $bootstrapSource -notmatch '\$startInfo\.WindowStyle\s*=') "Protected bootstrap GUI launch does not use the shared future-safe direct-CreateProcess configuration after release verification."
     $prestageInstallerSource = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")
-    Assert-True ($prestageInstallerSource -match 'Administrator prestage installer must already be staged at the protected canonical path' -and $prestageInstallerSource -match 'localBootstrapInstallerScript' -and $prestageInstallerSource -match 'Protected prestage installer does not match independently authenticated SHA-256 evidence') "Production prestage must reject elevation of the repo-side wrapper and bind the protected staged wrapper to independent evidence."
+    Assert-True ($prestageInstallerSource -match 'Administrator prestage installer must run only from the canonical supervised prestage path or an exact private nonce-bound machine-broker apply path\. Never elevate the repo-side copy\.' -and $prestageInstallerSource -match '\$isLegacyPrestageShape' -and $prestageInstallerSource -match '\$isBrokerApplyShape' -and $prestageInstallerSource -match "\^apply-\[a-f0-9\]\{32\}\$" -and $prestageInstallerSource -match 'producer mode does not match the exact protected installer/evidence/key path shape' -and $prestageInstallerSource -match 'localBootstrapInstallerScript' -and $prestageInstallerSource -match 'Protected prestage installer does not match independently authenticated SHA-256 evidence') "Production prestage must reject elevation of the repo-side wrapper, accept only the exact supervised or nonce-bound broker path shapes, bind producerMode to that shape, and bind the protected staged wrapper to independent evidence."
 }
 finally {
     if (Test-Path -LiteralPath $junctionParent) {
@@ -1272,15 +1549,8 @@ finally {
     if (Test-Path -LiteralPath $evidenceJunction) {
         try { [IO.Directory]::Delete($evidenceJunction) } catch { }
     }
-    if (Test-Path -LiteralPath $bootstrapRoot) {
-        $identity = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-        $icacls = Join-Path ([Environment]::SystemDirectory) "icacls.exe"
-        & $icacls $bootstrapRoot /grant:r ("*{0}:(OI)(CI)F" -f $identity) /T /C | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not restore recursive test cleanup access on $bootstrapRoot" }
-        & $icacls $bootstrapRoot /grant:r ("*{0}:F" -f $identity) /T /C | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw "Could not restore protected-leaf test cleanup access on $bootstrapRoot" }
-    }
     if (Test-Path -LiteralPath $temp) {
+        Grant-TestTreeCleanupAccess -Root $temp
         Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction Stop
         if (Test-Path -LiteralPath $temp) { throw "Local bootstrap test cleanup left artifacts behind: $temp" }
     }

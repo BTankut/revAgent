@@ -58,7 +58,7 @@ if not exist "%BOOTSTRAP%" (
     exit /b 1
   )
   echo.
-  echo revAgent stable bootstrap install completed. The updater should open now.
+  echo revAgent stable bootstrap install completed and handed off to the protected local updater.
   exit /b 0
 )
 
@@ -88,7 +88,7 @@ if errorlevel 1 (
     exit /b 1
   )
   echo.
-  echo revAgent stable bootstrap refresh completed. The updater should open now.
+  echo revAgent stable bootstrap refresh completed and handed off to the protected local updater.
   exit /b 0
 )
 
@@ -100,31 +100,21 @@ exit /b !BOOTSTRAP_EXIT!
 set "REVAGENT_FAILURE_CODE=%~1"
 set "REVAGENT_FAILURE_ACTION=%~2"
 echo.
-if "%REVAGENT_FAILURE_CODE%"=="79" goto stable_uac_declined
 if "%REVAGENT_FAILURE_CODE%"=="80" goto stable_coordinator_running
 if "%REVAGENT_FAILURE_CODE%"=="81" goto stable_coordinator_timeout
-if "%REVAGENT_FAILURE_CODE%"=="82" goto stable_uac_disabled
 if "%REVAGENT_FAILURE_CODE%"=="84" goto stable_signing_trust_unavailable
 echo revAgent stable bootstrap %REVAGENT_FAILURE_ACTION% did not complete.
 exit /b 0
 
-:stable_uac_declined
-echo Administrator approval was declined. Run this updater again when an administrator is available.
-exit /b 0
-
 :stable_coordinator_running
-echo A revAgent bootstrap coordinator is already running. Finish the coordinator/UAC window, then run this updater again.
+echo A revAgent bootstrap trust broker request is already running. Wait for it to finish, then run this updater again.
 exit /b 0
 
 :stable_coordinator_timeout
-echo The revAgent bootstrap coordinator is still running. Finish the coordinator/UAC window, then run this updater again.
-exit /b 0
-
-:stable_uac_disabled
-echo This machine has UAC disabled or Windows could not provide the standard (non-elevated) user context required by the revAgent first install. Re-enable UAC, then run this updater again, or contact the DPE revAgent administrator for supervised manual bootstrap prestage.
+echo The revAgent bootstrap trust broker is still running. Wait for it to finish, then run this updater again.
 exit /b 0
 
 :stable_signing_trust_unavailable
-echo SECURITY STOP: independent Windows signing trust anchor is unavailable.
-echo Contact the DPE revAgent administrator to complete the supervised manual bootstrap prestage, then run this updater again.
+echo SECURITY STOP: the IT-prestaged revAgent machine trust core is missing or unhealthy.
+echo Ask the DPE revAgent administrator to run the revAgent IT prestage kit on this machine, then run this updater again.
 exit /b 0

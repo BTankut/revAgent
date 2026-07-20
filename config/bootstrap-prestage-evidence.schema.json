@@ -21,7 +21,7 @@
     "schemaVersion": { "const": 1 },
     "app": { "const": "revAgent" },
     "evidenceType": { "const": "bootstrap-prestage" },
-    "producerMode": { "enum": ["unelevated-coordinator", "supervised-admin-prestage"] },
+    "producerMode": { "enum": ["unelevated-coordinator", "supervised-admin-prestage", "machine-trust-broker"] },
     "supervisedAdminPrestage": { "type": "boolean" },
     "generatedAtUtc": { "type": "string", "format": "date-time" },
     "generatedBySid": { "type": "string", "pattern": "^S-[0-9]+(?:-[0-9]+)+$" },
@@ -76,7 +76,7 @@
     "sources": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bootstrap", "launcher", "updaterGui", "distributionIntegrity", "permissions", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "trustedKeys"],
+      "required": ["bootstrap", "launcher", "updaterGui", "distributionIntegrity", "permissions", "sourceFreeMigration", "releaseSnapshot", "privilegedSnapshotUpdate", "bootstrapTrust", "bootstrapTrustBroker", "trustedKeys"],
       "properties": {
         "bootstrap": { "$ref": "#/$defs/sha256" },
         "launcher": { "$ref": "#/$defs/sha256" },
@@ -86,19 +86,39 @@
         "sourceFreeMigration": { "$ref": "#/$defs/sha256" },
         "releaseSnapshot": { "$ref": "#/$defs/sha256" },
         "privilegedSnapshotUpdate": { "$ref": "#/$defs/sha256" },
+        "bootstrapTrust": { "$ref": "#/$defs/sha256" },
+        "bootstrapTrustBroker": { "$ref": "#/$defs/sha256" },
         "trustedKeys": { "$ref": "#/$defs/sha256" }
       }
     }
   },
   "allOf": [
     {
-      "if": { "properties": { "supervisedAdminPrestage": { "const": true } } },
-      "then": { "properties": { "producerMode": { "const": "supervised-admin-prestage" } } },
-      "else": { "properties": { "producerMode": { "const": "unelevated-coordinator" } } }
+      "oneOf": [
+        {
+          "properties": {
+            "producerMode": { "const": "unelevated-coordinator" },
+            "supervisedAdminPrestage": { "const": false }
+          }
+        },
+        {
+          "properties": {
+            "producerMode": { "const": "supervised-admin-prestage" },
+            "supervisedAdminPrestage": { "const": true }
+          }
+        },
+        {
+          "properties": {
+            "producerMode": { "const": "machine-trust-broker" },
+            "supervisedAdminPrestage": { "const": false },
+            "generatedBySid": { "const": "S-1-5-18" }
+          }
+        }
+      ]
     }
   ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
   },
-  "$comment": "producerMode and supervisedAdminPrestage are intentionally redundant audit evidence and must agree."
+  "$comment": "producerMode and supervisedAdminPrestage are intentionally redundant audit evidence; machine-trust-broker evidence is LocalSystem-only."
 }

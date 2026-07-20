@@ -254,6 +254,194 @@ function Set-RevAgentBootstrapDacl {
     }
 }
 
+function Get-RevAgentBootstrapDirectoryIdentity {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    $guard = Open-RevAgentBootstrapDirectoryGuard -Path $Path
+    try { return [string]$guard.Identity }
+    finally { if ($null -ne $guard -and $null -ne $guard.Handle) { $guard.Handle.Dispose() } }
+}
+
+function Assert-RevAgentBootstrapItemAclReady {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$RequireAdministratorsOwner
+    )
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    if (-not $acl.AreAccessRulesProtected) {
+        throw "Bootstrap commit candidate has an inherited DACL: $($item.FullName)"
+    }
+    if ($RequireAdministratorsOwner) {
+        $ownerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+        if (-not [string]::Equals($ownerSid, 'S-1-5-32-544', [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bootstrap commit candidate is not owned by BUILTIN\Administrators: $($item.FullName)"
+        }
+    }
+
+    $requiredRights = [ordered]@{
+        'S-1-5-18' = [Security.AccessControl.FileSystemRights]::FullControl
+        'S-1-5-32-544' = [Security.AccessControl.FileSystemRights]::FullControl
+        'S-1-5-32-545' = [Security.AccessControl.FileSystemRights]::ReadAndExecute
+    }
+    $seen = @{}
+    $writeMask = [Security.AccessControl.FileSystemRights]::Write -bor
+        [Security.AccessControl.FileSystemRights]::Delete -bor
+        [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
+        [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
+        [Security.AccessControl.FileSystemRights]::TakeOwnership
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $sid = [string]$rule.IdentityReference.Value
+        if ($rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or -not $requiredRights.Contains($sid)) {
+            throw "Bootstrap commit candidate has an unexpected access rule. path=$($item.FullName) principal=$sid type=$($rule.AccessControlType) rights=$($rule.FileSystemRights)"
+        }
+        if ($rule.IsInherited) {
+            throw "Bootstrap commit candidate has an inherited access rule: $($item.FullName)"
+        }
+        if ($sid -eq 'S-1-5-32-545' -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
+            throw "Bootstrap commit candidate grants write-capable access to BUILTIN\Users: $($item.FullName)"
+        }
+        $required = [Security.AccessControl.FileSystemRights]$requiredRights[$sid]
+        if (($rule.FileSystemRights -band $required) -ne $required) {
+            throw "Bootstrap commit candidate lacks required access. path=$($item.FullName) principal=$sid required=$required actual=$($rule.FileSystemRights)"
+        }
+        $seen[$sid] = $true
+    }
+    foreach ($sid in $requiredRights.Keys) {
+        if (-not $seen.ContainsKey($sid)) {
+            throw "Bootstrap commit candidate is missing the required access rule for ${sid}: $($item.FullName)"
+        }
+    }
+}
+
+function Assert-RevAgentBootstrapPrivateTransactionRoot {
+    param([Parameter(Mandatory = $true)][string]$Path)
+
+    Assert-RevAgentBootstrapLinkSafe -Path $Path
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (-not $item.PSIsContainer) { throw "Bootstrap transaction root is not a directory: $Path" }
+    $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+    $ownerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (-not $acl.AreAccessRulesProtected -or -not [string]::Equals($ownerSid, 'S-1-5-32-544', [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Bootstrap transaction root is not protected and Administrators-owned: $($item.FullName)"
+    }
+    $seen = @{}
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        $sid = [string]$rule.IdentityReference.Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -notin @('S-1-5-18', 'S-1-5-32-544') -or
+            (($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne [Security.AccessControl.FileSystemRights]::FullControl)) {
+            throw "Bootstrap transaction root grants unexpected access. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
+        }
+        $seen[$sid] = $true
+    }
+    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
+        if (-not $seen.ContainsKey($sid)) { throw "Bootstrap transaction root is missing required full control for ${sid}: $($item.FullName)" }
+    }
+}
+
+function Grant-RevAgentBootstrapTestCleanupAccess {
+    param([Parameter(Mandatory = $true)][string]$Root)
+
+    if (-not (Test-Path -LiteralPath $Root)) { return }
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $items = @(Get-ChildItem -LiteralPath $Root -Recurse -Force -ErrorAction SilentlyContinue) + @(Get-Item -LiteralPath $Root -Force)
+    foreach ($item in @($items | Sort-Object { $_.FullName.Length })) {
+        try {
+            $acl = Get-Acl -LiteralPath $item.FullName -ErrorAction Stop
+            $inheritance = if ($item.PSIsContainer) {
+                [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+            }
+            else { [Security.AccessControl.InheritanceFlags]::None }
+            $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+                $currentSid,
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                $inheritance,
+                [Security.AccessControl.PropagationFlags]::None,
+                [Security.AccessControl.AccessControlType]::Allow)
+            $acl.SetAccessRule($rule)
+            if ($item.PSIsContainer) {
+                if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, [Security.AccessControl.DirectorySecurity]$acl) }
+                else { ([IO.DirectoryInfo]$item).SetAccessControl([Security.AccessControl.DirectorySecurity]$acl) }
+            }
+            else {
+                if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]$item, [Security.AccessControl.FileSecurity]$acl) }
+                else { ([IO.FileInfo]$item).SetAccessControl([Security.AccessControl.FileSecurity]$acl) }
+            }
+        }
+        catch { }
+    }
+}
+
+function Assert-RevAgentBootstrapTreeReadyForCommit {
+    param(
+        [Parameter(Mandatory = $true)][string]$Root,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Destinations,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$ExpectedSourceHashes,
+        [switch]$RequireAdministratorsOwner
+    )
+
+    $fullRoot = [IO.Path]::GetFullPath($Root).TrimEnd('\')
+    Assert-RevAgentBootstrapLinkSafe -Path $fullRoot -Recurse
+    if (-not (Test-Path -LiteralPath $fullRoot -PathType Container)) {
+        throw "Bootstrap commit candidate root was not found: $fullRoot"
+    }
+
+    $expectedRelativePaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    [void]$expectedRelativePaths.Add('lib')
+    [void]$expectedRelativePaths.Add('config')
+    [void]$expectedRelativePaths.Add('bootstrap-state.json')
+    foreach ($relativePath in $Destinations.Values) { [void]$expectedRelativePaths.Add(([string]$relativePath).Replace('/', '\')) }
+
+    $items = @(Get-ChildItem -LiteralPath $fullRoot -Recurse -Force -ErrorAction Stop)
+    foreach ($item in $items) {
+        $relativePath = $item.FullName.Substring($fullRoot.Length).TrimStart('\')
+        if (-not $expectedRelativePaths.Contains($relativePath)) {
+            throw "Bootstrap commit candidate contains an unexpected item: $relativePath"
+        }
+    }
+    if ($items.Count -ne $expectedRelativePaths.Count) {
+        $actualRelativePaths = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($item in $items) { [void]$actualRelativePaths.Add($item.FullName.Substring($fullRoot.Length).TrimStart('\')) }
+        $missing = @($expectedRelativePaths | Where-Object { -not $actualRelativePaths.Contains($_) })
+        throw "Bootstrap commit candidate is incomplete. missing=$($missing -join ',')"
+    }
+
+    foreach ($item in @($items | Sort-Object { $_.FullName.Length } -Descending) + @(Get-Item -LiteralPath $fullRoot -Force -ErrorAction Stop)) {
+        Assert-RevAgentBootstrapItemAclReady -Path $item.FullName -RequireAdministratorsOwner:$RequireAdministratorsOwner
+        if (-not $item.PSIsContainer) { Assert-RevAgentBootstrapLinkSafe -Path $item.FullName }
+    }
+    foreach ($role in $Destinations.Keys) {
+        $path = Join-Path $fullRoot ([string]$Destinations[$role])
+        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Bootstrap commit candidate is missing '$role': $path" }
+        $actualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $path -ErrorAction Stop).Hash
+        if (-not [string]::Equals($actualHash, [string]$ExpectedSourceHashes[$role], [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bootstrap commit candidate '$role' does not match authenticated SHA-256 evidence."
+        }
+    }
+
+    $statePath = Join-Path $fullRoot 'bootstrap-state.json'
+    $stateItem = Get-Item -LiteralPath $statePath -Force -ErrorAction Stop
+    if ($stateItem.Length -le 0 -or $stateItem.Length -gt 1048576) {
+        throw "Bootstrap commit candidate state is outside the bounded 1..1048576 byte policy: $statePath"
+    }
+    $installedState = Get-Content -Raw -LiteralPath $statePath -ErrorAction Stop | ConvertFrom-Json
+    if ([int]$installedState.schemaVersion -ne 1 -or -not [string]::Equals([string]$installedState.app, 'revAgent', [StringComparison]::Ordinal)) {
+        throw "Bootstrap commit candidate state contract is invalid: $statePath"
+    }
+    foreach ($role in $Destinations.Keys) {
+        $fileState = $installedState.files.$role
+        if ($null -eq $fileState -or
+            -not [string]::Equals([string]$fileState.relativePath, [string]$Destinations[$role], [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals([string]$fileState.sha256, [string]$ExpectedSourceHashes[$role], [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Bootstrap commit candidate state does not bind authenticated file '$role'."
+        }
+    }
+    return $installedState
+}
+
 function Assert-RevAgentBootstrapLinkSafe {
     param([Parameter(Mandatory = $true)][string]$Path, [switch]$Recurse)
     $fullPath = [IO.Path]::GetFullPath($Path)
@@ -595,7 +783,9 @@ function Install-RevAgentLocalBootstrap {
         [Parameter(Mandatory = $true)][string]$SourceAuthenticationMethod,
         [string]$DesktopShortcutRoot = "",
         [switch]$ConfirmIndependentlyAuthenticatedSource,
-        [switch]$AllowTestRoot
+        [switch]$AllowTestRoot,
+        [Parameter(DontShow = $true)][scriptblock]$BeforeCommitTestHook = $null,
+        [Parameter(DontShow = $true)][scriptblock]$BackupCleanupTestHook = $null
     )
 
     if (-not $ConfirmIndependentlyAuthenticatedSource) {
@@ -699,19 +889,49 @@ function Install-RevAgentLocalBootstrap {
         }
         Assert-RevAgentBootstrapParentProtected -Path $parent
     }
-    if (Test-Path -LiteralPath $BootstrapRoot) { Assert-RevAgentBootstrapLinkSafe -Path $BootstrapRoot -Recurse }
-    $staging = Join-Path $parent (".bootstrap-stage-{0}" -f [Guid]::NewGuid().ToString("N"))
-    $backup = Join-Path $parent (".bootstrap-previous-{0}" -f [Guid]::NewGuid().ToString("N"))
+    $previousBootstrapPathExists = Test-Path -LiteralPath $BootstrapRoot
+    if ($previousBootstrapPathExists) {
+        Assert-RevAgentBootstrapLinkSafe -Path $BootstrapRoot -Recurse
+        if (-not (Test-Path -LiteralPath $BootstrapRoot -PathType Container)) {
+            throw "Existing bootstrap root is not a directory: $BootstrapRoot"
+        }
+    }
+    # Candidate and prior roots stay below an unlistable fixed container and one
+    # random transaction child. Windows users normally hold bypass-traverse, so a
+    # random directory directly below the listable product root would still leak
+    # its GUID. Here users cannot enumerate the private container to learn the
+    # exact random path needed to open/pin either rename target.
+    $transactionParent = Join-Path $parent '.bootstrap-transactions'
+    $transactionRoot = Join-Path $transactionParent ([Guid]::NewGuid().ToString("N"))
+    $staging = Join-Path $transactionRoot 'candidate'
+    $backup = Join-Path $transactionRoot 'previous'
+    $hadPreviousBootstrap = $previousBootstrapPathExists
+    $previousBootstrapIdentity = if ($hadPreviousBootstrap) { Get-RevAgentBootstrapDirectoryIdentity -Path $BootstrapRoot } else { '' }
+    $commitComplete = $false
     try {
-        if ($AllowTestRoot) { New-Item -ItemType Directory -Path $staging -Force | Out-Null }
-        else {
-            $stageAcl = [Security.AccessControl.DirectorySecurity]::new()
-            $stageAcl.SetAccessRuleProtection($true, $false)
-            $stageAcl.SetOwner([Security.Principal.SecurityIdentifier]::new("S-1-5-32-544"))
-            foreach ($sid in @("S-1-5-18", "S-1-5-32-544")) {
-                [void]$stageAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [Security.AccessControl.FileSystemRights]::FullControl, ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+        if ($AllowTestRoot) {
+            if (-not (Test-Path -LiteralPath $transactionParent -PathType Container)) {
+                New-Item -ItemType Directory -Path $transactionParent -ErrorAction Stop | Out-Null
             }
-            [void]([IO.DirectoryInfo]::new($parent).CreateSubdirectory((Split-Path -Leaf $staging), $stageAcl))
+            New-Item -ItemType Directory -Path $transactionRoot -ErrorAction Stop | Out-Null
+            New-Item -ItemType Directory -Path $staging -ErrorAction Stop | Out-Null
+        }
+        else {
+            $transactionAcl = [Security.AccessControl.DirectorySecurity]::new()
+            $transactionAcl.SetAccessRuleProtection($true, $false)
+            $transactionAcl.SetOwner([Security.Principal.SecurityIdentifier]::new("S-1-5-32-544"))
+            foreach ($sid in @("S-1-5-18", "S-1-5-32-544")) {
+                [void]$transactionAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new([Security.Principal.SecurityIdentifier]::new($sid), [Security.AccessControl.FileSystemRights]::FullControl, ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit), [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow))
+            }
+            if (-not (Test-Path -LiteralPath $transactionParent -PathType Container)) {
+                $transactionParentItem = [IO.DirectoryInfo]::new($parent).CreateSubdirectory((Split-Path -Leaf $transactionParent), $transactionAcl)
+            }
+            else { $transactionParentItem = [IO.DirectoryInfo](Get-Item -LiteralPath $transactionParent -Force -ErrorAction Stop) }
+            Assert-RevAgentBootstrapPrivateTransactionRoot -Path $transactionParentItem.FullName
+            if (Test-Path -LiteralPath $transactionRoot) { throw "Bootstrap transaction root already exists: $transactionRoot" }
+            $transactionItem = $transactionParentItem.CreateSubdirectory((Split-Path -Leaf $transactionRoot), $transactionAcl)
+            Assert-RevAgentBootstrapPrivateTransactionRoot -Path $transactionItem.FullName
+            [void]$transactionItem.CreateSubdirectory('candidate', $transactionAcl)
         }
         New-Item -ItemType Directory -Path (Join-Path $staging "lib"), (Join-Path $staging "config") -Force | Out-Null
         $destinations = [ordered]@{
@@ -766,24 +986,102 @@ function Install-RevAgentLocalBootstrap {
         $stateBytes = [Text.UTF8Encoding]::new($false).GetBytes(($state | ConvertTo-Json -Depth 10))
         [IO.File]::WriteAllBytes((Join-Path $staging "bootstrap-state.json"), $stateBytes)
 
-        if (Test-Path -LiteralPath $BootstrapRoot) { Move-Item -LiteralPath $BootstrapRoot -Destination $backup }
+        # A standard user must never observe a half-hardened canonical tree. Apply
+        # and attest every ACL, expected file, hash, and state binding while the
+        # candidate is still outside the canonical pathname.
+        $orderedItems = @(Get-ChildItem -LiteralPath $staging -Recurse -Force) + @(Get-Item -LiteralPath $staging -Force)
+        foreach ($item in @($orderedItems | Sort-Object { $_.FullName.Length } -Descending)) {
+            Set-RevAgentBootstrapDacl -Path $item.FullName -SetAdministratorsOwner:(-not $AllowTestRoot)
+        }
+        $installedState = Assert-RevAgentBootstrapTreeReadyForCommit `
+            -Root $staging `
+            -Destinations $destinations `
+            -ExpectedSourceHashes $ExpectedSourceHashes `
+            -RequireAdministratorsOwner:(-not $AllowTestRoot)
+
+        if ($hadPreviousBootstrap) { Move-Item -LiteralPath $BootstrapRoot -Destination $backup -ErrorAction Stop }
+        if ($null -ne $BeforeCommitTestHook) { & $BeforeCommitTestHook $staging $backup }
         Move-Item -LiteralPath $staging -Destination $BootstrapRoot
-        $orderedItems = @(Get-ChildItem -LiteralPath $BootstrapRoot -Recurse -Force) + @(Get-Item -LiteralPath $BootstrapRoot -Force)
-        foreach ($item in @($orderedItems | Sort-Object { $_.FullName.Length } -Descending)) { Set-RevAgentBootstrapDacl -Path $item.FullName -SetAdministratorsOwner:(-not $AllowTestRoot) }
-        if (Test-Path -LiteralPath $backup) { Assert-RevAgentBootstrapLinkSafe -Path $backup -Recurse; Remove-Item -LiteralPath $backup -Recurse -Force }
+        # Promotion of the already-attested candidate is the commit boundary.
+        # Any later failure leaves that healthy canonical root in place.
+        $commitComplete = $true
+        [void](Assert-RevAgentBootstrapTreeReadyForCommit `
+                -Root $BootstrapRoot `
+                -Destinations $destinations `
+                -ExpectedSourceHashes $ExpectedSourceHashes `
+                -RequireAdministratorsOwner:(-not $AllowTestRoot))
+
+        # Once the canonical tree has passed its post-swap attestation it is the
+        # committed good root. A locked/deletion-resistant prior root is only
+        # deferred cleanup; it must never roll a healthy new root back.
+        $backupCleanup = [ordered]@{
+            attempted = $false
+            success = $true
+            deferred = $false
+            path = $backup
+            warning = ''
+        }
+        if (Test-Path -LiteralPath $backup) {
+            $backupCleanup.attempted = $true
+            try {
+                if ($null -ne $BackupCleanupTestHook) { & $BackupCleanupTestHook $backup }
+                Assert-RevAgentBootstrapLinkSafe -Path $backup -Recurse
+                Remove-Item -LiteralPath $backup -Recurse -Force -ErrorAction Stop
+                if (Test-Path -LiteralPath $backup) { throw "Previous bootstrap root still exists after cleanup: $backup" }
+            }
+            catch {
+                $backupCleanup.success = $false
+                $backupCleanup.deferred = $true
+                $backupCleanup.warning = [string]$_.Exception.Message
+                Write-Warning ("Committed local bootstrap is healthy, but prior-root cleanup was deferred. path={0} reason={1}" -f $backup, $backupCleanup.warning)
+            }
+        }
         $desktopShortcut = Set-RevAgentLocalBootstrapDesktopShortcut -DesktopShortcutRoot $DesktopShortcutRoot -BootstrapRoot $BootstrapRoot -AllowTestRoot:$AllowTestRoot
-        $installedState = Get-Content -Raw -LiteralPath (Join-Path $BootstrapRoot "bootstrap-state.json") | ConvertFrom-Json
         $installedState | Add-Member -NotePropertyName "desktopShortcut" -NotePropertyValue $desktopShortcut -Force
+        $installedState | Add-Member -NotePropertyName "backupCleanup" -NotePropertyValue ([pscustomobject]$backupCleanup) -Force
         return $installedState
     }
     catch {
-        if ((-not (Test-Path -LiteralPath $BootstrapRoot)) -and (Test-Path -LiteralPath $backup)) {
-            Move-Item -LiteralPath $backup -Destination $BootstrapRoot -ErrorAction SilentlyContinue
+        $installFailure = $_
+        if (-not $commitComplete) {
+            try {
+                if ($hadPreviousBootstrap) {
+                    if (Test-Path -LiteralPath $backup -PathType Container) {
+                        if (Test-Path -LiteralPath $BootstrapRoot) {
+                            throw "Canonical bootstrap root unexpectedly exists before previous-root restore: $BootstrapRoot"
+                        }
+                        Move-Item -LiteralPath $backup -Destination $BootstrapRoot -ErrorAction Stop
+                    }
+                    if (-not (Test-Path -LiteralPath $BootstrapRoot -PathType Container)) {
+                        throw "Previous bootstrap root is missing after rollback: $BootstrapRoot"
+                    }
+                    Assert-RevAgentBootstrapLinkSafe -Path $BootstrapRoot -Recurse
+                    $restoredIdentity = Get-RevAgentBootstrapDirectoryIdentity -Path $BootstrapRoot
+                    if (-not [string]::Equals($restoredIdentity, $previousBootstrapIdentity, [StringComparison]::Ordinal)) {
+                        throw "Previous bootstrap root identity was not restored. expected=$previousBootstrapIdentity actual=$restoredIdentity"
+                    }
+                }
+                elseif (Test-Path -LiteralPath $BootstrapRoot) {
+                    Assert-RevAgentBootstrapLinkSafe -Path $BootstrapRoot -Recurse
+                    Remove-Item -LiteralPath $BootstrapRoot -Recurse -Force -ErrorAction Stop
+                    if (Test-Path -LiteralPath $BootstrapRoot) { throw "Uncommitted bootstrap root still exists after rollback: $BootstrapRoot" }
+                }
+            }
+            catch {
+                $rollbackFailure = $_
+                throw "Local bootstrap pre-commit failure could not restore the canonical root. installError=$($installFailure.Exception.Message) rollbackError=$($rollbackFailure.Exception.Message)"
+            }
         }
-        throw
+        throw $installFailure
     }
     finally {
-        if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue }
+        if (Test-Path -LiteralPath $staging) {
+            if ($AllowTestRoot) { Grant-RevAgentBootstrapTestCleanupAccess -Root $staging }
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
+        if ((Test-Path -LiteralPath $transactionRoot -PathType Container) -and -not (Test-Path -LiteralPath $backup)) {
+            Remove-Item -LiteralPath $transactionRoot -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

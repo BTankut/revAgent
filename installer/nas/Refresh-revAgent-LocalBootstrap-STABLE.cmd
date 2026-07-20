@@ -37,33 +37,23 @@ goto refresh_failed
 
 :refresh_failed
 echo.
-if "%REFRESH_EXIT%"=="79" goto refresh_uac_declined
 if "%REFRESH_EXIT%"=="80" goto refresh_coordinator_running
 if "%REFRESH_EXIT%"=="81" goto refresh_coordinator_timeout
-if "%REFRESH_EXIT%"=="82" goto refresh_uac_disabled
 if "%REFRESH_EXIT%"=="84" goto refresh_signing_trust_unavailable
 echo revAgent bootstrap install/refresh did not complete.
 goto refresh_failure_exit
 
-:refresh_uac_declined
-echo Administrator approval was declined. Run this updater again when an administrator is available.
-goto refresh_failure_exit
-
 :refresh_coordinator_running
-echo A revAgent bootstrap coordinator is already running. Finish the coordinator/UAC window, then run this updater again.
+echo A revAgent bootstrap trust broker request is already running. Wait for it to finish, then run this updater again.
 goto refresh_failure_exit
 
 :refresh_coordinator_timeout
-echo The revAgent bootstrap coordinator is still running. Finish the coordinator/UAC window, then run this updater again.
-goto refresh_failure_exit
-
-:refresh_uac_disabled
-echo This machine has UAC disabled or Windows could not provide the standard (non-elevated) user context required by the revAgent first install. Re-enable UAC, then run this updater again, or contact the DPE revAgent administrator for supervised manual bootstrap prestage.
+echo The revAgent bootstrap trust broker is still running. Wait for it to finish, then run this updater again.
 goto refresh_failure_exit
 
 :refresh_signing_trust_unavailable
-echo SECURITY STOP: independent Windows signing trust anchor is unavailable.
-echo Contact the DPE revAgent administrator to complete the supervised manual bootstrap prestage, then run this updater again.
+echo SECURITY STOP: the IT-prestaged revAgent machine trust core is missing or unhealthy.
+echo Ask the DPE revAgent administrator to run the revAgent IT prestage kit on this machine, then run this updater again.
 goto refresh_failure_exit
 
 :refresh_failure_exit

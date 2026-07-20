@@ -252,14 +252,27 @@ function Read-RevAgentStrictTrustedKeyJsonTokens {
     Assert-RevAgentJsonTokenTree -Element $root -Context '$'
 
     $topLevelChildren = @(Get-RevAgentJsonMappedElementChildren -Element $root)
-    if ($topLevelChildren.Count -ne 1 -or
-        -not [string]::Equals((Get-RevAgentJsonMappedPropertyName -Element $topLevelChildren[0]), 'trustedKeys', [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$topLevelChildren[0].GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
-        throw 'Prestage kit trusted-key token properties must exactly match the public allowlist: trustedKeys.'
+    $topLevelNames = @($topLevelChildren | ForEach-Object { Get-RevAgentJsonMappedPropertyName -Element $_ })
+    $allowedTopLevelNames = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    $trustedKeysNodes = @($topLevelChildren | Where-Object { [string]::Equals((Get-RevAgentJsonMappedPropertyName -Element $_), 'trustedKeys', [StringComparison]::Ordinal) })
+    if ($trustedKeysNodes.Count -ne 1 -or
+        -not [string]::Equals([string]$trustedKeysNodes[0].GetAttribute('type'), 'object', [StringComparison]::Ordinal) -or
+        @($topLevelNames | Where-Object { $allowedTopLevelNames -cnotcontains $_ }).Count -ne 0 -or
+        $topLevelChildren.Count -notin @(1, 4)) {
+        throw 'Prestage kit trusted-key token properties must be trustedKeys alone or the exact public metadata allowlist (schemaVersion, app, generatedAtUtc, trustedKeys).'
     }
-    $keyNodes = @(Get-RevAgentJsonMappedElementChildren -Element $topLevelChildren[0])
+    if ($topLevelChildren.Count -eq 4) {
+        foreach ($metadata in @(@('schemaVersion', 'number'), @('app', 'string'), @('generatedAtUtc', 'string'))) {
+            $metadataNode = @($topLevelChildren | Where-Object { [string]::Equals((Get-RevAgentJsonMappedPropertyName -Element $_), [string]$metadata[0], [StringComparison]::Ordinal) })
+            if ($metadataNode.Count -ne 1 -or -not [string]::Equals([string]$metadataNode[0].GetAttribute('type'), [string]$metadata[1], [StringComparison]::Ordinal)) {
+                throw "Prestage kit trusted-key token metadata is incomplete or mistyped: $($metadata[0])"
+            }
+        }
+    }
+    $keyNodes = @(Get-RevAgentJsonMappedElementChildren -Element $trustedKeysNodes[0])
     if ($keyNodes.Count -lt 1) { throw 'Prestage kit trusted-key token document contains no public keys.' }
-    $allowedRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+    $requiredRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+    $allowedRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
     foreach ($keyNode in $keyNodes) {
         $keyId = Get-RevAgentJsonMappedPropertyName -Element $keyNode
         if ($keyId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
@@ -268,10 +281,11 @@ function Read-RevAgentStrictTrustedKeyJsonTokens {
         }
         $recordNodes = @(Get-RevAgentJsonMappedElementChildren -Element $keyNode)
         $recordNames = @($recordNodes | ForEach-Object { Get-RevAgentJsonMappedPropertyName -Element $_ })
-        if ($recordNodes.Count -ne $allowedRecordProperties.Count -or
+        if ($recordNodes.Count -notin @(3, 4) -or
             @($recordNames | Where-Object { $allowedRecordProperties -cnotcontains $_ }).Count -ne 0 -or
-            @($allowedRecordProperties | Where-Object { $recordNames -cnotcontains $_ }).Count -ne 0) {
-            throw "Prestage kit trusted-key token entry properties must exactly match the public allowlist (algorithm, publicKeyFingerprint, publicKeyXml): $keyId"
+            @($requiredRecordProperties | Where-Object { $recordNames -cnotcontains $_ }).Count -ne 0 -or
+            ($recordNodes.Count -eq 4 -and $recordNames -cnotcontains 'purpose')) {
+            throw "Prestage kit trusted-key token entry properties must match the public allowlist (algorithm, publicKeyFingerprint, publicKeyXml, optional purpose): $keyId"
         }
         foreach ($recordNode in $recordNodes) {
             if (-not [string]::Equals([string]$recordNode.GetAttribute('type'), 'string', [StringComparison]::Ordinal)) {
@@ -303,16 +317,38 @@ function Assert-RevAgentPublicTrustedKeys {
         throw "Prestage kit trusted-key raw JSON contains forbidden private RSA XML material."
     }
 
-    [void](Read-RevAgentStrictTrustedKeyJsonTokens -Bytes $Bytes)
+    $tokenDocument = Read-RevAgentStrictTrustedKeyJsonTokens -Bytes $Bytes
     $document = $text | ConvertFrom-Json
 
     if ($document -isnot [pscustomobject]) {
         throw "Prestage kit trusted-key document must be one JSON object."
     }
     $topLevelProperties = @($document.PSObject.Properties)
-    if ($topLevelProperties.Count -ne 1 -or
-        -not [string]::Equals([string]$topLevelProperties[0].Name, 'trustedKeys', [StringComparison]::Ordinal)) {
-        throw "Prestage kit trusted-key document properties must exactly match the public allowlist: trustedKeys."
+    $topLevelPropertyNames = @($topLevelProperties | ForEach-Object { [string]$_.Name })
+    $allowedTopLevelProperties = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    if ($topLevelProperties.Count -notin @(1, 4) -or
+        @($topLevelPropertyNames | Where-Object { $allowedTopLevelProperties -cnotcontains $_ }).Count -ne 0 -or
+        $topLevelPropertyNames -cnotcontains 'trustedKeys') {
+        throw "Prestage kit trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist."
+    }
+    if ($topLevelProperties.Count -eq 4) {
+        foreach ($metadataName in @('schemaVersion', 'app', 'generatedAtUtc')) {
+            if ($topLevelPropertyNames -cnotcontains $metadataName) { throw "Prestage kit trusted-key metadata is incomplete: $metadataName" }
+        }
+        $tokenRoot = $tokenDocument.DocumentElement
+        $generatedAtUtcNodes = @(Get-RevAgentJsonMappedElementChildren -Element $tokenRoot | Where-Object {
+                [string]::Equals((Get-RevAgentJsonMappedPropertyName -Element $_), 'generatedAtUtc', [StringComparison]::Ordinal)
+            })
+        $generatedAtUtcText = if ($generatedAtUtcNodes.Count -eq 1) { [string]$generatedAtUtcNodes[0].InnerText } else { $null }
+        $generatedAt = [DateTime]::MinValue
+        if ([int]$document.schemaVersion -ne 1 -or
+            [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or
+            [string]$generatedAtUtcText -cnotmatch 'Z$' -or
+            -not [DateTime]::TryParse([string]$generatedAtUtcText, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generatedAt) -or
+            $generatedAt.Kind -ne [DateTimeKind]::Utc -or
+            $generatedAt -gt [DateTime]::UtcNow.AddMinutes(5)) {
+            throw 'Prestage kit trusted-key public metadata is invalid.'
+        }
     }
     if ($document.trustedKeys -isnot [pscustomobject]) {
         throw "Prestage kit trusted-key document has no trustedKeys object."
@@ -320,6 +356,7 @@ function Assert-RevAgentPublicTrustedKeys {
 
     $keyProperties = @($document.trustedKeys.PSObject.Properties)
     if ($keyProperties.Count -lt 1) { throw "Prestage kit trusted-key document contains no public keys." }
+    $fingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
     foreach ($keyProperty in $keyProperties) {
         if ([string]$keyProperty.Name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
             throw "Prestage kit trusted-key id is outside the public key-id policy: $($keyProperty.Name)"
@@ -329,16 +366,21 @@ function Assert-RevAgentPublicTrustedKeys {
             throw "Prestage kit trusted-key entry must be one public-key object: $($keyProperty.Name)"
         }
         $recordProperties = @($key.PSObject.Properties)
-        $allowedRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
-        if ($recordProperties.Count -ne $allowedRecordProperties.Count -or
+        $requiredRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+        $allowedRecordProperties = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+        if ($recordProperties.Count -notin @(3, 4) -or
             @($recordProperties | Where-Object { $allowedRecordProperties -cnotcontains [string]$_.Name }).Count -ne 0 -or
-            @($allowedRecordProperties | Where-Object { @($recordProperties.Name) -cnotcontains $_ }).Count -ne 0) {
-            throw "Prestage kit trusted-key entry properties must exactly match the public allowlist (algorithm, publicKeyFingerprint, publicKeyXml): $($keyProperty.Name)"
+            @($requiredRecordProperties | Where-Object { @($recordProperties.Name) -cnotcontains $_ }).Count -ne 0 -or
+            ($recordProperties.Count -eq 4 -and @($recordProperties.Name) -cnotcontains 'purpose')) {
+            throw "Prestage kit trusted-key entry properties must match the public allowlist (algorithm, publicKeyFingerprint, publicKeyXml, optional purpose): $($keyProperty.Name)"
         }
         if ($key.algorithm -isnot [string] -or
             $key.publicKeyXml -isnot [string] -or
             $key.publicKeyFingerprint -isnot [string]) {
             throw "Prestage kit trusted-key entry public fields must all be strings: $($keyProperty.Name)"
+        }
+        if ($recordProperties.Count -eq 4 -and (-not ($key.purpose -is [string]) -or -not [string]::Equals([string]$key.purpose, 'release-signing', [StringComparison]::Ordinal))) {
+            throw "Prestage kit trusted-key purpose must be release-signing: $($keyProperty.Name)"
         }
         if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
             [string]::IsNullOrWhiteSpace([string]$key.publicKeyXml) -or
@@ -384,16 +426,26 @@ function Assert-RevAgentPublicTrustedKeys {
         if (-not [string]::Equals($actualFingerprint, [string]$key.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Prestage kit trusted-key fingerprint does not match the exact publicKeyXml bytes: $($keyProperty.Name)"
         }
+        if (-not $fingerprints.Add($actualFingerprint)) { throw "Prestage kit trusted-key document contains a duplicate public-key fingerprint: $($keyProperty.Name)" }
     }
 
     if (-not $AllowTestIdentity) {
-        if ($keyProperties.Count -ne 1 -or -not [string]::Equals([string]$keyProperties[0].Name, 'revagent-prod-rsa-2026q3', [StringComparison]::Ordinal)) {
-            throw "Production prestage kit requires exactly the pinned revagent-prod-rsa-2026q3 public key."
+        if ($keyProperties.Count -gt 2 -or
+            @($keyProperties | Where-Object { [string]::Equals([string]$_.Name, 'revagent-prod-rsa-2026q3', [StringComparison]::Ordinal) }).Count -ne 1) {
+            throw "Production prestage kit requires revagent-prod-rsa-2026q3 and permits at most one future rotation key."
         }
         $key = $document.trustedKeys.'revagent-prod-rsa-2026q3'
         if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
             -not [string]::Equals([string]$key.publicKeyFingerprint, '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33', [StringComparison]::OrdinalIgnoreCase)) {
             throw "Production prestage kit trusted-key metadata does not match the pinned RS256 identity."
+        }
+        if ($keyProperties.Count -eq 2) {
+            $futureId = [string](@($keyProperties | Where-Object { -not [string]::Equals([string]$_.Name, 'revagent-prod-rsa-2026q3', [StringComparison]::Ordinal) })[0].Name)
+            $match = [regex]::Match($futureId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+            $futureOrdinal = if ($match.Success) { ([int]$match.Groups['year'].Value * 4) + [int]$match.Groups['quarter'].Value } else { 0 }
+            if (-not $match.Success -or $futureOrdinal -le ((2026 * 4) + 3)) {
+                throw "The optional production prestage rotation key must be later than revagent-prod-rsa-2026q3: $futureId"
+            }
         }
     }
     return $document

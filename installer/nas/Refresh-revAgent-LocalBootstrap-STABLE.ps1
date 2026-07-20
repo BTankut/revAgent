@@ -1,22 +1,13 @@
 <#
 .SYNOPSIS
-    Fail-closed stable bootstrap trust gate requiring supervised manual prestage when no independent signing trust anchor exists.
+    Refresh the protected local bootstrap through the IT-prestaged fixed
+    machine-trust broker, or fail closed when that trust core is unhealthy.
 #>
 
 [CmdletBinding()]
 param(
     [string]$ReleaseRoot = "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy",
-    [ValidateSet("stable")][string]$Channel = "stable",
-    [switch]$ElevatedApply,
-    [string]$SourceRoot = "",
-    [string]$EvidenceSource = "",
-    [string]$ExpectedEvidenceSha256 = "",
-    [string]$ExpectedInstallerSha256 = "",
-    [string]$ExpectedRefreshScriptSha256 = "",
-    [string]$TrustedKeysSource = "",
-    [switch]$CoordinatorRelaunchedFromAdmin,
-    [string]$CoordinatorNonce = "",
-    [string]$CoordinatorResultPath = ""
+    [ValidateSet("stable")][string]$Channel = "stable"
 )
 
 if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
@@ -29,10 +20,8 @@ if ("$($ExecutionContext.SessionState.LanguageMode)" -ne 'FullLanguage') {
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-$script:RevAgentExitUacDeclined = 79
 $script:RevAgentExitCoordinatorAlreadyRunning = 80
 $script:RevAgentExitCoordinatorTimeout = 81
-$script:RevAgentExitUacDisabled = 82
 $script:RevAgentExitBootstrapTrustRequired = 84
 
 function Resolve-RevAgentTrustedArchiveManifest {
@@ -110,13 +99,8 @@ function Initialize-TrustedPowerShellModules {
     Microsoft.PowerShell.Core\Import-Module -Name $archiveManifest -Force -ErrorAction Stop
 }
 
-# Production remains fail-closed before any optional module import. The helpers
-# below stay dormant until an independently trusted broker can activate them.
-
-function Get-Sha256Hex {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    return (Get-FileHash -Algorithm SHA256 -LiteralPath $Path).Hash
-}
+# Production initializes only trusted PowerShell modules before it loads and
+# attests the protected machine trust core used by the active E2 broker flow.
 
 function Test-RevAgentStringEquals {
     param(
@@ -147,24 +131,6 @@ function Test-RevAgentStringStartsWith {
     return Test-RevAgentStringEquals -Left ($Value.Substring(0, $Prefix.Length)) -Right $Prefix -IgnoreCase:([bool]$IgnoreCase)
 }
 
-function Quote-Arg {
-    param([Parameter(Mandatory = $true)][string]$Value)
-    return '"' + ($Value -replace '"', '\"') + '"'
-}
-
-function Join-CommandLine {
-    param([Parameter(Mandatory = $true)][string[]]$Arguments)
-    return ($Arguments | ForEach-Object {
-            $value = [string]$_
-            if ($value -match '[\s"]') { Quote-Arg $value } else { $value }
-        }) -join ' '
-}
-
-function Test-IsAdmin {
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    return [Security.Principal.WindowsPrincipal]::new($identity).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-}
-
 function Get-RevAgentProgramDataRoot {
     return [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
 }
@@ -173,136 +139,15 @@ function Get-RevAgentBootstrapExitMessage {
     param([int]$ExitCode)
 
     switch ($ExitCode) {
-        79 { return "Administrator approval was declined. Run this updater again when an administrator is available." }
-        80 { return "A revAgent bootstrap coordinator is already running. Finish the coordinator/UAC window, then run this updater again." }
-        81 { return "The revAgent bootstrap coordinator is still running. Finish the coordinator/UAC window, then run this updater again." }
-        82 { return "This machine has UAC disabled or Windows could not provide the standard (non-elevated) user context required by the revAgent first install. Re-enable UAC, then run this updater again, or contact the DPE revAgent administrator for supervised manual bootstrap prestage." }
-        84 { return "Automatic revAgent protected bootstrap install or refresh is disabled because this deployment has no Authenticode or IT-managed trust anchor. Contact the DPE revAgent administrator to complete the supervised manual high-assurance prestage, then run this updater again." }
+        80 { return "A revAgent bootstrap trust broker request is already running. Wait for it to finish, then run this updater again." }
+        81 { return "The revAgent bootstrap trust broker is still running. Wait for it to finish, then run this updater again." }
+        84 { return "Automatic revAgent protected bootstrap install or refresh requires the IT-prestaged machine trust core. Ask the DPE revAgent administrator to run the revAgent IT prestage kit on this machine, then run this updater again." }
         default { return "" }
     }
 }
 
-function Test-RevAgentUacDeclinedException {
-    param([Parameter(Mandatory = $true)][Exception]$Exception)
-
-    $current = $Exception
-    while ($null -ne $current) {
-        if ($current -is [ComponentModel.Win32Exception] -and [int]$current.NativeErrorCode -eq 1223) {
-            return $true
-        }
-        $current = $current.InnerException
-    }
-    return $false
-}
-
-function Start-RevAgentElevatedProcess {
-    param([Parameter(Mandatory = $true)][Diagnostics.ProcessStartInfo]$StartInfo)
-    return [Diagnostics.Process]::Start($StartInfo)
-}
-
-function Get-RevAgentTokenElevationType {
-    if (-not ('RevAgentBootstrap.TokenInspector' -as [type])) {
-        Add-Type -TypeDefinition @'
-using System;
-using System.ComponentModel;
-using System.Runtime.InteropServices;
-
-namespace RevAgentBootstrap
-{
-    public static class TokenInspector
-    {
-        [DllImport("advapi32.dll", SetLastError = true)]
-        private static extern bool GetTokenInformation(
-            IntPtr tokenHandle,
-            int tokenInformationClass,
-            out int tokenInformation,
-            int tokenInformationLength,
-            out int returnLength);
-
-        public static int GetElevationType(IntPtr tokenHandle)
-        {
-            int elevationType;
-            int returnLength;
-            if (!GetTokenInformation(tokenHandle, 18, out elevationType, sizeof(int), out returnLength))
-            {
-                throw new Win32Exception(Marshal.GetLastWin32Error());
-            }
-            return elevationType;
-        }
-    }
-}
-'@
-    }
-
-    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    try {
-        switch ([int][RevAgentBootstrap.TokenInspector]::GetElevationType($identity.Token)) {
-            1 { return 'Default' }
-            2 { return 'Full' }
-            3 { return 'Limited' }
-            default { return 'Unknown' }
-        }
-    }
-    finally {
-        $identity.Dispose()
-    }
-}
-
-function Get-RevAgentDeElevationCapability {
-    $policyPath = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
-    $policy = Get-ItemProperty -LiteralPath $policyPath -Name EnableLUA -ErrorAction Stop
-    $enableLua = [int]$policy.EnableLUA
-    if ($enableLua -eq 0) {
-        return [pscustomobject][ordered]@{
-            canDeElevate = $false
-            reason = 'uac_disabled'
-            enableLUA = $enableLua
-            tokenElevationType = ''
-        }
-    }
-
-    $tokenElevationType = Get-RevAgentTokenElevationType
-    if (-not (Test-RevAgentStringEquals -Left $tokenElevationType -Right 'Full' -IgnoreCase)) {
-        return [pscustomobject][ordered]@{
-            canDeElevate = $false
-            reason = if (Test-RevAgentStringEquals -Left $tokenElevationType -Right 'Default' -IgnoreCase) {
-                'token_elevation_type_default'
-            }
-            else {
-                'split_token_unavailable'
-            }
-            enableLUA = $enableLua
-            tokenElevationType = $tokenElevationType
-        }
-    }
-
-    return [pscustomobject][ordered]@{
-        canDeElevate = $true
-        reason = 'split_token_available'
-        enableLUA = $enableLua
-        tokenElevationType = $tokenElevationType
-    }
-}
-
-function Write-RevAgentDeElevationFailure {
-    param([Parameter(Mandatory = $true)][object]$Capability)
-
-    if (Test-RevAgentStringEquals -Left ([string]$Capability.reason) -Right 'uac_disabled') {
-        Write-Host "This machine runs with UAC disabled (EnableLUA=0); the revAgent first install requires a standard (non-elevated) user context."
-        Write-Host "Re-enable UAC, then run this updater again, or contact the DPE revAgent administrator for supervised manual bootstrap prestage."
-        return
-    }
-
-    Write-Host "This administrator session cannot be de-elevated to the standard user context required by the revAgent first install."
-    Write-Host "The Windows token elevation type is '$([string]$Capability.tokenElevationType)'. Start from a standard user session or contact the DPE revAgent administrator for supervised manual bootstrap prestage."
-}
-
 function Get-RevAgentBootstrapTempRoot {
     return [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
-}
-
-function Get-RevAgentRunningRefreshScriptPath {
-    return $PSCommandPath
 }
 
 function Get-RevAgentBootstrapTemporaryPathInfo {
@@ -608,26 +453,6 @@ function Remove-RevAgentBootstrapTemporaryPath {
     }
 }
 
-function Remove-RevAgentBootstrapTemporaryInput {
-    param(
-        [AllowNull()][object]$InputObject,
-        [string]$TempRoot = (Get-RevAgentBootstrapTempRoot)
-    )
-
-    if ($null -eq $InputObject) { return }
-    $lockProperty = $InputObject.PSObject.Properties['CleanupLock']
-    if ($null -ne $lockProperty -and $null -ne $lockProperty.Value) {
-        try { $lockProperty.Value.Dispose() }
-        catch { }
-    }
-    foreach ($propertyName in @('SourceRoot', 'EvidenceSource', 'TrustedKeysSource', 'CleanupLockPath')) {
-        $property = $InputObject.PSObject.Properties[$propertyName]
-        if ($null -ne $property) {
-            Remove-RevAgentBootstrapTemporaryPath -Path ([string]$property.Value) -TempRoot $TempRoot
-        }
-    }
-}
-
 function Remove-StaleRevAgentBootstrapTemporaryItems {
     param(
         [string]$TempRoot = (Get-RevAgentBootstrapTempRoot),
@@ -689,728 +514,215 @@ function Remove-StaleRevAgentBootstrapTemporaryItems {
     }
 }
 
-function Write-RevAgentCoordinatorResultMarker {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Nonce,
-        [Parameter(Mandatory = $true)][int]$ExitCode,
-        [AllowEmptyString()][string]$Message = ''
-    )
-
-    if ($Nonce -notmatch '^[0-9a-f]{32}$') { throw "Invalid revAgent bootstrap coordinator nonce." }
-    $pathInfo = Get-RevAgentBootstrapTemporaryPathInfo -Path $Path
-    if ($null -eq $pathInfo -or $pathInfo.kind -ne 'coordinatorResult' -or
-        -not (Test-RevAgentStringEquals -Left ([string]$pathInfo.attemptId) -Right $Nonce -IgnoreCase)) {
-        throw "Invalid revAgent bootstrap coordinator result path."
-    }
-
-    $state = if ($ExitCode -eq 0) { 'succeeded' } else { 'failed' }
-    $document = [ordered]@{
-        schemaVersion = 1
-        nonce = $Nonce
-        completedUtc = [DateTime]::UtcNow.ToString('o')
-        state = $state
-        exitCode = $ExitCode
-        message = $Message
-    }
-    $json = $document | ConvertTo-Json -Depth 4
-    $temporaryPath = $pathInfo.path + '.tmp-' + [Guid]::NewGuid().ToString('N')
-    try {
-        [IO.File]::WriteAllText($temporaryPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
-        [IO.File]::Move($temporaryPath, [string]$pathInfo.path)
-    }
-    finally {
-        if ([IO.File]::Exists($temporaryPath)) {
-            try { [IO.File]::Delete($temporaryPath) }
-            catch { }
-        }
-    }
+function Get-RevAgentLocalAppDataRoot {
+    return [Environment]::GetFolderPath([Environment+SpecialFolder]::LocalApplicationData)
 }
 
-function Read-RevAgentCoordinatorResultMarker {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$Nonce
-    )
+function Get-RevAgentBootstrapTrustClientContext {
+    $programDataRoot = [IO.Path]::GetFullPath((Get-RevAgentProgramDataRoot)).TrimEnd('\')
+    $trustRoot = Join-Path $programDataRoot 'DPE\revAgent\trust'
+    $modulePath = Join-Path $trustRoot 'RevAgent.BootstrapTrust.psm1'
+    if (-not [IO.File]::Exists($modulePath)) { return $null }
 
     try {
-        $pathInfo = Get-RevAgentBootstrapTemporaryPathInfo -Path $Path
-        if ($null -eq $pathInfo -or $pathInfo.kind -ne 'coordinatorResult' -or
-            -not (Test-RevAgentStringEquals -Left ([string]$pathInfo.attemptId) -Right $Nonce -IgnoreCase) -or
-            -not [IO.File]::Exists([string]$pathInfo.path)) {
+        $module = Microsoft.PowerShell.Core\Import-Module -Name $modulePath -Force -PassThru -ErrorAction Stop
+        $commands = [ordered]@{}
+        foreach ($name in @(
+                'Test-RevAgentBootstrapTrustHealth',
+                'New-RevAgentBootstrapTrustRequest',
+                'Start-RevAgentBootstrapTrustBrokerTask',
+                'Wait-RevAgentBootstrapTrustResult',
+                'Remove-RevAgentBootstrapTrustClientArtifacts'
+            )) {
+            $commands[$name] = Get-Command ("{0}\{1}" -f $module.Name, $name) -ErrorAction Stop
+        }
+
+        $health = & $commands['Test-RevAgentBootstrapTrustHealth']
+        if ($null -eq $health -or
+            $null -eq $health.PSObject.Properties['healthy'] -or
+            -not [bool]$health.healthy) {
+            $reason = if ($null -ne $health -and $null -ne $health.PSObject.Properties['reason']) { [string]$health.reason } else { 'health_check_failed' }
+            Write-Warning "The IT-prestaged revAgent machine trust core is not healthy: $reason"
             return $null
         }
-        $marker = Get-Content -Raw -LiteralPath $pathInfo.path -ErrorAction Stop | ConvertFrom-Json
-        if ([int]$marker.schemaVersion -ne 1 -or
-            -not (Test-RevAgentStringEquals -Left ([string]$marker.nonce) -Right $Nonce) -or
-            [string]$marker.state -notin @('succeeded', 'failed')) {
+        if ($null -eq $health.PSObject.Properties['layout'] -or $null -eq $health.layout) {
+            Write-Warning 'The IT-prestaged revAgent machine trust core health result has no canonical layout.'
             return $null
         }
-        return $marker
+
+        return [pscustomobject][ordered]@{
+            module = $module
+            commands = $commands
+            health = $health
+            layout = $health.layout
+        }
     }
     catch {
+        Write-Warning "The IT-prestaged revAgent machine trust core could not be loaded or verified: $($_.Exception.Message)"
         return $null
     }
 }
 
-function Find-RevAgentActiveCoordinatorTask {
-    param([AllowNull()][object[]]$Tasks)
+function New-RevAgentBootstrapAuthenticatedInbox {
+    param([Parameter(Mandatory = $true)][object]$TrustContext)
 
-    foreach ($task in @($Tasks)) {
-        $state = [string]$task.State
-        if ($state -in @('Running', 'Queued')) { return $task }
+    $layout = $TrustContext.layout
+    foreach ($propertyName in @('trustRoot', 'releaseSnapshotModulePath', 'distributionIntegrityModulePath', 'trustedKeysPath')) {
+        if ($null -eq $layout.PSObject.Properties[$propertyName] -or [string]::IsNullOrWhiteSpace([string]$layout.$propertyName)) {
+            throw "Bootstrap trust health is missing the protected $propertyName path."
+        }
     }
-    return $null
+    $trustRoot = [IO.Path]::GetFullPath([string]$layout.trustRoot).TrimEnd('\')
+    foreach ($pathValue in @($layout.releaseSnapshotModulePath, $layout.distributionIntegrityModulePath, $layout.trustedKeysPath)) {
+        $fullPath = [IO.Path]::GetFullPath([string]$pathValue)
+        if (-not (Test-RevAgentStringStartsWith -Value $fullPath -Prefix ($trustRoot + '\') -IgnoreCase)) {
+            throw "Bootstrap trust health returned a protected dependency outside its trust root: $fullPath"
+        }
+    }
+
+    $snapshotModule = Microsoft.PowerShell.Core\Import-Module -Name ([string]$layout.releaseSnapshotModulePath) -Force -PassThru -ErrorAction Stop
+    $newInboxCommand = Get-Command ("{0}\New-RevAgentAuthenticatedReleaseInbox" -f $snapshotModule.Name) -ErrorAction Stop
+    $inbox = & $newInboxCommand `
+        -ReleaseRoot $ReleaseRoot `
+        -Channel $Channel `
+        -TrustedKeysPath ([string]$layout.trustedKeysPath) `
+        -IntegrityModulePath ([string]$layout.distributionIntegrityModulePath)
+    if ($null -eq $inbox -or
+        [string]$inbox.inboxId -notmatch '^[0-9a-f]{32}$' -or
+        [string]::IsNullOrWhiteSpace([string]$inbox.inboxRoot)) {
+        throw 'Authenticated stable release acquisition did not return one complete local inbox.'
+    }
+    return $inbox
 }
 
-function Wait-RevAgentBootstrapCoordinator {
-    param(
-        [Parameter(Mandatory = $true)][string]$TaskName,
-        [Parameter(Mandatory = $true)][string]$ResultPath,
-        [Parameter(Mandatory = $true)][string]$Nonce,
-        [Parameter(Mandatory = $true)][string]$BootstrapPath,
-        [ValidateRange(0, 3600)][int]$TimeoutSeconds = 600,
-        [ValidateRange(1, 10000)][int]$PollIntervalMilliseconds = 1000
-    )
+function Remove-RevAgentBootstrapAuthenticatedInbox {
+    param([AllowNull()][object]$Inbox)
 
-    $timer = [Diagnostics.Stopwatch]::StartNew()
-    $completedWithoutMarkerAt = $null
-    $previousResultMismatch = ''
-    try {
-        while ($true) {
-            $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
-            $taskInfo = Get-ScheduledTaskInfo -TaskName $TaskName -ErrorAction SilentlyContinue
-            $state = if ($null -ne $task) { [string]$task.State } else { '' }
-            $lastTaskResult = $null
-            $hasRun = $false
-            if ($null -ne $taskInfo) {
-                if ($null -ne $taskInfo.PSObject.Properties['LastTaskResult']) {
-                    $lastTaskResult = [long]$taskInfo.LastTaskResult
-                }
-                if ($null -ne $taskInfo.PSObject.Properties['LastRunTime'] -and $null -ne $taskInfo.LastRunTime) {
-                    $hasRun = ([DateTime]$taskInfo.LastRunTime).Year -ge 2000
-                }
-            }
-            $marker = Read-RevAgentCoordinatorResultMarker -Path $ResultPath -Nonce $Nonce
-            $taskStillActive = $state -in @('Running', 'Queued')
+    if ($null -eq $Inbox -or
+        $null -eq $Inbox.PSObject.Properties['inboxId'] -or
+        $null -eq $Inbox.PSObject.Properties['inboxRoot']) { return }
+    $inboxId = [string]$Inbox.inboxId
+    if ($inboxId -notmatch '^[0-9a-f]{32}$') { throw 'Refusing cleanup for an invalid authenticated release inbox id.' }
 
-            if ($null -ne $marker -and -not $taskStillActive -and $hasRun -and $null -ne $lastTaskResult) {
-                $markerExitCode = [int]$marker.exitCode
-                if ([long]$markerExitCode -ne [long]$lastTaskResult) {
-                    $mismatchSignature = "$markerExitCode|$lastTaskResult|$state"
-                    if (Test-RevAgentStringEquals -Left $previousResultMismatch -Right $mismatchSignature) {
-                        return [pscustomobject][ordered]@{
-                            completed = $true
-                            timedOut = $false
-                            exitCode = 1
-                            taskState = $state
-                            lastTaskResult = $lastTaskResult
-                            message = "The revAgent bootstrap coordinator result marker did not match LastTaskResult. marker=$markerExitCode task=$lastTaskResult"
-                        }
-                    }
-                    $previousResultMismatch = $mismatchSignature
-                }
-                else {
-                    $previousResultMismatch = ''
-                    if ($markerExitCode -eq 0 -and -not [IO.File]::Exists($BootstrapPath)) {
-                        return [pscustomobject][ordered]@{
-                            completed = $true
-                            timedOut = $false
-                            exitCode = 1
-                            taskState = $state
-                            lastTaskResult = $lastTaskResult
-                            message = "The revAgent bootstrap coordinator reported success without creating the protected local bootstrap: $BootstrapPath"
-                        }
-                    }
-                    return [pscustomobject][ordered]@{
-                        completed = $true
-                        timedOut = $false
-                        exitCode = $markerExitCode
-                        taskState = $state
-                        lastTaskResult = $lastTaskResult
-                        message = [string]$marker.message
-                    }
-                }
-            }
-
-            if (-not $taskStillActive -and $hasRun -and $null -ne $lastTaskResult -and $null -eq $marker) {
-                if ($null -eq $completedWithoutMarkerAt) { $completedWithoutMarkerAt = $timer.Elapsed }
-                if (($timer.Elapsed - $completedWithoutMarkerAt).TotalSeconds -ge 2) {
-                    return [pscustomobject][ordered]@{
-                        completed = $true
-                        timedOut = $false
-                        exitCode = 1
-                        taskState = $state
-                        lastTaskResult = $lastTaskResult
-                        message = "The revAgent bootstrap coordinator ended without its nonce-bound result marker. LastTaskResult=$lastTaskResult"
-                    }
-                }
-            }
-            else {
-                $completedWithoutMarkerAt = $null
-            }
-
-            if ($timer.Elapsed.TotalSeconds -ge $TimeoutSeconds) {
-                return [pscustomobject][ordered]@{
-                    completed = $false
-                    timedOut = $true
-                    exitCode = $script:RevAgentExitCoordinatorTimeout
-                    taskState = $state
-                    lastTaskResult = $lastTaskResult
-                    message = (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitCoordinatorTimeout)
-                }
-            }
-            Start-Sleep -Milliseconds $PollIntervalMilliseconds
-        }
+    $allowedRoot = [IO.Path]::GetFullPath((Join-Path (Get-RevAgentLocalAppDataRoot) 'DPE\revAgent\release-inbox')).TrimEnd('\')
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path $allowedRoot $inboxId)).TrimEnd('\')
+    $inboxPath = [IO.Path]::GetFullPath([string]$Inbox.inboxRoot).TrimEnd('\')
+    if (-not (Test-RevAgentStringEquals -Left $inboxPath -Right $expectedPath -IgnoreCase)) {
+        throw "Refusing authenticated release inbox cleanup outside its exact user-local path: $inboxPath"
     }
-    finally {
-        $timer.Stop()
+    if (-not [IO.Directory]::Exists($inboxPath)) { return }
+
+    $cleanupState = [pscustomobject]@{
+        itemCount = 0
+        maxItems = 100000
+        maxDepth = 64
+        maxPassesPerDirectory = 32
     }
+    Clear-RevAgentBootstrapTemporaryDirectoryNoFollow `
+        -Path $inboxPath `
+        -CleanupRoot $inboxPath `
+        -State $cleanupState
+    if ([IO.Directory]::Exists($inboxPath)) { [IO.Directory]::Delete($inboxPath, $false) }
+    if ([IO.Directory]::Exists($inboxPath)) { throw "Authenticated release inbox cleanup was incomplete: $inboxPath" }
 }
 
-function Set-AdminOnlyAcl {
-    param([Parameter(Mandatory = $true)][string]$Path)
-
-    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
-    $acl = if ($item.PSIsContainer) {
-        [Security.AccessControl.DirectorySecurity]::new()
-    }
-    else {
-        [Security.AccessControl.FileSecurity]::new()
-    }
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
-    foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {
-        $inheritance = if ($item.PSIsContainer) {
-            [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
+function Start-RevAgentPostRefreshLauncher {
+    $bootstrapRoot = Join-Path (Get-RevAgentProgramDataRoot) 'DPE\revAgent\bootstrap'
+    $bootstrapScript = Join-Path $bootstrapRoot 'Start-revAgent-Update.ps1'
+    $bootstrapState = Join-Path $bootstrapRoot 'bootstrap-state.json'
+    $launcherPath = Join-Path $bootstrapRoot 'Start-revAgent-Update.cmd'
+    foreach ($requiredPath in @($bootstrapScript, $bootstrapState, $launcherPath)) {
+        if (-not [IO.File]::Exists($requiredPath)) {
+            throw "The revAgent bootstrap trust broker reported success without installing a required protected bootstrap file: $requiredPath"
         }
-        else {
-            [Security.AccessControl.InheritanceFlags]::None
-        }
-        [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
-                [Security.Principal.SecurityIdentifier]::new($sid),
-                [Security.AccessControl.FileSystemRights]::FullControl,
-                $inheritance,
-                [Security.AccessControl.PropagationFlags]::None,
-                [Security.AccessControl.AccessControlType]::Allow))
-    }
-    if ('System.IO.FileSystemAclExtensions' -as [type]) {
-        if ($item.PSIsContainer) {
-            [IO.FileSystemAclExtensions]::SetAccessControl([IO.DirectoryInfo]$item, [Security.AccessControl.DirectorySecurity]$acl)
-        }
-        else {
-            [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]$item, [Security.AccessControl.FileSecurity]$acl)
-        }
-    }
-    elseif ($item.PSIsContainer) {
-        ([IO.DirectoryInfo]$item).SetAccessControl([Security.AccessControl.DirectorySecurity]$acl)
-    }
-    else {
-        ([IO.FileInfo]$item).SetAccessControl([Security.AccessControl.FileSecurity]$acl)
-    }
-}
-
-function Get-ProtectedBootstrapState {
-    $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-    $bootstrapRoot = [IO.Path]::GetFullPath((Join-Path $programData 'DPE\revAgent\bootstrap')).TrimEnd('\')
-    $statePath = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    if (-not (Test-Path -LiteralPath $statePath -PathType Leaf)) {
-        throw "Protected local bootstrap state was not found: $statePath"
-    }
-    $state = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
-    if ([int]$state.schemaVersion -ne 1 -or -not [bool]$state.sourceAuthentication.independentlyAuthenticated) {
-        throw "Protected local bootstrap state does not prove an independently authenticated prestage."
-    }
-    foreach ($role in @('distributionIntegrity', 'releaseSnapshot', 'trustedKeys')) {
-        $evidence = $state.files.$role
-        if ($null -eq $evidence -or [string]::IsNullOrWhiteSpace([string]$evidence.relativePath) -or [string]::IsNullOrWhiteSpace([string]$evidence.sha256)) {
-            throw "Protected local bootstrap state is missing required file evidence: $role"
-        }
-        $path = Join-Path $bootstrapRoot ([string]$evidence.relativePath)
-        if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Protected local bootstrap file was not found: $path" }
-        if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $path) -Right ([string]$evidence.sha256) -IgnoreCase)) {
-            throw "Protected local bootstrap file hash mismatch: $role"
-        }
-    }
-    return [pscustomobject]@{ root = $bootstrapRoot; statePath = $statePath; state = $state }
-}
-
-function New-RevAgentElevatedRefreshVerifierEncodedCommand {
-    param(
-        [Parameter(Mandatory = $true)][string]$ScriptPath,
-        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-        [Parameter(Mandatory = $true)][string[]]$ScriptArguments
-    )
-
-    $resolvedScriptPath = [IO.Path]::GetFullPath($ScriptPath)
-    if (Test-RevAgentStringStartsWith -Value $resolvedScriptPath -Prefix '\\') {
-        throw "The elevated revAgent bootstrap verifier refused a UNC script path: $resolvedScriptPath"
-    }
-    if ($ExpectedSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
-        throw "The elevated revAgent bootstrap verifier requires a valid script SHA-256."
-    }
-    $childArguments = Join-CommandLine -Arguments (@(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $resolvedScriptPath
-        ) + $ScriptArguments)
-    $payloadJson = [pscustomobject][ordered]@{
-        scriptPath = $resolvedScriptPath
-        expectedSha256 = $ExpectedSha256.ToUpperInvariant()
-        childArguments = $childArguments
-    } | ConvertTo-Json -Compress
-    $payloadBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($payloadJson))
-    $verifier = @'
-$ErrorActionPreference = 'Stop'
-$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__REVAGENT_PAYLOAD_BASE64__'))
-$payload = $payloadJson | ConvertFrom-Json
-$scriptPath = [IO.Path]::GetFullPath([string]$payload.scriptPath)
-$expectedSha256 = [string]$payload.expectedSha256
-$exitCode = 1
-$guard = $null
-$child = $null
-try {
-    if (($scriptPath.Length -ge 2 -and $scriptPath[0] -eq '\' -and $scriptPath[1] -eq '\') -or
-        $expectedSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
-        throw 'The elevated revAgent bootstrap verifier rejected its staged script identity.'
-    }
-    $guard = [IO.File]::Open($scriptPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
-    $sha256 = [Security.Cryptography.SHA256]::Create()
-    try {
-        $actualSha256 = [BitConverter]::ToString($sha256.ComputeHash($guard)).Replace('-', '')
-    }
-    finally { $sha256.Dispose() }
-    if ($actualSha256 -cne $expectedSha256.ToUpperInvariant()) {
-        throw 'The elevated revAgent bootstrap refresh script changed before administrator execution.'
     }
 
-    $powershell = Join-Path $PSHOME 'powershell.exe'
+    $systemDirectory = [Environment]::SystemDirectory
     $startInfo = [Diagnostics.ProcessStartInfo]::new()
-    $startInfo.FileName = $powershell
-    $startInfo.Arguments = [string]$payload.childArguments
-    $startInfo.WorkingDirectory = Split-Path -Parent $powershell
+    $startInfo.FileName = Join-Path $systemDirectory 'cmd.exe'
+    $startInfo.Arguments = '/d /s /c ""{0}" --post-refresh"' -f $launcherPath
+    $startInfo.WorkingDirectory = $systemDirectory
     $startInfo.UseShellExecute = $false
-    $child = [Diagnostics.Process]::Start($startInfo)
-    if ($null -eq $child) { throw 'The verified elevated revAgent bootstrap child did not start.' }
-    $child.WaitForExit()
-    $exitCode = [int]$child.ExitCode
-}
-catch {
-    try { [Console]::Error.WriteLine('revAgent elevated bootstrap verifier failed: ' + $_.Exception.Message) } catch { }
-}
-finally {
-    if ($null -ne $child) { $child.Dispose() }
-    if ($null -ne $guard) { $guard.Dispose() }
-}
-exit $exitCode
-'@.Replace('__REVAGENT_PAYLOAD_BASE64__', $payloadBase64)
-    return [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($verifier))
-}
-
-function Start-ElevatedApply {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceRoot,
-        [Parameter(Mandatory = $true)][string]$EvidenceSource,
-        [Parameter(Mandatory = $true)][string]$EvidenceSha256,
-        [Parameter(Mandatory = $true)][string]$InstallerSha256,
-        [Parameter(Mandatory = $true)][string]$TrustedKeysSource
-    )
-
-    if (Test-IsAdmin) {
-        Write-Host "Administrator session detected. Applying the protected local bootstrap without a second UAC prompt..."
-        Invoke-AuthenticatedBootstrapApply `
-            -SourceRoot $SourceRoot `
-            -EvidenceSource $EvidenceSource `
-            -ExpectedEvidenceSha256 $EvidenceSha256 `
-            -ExpectedInstallerSha256 $InstallerSha256 `
-            -TrustedKeysSource $TrustedKeysSource
-        return 0
-    }
-
-    $tempRoot = [IO.Path]::GetFullPath((Get-RevAgentBootstrapTempRoot)).TrimEnd('\')
-    if ((Test-RevAgentStringStartsWith -Value $tempRoot -Prefix '\\') -or
-        -not [IO.Directory]::Exists($tempRoot) -or
-        (([IO.File]::GetAttributes($tempRoot) -band [IO.FileAttributes]::ReparsePoint) -ne 0)) {
-        throw "The elevated revAgent bootstrap script requires a local, non-reparse temporary root: $tempRoot"
-    }
-    $runningRefreshScriptPath = Get-RevAgentRunningRefreshScriptPath
-    if ([string]::IsNullOrWhiteSpace($runningRefreshScriptPath) -or -not [IO.File]::Exists($runningRefreshScriptPath)) {
-        throw "The running revAgent bootstrap refresh script could not be resolved for local elevation staging."
-    }
-
-    $stagedRefreshScript = Join-Path $tempRoot ("revagent-bootstrap-elevated-script-{0}.ps1" -f [Guid]::NewGuid().ToString('N'))
-    $process = $null
+    $startInfo.CreateNoWindow = $true
+    $process = [Diagnostics.Process]::Start($startInfo)
+    if ($null -eq $process) { throw 'The protected revAgent post-refresh launcher did not start.' }
     try {
-        [IO.File]::Copy([IO.Path]::GetFullPath($runningRefreshScriptPath), $stagedRefreshScript, $false)
-        $refreshScriptSha256 = Get-Sha256Hex -Path $stagedRefreshScript
-        $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-        $scriptArguments = @(
-            '-ElevatedApply',
-            '-ReleaseRoot', $ReleaseRoot,
-            '-Channel', $Channel,
-            '-SourceRoot', $SourceRoot,
-            '-EvidenceSource', $EvidenceSource,
-            '-ExpectedEvidenceSha256', $EvidenceSha256,
-            '-ExpectedInstallerSha256', $InstallerSha256,
-            '-ExpectedRefreshScriptSha256', $refreshScriptSha256,
-            '-TrustedKeysSource', $TrustedKeysSource
-        )
-        $encodedVerifier = New-RevAgentElevatedRefreshVerifierEncodedCommand `
-            -ScriptPath $stagedRefreshScript `
-            -ExpectedSha256 $refreshScriptSha256 `
-            -ScriptArguments $scriptArguments
-        $args = @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-EncodedCommand', $encodedVerifier
-        )
-        $psi = [Diagnostics.ProcessStartInfo]::new()
-        $psi.FileName = $powershell
-        $psi.Arguments = Join-CommandLine -Arguments $args
-        $psi.WorkingDirectory = Split-Path -Parent $powershell
-        $psi.UseShellExecute = $true
-        $psi.Verb = 'runas'
-        try {
-            $process = Start-RevAgentElevatedProcess -StartInfo $psi
-        }
-        catch {
-            if (Test-RevAgentUacDeclinedException -Exception $_.Exception) {
-                Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitUacDeclined)
-                return $script:RevAgentExitUacDeclined
-            }
-            throw
-        }
-        if ($null -eq $process) { throw "Administrator approval did not start the elevated bootstrap process." }
         $process.WaitForExit()
-        $exitCode = [int]$process.ExitCode
+        return [int]$process.ExitCode
     }
-    finally {
-        if ($null -ne $process) { $process.Dispose() }
-        Remove-RevAgentBootstrapTemporaryPath -Path $stagedRefreshScript -TempRoot $tempRoot
-    }
-    if ($exitCode -ne 0) { throw "Elevated bootstrap refresh exited with code $exitCode." }
-    return 0
+    finally { $process.Dispose() }
 }
 
-function Assert-RevAgentElevatedRefreshScript {
-    param(
-        [Parameter(Mandatory = $true)][string]$ExpectedSha256,
-        [string]$ScriptPath = $PSCommandPath
-    )
-
-    if ([string]::IsNullOrWhiteSpace($ScriptPath)) {
-        throw "Elevated revAgent bootstrap refresh could not resolve its local script path."
-    }
-    $resolvedScriptPath = [IO.Path]::GetFullPath($ScriptPath)
-    if (Test-RevAgentStringStartsWith -Value $resolvedScriptPath -Prefix '\\') {
-        throw "Elevated revAgent bootstrap refresh refused a UNC script path: $resolvedScriptPath"
-    }
-    if ($ExpectedSha256 -notmatch '^[0-9A-Fa-f]{64}$') {
-        throw "Elevated revAgent bootstrap refresh is missing a valid expected script SHA-256."
-    }
-    if (-not [IO.File]::Exists($resolvedScriptPath)) {
-        throw "Elevated revAgent bootstrap refresh script was not found: $resolvedScriptPath"
-    }
-    if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $resolvedScriptPath) -Right $ExpectedSha256 -IgnoreCase)) {
-        throw "Elevated revAgent bootstrap refresh script changed before administrator execution."
-    }
-}
-
-function Resolve-ReleaseRootChildPath {
-    param(
-        [Parameter(Mandatory = $true)][string]$Path,
-        [Parameter(Mandatory = $true)][string]$BaseDirectory
-    )
-
-    $releaseRootFullPath = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\')
-    $resolved = if ([IO.Path]::IsPathRooted($Path)) {
-        [IO.Path]::GetFullPath($Path)
-    }
-    else {
-        [IO.Path]::GetFullPath((Join-Path $BaseDirectory $Path))
-    }
-    $resolvedTrimmed = $resolved.TrimEnd('\')
-    if (-not (Test-RevAgentStringEquals -Left $resolvedTrimmed -Right $releaseRootFullPath -IgnoreCase) -and
-        -not (Test-RevAgentStringStartsWith -Value $resolvedTrimmed -Prefix ($releaseRootFullPath + '\') -IgnoreCase)) {
-        throw "Signed release path escaped ReleaseRoot: $resolved"
-    }
-    return $resolved
-}
-
-function New-CleanInstallBootstrapInput {
-    $channelPath = Join-Path (Join-Path $ReleaseRoot 'channels') "$Channel.json"
-    $trustedKeys = Join-Path (Join-Path $ReleaseRoot 'tools\config') 'release-trusted-keys.json'
-    if (-not (Test-Path -LiteralPath $channelPath -PathType Leaf)) {
-        throw "Signed stable channel manifest was not found: $channelPath"
-    }
-    if (-not (Test-Path -LiteralPath $trustedKeys -PathType Leaf)) {
-        throw "Trusted release keys were not found: $trustedKeys"
-    }
-
-    $channelManifest = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
-    if (-not (Test-RevAgentStringEquals -Left ([string]$channelManifest.channel) -Right $Channel)) {
-        throw "Signed channel identity mismatch. requested=$Channel actual=$($channelManifest.channel)"
-    }
-    $channelDirectory = Split-Path -Parent $channelPath
-    $packagePath = Resolve-ReleaseRootChildPath -Path ([string]$channelManifest.packagePath) -BaseDirectory $channelDirectory
-    if (-not (Test-Path -LiteralPath $packagePath -PathType Leaf)) {
-        throw "Signed release package was not found: $packagePath"
-    }
-    if ([string]::IsNullOrWhiteSpace([string]$channelManifest.sha256)) {
-        throw "Signed stable channel does not contain a package SHA-256."
-    }
-    $actualPackageSha256 = Get-Sha256Hex -Path $packagePath
-    if (-not (Test-RevAgentStringEquals -Left $actualPackageSha256 -Right ([string]$channelManifest.sha256) -IgnoreCase)) {
-        throw "Signed release package changed before bootstrap evidence production."
-    }
-
-    $tempRoot = Get-RevAgentBootstrapTempRoot
-    $attemptId = [Guid]::NewGuid().ToString('N')
-    $trustedKeysLocal = Join-Path $tempRoot ("revagent-bootstrap-trusted-keys-$attemptId.json")
-    $temporaryInput = [pscustomobject][ordered]@{
-        SourceRoot = Join-Path $tempRoot ("revagent-bootstrap-install-source-$attemptId")
-        EvidenceSource = Join-Path $tempRoot ("revagent-bootstrap-install-evidence-$attemptId.json")
-        EvidenceSha256 = ''
-        InstallerSha256 = ''
-        TrustedKeysSource = $trustedKeysLocal
-        CleanupLockPath = Join-Path $tempRoot ("revagent-bootstrap-install-source-$attemptId.lock")
-        CleanupLock = $null
-    }
-    $completed = $false
-    try {
-        New-Item -ItemType Directory -Path $temporaryInput.SourceRoot -ErrorAction Stop | Out-Null
-        $temporaryInput.CleanupLock = [IO.File]::Open(
-            [string]$temporaryInput.CleanupLockPath,
-            [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::ReadWrite,
-            [IO.FileShare]::None)
-        Expand-Archive -LiteralPath $packagePath -DestinationPath $temporaryInput.SourceRoot -Force
-        if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $packagePath) -Right $actualPackageSha256 -IgnoreCase)) {
-            throw "Signed release package changed during extraction."
-        }
-
-        $evidenceTool = Join-Path $temporaryInput.SourceRoot 'installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1'
-        if (-not (Test-Path -LiteralPath $evidenceTool -PathType Leaf)) {
-            throw "Signed release package does not contain the bootstrap evidence producer: $evidenceTool"
-        }
-
-        Write-Host "Preparing authenticated first-install bootstrap evidence..."
-        $evidenceResult = & $evidenceTool `
-            -ReleaseRoot $ReleaseRoot `
-            -TrustedKeysPath $trustedKeys `
-            -OutputPath $temporaryInput.EvidenceSource `
-            -RepoRoot $temporaryInput.SourceRoot `
-            -Channel $Channel
-        $evidence = Get-Content -Raw -LiteralPath $temporaryInput.EvidenceSource | ConvertFrom-Json
-        if (-not [bool]$evidence.release.signatureVerified -or
-            -not (Test-RevAgentStringEquals -Left ([string]$evidence.release.channel) -Right $Channel)) {
-            throw "Bootstrap first-install evidence does not prove a signed stable release."
-        }
-        if ([string]::IsNullOrWhiteSpace([string]$evidence.localBootstrapInstallerScript)) {
-            throw "Bootstrap first-install evidence is missing the local bootstrap installer hash."
-        }
-        if ([string]::IsNullOrWhiteSpace([string]$evidence.sources.trustedKeys)) {
-            throw "Bootstrap first-install evidence is missing the trusted keys hash."
-        }
-        Copy-Item -LiteralPath $trustedKeys -Destination $temporaryInput.TrustedKeysSource -Force
-        if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $temporaryInput.TrustedKeysSource) -Right ([string]$evidence.sources.trustedKeys) -IgnoreCase)) {
-            throw "Trusted release keys changed before bootstrap elevation."
-        }
-
-        $temporaryInput.EvidenceSha256 = [string]$evidenceResult.outputSha256
-        $temporaryInput.InstallerSha256 = [string]$evidence.localBootstrapInstallerScript
-        $completed = $true
-        return $temporaryInput
-    }
-    finally {
-        if (-not $completed) {
-            Remove-RevAgentBootstrapTemporaryInput -InputObject $temporaryInput -TempRoot $tempRoot
-        }
-    }
-}
-
-function Start-LimitedCoordinatorFromAdministrator {
-    $capability = Get-RevAgentDeElevationCapability
-    if (-not [bool]$capability.canDeElevate) {
-        Write-RevAgentDeElevationFailure -Capability $capability
-        return $script:RevAgentExitUacDisabled
-    }
-    if ($CoordinatorRelaunchedFromAdmin) {
-        Write-Host "The revAgent bootstrap coordinator is still elevated after Windows was asked to run it with a limited token."
-        Write-Host "Start the updater from a standard user session or contact the DPE revAgent administrator for supervised manual bootstrap prestage."
-        return $script:RevAgentExitUacDisabled
-    }
-
+function Get-RevAgentBootstrapTrustMutexName {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-    try {
-        $currentUser = $identity.Name
-        $currentUserSid = $identity.User.Value
-    }
+    try { return 'Local\revAgentBootstrapTrustRefresh-' + [string]$identity.User.Value }
     finally { $identity.Dispose() }
+}
 
-    $registrationMutex = $null
+function Invoke-RevAgentBootstrapRefreshMain {
+    Initialize-TrustedPowerShellModules
+
+    $trustContext = Get-RevAgentBootstrapTrustClientContext
+    if ($null -eq $trustContext) {
+        Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitBootstrapTrustRequired)
+        return $script:RevAgentExitBootstrapTrustRequired
+    }
+
+    $refreshMutex = $null
     $mutexAcquired = $false
-    $taskName = ''
-    $taskRegistered = $false
-    $waitResult = $null
-    $coordinatorResultPath = ''
+    $inbox = $null
+    $request = $null
     try {
-        $registrationMutex = [Threading.Mutex]::new($false, "Local\revAgentBootstrapCoordinator-$currentUserSid")
-        try { $mutexAcquired = $registrationMutex.WaitOne(0) }
+        $refreshMutex = [Threading.Mutex]::new($false, (Get-RevAgentBootstrapTrustMutexName))
+        try { $mutexAcquired = $refreshMutex.WaitOne(0) }
         catch [Threading.AbandonedMutexException] { $mutexAcquired = $true }
         if (-not $mutexAcquired) {
             Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitCoordinatorAlreadyRunning)
             return $script:RevAgentExitCoordinatorAlreadyRunning
         }
 
-        Microsoft.PowerShell.Core\Import-Module -Name ScheduledTasks -ErrorAction Stop
-        $existingTasks = @(Get-ScheduledTask -TaskName 'revAgent Bootstrap Coordinator *' -ErrorAction SilentlyContinue)
-        $activeTask = Find-RevAgentActiveCoordinatorTask -Tasks $existingTasks
-        if ($null -ne $activeTask) {
-            Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitCoordinatorAlreadyRunning)
-            Write-Host "Active task: $([string]$activeTask.TaskName) (state=$([string]$activeTask.State))"
-            return $script:RevAgentExitCoordinatorAlreadyRunning
-        }
-        foreach ($oldTask in $existingTasks) {
-            try {
-                Unregister-ScheduledTask -TaskName ([string]$oldTask.TaskName) -Confirm:$false -ErrorAction Stop | Out-Null
-            }
-            catch {
-                Write-Warning "Could not remove old revAgent bootstrap coordinator task '$($oldTask.TaskName)': $($_.Exception.Message)"
-            }
+        $inbox = New-RevAgentBootstrapAuthenticatedInbox -TrustContext $trustContext
+        $request = & $trustContext.commands['New-RevAgentBootstrapTrustRequest'] -InboxId ([string]$inbox.inboxId)
+        if ($null -eq $request -or
+            [string]$request.inboxId -ne [string]$inbox.inboxId -or
+            [string]$request.nonce -notmatch '^[0-9a-f]{32}$') {
+            throw 'The revAgent bootstrap trust core did not create an exact nonce-bound request for the authenticated inbox.'
         }
 
-        $coordinatorNonce = [Guid]::NewGuid().ToString('N')
-        $coordinatorResultPath = Join-Path (Get-RevAgentBootstrapTempRoot) "revagent-bootstrap-coordinator-result-$coordinatorNonce.json"
-        $powershell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-        $arguments = Join-CommandLine -Arguments @(
-            '-NoProfile',
-            '-ExecutionPolicy', 'Bypass',
-            '-File', $PSCommandPath,
-            '-ReleaseRoot', $ReleaseRoot,
-            '-Channel', $Channel,
-            '-CoordinatorRelaunchedFromAdmin',
-            '-CoordinatorNonce', $coordinatorNonce,
-            '-CoordinatorResultPath', $coordinatorResultPath
-        )
-        $taskName = "revAgent Bootstrap Coordinator $coordinatorNonce"
-        $action = New-ScheduledTaskAction `
-            -Execute $powershell `
-            -Argument $arguments `
-            -WorkingDirectory (Split-Path -Parent $powershell)
-        $triggerAt = (Get-Date).AddYears(10)
-        $trigger = New-ScheduledTaskTrigger -Once -At $triggerAt
-        $settings = New-ScheduledTaskSettingsSet `
-            -AllowStartIfOnBatteries `
-            -DontStopIfGoingOnBatteries `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 45)
-        $principal = New-ScheduledTaskPrincipal `
-            -UserId $currentUser `
-            -LogonType Interactive `
-            -RunLevel Limited
-
-        Register-ScheduledTask `
-            -TaskName $taskName `
-            -Action $action `
-            -Trigger $trigger `
-            -Settings $settings `
-            -Principal $principal `
-            -Description "Runs the revAgent stable bootstrap coordinator at normal user privilege when the STABLE updater was started elevated." `
-            -Force | Out-Null
-        $taskRegistered = $true
-        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
-
-        Write-Host "Administrator session detected. Started the revAgent stable bootstrap coordinator as a normal limited interactive task."
-        Write-Host "The coordinator will verify the signed release before requesting administrator approval for the protected bootstrap phase."
-        Write-Host "Waiting up to 10 minutes for the coordinator and its administrator approval window..."
-
-        $programData = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)
-        $bootstrapPath = Join-Path $programData 'DPE\revAgent\bootstrap\Start-revAgent-Update.ps1'
-        $waitResult = Wait-RevAgentBootstrapCoordinator `
-            -TaskName $taskName `
-            -ResultPath $coordinatorResultPath `
-            -Nonce $coordinatorNonce `
-            -BootstrapPath $bootstrapPath `
-            -TimeoutSeconds 600
-
-        if (-not [string]::IsNullOrWhiteSpace([string]$waitResult.message)) {
-            Write-Host ([string]$waitResult.message)
+        [void](& $trustContext.commands['Start-RevAgentBootstrapTrustBrokerTask'])
+        $waitResult = & $trustContext.commands['Wait-RevAgentBootstrapTrustResult'] -Request $request -TimeoutSeconds 600
+        if ($null -eq $waitResult -or
+            $null -eq $waitResult.PSObject.Properties['completed'] -or
+            $null -eq $waitResult.PSObject.Properties['timedOut'] -or
+            $null -eq $waitResult.PSObject.Properties['exitCode']) {
+            throw 'The revAgent bootstrap trust broker returned an incomplete protected result.'
         }
-        return [int]$waitResult.exitCode
-    }
-    catch {
-        throw "Administrator-launched revAgent stable bootstrap could not run a normal limited coordinator for '$currentUser': $($_.Exception.Message)"
+        if ([bool]$waitResult.timedOut -or -not [bool]$waitResult.completed) {
+            Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitCoordinatorTimeout)
+            return $script:RevAgentExitCoordinatorTimeout
+        }
+        if (-not [string]::IsNullOrWhiteSpace([string]$waitResult.message)) { Write-Host ([string]$waitResult.message) }
+        if ([int]$waitResult.exitCode -ne 0) { return [int]$waitResult.exitCode }
+
+        return [int](Start-RevAgentPostRefreshLauncher)
     }
     finally {
-        if ($taskRegistered -and $null -ne $waitResult -and [bool]$waitResult.completed) {
-            try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop | Out-Null }
-            catch { Write-Warning "Could not remove completed revAgent bootstrap coordinator task '$taskName': $($_.Exception.Message)" }
-            Remove-RevAgentBootstrapTemporaryPath -Path $coordinatorResultPath
+        if ($null -ne $request) {
+            try { & $trustContext.commands['Remove-RevAgentBootstrapTrustClientArtifacts'] -Request $request }
+            catch { Write-Warning "Bootstrap trust request cleanup was deferred: $($_.Exception.Message)" }
         }
-        if ($mutexAcquired -and $null -ne $registrationMutex) {
-            try { $registrationMutex.ReleaseMutex() }
+        if ($null -ne $inbox) {
+            try { Remove-RevAgentBootstrapAuthenticatedInbox -Inbox $inbox }
+            catch { Write-Warning "Authenticated release inbox cleanup was deferred: $($_.Exception.Message)" }
+        }
+        try { Remove-StaleRevAgentBootstrapTemporaryItems }
+        catch { }
+        if ($mutexAcquired -and $null -ne $refreshMutex) {
+            try { $refreshMutex.ReleaseMutex() }
             catch { }
         }
-        if ($null -ne $registrationMutex) { $registrationMutex.Dispose() }
+        if ($null -ne $refreshMutex) { $refreshMutex.Dispose() }
     }
-}
-
-function Invoke-AuthenticatedBootstrapApply {
-    param(
-        [Parameter(Mandatory = $true)][string]$SourceRoot,
-        [Parameter(Mandatory = $true)][string]$EvidenceSource,
-        [Parameter(Mandatory = $true)][string]$ExpectedEvidenceSha256,
-        [Parameter(Mandatory = $true)][string]$ExpectedInstallerSha256,
-        [Parameter(Mandatory = $true)][string]$TrustedKeysSource
-    )
-
-    if (-not (Test-IsAdmin)) { throw "Elevated bootstrap refresh requires administrator permission." }
-    foreach ($required in @($SourceRoot, $EvidenceSource, $ExpectedEvidenceSha256, $ExpectedInstallerSha256, $TrustedKeysSource)) {
-        if ([string]::IsNullOrWhiteSpace($required)) { throw "Elevated bootstrap refresh is missing a required authenticated input." }
-    }
-    if ((Get-Sha256Hex -Path $EvidenceSource) -ne $ExpectedEvidenceSha256) { throw "Bootstrap refresh evidence changed before elevation." }
-    $evidenceDocument = Get-Content -Raw -LiteralPath $EvidenceSource | ConvertFrom-Json
-    if ([string]::IsNullOrWhiteSpace([string]$evidenceDocument.sources.trustedKeys)) {
-        throw "Bootstrap refresh evidence is missing the trusted keys hash."
-    }
-    if (-not (Test-RevAgentStringEquals -Left (Get-Sha256Hex -Path $TrustedKeysSource) -Right ([string]$evidenceDocument.sources.trustedKeys) -IgnoreCase)) {
-        throw "Bootstrap refresh trusted keys changed before elevation."
-    }
-    $installerSource = Join-Path $SourceRoot 'installer\nas\install-revagent-local-bootstrap.ps1'
-    if ((Get-Sha256Hex -Path $installerSource) -ne $ExpectedInstallerSha256) { throw "Bootstrap refresh installer changed before elevation." }
-
-    $programData = Get-RevAgentProgramDataRoot
-    $dpeRoot = Join-Path $programData 'DPE'
-    $productRoot = Join-Path $dpeRoot 'revAgent'
-    $prestageRoot = Join-Path $productRoot 'prestage'
-    New-Item -ItemType Directory -Path $dpeRoot -Force | Out-Null
-    New-Item -ItemType Directory -Path $productRoot -Force | Out-Null
-    Set-AdminOnlyAcl -Path $productRoot
-    New-Item -ItemType Directory -Path $prestageRoot -Force | Out-Null
-    Set-AdminOnlyAcl -Path $prestageRoot
-
-    $stagedEvidence = Join-Path $prestageRoot 'bootstrap-prestage-evidence.json'
-    $stagedInstaller = Join-Path $prestageRoot 'install-revagent-local-bootstrap.ps1'
-    $stagedTrustedKeys = Join-Path $prestageRoot 'release-trusted-keys.json'
-    foreach ($target in @($stagedEvidence, $stagedInstaller, $stagedTrustedKeys)) {
-        if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target -Force }
-    }
-    Copy-Item -LiteralPath $EvidenceSource -Destination $stagedEvidence -Force
-    Copy-Item -LiteralPath $installerSource -Destination $stagedInstaller -Force
-    Copy-Item -LiteralPath $TrustedKeysSource -Destination $stagedTrustedKeys -Force
-    foreach ($target in @($stagedEvidence, $stagedInstaller, $stagedTrustedKeys)) { Set-AdminOnlyAcl -Path $target }
-
-    & $stagedInstaller `
-        -RepoRoot $SourceRoot `
-        -ReleaseRoot $ReleaseRoot `
-        -TrustedKeysPath $stagedTrustedKeys `
-        -ExpectedHashesPath $stagedEvidence `
-        -ConfirmIndependentlyAuthenticatedSource | Out-Host
-}
-
-function Invoke-RevAgentBootstrapRefreshMain {
-    Write-Host (Get-RevAgentBootstrapExitMessage -ExitCode $script:RevAgentExitBootstrapTrustRequired)
-    return $script:RevAgentExitBootstrapTrustRequired
 }
 
 $mainExitCode = 1
@@ -1421,28 +733,6 @@ try {
 catch {
     $mainFailure = $_
     $mainExitCode = 1
-}
-finally {
-    if ($CoordinatorRelaunchedFromAdmin -and
-        -not [string]::IsNullOrWhiteSpace($CoordinatorNonce) -and
-        -not [string]::IsNullOrWhiteSpace($CoordinatorResultPath)) {
-        $coordinatorMessage = if ($null -ne $mainFailure) {
-            [string]$mainFailure.Exception.Message
-        }
-        else {
-            Get-RevAgentBootstrapExitMessage -ExitCode $mainExitCode
-        }
-        try {
-            Write-RevAgentCoordinatorResultMarker `
-                -Path $CoordinatorResultPath `
-                -Nonce $CoordinatorNonce `
-                -ExitCode $mainExitCode `
-                -Message $coordinatorMessage
-        }
-        catch {
-            Write-Warning "Could not write the revAgent bootstrap coordinator result marker: $($_.Exception.Message)"
-        }
-    }
 }
 
 if ($null -ne $mainFailure) {

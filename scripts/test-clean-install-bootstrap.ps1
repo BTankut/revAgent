@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
-    Execute clean-machine authenticated input production, supervised mocked
-    elevation/apply, fail-closed self-service, and GUI pre-window fixtures.
+    Exercise the live E2 stable-launcher chain for clean and stale bootstrap
+    fixtures through real Windows PowerShell 5.1 child processes.
 #>
 
 [CmdletBinding()]
-param([string]$RepoRoot = "")
+param([string]$RepoRoot = '')
 
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
-    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+    $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot)
 
@@ -20,360 +20,381 @@ function Assert-True {
     if (-not $Condition) { throw $Message }
 }
 
-$refreshPath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1'
-$windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
-$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-clean-install-fixture-' + [Guid]::NewGuid().ToString('N'))
-$releaseRoot = Join-Path $fixtureRoot 'revAgent-deploy'
-$packageSource = Join-Path $fixtureRoot 'package-source'
-$packagePath = Join-Path $releaseRoot 'releases\fixture\revagent-fixture.zip'
-$channelPath = Join-Path $releaseRoot 'channels\stable.json'
-$trustedKeysPath = Join-Path $releaseRoot 'tools\config\release-trusted-keys.json'
-$bootstrapTempRoot = Join-Path $fixtureRoot 'bootstrap-temp'
-$bootstrapRoot = Join-Path $fixtureRoot 'protected-bootstrap'
-$fixtureProgramDataRoot = Join-Path $fixtureRoot 'programdata'
-$desktopRoot = Join-Path $fixtureRoot 'desktop'
-$applySentinel = Join-Path $fixtureRoot 'mock-elevated-apply.json'
-$fixtureModule = $null
-$cleanInput = $null
+function Write-Utf8NoBom {
+    param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)][string]$Text)
+    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $Path))
+    [IO.File]::WriteAllText($Path, $Text, [Text.UTF8Encoding]::new($false))
+}
 
-[void][IO.Directory]::CreateDirectory($packageSource)
-[void][IO.Directory]::CreateDirectory((Split-Path -Parent $packagePath))
-[void][IO.Directory]::CreateDirectory((Split-Path -Parent $channelPath))
-[void][IO.Directory]::CreateDirectory((Split-Path -Parent $trustedKeysPath))
-[void][IO.Directory]::CreateDirectory($bootstrapTempRoot)
+function ConvertTo-SingleQuotedPowerShellLiteral {
+    param([Parameter(Mandatory = $true)][string]$Value)
+    return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function Get-ProductionFunctionText {
+    param(
+        [Parameter(Mandatory = $true)][Management.Automation.Language.ScriptBlockAst]$Ast,
+        [Parameter(Mandatory = $true)][string[]]$Names
+    )
+
+    $functions = @($Ast.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst]
+            }, $true))
+    $result = [System.Collections.Generic.List[string]]::new()
+    foreach ($name in $Names) {
+        $match = @($functions | Where-Object { $_.Name -eq $name })
+        Assert-True ($match.Count -eq 1) "Production refresh function was not found exactly once: $name"
+        [void]$result.Add([string]$match[0].Extent.Text)
+    }
+    return [string]::Join(([Environment]::NewLine + [Environment]::NewLine), $result.ToArray())
+}
+
+$refreshSourcePath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1'
+$stableLauncherSourcePath = Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd'
+$refreshLauncherSourcePath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+$windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
+
+$tokens = $null
+$parseErrors = $null
+$refreshAst = [Management.Automation.Language.Parser]::ParseFile($refreshSourcePath, [ref]$tokens, [ref]$parseErrors)
+Assert-True (@($parseErrors).Count -eq 0) 'Production bootstrap refresh script did not parse.'
+$productionFunctions = Get-ProductionFunctionText -Ast $refreshAst -Names @(
+    'Get-RevAgentBootstrapExitMessage',
+    'Start-RevAgentPostRefreshLauncher',
+    'Invoke-RevAgentBootstrapRefreshMain'
+)
+
+$componentTargets = [ordered]@{
+    bootstrap = 'Start-revAgent-Update.ps1'
+    launcher = 'Start-revAgent-Update.cmd'
+    updaterGui = 'Install-revAgent-Updater-GUI.ps1'
+    distributionIntegrity = 'RevAgent.DistributionIntegrity.psm1'
+    permissions = 'RevAgent.Permissions.psm1'
+    sourceFreeMigration = 'RevAgent.SourceFreeMigration.psm1'
+    releaseSnapshot = 'RevAgent.ReleaseSnapshot.psm1'
+    privilegedSnapshotUpdate = 'Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
+}
+Assert-True ($componentTargets.Count -eq 8) 'The clean-install fixture must bind exactly eight bootstrap components.'
+
+$fixtureRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-e2-clean-install-' + [Guid]::NewGuid().ToString('N'))
+[void][IO.Directory]::CreateDirectory($fixtureRoot)
 
 try {
-    Write-Host 'Build clean-install signed-release fixture'
-    $packageFiles = [ordered]@{
-        'installer\nas\install-revagent-local-bootstrap.ps1' = 'scripts\install-revagent-local-bootstrap.ps1'
-        'installer\nas\Start-revAgent-Update.ps1' = 'installer\nas\Start-revAgent-Update.ps1'
-        'installer\nas\Start-revAgent-Update.cmd' = 'installer\nas\Start-revAgent-Update.cmd'
-        'installer\nas\Install-revAgent-Updater-GUI.ps1' = 'installer\nas\Install-revAgent-Updater-GUI.ps1'
-        'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1' = 'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
-        'installer\lib\RevAgent.LocalBootstrap.psm1' = 'installer\lib\RevAgent.LocalBootstrap.psm1'
-        'installer\lib\RevAgent.DistributionIntegrity.psm1' = 'installer\lib\RevAgent.DistributionIntegrity.psm1'
-        'installer\lib\RevAgent.Permissions.psm1' = 'installer\lib\RevAgent.Permissions.psm1'
-        'installer\lib\RevAgent.SourceFreeMigration.psm1' = 'installer\lib\RevAgent.SourceFreeMigration.psm1'
-        'installer\lib\RevAgent.ReleaseSnapshot.psm1' = 'installer\lib\RevAgent.ReleaseSnapshot.psm1'
-    }
-    foreach ($entry in $packageFiles.GetEnumerator()) {
-        $source = Join-Path $RepoRoot ([string]$entry.Value)
-        $destination = Join-Path $packageSource ([string]$entry.Key)
-        Assert-True (Test-Path -LiteralPath $source -PathType Leaf) "Clean-install package source is missing: $source"
-        [void][IO.Directory]::CreateDirectory((Split-Path -Parent $destination))
-        [IO.File]::Copy($source, $destination, $false)
-    }
+    foreach ($scenario in @('clean', 'stale')) {
+        Write-Host "Execute E2 stable launcher fixture: $scenario"
+        $scenarioRoot = Join-Path $fixtureRoot $scenario
+        $releaseRoot = Join-Path $scenarioRoot 'release'
+        $toolsRoot = Join-Path $releaseRoot 'tools'
+        $payloadRoot = Join-Path $toolsRoot 'fixture-payload'
+        $programDataRoot = Join-Path $scenarioRoot 'programdata'
+        $localAppDataRoot = Join-Path $scenarioRoot 'localappdata'
+        $bootstrapRoot = Join-Path $programDataRoot 'DPE\revAgent\bootstrap'
+        $requestsRoot = Join-Path $programDataRoot 'DPE\revAgent\trust\broker\requests'
+        $resultsRoot = Join-Path $programDataRoot 'DPE\revAgent\trust\broker\results'
+        $eventLogPath = Join-Path $scenarioRoot 'events.log'
+        $postRefreshLogPath = Join-Path $scenarioRoot 'post-refresh.log'
+        $brokerPath = Join-Path $programDataRoot 'DPE\revAgent\trust\Invoke-RevAgent-BootstrapTrustBroker.ps1'
+        $stableLauncherPath = Join-Path $scenarioRoot 'revAgent Updater STABLE.cmd'
+        $refreshLauncherPath = Join-Path $toolsRoot 'Refresh-revAgent-LocalBootstrap-STABLE.cmd'
+        $fixtureRefreshPath = Join-Path $toolsRoot 'Refresh-revAgent-LocalBootstrap-STABLE.ps1'
+        $channelPath = Join-Path $releaseRoot 'channels\stable.json'
+        $expectedMarker = 'revagent-e2-' + $scenario + '-' + [Guid]::NewGuid().ToString('N')
 
-    # Keep the production installer logic, but bind its output paths to this
-    # disposable fixture so the isolated supervised-apply test cannot touch
-    # the workstation's real protected bootstrap.
-    $fixtureInstallerPath = Join-Path $packageSource 'installer\nas\install-revagent-local-bootstrap.ps1'
-    $fixtureInstallerText = [IO.File]::ReadAllText($fixtureInstallerPath)
-    $fixtureBootstrapLiteral = $bootstrapRoot.Replace("'", "''")
-    $fixtureDesktopLiteral = $desktopRoot.Replace("'", "''")
-    $fixtureSentinelLiteral = $applySentinel.Replace("'", "''")
-    $fixtureInstallerSetup = @"
-`$ErrorActionPreference = "Stop"
-`$BootstrapRoot = '$fixtureBootstrapLiteral'
-`$DesktopShortcutRoot = '$fixtureDesktopLiteral'
-`$AllowTestRoot = `$true
+        foreach ($directory in @($payloadRoot, $bootstrapRoot, $requestsRoot, $resultsRoot, (Split-Path -Parent $channelPath))) {
+            [void][IO.Directory]::CreateDirectory($directory)
+        }
+        Write-Utf8NoBom -Path $channelPath -Text '{"channel":"stable","fixture":true}'
+
+        foreach ($entry in $componentTargets.GetEnumerator()) {
+            $payloadPath = Join-Path $payloadRoot ([string]$entry.Value)
+            if ([string]$entry.Key -eq 'bootstrap') {
+                $payloadText = @"
+param([string]`$ChannelManifestPath, [switch]`$VerificationOnly)
+# $expectedMarker
+exit 0
 "@
-    $fixtureInstallerPatched = $fixtureInstallerText.Replace('$ErrorActionPreference = "Stop"', $fixtureInstallerSetup.TrimEnd())
-    Assert-True (-not [string]::Equals($fixtureInstallerPatched, $fixtureInstallerText, [StringComparison]::Ordinal)) 'Could not bind the fixture installer to disposable output roots.'
-    $fixtureInstallerPatched += "`r`n[IO.File]::WriteAllText('$fixtureSentinelLiteral', '{`"completed`":true}', [Text.UTF8Encoding]::new(`$false))`r`n"
-    [IO.File]::WriteAllText($fixtureInstallerPath, $fixtureInstallerPatched, [Text.UTF8Encoding]::new($false))
+            }
+            elseif ([string]$entry.Key -eq 'launcher') {
+                $checks = [System.Collections.Generic.List[string]]::new()
+                foreach ($target in $componentTargets.Values) {
+                    [void]$checks.Add(('findstr /l /c:"{0}" "%~dp0{1}" >nul || exit /b 91' -f $expectedMarker, [string]$target))
+                }
+                $payloadText = [string]::Join([Environment]::NewLine, @(
+                        '@echo off',
+                        ('rem ' + $expectedMarker),
+                        'if /i not "%~1"=="--post-refresh" exit /b 90',
+                        $checks.ToArray(),
+                        ('>>"{0}" echo post-refresh' -f $eventLogPath),
+                        ('>>"{0}" echo post-refresh' -f $postRefreshLogPath),
+                        'exit /b 0'
+                    ))
+            }
+            else {
+                $payloadText = "# $expectedMarker`r`n"
+            }
+            Write-Utf8NoBom -Path $payloadPath -Text $payloadText
+        }
 
-    $evidenceToolPath = Join-Path $packageSource 'installer\nas\New-RevAgentBootstrapPrestageEvidence.ps1'
-    [IO.File]::WriteAllText($evidenceToolPath, @'
-[CmdletBinding()]
-param(
-    [Parameter(Mandatory = $true)][string]$ReleaseRoot,
-    [Parameter(Mandatory = $true)][string]$TrustedKeysPath,
-    [Parameter(Mandatory = $true)][string]$OutputPath,
-    [Parameter(Mandatory = $true)][string]$RepoRoot,
-    [Parameter(Mandatory = $true)][string]$Channel
-)
+        if ($scenario -eq 'stale') {
+            foreach ($entry in $componentTargets.GetEnumerator()) {
+                $targetPath = Join-Path $bootstrapRoot ([string]$entry.Value)
+                if ([string]$entry.Key -eq 'bootstrap') {
+                    Write-Utf8NoBom -Path $targetPath -Text "param([string]`$ChannelManifestPath, [switch]`$VerificationOnly)`r`n# stale-component`r`nexit 1`r`n"
+                }
+                elseif ([string]$entry.Key -eq 'launcher') {
+                    Write-Utf8NoBom -Path $targetPath -Text "@echo off`r`nrem stale-component`r`nexit /b 92`r`n"
+                }
+                else {
+                    Write-Utf8NoBom -Path $targetPath -Text "# stale-component`r`n"
+                }
+            }
+            Write-Utf8NoBom -Path (Join-Path $bootstrapRoot 'bootstrap-state.json') -Text '{"stale":true}'
+        }
+        else {
+            Remove-Item -LiteralPath $bootstrapRoot -Recurse -Force
+        }
+
+        $brokerTemplate = @'
 $ErrorActionPreference = 'Stop'
-$sourceFiles = [ordered]@{
-    bootstrap = 'installer\nas\Start-revAgent-Update.ps1'
-    launcher = 'installer\nas\Start-revAgent-Update.cmd'
-    updaterGui = 'installer\nas\Install-revAgent-Updater-GUI.ps1'
-    distributionIntegrity = 'installer\lib\RevAgent.DistributionIntegrity.psm1'
-    permissions = 'installer\lib\RevAgent.Permissions.psm1'
-    sourceFreeMigration = 'installer\lib\RevAgent.SourceFreeMigration.psm1'
-    releaseSnapshot = 'installer\lib\RevAgent.ReleaseSnapshot.psm1'
-    privilegedSnapshotUpdate = 'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
+Set-StrictMode -Version Latest
+$requestsRoot = __REQUESTS_ROOT__
+$resultsRoot = __RESULTS_ROOT__
+$localAppDataRoot = __LOCAL_APP_DATA_ROOT__
+$bootstrapRoot = __BOOTSTRAP_ROOT__
+$eventLogPath = __EVENT_LOG__
+[IO.File]::AppendAllText($eventLogPath, 'broker' + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
+$requests = @([IO.Directory]::GetFiles($requestsRoot, '*.json'))
+if ($requests.Count -ne 1) { throw "Mock SYSTEM broker expected one exact request; found $($requests.Count)." }
+$request = [IO.File]::ReadAllText($requests[0]) | ConvertFrom-Json
+$inboxRoot = Join-Path $localAppDataRoot ('DPE\revAgent\release-inbox\' + [string]$request.inboxId)
+if (-not [IO.Directory]::Exists($inboxRoot)) { throw "Authenticated inbox is missing: $inboxRoot" }
+[void][IO.Directory]::CreateDirectory($bootstrapRoot)
+$targets = @(
+    'Start-revAgent-Update.ps1',
+    'Start-revAgent-Update.cmd',
+    'Install-revAgent-Updater-GUI.ps1',
+    'RevAgent.DistributionIntegrity.psm1',
+    'RevAgent.Permissions.psm1',
+    'RevAgent.SourceFreeMigration.psm1',
+    'RevAgent.ReleaseSnapshot.psm1',
+    'Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
+)
+foreach ($target in $targets) {
+    [IO.File]::Copy((Join-Path $inboxRoot $target), (Join-Path $bootstrapRoot $target), $true)
 }
-$sourceHashes = [ordered]@{}
-foreach ($entry in $sourceFiles.GetEnumerator()) {
-    $sourceHashes[[string]$entry.Key] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $RepoRoot ([string]$entry.Value))).Hash
+[IO.File]::WriteAllText((Join-Path $bootstrapRoot 'bootstrap-state.json'), '{"fixture":"broker-installed"}', [Text.UTF8Encoding]::new($false))
+$result = [ordered]@{
+    inboxId = [string]$request.inboxId
+    nonce = [string]$request.nonce
+    state = 'succeeded'
+    exitCode = 0
+    message = 'Mock SYSTEM trust broker installed the protected bootstrap.'
+    releaseSequence = 100
 }
-$sourceHashes.trustedKeys = (Get-FileHash -Algorithm SHA256 -LiteralPath $TrustedKeysPath).Hash
-$installerPath = Join-Path $RepoRoot 'installer\nas\install-revagent-local-bootstrap.ps1'
-$modulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.LocalBootstrap.psm1'
-$evidence = [ordered]@{
-    schemaVersion = 1
-    app = 'revAgent'
-    evidenceType = 'bootstrap-prestage'
-    producerMode = 'unelevated-coordinator'
-    supervisedAdminPrestage = $false
-    generatedAtUtc = [DateTime]::UtcNow.ToString('o')
-    generatedBySid = 'S-1-5-19'
-    release = [ordered]@{
-        root = $ReleaseRoot
-        channel = $Channel
-        version = '2099.01.01.clean-fixture'
-        releaseSequence = 100
-        minimumAcceptedReleaseSequence = 1
-        highestAcceptedReleaseSequence = 100
-        channelManifestSha256 = ('A' * 64)
-        releaseManifestSha256 = ('B' * 64)
-        packageSha256 = ('C' * 64)
-        signatureVerified = $true
-    }
-    localBootstrapInstallerScript = (Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath).Hash
-    localBootstrapInstallerModule = (Get-FileHash -Algorithm SHA256 -LiteralPath $modulePath).Hash
-    sources = $sourceHashes
+$resultPath = Join-Path $resultsRoot (([string]$request.nonce) + '.json')
+[IO.File]::WriteAllText($resultPath, ($result | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+'@
+        $brokerText = $brokerTemplate
+        $brokerText = $brokerText.Replace('__REQUESTS_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $requestsRoot))
+        $brokerText = $brokerText.Replace('__RESULTS_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $resultsRoot))
+        $brokerText = $brokerText.Replace('__LOCAL_APP_DATA_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $localAppDataRoot))
+        $brokerText = $brokerText.Replace('__BOOTSTRAP_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $bootstrapRoot))
+        $brokerText = $brokerText.Replace('__EVENT_LOG__', (ConvertTo-SingleQuotedPowerShellLiteral $eventLogPath))
+        Write-Utf8NoBom -Path $brokerPath -Text $brokerText
+
+        $refreshFixtureTemplate = @'
+$ErrorActionPreference = 'Stop'
+Set-StrictMode -Version Latest
+$script:ReleaseRoot = __RELEASE_ROOT__
+$script:Channel = 'stable'
+$script:ProgramDataRoot = __PROGRAM_DATA_ROOT__
+$script:LocalAppDataRoot = __LOCAL_APP_DATA_ROOT__
+$script:PayloadRoot = __PAYLOAD_ROOT__
+$script:RequestsRoot = __REQUESTS_ROOT__
+$script:ResultsRoot = __RESULTS_ROOT__
+$script:BrokerPath = __BROKER_PATH__
+$script:EventLogPath = __EVENT_LOG__
+$script:PowerShellPath = __POWERSHELL_PATH__
+$script:MutexName = __MUTEX_NAME__
+$script:RevAgentExitCoordinatorAlreadyRunning = 80
+$script:RevAgentExitCoordinatorTimeout = 81
+$script:RevAgentExitBootstrapTrustRequired = 84
+$script:BrokerProcess = $null
+
+function Add-FixtureEvent {
+    param([Parameter(Mandatory = $true)][string]$Name)
+    [IO.File]::AppendAllText($script:EventLogPath, $Name + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
 }
-[IO.File]::WriteAllText($OutputPath, ($evidence | ConvertTo-Json -Depth 8), [Text.UTF8Encoding]::new($false))
-[pscustomobject]@{ outputSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash }
-'@, [Text.UTF8Encoding]::new($false))
 
-    [IO.File]::WriteAllText($trustedKeysPath, '{"schemaVersion":1,"keys":[]}', [Text.UTF8Encoding]::new($false))
-    Microsoft.PowerShell.Archive\Compress-Archive -Path (Join-Path $packageSource '*') -DestinationPath $packagePath -Force
-    $packageSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash
-    $channel = [ordered]@{
-        channel = 'stable'
-        version = '2099.01.01.clean-fixture'
-        releaseSequence = 100
-        packagePath = '..\releases\fixture\revagent-fixture.zip'
-        sha256 = $packageSha256
+function Initialize-TrustedPowerShellModules { Add-FixtureEvent -Name 'modules' }
+function Get-RevAgentProgramDataRoot { return $script:ProgramDataRoot }
+function Get-RevAgentLocalAppDataRoot { return $script:LocalAppDataRoot }
+function Get-RevAgentBootstrapTrustMutexName { return $script:MutexName }
+
+function Get-RevAgentBootstrapTrustClientContext {
+    Add-FixtureEvent -Name 'health'
+    $commands = [ordered]@{}
+    $commands['New-RevAgentBootstrapTrustRequest'] = {
+        param([Parameter(Mandatory = $true)][string]$InboxId)
+        Add-FixtureEvent -Name 'request'
+        $nonce = [Guid]::NewGuid().ToString('N')
+        $requestPath = Join-Path $script:RequestsRoot ($nonce + '.json')
+        $resultPath = Join-Path $script:ResultsRoot ($nonce + '.json')
+        $request = [ordered]@{ inboxId = $InboxId; nonce = $nonce; requestPath = $requestPath; resultPath = $resultPath }
+        [IO.File]::WriteAllText($requestPath, ($request | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
+        return [pscustomobject]$request
     }
-    [IO.File]::WriteAllText($channelPath, ($channel | ConvertTo-Json -Depth 4), [Text.UTF8Encoding]::new($false))
-
-    $tokens = $null
-    $parseErrors = $null
-    $refreshAst = [Management.Automation.Language.Parser]::ParseFile($refreshPath, [ref]$tokens, [ref]$parseErrors)
-    Assert-True (@($parseErrors).Count -eq 0) 'Clean-install refresh source did not parse.'
-    $functionNames = @(
-        'Get-Sha256Hex',
-        'Test-RevAgentStringEquals',
-        'Test-RevAgentStringStartsWith',
-        'Get-RevAgentProgramDataRoot',
-        'Get-RevAgentBootstrapExitMessage',
-        'Resolve-ReleaseRootChildPath',
-        'New-CleanInstallBootstrapInput',
-        'Start-ElevatedApply',
-        'Invoke-AuthenticatedBootstrapApply',
-        'Invoke-RevAgentBootstrapRefreshMain'
-    )
-    $functionAsts = @($refreshAst.FindAll({
-                param($node)
-                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $functionNames
-            }, $true))
-    Assert-True ($functionAsts.Count -eq $functionNames.Count) 'Clean-install production functions could not be loaded for executable coverage.'
-    $fixtureModule = New-Module -ScriptBlock ([scriptblock]::Create((@($functionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
-
-    & $fixtureModule {
-        param($FixtureReleaseRoot, $FixtureTempRoot, $FixtureBootstrapRoot, $FixtureProgramDataRoot, $FixtureDesktopRoot, $FixtureSentinel)
-        $script:ReleaseRoot = $FixtureReleaseRoot
-        $script:Channel = 'stable'
-        $script:FixtureTempRoot = $FixtureTempRoot
-        $script:FixtureBootstrapRoot = $FixtureBootstrapRoot
-        $script:FixtureProgramDataRoot = $FixtureProgramDataRoot
-        $script:FixtureDesktopRoot = $FixtureDesktopRoot
-        $script:FixtureSentinel = $FixtureSentinel
-        $script:RevAgentExitBootstrapTrustRequired = 84
-        function script:Get-RevAgentBootstrapTempRoot { return $script:FixtureTempRoot }
-        function script:Remove-RevAgentBootstrapTemporaryInput { param([object]$InputObject, [string]$TempRoot) }
-        function script:Get-RevAgentProgramDataRoot { return $script:FixtureProgramDataRoot }
-        function script:Set-AdminOnlyAcl { param([string]$Path) }
-        function script:Test-IsAdmin { return $true }
-    } $releaseRoot $bootstrapTempRoot $bootstrapRoot $fixtureProgramDataRoot $desktopRoot $applySentinel
-
-    Write-Host 'Execute New-CleanInstallBootstrapInput against the fixture ZIP'
-    $cleanInput = & $fixtureModule { New-CleanInstallBootstrapInput }
-    Assert-True ($null -ne $cleanInput) 'Clean-install acquisition did not return authenticated input.'
-    foreach ($path in @($cleanInput.SourceRoot, $cleanInput.EvidenceSource, $cleanInput.TrustedKeysSource)) {
-        Assert-True ([IO.Path]::GetFullPath([string]$path).StartsWith([IO.Path]::GetFullPath($bootstrapTempRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "Clean-install input escaped the fixture TEMP root: $path"
+    $commands['Start-RevAgentBootstrapTrustBrokerTask'] = {
+        Add-FixtureEvent -Name 'task'
+        $startInfo = [Diagnostics.ProcessStartInfo]::new()
+        $startInfo.FileName = $script:PowerShellPath
+        $startInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $script:BrokerPath + '"'
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $script:BrokerProcess = [Diagnostics.Process]::Start($startInfo)
+        if ($null -eq $script:BrokerProcess) { throw 'Mock fixed SYSTEM broker task did not start.' }
+        $brokerSeen = $false
+        for ($index = 0; $index -lt 500; $index++) {
+            if ([IO.File]::Exists($script:EventLogPath) -and @([IO.File]::ReadAllLines($script:EventLogPath)) -contains 'broker') { $brokerSeen = $true; break }
+            Start-Sleep -Milliseconds 10
+        }
+        if (-not $brokerSeen) { throw 'Mock fixed SYSTEM broker task did not report activation.' }
+        return [pscustomobject]@{ started = $true; taskName = '\DPE\revAgent\revAgent Bootstrap Trust Broker' }
     }
-    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $cleanInput.EvidenceSource).Hash -eq [string]$cleanInput.EvidenceSha256) 'Clean-install evidence result hash is not bound to the produced file.'
-    $extractedInstaller = Join-Path $cleanInput.SourceRoot 'installer\nas\install-revagent-local-bootstrap.ps1'
-    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $extractedInstaller).Hash -eq [string]$cleanInput.InstallerSha256) 'Clean-install installer result hash is not bound to the extracted installer.'
-    Assert-True ((Get-FileHash -Algorithm SHA256 -LiteralPath $cleanInput.TrustedKeysSource).Hash -eq (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedKeysPath).Hash) 'Clean-install trusted keys were not copied byte-for-byte before elevation.'
+    $commands['Wait-RevAgentBootstrapTrustResult'] = {
+        param([Parameter(Mandatory = $true)][object]$Request, [int]$TimeoutSeconds = 600)
+        Add-FixtureEvent -Name 'wait'
+        if ($null -eq $script:BrokerProcess) { throw 'Mock fixed SYSTEM broker process was not started.' }
+        if (-not $script:BrokerProcess.WaitForExit([Math]::Min($TimeoutSeconds * 1000, 30000))) {
+            return [pscustomobject]@{ completed = $false; timedOut = $true; exitCode = 81; message = 'timeout' }
+        }
+        $brokerExit = [int]$script:BrokerProcess.ExitCode
+        $script:BrokerProcess.Dispose()
+        $script:BrokerProcess = $null
+        if ($brokerExit -ne 0 -or -not [IO.File]::Exists([string]$Request.resultPath)) {
+            throw "Mock fixed SYSTEM broker failed. exit=$brokerExit"
+        }
+        $result = [IO.File]::ReadAllText([string]$Request.resultPath) | ConvertFrom-Json
+        if ([string]$result.nonce -ne [string]$Request.nonce -or [string]$result.inboxId -ne [string]$Request.inboxId) {
+            throw 'Mock fixed SYSTEM broker result was not bound to the exact request.'
+        }
+        return [pscustomobject]@{ completed = $true; timedOut = $false; exitCode = [int]$result.exitCode; message = [string]$result.message; state = [string]$result.state; releaseSequence = [int]$result.releaseSequence }
+    }
+    $commands['Remove-RevAgentBootstrapTrustClientArtifacts'] = {
+        param([Parameter(Mandatory = $true)][object]$Request)
+        foreach ($path in @([string]$Request.requestPath, [string]$Request.resultPath)) {
+            if ([IO.File]::Exists($path)) { [IO.File]::Delete($path) }
+        }
+        Add-FixtureEvent -Name 'request-cleanup'
+    }
+    return [pscustomobject]@{ commands = $commands; layout = [pscustomobject]@{}; health = [pscustomobject]@{ healthy = $true } }
+}
 
-    Write-Host 'Execute supervised isolated manual apply into a protected fixture bootstrap'
-    & $fixtureModule {
-        param($InputObject)
-        Invoke-AuthenticatedBootstrapApply `
-            -SourceRoot ([string]$InputObject.SourceRoot) `
-            -EvidenceSource ([string]$InputObject.EvidenceSource) `
-            -ExpectedEvidenceSha256 ([string]$InputObject.EvidenceSha256) `
-            -ExpectedInstallerSha256 ([string]$InputObject.InstallerSha256) `
-            -TrustedKeysSource ([string]$InputObject.TrustedKeysSource)
-    } $cleanInput
-    $installedStatePath = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    Assert-True (Test-Path -LiteralPath $applySentinel -PathType Leaf) 'Supervised isolated manual apply did not complete its staged installer.'
-    Assert-True (Test-Path -LiteralPath $installedStatePath -PathType Leaf) 'Supervised isolated manual apply did not install the fixture bootstrap.'
-    $installedState = Get-Content -Raw -LiteralPath $installedStatePath | ConvertFrom-Json
-    Assert-True ([bool]$installedState.sourceAuthentication.independentlyAuthenticated) 'Supervised isolated manual apply did not preserve independently authenticated bootstrap state.'
+function New-RevAgentBootstrapAuthenticatedInbox {
+    param([Parameter(Mandatory = $true)][object]$TrustContext)
+    Add-FixtureEvent -Name 'inbox'
+    $inboxId = [Guid]::NewGuid().ToString('N')
+    $inboxRoot = Join-Path $script:LocalAppDataRoot ('DPE\revAgent\release-inbox\' + $inboxId)
+    [void][IO.Directory]::CreateDirectory($inboxRoot)
+    foreach ($sourcePath in [IO.Directory]::GetFiles($script:PayloadRoot)) {
+        [IO.File]::Copy($sourcePath, (Join-Path $inboxRoot ([IO.Path]::GetFileName($sourcePath))), $false)
+    }
+    return [pscustomobject]@{ inboxId = $inboxId; inboxRoot = $inboxRoot }
+}
 
-    Write-Host 'Execute protected GUI pre-window chain in a fresh Windows PowerShell 5.1 child'
-    $protectedGui = Join-Path $bootstrapRoot 'Install-revAgent-Updater-GUI.ps1'
-    $protectedState = Join-Path $bootstrapRoot 'bootstrap-state.json'
-    $guiOutput = @(& $windowsPowerShell `
-            -NoLogo `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $protectedGui `
-            -ChannelManifestPath $channelPath `
-            -BootstrapStatePath $protectedState `
-            -PreWindowBootstrapSmokeTest 2>&1 | ForEach-Object { [string]$_ })
-    $guiExitCode = $LASTEXITCODE
-    Assert-True ($guiExitCode -eq 0) "Clean-install GUI pre-window PS5 child failed. output=$($guiOutput -join ' | ')"
-    $jsonLine = @($guiOutput | Where-Object { $_.TrimStart().StartsWith('{') } | Select-Object -Last 1)
-    Assert-True ($jsonLine.Count -eq 1) "Clean-install GUI pre-window child did not return JSON evidence. output=$($guiOutput -join ' | ')"
-    $guiResult = $jsonLine[0] | ConvertFrom-Json
-    Assert-True ([bool]$guiResult.success -and [string]$guiResult.action -eq 'pre-window-bootstrap-smoke-test') 'Clean-install GUI pre-window chain was not successful.'
-    foreach ($loadedPath in @($guiResult.sourceFreeMigrationModule, $guiResult.releaseSnapshotModule, $guiResult.trustedKeysPath)) {
-        Assert-True ([IO.Path]::GetFullPath([string]$loadedPath).StartsWith([IO.Path]::GetFullPath($bootstrapRoot).TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase)) "Clean-install GUI loaded evidence outside the fixture bootstrap: $loadedPath"
+function Remove-RevAgentBootstrapAuthenticatedInbox {
+    param([AllowNull()][object]$Inbox)
+    if ($null -ne $Inbox -and [IO.Directory]::Exists([string]$Inbox.inboxRoot)) {
+        [IO.Directory]::Delete([string]$Inbox.inboxRoot, $true)
+    }
+    Add-FixtureEvent -Name 'inbox-cleanup'
+}
+
+function Remove-StaleRevAgentBootstrapTemporaryItems { Add-FixtureEvent -Name 'sweep' }
+
+__PRODUCTION_FUNCTIONS__
+
+$exitCode = 1
+try { $exitCode = [int](Invoke-RevAgentBootstrapRefreshMain) }
+finally {
+    if ($null -ne $script:BrokerProcess) { try { $script:BrokerProcess.Dispose() } catch { } }
+}
+exit $exitCode
+'@
+        $fixtureRefreshText = $refreshFixtureTemplate.Replace('__PRODUCTION_FUNCTIONS__', $productionFunctions)
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__RELEASE_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $releaseRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__PROGRAM_DATA_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $programDataRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__LOCAL_APP_DATA_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $localAppDataRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__PAYLOAD_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $payloadRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__REQUESTS_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $requestsRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__RESULTS_ROOT__', (ConvertTo-SingleQuotedPowerShellLiteral $resultsRoot))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__BROKER_PATH__', (ConvertTo-SingleQuotedPowerShellLiteral $brokerPath))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__EVENT_LOG__', (ConvertTo-SingleQuotedPowerShellLiteral $eventLogPath))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__POWERSHELL_PATH__', (ConvertTo-SingleQuotedPowerShellLiteral $windowsPowerShell))
+        $fixtureRefreshText = $fixtureRefreshText.Replace('__MUTEX_NAME__', (ConvertTo-SingleQuotedPowerShellLiteral ('Local\revAgentE2Fixture-' + [Guid]::NewGuid().ToString('N'))))
+        Write-Utf8NoBom -Path $fixtureRefreshPath -Text $fixtureRefreshText
+
+        $commonDataExpression = '[Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)'
+        $fixtureCommonDataExpression = ConvertTo-SingleQuotedPowerShellLiteral $programDataRoot
+        $stableText = [IO.File]::ReadAllText($stableLauncherSourcePath)
+        $stableText = $stableText.Replace('\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy', $releaseRoot)
+        $stableText = $stableText.Replace($commonDataExpression, $fixtureCommonDataExpression)
+        Assert-True ($stableText.Contains($releaseRoot)) 'Could not bind the real STABLE launcher to the disposable release root.'
+        Assert-True ($stableText.Contains($fixtureCommonDataExpression)) 'Could not bind the real STABLE launcher CommonApplicationData probe.'
+        Write-Utf8NoBom -Path $stableLauncherPath -Text $stableText
+
+        $refreshLauncherText = [IO.File]::ReadAllText($refreshLauncherSourcePath).Replace($commonDataExpression, $fixtureCommonDataExpression)
+        Assert-True ($refreshLauncherText.Contains($fixtureCommonDataExpression)) 'Could not bind the real Refresh launcher CommonApplicationData probe.'
+        Write-Utf8NoBom -Path $refreshLauncherPath -Text $refreshLauncherText
+
+        $cmdPath = Join-Path ([Environment]::SystemDirectory) 'cmd.exe'
+        $processInfo = [Diagnostics.ProcessStartInfo]::new()
+        $processInfo.FileName = $cmdPath
+        $processInfo.Arguments = '/d /s /c ""' + $stableLauncherPath + '""'
+        $processInfo.WorkingDirectory = $scenarioRoot
+        $processInfo.UseShellExecute = $false
+        $processInfo.CreateNoWindow = $true
+        $processInfo.RedirectStandardOutput = $true
+        $processInfo.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::Start($processInfo)
+        Assert-True ($null -ne $process) "Real STABLE launcher child did not start for $scenario."
+        try {
+            $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+            $stderrTask = $process.StandardError.ReadToEndAsync()
+            Assert-True ($process.WaitForExit(60000)) "Real STABLE launcher child timed out for $scenario."
+            $stdout = $stdoutTask.GetAwaiter().GetResult()
+            $stderr = $stderrTask.GetAwaiter().GetResult()
+            $launcherExit = [int]$process.ExitCode
+        }
+        finally { $process.Dispose() }
+        Assert-True ($launcherExit -eq 0) "Real STABLE launcher failed for $scenario. code=$launcherExit stdout=$stdout stderr=$stderr"
+
+        foreach ($entry in $componentTargets.GetEnumerator()) {
+            $installedPath = Join-Path $bootstrapRoot ([string]$entry.Value)
+            Assert-True ([IO.File]::Exists($installedPath)) "Broker did not install $($entry.Key) for $scenario. stdout=$stdout stderr=$stderr"
+            Assert-True ([IO.File]::ReadAllText($installedPath).Contains($expectedMarker)) "Broker did not rebind $($entry.Key) to the authenticated eight-component set for $scenario."
+        }
+        Assert-True ([IO.File]::Exists((Join-Path $bootstrapRoot 'bootstrap-state.json'))) "Broker did not install bootstrap state for $scenario."
+
+        $postRefreshLines = @(if ([IO.File]::Exists($postRefreshLogPath)) { [IO.File]::ReadAllLines($postRefreshLogPath) | Where-Object { $_ -eq 'post-refresh' } })
+        Assert-True ($postRefreshLines.Count -eq 1) "Protected local launcher was not called with --post-refresh exactly once for $scenario. count=$($postRefreshLines.Count) events=$(if ([IO.File]::Exists($eventLogPath)) { [IO.File]::ReadAllText($eventLogPath) }) stdout=$stdout stderr=$stderr"
+
+        $events = @([IO.File]::ReadAllLines($eventLogPath) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+        $expectedEvents = @('modules', 'health', 'inbox', 'request', 'task', 'broker', 'wait', 'post-refresh', 'request-cleanup', 'inbox-cleanup', 'sweep')
+        Assert-True ($events.Count -eq $expectedEvents.Count) "Unexpected E2 event count for $scenario. actual=$($events -join ',')"
+        for ($index = 0; $index -lt $expectedEvents.Count; $index++) {
+            Assert-True ($events[$index] -eq $expectedEvents[$index]) "E2 event order mismatch for $scenario at $index. expected=$($expectedEvents[$index]) actual=$($events[$index]) all=$($events -join ',')"
+        }
+        Assert-True (@($events | Where-Object { $_ -eq 'broker' }).Count -eq 1) "Fixed mock SYSTEM broker did not run exactly once for $scenario."
+        Assert-True (@([IO.Directory]::GetFiles($requestsRoot)).Count -eq 0) "Exact request cleanup was incomplete for $scenario."
+        Assert-True (@([IO.Directory]::GetFiles($resultsRoot)).Count -eq 0) "Exact result cleanup was incomplete for $scenario."
+        $releaseInboxRoot = Join-Path $localAppDataRoot 'DPE\revAgent\release-inbox'
+        Assert-True (-not [IO.Directory]::Exists($releaseInboxRoot) -or @([IO.Directory]::GetDirectories($releaseInboxRoot)).Count -eq 0) "Authenticated inbox cleanup was incomplete for $scenario."
     }
 
-    Write-Host 'Prove production clean-machine self-service fails closed before acquisition, elevation, or coordinator work'
-    $failClosedState = & $fixtureModule {
-        $script:ElevatedApply = $false
-        $script:MockAcquisitionCallCount = 0
-        $script:MockElevationCallCount = 0
-        $script:MockApplyCallCount = 0
-        $script:MockAdminProbeCallCount = 0
-        $script:MockCoordinatorCallCount = 0
-        $script:MockCleanupCallCount = 0
-        function script:Remove-StaleRevAgentBootstrapTemporaryItems {
-            $script:MockCleanupCallCount++
-            throw 'Production fail-closed refresh must not perform temporary cleanup or acquisition work.'
-        }
-        function script:Get-RevAgentProgramDataRoot { return $script:FixtureProgramDataRoot }
-        function script:New-CleanInstallBootstrapInput {
-            $script:MockAcquisitionCallCount++
-            throw 'Production clean-machine self-service must not prepare unanchored install input.'
-        }
-        function script:Start-ElevatedApply {
-            param(
-                [string]$SourceRoot,
-                [string]$EvidenceSource,
-                [string]$EvidenceSha256,
-                [string]$InstallerSha256,
-                [string]$TrustedKeysSource
-            )
-            $script:MockElevationCallCount++
-            return 0
-        }
-        function script:Invoke-AuthenticatedBootstrapApply {
-            $script:MockApplyCallCount++
-            throw 'Production fail-closed refresh must not invoke authenticated apply.'
-        }
-        function script:Test-IsAdmin {
-            $script:MockAdminProbeCallCount++
-            return $true
-        }
-        function script:Start-LimitedCoordinatorFromAdministrator {
-            $script:MockCoordinatorCallCount++
-            return 0
-        }
-
-        $exitCode = Invoke-RevAgentBootstrapRefreshMain
-        [pscustomobject][ordered]@{
-            exitCode = [int]$exitCode
-            acquisitionCallCount = $script:MockAcquisitionCallCount
-            elevationCallCount = $script:MockElevationCallCount
-            applyCallCount = $script:MockApplyCallCount
-            adminProbeCallCount = $script:MockAdminProbeCallCount
-            coordinatorCallCount = $script:MockCoordinatorCallCount
-            cleanupCallCount = $script:MockCleanupCallCount
-            exitMessage = Get-RevAgentBootstrapExitMessage -ExitCode ([int]$exitCode)
-        }
-    }
-    Assert-True ([int]$failClosedState.exitCode -eq 84) "Clean-machine self-service did not return stable exit code 84: $($failClosedState.exitCode)"
-    Assert-True ([int]$failClosedState.acquisitionCallCount -eq 0) 'Clean-machine fail-closed path prepared install input.'
-    Assert-True ([int]$failClosedState.elevationCallCount -eq 0 -and [int]$failClosedState.applyCallCount -eq 0) 'Clean-machine fail-closed path attempted elevation/apply.'
-    Assert-True ([int]$failClosedState.adminProbeCallCount -eq 0 -and [int]$failClosedState.coordinatorCallCount -eq 0) 'Clean-machine fail-closed path attempted administrator/coordinator work.'
-    Assert-True ([int]$failClosedState.cleanupCallCount -eq 0) 'Clean-machine fail-closed path performed cleanup/acquisition work.'
-    Assert-True ([string]$failClosedState.exitMessage -match 'no Authenticode or IT-managed trust anchor') 'Exit 84 does not explain the missing independent trust anchor.'
-    Assert-True ([string]$failClosedState.exitMessage -match 'supervised manual high-assurance prestage') 'Exit 84 does not direct the operator to the supervised high-assurance flow.'
-    Assert-True ([string]$failClosedState.exitMessage -match 'DPE revAgent administrator' -and [string]$failClosedState.exitMessage -notmatch 'docs/BOOTSTRAP_PRESTAGE\.md') 'Exit 84 does not provide stable field remediation through the DPE revAgent administrator.'
-
-    Write-Host 'Prove Refresh also fails closed when a protected bootstrap state exists'
-    $existingStatePath = Join-Path $fixtureProgramDataRoot 'DPE\revAgent\bootstrap\bootstrap-state.json'
-    [void][IO.Directory]::CreateDirectory((Split-Path -Parent $existingStatePath))
-    [IO.File]::WriteAllText($existingStatePath, '{}', [Text.UTF8Encoding]::new($false))
-    $existingBootstrapState = & $fixtureModule {
-        $script:MockAcquisitionCallCount = 0
-        $script:MockElevationCallCount = 0
-        $script:MockApplyCallCount = 0
-        $script:MockAdminProbeCallCount = 0
-        $script:MockCoordinatorCallCount = 0
-        $script:MockCleanupCallCount = 0
-        $exitCode = Invoke-RevAgentBootstrapRefreshMain
-        [pscustomobject][ordered]@{
-            exitCode = [int]$exitCode
-            acquisitionCallCount = $script:MockAcquisitionCallCount
-            elevationCallCount = $script:MockElevationCallCount
-            applyCallCount = $script:MockApplyCallCount
-            adminProbeCallCount = $script:MockAdminProbeCallCount
-            coordinatorCallCount = $script:MockCoordinatorCallCount
-            cleanupCallCount = $script:MockCleanupCallCount
-        }
-    }
-    Assert-True ([int]$existingBootstrapState.exitCode -eq 84) "Existing-state Refresh did not fail closed with exit 84: $($existingBootstrapState.exitCode)"
-    Assert-True ([int]$existingBootstrapState.acquisitionCallCount -eq 0 -and [int]$existingBootstrapState.cleanupCallCount -eq 0) 'Existing-state Refresh performed acquisition/cleanup work.'
-    Assert-True ([int]$existingBootstrapState.elevationCallCount -eq 0 -and [int]$existingBootstrapState.applyCallCount -eq 0) 'Existing-state Refresh attempted elevation/apply.'
-    Assert-True ([int]$existingBootstrapState.adminProbeCallCount -eq 0 -and [int]$existingBootstrapState.coordinatorCallCount -eq 0) 'Existing-state Refresh attempted administrator/coordinator work.'
-
-    Write-Host 'Prove direct -ElevatedApply production entry also fails closed with no apply call'
-    $elevatedApplyState = & $fixtureModule {
-        $script:ElevatedApply = $true
-        $script:MockAcquisitionCallCount = 0
-        $script:MockElevationCallCount = 0
-        $script:MockApplyCallCount = 0
-        $script:MockAdminProbeCallCount = 0
-        $script:MockCoordinatorCallCount = 0
-        $script:MockCleanupCallCount = 0
-        $exitCode = Invoke-RevAgentBootstrapRefreshMain
-        [pscustomobject][ordered]@{
-            exitCode = [int]$exitCode
-            acquisitionCallCount = $script:MockAcquisitionCallCount
-            elevationCallCount = $script:MockElevationCallCount
-            applyCallCount = $script:MockApplyCallCount
-            adminProbeCallCount = $script:MockAdminProbeCallCount
-            coordinatorCallCount = $script:MockCoordinatorCallCount
-            cleanupCallCount = $script:MockCleanupCallCount
-        }
-    }
-    Assert-True ([int]$elevatedApplyState.exitCode -eq 84) "Direct -ElevatedApply did not fail closed with exit 84: $($elevatedApplyState.exitCode)"
-    Assert-True ([int]$elevatedApplyState.acquisitionCallCount -eq 0 -and [int]$elevatedApplyState.cleanupCallCount -eq 0) 'Direct -ElevatedApply performed acquisition/cleanup work.'
-    Assert-True ([int]$elevatedApplyState.elevationCallCount -eq 0 -and [int]$elevatedApplyState.applyCallCount -eq 0) 'Direct -ElevatedApply reached elevation/apply.'
-    Assert-True ([int]$elevatedApplyState.adminProbeCallCount -eq 0 -and [int]$elevatedApplyState.coordinatorCallCount -eq 0) 'Direct -ElevatedApply attempted administrator/coordinator work.'
-
-    Write-Host 'Execute the real production -ElevatedApply entry in a fresh Windows PowerShell 5.1 child'
-    $productionElevatedOutput = @(& $windowsPowerShell `
-            -NoLogo `
-            -NoProfile `
-            -NonInteractive `
-            -ExecutionPolicy Bypass `
-            -File $refreshPath `
-            -ElevatedApply 2>&1 | ForEach-Object { [string]$_ })
-    $productionElevatedExitCode = $LASTEXITCODE
-    Assert-True ($productionElevatedExitCode -eq 84) "Production -ElevatedApply entry did not return 84. code=$productionElevatedExitCode output=$($productionElevatedOutput -join ' | ')"
-    Assert-True (($productionElevatedOutput -join ' ') -match 'no Authenticode or IT-managed trust anchor') 'Production -ElevatedApply entry did not emit trust-anchor guidance.'
-
-    Write-Host 'Clean-install bootstrap E2E fixture passed.' -ForegroundColor Green
+    Write-Host 'Clean and stale E2 bootstrap launcher fixtures passed.' -ForegroundColor Green
 }
 finally {
-    if ($null -ne $cleanInput -and $null -ne $cleanInput.PSObject.Properties['CleanupLock'] -and $null -ne $cleanInput.CleanupLock) {
-        try { $cleanInput.CleanupLock.Dispose() }
-        catch { }
-    }
-    if ($null -ne $fixtureModule) { Remove-Module $fixtureModule.Name -Force -ErrorAction SilentlyContinue }
-    if (Test-Path -LiteralPath $fixtureRoot) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if ([IO.Directory]::Exists($fixtureRoot)) { Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction SilentlyContinue }
 }

@@ -12,7 +12,7 @@ if /i "%~1"=="--post-refresh" set "POST_REFRESH_LAUNCH=1"
 if not exist "%BOOTSTRAP%" (
   echo.
   echo SECURITY STOP: protected local revAgent bootstrap is not installed.
-  echo Contact the DPE revAgent administrator to complete the supervised manual bootstrap prestage, then run this updater again.
+  echo Contact the DPE revAgent administrator to run the revAgent IT prestage kit, then run this updater again.
   pause
   exit /b 84
 )
@@ -20,7 +20,7 @@ if not exist "%BOOTSTRAP%" (
 if not exist "%BOOTSTRAP_STATE%" (
   echo.
   echo SECURITY STOP: protected local revAgent bootstrap state is not installed.
-  echo Contact the DPE revAgent administrator to complete the supervised manual bootstrap prestage, then run this updater again.
+  echo Contact the DPE revAgent administrator to run the revAgent IT prestage kit, then run this updater again.
   pause
   exit /b 84
 )
@@ -67,8 +67,8 @@ call "%STABLE_REFRESH%"
 set "REFRESH_EXIT=!ERRORLEVEL!"
 if "!REFRESH_EXIT!"=="84" (
   echo.
-  echo SECURITY STOP: independent Windows signing trust anchor is unavailable.
-  echo Contact the DPE revAgent administrator to complete the supervised manual bootstrap prestage, then run this updater again.
+  echo SECURITY STOP: IT-prestaged revAgent machine trust core is missing or unhealthy.
+  echo Contact the DPE revAgent administrator to run the revAgent IT prestage kit, then run this updater again.
   pause
   exit /b 84
 )
