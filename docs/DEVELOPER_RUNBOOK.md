@@ -831,8 +831,10 @@ Signed pilot releases publish through manual `workflow_dispatch` with
 operation may create only a pilot-namespaced release and the signed pilot
 channel pair. It must prove stable metadata, the active stable release, and the
 shared tools tree stayed unchanged. Production stable/fleet release is a later,
-separately approved `publish_to_nas=true` dispatch and is currently fail-closed
-until shared-tools replacement has the same handle-bound transaction guarantees.
+separately approved `publish_to_nas=true` dispatch. Its 13-file managed
+shared-tools/operator surface now uses the active transactional exact-handle
+create-new/compare-and-swap/rollback path and is no longer disabled by the
+former transaction gap.
 
 Set the protected production publish variable `REVAGENT_NAS_RELEASE_ROOT` to
 the canonical `revAgent-deploy` root. The CD job publishes only to that
@@ -1072,8 +1074,11 @@ re-sign. For pilot it holds exact source/stable/tools identities, creates a new
 pilot release through handle-bound create-new operations, and writes the signed
 pilot pair with same-handle compare-and-swap/rollback. The canonical stable
 pair, active stable release, and shared tools are immutable pilot evidence.
-Stable publication remains fail-closed in this phase; no weaker direct writer
-or recovery path is authorized.
+Stable publication creates the release tree handle-bound, exact-manages the
+complete 13-file stable/tools operator surface, and promotes the signed channel
+pair with same-handle compare-and-swap/rollback plus final identity checks. No
+weaker direct writer or recovery path is authorized; publication remains a
+separately approved manual dispatch.
 
 The canonical `revAgent-deploy` NAS root is a writable signed transport, not an
 executable trust boundary. `scripts/publish-signed-source-free-release-to-nas.ps1`

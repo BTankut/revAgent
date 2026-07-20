@@ -4,6 +4,32 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Recorded the #233-#244 updater closure arc: Codex integration rescue,
+  split-privilege helper ownership and validation, inaccessible launcher/task
+  tolerance, machine-owned hidden-launcher repair, GUI diagnostics, the desktop
+  shortcut, cleanup, and retry-safe log access.
+- Recorded the #245-#254 bootstrap arc: automatic stale-bootstrap refresh,
+  clean-machine acquisition and first install, PowerShell 5 compatibility,
+  signed-channel binding, local staging, legacy GUI repair, administrator-start
+  coordination, and first-install completion checks. The clean-machine
+  elevation path was subsequently disabled by the G13 trust decision; these
+  tested helpers remain dormant until an independently authenticated machine
+  verifier and pinned production key are present.
+- Recorded the #246/#255/#256 publisher alignment fixes: the repository
+  launcher, embedded publisher template, completion behavior, and legacy
+  `Revit MCP Updater STABLE.cmd` alias now share the exact-managed contract.
+- **Fleet rebind warning (K0):** stable `2026.07.20.574-11020d1a` is already
+  published, and #258/#259 changed four of the eight manifest-bound
+  local-bootstrap components. Every older protected bootstrap therefore reports
+  `bootstrap_refresh_required` on its next operator-started update/GUI path.
+  Before the E2 machine-trust-core/broker path is live, publishing such content
+  requires a supervised fleet re-prestage/refresh plan. The installed product and
+  audit-only task keep running, but the next STABLE/GUI update attempt stops at
+  exit 84. Use E1 only for urgent individual machines; defer the general fleet
+  pass until E2 can rebind and self-heal in one transition.
+- Release bookkeeping note (O3): at the next separately approved NAS stable
+  publication, move the applicable `Unreleased` entries under the exact
+  published version heading instead of leaving them as rolling history.
 - Fixed split-privilege Install/Repair reaching the final user phase without
   the protected `Run-revAgent-Update-Hidden.vbs` scheduled-audit launcher.
   After a successful machine update, the elevated phase now creates the
