@@ -21,11 +21,13 @@ param(
     [string]$RepoRoot = "",
     [switch]$AllowTestRoot,
     [switch]$SupervisedAdminPrestage,
+    [switch]$MachineTrustBroker,
     [Parameter(DontShow = $true)][scriptblock]$IntegrityModuleBytesVerifiedHook,
     [Parameter(DontShow = $true)][scriptblock]$TrustedKeysBytesVerifiedHook,
     [Parameter(DontShow = $true)][string]$TestMachineName = "",
     [Parameter(DontShow = $true)][scriptblock]$TestAfterPilotAuthorizationHook,
-    [Parameter(DontShow = $true)][ValidateSet("", "elevated", "standard")][string]$TestAdministratorState = ""
+    [Parameter(DontShow = $true)][ValidateSet("", "elevated", "standard")][string]$TestAdministratorState = "",
+    [Parameter(DontShow = $true)][string]$TestProducerSid = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -57,6 +59,10 @@ $canonicalReleaseRoot = [IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
 $isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+$producerSid = [string]$identity.User.Value
+if ($SupervisedAdminPrestage -and $MachineTrustBroker) {
+    throw "SupervisedAdminPrestage and MachineTrustBroker are mutually exclusive producer modes."
+}
 if (-not [string]::IsNullOrWhiteSpace($TestAdministratorState) -and -not $AllowTestRoot) {
     throw "TestAdministratorState is available only with -AllowTestRoot."
 }
@@ -70,13 +76,21 @@ if ($AllowTestRoot) {
         $false
     }
     else {
-        [bool]$SupervisedAdminPrestage
+        [bool]($SupervisedAdminPrestage -or $MachineTrustBroker)
     }
+}
+if (-not [string]::IsNullOrWhiteSpace($TestProducerSid)) {
+    if (-not $AllowTestRoot) { throw "TestProducerSid is available only with -AllowTestRoot." }
+    if ($TestProducerSid -notmatch '^S-[0-9]+(?:-[0-9]+)+$') { throw "TestProducerSid must be a valid SID string." }
+    $producerSid = $TestProducerSid
 }
 if ($SupervisedAdminPrestage -and -not $isAdministrator) {
     throw "Supervised administrator prestage evidence requires an elevated Windows PowerShell process."
 }
-if (-not $SupervisedAdminPrestage -and $isAdministrator) {
+if ($MachineTrustBroker -and (-not $isAdministrator -or -not [string]::Equals($producerSid, 'S-1-5-18', [StringComparison]::Ordinal))) {
+    throw "Machine trust broker evidence must be produced by elevated LocalSystem (S-1-5-18)."
+}
+if (-not $SupervisedAdminPrestage -and -not $MachineTrustBroker -and $isAdministrator) {
     throw "Bootstrap prestage evidence must be produced before elevation in the normal coordinator process."
 }
 if (-not $AllowTestRoot -and -not [string]::Equals($ReleaseRoot, $canonicalReleaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -88,7 +102,7 @@ if ($AllowTestRoot) {
         throw "AllowTestRoot is limited to disposable release fixtures below TEMP."
     }
 }
-if (($null -ne $IntegrityModuleBytesVerifiedHook -or $null -ne $TrustedKeysBytesVerifiedHook -or -not [string]::IsNullOrWhiteSpace($TestMachineName) -or $null -ne $TestAfterPilotAuthorizationHook -or -not [string]::IsNullOrWhiteSpace($TestAdministratorState)) -and -not $AllowTestRoot) {
+if (($null -ne $IntegrityModuleBytesVerifiedHook -or $null -ne $TrustedKeysBytesVerifiedHook -or -not [string]::IsNullOrWhiteSpace($TestMachineName) -or $null -ne $TestAfterPilotAuthorizationHook -or -not [string]::IsNullOrWhiteSpace($TestAdministratorState) -or -not [string]::IsNullOrWhiteSpace($TestProducerSid)) -and -not $AllowTestRoot) {
     throw "Evidence producer test seams are available only with -AllowTestRoot."
 }
 
@@ -214,6 +228,206 @@ function Read-RevAgentEvidenceBoundedBytes {
     }
 }
 
+function Get-RevAgentEvidenceJsonPropertyName {
+    param([Parameter(Mandatory = $true)][Xml.XmlElement]$Element)
+    if ([string]::Equals($Element.LocalName, 'item', [StringComparison]::Ordinal) -and $Element.HasAttribute('item')) {
+        return [string]$Element.GetAttribute('item')
+    }
+    return [string]$Element.LocalName
+}
+
+function Get-RevAgentEvidenceJsonChildren {
+    param([Parameter(Mandatory = $true)][Xml.XmlElement]$Element)
+    return @($Element.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+}
+
+function Assert-RevAgentEvidenceJsonTree {
+    param([Parameter(Mandatory = $true)][Xml.XmlElement]$Element, [Parameter(Mandatory = $true)][string]$Context)
+
+    $jsonType = [string]$Element.GetAttribute('type')
+    if ([string]::Equals($jsonType, 'object', [StringComparison]::Ordinal)) {
+        $children = @(Get-RevAgentEvidenceJsonChildren -Element $Element)
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($child in $children) {
+            $name = Get-RevAgentEvidenceJsonPropertyName -Element $child
+            if ([string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name)) {
+                throw "Trusted-key JSON contains an empty or duplicate decoded property at ${Context}: $name"
+            }
+            if ($name -match '^(?i:d|p|q|dp|dq|qi|oth|k|privatekey|privatekeypem|secret|password|credential)$') {
+                throw "Trusted-key JSON contains a forbidden private or secret-bearing property: $name"
+            }
+        }
+        foreach ($child in $children) {
+            $name = Get-RevAgentEvidenceJsonPropertyName -Element $child
+            Assert-RevAgentEvidenceJsonTree -Element $child -Context ($Context + '.' + $name)
+        }
+    }
+    elseif ([string]::Equals($jsonType, 'array', [StringComparison]::Ordinal)) {
+        $index = 0
+        foreach ($child in @(Get-RevAgentEvidenceJsonChildren -Element $Element)) {
+            Assert-RevAgentEvidenceJsonTree -Element $child -Context ("$Context[$index]")
+            $index++
+        }
+    }
+    elseif ([string]::Equals($jsonType, 'string', [StringComparison]::Ordinal)) {
+        $value = [string]$Element.InnerText
+        if ($value -match '(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' -or
+            $value -match '(?i)<\s*(?:D|P|Q|DP|DQ|InverseQ)\s*>') {
+            throw "Trusted-key JSON contains decoded private-key material at $Context."
+        }
+    }
+}
+
+function Assert-RevAgentEvidenceTrustedKeys {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes, [switch]$AllowTestIdentity)
+
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $text = $strictUtf8.GetString($Bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    if ($text -match '(?i)"(?:d|p|q|dp|dq|qi|oth|k|privatekey|privatekeypem|secret|password|credential)"\s*:' -or
+        $text -match '(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' -or
+        $text -match '(?i)<\s*(?:D|P|Q|DP|DQ|InverseQ)\s*>') {
+        throw 'Trusted-key document contains forbidden private or secret-bearing material.'
+    }
+
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Runtime.Serialization -ErrorAction Stop
+    $jsonBytes = $Bytes
+    if ($Bytes.Length -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        $jsonBytes = New-Object byte[] ($Bytes.Length - 3)
+        [Array]::Copy($Bytes, 3, $jsonBytes, 0, $jsonBytes.Length)
+    }
+    $reader = $null
+    try {
+        $reader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader($jsonBytes, [Xml.XmlDictionaryReaderQuotas]::Max)
+        $xml = [Xml.XmlDocument]::new()
+        $xml.XmlResolver = $null
+        $xml.Load($reader)
+    }
+    catch { throw "Trusted-key bytes are not strict JSON: $($_.Exception.Message)" }
+    finally { if ($null -ne $reader) { $reader.Dispose() } }
+
+    $root = $xml.DocumentElement
+    if ($null -eq $root -or -not [string]::Equals([string]$root.LocalName, 'root', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$root.GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
+        throw 'Trusted-key document must be one JSON object.'
+    }
+    Assert-RevAgentEvidenceJsonTree -Element $root -Context '$'
+    $top = @(Get-RevAgentEvidenceJsonChildren -Element $root)
+    $topNames = @($top | ForEach-Object { Get-RevAgentEvidenceJsonPropertyName -Element $_ })
+    $allowedTopNames = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    $trustedKeysNodes = @($top | Where-Object { [string]::Equals((Get-RevAgentEvidenceJsonPropertyName -Element $_), 'trustedKeys', [StringComparison]::Ordinal) })
+    if ($trustedKeysNodes.Count -ne 1 -or -not [string]::Equals([string]$trustedKeysNodes[0].GetAttribute('type'), 'object', [StringComparison]::Ordinal) -or
+        @($topNames | Where-Object { $allowedTopNames -cnotcontains $_ }).Count -ne 0 -or $top.Count -notin @(1, 4)) {
+        throw 'Trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist.'
+    }
+    if ($top.Count -eq 4) {
+        foreach ($metadata in @(@('schemaVersion', 'number'), @('app', 'string'), @('generatedAtUtc', 'string'))) {
+            $metadataNode = @($top | Where-Object { [string]::Equals((Get-RevAgentEvidenceJsonPropertyName -Element $_), [string]$metadata[0], [StringComparison]::Ordinal) })
+            if ($metadataNode.Count -ne 1 -or -not [string]::Equals([string]$metadataNode[0].GetAttribute('type'), [string]$metadata[1], [StringComparison]::Ordinal)) {
+                throw "Trusted-key metadata is incomplete or mistyped: $($metadata[0])"
+            }
+        }
+    }
+    $keyNodes = @(Get-RevAgentEvidenceJsonChildren -Element $trustedKeysNodes[0])
+    if ($keyNodes.Count -lt 1 -or $keyNodes.Count -gt 2) {
+        throw 'Trusted-key document must contain one key or a two-key rotation window.'
+    }
+    $requiredFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+    $allowedFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+    foreach ($keyNode in $keyNodes) {
+        $keyId = Get-RevAgentEvidenceJsonPropertyName -Element $keyNode
+        $fields = @(Get-RevAgentEvidenceJsonChildren -Element $keyNode)
+        $fieldNames = @($fields | ForEach-Object { Get-RevAgentEvidenceJsonPropertyName -Element $_ })
+        if ($keyId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+            -not [string]::Equals([string]$keyNode.GetAttribute('type'), 'object', [StringComparison]::Ordinal) -or
+            $fields.Count -notin @(3, 4) -or @($fieldNames | Where-Object { $allowedFields -cnotcontains $_ }).Count -ne 0 -or
+            @($requiredFields | Where-Object { $fieldNames -cnotcontains $_ }).Count -ne 0 -or
+            ($fields.Count -eq 4 -and $fieldNames -cnotcontains 'purpose') -or
+            @($fields | Where-Object { -not [string]::Equals([string]$_.GetAttribute('type'), 'string', [StringComparison]::Ordinal) }).Count -ne 0) {
+            throw "Trusted-key entry must be an exact public RS256 record: $keyId"
+        }
+    }
+
+    $document = $text | ConvertFrom-Json
+    $topProperties = @($document.PSObject.Properties)
+    $topPropertyNames = @($topProperties | ForEach-Object { [string]$_.Name })
+    if ($topProperties.Count -notin @(1, 4) -or @($topPropertyNames | Where-Object { $allowedTopNames -cnotcontains $_ }).Count -ne 0 -or
+        $topPropertyNames -cnotcontains 'trustedKeys') {
+        throw 'Trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist.'
+    }
+    if ($topProperties.Count -eq 4) {
+        foreach ($metadataName in @('schemaVersion', 'app', 'generatedAtUtc')) {
+            if ($topPropertyNames -cnotcontains $metadataName) { throw "Trusted-key metadata is incomplete: $metadataName" }
+        }
+        if ([int]$document.schemaVersion -ne 1 -or [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or [string]::IsNullOrWhiteSpace([string]$document.generatedAtUtc)) {
+            throw 'Trusted-key public metadata is invalid.'
+        }
+    }
+    $properties = @($document.trustedKeys.PSObject.Properties)
+    $fingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($property in $properties) {
+        $key = $property.Value
+        if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+            [string]$key.publicKeyFingerprint -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Trusted-key entry is not a complete RS256 public-key record: $($property.Name)"
+        }
+        if ($key.PSObject.Properties['purpose'] -and -not [string]::Equals([string]$key.purpose, 'release-signing', [StringComparison]::Ordinal)) {
+            throw "Trusted-key purpose must be release-signing: $($property.Name)"
+        }
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $stringReader = [IO.StringReader]::new([string]$key.publicKeyXml)
+        $xmlReader = $null
+        try {
+            $xmlReader = [Xml.XmlReader]::Create($stringReader, $settings)
+            $publicXml = [Xml.XmlDocument]::new()
+            $publicXml.XmlResolver = $null
+            $publicXml.Load($xmlReader)
+        }
+        finally {
+            if ($null -ne $xmlReader) { $xmlReader.Dispose() }
+            $stringReader.Dispose()
+        }
+        $elementNames = @($publicXml.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.Name })
+        if ($null -eq $publicXml.DocumentElement -or -not [string]::Equals($publicXml.DocumentElement.Name, 'RSAKeyValue', [StringComparison]::Ordinal) -or
+            $elementNames.Count -ne 2 -or @((Compare-Object @('Exponent', 'Modulus') @($elementNames | Sort-Object) -SyncWindow 0)).Count -ne 0) {
+            throw "Trusted-key XML contains private or unexpected RSA parameters: $($property.Name)"
+        }
+        foreach ($name in @('Modulus', 'Exponent')) {
+            $node = $publicXml.DocumentElement.SelectSingleNode($name)
+            if ($null -eq $node -or [string]::IsNullOrWhiteSpace([string]$node.InnerText)) { throw "Trusted-key XML is missing $name for $($property.Name)." }
+            try { [void][Convert]::FromBase64String(([string]$node.InnerText).Trim()) }
+            catch { throw "Trusted-key XML contains invalid $name base64 for $($property.Name)." }
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $actualFingerprint = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((([string]$key.publicKeyXml).Trim() -replace '\s+', ''))))).Replace('-', '') }
+        finally { $sha.Dispose() }
+        if (-not [string]::Equals($actualFingerprint, [string]$key.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Trusted-key fingerprint does not match publicKeyXml: $($property.Name)"
+        }
+        if (-not $fingerprints.Add($actualFingerprint)) { throw "Trusted-key document contains a duplicate public-key fingerprint: $($property.Name)" }
+    }
+
+    if (-not $AllowTestIdentity) {
+        $productionId = 'revagent-prod-rsa-2026q3'
+        $productionProperties = @($properties | Where-Object { [string]::Equals([string]$_.Name, $productionId, [StringComparison]::Ordinal) })
+        if ($productionProperties.Count -ne 1) { throw "Production trusted-key document must contain '$productionId'." }
+        if (-not [string]::Equals([string]$productionProperties[0].Value.publicKeyFingerprint, '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33', [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Production trusted-key document does not match the pinned RS256 release key.'
+        }
+        if ($properties.Count -eq 2) {
+            $futureId = [string](@($properties | Where-Object { -not [string]::Equals([string]$_.Name, $productionId, [StringComparison]::Ordinal) })[0].Name)
+            $match = [regex]::Match($futureId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+            $futureOrdinal = if ($match.Success) { ([int]$match.Groups['year'].Value * 4) + [int]$match.Groups['quarter'].Value } else { 0 }
+            if (-not $match.Success -or $futureOrdinal -le ((2026 * 4) + 3)) {
+                throw "The optional production rotation key must be later than revagent-prod-rsa-2026q3: $futureId"
+            }
+        }
+    }
+    return $document
+}
+
 if (Test-RevAgentEvidencePathUnderRoot -Path $OutputPath -Root $ReleaseRoot) { throw "Evidence output must not be written into the signed release root." }
 if (Test-Path -LiteralPath $OutputPath) { throw "Evidence output already exists; refusing replacement: $OutputPath" }
 $outputParent = Split-Path -Parent $OutputPath
@@ -221,7 +435,7 @@ if (-not (Test-Path -LiteralPath $outputParent -PathType Container)) { throw "Ev
 if (-not (Test-Path -LiteralPath $TrustedKeysPath -PathType Leaf)) { throw "Trusted key document was not found: $TrustedKeysPath" }
 
 $integrityModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
-$pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
+$pinnedIntegrityModuleHash = "C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6"
 $integrityModuleBytes = Read-RevAgentPinnedModuleBytes -Path $integrityModulePath -ExpectedSha256 $pinnedIntegrityModuleHash
 if ($null -ne $IntegrityModuleBytesVerifiedHook) { & $IntegrityModuleBytesVerifiedHook $integrityModulePath }
 $trustedKeysStopRoot = if (Test-RevAgentEvidencePathUnderRoot -Path $TrustedKeysPath -Root $RepoRoot) {
@@ -234,30 +448,8 @@ else {
     [IO.Path]::GetPathRoot($TrustedKeysPath)
 }
 $trustedKeysEvidence = Read-RevAgentEvidenceBoundedBytes -Path $TrustedKeysPath -StopRoot $trustedKeysStopRoot
-$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
-$trustedKeysText = $strictUtf8.GetString([byte[]]$trustedKeysEvidence.Bytes)
-if ($trustedKeysText.Length -gt 0 -and $trustedKeysText[0] -eq [char]0xFEFF) { $trustedKeysText = $trustedKeysText.Substring(1) }
-$trustedKeys = $trustedKeysText | ConvertFrom-Json
+$trustedKeys = Assert-RevAgentEvidenceTrustedKeys -Bytes ([byte[]]$trustedKeysEvidence.Bytes) -AllowTestIdentity:$AllowTestRoot
 if ($null -ne $TrustedKeysBytesVerifiedHook) { & $TrustedKeysBytesVerifiedHook $TrustedKeysPath ([string]$trustedKeysEvidence.Sha256) }
-if (-not $AllowTestRoot) {
-    $productionKeyId = "revagent-prod-rsa-2026q3"
-    $trustedKeyProperties = @($trustedKeys.trustedKeys.PSObject.Properties)
-    if ($trustedKeyProperties.Count -ne 1 -or
-        -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [StringComparison]::Ordinal)) {
-        throw "Production trusted-key document must contain exactly the pinned key '$productionKeyId' and no additional signing keys."
-    }
-    $productionKey = $trustedKeys.trustedKeys."revagent-prod-rsa-2026q3"
-    if ($null -eq $productionKey) { throw "Trusted key document does not contain the production signing key." }
-    if (-not [string]::Equals([string]$productionKey.algorithm, "RS256", [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$productionKey.publicKeyFingerprint, "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33", [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Production release-key metadata does not match the pinned RS256 key."
-    }
-    $normalizedPublicKey = ([string]$productionKey.publicKeyXml).Trim() -replace "\s+", ""
-    $sha = [Security.Cryptography.SHA256]::Create()
-    try { $fingerprint = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedPublicKey)))).Replace("-", "") }
-    finally { $sha.Dispose() }
-    if ($fingerprint -ne "32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33") { throw "Production release-key fingerprint mismatch." }
-}
 
 $channelPath = Resolve-RevAgentEvidenceReleasePath -Path (Join-Path "channels" ($Channel + ".json")) -BaseDirectory $ReleaseRoot
 $channelDocument = Get-Content -Raw -LiteralPath $channelPath | ConvertFrom-Json
@@ -308,6 +500,9 @@ $componentMap = [ordered]@{
     sourceFreeMigration = @("installerLibSourceFreeMigration", "installer\lib\RevAgent.SourceFreeMigration.psm1")
     releaseSnapshot = @("installerLibReleaseSnapshot", "installer\lib\RevAgent.ReleaseSnapshot.psm1")
     privilegedSnapshotUpdate = @("privilegedSnapshotUpdate", "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")
+    bootstrapTrust = @("installerLibBootstrapTrust", "installer\lib\RevAgent.BootstrapTrust.psm1")
+    bootstrapTrustBroker = @("bootstrapTrustBroker", "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1")
+    trustedKeys = @("releaseTrustedKeys", "config\release-trusted-keys.json")
 }
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -327,7 +522,27 @@ try {
         if ([long]$zipEntries[0].Length -lt 1 -or [long]$zipEntries[0].Length -gt 33554432) { throw "Signed package entry size is outside the evidence policy: $zipPath" }
         $entryStream = $zipEntries[0].Open()
         $entryHash = [Security.Cryptography.SHA256]::Create()
-        try { $actualHash = ([BitConverter]::ToString($entryHash.ComputeHash($entryStream))).Replace("-", "") }
+        try {
+            if ([string]::Equals([string]$entry.Key, 'trustedKeys', [StringComparison]::Ordinal)) {
+                if ([long]$zipEntries[0].Length -ne [long]$trustedKeysEvidence.Bytes.Length) {
+                    throw 'Signed package trusted-key bytes differ from the independently acquired trusted-key document.'
+                }
+                $entryBytes = New-Object byte[] ([int]$zipEntries[0].Length)
+                $offset = 0
+                while ($offset -lt $entryBytes.Length) {
+                    $read = $entryStream.Read($entryBytes, $offset, $entryBytes.Length - $offset)
+                    if ($read -le 0) { throw 'Signed package trusted-key entry ended before its declared length.' }
+                    $offset += $read
+                }
+                if (-not [Linq.Enumerable]::SequenceEqual([byte[]]$entryBytes, [byte[]]$trustedKeysEvidence.Bytes)) {
+                    throw 'Signed package trusted-key bytes differ from the independently acquired trusted-key document.'
+                }
+                $actualHash = ([BitConverter]::ToString($entryHash.ComputeHash($entryBytes))).Replace("-", "")
+            }
+            else {
+                $actualHash = ([BitConverter]::ToString($entryHash.ComputeHash($entryStream))).Replace("-", "")
+            }
+        }
         finally { $entryHash.Dispose(); $entryStream.Dispose() }
         if (-not [string]::Equals($actualHash, [string]$component.sha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Signed package entry hash mismatch for '$componentKey'."
@@ -341,10 +556,10 @@ $evidence = [ordered]@{
     schemaVersion = 1
     app = "revAgent"
     evidenceType = "bootstrap-prestage"
-    producerMode = if ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
+    producerMode = if ($MachineTrustBroker) { "machine-trust-broker" } elseif ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
     supervisedAdminPrestage = [bool]$SupervisedAdminPrestage
     generatedAtUtc = [DateTime]::UtcNow.ToString("o")
-    generatedBySid = [string]$identity.User.Value
+    generatedBySid = $producerSid
     release = [ordered]@{
         root = $ReleaseRoot
         channel = [string]$channelDocument.channel
@@ -369,7 +584,9 @@ $evidence = [ordered]@{
         sourceFreeMigration = [string]$componentHashes.sourceFreeMigration
         releaseSnapshot = [string]$componentHashes.releaseSnapshot
         privilegedSnapshotUpdate = [string]$componentHashes.privilegedSnapshotUpdate
-        trustedKeys = [string]$trustedKeysEvidence.Sha256
+        bootstrapTrust = [string]$componentHashes.bootstrapTrust
+        bootstrapTrustBroker = [string]$componentHashes.bootstrapTrustBroker
+        trustedKeys = [string]$componentHashes.trustedKeys
     }
 }
 $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($evidence | ConvertTo-Json -Depth 10))
@@ -388,6 +605,6 @@ finally { if ($null -ne $stream) { $stream.Dispose() } }
     outputSha256 = (Microsoft.PowerShell.Utility\Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash
     version = [string]$channelDocument.version
     signatureVerified = $true
-    producerMode = if ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
+    producerMode = if ($MachineTrustBroker) { "machine-trust-broker" } elseif ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
     supervisedAdminPrestage = [bool]$SupervisedAdminPrestage
 }

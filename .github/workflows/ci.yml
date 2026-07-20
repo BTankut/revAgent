@@ -50,4 +50,5 @@ jobs:
           .\scripts\test-signed-stable-readiness.ps1
           .\scripts\test-signed-source-free-cd.ps1
           .\scripts\test-supervised-prestage.ps1
+          .\scripts\test-bootstrap-trust-broker.ps1
           .\scripts\test-desktop-launcher-cleanup.ps1

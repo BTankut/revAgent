@@ -2,10 +2,11 @@ Set-StrictMode -Version Latest
 
 $script:RevAgentProductionReleaseRoot = [IO.Path]::GetFullPath('\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy').TrimEnd('\')
 $script:RevAgentProductionKeyFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
-$script:RevAgentIntegrityModuleSha256 = 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E'
+$script:RevAgentIntegrityModuleSha256 = 'C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6'
 $script:RevAgentNodeMsiName = 'node-v24.14.1-x64.msi'
 $script:RevAgentNodeMsiSha256 = 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC'
 $script:RevAgentNodeMsiSizeBytes = [long]32387072
+$script:RevAgentSystemOnlySnapshotAccessPolicy = 'system-only-bootstrap-trust'
 $script:RevAgentNodeMsiSignerSubject = 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US'
 
 if (-not ('RevAgent.ReleaseSnapshotNative' -as [type])) {
@@ -120,6 +121,125 @@ function Get-RevAgentSnapshotLockedStreamSha256 {
     }
 }
 
+function New-RevAgentSnapshotJsonScanContext {
+    param([Parameter(Mandatory = $true)][ValidateSet('object', 'array')][string]$Kind)
+
+    if ($Kind -eq 'object') {
+        return [pscustomobject][ordered]@{
+            kind = 'object'
+            state = 'keyOrEnd'
+            keys = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+        }
+    }
+    return [pscustomobject][ordered]@{ kind = 'array'; state = 'valueOrEnd'; keys = $null }
+}
+
+function Set-RevAgentSnapshotJsonValueConsumed {
+    param([Parameter(Mandatory = $true)][Collections.Generic.Stack[object]]$Stack)
+
+    if ($Stack.Count -eq 0) { return }
+    $context = $Stack.Peek()
+    if ($context.kind -eq 'object' -and $context.state -eq 'value') { $context.state = 'commaOrEnd' }
+    elseif ($context.kind -eq 'array' -and $context.state -in @('valueOrEnd', 'value')) { $context.state = 'commaOrEnd' }
+}
+
+function Read-RevAgentSnapshotJsonStringToken {
+    param(
+        [Parameter(Mandatory = $true)][string]$Json,
+        [Parameter(Mandatory = $true)][ref]$Index
+    )
+
+    $builder = [Text.StringBuilder]::new()
+    $i = $Index.Value + 1
+    while ($i -lt $Json.Length) {
+        $character = $Json[$i]
+        if ($character -eq '"') { $Index.Value = $i; return $builder.ToString() }
+        if ($character -eq '\') {
+            $i++
+            if ($i -ge $Json.Length) { throw 'Invalid JSON string escape.' }
+            switch ($Json[$i]) {
+                '"' { [void]$builder.Append('"'); break }
+                '\' { [void]$builder.Append('\'); break }
+                '/' { [void]$builder.Append('/'); break }
+                'b' { [void]$builder.Append([char]8); break }
+                'f' { [void]$builder.Append([char]12); break }
+                'n' { [void]$builder.Append([char]10); break }
+                'r' { [void]$builder.Append([char]13); break }
+                't' { [void]$builder.Append([char]9); break }
+                'u' {
+                    if ($i + 4 -ge $Json.Length) { throw 'Invalid JSON unicode escape.' }
+                    $hex = $Json.Substring($i + 1, 4)
+                    if ($hex -notmatch '^[0-9a-fA-F]{4}$') { throw 'Invalid JSON unicode escape.' }
+                    [void]$builder.Append([char]([Convert]::ToInt32($hex, 16)))
+                    $i += 4
+                    break
+                }
+                default { throw 'Invalid JSON string escape.' }
+            }
+            $i++
+            continue
+        }
+        [void]$builder.Append($character)
+        $i++
+    }
+    throw 'Unterminated JSON string.'
+}
+
+function Find-RevAgentSnapshotDuplicateJsonObjectKey {
+    param([Parameter(Mandatory = $true)][string]$Json)
+
+    $stack = [Collections.Generic.Stack[object]]::new()
+    for ($i = 0; $i -lt $Json.Length; $i++) {
+        $character = $Json[$i]
+        if ([char]::IsWhiteSpace($character)) { continue }
+        switch ($character) {
+            '"' {
+                $indexRef = [ref]$i
+                $text = Read-RevAgentSnapshotJsonStringToken -Json $Json -Index $indexRef
+                $i = $indexRef.Value
+                if ($stack.Count -gt 0) {
+                    $context = $stack.Peek()
+                    if ($context.kind -eq 'object' -and $context.state -eq 'keyOrEnd') {
+                        if (-not $context.keys.Add($text)) { return [pscustomobject]@{ found = $true; key = $text } }
+                        $context.state = 'colon'
+                    }
+                    else { Set-RevAgentSnapshotJsonValueConsumed -Stack $stack }
+                }
+                continue
+            }
+            '{' { $stack.Push((New-RevAgentSnapshotJsonScanContext -Kind object)); continue }
+            '[' { $stack.Push((New-RevAgentSnapshotJsonScanContext -Kind array)); continue }
+            '}' {
+                if ($stack.Count -gt 0 -and $stack.Peek().kind -eq 'object') { [void]$stack.Pop(); Set-RevAgentSnapshotJsonValueConsumed -Stack $stack }
+                continue
+            }
+            ']' {
+                if ($stack.Count -gt 0 -and $stack.Peek().kind -eq 'array') { [void]$stack.Pop(); Set-RevAgentSnapshotJsonValueConsumed -Stack $stack }
+                continue
+            }
+            ':' {
+                if ($stack.Count -gt 0 -and $stack.Peek().kind -eq 'object' -and $stack.Peek().state -eq 'colon') { $stack.Peek().state = 'value' }
+                continue
+            }
+            ',' {
+                if ($stack.Count -gt 0 -and $stack.Peek().state -eq 'commaOrEnd') {
+                    if ($stack.Peek().kind -eq 'object') { $stack.Peek().state = 'keyOrEnd' } else { $stack.Peek().state = 'value' }
+                }
+                continue
+            }
+            default {
+                while ($i + 1 -lt $Json.Length) {
+                    $next = $Json[$i + 1]
+                    if ([char]::IsWhiteSpace($next) -or $next -eq ',' -or $next -eq ']' -or $next -eq '}') { break }
+                    $i++
+                }
+                Set-RevAgentSnapshotJsonValueConsumed -Stack $stack
+            }
+        }
+    }
+    return [pscustomobject]@{ found = $false; key = '' }
+}
+
 function Read-RevAgentSnapshotLockedJson {
     param(
         [Parameter(Mandatory = $true)][IO.FileStream]$Stream,
@@ -142,6 +262,8 @@ function Read-RevAgentSnapshotLockedJson {
     try {
         $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
         if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) { $json = $json.Substring(1) }
+        $duplicate = Find-RevAgentSnapshotDuplicateJsonObjectKey -Json $json
+        if ([bool]$duplicate.found) { throw "Signed JSON contains a duplicate decoded object property: $($duplicate.key)" }
         return $json | ConvertFrom-Json -ErrorAction Stop
     }
     catch {
@@ -184,6 +306,109 @@ function Assert-RevAgentSnapshotPathNoLinks {
         $cursor = $parent
     }
     return $fullPath
+}
+
+function Assert-RevAgentSnapshotExactProperties {
+    param(
+        [Parameter(Mandatory = $true)][object]$Value,
+        [Parameter(Mandatory = $true)][string[]]$Names,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    if ($null -eq $Value) { throw "$Label is missing." }
+    $actual = @($Value.PSObject.Properties | ForEach-Object { [string]$_.Name })
+    if ($actual.Count -ne $Names.Count -or
+        @($actual | Where-Object { $Names -cnotcontains $_ }).Count -ne 0 -or
+        @($Names | Where-Object { $actual -cnotcontains $_ }).Count -ne 0) {
+        throw "$Label must contain exactly: $($Names -join ', ')."
+    }
+}
+
+function Read-RevAgentSnapshotInboxState {
+    param(
+        [Parameter(Mandatory = $true)][string]$InboxPath,
+        [Parameter(Mandatory = $true)][ValidateSet('stable', 'pilot')][string]$Channel
+    )
+
+    $inbox = [IO.Path]::GetFullPath($InboxPath).TrimEnd('\')
+    $statePath = Assert-RevAgentSnapshotPathNoLinks -Path (Join-Path $inbox 'inbox-state.json') -StopRoot $inbox -RequireLeaf
+    $stream = $null
+    try {
+        # FileShare.Read denies both writes and delete/rename while the exact
+        # hostile-inbox bytes are bounded, duplicate-scanned, and parsed.
+        $stream = [IO.FileStream]::new($statePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $attributes = [uint32][RevAgent.ReleaseSnapshotNative]::GetAttributes($stream.SafeFileHandle)
+        if (($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($attributes -band [uint32][IO.FileAttributes]::Directory) -ne 0) {
+            throw "Release inbox state must be an ordinary non-reparse file: $statePath"
+        }
+        $linkCount = [uint32][RevAgent.ReleaseSnapshotNative]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) { throw "Release inbox state must have exactly one hardlink reference. path=$statePath linkCount=$linkCount" }
+        [void](Assert-RevAgentSnapshotPathNoLinks -Path $statePath -StopRoot $inbox -RequireLeaf)
+        $state = Read-RevAgentSnapshotLockedJson -Stream $stream -Path $statePath -MaxBytes 262144
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+
+    Assert-RevAgentSnapshotExactProperties -Value $state -Names @(
+        'schemaVersion', 'app', 'stateType', 'transportTrust', 'inboxId', 'inboxRoot', 'createdAtUtc',
+        'acquisitionChannelManifestPath', 'channelPolicy', 'release', 'files'
+    ) -Label 'Release inbox state'
+    if ([int]$state.schemaVersion -ne 1 -or
+        [string]$state.app -cne 'revAgent' -or
+        [string]$state.stateType -cne 'authenticated-release-inbox' -or
+        [string]$state.transportTrust -cne 'signed_local_snapshot') {
+        throw 'Release inbox state contract is invalid.'
+    }
+    $createdAt = [DateTimeOffset]::MinValue
+    if ([string]$state.createdAtUtc -cnotmatch 'Z$' -or
+        -not [DateTimeOffset]::TryParse([string]$state.createdAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$createdAt)) {
+        throw 'Release inbox createdAtUtc must be an ISO UTC timestamp.'
+    }
+
+    $inboxId = [string]$state.inboxId
+    $boundRoot = ''
+    try { $boundRoot = [IO.Path]::GetFullPath([string]$state.inboxRoot).TrimEnd('\') }
+    catch { throw 'Release inbox root is not a valid absolute path.' }
+    if ($inboxId -cnotmatch '^[a-f0-9]{32}$' -or
+        -not [string]::Equals([IO.Path]::GetFileName($inbox), $inboxId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals($boundRoot, $inbox, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Release inbox identity/path/leaf contract is invalid.'
+    }
+
+    Assert-RevAgentSnapshotExactProperties -Value $state.release -Names @(
+        'channel', 'version', 'releaseSequence', 'minimumAcceptedReleaseSequence', 'highestAcceptedReleaseSequence',
+        'channelManifestRelativePath', 'channelSignatureRelativePath', 'releaseManifestRelativePath',
+        'releaseManifestSignatureRelativePath', 'packageRelativePath', 'packageSha256', 'packageSizeBytes'
+    ) -Label 'Release inbox release state'
+    if ([string]$state.release.channel -cne $Channel -or
+        [string]$state.release.channelManifestRelativePath -cne "channels\$Channel.json" -or
+        [string]$state.release.channelSignatureRelativePath -cne "channels\$Channel.sig.json" -or
+        [string]$state.release.packageSha256 -cnotmatch '^[A-Fa-f0-9]{64}$' -or
+        [long]$state.release.packageSizeBytes -lt 1) {
+        throw "Release inbox channel/release state does not match the requested protected snapshot channel: $Channel"
+    }
+
+    $policyFields = if ($Channel -eq 'pilot') { @('channel', 'cohortEnforced', 'allowedMachineNames', 'machineName') } else { @('channel', 'cohortEnforced', 'allowedMachineNames') }
+    Assert-RevAgentSnapshotExactProperties -Value $state.channelPolicy -Names $policyFields -Label 'Release inbox channel policy'
+    if ([string]$state.channelPolicy.channel -cne $Channel) { throw 'Release inbox channel policy identity is invalid.' }
+
+    $fileRoles = @('channelManifest', 'channelSignature', 'releaseManifest', 'releaseManifestSignature', 'package', 'nodeMsi')
+    Assert-RevAgentSnapshotExactProperties -Value $state.files -Names $fileRoles -Label 'Release inbox file map'
+    foreach ($role in $fileRoles) {
+        $entry = $state.files.PSObject.Properties[$role].Value
+        $fields = @('sourcePath', 'destinationPath', 'sha256', 'sizeBytes', 'sourceIdentity', 'sourceLinkCount')
+        if ($role -eq 'nodeMsi') { $fields += @('signerSubject', 'authenticodeStatus') }
+        Assert-RevAgentSnapshotExactProperties -Value $entry -Names $fields -Label "Release inbox file '$role'"
+        $destination = ''
+        try { $destination = [IO.Path]::GetFullPath([string]$entry.destinationPath) }
+        catch { throw "Release inbox file '$role' destination path is invalid." }
+        if (-not (Test-RevAgentSnapshotPathUnderRoot -Path $destination -Root $inbox) -or
+            [string]$entry.sha256 -cnotmatch '^[A-Fa-f0-9]{64}$' -or
+            [long]$entry.sizeBytes -lt 1 -or [uint32]$entry.sourceLinkCount -ne 1) {
+            throw "Release inbox file '$role' evidence is invalid."
+        }
+    }
+    return $state
 }
 
 function Resolve-RevAgentSnapshotRelativePath {
@@ -401,13 +626,92 @@ function Assert-RevAgentSnapshotTrustInputs {
     if (-not $AllowTestRoot -and -not [string]::Equals($integrityHash, $script:RevAgentIntegrityModuleSha256, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Protected release integrity verifier hash mismatch. expected=$($script:RevAgentIntegrityModuleSha256) actual=$integrityHash"
     }
-    $keys = Get-Content -Raw -LiteralPath $TrustedKeysPath | ConvertFrom-Json
-    if (-not $AllowTestRoot) {
-        $productionKeyId = 'revagent-prod-rsa-2026q3'
-        $trustedKeyProperties = @($keys.trustedKeys.PSObject.Properties)
-        if ($trustedKeyProperties.Count -ne 1 -or
-            -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [StringComparison]::Ordinal)) {
-            throw "Protected production trust document must contain exactly '$productionKeyId' and no additional signing keys."
+    $trustedKeysJson = Get-Content -Raw -LiteralPath $TrustedKeysPath -Encoding UTF8
+    $trustedInputIntegrityModule = Import-Module $IntegrityModulePath -Force -PassThru
+    $duplicateTrustedKeyProperty = & $trustedInputIntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $trustedKeysJson
+    if ([bool]$duplicateTrustedKeyProperty.found) {
+        throw "Protected trust document contains a duplicate decoded JSON property: $($duplicateTrustedKeyProperty.key)"
+    }
+    $keys = $trustedKeysJson | ConvertFrom-Json
+    $topLevelProperties = @($keys.PSObject.Properties)
+    $allowedTopLevelFields = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    $minimalTopLevel = $topLevelProperties.Count -eq 1 -and [string]::Equals([string]$topLevelProperties[0].Name, 'trustedKeys', [StringComparison]::Ordinal)
+    $metadataTopLevel = $topLevelProperties.Count -eq $allowedTopLevelFields.Count -and
+        @($topLevelProperties | Where-Object { $allowedTopLevelFields -cnotcontains [string]$_.Name }).Count -eq 0 -and
+        @($allowedTopLevelFields | Where-Object { @($topLevelProperties.Name) -cnotcontains $_ }).Count -eq 0
+    if (-not $minimalTopLevel -and -not $metadataTopLevel) {
+        throw 'Protected trust document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys.'
+    }
+    if ($metadataTopLevel) {
+        $generatedAt = [DateTimeOffset]::MinValue
+        if (($keys.schemaVersion -isnot [int] -and $keys.schemaVersion -isnot [long]) -or
+            [long]$keys.schemaVersion -ne 1 -or
+            $keys.app -isnot [string] -or
+            ([string]$keys.app -cne 'revAgent' -and [string]$keys.app -cne 'revit-mcp-skill') -or
+            $keys.generatedAtUtc -isnot [string] -or
+            [string]$keys.generatedAtUtc -notmatch 'Z$' -or
+            -not [DateTimeOffset]::TryParse([string]$keys.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt)) {
+            throw 'Protected trust metadata must be schemaVersion 1, an accepted revAgent app identity, and ISO UTC generatedAtUtc.'
+        }
+    }
+    $trustedKeyProperties = @($keys.trustedKeys.PSObject.Properties)
+    if ($trustedKeyProperties.Count -lt 1 -or $trustedKeyProperties.Count -gt 2) {
+        throw 'Protected trust document must contain one active key and at most one transition key.'
+    }
+    if (-not $AllowTestRoot -and $null -eq $keys.trustedKeys.PSObject.Properties['revagent-prod-rsa-2026q3']) {
+        throw "Protected production trust document must contain the pinned 'revagent-prod-rsa-2026q3' key."
+    }
+    if (-not $AllowTestRoot -and $trustedKeyProperties.Count -eq 2) {
+        $transitionKeyId = [string](@($trustedKeyProperties | Where-Object { -not [string]::Equals([string]$_.Name, 'revagent-prod-rsa-2026q3', [StringComparison]::Ordinal) })[0].Name)
+        $transitionMatch = [regex]::Match($transitionKeyId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+        $transitionOrdinal = if ($transitionMatch.Success) { ([int]$transitionMatch.Groups['year'].Value * 4) + [int]$transitionMatch.Groups['quarter'].Value } else { 0 }
+        if (-not $transitionMatch.Success -or $transitionOrdinal -le ((2026 * 4) + 3)) {
+            throw "Protected transition key must be later than revagent-prod-rsa-2026q3: $transitionKeyId"
+        }
+    }
+    $trustedFingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($trustedKeyProperty in $trustedKeyProperties) {
+        $trustedKey = $trustedKeyProperty.Value
+        $recordProperties = @($trustedKey.PSObject.Properties)
+        $requiredFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+        $allowedFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+        if ($recordProperties.Count -lt $requiredFields.Count -or $recordProperties.Count -gt $allowedFields.Count -or
+            @($recordProperties | Where-Object { $allowedFields -cnotcontains [string]$_.Name }).Count -ne 0 -or
+            @($requiredFields | Where-Object { @($recordProperties.Name) -cnotcontains $_ }).Count -ne 0 -or
+            ($null -ne $trustedKey.PSObject.Properties['purpose'] -and [string]$trustedKey.purpose -cne 'release-signing') -or
+            -not [string]::Equals([string]$trustedKey.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+            [string]$trustedKey.publicKeyFingerprint -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Protected trusted-key entry is not an exact public RS256 record: $($trustedKeyProperty.Name)"
+        }
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $stringReader = [IO.StringReader]::new([string]$trustedKey.publicKeyXml)
+        $xmlReader = $null
+        try {
+            $xmlReader = [Xml.XmlReader]::Create($stringReader, $settings)
+            $publicXml = [Xml.XmlDocument]::new()
+            $publicXml.XmlResolver = $null
+            $publicXml.Load($xmlReader)
+        }
+        finally {
+            if ($null -ne $xmlReader) { $xmlReader.Dispose() }
+            $stringReader.Dispose()
+        }
+        $elementNames = if ($null -eq $publicXml.DocumentElement) { @() } else {
+            @($publicXml.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.Name })
+        }
+        if ($null -eq $publicXml.DocumentElement -or
+            -not [string]::Equals([string]$publicXml.DocumentElement.Name, 'RSAKeyValue', [StringComparison]::Ordinal) -or
+            $elementNames.Count -ne 2 -or
+            @((Compare-Object @('Exponent', 'Modulus') @($elementNames | Sort-Object) -SyncWindow 0)).Count -ne 0) {
+            throw "Protected trusted-key XML contains private or unexpected RSA parameters: $($trustedKeyProperty.Name)"
+        }
+        $normalizedTrustedKey = ([string]$trustedKey.publicKeyXml).Trim() -replace '\s+', ''
+        $computedTrustedFingerprint = Get-RevAgentSnapshotSha256Bytes -Bytes ([Text.Encoding]::UTF8.GetBytes($normalizedTrustedKey))
+        if (-not [string]::Equals($computedTrustedFingerprint, [string]$trustedKey.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $trustedFingerprints.Add($computedTrustedFingerprint)) {
+            throw "Protected trusted-key fingerprint is invalid or duplicated: $($trustedKeyProperty.Name)"
         }
     }
     $productionKeyProperty = if ($null -ne $keys.trustedKeys) { $keys.trustedKeys.PSObject.Properties['revagent-prod-rsa-2026q3'] } else { $null }
@@ -466,24 +770,52 @@ function Get-RevAgentVerifiedReleaseSet {
         # handles keep the complete signed set coherent.
         foreach ($path in @($channelPath, $channelSignaturePath)) {
             [void](Assert-RevAgentSnapshotPathNoLinks -Path $path -StopRoot $root -RequireLeaf)
-            $locks.Add([IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+            $locked = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($locked.SafeFileHandle) -ne 1 -or
+                ([RevAgent.ReleaseSnapshotNative]::GetAttributes($locked.SafeFileHandle) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $locked.Dispose()
+                throw "Signed release input must be an ordinary file with exactly one hardlink reference: $path"
+            }
+            $locks.Add($locked)
         }
         if ($null -ne $SignedSetLockedHook) { & $SignedSetLockedHook $channelPath $channelSignaturePath }
         $channelDocument = Read-RevAgentSnapshotLockedJson -Stream $locks[0] -Path $channelPath -MaxBytes 1048576
+        [void](Read-RevAgentSnapshotLockedJson -Stream $locks[1] -Path $channelSignaturePath -MaxBytes 262144)
         $channelDirectory = Split-Path -Parent $channelPath
         $manifestPath = Resolve-RevAgentSnapshotRelativePath -RelativePath ([string]$channelDocument.manifestPath) -BaseDirectory $channelDirectory -Root $root
         $packagePath = Resolve-RevAgentSnapshotRelativePath -RelativePath ([string]$channelDocument.packagePath) -BaseDirectory $channelDirectory -Root $root
         $manifestSignaturePath = Join-Path (Split-Path -Parent $manifestPath) (([IO.Path]::GetFileNameWithoutExtension($manifestPath)) + '.sig.json')
         foreach ($path in @($manifestPath, $manifestSignaturePath, $packagePath)) {
             [void](Assert-RevAgentSnapshotPathNoLinks -Path $path -StopRoot $root -RequireLeaf)
-            $locks.Add([IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
+            $locked = [IO.FileStream]::new($path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+            if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($locked.SafeFileHandle) -ne 1 -or
+                ([RevAgent.ReleaseSnapshotNative]::GetAttributes($locked.SafeFileHandle) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+                $locked.Dispose()
+                throw "Signed release input must be an ordinary file with exactly one hardlink reference: $path"
+            }
+            $locks.Add($locked)
         }
         $manifestDocument = Read-RevAgentSnapshotLockedJson -Stream $locks[2] -Path $manifestPath -MaxBytes 4194304
+        [void](Read-RevAgentSnapshotLockedJson -Stream $locks[3] -Path $manifestSignaturePath -MaxBytes 262144)
         $nodeMsi = Get-RevAgentSignedNodeMsiMetadata -Manifest $manifestDocument -ManifestPath $manifestPath -ReleaseRoot $root -AllowTestRoot:$AllowTestRoot
         [void](Assert-RevAgentSnapshotPathNoLinks -Path $nodeMsi.path -StopRoot (Split-Path -Parent $manifestPath) -RequireLeaf)
         $locks.Add([IO.FileStream]::new([string]$nodeMsi.path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read))
-        if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($locks[5].SafeFileHandle) -ne 1) {
-            throw "Signed Node.js MSI sidecar must have exactly one hardlink reference: $($nodeMsi.path)"
+        if ([RevAgent.ReleaseSnapshotNative]::GetLinkCount($locks[5].SafeFileHandle) -ne 1 -or
+            ([RevAgent.ReleaseSnapshotNative]::GetAttributes($locks[5].SafeFileHandle) -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "Signed Node.js MSI sidecar must be an ordinary file with exactly one hardlink reference: $($nodeMsi.path)"
+        }
+
+        [long]$declaredPackageSize = 0
+        if ($null -eq $manifestDocument.package.PSObject.Properties['sizeBytes'] -or
+            -not [long]::TryParse([string]$manifestDocument.package.sizeBytes, [ref]$declaredPackageSize) -or
+            $declaredPackageSize -lt 1 -or $declaredPackageSize -gt 4294967296L) {
+            throw 'Signed release package size declaration is missing or outside the 1..4294967296 byte policy.'
+        }
+        if ($locks[4].Length -ne $declaredPackageSize -or $locks[4].Length -gt 4294967296L) {
+            throw "Signed release package size mismatch before hashing. expected=$declaredPackageSize actual=$($locks[4].Length)"
+        }
+        if ($locks[5].Length -ne [long]$nodeMsi.sizeBytes -or $locks[5].Length -gt 268435456L) {
+            throw "Signed Node.js MSI size mismatch before hashing. expected=$($nodeMsi.sizeBytes) actual=$($locks[5].Length)"
         }
         $trust = Assert-RevAgentSnapshotTrustInputs -TrustedKeysPath $TrustedKeysPath -IntegrityModulePath $IntegrityModulePath -AllowTestRoot:$AllowTestRoot
         $integrityModule = Import-Module $IntegrityModulePath -Force -PassThru
@@ -512,14 +844,8 @@ function Get-RevAgentVerifiedReleaseSet {
             throw "Signed release package SHA-256 mismatch. expected=$expectedPackageHash actual=$packageHash"
         }
         $packageSizeBytes = [long]$locks[4].Length
-        if ($manifestDocument.package.PSObject.Properties['sizeBytes'] -and [long]$manifestDocument.package.sizeBytes -ne $packageSizeBytes) {
-            throw "Signed release package size mismatch. expected=$($manifestDocument.package.sizeBytes) actual=$packageSizeBytes"
-        }
         if (-not [string]::Equals([string]$signedSetSha256.nodeMsi, [string]$nodeMsi.sha256, [StringComparison]::OrdinalIgnoreCase)) {
             throw "Signed Node.js MSI SHA-256 mismatch. expected=$($nodeMsi.sha256) actual=$($signedSetSha256.nodeMsi)"
-        }
-        if ([long]$locks[5].Length -ne [long]$nodeMsi.sizeBytes) {
-            throw "Signed Node.js MSI size mismatch. expected=$($nodeMsi.sizeBytes) actual=$($locks[5].Length)"
         }
         $nodeValidation = Test-RevAgentNodeMsi -Path $nodeMsi.path -ExpectedSha256 $nodeMsi.sha256 -ExpectedSizeBytes $nodeMsi.sizeBytes -AllowTestRoot:$AllowTestRoot
         if (-not $AllowTestRoot -and
@@ -712,7 +1038,10 @@ function New-RevAgentAuthenticatedReleaseInbox {
 }
 
 function New-RevAgentSnapshotDirectorySecurity {
-    param([switch]$AllowTestRoot)
+    param(
+        [switch]$AllowTestRoot,
+        [switch]$SystemOnlySnapshot
+    )
     $acl = [Security.AccessControl.DirectorySecurity]::new()
     $acl.SetAccessRuleProtection($true, $false)
     $ownerSid = if ($AllowTestRoot) { [Security.Principal.WindowsIdentity]::GetCurrent().User } else { [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') }
@@ -723,7 +1052,9 @@ function New-RevAgentSnapshotDirectorySecurity {
         $entries.Add([pscustomobject]@{ Sid = 'S-1-5-18'; Rights = [Security.AccessControl.FileSystemRights]::FullControl })
         $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-544'; Rights = [Security.AccessControl.FileSystemRights]::FullControl })
     }
-    $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute })
+    if (-not $SystemOnlySnapshot) {
+        $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute })
+    }
     foreach ($entry in $entries) {
         [void]$acl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
                 [Security.Principal.SecurityIdentifier]::new([string]$entry.Sid),
@@ -738,7 +1069,8 @@ function New-RevAgentSnapshotDirectorySecurity {
 function Set-RevAgentSnapshotItemSecurity {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
-        [switch]$AllowTestRoot
+        [switch]$AllowTestRoot,
+        [switch]$SystemOnlySnapshot
     )
 
     $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
@@ -752,7 +1084,9 @@ function Set-RevAgentSnapshotItemSecurity {
         $entries.Add([pscustomobject]@{ Sid = 'S-1-5-18'; Rights = [Security.AccessControl.FileSystemRights]::FullControl })
         $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-544'; Rights = [Security.AccessControl.FileSystemRights]::FullControl })
     }
-    $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute })
+    if (-not $SystemOnlySnapshot) {
+        $entries.Add([pscustomobject]@{ Sid = 'S-1-5-32-545'; Rights = [Security.AccessControl.FileSystemRights]::ReadAndExecute })
+    }
     foreach ($entry in $entries) {
         $inheritance = if ($item.PSIsContainer) {
             [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit
@@ -774,11 +1108,16 @@ function Set-RevAgentSnapshotItemSecurity {
 }
 
 function New-RevAgentProtectedSnapshotChild {
-    param([Parameter(Mandatory = $true)][string]$Parent, [Parameter(Mandatory = $true)][string]$Name, [switch]$AllowTestRoot)
+    param(
+        [Parameter(Mandatory = $true)][string]$Parent,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [switch]$AllowTestRoot,
+        [switch]$SystemOnlySnapshot
+    )
     [void](Assert-RevAgentSnapshotPathNoLinks -Path $Parent)
     $path = Join-Path $Parent $Name
     if (Test-Path -LiteralPath $path) { throw "Protected snapshot child already exists: $path" }
-    $security = New-RevAgentSnapshotDirectorySecurity -AllowTestRoot:$AllowTestRoot
+    $security = New-RevAgentSnapshotDirectorySecurity -AllowTestRoot:$AllowTestRoot -SystemOnlySnapshot:$SystemOnlySnapshot
     $parentInfo = [IO.DirectoryInfo]::new($Parent)
     $aclCreateOverload = @($parentInfo.GetType().GetMethods() | Where-Object {
             $_.Name -eq 'CreateSubdirectory' -and $_.GetParameters().Count -eq 2
@@ -1032,15 +1371,78 @@ function Get-RevAgentSnapshotComponentState {
     return $result
 }
 
+function Read-RevAgentProtectedReleaseSnapshotState {
+    param(
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [switch]$RequireSystemOnly
+    )
+
+    $root = [IO.Path]::GetFullPath($SnapshotRoot).TrimEnd('\')
+    $statePath = Assert-RevAgentSnapshotPathNoLinks -Path (Join-Path $root 'snapshot-state.json') -StopRoot $root -RequireLeaf
+    $stream = $null
+    try {
+        $stream = [IO.FileStream]::new($statePath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        $attributes = [uint32][RevAgent.ReleaseSnapshotNative]::GetAttributes($stream.SafeFileHandle)
+        if (($attributes -band [uint32][IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            ($attributes -band [uint32][IO.FileAttributes]::Directory) -ne 0) {
+            throw "Protected release snapshot state must be an ordinary non-reparse file: $statePath"
+        }
+        $linkCount = [uint32][RevAgent.ReleaseSnapshotNative]::GetLinkCount($stream.SafeFileHandle)
+        if ($linkCount -ne 1) { throw "Protected release snapshot state must have exactly one hardlink reference. path=$statePath linkCount=$linkCount" }
+        $state = Read-RevAgentSnapshotLockedJson -Stream $stream -Path $statePath -MaxBytes 4194304
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+
+    $requiredFields = @(
+        'schemaVersion', 'app', 'stateType', 'transportTrust', 'snapshotId', 'snapshotRoot', 'createdAtUtc',
+        'acquisitionChannelManifestPath', 'channelPolicy', 'release', 'trust', 'execution', 'components', 'externalDependencies'
+    )
+    $hasAccessPolicy = $null -ne $state.PSObject.Properties['accessPolicy']
+    if ($hasAccessPolicy) { $requiredFields += 'accessPolicy' }
+    Assert-RevAgentSnapshotExactProperties -Value $state -Names $requiredFields -Label 'Protected release snapshot state'
+
+    $systemOnly = $hasAccessPolicy -and [string]$state.accessPolicy -ceq $script:RevAgentSystemOnlySnapshotAccessPolicy
+    if ($hasAccessPolicy -and -not $systemOnly) { throw "Protected release snapshot accessPolicy is unsupported: $($state.accessPolicy)" }
+    if ($RequireSystemOnly -and -not $systemOnly) { throw 'Protected release snapshot is not bound to the system-only bootstrap-trust access policy.' }
+    if ([int]$state.schemaVersion -ne 1 -or
+        [string]$state.app -cne 'revAgent' -or
+        [string]$state.stateType -cne 'authenticated-release-snapshot' -or
+        [string]$state.transportTrust -cne 'signed_local_snapshot') {
+        throw 'Protected release snapshot state contract is invalid.'
+    }
+    $createdAt = [DateTimeOffset]::MinValue
+    if ([string]$state.createdAtUtc -cnotmatch 'Z$' -or
+        -not [DateTimeOffset]::TryParse([string]$state.createdAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$createdAt)) {
+        throw 'Protected release snapshot createdAtUtc must be an ISO UTC timestamp.'
+    }
+    $boundRoot = ''
+    try { $boundRoot = [IO.Path]::GetFullPath([string]$state.snapshotRoot).TrimEnd('\') }
+    catch { throw 'Protected release snapshot root state is not a valid absolute path.' }
+    if ([string]$state.snapshotId -cnotmatch '^[a-f0-9]{32}$' -or
+        -not [string]::Equals([IO.Path]::GetFileName($root), [string]$state.snapshotId, [StringComparison]::Ordinal) -or
+        -not [string]::Equals($boundRoot, $root, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Protected release snapshot identity/path/leaf contract is invalid.'
+    }
+    return [pscustomobject][ordered]@{
+        state = $state
+        statePath = $statePath
+        accessPolicy = if ($systemOnly) { $script:RevAgentSystemOnlySnapshotAccessPolicy } else { 'authenticated-users-read' }
+        systemOnly = [bool]$systemOnly
+    }
+}
+
 function Assert-RevAgentProtectedReleaseSnapshot {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory = $true)][string]$SnapshotRoot,
-        [switch]$AllowTestRoot
+        [switch]$AllowTestRoot,
+        [switch]$SystemOnlySnapshot
     )
 
     $root = [IO.Path]::GetFullPath($SnapshotRoot).TrimEnd('\')
     [void](Assert-RevAgentSnapshotPathNoLinks -Path $root)
+    $stateEvidence = Read-RevAgentProtectedReleaseSnapshotState -SnapshotRoot $root -RequireSystemOnly:$SystemOnlySnapshot
+    $enforceSystemOnly = [bool]$stateEvidence.systemOnly
     $rootItem = Get-Item -LiteralPath $root -Force -ErrorAction Stop
     if (-not $rootItem.PSIsContainer) { throw "Protected release snapshot root is not a directory: $root" }
     $rootAcl = Get-Acl -LiteralPath $root -ErrorAction Stop
@@ -1058,6 +1460,11 @@ function Assert-RevAgentProtectedReleaseSnapshot {
         [Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles -bor
         [Security.AccessControl.FileSystemRights]::ChangePermissions -bor
         [Security.AccessControl.FileSystemRights]::TakeOwnership
+    $readMask = [Security.AccessControl.FileSystemRights]::ReadData -bor
+        [Security.AccessControl.FileSystemRights]::ReadExtendedAttributes -bor
+        [Security.AccessControl.FileSystemRights]::ReadAttributes -bor
+        [Security.AccessControl.FileSystemRights]::ReadPermissions -bor
+        [Security.AccessControl.FileSystemRights]::ExecuteFile
     foreach ($item in @($rootItem) + @(Get-ChildItem -LiteralPath $root -Recurse -Force -ErrorAction Stop)) {
         $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) { throw "Protected release snapshot contains a filesystem link: $($item.FullName)" }
@@ -1074,15 +1481,47 @@ function Assert-RevAgentProtectedReleaseSnapshot {
         if (-not $trustedWriters.Contains($itemOwnerSid) -or -not $acl.AreAccessRulesProtected) {
             throw "Protected release snapshot item owner/DACL is not trusted. path=$($item.FullName) owner=$itemOwnerSid"
         }
+        $builtinUsersReadable = $false
         foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
             $sid = [string]$rule.IdentityReference.Value
+            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                [string]::Equals($sid, 'S-1-5-32-545', [StringComparison]::OrdinalIgnoreCase) -and
+                (($rule.FileSystemRights -band $readMask) -ne 0)) {
+                $builtinUsersReadable = $true
+            }
+            if ($enforceSystemOnly -and
+                $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                -not $trustedWriters.Contains($sid)) {
+                throw "System-only protected release snapshot grants access to an untrusted principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
+            }
             if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
                 -not $trustedWriters.Contains($sid) -and (($rule.FileSystemRights -band $writeMask) -ne 0)) {
                 throw "Protected release snapshot grants write/delete/ACL capability to an untrusted principal. path=$($item.FullName) principal=$sid rights=$($rule.FileSystemRights)"
             }
         }
+        if (-not $enforceSystemOnly -and -not $builtinUsersReadable) {
+            throw "Protected release snapshot default access policy requires BUILTIN Users read access. path=$($item.FullName)"
+        }
     }
     return $true
+}
+
+function Test-RevAgentSystemOnlyReleaseSnapshot {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory = $true)][string]$SnapshotRoot,
+        [switch]$AllowTestRoot
+    )
+
+    try { return [bool](Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $SnapshotRoot -AllowTestRoot:$AllowTestRoot -SystemOnlySnapshot) }
+    catch { return $false }
+}
+
+function Get-RevAgentCanonicalProtectedSnapshotParent {
+    param([switch]$SystemOnlySnapshot)
+
+    $relativePath = if ($SystemOnlySnapshot) { 'DPE\revAgent\bootstrap-broker\snapshots' } else { 'DPE\revAgent\execution-snapshots' }
+    return [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) $relativePath)).TrimEnd('\')
 }
 
 function New-RevAgentProtectedReleaseSnapshot {
@@ -1096,6 +1535,7 @@ function New-RevAgentProtectedReleaseSnapshot {
         [long]$HighestAcceptedReleaseSequence = 0,
         [string]$ExpectedNodeMsiSha256 = '',
         [switch]$AllowTestRoot,
+        [switch]$SystemOnlySnapshot,
         [scriptblock]$VerifiedInboxReleasedHook = $null,
         [scriptblock]$SnapshotParentLockedHook = $null,
         [Parameter(DontShow = $true)][string]$TestMachineName = ''
@@ -1110,16 +1550,8 @@ function New-RevAgentProtectedReleaseSnapshot {
     }
     $inbox = [IO.Path]::GetFullPath($InboxPath).TrimEnd('\')
     [void](Assert-RevAgentSnapshotPathNoLinks -Path $inbox)
-    $inboxStatePath = Join-Path $inbox 'inbox-state.json'
-    if (-not (Test-Path -LiteralPath $inboxStatePath -PathType Leaf)) { throw "Authenticated release inbox state was not found: $inboxStatePath" }
-    $inboxState = Get-Content -Raw -LiteralPath $inboxStatePath | ConvertFrom-Json
-    if ([int]$inboxState.schemaVersion -ne 1 -or [string]$inboxState.app -ne 'revAgent' -or [string]$inboxState.stateType -ne 'authenticated-release-inbox') { throw 'Release inbox state contract is invalid.' }
+    $inboxState = Read-RevAgentSnapshotInboxState -InboxPath $inbox -Channel $Channel
     $snapshotId = [string]$inboxState.inboxId
-    if ($snapshotId -notmatch '^[a-f0-9]{32}$' -or -not [string]::Equals([IO.Path]::GetFullPath([string]$inboxState.inboxRoot).TrimEnd('\'), $inbox, [StringComparison]::OrdinalIgnoreCase)) { throw 'Release inbox identity/path contract is invalid.' }
-    if (-not [string]::Equals([string]$inboxState.release.channel, $Channel, [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$inboxState.release.channelManifestRelativePath, "channels\$Channel.json", [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Release inbox channel state does not match the requested protected snapshot channel: $Channel"
-    }
     if (-not $AllowTestRoot) {
         $expectedAcquisitionPath = [IO.Path]::GetFullPath((Join-Path $script:RevAgentProductionReleaseRoot "channels\$Channel.json"))
         if (-not [string]::Equals([IO.Path]::GetFullPath([string]$inboxState.acquisitionChannelManifestPath), $expectedAcquisitionPath, [StringComparison]::OrdinalIgnoreCase)) {
@@ -1129,10 +1561,11 @@ function New-RevAgentProtectedReleaseSnapshot {
 
     $verified = Get-RevAgentVerifiedReleaseSet -ReleaseRoot $inbox -Channel $Channel -TrustedKeysPath $TrustedKeysPath -IntegrityModulePath $IntegrityModulePath -HighestAcceptedReleaseSequence $HighestAcceptedReleaseSequence -AllowTestRoot:$AllowTestRoot -TestMachineName $TestMachineName
     if ($null -ne $VerifiedInboxReleasedHook) { & $VerifiedInboxReleasedHook $verified }
-    if ([string]::IsNullOrWhiteSpace($SnapshotParent)) { $SnapshotParent = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'DPE\revAgent\execution-snapshots' }
+    $canonicalSnapshotParent = Get-RevAgentCanonicalProtectedSnapshotParent -SystemOnlySnapshot:$SystemOnlySnapshot
+    if ([string]::IsNullOrWhiteSpace($SnapshotParent)) { $SnapshotParent = $canonicalSnapshotParent }
     $SnapshotParent = [IO.Path]::GetFullPath($SnapshotParent).TrimEnd('\')
     if (-not $AllowTestRoot) {
-        $canonicalParent = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'DPE\revAgent\execution-snapshots')).TrimEnd('\')
+        $canonicalParent = [IO.Path]::GetFullPath($canonicalSnapshotParent).TrimEnd('\')
         if (-not [string]::Equals($SnapshotParent, $canonicalParent, [StringComparison]::OrdinalIgnoreCase)) { throw "Production snapshot parent must be '$canonicalParent'." }
         $productRoot = Split-Path -Parent $SnapshotParent
         if (-not (Test-Path -LiteralPath $productRoot -PathType Container)) { throw "Protected revAgent product root is missing: $productRoot" }
@@ -1146,8 +1579,8 @@ function New-RevAgentProtectedReleaseSnapshot {
         if ($null -ne $SnapshotParentLockedHook) { & $SnapshotParentLockedHook $parentGuard }
         [void](Assert-RevAgentSnapshotDirectoryGuard -Guard $parentGuard -AllowTestRoot:$AllowTestRoot)
         if (Test-Path -LiteralPath $final) { throw "Protected release snapshot already exists: $final" }
-        $stageName = ".stage-$snapshotId"
-        $stage = New-RevAgentProtectedSnapshotChild -Parent $SnapshotParent -Name $stageName -AllowTestRoot:$AllowTestRoot
+        $stageName = if ($SystemOnlySnapshot) { ".bootstrap-trust-stage-$snapshotId" } else { ".stage-$snapshotId" }
+        $stage = New-RevAgentProtectedSnapshotChild -Parent $SnapshotParent -Name $stageName -AllowTestRoot:$AllowTestRoot -SystemOnlySnapshot:$SystemOnlySnapshot
         [void](Assert-RevAgentSnapshotDirectoryGuard -Guard $parentGuard -AllowTestRoot:$AllowTestRoot)
         foreach ($directory in @('channels', 'releases', 'trust', 'payload')) { New-Item -ItemType Directory -Path (Join-Path $stage $directory) -Force | Out-Null }
         $version = [string]$verified.channel.version
@@ -1234,13 +1667,14 @@ function New-RevAgentProtectedReleaseSnapshot {
             components = $componentState
             externalDependencies = $externalDependencies
         }
+        if ($SystemOnlySnapshot) { $state.Insert(4, 'accessPolicy', $script:RevAgentSystemOnlySnapshotAccessPolicy) }
         Write-RevAgentSnapshotJsonCreateNew -Path (Join-Path $stage 'snapshot-state.json') -Value $state
         $snapshotItems = @(Get-ChildItem -LiteralPath $stage -Recurse -Force -ErrorAction Stop) + @(Get-Item -LiteralPath $stage -Force -ErrorAction Stop)
         foreach ($item in @($snapshotItems | Sort-Object { $_.FullName.Length } -Descending)) {
-            Set-RevAgentSnapshotItemSecurity -Path $item.FullName -AllowTestRoot:$AllowTestRoot
+            Set-RevAgentSnapshotItemSecurity -Path $item.FullName -AllowTestRoot:$AllowTestRoot -SystemOnlySnapshot:$SystemOnlySnapshot
         }
         Move-Item -LiteralPath $stage -Destination $final -ErrorAction Stop
-        [void](Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $final -AllowTestRoot:$AllowTestRoot)
+        [void](Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $final -AllowTestRoot:$AllowTestRoot -SystemOnlySnapshot:$SystemOnlySnapshot)
         $statePath = Join-Path $final 'snapshot-state.json'
         $persisted = Get-Content -Raw -LiteralPath $statePath | ConvertFrom-Json
         if (-not [string]::Equals([string]$persisted.snapshotRoot, $final, [StringComparison]::OrdinalIgnoreCase) -or
@@ -1252,6 +1686,7 @@ function New-RevAgentProtectedReleaseSnapshot {
     }
     catch {
         if (-not [string]::IsNullOrWhiteSpace($stage) -and (Test-Path -LiteralPath $stage)) { Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue }
+        if (-not [string]::IsNullOrWhiteSpace($final) -and (Test-Path -LiteralPath $final)) { Remove-Item -LiteralPath $final -Recurse -Force -ErrorAction SilentlyContinue }
         throw
     }
     finally { if ($null -ne $parentGuard -and $null -ne $parentGuard.Handle) { $parentGuard.Handle.Dispose() } }
@@ -1261,6 +1696,7 @@ Export-ModuleMember -Function `
     New-RevAgentAuthenticatedReleaseInbox, `
     New-RevAgentProtectedReleaseSnapshot, `
     Assert-RevAgentProtectedReleaseSnapshot, `
+    Test-RevAgentSystemOnlyReleaseSnapshot, `
     Assert-RevAgentProtectedSnapshotParent, `
     Get-RevAgentVerifiedReleaseSet, `
     Expand-RevAgentSnapshotArchiveSecure

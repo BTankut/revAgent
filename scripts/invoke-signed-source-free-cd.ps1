@@ -41,6 +41,119 @@ $ErrorActionPreference = "Stop"
 $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
 $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
 
+function Assert-RevAgentCdProductionTrustedKeysDocument {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][System.Management.Automation.PSModuleInfo]$IntegrityModule
+    )
+
+    $json = Get-Content -Raw -LiteralPath $Path -Encoding UTF8
+    $duplicate = & $IntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $json
+    if ([bool]$duplicate.found) {
+        throw "Production trusted-key document contains a duplicate decoded JSON property: $($duplicate.key)"
+    }
+    $fingerprintCommand = $IntegrityModule.ExportedCommands['Get-RevAgentPublicKeyFingerprint']
+    if ($null -eq $fingerprintCommand) {
+        throw 'Pinned distribution-integrity module did not export Get-RevAgentPublicKeyFingerprint.'
+    }
+
+    $document = $json | ConvertFrom-Json
+    $topLevelProperties = @($document.PSObject.Properties)
+    $allowedTopLevelFields = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    $minimalTopLevel = $topLevelProperties.Count -eq 1 -and [string]::Equals([string]$topLevelProperties[0].Name, 'trustedKeys', [StringComparison]::Ordinal)
+    $metadataTopLevel = $topLevelProperties.Count -eq $allowedTopLevelFields.Count -and
+        @($topLevelProperties | Where-Object { $allowedTopLevelFields -cnotcontains [string]$_.Name }).Count -eq 0 -and
+        @($allowedTopLevelFields | Where-Object { @($topLevelProperties.Name) -cnotcontains $_ }).Count -eq 0
+    if (-not $minimalTopLevel -and -not $metadataTopLevel) {
+        throw "Production trusted-key document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys."
+    }
+    if ($metadataTopLevel) {
+        $generatedAt = [DateTimeOffset]::MinValue
+        if (($document.schemaVersion -isnot [int] -and $document.schemaVersion -isnot [long]) -or
+            [long]$document.schemaVersion -ne 1 -or
+            $document.app -isnot [string] -or
+            ([string]$document.app -cne 'revAgent' -and [string]$document.app -cne 'revit-mcp-skill') -or
+            $document.generatedAtUtc -isnot [string] -or
+            [string]$document.generatedAtUtc -notmatch 'Z$' -or
+            -not [DateTimeOffset]::TryParse([string]$document.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$generatedAt)) {
+            throw 'Production trusted-key metadata must be schemaVersion 1, an accepted revAgent app identity, and an ISO UTC generatedAtUtc value.'
+        }
+    }
+
+    $properties = @($document.trustedKeys.PSObject.Properties)
+    if ($properties.Count -lt 1 -or $properties.Count -gt 2 -or
+        $null -eq $document.trustedKeys.PSObject.Properties[$productionSigningKeyId]) {
+        throw "Production trusted-key document must contain the pinned '$productionSigningKeyId' key and at most one transition key."
+    }
+    if ($properties.Count -eq 2) {
+        $transitionKeyId = [string](@($properties | Where-Object { -not [string]::Equals([string]$_.Name, $productionSigningKeyId, [StringComparison]::Ordinal) })[0].Name)
+        $transitionMatch = [regex]::Match($transitionKeyId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+        $transitionOrdinal = if ($transitionMatch.Success) { ([int]$transitionMatch.Groups['year'].Value * 4) + [int]$transitionMatch.Groups['quarter'].Value } else { 0 }
+        if (-not $transitionMatch.Success -or $transitionOrdinal -le ((2026 * 4) + 3)) {
+            throw "The optional production rotation key must be later than ${productionSigningKeyId}: $transitionKeyId"
+        }
+    }
+
+    $fingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($property in $properties) {
+        if ([string]$property.Name -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$') {
+            throw "Production trusted-key id is outside the public key-id policy: $($property.Name)"
+        }
+        $key = $property.Value
+        $recordProperties = @($key.PSObject.Properties)
+        $requiredFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+        $allowedFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+        if ($recordProperties.Count -lt $requiredFields.Count -or $recordProperties.Count -gt $allowedFields.Count -or
+            @($recordProperties | Where-Object { $allowedFields -cnotcontains [string]$_.Name }).Count -ne 0 -or
+            @($requiredFields | Where-Object { @($recordProperties.Name) -cnotcontains $_ }).Count -ne 0 -or
+            ($null -ne $key.PSObject.Properties['purpose'] -and [string]$key.purpose -cne 'release-signing')) {
+            throw "Production trusted-key entry properties must exactly match the public allowlist: $($property.Name)"
+        }
+        if ($key.algorithm -isnot [string] -or $key.publicKeyFingerprint -isnot [string] -or $key.publicKeyXml -isnot [string] -or
+            -not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+            [string]$key.publicKeyFingerprint -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Production trusted-key entry is not a complete RS256 public-key record: $($property.Name)"
+        }
+
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $stringReader = [IO.StringReader]::new([string]$key.publicKeyXml)
+        $xmlReader = $null
+        try {
+            $xmlReader = [Xml.XmlReader]::Create($stringReader, $settings)
+            $xml = [Xml.XmlDocument]::new()
+            $xml.XmlResolver = $null
+            $xml.Load($xmlReader)
+        }
+        finally {
+            if ($null -ne $xmlReader) { $xmlReader.Dispose() }
+            $stringReader.Dispose()
+        }
+        $elementNames = if ($null -eq $xml.DocumentElement) { @() } else {
+            @($xml.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.Name })
+        }
+        if ($null -eq $xml.DocumentElement -or
+            -not [string]::Equals([string]$xml.DocumentElement.Name, 'RSAKeyValue', [StringComparison]::Ordinal) -or
+            $elementNames.Count -ne 2 -or
+            @((Compare-Object @('Exponent', 'Modulus') @($elementNames | Sort-Object) -SyncWindow 0)).Count -ne 0) {
+            throw "Production trusted-key XML contains private or unexpected RSA parameters: $($property.Name)"
+        }
+
+        $computedFingerprint = & $fingerprintCommand -PublicKeyXml ([string]$key.publicKeyXml)
+        if (-not [string]::Equals([string]$computedFingerprint, [string]$key.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
+            -not $fingerprints.Add([string]$computedFingerprint)) {
+            throw "Production trusted-key fingerprint is invalid or duplicated: $($property.Name)"
+        }
+    }
+
+    $productionKey = $document.trustedKeys.$productionSigningKeyId
+    if (-not [string]::Equals([string]$productionKey.publicKeyFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Production trusted-key document does not match the pinned RS256 release key.'
+    }
+    return $document
+}
+
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) {
     $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 }
@@ -279,19 +392,8 @@ if (-not $testSigningIdentity) {
     if (-not [string]::Equals($SigningKeyId, $productionSigningKeyId, [StringComparison]::Ordinal)) {
         throw "Production signed source-free CD requires signing key '$productionSigningKeyId'."
     }
-    Import-Module (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -Force
-    $trustedDocument = Get-Content -Raw -LiteralPath $trustedKeysFullPath -Encoding UTF8 | ConvertFrom-Json
-    $trustedProperties = @($trustedDocument.trustedKeys.PSObject.Properties)
-    if ($trustedProperties.Count -ne 1 -or -not [string]::Equals([string]$trustedProperties[0].Name, $productionSigningKeyId, [StringComparison]::Ordinal)) {
-        throw "Production trusted-key document must contain exactly one '$productionSigningKeyId' key."
-    }
-    $trustedKey = $trustedProperties[0].Value
-    $computedFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml ([string]$trustedKey.publicKeyXml)
-    if (-not [string]::Equals([string]$trustedKey.algorithm, 'RS256', [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$trustedKey.publicKeyFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($computedFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Production trusted-key document does not match the pinned RS256 release key.'
-    }
+    $integrityModule = Import-Module (Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1') -Force -PassThru
+    [void](Assert-RevAgentCdProductionTrustedKeysDocument -Path $trustedKeysFullPath -IntegrityModule $integrityModule)
 }
 
 $refName = [string]$env:GITHUB_REF_NAME

@@ -957,7 +957,7 @@ function Copy-RevAgentUserPack {
     Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.schema.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.schema.json"
     Copy-UserPackFile -SourceRelativePath "config\bootstrap-prestage-evidence.example.json" -DestinationRelativePath "installer\nas\bootstrap-prestage-evidence.example.json"
     Copy-UserPackDirectory -SourceRelativePath "installer\lib"
-    foreach ($nasTool in @("Start-revAgent-Update.ps1", "Start-revAgent-Update.cmd", "Install-revAgent-Updater-GUI.ps1", "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
+    foreach ($nasTool in @("Start-revAgent-Update.ps1", "Start-revAgent-Update.cmd", "Install-revAgent-Updater-GUI.ps1", "Invoke-revAgent-PrivilegedSnapshotUpdate.ps1", "Invoke-RevAgent-BootstrapTrustBroker.ps1", "update-from-nas.ps1", "show-installed-version.ps1", "install-updater-task.ps1", "migrate-source-free-install.ps1", "Invoke-revAgent-CodexUserIntegration.ps1")) {
         Copy-UserPackFile -SourceRelativePath (Join-Path "installer\nas" $nasTool)
     }
 
@@ -1223,20 +1223,239 @@ function Get-RevAgentPilotAllowedMachineNames {
     return @($normalized.ToArray() | Sort-Object)
 }
 
-function Assert-RevAgentProductionTrustedKeysDocument {
-    param([Parameter(Mandatory = $true)][string]$Path)
-    $document = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
+function Get-RevAgentTrustedKeyJsonPropertyName {
+    param([Parameter(Mandatory = $true)][Xml.XmlElement]$Element)
+
+    if ([string]::Equals($Element.LocalName, 'item', [StringComparison]::Ordinal) -and $Element.HasAttribute('item')) {
+        return [string]$Element.GetAttribute('item')
+    }
+    return [string]$Element.LocalName
+}
+
+function Get-RevAgentTrustedKeyJsonChildren {
+    param([Parameter(Mandatory = $true)][Xml.XmlElement]$Element)
+    return @($Element.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element })
+}
+
+function Assert-RevAgentTrustedKeyJsonTree {
+    param(
+        [Parameter(Mandatory = $true)][Xml.XmlElement]$Element,
+        [Parameter(Mandatory = $true)][string]$Context
+    )
+
+    $jsonType = [string]$Element.GetAttribute('type')
+    if ([string]::Equals($jsonType, 'object', [StringComparison]::Ordinal)) {
+        $children = @(Get-RevAgentTrustedKeyJsonChildren -Element $Element)
+        $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+        foreach ($child in $children) {
+            $name = Get-RevAgentTrustedKeyJsonPropertyName -Element $child
+            if ([string]::IsNullOrWhiteSpace($name) -or -not $seen.Add($name)) {
+                throw "Trusted-key JSON contains an empty or duplicate decoded property at ${Context}: $name"
+            }
+            if ($name -match '^(?i:d|p|q|dp|dq|qi|oth|k|privatekey|privatekeypem|secret|password|credential)$') {
+                throw "Trusted-key JSON contains a forbidden private or secret-bearing property: $name"
+            }
+        }
+        foreach ($child in $children) {
+            $name = Get-RevAgentTrustedKeyJsonPropertyName -Element $child
+            Assert-RevAgentTrustedKeyJsonTree -Element $child -Context ($Context + '.' + $name)
+        }
+    }
+    elseif ([string]::Equals($jsonType, 'array', [StringComparison]::Ordinal)) {
+        $index = 0
+        foreach ($child in @(Get-RevAgentTrustedKeyJsonChildren -Element $Element)) {
+            Assert-RevAgentTrustedKeyJsonTree -Element $child -Context ("$Context[$index]")
+            $index++
+        }
+    }
+    elseif ([string]::Equals($jsonType, 'string', [StringComparison]::Ordinal)) {
+        $value = [string]$Element.InnerText
+        if ($value -match '(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' -or
+            $value -match '(?i)<\s*(?:D|P|Q|DP|DQ|InverseQ)\s*>') {
+            throw "Trusted-key JSON contains decoded private-key material at $Context."
+        }
+    }
+}
+
+function Read-RevAgentTrustedKeysEvidence {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [switch]$AllowTestIdentity
+    )
+
+    $stream = $null
+    try {
+        $stream = [IO.File]::Open($Path, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -lt 1 -or $stream.Length -gt 65536) {
+            throw "Trusted-key document size is outside the bounded 1..65536 policy: $Path"
+        }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw "Trusted-key document ended before its declared length: $Path" }
+            $offset += $read
+        }
+        if ($stream.ReadByte() -ne -1) { throw "Trusted-key document grew while it was acquired: $Path" }
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+
+    $strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+    $text = $strictUtf8.GetString($bytes)
+    if ($text.Length -gt 0 -and $text[0] -eq [char]0xFEFF) { $text = $text.Substring(1) }
+    if ($text -match '(?i)"(?:d|p|q|dp|dq|qi|oth|k|privatekey|privatekeypem|secret|password|credential)"\s*:' -or
+        $text -match '(?i)-----BEGIN(?: [A-Z0-9]+)* PRIVATE KEY-----|-----BEGIN OPENSSH PRIVATE KEY-----' -or
+        $text -match '(?i)<\s*(?:D|P|Q|DP|DQ|InverseQ)\s*>') {
+        throw 'Trusted-key document contains forbidden private or secret-bearing material.'
+    }
+
+    Microsoft.PowerShell.Utility\Add-Type -AssemblyName System.Runtime.Serialization -ErrorAction Stop
+    $jsonBytes = $bytes
+    if ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) {
+        $jsonBytes = New-Object byte[] ($bytes.Length - 3)
+        [Array]::Copy($bytes, 3, $jsonBytes, 0, $jsonBytes.Length)
+    }
+    $reader = $null
+    try {
+        $reader = [Runtime.Serialization.Json.JsonReaderWriterFactory]::CreateJsonReader($jsonBytes, [Xml.XmlDictionaryReaderQuotas]::Max)
+        $xml = [Xml.XmlDocument]::new()
+        $xml.XmlResolver = $null
+        $xml.Load($reader)
+    }
+    catch { throw "Trusted-key bytes are not strict JSON: $($_.Exception.Message)" }
+    finally { if ($null -ne $reader) { $reader.Dispose() } }
+
+    $root = $xml.DocumentElement
+    if ($null -eq $root -or -not [string]::Equals([string]$root.LocalName, 'root', [StringComparison]::Ordinal) -or
+        -not [string]::Equals([string]$root.GetAttribute('type'), 'object', [StringComparison]::Ordinal)) {
+        throw 'Trusted-key document must be one JSON object.'
+    }
+    Assert-RevAgentTrustedKeyJsonTree -Element $root -Context '$'
+    $top = @(Get-RevAgentTrustedKeyJsonChildren -Element $root)
+    $topNames = @($top | ForEach-Object { Get-RevAgentTrustedKeyJsonPropertyName -Element $_ })
+    $allowedTopNames = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+    $trustedKeysNodes = @($top | Where-Object { [string]::Equals((Get-RevAgentTrustedKeyJsonPropertyName -Element $_), 'trustedKeys', [StringComparison]::Ordinal) })
+    if ($trustedKeysNodes.Count -ne 1 -or -not [string]::Equals([string]$trustedKeysNodes[0].GetAttribute('type'), 'object', [StringComparison]::Ordinal) -or
+        @($topNames | Where-Object { $allowedTopNames -cnotcontains $_ }).Count -ne 0 -or $top.Count -notin @(1, 4)) {
+        throw 'Trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist.'
+    }
+    if ($top.Count -eq 4) {
+        foreach ($metadata in @(@('schemaVersion', 'number'), @('app', 'string'), @('generatedAtUtc', 'string'))) {
+            $metadataNode = @($top | Where-Object { [string]::Equals((Get-RevAgentTrustedKeyJsonPropertyName -Element $_), [string]$metadata[0], [StringComparison]::Ordinal) })
+            if ($metadataNode.Count -ne 1 -or -not [string]::Equals([string]$metadataNode[0].GetAttribute('type'), [string]$metadata[1], [StringComparison]::Ordinal)) {
+                throw "Trusted-key metadata is incomplete or mistyped: $($metadata[0])"
+            }
+        }
+    }
+    $keyNodes = @(Get-RevAgentTrustedKeyJsonChildren -Element $trustedKeysNodes[0])
+    if ($keyNodes.Count -lt 1 -or $keyNodes.Count -gt 2) {
+        throw 'Trusted-key document must contain one key or a two-key rotation window.'
+    }
+    $requiredFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+    $allowedFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+    foreach ($keyNode in $keyNodes) {
+        $keyId = Get-RevAgentTrustedKeyJsonPropertyName -Element $keyNode
+        $fields = @(Get-RevAgentTrustedKeyJsonChildren -Element $keyNode)
+        $fieldNames = @($fields | ForEach-Object { Get-RevAgentTrustedKeyJsonPropertyName -Element $_ })
+        if ($keyId -cnotmatch '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$' -or
+            -not [string]::Equals([string]$keyNode.GetAttribute('type'), 'object', [StringComparison]::Ordinal) -or
+            $fields.Count -notin @(3, 4) -or @($fieldNames | Where-Object { $allowedFields -cnotcontains $_ }).Count -ne 0 -or
+            @($requiredFields | Where-Object { $fieldNames -cnotcontains $_ }).Count -ne 0 -or
+            ($fields.Count -eq 4 -and $fieldNames -cnotcontains 'purpose') -or
+            @($fields | Where-Object { -not [string]::Equals([string]$_.GetAttribute('type'), 'string', [StringComparison]::Ordinal) }).Count -ne 0) {
+            throw "Trusted-key entry must be an exact public RS256 record: $keyId"
+        }
+    }
+
+    $document = $text | ConvertFrom-Json
+    $topProperties = @($document.PSObject.Properties)
+    $topPropertyNames = @($topProperties | ForEach-Object { [string]$_.Name })
+    if ($topProperties.Count -notin @(1, 4) -or @($topPropertyNames | Where-Object { $allowedTopNames -cnotcontains $_ }).Count -ne 0 -or
+        $topPropertyNames -cnotcontains 'trustedKeys') {
+        throw 'Trusted-key document properties must be trustedKeys alone or the exact public metadata allowlist.'
+    }
+    if ($topProperties.Count -eq 4) {
+        foreach ($metadataName in @('schemaVersion', 'app', 'generatedAtUtc')) {
+            if ($topPropertyNames -cnotcontains $metadataName) { throw "Trusted-key metadata is incomplete: $metadataName" }
+        }
+        $generatedAt = [DateTime]::MinValue
+        if ([int]$document.schemaVersion -ne 1 -or
+            [string]$document.app -notin @('revAgent', 'revit-mcp-skill') -or
+            [string]$document.generatedAtUtc -cnotmatch 'Z$' -or
+            -not [DateTime]::TryParse([string]$document.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::RoundtripKind, [ref]$generatedAt) -or
+            $generatedAt.Kind -ne [DateTimeKind]::Utc -or
+            $generatedAt -gt [DateTime]::UtcNow.AddMinutes(5)) {
+            throw 'Trusted-key public metadata is invalid.'
+        }
+    }
     $properties = @($document.trustedKeys.PSObject.Properties)
-    if ($properties.Count -ne 1 -or -not [string]::Equals([string]$properties[0].Name, $script:RevAgentProductionSigningKeyId, [StringComparison]::Ordinal)) {
-        throw "Production trusted-key document must contain exactly one '$($script:RevAgentProductionSigningKeyId)' key."
+    $fingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($property in $properties) {
+        $key = $property.Value
+        if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+            [string]$key.publicKeyFingerprint -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Trusted-key entry is not a complete RS256 public-key record: $($property.Name)"
+        }
+        if ($key.PSObject.Properties['purpose'] -and -not [string]::Equals([string]$key.purpose, 'release-signing', [StringComparison]::Ordinal)) {
+            throw "Trusted-key purpose must be release-signing: $($property.Name)"
+        }
+        $settings = [Xml.XmlReaderSettings]::new()
+        $settings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+        $settings.XmlResolver = $null
+        $stringReader = [IO.StringReader]::new([string]$key.publicKeyXml)
+        $xmlReader = $null
+        try {
+            $xmlReader = [Xml.XmlReader]::Create($stringReader, $settings)
+            $publicXml = [Xml.XmlDocument]::new()
+            $publicXml.XmlResolver = $null
+            $publicXml.Load($xmlReader)
+        }
+        finally {
+            if ($null -ne $xmlReader) { $xmlReader.Dispose() }
+            $stringReader.Dispose()
+        }
+        $elementNames = @($publicXml.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.Name })
+        if ($null -eq $publicXml.DocumentElement -or -not [string]::Equals($publicXml.DocumentElement.Name, 'RSAKeyValue', [StringComparison]::Ordinal) -or
+            $elementNames.Count -ne 2 -or @((Compare-Object @('Exponent', 'Modulus') @($elementNames | Sort-Object) -SyncWindow 0)).Count -ne 0) {
+            throw "Trusted-key XML contains private or unexpected RSA parameters: $($property.Name)"
+        }
+        foreach ($name in @('Modulus', 'Exponent')) {
+            $node = $publicXml.DocumentElement.SelectSingleNode($name)
+            if ($null -eq $node -or [string]::IsNullOrWhiteSpace([string]$node.InnerText)) { throw "Trusted-key XML is missing $name for $($property.Name)." }
+            try { [void][Convert]::FromBase64String(([string]$node.InnerText).Trim()) }
+            catch { throw "Trusted-key XML contains invalid $name base64 for $($property.Name)." }
+        }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $actualFingerprint = ([BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes((([string]$key.publicKeyXml).Trim() -replace '\s+', ''))))).Replace('-', '') }
+        finally { $sha.Dispose() }
+        if (-not [string]::Equals($actualFingerprint, [string]$key.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Trusted-key fingerprint does not match publicKeyXml: $($property.Name)"
+        }
+        if (-not $fingerprints.Add($actualFingerprint)) { throw "Trusted-key document contains a duplicate public-key fingerprint: $($property.Name)" }
     }
-    $key = $properties[0].Value
-    $computedFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml ([string]$key.publicKeyXml)
-    if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$key.publicKeyFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($computedFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Production trusted-key document does not match the pinned RS256 release key.'
+
+    if (-not $AllowTestIdentity) {
+        $productionProperty = @($properties | Where-Object { [string]::Equals([string]$_.Name, $script:RevAgentProductionSigningKeyId, [StringComparison]::Ordinal) })
+        if ($productionProperty.Count -ne 1) { throw "Production trusted-key document must contain '$($script:RevAgentProductionSigningKeyId)'." }
+        $productionKey = $productionProperty[0].Value
+        if (-not [string]::Equals([string]$productionKey.publicKeyFingerprint, $script:RevAgentProductionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Production trusted-key document does not match the pinned RS256 release key.'
+        }
+        if ($properties.Count -eq 2) {
+            $futureId = [string](@($properties | Where-Object { -not [string]::Equals([string]$_.Name, $script:RevAgentProductionSigningKeyId, [StringComparison]::Ordinal) })[0].Name)
+            $match = [regex]::Match($futureId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+            $futureOrdinal = if ($match.Success) { ([int]$match.Groups['year'].Value * 4) + [int]$match.Groups['quarter'].Value } else { 0 }
+            $q3Ordinal = (2026 * 4) + 3
+            if (-not $match.Success -or $futureOrdinal -le $q3Ordinal) {
+                throw "The optional production rotation key must be later than revagent-prod-rsa-2026q3: $futureId"
+            }
+        }
     }
+
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try { $sha256 = ([BitConverter]::ToString($digest.ComputeHash($bytes))).Replace('-', '') }
+    finally { $digest.Dispose() }
+    return [pscustomobject][ordered]@{ Bytes = $bytes; Sha256 = $sha256; Document = $document }
 }
 
 function Write-RevAgentDetachedSignatureFile {
@@ -1356,11 +1575,19 @@ $signingContext = New-RevAgentPublishSigningContext `
 if ($RequireSigning -and -not $signingContext) {
     throw "Release signing is required for this publish. Provide -SigningPrivateKeyPath and -SigningKeyId."
 }
-if ($signingContext -and -not $AllowTestSigningIdentity) {
-    if ([string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) { throw 'Production signed publish requires the pinned trusted-key document.' }
-    $productionTrustedKeysPath = [IO.Path]::GetFullPath($TrustedReleaseKeysPath)
-    if (-not (Test-Path -LiteralPath $productionTrustedKeysPath -PathType Leaf)) { throw "Trusted release keys file was not found: $productionTrustedKeysPath" }
-    Assert-RevAgentProductionTrustedKeysDocument -Path $productionTrustedKeysPath
+$trustedReleaseKeysEvidence = $null
+if ($signingContext) {
+    if ([string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) { throw 'Signed publish requires the trusted-key document that will be embedded in the package.' }
+    $trustedReleaseKeysFullPath = [IO.Path]::GetFullPath($TrustedReleaseKeysPath)
+    if (-not (Test-Path -LiteralPath $trustedReleaseKeysFullPath -PathType Leaf)) { throw "Trusted release keys file was not found: $trustedReleaseKeysFullPath" }
+    $trustedReleaseKeysEvidence = Read-RevAgentTrustedKeysEvidence `
+        -Path $trustedReleaseKeysFullPath `
+        -AllowTestIdentity:$AllowTestSigningIdentity
+}
+elseif (-not [string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) {
+    $trustedReleaseKeysFullPath = [IO.Path]::GetFullPath($TrustedReleaseKeysPath)
+    if (-not (Test-Path -LiteralPath $trustedReleaseKeysFullPath -PathType Leaf)) { throw "Trusted release keys file was not found: $trustedReleaseKeysFullPath" }
+    $trustedReleaseKeysEvidence = Read-RevAgentTrustedKeysEvidence -Path $trustedReleaseKeysFullPath
 }
 if ($ReleaseSequence -lt 0) {
     throw "ReleaseSequence must be zero or a positive integer."
@@ -1443,6 +1670,11 @@ try {
 
     Write-Section "Stage package"
     Copy-RevAgentUserPack
+    if ($null -ne $trustedReleaseKeysEvidence) {
+        $packageTrustedKeysPath = Join-Path $packageRoot 'config\release-trusted-keys.json'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $packageTrustedKeysPath) -Force | Out-Null
+        [IO.File]::WriteAllBytes($packageTrustedKeysPath, [byte[]]$trustedReleaseKeysEvidence.Bytes)
+    }
     Assert-RevAgentUserPackNoSourceLeak -Root $packageRoot
     Assert-RevAgentUserPackDotNetPayloadHardened -Root $packageRoot
     Assert-RevAgentUserPackHardenedJsPayload -Root $packageRoot
@@ -1494,6 +1726,7 @@ try {
         installerLibReporting = "installer\lib\RevAgent.Reporting.psm1"
         installerLibSourceFreeMigration = "installer\lib\RevAgent.SourceFreeMigration.psm1"
         installerLibLocalBootstrap = "installer\lib\RevAgent.LocalBootstrap.psm1"
+        installerLibBootstrapTrust = "installer\lib\RevAgent.BootstrapTrust.psm1"
         installerLibReleaseSnapshot = "installer\lib\RevAgent.ReleaseSnapshot.psm1"
         installer = "installer\install-self-contained.ps1"
         localBootstrapInstaller = "installer\nas\install-revagent-local-bootstrap.ps1"
@@ -1505,6 +1738,8 @@ try {
         updater = "installer\nas\update-from-nas.ps1"
         updaterGui = "installer\nas\Install-revAgent-Updater-GUI.ps1"
         privilegedSnapshotUpdate = "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1"
+        bootstrapTrustBroker = "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1"
+        releaseTrustedKeys = "config\release-trusted-keys.json"
         versionStatusTool = "installer\nas\show-installed-version.ps1"
         updaterTaskInstaller = "installer\nas\install-updater-task.ps1"
         sourceFreeMigrationTool = "installer\nas\migrate-source-free-install.ps1"
@@ -1702,14 +1937,10 @@ try {
         $configTarget = Join-Path $toolsRoot "config"
         New-Item -ItemType Directory -Path $configTarget -Force | Out-Null
     }
-    if (-not [string]::IsNullOrWhiteSpace($TrustedReleaseKeysPath)) {
-        $trustedReleaseKeysFullPath = [System.IO.Path]::GetFullPath($TrustedReleaseKeysPath)
-        if (-not (Test-Path -LiteralPath $trustedReleaseKeysFullPath -PathType Leaf)) {
-            throw "Trusted release keys file was not found: $trustedReleaseKeysFullPath"
-        }
+    if ($null -ne $trustedReleaseKeysEvidence) {
         $trustedReleaseKeysTarget = Join-Path (Join-Path $toolsRoot "config") "release-trusted-keys.json"
         New-Item -ItemType Directory -Path (Split-Path -Parent $trustedReleaseKeysTarget) -Force | Out-Null
-        Copy-Item -LiteralPath $trustedReleaseKeysFullPath -Destination $trustedReleaseKeysTarget -Force
+        [IO.File]::WriteAllBytes($trustedReleaseKeysTarget, [byte[]]$trustedReleaseKeysEvidence.Bytes)
         Write-Host "Trusted release keys: $trustedReleaseKeysTarget" -ForegroundColor Green
     }
     if ($null -ne $nodeMsiEvidence) {

@@ -128,7 +128,7 @@ $producerText = Get-Content -Raw -LiteralPath $producerPath
 Assert-True ($producerText -match '\[switch\]\$SupervisedAdminPrestage') 'Evidence producer does not expose SupervisedAdminPrestage.'
 Assert-True ($producerText -match 'Supervised administrator prestage evidence requires an elevated Windows PowerShell process') 'Evidence producer lacks the supervised non-elevated fail-closed guard.'
 Assert-True ($producerText -match 'Bootstrap prestage evidence must be produced before elevation in the normal coordinator process') 'Evidence producer lost the normal elevated-process guard.'
-Assert-True ($producerText -match 'Read-RevAgentEvidenceBoundedBytes' -and $producerText -match 'trustedKeys = \[string\]\$trustedKeysEvidence\.Sha256' -and $producerText -notmatch 'Get-FileHash[^\r\n]*TrustedKeysPath') 'Evidence producer must parse and bind the same bounded trusted-key byte snapshot.'
+Assert-True ($producerText -match 'Read-RevAgentEvidenceBoundedBytes' -and $producerText -match 'SequenceEqual\(\[byte\[\]\]\$entryBytes, \[byte\[\]\]\$trustedKeysEvidence\.Bytes\)' -and $producerText -match 'trustedKeys = \[string\]\$componentHashes\.trustedKeys' -and $producerText -notmatch 'Get-FileHash[^\r\n]*TrustedKeysPath') 'Evidence producer must parse and bind the same bounded trusted-key byte snapshot.'
 $schema = Get-Content -Raw -LiteralPath $schemaPath | ConvertFrom-Json
 $example = Get-Content -Raw -LiteralPath $examplePath | ConvertFrom-Json
 Assert-True (@($schema.required) -contains 'producerMode') 'Evidence schema does not require producerMode.'
@@ -167,7 +167,21 @@ try {
     $swapReleaseRoot = Join-Path $keySwapFixture 'release'
     [void][IO.Directory]::CreateDirectory($swapReleaseRoot)
     $swapKeysPath = Join-Path $swapReleaseRoot 'release-trusted-keys.json'
-    $originalKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes('{"trustedKeys":{"original":{"algorithm":"RS256"}}}')
+    $swapRsa = [Security.Cryptography.RSACryptoServiceProvider]::new(2048)
+    try {
+        $swapPublicKeyXml = $swapRsa.ToXmlString($false)
+        $swapPublicFingerprint = Get-Sha256ForBytes ([Text.Encoding]::UTF8.GetBytes(($swapPublicKeyXml.Trim() -replace '\s+', '')))
+        $originalKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes(([ordered]@{
+            trustedKeys = [ordered]@{
+                original = [ordered]@{
+                    algorithm = 'RS256'
+                    publicKeyFingerprint = $swapPublicFingerprint
+                    publicKeyXml = $swapPublicKeyXml
+                }
+            }
+        } | ConvertTo-Json -Depth 6))
+    }
+    finally { $swapRsa.Dispose() }
     $replacementKeyBytes = [Text.UTF8Encoding]::new($false).GetBytes('{"trustedKeys":{"replacement":{"algorithm":"RS256"}}}')
     [IO.File]::WriteAllBytes($swapKeysPath, $originalKeyBytes)
     $hookState = [pscustomobject]@{ Sha256 = '' }
@@ -347,7 +361,9 @@ $packageFiles = [ordered]@{
     'installer\nas\Start-revAgent-Update.cmd' = 'installer\nas\Start-revAgent-Update.cmd'
     'installer\nas\Install-revAgent-Updater-GUI.ps1' = 'installer\nas\Install-revAgent-Updater-GUI.ps1'
     'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1' = 'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
+    'installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1' = 'installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1'
     'installer\lib\RevAgent.LocalBootstrap.psm1' = 'installer\lib\RevAgent.LocalBootstrap.psm1'
+    'installer\lib\RevAgent.BootstrapTrust.psm1' = 'installer\lib\RevAgent.BootstrapTrust.psm1'
     'installer\lib\RevAgent.DistributionIntegrity.psm1' = 'installer\lib\RevAgent.DistributionIntegrity.psm1'
     'installer\lib\RevAgent.Permissions.psm1' = 'installer\lib\RevAgent.Permissions.psm1'
     'installer\lib\RevAgent.SourceFreeMigration.psm1' = 'installer\lib\RevAgent.SourceFreeMigration.psm1'
@@ -365,9 +381,11 @@ $fixtureInstallerPath = Join-Path $packageSource 'installer\nas\install-revagent
 $fixtureInstallerText = [IO.File]::ReadAllText($fixtureInstallerPath)
 $fixtureBootstrapLiteral = $bootstrapRoot.Replace("'", "''")
 $fixtureDesktopLiteral = $desktopRoot.Replace("'", "''")
+$fixtureProgramDataLiteral = $programDataRoot.Replace("'", "''")
 $fixtureInstallerSetup = @"
 `$ErrorActionPreference = "Stop"
 `$BootstrapRoot = '$fixtureBootstrapLiteral'
+`$ProgramDataRoot = '$fixtureProgramDataLiteral'
 `$DesktopShortcutRoot = '$fixtureDesktopLiteral'
 `$AllowTestRoot = `$true
 "@
@@ -392,6 +410,9 @@ $testTrustedKeys = [ordered]@{
 }
 $keysBytes = $utf8.GetBytes(($testTrustedKeys | ConvertTo-Json -Depth 6))
 [IO.File]::WriteAllBytes($trustedKeysPath, $keysBytes)
+$packageTrustedKeysPath = Join-Path $packageSource 'config\release-trusted-keys.json'
+[void][IO.Directory]::CreateDirectory((Split-Path -Parent $packageTrustedKeysPath))
+[IO.File]::WriteAllBytes($packageTrustedKeysPath, $keysBytes)
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($packageSource, $packagePath, [IO.Compression.CompressionLevel]::Optimal, $false)
@@ -406,12 +427,15 @@ $sourcePaths = [ordered]@{
     sourceFreeMigration = 'installer\lib\RevAgent.SourceFreeMigration.psm1'
     releaseSnapshot = 'installer\lib\RevAgent.ReleaseSnapshot.psm1'
     privilegedSnapshotUpdate = 'installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1'
+    bootstrapTrust = 'installer\lib\RevAgent.BootstrapTrust.psm1'
+    bootstrapTrustBroker = 'installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1'
+    trustedKeys = 'config\release-trusted-keys.json'
 }
 $sourceHashes = [ordered]@{}
 foreach ($entry in $sourcePaths.GetEnumerator()) {
     $sourceHashes[[string]$entry.Key] = (Get-FileHash -Algorithm SHA256 -LiteralPath (Join-Path $packageSource ([string]$entry.Value))).Hash
 }
-$sourceHashes.trustedKeys = (Get-FileHash -Algorithm SHA256 -LiteralPath $trustedKeysPath).Hash
+Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][IO.File]::ReadAllBytes($packageTrustedKeysPath), [byte[]][IO.File]::ReadAllBytes($trustedKeysPath))) 'Supervised package fixture trusted-key bytes drifted from the external trust document.'
 $evidenceTemplate = [ordered]@{
     schemaVersion = 1
     app = 'revAgent'
@@ -594,6 +618,15 @@ try {
         $relativePath = [string]$installedState.files.$role.relativePath
         Assert-True (Test-Path -LiteralPath (Join-Path $bootstrapRoot $relativePath) -PathType Leaf) "Installed bootstrap role '$role' is missing on disk."
     }
+    $trustRoot = Join-Path $programDataRoot 'DPE\revAgent\trust'
+    $trustStatePath = Join-Path $trustRoot 'trust-state.json'
+    foreach ($trustFile in @('RevAgent.BootstrapTrust.psm1', 'Invoke-RevAgent-BootstrapTrustBroker.ps1', 'RevAgent.DistributionIntegrity.psm1', 'RevAgent.ReleaseSnapshot.psm1', 'release-trusted-keys.json', 'trust-state.json')) {
+        Assert-True (Test-Path -LiteralPath (Join-Path $trustRoot $trustFile) -PathType Leaf) "Supervised E2 prestage did not install trust-core file '$trustFile'."
+    }
+    $trustState = Get-Content -Raw -LiteralPath $trustStatePath | ConvertFrom-Json
+    Assert-Equal ([string]$trustState.task.taskName) 'revAgent Bootstrap Trust Broker' 'Trust-core state did not bind the fixed production task name.'
+    Assert-Equal ([string]$trustState.task.taskPath) '\DPE\revAgent\' 'Trust-core state did not bind the fixed production task path.'
+    Assert-True ([string]$trustState.task.arguments -match '(?i)-File\s+".*Invoke-RevAgent-BootstrapTrustBroker\.ps1"$' -and [string]$trustState.task.arguments -notmatch '(?i)-(Expected|Trusted|ReleaseRoot|Inbox|Request|Result|Hash|EncodedCommand)') 'Trust-core task state contains mutable caller-supplied security arguments.'
     Assert-True (Test-Path -LiteralPath (Join-Path $desktopRoot 'revAgent Updater.lnk') -PathType Leaf) 'Real staged installer did not create the revAgent desktop shortcut.'
     $stagedEvidencePath = Join-Path $programDataRoot 'DPE\revAgent\prestage\bootstrap-prestage-evidence.json'
     Assert-True (Test-Path -LiteralPath $stagedEvidencePath -PathType Leaf) 'Driver did not stage evidence below the disposable ProgramData root.'

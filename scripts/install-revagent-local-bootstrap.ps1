@@ -5,10 +5,16 @@ param(
     [Parameter(Mandatory = $true)][string]$TrustedKeysPath,
     [Parameter(Mandatory = $true)][string]$ExpectedHashesPath,
     [string]$BootstrapRoot = "",
+    [string]$ProgramDataRoot = "",
     [string]$DesktopShortcutRoot = "",
     [switch]$ConfirmIndependentlyAuthenticatedSource,
     [switch]$AllowTestRoot,
-    [scriptblock]$ModuleStageTestHook = $null
+    [scriptblock]$ModuleStageTestHook = $null,
+    [Parameter(DontShow = $true)][string]$TestConsumerSid = "",
+    [Parameter(DontShow = $true)][scriptblock]$BootstrapTrustTaskRegistrar = $null,
+    [Parameter(DontShow = $true)][scriptblock]$BootstrapTrustTaskProvider = $null,
+    [Parameter(DontShow = $true)][scriptblock]$LocalBootstrapBeforeCommitTestHook = $null,
+    [Parameter(DontShow = $true)][scriptblock]$LocalBootstrapBackupCleanupTestHook = $null
 )
 
 $ErrorActionPreference = "Stop"
@@ -465,17 +471,215 @@ function Set-RevAgentPrestageAdminFileDacl {
     else { ([IO.FileInfo]$item).SetAccessControl($acl) }
 }
 
+function New-RevAgentPrestageMachineInstallLockSecurity {
+    param([switch]$AllowTestRoot)
+
+    $security = [Security.AccessControl.FileSecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $ownerSid = if ($AllowTestRoot) { $currentSid } else { [Security.Principal.SecurityIdentifier]::new('S-1-5-32-544') }
+    $security.SetOwner($ownerSid)
+    $allowedSids = @('S-1-5-18', 'S-1-5-32-544')
+    if ($AllowTestRoot) { $allowedSids += [string]$currentSid.Value }
+    foreach ($sid in @($allowedSids | Select-Object -Unique)) {
+        [void]$security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+                [Security.Principal.SecurityIdentifier]::new($sid),
+                [Security.AccessControl.FileSystemRights]::FullControl,
+                [Security.AccessControl.AccessControlType]::Allow))
+    }
+    return $security
+}
+
+function Set-RevAgentPrestageMachineInstallLockAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [switch]$AllowTestRoot)
+
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    $security = New-RevAgentPrestageMachineInstallLockSecurity -AllowTestRoot:$AllowTestRoot
+    if ('System.IO.FileSystemAclExtensions' -as [type]) {
+        [IO.FileSystemAclExtensions]::SetAccessControl([IO.FileInfo]$item, $security)
+    }
+    else { ([IO.FileInfo]$item).SetAccessControl($security) }
+}
+
+function Assert-RevAgentPrestageMachineInstallLockAcl {
+    param([Parameter(Mandatory = $true)][string]$Path, [switch]$AllowTestRoot)
+
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User
+    $expectedOwnerSid = if ($AllowTestRoot) { [string]$currentSid.Value } else { 'S-1-5-32-544' }
+    $actualOwnerSid = [string]$acl.GetOwner([Security.Principal.SecurityIdentifier]).Value
+    if (-not $acl.AreAccessRulesProtected -or -not $acl.AreAccessRulesCanonical -or
+        -not [string]::Equals($actualOwnerSid, $expectedOwnerSid, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Machine bootstrap install lock owner/DACL protection is invalid: $Path"
+    }
+
+    $expectedSids = @('S-1-5-18', 'S-1-5-32-544')
+    if ($AllowTestRoot) { $expectedSids += [string]$currentSid.Value }
+    $expectedSids = @($expectedSids | Select-Object -Unique)
+    $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))
+    if ($rules.Count -ne $expectedSids.Count) {
+        throw "Machine bootstrap install lock DACL is not the exact expected principal set: $Path"
+    }
+    $seen = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+    foreach ($rule in $rules) {
+        $sid = [string]$rule.IdentityReference.Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -notin $expectedSids -or
+            [int64]$rule.FileSystemRights -ne [int64][Security.AccessControl.FileSystemRights]::FullControl -or
+            $rule.InheritanceFlags -ne [Security.AccessControl.InheritanceFlags]::None -or
+            $rule.PropagationFlags -ne [Security.AccessControl.PropagationFlags]::None -or
+            -not $seen.Add($sid)) {
+            throw "Machine bootstrap install lock contains an unexpected ACL rule. path=$Path principal=$sid"
+        }
+    }
+    if ($seen.Count -ne $expectedSids.Count) {
+        throw "Machine bootstrap install lock is missing an exact required ACL rule: $Path"
+    }
+    return [pscustomobject]@{ ownerSid = $actualOwnerSid; principalSids = $expectedSids }
+}
+
+function Assert-RevAgentPrestageMachineInstallLock {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][IO.FileStream]$Stream,
+        [switch]$AllowTestRoot
+    )
+
+    $expectedPath = [IO.Path]::GetFullPath((Join-Path (Split-Path -Parent $Path) '.bootstrap-install.lock'))
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    if (-not [string]::Equals($fullPath, $expectedPath, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Machine bootstrap install lock path is not the exact fixed leaf: $fullPath"
+    }
+    [void](Assert-RevAgentPrestagePathNoLinks -Path $fullPath -RequireLeaf)
+    $aclEvidence = Assert-RevAgentPrestageMachineInstallLockAcl -Path $fullPath -AllowTestRoot:$AllowTestRoot
+    $marker = [Text.Encoding]::ASCII.GetBytes('revAgent-bootstrap-install-lock-v1')
+    if ($Stream.Length -ne $marker.Length) {
+        throw "Machine bootstrap install lock marker length is invalid: $fullPath"
+    }
+    $Stream.Position = 0
+    $actual = New-Object byte[] $marker.Length
+    $offset = 0
+    while ($offset -lt $actual.Length) {
+        $read = $Stream.Read($actual, $offset, $actual.Length - $offset)
+        if ($read -le 0) { throw "Machine bootstrap install lock marker ended early: $fullPath" }
+        $offset += $read
+    }
+    for ($index = 0; $index -lt $marker.Length; $index++) {
+        if ($actual[$index] -ne $marker[$index]) { throw "Machine bootstrap install lock marker is invalid: $fullPath" }
+    }
+    $linkCount = [uint32][RevAgent.PrestageNativeFileInfo]::GetLinkCount($Stream.SafeFileHandle)
+    if ($linkCount -ne 1) {
+        throw "Machine bootstrap install lock must have exactly one hardlink. path=$fullPath linkCount=$linkCount"
+    }
+    $heldIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($Stream.SafeFileHandle)
+    $pathStream = $null
+    try {
+        $pathStream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite)
+        $pathIdentity = [string][RevAgent.PrestageNativeFileInfo]::GetIdentity($pathStream.SafeFileHandle)
+        if (-not [string]::Equals($pathIdentity, $heldIdentity, [StringComparison]::Ordinal)) {
+            throw "Machine bootstrap install lock pathname no longer names the held file. path=$fullPath held=$heldIdentity actual=$pathIdentity"
+        }
+        [void](Assert-RevAgentPrestagePathNoLinks -Path $fullPath -RequireLeaf)
+    }
+    finally { if ($null -ne $pathStream) { $pathStream.Dispose() } }
+    return [pscustomobject]@{
+        path = $fullPath
+        identity = $heldIdentity
+        hardlinkCount = $linkCount
+        markerVersion = 1
+        ownerSid = [string]$aclEvidence.ownerSid
+    }
+}
+
+function Enter-RevAgentPrestageMachineInstallLock {
+    param([Parameter(Mandatory = $true)][string]$Parent, [switch]$AllowTestRoot)
+
+    $parentPath = [IO.Path]::GetFullPath($Parent).TrimEnd('\')
+    [void](Assert-RevAgentPrestagePathNoLinks -Path $parentPath)
+    if (-not $AllowTestRoot) { Assert-RevAgentPrestageAdminDirectory -Path $parentPath }
+    $lockPath = [IO.Path]::GetFullPath((Join-Path $parentPath '.bootstrap-install.lock'))
+    $stream = $null
+    $created = $false
+    try {
+        try {
+            $stream = [IO.File]::Open($lockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+        }
+        catch [IO.FileNotFoundException] {
+            try {
+                $stream = [IO.File]::Open($lockPath, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite, [IO.FileShare]::Read)
+                $created = $true
+            }
+            catch [IO.IOException] {
+                throw [InvalidOperationException]::new("bootstrap_install_busy: another authenticated machine bootstrap install owns the fixed install lock: $lockPath")
+            }
+        }
+        catch [IO.IOException] {
+            throw [InvalidOperationException]::new("bootstrap_install_busy: another authenticated machine bootstrap install owns the fixed install lock: $lockPath")
+        }
+
+        if ($created) {
+            $marker = [Text.Encoding]::ASCII.GetBytes('revAgent-bootstrap-install-lock-v1')
+            $stream.Write($marker, 0, $marker.Length)
+            $stream.Flush($true)
+            Set-RevAgentPrestageMachineInstallLockAcl -Path $lockPath -AllowTestRoot:$AllowTestRoot
+        }
+        $evidence = Assert-RevAgentPrestageMachineInstallLock -Path $lockPath -Stream $stream -AllowTestRoot:$AllowTestRoot
+        return [pscustomobject]@{ stream = $stream; evidence = $evidence; created = $created }
+    }
+    catch {
+        if ($null -ne $stream) { $stream.Dispose() }
+        throw
+    }
+}
+
 if (-not $ConfirmIndependentlyAuthenticatedSource) { throw "Administrator prestage requires -ConfirmIndependentlyAuthenticatedSource." }
-if ($null -ne $ModuleStageTestHook -and -not $AllowTestRoot) { throw "ModuleStageTestHook is available only with -AllowTestRoot." }
+if (($null -ne $ModuleStageTestHook -or
+        -not [string]::IsNullOrWhiteSpace($TestConsumerSid) -or
+        $null -ne $BootstrapTrustTaskRegistrar -or
+        $null -ne $BootstrapTrustTaskProvider -or
+        $null -ne $LocalBootstrapBeforeCommitTestHook -or
+        $null -ne $LocalBootstrapBackupCleanupTestHook) -and -not $AllowTestRoot) {
+    throw "Prestage installer test seams are available only with -AllowTestRoot."
+}
+if (-not [string]::IsNullOrWhiteSpace($TestConsumerSid) -and $TestConsumerSid -notmatch '^S-[0-9]+(?:-[0-9]+)+$') {
+    throw "TestConsumerSid must be a valid SID string."
+}
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
 if ([string]::IsNullOrWhiteSpace($BootstrapRoot)) { $BootstrapRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "DPE\revAgent\bootstrap" }
+if ([string]::IsNullOrWhiteSpace($ProgramDataRoot)) {
+    if ($AllowTestRoot) { $ProgramDataRoot = Split-Path -Parent ([IO.Path]::GetFullPath($BootstrapRoot)) }
+    else { $ProgramDataRoot = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData) }
+}
 [void](Assert-RevAgentPrestagePathNoLinks -Path $PSCommandPath -RequireLeaf)
+$installerPathShape = ''
 if (-not $AllowTestRoot) {
-    $canonicalPrestageInstaller = [IO.Path]::GetFullPath((Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) "DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1"))
-    if (-not [string]::Equals([IO.Path]::GetFullPath($PSCommandPath), $canonicalPrestageInstaller, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Administrator prestage installer must already be staged at the protected canonical path '$canonicalPrestageInstaller'. Never elevate the repo-side copy."
+    $programDataCanonical = [IO.Path]::GetFullPath([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)).TrimEnd('\')
+    $canonicalPrestageRoot = Join-Path $programDataCanonical 'DPE\revAgent\prestage'
+    $canonicalPrestageInstaller = [IO.Path]::GetFullPath((Join-Path $canonicalPrestageRoot 'install-revagent-local-bootstrap.ps1'))
+    $canonicalPrestageEvidence = [IO.Path]::GetFullPath((Join-Path $canonicalPrestageRoot 'bootstrap-prestage-evidence.json'))
+    $canonicalPrestageKeys = [IO.Path]::GetFullPath((Join-Path $canonicalPrestageRoot 'release-trusted-keys.json'))
+    $canonicalBrokerApplyRoot = [IO.Path]::GetFullPath((Join-Path $programDataCanonical 'DPE\revAgent\bootstrap-broker\apply')).TrimEnd('\')
+    $selfFullPath = [IO.Path]::GetFullPath($PSCommandPath)
+    $evidenceFullPath = [IO.Path]::GetFullPath($ExpectedHashesPath)
+    $keysFullPath = [IO.Path]::GetFullPath($TrustedKeysPath)
+    $selfParent = [IO.Path]::GetFullPath((Split-Path -Parent $selfFullPath)).TrimEnd('\')
+    $isLegacyPrestageShape = [string]::Equals($selfFullPath, $canonicalPrestageInstaller, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($evidenceFullPath, $canonicalPrestageEvidence, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals($keysFullPath, $canonicalPrestageKeys, [StringComparison]::OrdinalIgnoreCase)
+    $isBrokerApplyShape = [IO.Path]::GetFileName($selfFullPath) -ceq 'install-revagent-local-bootstrap.ps1' -and
+        [IO.Path]::GetFileName($evidenceFullPath) -ceq 'bootstrap-prestage-evidence.json' -and
+        [IO.Path]::GetFileName($keysFullPath) -ceq 'release-trusted-keys.json' -and
+        [IO.Path]::GetFileName($selfParent) -cmatch '^apply-[a-f0-9]{32}$' -and
+        [string]::Equals((Split-Path -Parent $selfParent), $canonicalBrokerApplyRoot, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Split-Path -Parent $evidenceFullPath), $selfParent, [StringComparison]::OrdinalIgnoreCase) -and
+        [string]::Equals((Split-Path -Parent $keysFullPath), $selfParent, [StringComparison]::OrdinalIgnoreCase)
+    if (-not $isLegacyPrestageShape -and -not $isBrokerApplyShape) {
+        throw "Administrator prestage installer must run only from the canonical supervised prestage path or an exact private nonce-bound machine-broker apply path. Never elevate the repo-side copy."
     }
+    $installerPathShape = if ($isBrokerApplyShape) { 'machine-trust-broker' } else { 'supervised-prestage' }
     Assert-RevAgentExpectedEvidenceAclChain -Path $PSCommandPath
+    Assert-RevAgentExpectedEvidenceAclChain -Path $TrustedKeysPath
 }
 [void](Assert-RevAgentPrestagePathNoLinks -Path $RepoRoot)
 if (-not $AllowTestRoot) { Assert-RevAgentExpectedEvidenceAclChain -Path $ExpectedHashesPath }
@@ -488,7 +692,7 @@ $supervisedModeProperty = $expectedDocument.PSObject.Properties['supervisedAdmin
 $producerMode = if ($null -eq $producerModeProperty) { '' } else { [string]$producerModeProperty.Value }
 $supervisedAdminPrestage = if ($null -eq $supervisedModeProperty) { $false } else { [bool]$supervisedModeProperty.Value }
 $generatedBySid = [string]$expectedDocument.generatedBySid
-$currentConsumerSid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$currentConsumerSid = if ([string]::IsNullOrWhiteSpace($TestConsumerSid)) { [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value } else { $TestConsumerSid }
 $generatedBySidValid = $false
 if ($generatedBySid -match '^S-[0-9]+(?:-[0-9]+)+$') {
     try {
@@ -499,7 +703,8 @@ if ($generatedBySid -match '^S-[0-9]+(?:-[0-9]+)+$') {
 }
 $producerModeValid =
     ([string]::Equals($producerMode, 'unelevated-coordinator', [StringComparison]::Ordinal) -and -not $supervisedAdminPrestage) -or
-    ([string]::Equals($producerMode, 'supervised-admin-prestage', [StringComparison]::Ordinal) -and $supervisedAdminPrestage)
+    ([string]::Equals($producerMode, 'supervised-admin-prestage', [StringComparison]::Ordinal) -and $supervisedAdminPrestage) -or
+    ([string]::Equals($producerMode, 'machine-trust-broker', [StringComparison]::Ordinal) -and -not $supervisedAdminPrestage)
 if ([int]$expectedDocument.schemaVersion -ne 1 -or
     -not [string]::Equals([string]$expectedDocument.app, "revAgent", [StringComparison]::Ordinal) -or
     -not [string]::Equals([string]$expectedDocument.evidenceType, "bootstrap-prestage", [StringComparison]::Ordinal) -or
@@ -508,11 +713,20 @@ if ([int]$expectedDocument.schemaVersion -ne 1 -or
     -not $producerModeValid -or
     -not $generatedBySidValid -or
     ($supervisedAdminPrestage -and -not [string]::Equals($generatedBySid, $currentConsumerSid, [StringComparison]::OrdinalIgnoreCase)) -or
+    ([string]::Equals($producerMode, 'machine-trust-broker', [StringComparison]::Ordinal) -and
+        (-not [string]::Equals($generatedBySid, 'S-1-5-18', [StringComparison]::OrdinalIgnoreCase) -or
+            -not [string]::Equals($currentConsumerSid, 'S-1-5-18', [StringComparison]::OrdinalIgnoreCase))) -or
     -not [bool]$expectedDocument.release.signatureVerified -or
     [long]$expectedDocument.release.releaseSequence -le 0 -or
     [long]$expectedDocument.release.highestAcceptedReleaseSequence -lt [long]$expectedDocument.release.releaseSequence -or
     [long]$expectedDocument.release.minimumAcceptedReleaseSequence -gt [long]$expectedDocument.release.releaseSequence) {
     throw "Authenticated prestage evidence does not satisfy the revAgent bootstrap-prestage schema/version/signature contract."
+}
+if (-not $AllowTestRoot) {
+    $expectedPathShape = if ([string]::Equals($producerMode, 'machine-trust-broker', [StringComparison]::Ordinal)) { 'machine-trust-broker' } else { 'supervised-prestage' }
+    if (-not [string]::Equals($installerPathShape, $expectedPathShape, [StringComparison]::Ordinal)) {
+        throw "Authenticated prestage evidence producer mode does not match the exact protected installer/evidence/key path shape. producerMode=$producerMode pathShape=$installerPathShape"
+    }
 }
 $selfEvidence = Read-RevAgentPrestageBoundedFile -Path $PSCommandPath -MaxBytes 1048576
 if ([string]::IsNullOrWhiteSpace([string]$expectedDocument.localBootstrapInstallerScript) -or
@@ -522,15 +736,28 @@ if ([string]::IsNullOrWhiteSpace([string]$expectedDocument.localBootstrapInstall
 Assert-RevAgentPrestageFileUnchanged -Evidence $selfEvidence -MaxBytes 1048576
 $expected = [ordered]@{}
 foreach ($property in $expectedDocument.sources.PSObject.Properties) { $expected[$property.Name] = [string]$property.Value }
+foreach ($requiredSource in @('bootstrap', 'launcher', 'updaterGui', 'distributionIntegrity', 'permissions', 'sourceFreeMigration', 'releaseSnapshot', 'privilegedSnapshotUpdate', 'bootstrapTrust', 'bootstrapTrustBroker', 'trustedKeys')) {
+    if (-not $expected.Contains($requiredSource) -or [string]$expected[$requiredSource] -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Authenticated prestage evidence is missing required source hash '$requiredSource'."
+    }
+}
 $modulePath = Join-Path $RepoRoot "installer\lib\RevAgent.LocalBootstrap.psm1"
 [void](Assert-RevAgentPrestagePathNoLinks -Path $modulePath -RequireLeaf)
 $moduleEvidence = Read-RevAgentPrestageBoundedFile -Path $modulePath
 if (-not [string]::Equals([string]$moduleEvidence.Sha256, [string]$expectedDocument.localBootstrapInstallerModule, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Local bootstrap installer module does not match independently authenticated SHA-256 evidence."
 }
+$bootstrapTrustModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.BootstrapTrust.psm1"
+[void](Assert-RevAgentPrestagePathNoLinks -Path $bootstrapTrustModulePath -RequireLeaf)
+$bootstrapTrustModuleEvidence = Read-RevAgentPrestageBoundedFile -Path $bootstrapTrustModulePath
+if (-not [string]::Equals([string]$bootstrapTrustModuleEvidence.Sha256, [string]$expected.bootstrapTrust, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "Bootstrap trust installer module does not match independently authenticated SHA-256 evidence."
+}
 $prestageParent = Get-RevAgentPrestageParent -BootstrapPath $BootstrapRoot -TestRoot:$AllowTestRoot
 $moduleStageRoot = Join-Path $prestageParent (".bootstrap-module-stage-{0}" -f [Guid]::NewGuid().ToString("N"))
 $stagedModulePath = Join-Path $moduleStageRoot "RevAgent.LocalBootstrap.psm1"
+$stagedBootstrapTrustModulePath = Join-Path $moduleStageRoot "RevAgent.BootstrapTrust.psm1"
+$machineInstallLock = Enter-RevAgentPrestageMachineInstallLock -Parent $prestageParent -AllowTestRoot:$AllowTestRoot
 try {
     if ($AllowTestRoot) { New-Item -ItemType Directory -Path $moduleStageRoot -ErrorAction Stop | Out-Null }
     else {
@@ -546,32 +773,118 @@ try {
     }
     finally { if ($null -ne $stageStream) { $stageStream.Dispose() } }
     if (-not $AllowTestRoot) { Set-RevAgentPrestageAdminFileDacl -Path $stagedModulePath }
+    [void](Assert-RevAgentPrestagePathNoLinks -Path $stagedBootstrapTrustModulePath)
+    $trustStageStream = $null
+    try {
+        $trustStageStream = [IO.File]::Open($stagedBootstrapTrustModulePath, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+        $trustStageStream.Write([byte[]]$bootstrapTrustModuleEvidence.Bytes, 0, [int]$bootstrapTrustModuleEvidence.Length)
+        $trustStageStream.Flush($true)
+    }
+    finally { if ($null -ne $trustStageStream) { $trustStageStream.Dispose() } }
+    if (-not $AllowTestRoot) { Set-RevAgentPrestageAdminFileDacl -Path $stagedBootstrapTrustModulePath }
     $stagedEvidence = Read-RevAgentPrestageBoundedFile -Path $stagedModulePath
     if (-not [string]::Equals([string]$stagedEvidence.Sha256, [string]$moduleEvidence.Sha256, [StringComparison]::OrdinalIgnoreCase)) {
         throw "Protected staged local-bootstrap module hash mismatch."
     }
+    $stagedBootstrapTrustEvidence = Read-RevAgentPrestageBoundedFile -Path $stagedBootstrapTrustModulePath
+    if (-not [string]::Equals([string]$stagedBootstrapTrustEvidence.Sha256, [string]$bootstrapTrustModuleEvidence.Sha256, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Protected staged bootstrap-trust module hash mismatch."
+    }
     if ($null -ne $ModuleStageTestHook) { & $ModuleStageTestHook $modulePath }
     Assert-RevAgentPrestageFileUnchanged -Evidence $moduleEvidence
-    Import-Module $stagedModulePath -Force
-    Install-RevAgentLocalBootstrap `
-        -BootstrapRoot $BootstrapRoot `
-        -ReleaseRoot $ReleaseRoot `
-        -BootstrapScriptPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1") `
-        -LauncherPath (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd") `
-        -GuiPath (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1") `
-        -DistributionIntegrityModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1") `
-        -PermissionsModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1") `
-        -SourceFreeMigrationModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1") `
-        -ReleaseSnapshotModulePath (Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1") `
-        -PrivilegedSnapshotUpdatePath (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1") `
-        -TrustedKeysPath $TrustedKeysPath `
-        -ExpectedSourceHashes $expected `
-        -AuthenticatedRelease $expectedDocument.release `
-        -SourceAuthenticationMethod $producerMode `
-        -DesktopShortcutRoot $DesktopShortcutRoot `
-        -ConfirmIndependentlyAuthenticatedSource `
-        -AllowTestRoot:$AllowTestRoot
+    Assert-RevAgentPrestageFileUnchanged -Evidence $bootstrapTrustModuleEvidence
+    $localBootstrapModule = Import-Module $stagedModulePath -Force -PassThru
+    $bootstrapTrustModule = Import-Module $stagedBootstrapTrustModulePath -Force -PassThru
+    $localBootstrapCommand = Get-Command ("{0}\Install-RevAgentLocalBootstrap" -f $localBootstrapModule.Name) -ErrorAction Stop
+    $installTrustCommand = Get-Command ("{0}\Install-RevAgentBootstrapTrustCore" -f $bootstrapTrustModule.Name) -ErrorAction Stop
+    $trustHealthCommand = Get-Command ("{0}\Test-RevAgentBootstrapTrustHealth" -f $bootstrapTrustModule.Name) -ErrorAction Stop
+    $trustInstallArguments = @{
+        BootstrapTrustModulePath = $stagedBootstrapTrustModulePath
+        BrokerPath = (Join-Path $RepoRoot "installer\nas\Invoke-RevAgent-BootstrapTrustBroker.ps1")
+        DistributionIntegrityModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1")
+        ReleaseSnapshotModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1")
+        TrustedKeysPath = $TrustedKeysPath
+        ExpectedSourceHashes = $expected
+        AuthenticatedRelease = $expectedDocument.release
+        ProgramDataRoot = $ProgramDataRoot
+        AllowTestRoot = [bool]$AllowTestRoot
+    }
+    if ($AllowTestRoot -and $null -eq $BootstrapTrustTaskRegistrar) {
+        $BootstrapTrustTaskRegistrar = {
+            param($layout)
+            [pscustomobject][ordered]@{
+                exists = $true
+                taskName = [string]$layout.taskName
+                taskPath = [string]$layout.taskPath
+                execute = [string]$layout.taskPowerShellPath
+                arguments = [string]$layout.taskArguments
+                actionCount = 1
+                userId = 'SYSTEM'
+                logonType = 'ServiceAccount'
+                runLevel = 'Highest'
+                sddl = [string]$layout.taskSddl
+                state = 'Ready'
+                enabled = $true
+                allowDemandStart = $true
+                multipleInstances = 'IgnoreNew'
+                executionTimeLimit = 'PT30M'
+            }
+        }
+    }
+    if ($null -ne $BootstrapTrustTaskRegistrar) { $trustInstallArguments.TaskRegistrar = $BootstrapTrustTaskRegistrar }
+    if ($null -ne $BootstrapTrustTaskProvider) { $trustInstallArguments.TaskProvider = $BootstrapTrustTaskProvider }
+    $bootstrapTrustInstall = & $installTrustCommand @trustInstallArguments
+
+    $trustHealthArguments = @{
+        ProgramDataRoot = $ProgramDataRoot
+        AllowTestRoot = [bool]$AllowTestRoot
+    }
+    if ($AllowTestRoot -and $null -eq $BootstrapTrustTaskProvider) {
+        $installedTaskEvidence = $bootstrapTrustInstall.task
+        $BootstrapTrustTaskProvider = { param($layout); $installedTaskEvidence }.GetNewClosure()
+    }
+    if ($null -ne $BootstrapTrustTaskProvider) { $trustHealthArguments.TaskProvider = $BootstrapTrustTaskProvider }
+    $bootstrapTrustHealth = & $trustHealthCommand @trustHealthArguments
+    if (-not $bootstrapTrustHealth.PSObject.Properties['success'] -or
+        -not [bool]$bootstrapTrustHealth.success -or
+        -not $bootstrapTrustHealth.PSObject.Properties['healthy'] -or
+        -not [bool]$bootstrapTrustHealth.healthy) {
+        throw "Installed bootstrap trust core did not pass health attestation."
+    }
+
+    # The release-independent machine trust/task is committed and attested first.
+    # A later local-bootstrap failure therefore leaves a healthy retry path instead
+    # of replacing the only authority and launcher in one coupled transaction.
+    $localBootstrapArguments = @{
+        BootstrapRoot = $BootstrapRoot
+        ReleaseRoot = $ReleaseRoot
+        BootstrapScriptPath = (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.ps1")
+        LauncherPath = (Join-Path $RepoRoot "installer\nas\Start-revAgent-Update.cmd")
+        GuiPath = (Join-Path $RepoRoot "installer\nas\Install-revAgent-Updater-GUI.ps1")
+        DistributionIntegrityModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1")
+        PermissionsModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.Permissions.psm1")
+        SourceFreeMigrationModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.SourceFreeMigration.psm1")
+        ReleaseSnapshotModulePath = (Join-Path $RepoRoot "installer\lib\RevAgent.ReleaseSnapshot.psm1")
+        PrivilegedSnapshotUpdatePath = (Join-Path $RepoRoot "installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1")
+        TrustedKeysPath = $TrustedKeysPath
+        ExpectedSourceHashes = $expected
+        AuthenticatedRelease = $expectedDocument.release
+        SourceAuthenticationMethod = $producerMode
+        DesktopShortcutRoot = $DesktopShortcutRoot
+        ConfirmIndependentlyAuthenticatedSource = $true
+        AllowTestRoot = [bool]$AllowTestRoot
+    }
+    if ($null -ne $LocalBootstrapBeforeCommitTestHook) { $localBootstrapArguments.BeforeCommitTestHook = $LocalBootstrapBeforeCommitTestHook }
+    if ($null -ne $LocalBootstrapBackupCleanupTestHook) { $localBootstrapArguments.BackupCleanupTestHook = $LocalBootstrapBackupCleanupTestHook }
+    $localBootstrapResult = & $localBootstrapCommand @localBootstrapArguments
+    if ($localBootstrapResult -is [psobject]) {
+        $localBootstrapResult | Add-Member -NotePropertyName bootstrapTrustInstall -NotePropertyValue $bootstrapTrustInstall -Force
+        $localBootstrapResult | Add-Member -NotePropertyName bootstrapTrustHealth -NotePropertyValue $bootstrapTrustHealth -Force
+        $localBootstrapResult | Add-Member -NotePropertyName machineInstallLock -NotePropertyValue $machineInstallLock.evidence -Force
+    }
+    $localBootstrapResult
 }
 finally {
     if (Test-Path -LiteralPath $moduleStageRoot) { Remove-Item -LiteralPath $moduleStageRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($null -ne $machineInstallLock -and $null -ne $machineInstallLock.stream) { $machineInstallLock.stream.Dispose() }
 }

@@ -315,18 +315,98 @@ foreach ($property in $state.files.PSObject.Properties) {
 }
 
 $localIntegrityModule = Join-Path $BootstrapRoot ([string]$state.files.distributionIntegrity.relativePath)
-$pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
+$pinnedIntegrityModuleHash = "C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6"
 if (-not [string]::Equals((Get-FileHash -Algorithm SHA256 -LiteralPath $localIntegrityModule).Hash, $pinnedIntegrityModuleHash, [StringComparison]::OrdinalIgnoreCase)) {
     throw "Protected local distribution-integrity verifier does not match the bootstrap pin."
 }
 $localTrustedKeysPath = Join-Path $BootstrapRoot ([string]$state.files.trustedKeys.relativePath)
-$trustedKeyDocument = Get-Content -Raw -LiteralPath $localTrustedKeysPath | ConvertFrom-Json
+$trustedKeysJson = Get-Content -Raw -LiteralPath $localTrustedKeysPath -Encoding UTF8
+$trustedInputIntegrityModule = Import-Module $localIntegrityModule -Force -PassThru
+$duplicateTrustedKeyProperty = & $trustedInputIntegrityModule { param($Value) Find-RevitMcpDuplicateJsonObjectKey -Json $Value } $trustedKeysJson
+if ([bool]$duplicateTrustedKeyProperty.found) {
+    throw "Protected trusted-key document contains a duplicate decoded JSON property: $($duplicateTrustedKeyProperty.key)"
+}
+$trustedKeyDocument = $trustedKeysJson | ConvertFrom-Json
+$trustedKeyTopLevelProperties = @($trustedKeyDocument.PSObject.Properties)
+$trustedKeyTopLevelAllowlist = @('schemaVersion', 'app', 'generatedAtUtc', 'trustedKeys')
+$trustedKeyMinimalTopLevel = $trustedKeyTopLevelProperties.Count -eq 1 -and [string]::Equals([string]$trustedKeyTopLevelProperties[0].Name, 'trustedKeys', [StringComparison]::Ordinal)
+$trustedKeyMetadataTopLevel = $trustedKeyTopLevelProperties.Count -eq $trustedKeyTopLevelAllowlist.Count -and
+    @($trustedKeyTopLevelProperties | Where-Object { $trustedKeyTopLevelAllowlist -cnotcontains [string]$_.Name }).Count -eq 0 -and
+    @($trustedKeyTopLevelAllowlist | Where-Object { @($trustedKeyTopLevelProperties.Name) -cnotcontains $_ }).Count -eq 0
+if (-not $trustedKeyMinimalTopLevel -and -not $trustedKeyMetadataTopLevel) {
+    throw 'Protected trusted-key document properties must be exactly trustedKeys, or exactly schemaVersion, app, generatedAtUtc, trustedKeys.'
+}
+if ($trustedKeyMetadataTopLevel) {
+    $trustedKeysGeneratedAt = [DateTimeOffset]::MinValue
+    if (($trustedKeyDocument.schemaVersion -isnot [int] -and $trustedKeyDocument.schemaVersion -isnot [long]) -or
+        [long]$trustedKeyDocument.schemaVersion -ne 1 -or
+        $trustedKeyDocument.app -isnot [string] -or
+        ([string]$trustedKeyDocument.app -cne 'revAgent' -and [string]$trustedKeyDocument.app -cne 'revit-mcp-skill') -or
+        $trustedKeyDocument.generatedAtUtc -isnot [string] -or
+        [string]$trustedKeyDocument.generatedAtUtc -notmatch 'Z$' -or
+        -not [DateTimeOffset]::TryParse([string]$trustedKeyDocument.generatedAtUtc, [Globalization.CultureInfo]::InvariantCulture, [Globalization.DateTimeStyles]::AssumeUniversal, [ref]$trustedKeysGeneratedAt)) {
+        throw 'Protected trusted-key metadata must be schemaVersion 1, an accepted revAgent app identity, and ISO UTC generatedAtUtc.'
+    }
+}
 $productionKeyId = "revagent-prod-rsa-2026q3"
 $trustedKeyProperties = @($trustedKeyDocument.trustedKeys.PSObject.Properties)
 if (-not $AllowTestRoot -and
-    ($trustedKeyProperties.Count -ne 1 -or
-        -not [string]::Equals([string]$trustedKeyProperties[0].Name, $productionKeyId, [StringComparison]::Ordinal))) {
-    throw "Protected production trusted-key set must contain exactly '$productionKeyId' and no additional signing keys."
+    ($trustedKeyProperties.Count -lt 1 -or $trustedKeyProperties.Count -gt 2 -or
+        $null -eq $trustedKeyDocument.trustedKeys.PSObject.Properties[$productionKeyId])) {
+    throw "Protected production trusted-key set must contain '$productionKeyId' and at most one transition key."
+}
+if (-not $AllowTestRoot -and $trustedKeyProperties.Count -eq 2) {
+    $transitionKeyId = [string](@($trustedKeyProperties | Where-Object { -not [string]::Equals([string]$_.Name, $productionKeyId, [StringComparison]::Ordinal) })[0].Name)
+    $transitionMatch = [regex]::Match($transitionKeyId, '^revagent-prod-rsa-(?<year>[0-9]{4})q(?<quarter>[1-4])$')
+    $transitionOrdinal = if ($transitionMatch.Success) { ([int]$transitionMatch.Groups['year'].Value * 4) + [int]$transitionMatch.Groups['quarter'].Value } else { 0 }
+    if (-not $transitionMatch.Success -or $transitionOrdinal -le ((2026 * 4) + 3)) {
+        throw "Protected transition key must be later than ${productionKeyId}: $transitionKeyId"
+    }
+}
+$trustedFingerprints = [Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase)
+foreach ($trustedKeyProperty in $trustedKeyProperties) {
+    $candidateKey = $trustedKeyProperty.Value
+    $candidateFields = @($candidateKey.PSObject.Properties)
+    $requiredKeyFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml')
+    $allowedKeyFields = @('algorithm', 'publicKeyFingerprint', 'publicKeyXml', 'purpose')
+    if ($candidateFields.Count -lt $requiredKeyFields.Count -or $candidateFields.Count -gt $allowedKeyFields.Count -or
+        @($candidateFields | Where-Object { $allowedKeyFields -cnotcontains [string]$_.Name }).Count -ne 0 -or
+        @($requiredKeyFields | Where-Object { @($candidateFields.Name) -cnotcontains $_ }).Count -ne 0 -or
+        ($null -ne $candidateKey.PSObject.Properties['purpose'] -and [string]$candidateKey.purpose -cne 'release-signing') -or
+        -not [string]::Equals([string]$candidateKey.algorithm, 'RS256', [StringComparison]::Ordinal) -or
+        [string]$candidateKey.publicKeyFingerprint -notmatch '^[A-Fa-f0-9]{64}$') {
+        throw "Protected trusted-key entry is not an exact public RS256 record: $($trustedKeyProperty.Name)"
+    }
+    $candidateXmlSettings = [Xml.XmlReaderSettings]::new()
+    $candidateXmlSettings.DtdProcessing = [Xml.DtdProcessing]::Prohibit
+    $candidateXmlSettings.XmlResolver = $null
+    $candidateXmlStringReader = [IO.StringReader]::new([string]$candidateKey.publicKeyXml)
+    $candidateXmlReader = $null
+    try {
+        $candidateXmlReader = [Xml.XmlReader]::Create($candidateXmlStringReader, $candidateXmlSettings)
+        $candidateXml = [Xml.XmlDocument]::new()
+        $candidateXml.XmlResolver = $null
+        $candidateXml.Load($candidateXmlReader)
+    }
+    finally {
+        if ($null -ne $candidateXmlReader) { $candidateXmlReader.Dispose() }
+        $candidateXmlStringReader.Dispose()
+    }
+    $candidateElements = @($candidateXml.DocumentElement.ChildNodes | Where-Object { $_.NodeType -eq [Xml.XmlNodeType]::Element } | ForEach-Object { $_.Name })
+    if ($null -eq $candidateXml.DocumentElement -or
+        -not [string]::Equals([string]$candidateXml.DocumentElement.Name, 'RSAKeyValue', [StringComparison]::Ordinal) -or
+        $candidateElements.Count -ne 2 -or
+        @((Compare-Object @('Exponent', 'Modulus') @($candidateElements | Sort-Object) -SyncWindow 0)).Count -ne 0) {
+        throw "Protected trusted-key XML contains private or unexpected RSA parameters: $($trustedKeyProperty.Name)"
+    }
+    $normalizedCandidate = ([string]$candidateKey.publicKeyXml).Trim() -replace '\s+', ''
+    $candidateSha = [Security.Cryptography.SHA256]::Create()
+    try { $candidateFingerprint = ([BitConverter]::ToString($candidateSha.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedCandidate)))).Replace('-', '') }
+    finally { $candidateSha.Dispose() }
+    if (-not [string]::Equals($candidateFingerprint, [string]$candidateKey.publicKeyFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
+        -not $trustedFingerprints.Add($candidateFingerprint)) {
+        throw "Protected trusted-key fingerprint is invalid or duplicated: $($trustedKeyProperty.Name)"
+    }
 }
 $trustedKey = $trustedKeyDocument.trustedKeys."revagent-prod-rsa-2026q3"
 if ($null -eq $trustedKey) { throw "Protected local trusted-key set does not contain the production release key." }

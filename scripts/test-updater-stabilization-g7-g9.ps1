@@ -86,33 +86,22 @@ $permissionsModule = Import-Module $permissionsModulePath -Force -PassThru
 $staleCleanupCommand = Get-Command ("{0}\Remove-StaleRevAgentBootstrapTemporaryItems" -f $permissionsModule.Name) -ErrorAction Stop
 
 $functionNames = @(
-    'Get-Sha256Hex',
     'Test-RevAgentStringEquals',
     'Test-RevAgentStringStartsWith',
-    'Quote-Arg',
-    'Join-CommandLine',
-    'Test-IsAdmin',
+    'Get-RevAgentProgramDataRoot',
     'Get-RevAgentBootstrapExitMessage',
-    'Test-RevAgentUacDeclinedException',
-    'Start-RevAgentElevatedProcess',
-    'Get-RevAgentTokenElevationType',
-    'Get-RevAgentDeElevationCapability',
-    'Write-RevAgentDeElevationFailure',
     'Get-RevAgentBootstrapTempRoot',
-    'Get-RevAgentRunningRefreshScriptPath',
     'Get-RevAgentBootstrapTemporaryPathInfo',
     'Open-RevAgentBootstrapTemporaryDirectoryGuard',
     'Clear-RevAgentBootstrapTemporaryDirectoryNoFollow',
     'Remove-RevAgentBootstrapTemporaryPath',
-    'Remove-RevAgentBootstrapTemporaryInput',
     'Remove-StaleRevAgentBootstrapTemporaryItems',
-    'Write-RevAgentCoordinatorResultMarker',
-    'Read-RevAgentCoordinatorResultMarker',
-    'Find-RevAgentActiveCoordinatorTask',
-    'Wait-RevAgentBootstrapCoordinator',
-    'New-RevAgentElevatedRefreshVerifierEncodedCommand',
-    'Start-ElevatedApply',
-    'Assert-RevAgentElevatedRefreshScript',
+    'Get-RevAgentLocalAppDataRoot',
+    'Get-RevAgentBootstrapTrustClientContext',
+    'New-RevAgentBootstrapAuthenticatedInbox',
+    'Remove-RevAgentBootstrapAuthenticatedInbox',
+    'Start-RevAgentPostRefreshLauncher',
+    'Get-RevAgentBootstrapTrustMutexName',
     'Invoke-RevAgentBootstrapRefreshMain'
 )
 $functionAsts = @($ast.FindAll({
@@ -129,99 +118,100 @@ New-Item -ItemType Directory -Path $fixtureRoot -Force | Out-Null
 try {
     & $fixtureModule {
         param($FixtureTempRoot, $FixtureRefreshScriptPath)
-        $script:RevAgentExitUacDeclined = 79
         $script:RevAgentExitCoordinatorAlreadyRunning = 80
         $script:RevAgentExitCoordinatorTimeout = 81
-        $script:RevAgentExitUacDisabled = 82
         $script:RevAgentExitBootstrapTrustRequired = 84
         $script:ReleaseRoot = 'C:\fixture\release'
         $script:Channel = 'stable'
         $script:FixtureTempRoot = $FixtureTempRoot
-        $script:FixtureRefreshScriptPath = $FixtureRefreshScriptPath
         function script:Get-RevAgentBootstrapTempRoot { return $script:FixtureTempRoot }
-        function script:Get-RevAgentRunningRefreshScriptPath { return $script:FixtureRefreshScriptPath }
     } $fixtureRoot $sourcePath
-
-    Write-Host 'Test dormant G7 UAC classification and active G13 fail-closed main'
-    $wrappedUacDecline = [InvalidOperationException]::new('wrapper', [ComponentModel.Win32Exception]::new(1223))
-    Assert-True ([bool](& $fixtureModule { param($ErrorObject) Test-RevAgentUacDeclinedException -Exception $ErrorObject } $wrappedUacDecline)) 'Nested Win32 error 1223 was not recognized as UAC cancellation.'
-    $uacOutput = @(& $fixtureModule {
-            function Test-IsAdmin { return $false }
-            function Start-RevAgentElevatedProcess { throw [ComponentModel.Win32Exception]::new(1223) }
-            Start-ElevatedApply `
-                -SourceRoot 'C:\fixture\source' `
-                -EvidenceSource 'C:\fixture\evidence.json' `
-                -EvidenceSha256 ('A' * 64) `
-                -InstallerSha256 ('B' * 64) `
-                -TrustedKeysSource 'C:\fixture\keys.json'
-        } 6>&1)
-    $uacExitCode = @($uacOutput | Where-Object { $_ -is [int] } | Select-Object -Last 1)
-    Assert-True ($uacExitCode.Count -eq 1 -and [int]$uacExitCode[0] -eq 79) 'Dormant future-broker UAC cancellation coverage did not preserve exit code 79.'
-
-    foreach ($elevatedMode in @($false, $true)) {
-        $failClosedOutput = @(& $fixtureModule {
-                param([bool]$ElevatedMode)
-                $script:ElevatedApply = $ElevatedMode
-                function Start-ElevatedApply { throw 'Production main reached dormant automatic apply.' }
-                Invoke-RevAgentBootstrapRefreshMain
-            } $elevatedMode 6>&1)
-        $failClosedExitCode = @($failClosedOutput | Where-Object { $_ -is [int] } | Select-Object -Last 1)
-        Assert-True ($failClosedExitCode.Count -eq 1 -and [int]$failClosedExitCode[0] -eq 84) 'Unsigned production bootstrap refresh main did not fail closed with exit code 84.'
-        Assert-True ((@($failClosedOutput | ForEach-Object { [string]$_ }) -join ' ') -match 'no Authenticode or IT-managed trust anchor') 'Unsigned production bootstrap refresh main did not emit the supervised-prestage guidance.'
-    }
-
-    Write-Host 'Test dormant G6 verifier remains locally hash-bound for a future signed broker'
-    $sourceRefreshSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $sourcePath).Hash
-    $encodedVerifier = & $fixtureModule {
-        param($Path, $Sha256)
-        New-RevAgentElevatedRefreshVerifierEncodedCommand `
-            -ScriptPath $Path `
-            -ExpectedSha256 $Sha256 `
-            -ScriptArguments @('-ElevatedApply', '-ExpectedRefreshScriptSha256', $Sha256)
-    } $sourcePath $sourceRefreshSha256
-    $verifierText = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String([string]$encodedVerifier))
-    $payloadMarker = "FromBase64String('"
-    $payloadStart = $verifierText.IndexOf($payloadMarker, [StringComparison]::Ordinal) + $payloadMarker.Length
-    $payloadEnd = $verifierText.IndexOf("')", $payloadStart, [StringComparison]::Ordinal)
-    Assert-True ($payloadStart -ge $payloadMarker.Length -and $payloadEnd -gt $payloadStart) 'Dormant elevated verifier did not contain a complete bound payload.'
-    $payloadBase64 = $verifierText.Substring($payloadStart, $payloadEnd - $payloadStart)
-    $verifierPayload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($payloadBase64)) | ConvertFrom-Json
-    Assert-True ([string]::Equals([string]$verifierPayload.scriptPath, $sourcePath, [StringComparison]::OrdinalIgnoreCase) -and [string]$verifierPayload.expectedSha256 -eq $sourceRefreshSha256) 'Dormant elevated verifier payload did not bind its local script path to the parent-computed SHA-256.'
-    Assert-True ([string]$verifierPayload.childArguments -match '-ExpectedRefreshScriptSha256' -and [string]$verifierPayload.childArguments -match [regex]::Escape($sourceRefreshSha256)) 'Dormant elevated verifier child arguments lost the self-hash binding.'
-    Assert-True ($verifierText -match '\[IO\.FileShare\]::Read' -and $verifierText -match '\$child\.WaitForExit\(\)') 'Dormant elevated verifier does not hold a no-write/no-delete read handle until its verified child exits.'
-    & $fixtureModule { param($Path, $Sha256) Assert-RevAgentElevatedRefreshScript -ScriptPath $Path -ExpectedSha256 $Sha256 } $sourcePath $sourceRefreshSha256
-    $hashMismatch = $null
-    try { & $fixtureModule { param($Path) Assert-RevAgentElevatedRefreshScript -ScriptPath $Path -ExpectedSha256 ('0' * 64) } $sourcePath }
-    catch { $hashMismatch = $_ }
-    Assert-True ($null -ne $hashMismatch -and [string]$hashMismatch.Exception.Message -match 'changed before administrator execution') 'Elevated self-hash verification accepted a mismatched refresh script hash.'
-    $uncRejected = $null
-    try { & $fixtureModule { Assert-RevAgentElevatedRefreshScript -ScriptPath '\\fixture-server\share\refresh.ps1' -ExpectedSha256 ('0' * 64) } }
-    catch { $uncRejected = $_ }
-    Assert-True ($null -ne $uncRejected -and [string]$uncRejected.Exception.Message -match 'refused a UNC script path') 'Elevated self-verification accepted a UNC refresh script path.'
-
-    Write-Host 'Test G9 EnableLUA and token elevation diagnosis'
-    $nativeTokenElevationType = & $fixtureModule { Get-RevAgentTokenElevationType }
-    Assert-True ([string]$nativeTokenElevationType -in @('Default', 'Full', 'Limited')) 'Native TokenElevationType probing returned an invalid value.'
-    & $fixtureModule {
-        $script:FixtureEnableLua = 0
-        $script:FixtureTokenElevationType = 'Full'
-        function script:Get-ItemProperty {
-            param([string]$LiteralPath, [string]$Name, [object]$ErrorAction)
-            return [pscustomobject]@{ EnableLUA = $script:FixtureEnableLua }
+    Write-Host 'Test active E2 trust-core dispatch, timeout mapping, and exact cleanup'
+    $dispatchResult = & $fixtureModule {
+        $script:DispatchOrder = [Collections.Generic.List[string]]::new()
+        $script:PostRefreshCount = 0
+        $script:RequestCleanupCount = 0
+        $script:InboxCleanupCount = 0
+        $script:MockWaitResult = [pscustomobject]@{ completed = $true; timedOut = $false; exitCode = 0; message = 'broker-ok' }
+        function script:Initialize-TrustedPowerShellModules { [void]$script:DispatchOrder.Add('modules') }
+        function script:Mock-NewTrustRequest {
+            param([string]$InboxId)
+            [void]$script:DispatchOrder.Add('request')
+            return [pscustomobject]@{ inboxId = $InboxId; nonce = ('a' * 32); requestPath = 'request'; resultPath = 'result' }
         }
-        function script:Get-RevAgentTokenElevationType { return $script:FixtureTokenElevationType }
+        function script:Mock-StartTrustTask { [void]$script:DispatchOrder.Add('task') }
+        function script:Mock-WaitTrustResult {
+            param([object]$Request, [int]$TimeoutSeconds)
+            [void]$script:DispatchOrder.Add('wait')
+            return $script:MockWaitResult
+        }
+        function script:Mock-RemoveTrustArtifacts {
+            param([object]$Request)
+            $script:RequestCleanupCount++
+            [void]$script:DispatchOrder.Add('request-cleanup')
+        }
+        $script:MockTrustContext = [pscustomobject]@{
+            commands = [ordered]@{
+                'New-RevAgentBootstrapTrustRequest' = Get-Command Mock-NewTrustRequest
+                'Start-RevAgentBootstrapTrustBrokerTask' = Get-Command Mock-StartTrustTask
+                'Wait-RevAgentBootstrapTrustResult' = Get-Command Mock-WaitTrustResult
+                'Remove-RevAgentBootstrapTrustClientArtifacts' = Get-Command Mock-RemoveTrustArtifacts
+            }
+        }
+        function script:Get-RevAgentBootstrapTrustClientContext {
+            [void]$script:DispatchOrder.Add('health')
+            return $script:MockTrustContext
+        }
+        function script:New-RevAgentBootstrapAuthenticatedInbox {
+            param([object]$TrustContext)
+            [void]$script:DispatchOrder.Add('inbox')
+            return [pscustomobject]@{ inboxId = ('b' * 32); inboxRoot = 'fixture-inbox' }
+        }
+        function script:Start-RevAgentPostRefreshLauncher {
+            $script:PostRefreshCount++
+            [void]$script:DispatchOrder.Add('post-refresh')
+            return 0
+        }
+        function script:Remove-RevAgentBootstrapAuthenticatedInbox {
+            param([object]$Inbox)
+            $script:InboxCleanupCount++
+            [void]$script:DispatchOrder.Add('inbox-cleanup')
+        }
+        function script:Remove-StaleRevAgentBootstrapTemporaryItems { }
+        function script:Get-RevAgentBootstrapTrustMutexName { return 'Local\revAgentBootstrapTrustRefresh-fixture-' + [Guid]::NewGuid().ToString('N') }
+
+        $exitCode = Invoke-RevAgentBootstrapRefreshMain
+        return [pscustomobject]@{
+            exitCode = [int]$exitCode
+            order = @($script:DispatchOrder.ToArray())
+            postRefreshCount = $script:PostRefreshCount
+            requestCleanupCount = $script:RequestCleanupCount
+            inboxCleanupCount = $script:InboxCleanupCount
+        }
     }
-    $uacDisabled = & $fixtureModule { Get-RevAgentDeElevationCapability }
-    Assert-True (-not [bool]$uacDisabled.canDeElevate -and [string]$uacDisabled.reason -eq 'uac_disabled' -and [int]$uacDisabled.enableLUA -eq 0) 'EnableLUA=0 was not classified as non-de-elevatable.'
-    $uacDisabledOutput = @(& $fixtureModule { param($Capability) Write-RevAgentDeElevationFailure -Capability $Capability } $uacDisabled 6>&1)
-    Assert-True ((@($uacDisabledOutput | ForEach-Object { [string]$_ }) -join ' ') -match 'UAC disabled \(EnableLUA=0\)' -and (@($uacDisabledOutput | ForEach-Object { [string]$_ }) -join ' ') -match 'DPE revAgent administrator') 'EnableLUA=0 did not emit the stable operator remediation.'
-    & $fixtureModule { $script:FixtureEnableLua = 1; $script:FixtureTokenElevationType = 'Default' }
-    $defaultToken = & $fixtureModule { Get-RevAgentDeElevationCapability }
-    Assert-True (-not [bool]$defaultToken.canDeElevate -and [string]$defaultToken.reason -eq 'token_elevation_type_default') 'TokenElevationTypeDefault was not classified as non-de-elevatable.'
-    & $fixtureModule { $script:FixtureTokenElevationType = 'Full' }
-    $splitToken = & $fixtureModule { Get-RevAgentDeElevationCapability }
-    Assert-True ([bool]$splitToken.canDeElevate -and [string]$splitToken.reason -eq 'split_token_available') 'A normal UAC split token was rejected.'
-    Assert-True ($sourceText -match 'EnableLUA=0' -and $sourceText -match 'DPE revAgent administrator' -and $sourceText -match '\$script:RevAgentExitUacDisabled = 82') 'The UAC-disabled operator diagnosis or dedicated exit code is missing.'
+    Assert-True ([int]$dispatchResult.exitCode -eq 0) 'Active E2 trust-core dispatch did not succeed.'
+    Assert-True ([string]::Join(',', [string[]]$dispatchResult.order) -eq 'modules,health,inbox,request,task,wait,post-refresh,request-cleanup,inbox-cleanup') 'E2 trust-core dispatch order or finally cleanup order changed.'
+    Assert-True ([int]$dispatchResult.postRefreshCount -eq 1 -and [int]$dispatchResult.requestCleanupCount -eq 1 -and [int]$dispatchResult.inboxCleanupCount -eq 1) 'E2 dispatch did not launch post-refresh or clean exact client artifacts exactly once.'
+
+    $timeoutResult = & $fixtureModule {
+        $script:DispatchOrder.Clear()
+        $script:PostRefreshCount = 0
+        $script:RequestCleanupCount = 0
+        $script:InboxCleanupCount = 0
+        $script:MockWaitResult = [pscustomobject]@{ completed = $false; timedOut = $true; exitCode = 0; message = '' }
+        $exitCode = Invoke-RevAgentBootstrapRefreshMain
+        [pscustomobject]@{ exitCode = [int]$exitCode; postRefreshCount = $script:PostRefreshCount; requestCleanupCount = $script:RequestCleanupCount; inboxCleanupCount = $script:InboxCleanupCount }
+    }
+    Assert-True ([int]$timeoutResult.exitCode -eq 81 -and [int]$timeoutResult.postRefreshCount -eq 0) 'E2 protected-result timeout did not map to exit 81 before post-refresh.'
+    Assert-True ([int]$timeoutResult.requestCleanupCount -eq 1 -and [int]$timeoutResult.inboxCleanupCount -eq 1) 'E2 timeout did not clean the exact request/result and inbox artifacts.'
+
+    $missingTrustOutput = @(& $fixtureModule {
+            function script:Get-RevAgentBootstrapTrustClientContext { return $null }
+            Invoke-RevAgentBootstrapRefreshMain
+        } 6>&1)
+    $missingTrustExit = @($missingTrustOutput | Where-Object { $_ -is [int] } | Select-Object -Last 1)
+    Assert-True ($missingTrustExit.Count -eq 1 -and [int]$missingTrustExit[0] -eq 84) 'Missing or unhealthy IT-prestaged trust core did not return exit 84.'
+    Assert-True ((@($missingTrustOutput | ForEach-Object { [string]$_ }) -join ' ') -match 'IT-prestaged machine trust core' -and (@($missingTrustOutput | ForEach-Object { [string]$_ }) -join ' ') -match 'IT prestage kit') 'Exit 84 did not provide the E1 prestage-kit remediation.'
 
     Write-Host 'Test G7 exact current TEMP cleanup'
     $cleanupId = [Guid]::NewGuid().ToString('N')
@@ -246,7 +236,13 @@ try {
         CleanupLockPath = $cleanupLockPath
         CleanupLock = $cleanupLock
     }
-    & $fixtureModule { param($InputObject, $TempRoot) Remove-RevAgentBootstrapTemporaryInput -InputObject $InputObject -TempRoot $TempRoot } $cleanupInput $fixtureRoot
+    $cleanupLock.Dispose()
+    & $fixtureModule {
+        param($InputObject, $TempRoot)
+        foreach ($path in @($InputObject.SourceRoot, $InputObject.EvidenceSource, $InputObject.TrustedKeysSource, $InputObject.CleanupLockPath)) {
+            Remove-RevAgentBootstrapTemporaryPath -Path ([string]$path) -TempRoot $TempRoot
+        }
+    } $cleanupInput $fixtureRoot
     Assert-True (-not (Test-Path -LiteralPath $cleanupSource) -and -not (Test-Path -LiteralPath $cleanupEvidence) -and -not (Test-Path -LiteralPath $cleanupKeys) -and -not (Test-Path -LiteralPath $cleanupLockPath)) 'Exact current bootstrap TEMP input was not fully removed.'
     Assert-True ((Get-Content -Raw -LiteralPath (Join-Path $cleanupJunctionTarget 'sentinel.txt')) -eq 'must-survive') 'Exact TEMP cleanup traversed a raced child junction target.'
 
@@ -302,74 +298,15 @@ try {
     Assert-True (-not $maintenanceFailureEscaped) 'GUI startup maintenance allowed a cleanup-only failure to escape.'
     Assert-True ($guiText -match '(?s)\$form\.Add_Shown\(\{\s*\$script:GuiStartupCompleted\s*=\s*\$true\s*Start-RevAgentGuiStartupMaintenance\s*\}\)' -and $guiText -match 'GuiStaleBootstrapCleanupCommand' -and $guiText -match 'System\.Windows\.Forms\.Timer') 'GUI cleanup is not scheduled exactly after the Shown startup-complete marker.'
     Remove-Module $maintenanceModule -Force
-
-    Write-Host 'Test G8 nonce marker plus task state and LastTaskResult synchronization'
-    $bootstrapFixture = Join-Path $fixtureRoot 'Start-revAgent-Update.ps1'
-    [IO.File]::WriteAllText($bootstrapFixture, '# fixture')
-    & $fixtureModule {
-        $script:FixtureTaskState = 'Ready'
-        $script:FixtureLastTaskResult = 0
-        function script:Get-ScheduledTask {
-            param([string]$TaskName, [object]$ErrorAction)
-            return [pscustomobject]@{ TaskName = $TaskName; State = $script:FixtureTaskState }
-        }
-        function script:Get-ScheduledTaskInfo {
-            param([string]$TaskName, [object]$ErrorAction)
-            return [pscustomobject]@{ LastTaskResult = $script:FixtureLastTaskResult; LastRunTime = (Get-Date).AddSeconds(-1) }
-        }
-        function script:Start-Sleep { param([int]$Milliseconds) }
-    }
-
-    $successNonce = [Guid]::NewGuid().ToString('N')
-    $successMarker = Join-Path $fixtureRoot "revagent-bootstrap-coordinator-result-$successNonce.json"
-    [void]$markerPaths.Add($successMarker)
-    & $fixtureModule { param($Path, $Nonce) Write-RevAgentCoordinatorResultMarker -Path $Path -Nonce $Nonce -ExitCode 0 } $successMarker $successNonce
-    $successWait = & $fixtureModule {
-        param($Path, $Nonce, $BootstrapPath)
-        Wait-RevAgentBootstrapCoordinator -TaskName 'fixture-task' -ResultPath $Path -Nonce $Nonce -BootstrapPath $BootstrapPath -TimeoutSeconds 0 -PollIntervalMilliseconds 1
-    } $successMarker $successNonce $bootstrapFixture
-    Assert-True ([bool]$successWait.completed -and -not [bool]$successWait.timedOut -and [int]$successWait.exitCode -eq 0 -and [long]$successWait.lastTaskResult -eq 0) 'Coordinator success returned before marker/task/LastTaskResult convergence.'
-
-    & $fixtureModule { $script:FixtureLastTaskResult = 1 }
-    $mismatchWait = & $fixtureModule {
-        param($Path, $Nonce, $BootstrapPath)
-        Wait-RevAgentBootstrapCoordinator -TaskName 'fixture-task' -ResultPath $Path -Nonce $Nonce -BootstrapPath $BootstrapPath -TimeoutSeconds 1 -PollIntervalMilliseconds 1
-    } $successMarker $successNonce $bootstrapFixture
-    Assert-True ([int]$mismatchWait.exitCode -eq 1 -and [string]$mismatchWait.message -match 'did not match LastTaskResult') 'Coordinator marker/LastTaskResult mismatch was accepted.'
-
-    & $fixtureModule { $script:FixtureTaskState = 'Running'; $script:FixtureLastTaskResult = 0 }
-    $wrongNonce = [Guid]::NewGuid().ToString('N')
-    $wrongNonceWait = & $fixtureModule {
-        param($Path, $Nonce, $BootstrapPath)
-        Wait-RevAgentBootstrapCoordinator -TaskName 'fixture-task' -ResultPath $Path -Nonce $Nonce -BootstrapPath $BootstrapPath -TimeoutSeconds 0 -PollIntervalMilliseconds 1
-    } $successMarker $wrongNonce $bootstrapFixture
-    Assert-True (-not [bool]$wrongNonceWait.completed -and [bool]$wrongNonceWait.timedOut -and [int]$wrongNonceWait.exitCode -eq 81) 'A marker with the wrong nonce was accepted or did not use timeout code 81.'
-
-    & $fixtureModule { $script:FixtureTaskState = 'Ready'; $script:FixtureLastTaskResult = 79 }
-    $declinedNonce = [Guid]::NewGuid().ToString('N')
-    $declinedMarker = Join-Path $fixtureRoot "revagent-bootstrap-coordinator-result-$declinedNonce.json"
-    [void]$markerPaths.Add($declinedMarker)
-    & $fixtureModule {
-        param($Path, $Nonce)
-        Write-RevAgentCoordinatorResultMarker -Path $Path -Nonce $Nonce -ExitCode 79 -Message 'Administrator approval was declined.'
-    } $declinedMarker $declinedNonce
-    $declinedWait = & $fixtureModule {
-        param($Path, $Nonce, $BootstrapPath)
-        Wait-RevAgentBootstrapCoordinator -TaskName 'fixture-task' -ResultPath $Path -Nonce $Nonce -BootstrapPath $BootstrapPath -TimeoutSeconds 0 -PollIntervalMilliseconds 1
-    } $declinedMarker $declinedNonce $bootstrapFixture
-    Assert-True ([int]$declinedWait.exitCode -eq 79 -and [long]$declinedWait.lastTaskResult -eq 79 -and [string]$declinedWait.message -match 'declined') 'Coordinator UAC-decline result was not propagated through marker and LastTaskResult.'
-
-    $activeTask = & $fixtureModule {
-        Find-RevAgentActiveCoordinatorTask -Tasks @(
-            [pscustomobject]@{ TaskName = 'old'; State = 'Ready' },
-            [pscustomobject]@{ TaskName = 'active'; State = 'Queued' }
-        )
-    }
-    Assert-True ([string]$activeTask.TaskName -eq 'active') 'Queued/running coordinator detection did not prevent a duplicate task.'
+    Write-Host 'Test G8 uses only the fixed prestaged broker task and protected nonce result API'
+    Assert-True ($sourceText -match 'New-RevAgentBootstrapTrustRequest' -and $sourceText -match 'Start-RevAgentBootstrapTrustBrokerTask' -and $sourceText -match 'Wait-RevAgentBootstrapTrustResult') 'Refresh is not wired to the protected request/start/wait API.'
+    Assert-True ($sourceText -notmatch 'New-ScheduledTaskAction|New-ScheduledTaskPrincipal|Register-ScheduledTask|Unregister-ScheduledTask|CoordinatorNonce|CoordinatorResultPath') 'Refresh must not create per-attempt tasks or caller-selected result paths after E2 activation.'
 
     Write-Host 'Test launcher trust boundaries and exit-code propagation with real CMD children'
     $ascii = [Text.ASCIIEncoding]::new()
-    $trustMessage = 'independent Windows signing trust anchor is unavailable'
+    $machineTrustMessage = 'IT-prestaged revAgent machine trust core is missing or unhealthy'
+    $machinePrestageMessage = 'run the revAgent IT prestage kit'
+    $localTrustMessage = 'IT-prestaged revAgent machine trust core is missing or unhealthy'
     $administratorContact = 'Contact the DPE revAgent administrator'
     $canonicalKnownFolderProbeCommand = '$mode=$ExecutionContext.SessionState.LanguageMode; if($mode -ne ''FullLanguage''){ ''REVAGENT_LANGUAGE_MODE='' + $mode } else { ''REVAGENT_COMMON_APP_DATA='' + [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData) }'
     $constrainedKnownFolderProbeCommand = '$ExecutionContext.SessionState.LanguageMode=''ConstrainedLanguage''; ' + $canonicalKnownFolderProbeCommand
@@ -385,7 +322,7 @@ try {
     $refreshFixtureResult = Invoke-CmdFixture -CommandPath $refreshFixtureCmd -Environment @{
         ProgramData = (Join-Path $fixtureRoot 'refresh-programdata')
     }
-    Assert-True ($refreshFixtureResult.exitCode -eq 84 -and $refreshFixtureResult.stdout -match [regex]::Escape($trustMessage) -and $refreshFixtureResult.stdout -match [regex]::Escape($administratorContact)) 'Refresh CMD did not preserve exit code 84 with its stable administrator guidance.'
+    Assert-True ($refreshFixtureResult.exitCode -eq 84 -and $refreshFixtureResult.stdout -match [regex]::Escape($machineTrustMessage) -and $refreshFixtureResult.stdout -match [regex]::Escape($machinePrestageMessage)) 'Refresh CMD did not preserve exit code 84 with E1 prestage-kit guidance.'
 
     Write-Host 'Test Refresh CMD LanguageMode-first probe with a real constrained PS5 child'
     $refreshConstrainedFixtureCmd = Join-Path $refreshFixtureRoot 'Refresh-revAgent-ConstrainedLanguage-STABLE.cmd'
@@ -432,7 +369,7 @@ try {
     $stableFixtureResult = Invoke-CmdFixture -CommandPath $stableFixtureLauncher -Environment @{
         ProgramData = (Join-Path $fixtureRoot 'stable-poisoned-programdata')
     }
-    Assert-True ($stableFixtureResult.exitCode -eq 84 -and $stableFixtureResult.stdout -match [regex]::Escape($trustMessage) -and $stableFixtureResult.stdout -match [regex]::Escape($administratorContact) -and (Test-Path -LiteralPath $stableRefreshSentinel -PathType Leaf)) 'STABLE launcher did not preserve exit code 84 with its stable administrator guidance.'
+    Assert-True ($stableFixtureResult.exitCode -eq 84 -and $stableFixtureResult.stdout -match [regex]::Escape($machineTrustMessage) -and $stableFixtureResult.stdout -match [regex]::Escape($machinePrestageMessage) -and (Test-Path -LiteralPath $stableRefreshSentinel -PathType Leaf)) 'STABLE launcher did not preserve exit code 84 with E1 prestage-kit guidance.'
 
     Write-Host 'Test current STABLE bootstrap ignores poisoned ProgramData and bypasses refresh'
     Remove-Item -LiteralPath $stableRefreshSentinel -Force
@@ -496,7 +433,7 @@ try {
     $localFixtureText = $localLauncherText.Replace($canonicalLocalRefreshLine, $fixtureLocalRefreshLine)
     [IO.File]::WriteAllText($localFixtureLauncher, $localFixtureText, $ascii)
     $localMissingScriptResult = Invoke-CmdFixture -CommandPath $localFixtureLauncher -Environment @{ ProgramData = $localProgramData }
-    Assert-True ($localMissingScriptResult.exitCode -eq 84 -and $localMissingScriptResult.stdout -match 'bootstrap is not installed' -and $localMissingScriptResult.stdout -match [regex]::Escape($administratorContact) -and -not (Test-Path -LiteralPath $maliciousInvocationSentinel) -and -not (Test-Path -LiteralPath $localRefreshSentinel)) 'Protected local launcher did not give stable exit 84 guidance for a missing sibling PS1.'
+    Assert-True ($localMissingScriptResult.exitCode -eq 84 -and $localMissingScriptResult.stdout -match 'bootstrap is not installed' -and $localMissingScriptResult.stdout -match [regex]::Escape($administratorContact) -and $localMissingScriptResult.stdout -match [regex]::Escape($machinePrestageMessage) -and -not (Test-Path -LiteralPath $maliciousInvocationSentinel) -and -not (Test-Path -LiteralPath $localRefreshSentinel)) 'Protected local launcher did not give IT-prestage-kit exit 84 guidance for a missing sibling PS1.'
     $localBootstrapInvocationSentinel = Join-Path $fixtureRoot 'local-bootstrap-invoked.txt'
     $localBootstrapFixtureText = @(
         'param([switch]$VerificationOnly)'
@@ -505,12 +442,12 @@ try {
     ) -join "`r`n"
     [IO.File]::WriteAllText((Join-Path $localBootstrapRoot 'Start-revAgent-Update.ps1'), ($localBootstrapFixtureText + "`r`n"), $ascii)
     $localMissingStateResult = Invoke-CmdFixture -CommandPath $localFixtureLauncher -Environment @{ ProgramData = $localProgramData }
-    Assert-True ($localMissingStateResult.exitCode -eq 84 -and $localMissingStateResult.stdout -match 'bootstrap state is not installed' -and $localMissingStateResult.stdout -match [regex]::Escape($administratorContact) -and -not (Test-Path -LiteralPath $localBootstrapInvocationSentinel) -and -not (Test-Path -LiteralPath $maliciousInvocationSentinel) -and -not (Test-Path -LiteralPath $localRefreshSentinel)) 'Protected local launcher did not fail before verification with stable exit 84 guidance for a missing sibling state.'
+    Assert-True ($localMissingStateResult.exitCode -eq 84 -and $localMissingStateResult.stdout -match 'bootstrap state is not installed' -and $localMissingStateResult.stdout -match [regex]::Escape($administratorContact) -and $localMissingStateResult.stdout -match [regex]::Escape($machinePrestageMessage) -and -not (Test-Path -LiteralPath $localBootstrapInvocationSentinel) -and -not (Test-Path -LiteralPath $maliciousInvocationSentinel) -and -not (Test-Path -LiteralPath $localRefreshSentinel)) 'Protected local launcher did not fail before verification with IT-prestage-kit exit 84 guidance for a missing sibling state.'
     [IO.File]::WriteAllText((Join-Path $localBootstrapRoot 'bootstrap-state.json'), '{"release":{"channel":"stable"}}', $ascii)
     $localFixtureResult = Invoke-CmdFixture -CommandPath $localFixtureLauncher -Environment @{
         ProgramData = $localProgramData
     }
-    Assert-True ($localFixtureResult.exitCode -eq 84 -and $localFixtureResult.stdout -match 'Fixture channel: stable' -and $localFixtureResult.stdout -match [regex]::Escape($trustMessage) -and $localFixtureResult.stdout -match [regex]::Escape($administratorContact) -and (Test-Path -LiteralPath $localRefreshSentinel -PathType Leaf)) ("Protected local launcher did not resolve its sibling state and pass exit code 84 through its refresh path. exit={0} stdout={1} stderr={2}" -f $localFixtureResult.exitCode, ($localFixtureResult.stdout -replace '[\r\n]+', ' | '), ($localFixtureResult.stderr -replace '[\r\n]+', ' | '))
+    Assert-True ($localFixtureResult.exitCode -eq 84 -and $localFixtureResult.stdout -match 'Fixture channel: stable' -and $localFixtureResult.stdout -match [regex]::Escape($localTrustMessage) -and $localFixtureResult.stdout -match [regex]::Escape($administratorContact) -and $localFixtureResult.stdout -match [regex]::Escape($machinePrestageMessage) -and (Test-Path -LiteralPath $localRefreshSentinel -PathType Leaf)) ("Protected local launcher did not resolve its sibling state and pass IT-prestage-kit exit code 84 through its refresh path. exit={0} stdout={1} stderr={2}" -f $localFixtureResult.exitCode, ($localFixtureResult.stdout -replace '[\r\n]+', ' | '), ($localFixtureResult.stderr -replace '[\r\n]+', ' | '))
     Remove-Item -LiteralPath $localRefreshSentinel -Force
     $localFixtureRefresh78 = Join-Path $fixtureRoot 'local-refresh-78.cmd'
     [IO.File]::WriteAllText($localFixtureRefresh78, "@echo off`r`nexit /b 78`r`n", $ascii)
@@ -534,25 +471,22 @@ try {
     Assert-True (-not (Test-Path -LiteralPath $localRefreshSentinel) -and -not (Test-Path -LiteralPath $maliciousInvocationSentinel)) 'Protected local current path called refresh or executed the caller-controlled ProgramData bootstrap.'
 
     Write-Host 'Test G7-G9 static production wiring'
-    $startLimitedAst = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-LimitedCoordinatorFromAdministrator' }, $true))[0]
-    $startElevatedAst = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Start-ElevatedApply' }, $true))[0]
-    $encodedVerifierAst = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'New-RevAgentElevatedRefreshVerifierEncodedCommand' }, $true))[0]
     $mainAst = @($ast.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-RevAgentBootstrapRefreshMain' }, $true))[0]
-    Assert-True ($startLimitedAst.Extent.Text -match 'Find-RevAgentActiveCoordinatorTask' -and $startLimitedAst.Extent.Text -match 'Wait-RevAgentBootstrapCoordinator' -and $startLimitedAst.Extent.Text -match "'-CoordinatorNonce'" -and $startLimitedAst.Extent.Text -match "'-CoordinatorResultPath'") 'Coordinator duplicate guard or nonce-bound wait is not wired into production.'
-    Assert-True ($startLimitedAst.Extent.Text -match '-TimeoutSeconds 600' -and $sourceText -match '\$script:RevAgentExitCoordinatorAlreadyRunning = 80' -and $sourceText -match '\$script:RevAgentExitCoordinatorTimeout = 81') 'Coordinator bounded wait codes are missing or not unique.'
-    Assert-True ($mainAst.Extent.Text -match 'Write-Host \(Get-RevAgentBootstrapExitMessage -ExitCode \$script:RevAgentExitBootstrapTrustRequired\)' -and $mainAst.Extent.Text -match 'return \$script:RevAgentExitBootstrapTrustRequired' -and $mainAst.Extent.Text -notmatch 'Test-IsAdmin|Start-LimitedCoordinatorFromAdministrator|Start-ElevatedApply|Invoke-AuthenticatedBootstrapApply|New-CleanInstallBootstrapInput|Get-ProtectedBootstrapState') 'Production bootstrap refresh main must unconditionally fail closed with exit code 84 before all automatic coordinator, UAC, and apply paths.'
-    Assert-True ($sourceText -notmatch '(?m)^\s*Initialize-TrustedPowerShellModules\s*$') 'Production bootstrap refresh initialized optional trusted modules before its unconditional exit 84 trust stop.'
+    Assert-True ($mainAst.Extent.Text -match 'Initialize-TrustedPowerShellModules' -and $mainAst.Extent.Text -match 'Get-RevAgentBootstrapTrustClientContext' -and $mainAst.Extent.Text -match 'New-RevAgentBootstrapAuthenticatedInbox' -and $mainAst.Extent.Text -match 'New-RevAgentBootstrapTrustRequest' -and $mainAst.Extent.Text -match 'Start-RevAgentBootstrapTrustBrokerTask' -and $mainAst.Extent.Text -match 'Wait-RevAgentBootstrapTrustResult' -and $mainAst.Extent.Text -match 'Start-RevAgentPostRefreshLauncher') 'Production bootstrap refresh main is not wired to the complete E2 trust-core dispatch.'
+    Assert-True ($mainAst.Extent.Text.IndexOf('Initialize-TrustedPowerShellModules') -lt $mainAst.Extent.Text.IndexOf('New-RevAgentBootstrapAuthenticatedInbox')) 'Trusted modules must initialize before authenticated inbox staging.'
+    Assert-True ($mainAst.Extent.Text -match '-TimeoutSeconds 600' -and $sourceText -match '\$script:RevAgentExitCoordinatorAlreadyRunning = 80' -and $sourceText -match '\$script:RevAgentExitCoordinatorTimeout = 81') 'Broker duplicate and bounded-wait exit codes are missing or not unique.'
+    Assert-True ($mainAst.Extent.Text -match 'Remove-RevAgentBootstrapTrustClientArtifacts' -and $mainAst.Extent.Text -match 'Remove-RevAgentBootstrapAuthenticatedInbox' -and $mainAst.Extent.Text -match 'Remove-StaleRevAgentBootstrapTemporaryItems') 'E2 finally cleanup is not wired to client artifacts, inbox, and K2 TEMP sweep.'
     Assert-True ($sourceText -notmatch 'Remove-Item[^\r\n]*-Recurse' -and $sourceText -match 'Clear-RevAgentBootstrapTemporaryDirectoryNoFollow' -and $sourceText -match 'FILE_FLAG_OPEN_REPARSE_POINT') 'Bootstrap TEMP cleanup regressed from bounded no-follow deletion to recursive path deletion.'
-    Assert-True ($sourceText -match '\$script:RevAgentExitUacDeclined = 79' -and $sourceText -match 'NativeErrorCode\s+-eq\s+1223') 'UAC decline no longer has its dedicated code/classification.'
-    Assert-True ($startElevatedAst.Extent.Text -match 'New-RevAgentElevatedRefreshVerifierEncodedCommand' -and $startElevatedAst.Extent.Text -match "'-EncodedCommand'" -and $startElevatedAst.Extent.Text -notmatch "'-File',\s*\`$(?:PSCommandPath|stagedRefreshScript)") 'Dormant future-broker apply helper lost the G6 locally staged, encoded-verifier elevation contract.'
-    Assert-True ($encodedVerifierAst.Extent.Text -match '\[IO\.FileShare\]::Read' -and $encodedVerifierAst.Extent.Text -match '\$child\.WaitForExit\(\)' -and $sourceText -match 'function Assert-RevAgentElevatedRefreshScript') 'Dormant G6 verifier or elevated self-hash guard was removed instead of being retained for a future signed broker.'
+    Assert-True ($sourceText -notmatch 'ElevatedApply|CoordinatorRelaunchedFromAdmin|ExpectedEvidenceSha256|ExpectedInstallerSha256|ExpectedRefreshScriptSha256|TrustedKeysSource|Start-LimitedCoordinatorFromAdministrator|Start-ElevatedApply|Invoke-AuthenticatedBootstrapApply|New-RevAgentElevatedRefreshVerifierEncodedCommand|NativeErrorCode\s+-eq\s+1223|RunLevel Limited') 'Dormant UAC/de-elevation/caller-trust transport was not removed.'
+    Assert-True ($sourceText -notmatch '\$script:RevAgentExitUacDeclined\s*=\s*79|\$script:RevAgentExitUacDisabled\s*=\s*82') 'Removed UAC exit codes 79 and 82 remain active.'
+    Assert-True ($sourceText -notmatch '(?i)-EncodedCommand') 'G6 forbids EncodedCommand in the activated bootstrap refresh.'
+    Assert-True ($sourceText -notmatch '(?is)-File\s+[''"]?\\\\') 'G6 forbids launching a UNC path through PowerShell -File.'
+    Assert-True ($sourceText -notmatch 'New-ScheduledTaskAction|New-ScheduledTaskPrincipal|Register-ScheduledTask|Unregister-ScheduledTask') 'Refresh must start only the fixed IT-prestaged broker task; it must never register a per-attempt task.'
 
     $friendlyLauncherExitMessages = [ordered]@{
-        '79' = 'Administrator approval was declined'
-        '80' = 'coordinator is already running'
-        '81' = 'coordinator is still running'
-        '82' = 'UAC disabled'
-        '84' = 'independent Windows signing trust anchor is unavailable'
+        '80' = 'trust broker request is already running'
+        '81' = 'trust broker is still running'
+        '84' = 'machine trust core is missing or unhealthy'
     }
     Assert-True ($refreshCmdText -match [regex]::Escape('set "REFRESH_EXIT=%ERRORLEVEL%"') -and $refreshCmdText -match [regex]::Escape('exit /b %REFRESH_EXIT%')) 'Refresh CMD must capture and return the exact PowerShell exit code.'
     Assert-True ($stableLauncherText -match [regex]::Escape('setlocal EnableExtensions EnableDelayedExpansion') -and ([regex]::Matches($stableLauncherText, [regex]::Escape('set "REFRESH_EXIT=!ERRORLEVEL!"'))).Count -eq 2 -and ([regex]::Matches($stableLauncherText, [regex]::Escape('exit /b !REFRESH_EXIT!'))).Count -eq 2) 'STABLE launcher must capture refresh results safely inside both parenthesized paths and return the exact code.'

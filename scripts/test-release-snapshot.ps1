@@ -15,13 +15,20 @@ function Write-Utf8Json { param([string]$Path, [object]$Value) [IO.File]::WriteA
 $integrityModulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.DistributionIntegrity.psm1'
 $snapshotModulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.ReleaseSnapshot.psm1'
 Import-Module $integrityModulePath -Force
-Import-Module $snapshotModulePath -Force
+$snapshotModule = Import-Module $snapshotModulePath -Force -PassThru
+
+$expectedProductRoot = Join-Path ([Environment]::GetFolderPath([Environment+SpecialFolder]::CommonApplicationData)) 'DPE\revAgent'
+$canonicalLegacySnapshotParent = & $snapshotModule { Get-RevAgentCanonicalProtectedSnapshotParent }
+$canonicalSystemOnlySnapshotParent = & $snapshotModule { Get-RevAgentCanonicalProtectedSnapshotParent -SystemOnlySnapshot }
+Assert-Equal $canonicalLegacySnapshotParent ([IO.Path]::GetFullPath((Join-Path $expectedProductRoot 'execution-snapshots')).TrimEnd('\')) 'Legacy production snapshot parent changed.'
+Assert-Equal $canonicalSystemOnlySnapshotParent ([IO.Path]::GetFullPath((Join-Path $expectedProductRoot 'bootstrap-broker\snapshots')).TrimEnd('\')) 'System-only production snapshot parent is not isolated below bootstrap-broker.'
 
 $tempRoot = Join-Path ([IO.Path]::GetTempPath()) ('revagent-release-snapshot-test-' + [Guid]::NewGuid().ToString('N'))
 $releaseRoot = Join-Path $tempRoot 'release'
 $payloadRoot = Join-Path $tempRoot 'payload'
 $inboxRoot = Join-Path $tempRoot 'inbox'
 $snapshotParent = Join-Path $tempRoot 'snapshots'
+$snapshotParentSystemOnly = Join-Path $tempRoot 'snapshots-system-only'
 $snapshotParentReplay = Join-Path $tempRoot 'snapshots-replay'
 $snapshotParentRace = Join-Path $tempRoot 'snapshots-race'
 $snapshotParentUnsafe = Join-Path $tempRoot 'snapshots-unsafe'
@@ -119,6 +126,10 @@ try {
     $inboxOne = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     $inboxTwo = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     $inboxThree = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
+    $inboxStateHostile = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
+    $inboxStateHardlink = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
+    $inboxSignatureOversized = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
+    $inboxPackageOversized = New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     $releaseOwnedNodeRelative = "releases\$version\$nodeMsiRelative"
     foreach ($inbox in @($inboxOne, $inboxTwo, $inboxThree)) {
         $inboxNodePath = Join-Path $inbox.inboxRoot $releaseOwnedNodeRelative
@@ -126,11 +137,90 @@ try {
         Assert-Equal (Get-FileHash -Algorithm SHA256 -LiteralPath $inboxNodePath).Hash $nodeHash 'Authenticated inbox Node.js MSI hash mismatch.'
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $inbox.inboxRoot "tools\dependencies\$nodeMsiName"))) 'Authenticated inbox recreated the legacy shared tools Node.js MSI path.'
     }
+
+    Write-Host 'Test hostile inbox-state bounds, schema, leaf binding, and hardlink rejection'
+    $hostileStatePath = Join-Path $inboxStateHostile.inboxRoot 'inbox-state.json'
+    $validHostileStateBytes = [IO.File]::ReadAllBytes($hostileStatePath)
+    [IO.File]::WriteAllBytes($hostileStatePath, (New-Object byte[] 262145))
+    $oversizedStateRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxStateHostile.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-oversized-state') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $oversizedStateRejected = $_.Exception.Message -match 'Signed JSON size is outside the bounded policy' }
+    Assert-True $oversizedStateRejected 'Protected snapshot accepted an inbox-state document above 256 KiB.'
+
+    [IO.File]::WriteAllBytes($hostileStatePath, $validHostileStateBytes)
+    $validHostileStateJson = [Text.UTF8Encoding]::new($false, $true).GetString($validHostileStateBytes)
+    $duplicateStateJson = [regex]::Replace($validHostileStateJson, '"app"\s*:\s*"revAgent"', '"app":"revAgent","app":"revAgent"', 1)
+    [IO.File]::WriteAllText($hostileStatePath, $duplicateStateJson, [Text.UTF8Encoding]::new($false))
+    $duplicateStateRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxStateHostile.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-duplicate-state') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $duplicateStateRejected = $_.Exception.Message -match 'duplicate decoded object property' }
+    Assert-True $duplicateStateRejected 'Protected snapshot accepted a duplicate decoded inbox-state property.'
+
+    $unknownState = $validHostileStateJson | ConvertFrom-Json
+    $unknownState | Add-Member -NotePropertyName unsignedExtra -NotePropertyValue 'forbidden'
+    Write-Utf8Json -Path $hostileStatePath -Value $unknownState
+    $unknownStateRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxStateHostile.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-extra-state') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $unknownStateRejected = $_.Exception.Message -match 'Release inbox state must contain exactly' }
+    Assert-True $unknownStateRejected 'Protected snapshot accepted an inbox-state property outside the exact schema.'
+
+    $wrongLeafState = $validHostileStateJson | ConvertFrom-Json
+    $wrongLeafState.inboxId = [Guid]::NewGuid().ToString('N')
+    Write-Utf8Json -Path $hostileStatePath -Value $wrongLeafState
+    $wrongLeafRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxStateHostile.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-wrong-leaf') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $wrongLeafRejected = $_.Exception.Message -match 'identity/path/leaf contract' }
+    Assert-True $wrongLeafRejected 'Protected snapshot accepted an inboxId that did not match the inbox directory leaf.'
+    [IO.File]::WriteAllBytes($hostileStatePath, $validHostileStateBytes)
+
+    $hardlinkStatePath = Join-Path $inboxStateHardlink.inboxRoot 'inbox-state.json'
+    $hardlinkAliasPath = Join-Path $inboxStateHardlink.inboxRoot 'inbox-state-hardlink.json'
+    $hardlinkSupported = $false
+    try {
+        New-Item -ItemType HardLink -Path $hardlinkAliasPath -Target $hardlinkStatePath -ErrorAction Stop | Out-Null
+        $hardlinkSupported = $true
+        $hardlinkedStateRejected = $false
+        try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxStateHardlink.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-hardlinked-state') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+        catch { $hardlinkedStateRejected = $_.Exception.Message -match 'exactly one hardlink reference|filesystem link/reparse component' }
+        Assert-True $hardlinkedStateRejected 'Protected snapshot accepted a multiply-linked inbox-state file.'
+    }
+    catch {
+        if ($hardlinkSupported) { throw }
+        Write-Host "  hardlink fixture skipped: $($_.Exception.Message)"
+    }
+    finally { if (Test-Path -LiteralPath $hardlinkAliasPath) { Remove-Item -LiteralPath $hardlinkAliasPath -Force } }
+
+    Write-Host 'Test bounded detached signatures and pre-hash package size rejection'
+    $oversizedSignaturePath = Join-Path $inboxSignatureOversized.inboxRoot $inboxSignatureOversized.release.channelSignatureRelativePath
+    [IO.File]::WriteAllBytes($oversizedSignaturePath, (New-Object byte[] 262145))
+    $testTrustedKeyMap = @{}
+    $testTrustedKeyMap[$keyId] = $trustedKeys.trustedKeys[$keyId]
+    $fixtureIntegrityModule = Import-Module $integrityModulePath -Force -PassThru
+    $fixtureSignatureCommand = $fixtureIntegrityModule.ExportedCommands['Test-RevitMcpDetachedJsonSignatureFile']
+    $directSignatureResult = & $fixtureSignatureCommand `
+        -ContentPath (Join-Path $inboxSignatureOversized.inboxRoot $inboxSignatureOversized.release.channelManifestRelativePath) `
+        -SignaturePath $oversizedSignaturePath `
+        -TrustedKeys $testTrustedKeyMap
+    Assert-True (-not [bool]$directSignatureResult.success -and [string]$directSignatureResult.reason -eq 'invalid_json_file' -and [string]$directSignatureResult.message -match 'bounded') 'Distribution-integrity verifier did not reject an oversized detached signature before parsing.'
+    $oversizedSignatureRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxSignatureOversized.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-oversized-signature') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $oversizedSignatureRejected = $_.Exception.Message -match 'Signed JSON size is outside the bounded policy' }
+    Assert-True $oversizedSignatureRejected 'Protected snapshot accepted a detached signature above 256 KiB.'
+
+    $oversizedPackagePath = Join-Path $inboxPackageOversized.inboxRoot $inboxPackageOversized.release.packageRelativePath
+    $oversizedPackageStream = [IO.File]::Open($oversizedPackagePath, [IO.FileMode]::Open, [IO.FileAccess]::Write, [IO.FileShare]::None)
+    try { $oversizedPackageStream.SetLength($oversizedPackageStream.Length + 1048576L) }
+    finally { $oversizedPackageStream.Dispose() }
+    $oversizedPackageRejected = $false
+    try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxPackageOversized.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-oversized-package') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
+    catch { $oversizedPackageRejected = $_.Exception.Message -match 'package size mismatch before hashing' }
+    Assert-True $oversizedPackageRejected 'Protected snapshot hashed an inbox package whose actual size exceeded its signed declaration.'
+
     [IO.File]::WriteAllBytes($nodeMsiPath, [Text.Encoding]::UTF8.GetBytes('TAMPERED RELEASE-OWNED NODE MSI'))
     $tamperedNodeRejected = $false
     try { [void](New-RevAgentAuthenticatedReleaseInbox -ReleaseRoot $releaseRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -InboxRoot $inboxRoot -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
-    catch { $tamperedNodeRejected = $_.Exception.Message -match 'Node.js MSI SHA-256 mismatch|Node.js MSI hash mismatch|hash mismatch' }
-    Assert-True $tamperedNodeRejected 'Authenticated inbox acquisition accepted a tampered release-owned Node.js MSI sidecar.'
+    catch { $tamperedNodeRejected = $_.Exception.Message -match 'Node.js MSI size mismatch before hashing' }
+    Assert-True $tamperedNodeRejected 'Authenticated inbox acquisition did not reject a changed Node.js MSI size before hashing.'
     [IO.File]::WriteAllBytes($packagePath, [Text.Encoding]::UTF8.GetBytes('MUTATED TRANSPORT AFTER INBOX'))
     $snapshot = New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxOne.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent $snapshotParent -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot
     Assert-True $snapshot.success 'Protected release snapshot should succeed from an authenticated local inbox after transport mutation.'
@@ -146,8 +236,47 @@ try {
     Assert-Equal ([string]$snapshot.state.externalDependencies.nodeMsi.releaseRelativePath) $releaseOwnedNodeRelative 'Snapshot Node.js MSI release-owned path state mismatch.'
     Assert-Equal ([string]$snapshot.state.externalDependencies.nodeMsi.snapshotRelativePath) "payload\installer\nas\dependencies\$nodeMsiName" 'Snapshot Node.js MSI payload path state mismatch.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $snapshot.snapshotRoot "tools\dependencies\$nodeMsiName"))) 'Protected snapshot recreated the legacy shared tools Node.js MSI path.'
+    Assert-True ($null -eq $snapshot.state.PSObject.Properties['accessPolicy']) 'Default snapshot state schema changed instead of remaining backward-compatible.'
     Assert-True (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $snapshot.snapshotRoot -AllowTestRoot) 'Snapshot ACL/link/hardlink reattestation should pass.'
     Assert-True (Assert-RevAgentProtectedSnapshotParent -Path $snapshotParent -AllowTestRoot) 'Snapshot parent owner/DACL/path attestation should pass.'
+
+    $builtinUsersSid = 'S-1-5-32-545'
+    $defaultRootUsersRules = @((Get-Acl -LiteralPath $snapshot.snapshotRoot).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+            $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and [string]$_.IdentityReference.Value -eq $builtinUsersSid
+        })
+    Assert-True ($defaultRootUsersRules.Count -gt 0) 'Default snapshot no longer grants its established BUILTIN Users read access.'
+
+    Write-Host 'Test system-only bootstrap-trust snapshot policy and ACL attestation'
+    $systemOnlySnapshot = New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxOne.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent $snapshotParentSystemOnly -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot -SystemOnlySnapshot
+    Assert-Equal ([string]$systemOnlySnapshot.state.accessPolicy) 'system-only-bootstrap-trust' 'System-only snapshot state access-policy binding mismatch.'
+    Assert-True (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $systemOnlySnapshot.snapshotRoot -AllowTestRoot -SystemOnlySnapshot) 'Explicit system-only snapshot reattestation should pass.'
+    Assert-True (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $systemOnlySnapshot.snapshotRoot -AllowTestRoot) 'Snapshot reattestation should derive the system-only policy from protected state.'
+    Assert-True (Test-RevAgentSystemOnlyReleaseSnapshot -SnapshotRoot $systemOnlySnapshot.snapshotRoot -AllowTestRoot) 'Read-only system-only snapshot classifier should accept the valid E2 snapshot.'
+    foreach ($item in @((Get-Item -LiteralPath $systemOnlySnapshot.snapshotRoot -Force)) + @(Get-ChildItem -LiteralPath $systemOnlySnapshot.snapshotRoot -Recurse -Force)) {
+        $usersRules = @((Get-Acl -LiteralPath $item.FullName).GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | Where-Object {
+                $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and [string]$_.IdentityReference.Value -eq $builtinUsersSid
+            })
+        Assert-True ($usersRules.Count -eq 0) "System-only snapshot item grants BUILTIN Users access: $($item.FullName)"
+    }
+    $systemOnlyRootAcl = Get-Acl -LiteralPath $systemOnlySnapshot.snapshotRoot
+    [void]$systemOnlyRootAcl.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($builtinUsersSid),
+            [Security.AccessControl.FileSystemRights]::ReadAndExecute,
+            [Security.AccessControl.InheritanceFlags]::None,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow))
+    $systemOnlyRootDacl = [Security.AccessControl.DirectorySecurity]::new()
+    $systemOnlyRootDacl.SetSecurityDescriptorSddlForm(
+        $systemOnlyRootAcl.GetSecurityDescriptorSddlForm([Security.AccessControl.AccessControlSections]::Access),
+        [Security.AccessControl.AccessControlSections]::Access)
+    $systemOnlyRootInfo = [IO.DirectoryInfo](Get-Item -LiteralPath $systemOnlySnapshot.snapshotRoot -Force)
+    if ('System.IO.FileSystemAclExtensions' -as [type]) { [IO.FileSystemAclExtensions]::SetAccessControl($systemOnlyRootInfo, $systemOnlyRootDacl) }
+    else { $systemOnlyRootInfo.SetAccessControl($systemOnlyRootDacl) }
+    $systemOnlyReaderRejected = $false
+    try { [void](Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot $systemOnlySnapshot.snapshotRoot -AllowTestRoot -SystemOnlySnapshot) }
+    catch { $systemOnlyReaderRejected = $_.Exception.Message -match 'System-only protected release snapshot grants access to an untrusted principal' }
+    Assert-True $systemOnlyReaderRejected 'System-only snapshot reattestation accepted a BUILTIN Users read ACE.'
+    Assert-True (-not (Test-RevAgentSystemOnlyReleaseSnapshot -SnapshotRoot $systemOnlySnapshot.snapshotRoot -AllowTestRoot)) 'Read-only system-only snapshot classifier accepted a snapshot with a public read ACE.'
 
     Write-Host 'Test snapshot parent ACL and no-delete-share race guards'
     New-Item -ItemType Directory -Path $snapshotParentUnsafe -Force | Out-Null
@@ -205,7 +334,7 @@ try {
     [IO.File]::WriteAllBytes((Join-Path $inboxTwo.inboxRoot $inboxTwoState.release.packageRelativePath), [Text.Encoding]::UTF8.GetBytes('TAMPERED INBOX PACKAGE'))
     $tamperRejected = $false
     try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxTwo.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent (Join-Path $tempRoot 'snapshots-tamper') -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }
-    catch { $tamperRejected = $_.Exception.Message -match 'package SHA-256 mismatch|hash mismatch' }
+    catch { $tamperRejected = $_.Exception.Message -match 'package (?:SHA-256|size) mismatch|hash mismatch' }
     Assert-True $tamperRejected 'Broker-side verification must reject a package changed after pre-UAC acquisition.'
     $replayRejected = $false
     try { [void](New-RevAgentProtectedReleaseSnapshot -InboxPath $inboxOne.inboxRoot -TrustedKeysPath $trustedKeysPath -IntegrityModulePath $integrityModulePath -SnapshotParent $snapshotParentReplay -HighestAcceptedReleaseSequence 11 -ExpectedNodeMsiSha256 $nodeHash -AllowTestRoot) }

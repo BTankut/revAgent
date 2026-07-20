@@ -1395,6 +1395,31 @@ namespace RevAgentInstallerSmoke {
     $bootstrapRefreshAst = [Management.Automation.Language.Parser]::ParseFile($bootstrapRefreshPath, [ref]$bootstrapRefreshTokens, [ref]$bootstrapRefreshErrors)
     Assert-Equal @($bootstrapRefreshErrors).Count 0 'Bootstrap refresh tool does not parse.'
     $bootstrapRefreshMainAst = @($bootstrapRefreshAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-RevAgentBootstrapRefreshMain' }, $true))[0]
+    $bootstrapTrustModulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.BootstrapTrust.psm1'
+    $bootstrapTrustModuleText = Get-Content -Raw -LiteralPath $bootstrapTrustModulePath
+    $bootstrapTrustTokens = $null
+    $bootstrapTrustErrors = $null
+    $bootstrapTrustAst = [Management.Automation.Language.Parser]::ParseFile($bootstrapTrustModulePath, [ref]$bootstrapTrustTokens, [ref]$bootstrapTrustErrors)
+    Assert-Equal @($bootstrapTrustErrors).Count 0 'Bootstrap trust module does not parse.'
+    $bootstrapTrustFunctionTexts = @{}
+    foreach ($bootstrapFunctionName in @(
+            'Get-RevAgentBootstrapTrustLayout',
+            'Register-RevAgentBootstrapTrustTask',
+            'Install-RevAgentBootstrapTrustCore',
+            'Get-RevAgentBootstrapTrustMachineProfiles',
+            'Invoke-RevAgentBootstrapTrustProtectedSnapshotApply',
+            'Get-RevAgentBootstrapTrustBoundedQueueCandidates',
+            'Invoke-RevAgentBootstrapTrustResultRetention',
+            'Invoke-RevAgentBootstrapTrustBrokerQueue'
+        )) {
+        $bootstrapFunctionAst = @($bootstrapTrustAst.FindAll({
+                    param($node)
+                    $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $bootstrapFunctionName
+                }, $true))
+        Assert-Equal $bootstrapFunctionAst.Count 1 "Bootstrap trust function '$bootstrapFunctionName' is missing or duplicated."
+        $bootstrapTrustFunctionTexts[$bootstrapFunctionName] = [string]$bootstrapFunctionAst[0].Extent.Text
+    }
+    $prestageInstallerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\install-revagent-local-bootstrap.ps1')
     $productionPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
     $legacyUpdaterStubText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.cmd')
     $legacyUpdaterAliasTexts = @(
@@ -1442,11 +1467,9 @@ namespace RevAgentInstallerSmoke {
     }
     Assert-True ($bootstrapRefreshCmdText -match '\[Environment\]::GetFolderPath\(\[Environment\+SpecialFolder\]::CommonApplicationData\)' -and $bootstrapRefreshCmdText -notmatch '%ProgramData%' -and $bootstrapRefreshCmdText -match 'returned without creating the protected local bootstrap' -and $bootstrapRefreshCmdText -match 'pause') "Bootstrap refresh CMD must resolve canonical CommonApplicationData and not return success silently when the protected local bootstrap was not created."
     $friendlyBootstrapExitMessages = [ordered]@{
-        '79' = 'Administrator approval was declined'
-        '80' = 'coordinator is already running'
-        '81' = 'coordinator is still running'
-        '82' = 'UAC disabled'
-        '84' = 'independent Windows signing trust anchor is unavailable'
+        '80' = 'trust broker request is already running'
+        '81' = 'trust broker is still running'
+        '84' = 'machine trust core is missing or unhealthy'
     }
     Assert-True ($bootstrapRefreshCmdText -match [regex]::Escape('set "REFRESH_EXIT=%ERRORLEVEL%"') -and $bootstrapRefreshCmdText -match [regex]::Escape('exit /b %REFRESH_EXIT%')) 'Bootstrap refresh CMD must preserve the exact PowerShell exit code.'
     Assert-True ($stableLauncherText -match [regex]::Escape('setlocal EnableExtensions EnableDelayedExpansion') -and ([regex]::Matches($stableLauncherText, [regex]::Escape('set "REFRESH_EXIT=!ERRORLEVEL!"'))).Count -eq 2 -and ([regex]::Matches($stableLauncherText, [regex]::Escape('exit /b !REFRESH_EXIT!'))).Count -eq 2) 'STABLE launcher must capture and preserve both refresh exit codes safely inside parenthesized blocks.'
@@ -1454,20 +1477,107 @@ namespace RevAgentInstallerSmoke {
         Assert-True ($bootstrapRefreshCmdText -match [regex]::Escape(('if "%REFRESH_EXIT%"=="{0}"' -f $exitCode)) -and $bootstrapRefreshCmdText -match [regex]::Escape([string]$friendlyBootstrapExitMessages[$exitCode])) "Bootstrap refresh CMD lost friendly exit-code $exitCode handling."
         Assert-True ($stableLauncherText -match [regex]::Escape(('if "%REVAGENT_FAILURE_CODE%"=="{0}"' -f $exitCode)) -and $stableLauncherText -match [regex]::Escape([string]$friendlyBootstrapExitMessages[$exitCode])) "STABLE launcher lost friendly exit-code $exitCode handling."
     }
-    Assert-True ($bootstrapRefreshCmdText -match 'Contact the DPE revAgent administrator' -and $stableLauncherText -match 'Contact the DPE revAgent administrator' -and $bootstrapRefreshText -match 'Contact the DPE revAgent administrator') 'Exit code 84 must provide stable field remediation through the DPE revAgent administrator.'
+    Assert-True ($bootstrapRefreshCmdText -match 'revAgent IT prestage kit' -and $stableLauncherText -match 'revAgent IT prestage kit' -and $bootstrapRefreshText -match 'revAgent IT prestage kit') 'Exit code 84 must direct the operator to the E1 revAgent IT prestage kit.'
     Assert-True ($localLauncherText -match [regex]::Escape('set "BOOTSTRAP=%~dp0Start-revAgent-Update.ps1"') -and $localLauncherText -match [regex]::Escape('set "BOOTSTRAP_STATE=%~dp0bootstrap-state.json"') -and $localLauncherText -match [regex]::Escape('set "REFRESH_EXIT=!ERRORLEVEL!"') -and $localLauncherText -match 'Contact the DPE revAgent administrator') 'Desktop local launcher must bind protected siblings, preserve refresh codes, and show stable trust-anchor guidance.'
     Assert-True ($localLauncherText -match [regex]::Escape('in (`^""%POWERSHELL%"') -and $localLauncherText -match '\$env:REVAGENT_BOOTSTRAP_STATE' -and $localLauncherText -match [regex]::Escape('}"^"`) do set "BOOTSTRAP_CHANNEL=%%C"')) 'Desktop local launcher must retain correct nested CMD quoting around its protected sibling-state channel probe.'
     Assert-True ($productionPublisherText -match 'function Get-RevAgentStableLauncherBytes' -and $productionPublisherText -match [regex]::Escape("'installer\nas\revAgent Updater STABLE.cmd'") -and $productionPublisherText -match '\[IO\.File\]::ReadAllBytes\(\$templatePath\)' -and $productionPublisherText -match 'Set-RevAgentStableLauncherExact') 'Production publisher must derive managed STABLE bytes from the exact repo launcher template so exit-code mappings remain in R3 lockstep.'
+    Assert-True ($productionPublisherText -match "foreach \(\`$toolName in @\('Refresh-revAgent-LocalBootstrap-STABLE\.cmd', 'Refresh-revAgent-LocalBootstrap-STABLE\.ps1'\)\)" -and $productionPublisherText -match 'Set-RevAgentStableBootstrapToolsExact') 'Production publisher must stage both Refresh launcher files with the canonical STABLE template as the R3 managed triple.'
     Assert-True ($localLauncherText -match '-VerificationOnly' -and $localLauncherText -match 'RefreshStableIfBound' -and $localLauncherText -match 'Refresh-revAgent-LocalBootstrap-STABLE\.cmd' -and $localLauncherText -match 'bootstrap must be refreshed') "Desktop local launcher must not fail silently when its protected bootstrap is stale; stable-bound launchers must route through bootstrap refresh."
-    Assert-True ($bootstrapRefreshMainAst.Extent.Text -match 'Write-Host \(Get-RevAgentBootstrapExitMessage -ExitCode \$script:RevAgentExitBootstrapTrustRequired\)' -and $bootstrapRefreshMainAst.Extent.Text -match 'return \$script:RevAgentExitBootstrapTrustRequired' -and $bootstrapRefreshMainAst.Extent.Text -notmatch 'Test-IsAdmin|Start-LimitedCoordinatorFromAdministrator|Start-ElevatedApply|Invoke-AuthenticatedBootstrapApply|New-CleanInstallBootstrapInput|Get-ProtectedBootstrapState') "Bootstrap refresh production main must fail closed with exit code 84 before every automatic coordinator, UAC, or apply path."
-    Assert-True ($bootstrapRefreshText -notmatch '(?m)^\s*Initialize-TrustedPowerShellModules\s*$') "Bootstrap refresh production entry must reach its unconditional exit 84 before optional trusted-module initialization."
-    Assert-True ($bootstrapRefreshText -match 'Get-ProtectedBootstrapState' -and $bootstrapRefreshText -match 'New-CleanInstallBootstrapInput' -and $bootstrapRefreshText -match 'New-RevAgentBootstrapPrestageEvidence\.ps1' -and $bootstrapRefreshText -match 'install-revagent-local-bootstrap\.ps1' -and $bootstrapRefreshText -match 'ConfirmIndependentlyAuthenticatedSource') "Bootstrap refresh tool must retain the dormant authenticated helper closure for a future independently signed broker."
-    Assert-True ($bootstrapRefreshText -match 'revagent-bootstrap-trusted-keys-' -and $bootstrapRefreshText -match 'Trusted release keys changed before bootstrap elevation' -and $bootstrapRefreshText -match 'TrustedKeysSource = \$trustedKeysLocal') "Clean first-install bootstrap must pass a local hash-verified trusted-keys copy into the elevated phase, not a NAS-only path."
-    Assert-True ($bootstrapRefreshText -match 'Bootstrap refresh trusted keys changed before elevation' -and $bootstrapRefreshText -match 'Get-Sha256Hex -Path \$TrustedKeysSource' -and $bootstrapRefreshText -match 'evidenceDocument\.sources\.trustedKeys') "Elevated bootstrap refresh must re-verify trusted keys against authenticated evidence before staging them."
-    Assert-True ($bootstrapRefreshText -match 'Start-LimitedCoordinatorFromAdministrator' -and $bootstrapRefreshText -match 'CoordinatorRelaunchedFromAdmin' -and $bootstrapRefreshText -match 'RunLevel Limited' -and $bootstrapRefreshText -match 'New-ScheduledTaskPrincipal' -and $bootstrapRefreshText -notmatch 'Start this refresh normally, not as administrator') "Bootstrap refresh must relaunch an elevated STABLE start as a normal limited coordinator before producing bootstrap evidence."
-    Assert-True ($bootstrapRefreshText -match 'Set-AdminOnlyAcl -Path \$productRoot' -and $bootstrapRefreshText.IndexOf('Set-AdminOnlyAcl -Path $productRoot') -lt $bootstrapRefreshText.IndexOf('Set-AdminOnlyAcl -Path $prestageRoot')) "Elevated bootstrap refresh must harden the revAgent product root before staging authenticated evidence under prestage."
+    Assert-True ($bootstrapRefreshMainAst.Extent.Text -match 'Initialize-TrustedPowerShellModules' -and $bootstrapRefreshMainAst.Extent.Text -match 'Get-RevAgentBootstrapTrustClientContext' -and $bootstrapRefreshMainAst.Extent.Text -match 'New-RevAgentBootstrapAuthenticatedInbox' -and $bootstrapRefreshMainAst.Extent.Text -match 'New-RevAgentBootstrapTrustRequest' -and $bootstrapRefreshMainAst.Extent.Text -match 'Start-RevAgentBootstrapTrustBrokerTask' -and $bootstrapRefreshMainAst.Extent.Text -match 'Wait-RevAgentBootstrapTrustResult' -and $bootstrapRefreshMainAst.Extent.Text -match 'Start-RevAgentPostRefreshLauncher') "Bootstrap refresh production main must execute the E2 trust-health, authenticated-inbox, fixed-task, protected-result, and post-refresh chain."
+    Assert-True ($bootstrapRefreshMainAst.Extent.Text.IndexOf('Initialize-TrustedPowerShellModules') -lt $bootstrapRefreshMainAst.Extent.Text.IndexOf('New-RevAgentBootstrapAuthenticatedInbox')) "Bootstrap refresh must initialize trusted PowerShell modules before authenticated inbox staging."
+    Assert-True ($bootstrapRefreshMainAst.Extent.Text -match 'Remove-RevAgentBootstrapTrustClientArtifacts' -and $bootstrapRefreshMainAst.Extent.Text -match 'Remove-RevAgentBootstrapAuthenticatedInbox' -and $bootstrapRefreshMainAst.Extent.Text -match 'Remove-StaleRevAgentBootstrapTemporaryItems') "Bootstrap refresh must clean exact broker client artifacts, the authenticated inbox, and stale K2 TEMP attempts from finally."
+    Assert-True ($bootstrapRefreshText -match 'DPE\\revAgent\\trust' -and $bootstrapRefreshText -match 'RevAgent\.BootstrapTrust\.psm1' -and $bootstrapRefreshText -match 'New-RevAgentAuthenticatedReleaseInbox') "Bootstrap refresh must use the IT-prestaged protected trust module and its protected release-snapshot dependency."
+    Assert-True ($bootstrapRefreshText -notmatch 'ElevatedApply|CoordinatorRelaunchedFromAdmin|ExpectedEvidenceSha256|ExpectedInstallerSha256|ExpectedRefreshScriptSha256|TrustedKeysSource|Start-LimitedCoordinatorFromAdministrator|Start-ElevatedApply|Invoke-AuthenticatedBootstrapApply|New-RevAgentElevatedRefreshVerifierEncodedCommand|RunLevel Limited') "Bootstrap refresh must not retain the dormant caller-supplied UAC transport."
+    Assert-True ($bootstrapRefreshText -notmatch '\$script:RevAgentExitUacDeclined\s*=\s*79|\$script:RevAgentExitUacDisabled\s*=\s*82') "Removed UAC exit codes 79 and 82 must not remain active in the E2 broker transport."
     Assert-True ($bootstrapRefreshText -notmatch '\[string\]::Equals\([^\r\n]*(?:StringComparison|System\.StringComparison)' -and $bootstrapRefreshText -notmatch '\.(?:StartsWith|EndsWith)\([^\r\n]*(?:StringComparison|System\.StringComparison)') "Bootstrap refresh must avoid StringComparison overloads because it runs on arbitrary workstation Windows PowerShell hosts."
     Assert-True ($bootstrapRefreshText -notmatch '(?m)^\s*\$channel\s*=') "Bootstrap refresh must not assign a local `$channel variable because PowerShell treats it as the same name as the `$Channel parameter."
+
+    Write-Host 'Test E2 fixed machine broker boundary and bounded private queues'
+    $trustLayoutText = [string]$bootstrapTrustFunctionTexts['Get-RevAgentBootstrapTrustLayout']
+    $trustTaskText = [string]$bootstrapTrustFunctionTexts['Register-RevAgentBootstrapTrustTask']
+    $trustInstallText = [string]$bootstrapTrustFunctionTexts['Install-RevAgentBootstrapTrustCore']
+    $trustProfilesText = [string]$bootstrapTrustFunctionTexts['Get-RevAgentBootstrapTrustMachineProfiles']
+    $trustApplyText = [string]$bootstrapTrustFunctionTexts['Invoke-RevAgentBootstrapTrustProtectedSnapshotApply']
+    $trustQueueScanText = [string]$bootstrapTrustFunctionTexts['Get-RevAgentBootstrapTrustBoundedQueueCandidates']
+    $trustResultRetentionText = [string]$bootstrapTrustFunctionTexts['Invoke-RevAgentBootstrapTrustResultRetention']
+    $trustBrokerQueueText = [string]$bootstrapTrustFunctionTexts['Invoke-RevAgentBootstrapTrustBrokerQueue']
+    $trustTaskArgumentsLine = [regex]::Match($trustLayoutText, '(?m)^\s*\$taskArguments\s*=.*$').Value
+
+    Assert-True (
+        $prestageInstallerText -match "canonicalPrestageRoot\s*=\s*Join-Path\s+\`$programDataCanonical\s+'DPE\\revAgent\\prestage'" -and
+        $prestageInstallerText -match "canonicalPrestageInstaller.*'install-revagent-local-bootstrap\.ps1'" -and
+        $prestageInstallerText -match "canonicalPrestageEvidence.*'bootstrap-prestage-evidence\.json'" -and
+        $prestageInstallerText -match "canonicalPrestageKeys.*'release-trusted-keys\.json'" -and
+        $prestageInstallerText -match '\$isLegacyPrestageShape' -and
+        $prestageInstallerText -match '\$isBrokerApplyShape' -and
+        $prestageInstallerText -match "\^apply-\[a-f0-9\]\{32\}\`$" -and
+        $prestageInstallerText -match "producerMode.*'machine-trust-broker'" -and
+        $prestageInstallerText -match 'producer mode does not match the exact protected installer/evidence/key path shape'
+    ) 'Elevated local-bootstrap install must accept only canonical supervised prestage or the exact private nonce-bound broker triple and bind producerMode to that shape.'
+
+    Assert-True (
+        $trustApplyText -match '\$Layout\.applyRoot' -and
+        $trustApplyText -match 'apply-\$\(\[string\]\$Request\.nonce\)' -and
+        $trustApplyText -match 'exact private nonce-derived apply directory' -and
+        $trustApplyText -match 'Test-RevAgentBootstrapTrustSystemOnlyAcl' -and
+        $trustApplyText -match "'install-revagent-local-bootstrap\.ps1'" -and
+        $trustApplyText -match "'bootstrap-prestage-evidence\.json'" -and
+        $trustApplyText -match "'release-trusted-keys\.json'" -and
+        $trustApplyText -notmatch 'prestageRoot|DPE\\revAgent\\prestage' -and
+        $trustBrokerQueueText -notmatch '\.prestageRoot|DPE\\revAgent\\prestage'
+    ) 'The live broker must use only its exact nonce-bound private apply triple and remain independent of shared public prestage files.'
+
+    Assert-True (
+        $trustLayoutText -match "requestQueueRelativeRoot\s*=\s*'AppData\\Local\\DPE\\revAgent\\broker-requests'" -and
+        $trustProfilesText -match 'RegistryHive\]::LocalMachine' -and
+        $trustProfilesText -match 'RegistryView\]::Registry64' -and
+        $trustProfilesText -match "ProfileList'" -and
+        $trustProfilesText -match 'MaxProfiles\s*=\s*128' -and
+        $trustQueueScanText -match '\$profile\.profileRoot' -and
+        $trustQueueScanText -match '\$Layout\.requestQueueRelativeRoot' -and
+        $trustQueueScanText -match 'MaxCandidatesPerProfile\s*=\s*16' -and
+        $trustQueueScanText -match 'for \(\$index = 0; \$index -lt \$MaxCandidatesPerProfile; \$index\+\+\)' -and
+        $trustBrokerQueueText -notmatch '\.requestsRoot'
+    ) 'Broker requests must be discovered from a bounded HKLM ProfileList inventory and scanned fairly from profile-local queues, never one shared ProgramData queue.'
+
+    Assert-True (
+        $bootstrapTrustModuleText -match '\("principal-\$sid"\)' -and
+        $trustResultRetentionText -match 'MaxBuckets\s*=\s*128' -and
+        $trustResultRetentionText -match 'MaxResultFiles\s*=\s*2048' -and
+        $trustResultRetentionText -match 'perPrincipalHardLimit\s*=\s*16' -and
+        $trustResultRetentionText -match 'blockedBucketCount' -and
+        $trustBrokerQueueText -match '\$ownerTerminalized -ge 2' -and
+        $trustBrokerQueueText -match '\$handled -ge \$MaxRequests'
+    ) 'Broker results and terminal work must remain isolated per requester SID with explicit per-principal and global hard caps.'
+
+    Assert-True (
+        $trustLayoutText -match "brokerLockPath\s*=.*'broker\.lock'" -and
+        $trustLayoutText -match "snapshotRoot\s*=\s*Join-Path\s+\`$brokerDataRoot\s+'snapshots'" -and
+        $trustLayoutText -match "applyRoot\s*=\s*Join-Path\s+\`$brokerDataRoot\s+'apply'" -and
+        $trustLayoutText -match "trustTransactionRoot\s*=\s*Join-Path\s+\`$brokerDataRoot\s+'trust-transactions'" -and
+        $trustInstallText -match "@\(\`$layout\.snapshotRoot, 'system-only'\)" -and
+        $trustInstallText -match "@\(\`$layout\.applyRoot, 'system-only'\)" -and
+        $trustInstallText -match "@\(\`$layout\.trustTransactionRoot, 'system-only'\)" -and
+        $trustBrokerQueueText -match 'brokerLockPath.*FileAccess\]::ReadWrite.*FileShare\]::Read' -and
+        $trustBrokerQueueText -match 'Test-RevAgentBootstrapTrustSystemOnlyAcl.*brokerLockPath' -and
+        $trustBrokerQueueText -match 'SystemOnlySnapshot\s*=\s*\$true' -and
+        $releaseSnapshotText -match "system-only-bootstrap-trust" -and
+        $releaseSnapshotText -match "DPE\\revAgent\\bootstrap-broker\\snapshots"
+    ) 'Broker lock, snapshots, apply scratch, and trust transactions must remain private system-only surfaces with an explicit system-only snapshot policy.'
+
+    Assert-True (
+        $trustLayoutText -match 'taskName\s*=\s*\$script:RevAgentBootstrapTrustTaskName' -and
+        $trustLayoutText -match 'taskPath\s*=\s*\$script:RevAgentBootstrapTrustTaskPath' -and
+        $trustTaskArgumentsLine -match '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File' -and
+        $trustTaskArgumentsLine -match '-Value\s+\$brokerPath\)\s*$' -and
+        $trustTaskArgumentsLine -notmatch '(?i)-(?:Inbox|Request|Result|Hash|Trusted|ReleaseRoot|EncodedCommand)' -and
+        $trustTaskText -match "New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest" -and
+        $trustTaskText -match 'New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries' -and
+        $trustTaskText -match 'ExecutionTimeLimit \(New-TimeSpan -Minutes 30\)' -and
+        $trustTaskText -match 'MultipleInstances IgnoreNew' -and
+        $trustTaskText -match 'SetSecurityDescriptor.*taskSddl'
+    ) 'Fixed bootstrap-trust task identity, no-argument action, SYSTEM/highest principal, SDDL, and bounded settings drifted.'
+
     Assert-True ($localBootstrapText -match 'bootstrap-state\.json' -and $localBootstrapText -match 'independentlyAuthenticated' -and $localBootstrapText -match 'FileMode\]::CreateNew' -and $localBootstrapText -match 'PSModulePath' -and $localBootstrapText -match 'installerLibPermissions' -and $localBootstrapText -match 'installerLibReleaseSnapshot' -and $localBootstrapText -match 'privilegedSnapshotUpdate') "Local bootstrap must enforce protected state, effective read-only access, the permissions sibling, trusted modules, and signed snapshot-broker mapping."
     Assert-True ($localBootstrapText -match 'localCurrentReleaseBindings' -and $localBootstrapText -match 'bootstrap_refresh_required' -and $localBootstrapText -match 'FileAccess\]::Write' -and $localBootstrapText -match 'fsutil\.exe' -and $localBootstrapText -match 'hardlink list') "Local bootstrap must reject stale trust-anchor files, effective file writes, and hardlinks."
     Assert-True ($localBootstrapText -match '(?s)\$startInfo\.UseShellExecute\s*=\s*\$false.*\$startInfo\.CreateNoWindow\s*=\s*\$true.*\$startInfo\.WorkingDirectory\s*=\s*Split-Path -Parent \$powershellPath' -and $localBootstrapText -notmatch '\$startInfo\.(?:Verb|WindowStyle)\s*=') "Local bootstrap must launch the unelevated GUI directly from the trusted PowerShell working directory without a shell verb or direct-mode WPF window-style override."
@@ -1510,10 +1620,10 @@ namespace RevAgentInstallerSmoke {
     Assert-True ($guiText -match '\$logBox\.Text = \$text') "GUI must stream the live installer log into the terminal area."
     Assert-True ($guiText -match '\$logBox\.AppendText\("Operation completed') "GUI must append completion status without replacing the streamed log."
     Assert-True ($guiText -notmatch 'Operation is running\.\.\.`r`nThis can take a few minutes') "GUI must not replace live terminal output with a generic running message."
-    Assert-True ($releaseSnapshotText -match 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E' -and $releaseSnapshotText -match 'Signed release package SHA-256 mismatch') "Protected snapshot acquisition must pin the signature verifier and verify the signed package before UAC."
+    Assert-True ($releaseSnapshotText -match 'C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6' -and $releaseSnapshotText -match 'Signed release package SHA-256 mismatch') "Protected snapshot acquisition must pin the signature verifier and verify the signed package before UAC."
     Assert-True ($releaseSnapshotText -match 'externalDependencies\.nodeMsi' -and $releaseSnapshotText -match 'external\\\$\(\$script:RevAgentNodeMsiName\)' -and $releaseSnapshotText -match 'signedSetSha256\.nodeMsi') "Protected acquisition must bind the Node MSI to the signed versioned release set."
     Assert-True ($releaseSnapshotText -notmatch 'tools\\dependencies\\\{0\}' -and $releaseSnapshotText -match 'nodeMsi = @\(\$source\.nodeMsiPath') "Authenticated inbox acquisition must not trust an ambient shared-tools dependency path."
-    Assert-True ($releaseSnapshotText -match 'FileShare\]::Read' -and $releaseSnapshotText -match 'Signed Node\.js MSI sidecar must have exactly one hardlink reference') "Signed Node MSI verification must deny concurrent writes/deletes and reject hardlinked sources."
+    Assert-True ($releaseSnapshotText -match 'FileShare\]::Read' -and $releaseSnapshotText -match 'Signed Node\.js MSI sidecar must be an ordinary file with exactly one hardlink reference') "Signed Node MSI verification must deny concurrent writes/deletes and reject hardlinked sources."
     Assert-True ($guiText -notmatch 'Trusted release path has a writable ACL and is not sealed|Assert-GuiDirectoryEffectivelyReadOnly|canonicalToolsRoot') "GUI must treat NAS as signed data transport without a sealed-ACL or loose-tools execution dependency."
     Assert-True ($snapshotBrokerText -match 'TargetArgumentsBase64' -and $snapshotBrokerText -match 'New-RevAgentProtectedReleaseSnapshot' -and $snapshotBrokerText -match 'targetRelativePath' -and $snapshotBrokerText -match '''-ExecutionSnapshotStatePath'', \$snapshot\.statePath' -and $snapshotBrokerText -match 'Assert-RevAgentBrokerTargetArguments' -and $snapshotBrokerText -match 'security-control arguments are forbidden') "Broker must decode exact-allowlisted target arguments, reject caller-owned trust parameters, and bind execution to the protected snapshot component/state."
     $integrityModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionIntegrity.psm1"
@@ -1624,7 +1734,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($updateText -match 'Publish-RevAgentMachineRunReport') "Updater must publish per-machine NAS reports and logs."
     Assert-True ($updateText -match '\.revagent-npm-dependencies\.json') "Updater payload fingerprints must ignore npm dependency marker files."
     Assert-True ($updateText -notmatch 'Repair-RevAgentScheduledTaskAction -Name \$TaskName') "Normal updates must not run an extra scheduled-task repair before the package installer."
-    Assert-True ($updateText -match 'Pinned pre-import integrity verifier hash mismatch' -and $updateText -match 'DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E') "Elevated updater must independently pin its pre-import signature verifier after UAC."
+    Assert-True ($updateText -match 'Pinned pre-import integrity verifier hash mismatch' -and $updateText -match 'C4B005D4333BD973C595D7590809D7BDA663807AF47A69ACDDF0E3955000D3E6') "Elevated updater must independently pin its pre-import signature verifier after UAC."
     Assert-True ($updateText -match 'Updater entrypoint does not match the authenticated snapshot component' -and $updateText -match 'GetFullPath\(\$PSCommandPath\).*GetFullPath\(\$componentPath\)') "Elevated updater must bind PSCommandPath to the exact authenticated local snapshot component."
     Assert-True ($updateText.IndexOf('Assert-RevAgentEarlyAuthenticatedSnapshot') -lt $updateText.IndexOf('Import-Module (Join-Path $nasLibRoot "RevAgent.HiddenLauncher.psm1")')) "Elevated updater must verify the protected snapshot state/hashes before importing sibling modules."
     Assert-True ($updateText -match 'authenticated-release-snapshot' -and $updateText -match 'signed_local_snapshot' -and $updateText -match 'Execution snapshot contains a filesystem link') "Elevated updater must reject unauthenticated or linked local snapshot inputs."
@@ -1749,7 +1859,7 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($publishText -match 'localBootstrap = "installer\\nas\\Start-revAgent-Update\.ps1"' -and $publishText -match 'installerLibLocalBootstrap = "installer\\lib\\RevAgent\.LocalBootstrap\.psm1"') "Signed release manifest must bind the local bootstrap and its protected prestage module."
     $localBootstrapModuleText = Get-Content -Raw -LiteralPath (Join-Path $libRoot "RevAgent.LocalBootstrap.psm1")
     $prestageInstallerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1")
-    Assert-True ($localBootstrapModuleText -match 'CommonDesktopDirectory' -and $localBootstrapModuleText -match 'CreateShortcut' -and $localBootstrapModuleText -match 'revAgent Updater\.lnk' -and $localBootstrapModuleText -match 'Start-revAgent-Update\.cmd' -and $prestageInstallerText -match '\[string\]\$DesktopShortcutRoot = ""' -and $prestageInstallerText -match '-DesktopShortcutRoot \$DesktopShortcutRoot') "Local bootstrap installer must create the stable GUI desktop shortcut through the protected local launcher, with a test-only root override."
+    Assert-True ($localBootstrapModuleText -match 'CommonDesktopDirectory' -and $localBootstrapModuleText -match 'CreateShortcut' -and $localBootstrapModuleText -match 'revAgent Updater\.lnk' -and $localBootstrapModuleText -match 'Start-revAgent-Update\.cmd' -and $prestageInstallerText -match '\[string\]\$DesktopShortcutRoot = ""' -and $prestageInstallerText -match 'DesktopShortcutRoot\s*=\s*\$DesktopShortcutRoot' -and $prestageInstallerText -match '\$localBootstrapCommand @localBootstrapArguments') "Local bootstrap installer must create the stable GUI desktop shortcut through the protected local launcher, with a test-only root override."
     Assert-True ($publishText -match '\$manifestMetadataPath' -and $publishText -match '\$zipMetadataPath') "Release publishing must write portable relative channel paths for signed CD artifacts."
     Assert-True ($publishText -match 'Signing private key must be stored outside the repository' -and $publishText -match 'Signing private key must be stored outside NAS tools') "Publish signing must reject private keys stored in shipped or tool roots."
     Assert-True ($publishText -match 'manifest\.sig\.json' -and $publishText -match '\{0\}\.sig\.json' -and $publishText -match 'Test-RevAgentDetachedJsonSignatureFile') "Publish signing must write and verify detached signature files."

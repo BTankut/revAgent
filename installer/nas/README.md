@@ -11,15 +11,16 @@ as exact release, server, legacy cleanup, or deep source identifiers.
 ## Deployment Model
 
 GitHub is the source history. The NAS share carries signed release data read by
-office workstations, but it is not an independently authenticated elevated
-trust anchor. Installed workstations start from the administrator-protected
-local bootstrap under `C:\ProgramData\DPE\revAgent\bootstrap`. Only a current,
-verified bootstrap follows the normal local GUI path. On a clean workstation,
-or when that bootstrap is stale, the exact-managed
-`tools\revAgent Updater STABLE.cmd` enters Refresh and returns exit 84 before
-UAC. It directs the operator to the supervised IT prestage kit and does not
-perform self-service bootstrap elevation. The long manual procedure remains an
-emergency fallback.
+office workstations, but it is not an elevated trust anchor. A one-time
+supervised IT kit installs the administrator-owned machine trust core under
+`C:\ProgramData\DPE\revAgent\trust`, the protected local bootstrap, and the
+fixed `\DPE\revAgent\revAgent Bootstrap Trust Broker` SYSTEM task. A current
+bootstrap follows the normal local GUI path. A clean/stale bootstrap enters
+Refresh, stages the complete signed release locally as the standard user, and
+asks that fixed broker to verify/apply it; SYSTEM never reads NAS or accepts
+caller-supplied trust data. A machine without a healthy core/task returns exit
+84 and is directed to the kit. The long manual procedure remains an emergency
+fallback.
 
 ```text
 Code change
@@ -30,8 +31,8 @@ Code change
 -> manual workflow_dispatch with publish_to_pilot=true updates only the signed
    DESKTOP-OKNV128/NET01 pilot channel
 -> a later, separately approved publish_to_nas=true updates NAS stable/fleet
--> scheduled tasks audit; current/prestaged workstations update through the
-   split-privilege GUI
+-> scheduled tasks audit; E2-prestaged workstations self-heal bootstrap content
+   through the fixed broker and update through the split-privilege GUI
 ```
 
 A normal feature-branch `git commit` or `git push` does not update the office by
@@ -112,9 +113,13 @@ proved by canonical published-surface readiness, not by ad-hoc file cleanup.
 `scripts\check-signed-stable-readiness.ps1 -RequirePublishedSurface` is the
 post-publication gate. It requires every managed file and exact hash, requires
 `tools\config\release-trusted-keys.json` to match the verified publisher input
-(and the pinned production key identity), and rejects unmanaged `.cmd` entry
-points. Do not use this mode against the source CD root; ordinary source-release
-readiness remains CMD-free and validates the signed payload before publication.
+(and the bounded q3-plus-one-future identity), requires the signed package's
+embedded key entry/component hash to match those exact bytes, and rejects
+unmanaged `.cmd` entry points. `-InspectLocalBootstrapTrust` adds a read-only,
+non-gating report of the current machine trust files, ACL/state, and fixed task;
+it never installs from NAS. Do not use published-surface mode against the source
+CD root; ordinary source-release readiness remains CMD-free and validates the
+signed payload before publication.
 The same gate is enabled automatically when `-ReleaseRoot` resolves to the
 canonical production `revAgent-deploy` root, so an operator cannot accidentally
 omit the published-surface check there. `-RequirePublishedSurface` remains the
@@ -236,12 +241,13 @@ Current production signing setup on this workstation uses key id
 `C:\ProgramData\DPE\revAgentReleaseSigning\private\revagent-prod-rsa-2026q3-private.xml`,
 and public trusted keys path
 `C:\ProgramData\DPE\revAgentReleaseSigning\public\release-trusted-keys.json`.
-The key id and fingerprint are pinned production values, not rotation
-examples. The production trusted-key document contains exactly this one key;
-do not publish an old-plus-new overlap document. Rotation requires the
-coordinated code-and-bootstrap-prestage procedure in
-`docs\DEVELOPER_RUNBOOK.md` before the replacement-key release is promoted to
-stable. The public key fingerprint is
+The key id and fingerprint are pinned production values, not examples.
+Production requires q3 and permits at most one strictly later
+`revagent-prod-rsa-YYYYqN` public key for an approved overlap window. No second
+key is activated here. Rotation still requires coordinated code, signed
+package, machine-trust prestage, and fleet evidence in
+`docs\DEVELOPER_RUNBOOK.md`; NAS may not replace the machine anchor by itself.
+The q3 public key fingerprint is
 `32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
 
 The GitHub environments exist and the workflow variables are configured, but
@@ -295,21 +301,34 @@ code-signing trust for the first elevated hop.
 
 On a clean workstation, a standard user runs only
 `\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy\tools\revAgent Updater
-STABLE.cmd`. If the protected state is absent or stale, any NAS Refresh path
-that would elevate returns exit 84 before UAC and points to
-`docs/BOOTSTRAP_PRESTAGE.md`; direct `-ElevatedApply` is disabled by the same
-guard. It does not copy release inputs into an elevated bootstrap attempt. Exit
-codes 79, 80, 81, and 82 describe UAC decline, an existing coordinator, timeout,
-and disabled/non-de-elevatable UAC only after a future independent elevation
-anchor re-enables that coordinator path. Current missing-or-stale Refresh does
-not reach those outcomes.
+STABLE.cmd`. If the protected state is absent or stale, Refresh initializes its
+pinned local modules, copies the complete signed release into
+`%LOCALAPPDATA%\DPE\revAgent\release-inbox\<inboxId>`, writes the minimal
+`%LOCALAPPDATA%\DPE\revAgent\broker-requests\bootstrap-request-<nonce>.json`,
+starts the fixed broker task, and waits for
+`%ProgramData%\DPE\revAgent\bootstrap-broker\results\principal-<SID>\bootstrap-result-<nonce>.json`.
+The request cannot select a key, verifier, hash, path, release root, or command.
 
-Existing protected-bootstrap operation remains normal only while that
-bootstrap is current and verified: STABLE bypasses Refresh and the protected
-local launcher opens the split-privilege GUI. A stale protected verifier/key
-may not authorize its own replacement. The locked-file verifier and associated
-staging/hash/nonce controls remain defense-in-depth for a future independently
-anchored coordinator; they are not current elevation authorization.
+SYSTEM discovers eligible local profiles through the 64-bit HKLM
+`ProfileList`, derives each inbox from the profile/SID, and never accesses NAS.
+The scan is bounded and round-robin fair: at most 128 profiles and 16 request
+candidates per profile are inventoried, no more than two requests per SID are
+terminalized in one invocation, and the broker handles 16 requests by default
+(hard maximum 64). Results are protected in per-SID buckets with a 16-file
+per-principal retention limit, 128-bucket cap, and 2048-file global cap. SYSTEM
+independently verifies detached signatures, rollback policy, package hash,
+embedded trusted-key identity, and signed component hashes before applying the
+protected bootstrap. A successful result cleans staging and starts the local
+launcher with `--post-refresh`; that continuation verifies the new binding and
+opens the GUI. Exit 80/81 mean broker busy/timeout. Every missing/unhealthy
+machine-trust check returns exit 84 and directs IT to the exact five-file E1
+supervised kit. The dormant UAC transport and its 79/82 outcomes were removed.
+
+D2 (whether this verifier is the final G13 release bar), D3 (available MDM/GPO
+deployment authority), and D4 (the q3-to-future-key rotation date/window and
+overlap) remain open operator decisions. `revagent-prod-rsa-2026q3` remains the
+only active signing identity; `2026q4` is only a future placeholder, not an
+activated key. E3 Authenticode has not started.
 
 Current bootstrap freshness is a byte-binding contract over these eight signed
 release components:
@@ -324,32 +343,36 @@ release components:
 - `installer\nas\Invoke-revAgent-PrivilegedSnapshotUpdate.ps1`
 
 If any one changes, an older protected bootstrap reports
-`bootstrap_refresh_required` and enters Refresh. Until the E2 machine trust
-core and broker are live, Refresh stops at exit 84, so such a stable publication
-requires an explicit fleet re-prestage/refresh plan. The current
-`2026.07.20.574-11020d1a` stable release already has this condition armed for
-older workstation bootstraps because #258/#259 changed the bootstrap script,
-launcher, updater GUI, and privileged-snapshot updater. Installed revAgent
-operation continues, but the next operator-started STABLE/GUI update path is
-blocked until supervised rebind. Use the E1 kit only for an urgent individual
-machine: verify its ZIP SHA-256 against the protected CD run summary,
-distribute it through an IT-controlled channel, preserve the exact five-file
-layout, and double-click `IT-Prestage-revAgent.cmd` for one UAC and an
-under-five-minute supervised rebind. It requires no repo checkout, pasted
-block, or copied hash literals; its sealed wrapper copies hash-pinned inputs to
-an administrator-only local staging directory before elevated execution. Do
-not run it from a standard-user-writable Downloads/Desktop/share path. Defer
-the general fleet pass until E2. Do not publish another
-eight-component change before E2 without the same warning in the PR and
-changelog and a separately approved rollout window.
+`bootstrap_refresh_required` and enters Refresh. With E2 trust established, the
+broker re-verifies and rebinds all eight components in the same user-started
+flow; that closes K0. Stable `2026.07.20.574-11020d1a` already armed the old
+fleet-strand condition, and E2 itself changes bound components, so the first
+E2-enabled stable rollout still needs one planned supervised kit pass on every
+older machine. That pass installs the trust core/task and rebinds the bootstrap
+together. After it, later eight-component changes self-heal without another IT
+touch.
 
-Self-service bootstrap install/refresh may be re-enabled only when an
-Authenticode-signed bootstrap broker, or an equivalent IT-prestaged verifier
-and pinned key, independently revalidates the detached release signature after
-elevation. Until then, use the primary supervised IT kit in
-`docs/BOOTSTRAP_PRESTAGE.md`; use its manual high-assurance block only for
-emergency recovery. The repository-side `scripts\install-revagent-local-bootstrap.ps1`
-is source material, never a repo- or NAS-side elevated entrypoint.
+For that one-time pass, verify the kit ZIP SHA-256 against the protected CD run
+summary, distribute it through an IT-controlled channel, preserve the exact
+five-file outer layout, and double-click `IT-Prestage-revAgent.cmd`. It requires
+no repo checkout, pasted block, or copied hash literals; its sealed wrapper
+copies hash-pinned inputs to an administrator-only local staging directory.
+Never run it from a standard-user-writable Downloads/Desktop/share path. The
+repository-side `scripts\install-revagent-local-bootstrap.ps1` remains source
+material, never a repo- or NAS-side elevated entrypoint.
+
+The protected installer commits and immediately health-attests the machine
+trust core before it starts the local-bootstrap transaction. An already exact,
+healthy fixed task is preserved; only a missing or broken task is repaired.
+Trust replacement stages and backs up below the SYSTEM/Administrators-only
+`bootstrap-broker\trust-transactions` root. The local bootstrap uses a private
+SYSTEM/Administrators-only `.bootstrap-transactions\<random>` child containing
+both candidate and prior roots. The candidate's ACLs, hashes, state bindings,
+readability, and single-link identities are fully attested before promotion;
+that promotion is the commit boundary. A pre-commit failure restores the exact
+prior directory identity, while the already healthy trust core remains for a
+retry. Failure to delete a prior root after commit is warning/deferred cleanup
+and never rolls back the healthy new bootstrap.
 
 After prestage, close Revit and run:
 
@@ -381,11 +404,11 @@ canonical release set into an administrator-protected local snapshot,
 re-attests the signed channel/manifest and every pre-import component there,
 and only then launches the local GUI. If the local bootstrap/GUI/verifiers or
 either protected migration dependency do not match the current signed
-manifest, the current managed Refresh path returns exit 84 before UAC and fails
-closed to supervised administrator prestage/refresh. A future independently
-authenticated broker may re-enable that path. Do not elevate a copied desktop
-script body, NAS GUI, or local user-writable updater. After installation,
-machine code, package,
+manifest, managed Refresh uses the E2 SYSTEM broker to independently verify and
+replace the complete protected binding. If the trust core/task itself is not
+healthy, it fails closed at exit 84 to the exact five-file E1 supervised kit.
+Do not elevate a copied desktop script body, NAS GUI, or local user-writable
+updater. After installation, machine code, package,
 runtime, updater libraries/config, Revit payload, and machine Codex source are
 administrator-owned and read/execute-only for standard users. User write ACLs
 are limited to updater `logs`, `user-state`, the product data `state` root, and
@@ -409,19 +432,48 @@ The NAS STABLE launcher delegates to
 `%ProgramData%\DPE\revAgent\bootstrap\Start-revAgent-Update.ps1` only when the
 protected bootstrap is current and verified; the canonical `revAgent-deploy`
 channel remains data rather than executable trust. A missing or stale bootstrap
-enters Refresh, stops with exit 84 before UAC, and requires supervised manual
-prestage/refresh. Direct `-ElevatedApply` is likewise disabled. No path permits
-elevating a loose NAS GUI/script.
+enters Refresh and uses the fixed E2 broker. Only a missing/unhealthy machine
+trust core/task stops at exit 84 for the exact five-file E1 supervised kit. No
+path permits elevating a loose NAS GUI/script or accepting caller-supplied trust
+inputs.
 
 Production NAS `tools` publishes the exact managed CMD allowlist described in
 the NAS Layout section. After a current, verified bootstrap is installed,
 prefer the protected local launcher for desktop shortcuts and ordinary repeat
 use.
 
-The updater uses the standard machine-wide root:
+The standard user owns only the profile-local request/inbox transport:
+
+```text
+%LOCALAPPDATA%\DPE\revAgent\
+  broker-requests\
+    bootstrap-request-<nonce>.json
+  release-inbox\
+    <inboxId>\
+```
+
+The updater uses the standard machine-wide protected root:
 
 ```text
 C:\ProgramData\DPE\revAgent\
+  bootstrap\
+  .bootstrap-transactions\       SYSTEM/Administrators only
+  trust\
+    RevAgent.BootstrapTrust.psm1
+    RevAgent.DistributionIntegrity.psm1
+    RevAgent.ReleaseSnapshot.psm1
+    Invoke-RevAgent-BootstrapTrustBroker.ps1
+    release-trusted-keys.json
+    trust-state.json
+  bootstrap-broker\
+    results\
+      principal-<SID>\
+        bootstrap-result-<nonce>.json
+    state\
+      broker.lock                 SYSTEM/Administrators only
+    snapshots\                    SYSTEM/Administrators only
+    apply\                        SYSTEM/Administrators only
+    trust-transactions\           SYSTEM/Administrators only
   package\
   runtime\
   updater\
@@ -430,6 +482,11 @@ C:\ProgramData\DPE\revAgent\
   revit-plugin\
   codex\
 ```
+
+There is no ProgramData request queue. Any legacy
+`bootstrap-broker\requests` directory left by an older build is ignored and is
+not an authority; the broker reads only profile-local `broker-requests`
+directories discovered through HKLM `ProfileList`.
 
 Logs are written to:
 

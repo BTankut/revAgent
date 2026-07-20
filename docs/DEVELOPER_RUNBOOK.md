@@ -976,11 +976,12 @@ clean-machine revAgent trust anchor.
 - Store only public release verification keys in
   `release-trusted-keys.json`; the CD producer copies that public file into
   release `tools\config\release-trusted-keys.json` for workstation updaters.
-- Production accepts exactly one pinned RS256 signing identity. The current
-  key id is `revagent-prod-rsa-2026q3` and its public-key fingerprint is
+- Production requires the pinned q3 RS256 signing identity and permits at most
+  one strictly later `revagent-prod-rsa-YYYYqN` public identity during an
+  approved transition. The current signing key id is
+  `revagent-prod-rsa-2026q3` and its public-key fingerprint is
   `32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33`.
-  The production `release-trusted-keys.json` must contain exactly that one key;
-  a live old-plus-new overlap document is rejected.
+  No second key is activated by E2 and q3 remains the signing identity.
 - Keep the encrypted/offline private-key backup under the release owner's
   control. Do not put private release keys, license-signing keys, seat secrets,
   or GitHub write tokens in Git, release ZIPs, NAS `tools\`, updater config, or
@@ -1012,31 +1013,35 @@ public key fingerprint:
   32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33
 ```
 
-These are pinned production values, not examples. Key rotation is a coordinated
-code-and-prestage rollout, not an in-place multi-key trust expansion:
+These are pinned production values, not examples. The code now supports a
+bounded two-key overlap, but D4 (rotation date/window) remains an operator
+decision. Do not add a future key until that decision is approved:
 
-1. Freeze production publish and generate the replacement private/public key
-   material outside Git, release ZIPs, and NAS `tools`.
-2. Prepare a new single-key trusted-key document and update the exact key-id and
-   fingerprint pins together in the signed producer, NAS publisher, direct
-   publisher, and bootstrap-prestage evidence generator. Update the protected
-   runner key path/id variables in the same change window.
-3. Merge through the protected PR gates, build and validate a source-free
-   release signed only by the replacement key, but do not promote NAS stable.
-4. Generate the supervised IT prestage kit from that staged signed release.
-   Use the primary kit procedure in `docs/BOOTSTRAP_PRESTAGE.md` to stage the
-   replacement single-key trust and matching protected bootstrap on the
-   developer/canary machine, then on every required online workstation. The
-   two-shell block is emergency recovery only. Record offline machines as
-   pending; they must be prestaged before they can consume the replacement-key
-   stable release.
-5. Verify the protected bootstrap state and signed readiness on the staged
-   machines, then explicitly publish the replacement-key release to NAS stable
-   and run the normal developer/canary and online-fleet audit.
-6. Retire the old private/public material only after the rollout evidence is
-   complete. A rollback across a signing-key boundary requires another
-   coordinated code-and-prestage operation; do not add the old key beside the
-   new key or bypass the pinned identity checks.
+The remaining closure decisions are explicit and must not be inferred from the
+E2 implementation: D2 asks whether the E2 machine verifier satisfies the final
+G13 release bar or whether publisher proof/E3 is additionally required; D3 asks
+what MDM/GPO deployment authority is actually available; D4 owns the rotation
+date/window and two-key overlap. All three remain open. E3 Authenticode has not
+started, q3 remains the sole active signing identity, and `2026q4` is only a
+future-key placeholder.
+
+1. Freeze production publish and generate the future private/public material
+   outside Git, release ZIPs, and NAS `tools`.
+2. Create the exact q3-plus-one-later public document. Keep q3 as the signing
+   identity for the overlap-entry release; validate its metadata, public-only
+   fields, unique fingerprints, and exact packaged/published bytes.
+3. Merge through protected PR gates, build signed CD, and generate the
+   supervised kit. Before stable promotion, use the kit/MDM to update the
+   administrator-owned machine trust core on developer/canary and then the
+   required fleet. NAS bytes cannot update this anchor by themselves.
+4. Verify `-InspectLocalBootstrapTrust` health, signed readiness, clean-install
+   broker flow, stale-eight-component self-heal, and fleet coverage. Record
+   offline machines as pending.
+5. Only in a separately approved follow-up may the new private key become the
+   signing identity. Keep q3 trusted through the approved rollback window.
+6. Removing q3 is another separately approved code, package, trust-core, and
+   fleet operation after evidence is complete. Never exceed two keys or remove
+   q3 merely by changing the writable NAS document.
 
 The GitHub environments `revagent-release-signing` and
 `revagent-production-publish` exist and their path/key variables are set.
@@ -1119,25 +1124,48 @@ the sibling protected `Start-revAgent-Update.ps1`. When that bootstrap is curren
 and verified, STABLE bypasses Refresh; the protected local GUI, signed
 inbox/snapshot verification, and bounded UAC machine phase of the ordinary
 package update continue to operate normally. When verification says the
-bootstrap itself is stale, its verifier/key may not authorize its own
-replacement: the unanchored NAS Refresh path stops before UAC.
+bootstrap itself is stale, Refresh uses the separately installed machine trust
+core and fixed SYSTEM broker; the stale verifier/key never authorizes itself.
 
 The production publisher also exact-manages
 `tools\revAgent Updater STABLE.cmd` as the only clean-workstation operator
-entry. It is currently a security-stop entry, not a successful O4 self-service
-installer: any missing or stale protected-bootstrap state that enters NAS
-Refresh returns exit 84 before UAC, prints the supervised prestage/refresh
-direction, and does not elevate locally staged release content. Direct
-`-ElevatedApply` is disabled by the same guard. This behavior prevents a
-standard user, a stale local verifier, or caller-supplied hashes from
-bootstrapping their own administrator-side trust.
+entry. On an E2-prestaged machine it is a real one-double-click clean/stale
+bootstrap path: the standard user stages the complete signed release to a local
+`%LOCALAPPDATA%\DPE\revAgent\release-inbox\<inboxId>` and submits only
+schema/app/request type, nonce, requester SID, inbox id, and timestamp through
+`%LOCALAPPDATA%\DPE\revAgent\broker-requests\bootstrap-request-<nonce>.json`.
+The fixed task runs
+`%ProgramData%\DPE\revAgent\trust\Invoke-RevAgent-BootstrapTrustBroker.ps1` as
+SYSTEM with no caller-controlled arguments. SYSTEM enumerates the 64-bit HKLM
+`SOFTWARE\Microsoft\Windows NT\CurrentVersion\ProfileList` inventory (hard cap
+128 profiles), derives the profile/inbox, and never accesses NAS. The bounded
+round-robin scan inventories at most 16 request candidates per profile; one
+broker invocation terminalizes at most two requests per SID and handles 16
+total by default (hard maximum 64). It independently verifies
+signatures/package/embedded key bytes/component hashes, applies the bootstrap,
+and writes
+`%ProgramData%\DPE\revAgent\bootstrap-broker\results\principal-<SID>\bootstrap-result-<nonce>.json`.
+Retention is capped at 16 files per SID, 128 principal buckets, and 2048 files
+globally. The broker reserves or creates the requester's protected result bucket
+before snapshot acquisition or privileged apply. At exactly 128 buckets, a new
+SID is rejected before apply and cannot create a 129th bucket; an existing SID
+continues within its own 16-file capacity, so the limit does not become a global
+broker outage. Success continues through `--post-refresh`.
 
-Self-service bootstrap install/refresh may be re-enabled only after an
-Authenticode-signed bootstrap broker, or an equivalent IT-prestaged machine
-verifier and pinned production key, independently revalidates the detached
-release signature after elevation. Until then, a missing or stale protected
-bootstrap fails closed to the supervised IT prestage kit below. The
-bootstrap root and state are
+There is no ProgramData request queue. Any legacy
+`bootstrap-broker\requests` directory is ignored and is not an authority. The
+authoritative queues are profile-local and discovered through `ProfileList`.
+`state\broker.lock`, `snapshots`, `apply`, and `trust-transactions` are
+SYSTEM/Administrators-only. The lock is the single-instance authority; snapshot
+and apply preflight each fail closed beyond 16 private artifacts.
+
+Every missing/unhealthy core/task path returns exit 84 with the exact five-file
+E1 supervised-kit direction; the manual procedure is emergency recovery, not
+the primary instruction. 80/81 are broker busy/timeout. The dormant
+`-ElevatedApply`/coordinator-UAC
+transport and 79/82 outcomes were deleted. This prevents a standard user, stale
+local verifier, or caller-supplied trust data from bootstrapping
+administrator-side trust. The bootstrap root and state are
 SYSTEM/Administrators-owned, standard-user read/execute only, link/hardlink
 guarded, and checked with effective directory and file-write probes. The local
 bootstrap, GUI, integrity verifier, permissions helper, and migration verifier
@@ -1150,8 +1178,32 @@ primary five-file IT kit runs one exact Windows PowerShell 5.1 driver, produces
 independent signed-release evidence, and copies the matched installer with
 OS/admin-only commands to
 `%ProgramData%\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`;
-only that protected canonical copy may run. The evidence binds both the staged
-installer (`localBootstrapInstallerScript`) and its imported module.
+only that protected canonical copy may run. E2 extends the signed evidence roles
+so that protected copy also installs the trust module, release-snapshot module,
+release-independent broker, exact public key bytes, and fixed SYSTEM task. The
+outer kit remains five files; those additional inputs come only from the
+verified signed package. The evidence binds both the staged installer
+(`localBootstrapInstallerScript`) and every trust-core source hash.
+
+Installation order is security-significant. The protected installer stages and
+commits trust below the SYSTEM/Administrators-only
+`bootstrap-broker\trust-transactions` root, preserves an already exact healthy
+task, repairs only a missing/broken task, and requires immediate trust health
+before starting local-bootstrap replacement. It holds the fixed
+`%ProgramData%\DPE\revAgent\.bootstrap-install.lock` continuously from before
+trust installation through that health check and the local-bootstrap commit.
+This machine-wide lock is distinct from `bootstrap-broker\state\broker.lock`;
+a concurrent installer fails closed as `bootstrap_install_busy` without
+performing trust or bootstrap mutation and must be retried only after the owning
+install exits. The local candidate and prior root
+then live below one private SYSTEM/Administrators-only
+`.bootstrap-transactions\<random>` child. Candidate ACLs, exact hashes, state
+bindings, readability, and single-link identities are attested before rename
+promotion; promotion is the commit boundary. Pre-commit failure restores the
+exact prior directory identity while the healthy trust remains available for
+retry. Post-commit failure to remove the prior root is warning/deferred cleanup
+only and must never roll back the healthy new bootstrap.
+
 The exact primary and emergency procedures are in
 `docs/BOOTSTRAP_PRESTAGE.md`. The primary path is one double-click, one UAC,
 under five minutes, and requires no repository checkout, pasted block, or
@@ -1160,6 +1212,13 @@ distribution-integrity verifier without write/delete sharing, hashes the exact
 acquired bytes, and executes those bytes as an in-memory module; it never
 imports the pathname after the hash check. Neither elevated path may derive
 replacement evidence from unauthenticated caller input.
+
+R9 still applies to E2's first stable release because E2 changes bound
+bootstrap files. Do not publish it until the separately approved rollout window
+has an E2-enabled kit/MDM pass for every in-scope machine. That one pass installs
+the core/task and rebinds the current bootstrap together. Afterward, the
+clean-install and stale-eight-component fixtures are the acceptance evidence
+for ordinary broker self-heal; another manual fleet prestage is not expected.
 When the server supports Windows ACL telemetry, inspect it without mutation
 with:
 
@@ -1294,14 +1353,17 @@ file:
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\check-signed-stable-readiness.ps1 `
   -ReleaseRoot "\\dpe-nas\...\revAgent-deploy" `
   -TrustedKeysPath "C:\secure\release-trusted-keys.json" `
+  -InspectLocalBootstrapTrust `
   -OutputJson
 ```
 
 The preflight verifies channel and release-manifest detached signatures in
-`enforce` mode, checks ZIP SHA256 against signed metadata, requires a positive
-`releaseSequence`, scans the release root and ZIP for source/developer/debug
-artifacts, and fails if obvious private signing material appears under the
-release root. It does not publish or change workstation policy.
+`enforce` mode, checks ZIP SHA256 and the package's exact embedded trusted-key
+entry/component hash against the verified external bytes, requires a positive
+`releaseSequence`, scans for source/developer/debug/private artifacts, and
+validates the bounded q3-plus-one-later public-key contract. The optional
+machine-trust inspection is read-only and non-gating: it reports core files,
+ACL/state, and fixed task health but never installs from NAS or changes policy.
 
 For an existing NAS root that still contains older source-full release ZIPs,
 check the currently selected signed stable release and `tools\` payload without

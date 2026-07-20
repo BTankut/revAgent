@@ -911,6 +911,44 @@ function Test-RevitMcpDetachedJsonSignature {
     return New-RevitMcpDistributionIntegrityResult -Success $true -Reason "ok" -Message "Detached JSON signature verified." -SignedObject $signedObject -KeyId $keyId -ContentSha256 $actualContentSha256
 }
 
+function Read-RevitMcpBoundedLockedJsonFile {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][long]$MaxBytes,
+        [Parameter(Mandatory = $true)][string]$Label
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    $item = Get-Item -LiteralPath $fullPath -Force -ErrorAction Stop
+    $linkType = if ($item.PSObject.Properties['LinkType']) { [string]$item.LinkType } else { '' }
+    if ($item.PSIsContainer -or ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or -not [string]::IsNullOrWhiteSpace($linkType)) {
+        throw "$Label must be an ordinary non-reparse file: $fullPath"
+    }
+
+    $stream = $null
+    try {
+        # FileShare.Read denies write and delete/rename while the exact bytes
+        # are bounded, duplicate-scanned, and parsed once.
+        $stream = [IO.FileStream]::new($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -lt 2 -or $stream.Length -gt $MaxBytes) {
+            throw "$Label size is outside the bounded 2..$MaxBytes byte policy. path=$fullPath size=$($stream.Length)"
+        }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        [int]$offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw "$Label ended before its locked length was read: $fullPath" }
+            $offset += $read
+        }
+        $json = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+        if ($json.Length -gt 0 -and $json[0] -eq [char]0xFEFF) { $json = $json.Substring(1) }
+        $duplicate = Find-RevitMcpDuplicateJsonObjectKey -Json $json
+        if ([bool]$duplicate.found) { throw "$Label contains duplicate decoded object key '$($duplicate.key)'." }
+        return ConvertFrom-RevitMcpJsonPreservingStrings -Json $json
+    }
+    finally { if ($null -ne $stream) { $stream.Dispose() } }
+}
+
 function Test-RevitMcpDetachedJsonSignatureFile {
     [CmdletBinding()]
     param(
@@ -934,21 +972,12 @@ function Test-RevitMcpDetachedJsonSignatureFile {
     }
 
     try {
-        $contentJson = Get-Content -Raw -LiteralPath $ContentPath -Encoding UTF8
-        $signatureJson = Get-Content -Raw -LiteralPath $SignaturePath -Encoding UTF8
-        $contentDuplicate = Find-RevitMcpDuplicateJsonObjectKey -Json $contentJson
-        if ($contentDuplicate.found) {
-            return Invoke-RevitMcpDistributionIntegrityFailure -Reason "duplicate_json_key" -Message "Signed content JSON contains duplicate object key '$($contentDuplicate.key)'." -ThrowOnFailure:$ThrowOnFailure
-        }
-        $signatureDuplicate = Find-RevitMcpDuplicateJsonObjectKey -Json $signatureJson
-        if ($signatureDuplicate.found) {
-            return Invoke-RevitMcpDistributionIntegrityFailure -Reason "duplicate_json_key" -Message "Signature envelope JSON contains duplicate object key '$($signatureDuplicate.key)'." -ThrowOnFailure:$ThrowOnFailure
-        }
-        $content = ConvertFrom-RevitMcpJsonPreservingStrings -Json $contentJson
-        $signatureEnvelope = ConvertFrom-RevitMcpJsonPreservingStrings -Json $signatureJson
+        $content = Read-RevitMcpBoundedLockedJsonFile -Path $ContentPath -MaxBytes 4194304 -Label 'Signed content JSON'
+        $signatureEnvelope = Read-RevitMcpBoundedLockedJsonFile -Path $SignaturePath -MaxBytes 262144 -Label 'Signature envelope JSON'
     }
     catch {
-        return Invoke-RevitMcpDistributionIntegrityFailure -Reason "invalid_json_file" -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure
+        $reason = if ($_.Exception.Message -match 'duplicate decoded object key') { 'duplicate_json_key' } else { 'invalid_json_file' }
+        return Invoke-RevitMcpDistributionIntegrityFailure -Reason $reason -Message $_.Exception.Message -ThrowOnFailure:$ThrowOnFailure
     }
 
     $verification = Test-RevitMcpDetachedJsonSignature `

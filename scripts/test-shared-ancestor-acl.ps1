@@ -100,7 +100,7 @@ $modules = @()
 try {
     New-Item -ItemType Directory -Path $fixtureRoot -ErrorAction Stop | Out-Null
 
-    Write-Host "Test production apply shared-root non-mutation contract"
+    Write-Host "Test fixed SYSTEM broker apply shared-root non-mutation contract"
     $refreshSourcePath = Join-Path $RepoRoot "installer\nas\Refresh-revAgent-LocalBootstrap-STABLE.ps1"
     $refreshTokens = $null
     $refreshParseErrors = $null
@@ -108,16 +108,88 @@ try {
     if (@($refreshParseErrors).Count -ne 0) {
         throw "Could not parse bootstrap refresh source: $refreshSourcePath`n$([string]::Join("`n", [string[]]@($refreshParseErrors)))"
     }
-    $applyFunctions = @($refreshAst.FindAll({
+    $legacyApplyFunctions = @($refreshAst.FindAll({
                 param($node)
                 return $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
                     $node.Name -eq "Invoke-AuthenticatedBootstrapApply"
             }, $true))
-    Assert-True ($applyFunctions.Count -eq 1) "Bootstrap refresh must define exactly one authenticated production apply function."
-    $applyText = [string]$applyFunctions[0].Extent.Text
-    Assert-True ($applyText -notmatch '(?i)\bSet-AdminOnlyAcl\s+(?:-Path\s+)?\$dpeRoot\b') "Production apply must not mutate the shared DPE ancestor with Set-AdminOnlyAcl."
-    Assert-True ($applyText -match '(?i)\bSet-AdminOnlyAcl\s+(?:-Path\s+)?\$productRoot\b') "Production apply must protect the exact revAgent product root."
-    Assert-True ($applyText -match '(?i)\bSet-AdminOnlyAcl\s+(?:-Path\s+)?\$prestageRoot\b') "Production apply must protect the exact revAgent prestage root."
+    Assert-True ($legacyApplyFunctions.Count -eq 0) "Bootstrap refresh must not retain the dormant user-launched authenticated apply function."
+
+    $refreshMainFunctions = @($refreshAst.FindAll({
+                param($node)
+                return $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq "Invoke-RevAgentBootstrapRefreshMain"
+            }, $true))
+    Assert-True ($refreshMainFunctions.Count -eq 1) "Bootstrap refresh must define exactly one fixed machine-trust broker dispatch."
+    $refreshMainText = [string]$refreshMainFunctions[0].Extent.Text
+    $trustedModulesIndex = $refreshMainText.IndexOf('Initialize-TrustedPowerShellModules', [StringComparison]::Ordinal)
+    $trustContextIndex = $refreshMainText.IndexOf('Get-RevAgentBootstrapTrustClientContext', [StringComparison]::Ordinal)
+    $inboxIndex = $refreshMainText.IndexOf('New-RevAgentBootstrapAuthenticatedInbox', [StringComparison]::Ordinal)
+    $requestIndex = $refreshMainText.IndexOf("New-RevAgentBootstrapTrustRequest", [StringComparison]::Ordinal)
+    $startTaskIndex = $refreshMainText.IndexOf("Start-RevAgentBootstrapTrustBrokerTask", [StringComparison]::Ordinal)
+    $waitResultIndex = $refreshMainText.IndexOf("Wait-RevAgentBootstrapTrustResult", [StringComparison]::Ordinal)
+    $postRefreshIndex = $refreshMainText.IndexOf('Start-RevAgentPostRefreshLauncher', [StringComparison]::Ordinal)
+    Assert-True ($trustedModulesIndex -ge 0 -and
+        $trustContextIndex -gt $trustedModulesIndex -and
+        $inboxIndex -gt $trustContextIndex -and
+        $requestIndex -gt $inboxIndex -and
+        $startTaskIndex -gt $requestIndex -and
+        $waitResultIndex -gt $startTaskIndex -and
+        $postRefreshIndex -gt $waitResultIndex) "Bootstrap refresh must load trusted modules, attest the fixed trust core, then use its nonce-bound SYSTEM broker request/result chain before post-refresh."
+    $refreshText = [string]$refreshAst.Extent.Text
+    Assert-True ($refreshText -notmatch '(?i)\bSet-AdminOnlyAcl\b|\bSet-Acl\b|\.SetAccessControl\s*\(') "User-mode bootstrap refresh must not mutate ProgramData ACLs or the shared DPE ancestor."
+
+    $trustContextFunctions = @($refreshAst.FindAll({
+                param($node)
+                return $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq "Get-RevAgentBootstrapTrustClientContext"
+            }, $true))
+    Assert-True ($trustContextFunctions.Count -eq 1) "Bootstrap refresh must define exactly one fixed protected trust-client context."
+    $trustContextText = [string]$trustContextFunctions[0].Extent.Text
+    Assert-True ($trustContextText -match "Join-Path \`$programDataRoot 'DPE\\revAgent\\trust'" -and
+        $trustContextText -match "Join-Path \`$trustRoot 'RevAgent\.BootstrapTrust\.psm1'" -and
+        $trustContextText -match "'Test-RevAgentBootstrapTrustHealth'" -and
+        $trustContextText -match "'Start-RevAgentBootstrapTrustBrokerTask'") "Bootstrap refresh must derive and attest its broker commands only from the fixed ProgramData trust module."
+
+    $trustModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.BootstrapTrust.psm1"
+    $trustTokens = $null
+    $trustParseErrors = $null
+    $trustAst = [Management.Automation.Language.Parser]::ParseFile($trustModulePath, [ref]$trustTokens, [ref]$trustParseErrors)
+    if (@($trustParseErrors).Count -ne 0) {
+        throw "Could not parse bootstrap trust source: $trustModulePath`n$([string]::Join("`n", [string[]]@($trustParseErrors)))"
+    }
+    $protectedApplyFunctions = @($trustAst.FindAll({
+                param($node)
+                return $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq "Invoke-RevAgentBootstrapTrustProtectedSnapshotApply"
+            }, $true))
+    Assert-True ($protectedApplyFunctions.Count -eq 1) "Machine trust must define exactly one protected production snapshot apply boundary."
+    $protectedApplyText = [string]$protectedApplyFunctions[0].Extent.Text
+    Assert-True ($protectedApplyText -match '(?i)\bTest-RevAgentBootstrapTrustSystemOnlyAcl\s+-Path\s+\$scratch\s+-Directory\b' -and
+        $protectedApplyText -match "ExpectedPath 'installer\\nas\\install-revagent-local-bootstrap\.ps1'" -and
+        $protectedApplyText -match "'-ProgramDataRoot', \(\[string\]\`$Layout\.programDataRoot\)" -and
+        $protectedApplyText -match "'-ConfirmIndependentlyAuthenticatedSource'") "SYSTEM broker apply must use one system-only nonce scratch directory and the authenticated local-bootstrap installer for the canonical ProgramData root."
+    Assert-True ($protectedApplyText -notmatch '(?i)\bSet-AdminOnlyAcl\b|\bSet-Acl\b|\.SetAccessControl\s*\(|\$dpeRoot\b') "SYSTEM broker apply must not directly mutate the shared DPE ancestor or its ACL."
+
+    $prestageInstallerPath = Join-Path $RepoRoot "scripts\install-revagent-local-bootstrap.ps1"
+    $prestageTokens = $null
+    $prestageParseErrors = $null
+    $prestageAst = [Management.Automation.Language.Parser]::ParseFile($prestageInstallerPath, [ref]$prestageTokens, [ref]$prestageParseErrors)
+    if (@($prestageParseErrors).Count -ne 0) {
+        throw "Could not parse local bootstrap installer source: $prestageInstallerPath`n$([string]::Join("`n", [string[]]@($prestageParseErrors)))"
+    }
+    $parentFunctions = @($prestageAst.FindAll({
+                param($node)
+                return $node -is [Management.Automation.Language.FunctionDefinitionAst] -and
+                    $node.Name -eq "Get-RevAgentPrestageParent"
+            }, $true))
+    Assert-True ($parentFunctions.Count -eq 1) "Authenticated local-bootstrap installer must define exactly one production parent resolver."
+    $parentText = [string]$parentFunctions[0].Extent.Text
+    Assert-True ($parentText -match 'bootstrap_shared_ancestor_not_prestaged' -and
+        $parentText -match '(?i)\bAssert-RevAgentPrestageSharedAncestorSafe\s+-Path\s+\$candidate\b' -and
+        $parentText -match 'CreateSubdirectory\(\$name, \(New-RevAgentPrestageAdminDirectorySecurity\)\)' -and
+        $parentText -match '(?i)\bAssert-RevAgentPrestageAdminDirectory\s+-Path\s+\$candidate\b') "Authenticated installer must validate the existing shared DPE ancestor read-only while creating and attesting only the exact revAgent product root."
+    Assert-True ($parentText -notmatch '(?i)\bSet-AdminOnlyAcl\b|\bSet-Acl\b|\.SetAccessControl\s*\(') "Production parent resolution must not rewrite the shared DPE ancestor ACL."
 
     $inheritOnlyAcl = New-TestDirectoryAcl -PropagationFlags ([Security.AccessControl.PropagationFlags]::InheritOnly)
     $appliedAcl = New-TestDirectoryAcl -PropagationFlags ([Security.AccessControl.PropagationFlags]::None)

@@ -1111,9 +1111,36 @@ else {
   foreach ($path in @($stagedEvidence, $stagedInstaller, $stagedTrustedKeys)) { Set-AdminOnlyAcl $path }
 }
 
-& $stagedInstaller -RepoRoot $SourceRoot -ReleaseRoot $ReleaseRoot `
+$installerOutput = @(& $stagedInstaller -RepoRoot $SourceRoot -ReleaseRoot $ReleaseRoot `
   -TrustedKeysPath $stagedTrustedKeys -ExpectedHashesPath $stagedEvidence `
-  -ConfirmIndependentlyAuthenticatedSource
+  -ProgramDataRoot $ProgramDataRoot `
+  -ConfirmIndependentlyAuthenticatedSource `
+  -AllowTestRoot:$AllowTestRoot)
+$installerResult = @($installerOutput | Where-Object { $null -ne $_ -and $_.PSObject.Properties['bootstrapTrustHealth'] } | Select-Object -Last 1)
+if ($installerResult.Count -ne 1 -or -not [bool]$installerResult[0].bootstrapTrustHealth.success) {
+  throw 'Local prestage installer did not return a healthy bootstrap trust-core attestation.'
+}
+
+$trustModuleBytes = Read-VerifiedBytes (Join-Path $SourceRoot 'installer\lib\RevAgent.BootstrapTrust.psm1') ([string]$evidence.sources.bootstrapTrust) 1048576
+$trustModuleText = ([Text.UTF8Encoding]::new($false, $true)).GetString($trustModuleBytes)
+if ($trustModuleText.Length -gt 0 -and $trustModuleText[0] -eq [char]0xFEFF) { $trustModuleText = $trustModuleText.Substring(1) }
+$trustModule = New-Module -Name ('RevAgent.BootstrapTrust.Attest.' + [Guid]::NewGuid().ToString('N')) -ScriptBlock ([ScriptBlock]::Create($trustModuleText))
+Microsoft.PowerShell.Core\Import-Module $trustModule -Force
+try {
+  $trustHealthCommand = Get-Command ("{0}\Test-RevAgentBootstrapTrustHealth" -f $trustModule.Name) -ErrorAction Stop
+  if ($AllowTestRoot) {
+    $installedTaskEvidence = $installerResult[0].bootstrapTrustInstall.task
+    $taskProvider = { param($layout); $installedTaskEvidence }.GetNewClosure()
+    $trustHealth = & $trustHealthCommand -ProgramDataRoot $ProgramDataRoot -AllowTestRoot -TaskProvider $taskProvider
+  }
+  else {
+    $trustHealth = & $trustHealthCommand -ProgramDataRoot $ProgramDataRoot
+  }
+  if (-not $trustHealth.PSObject.Properties['success'] -or -not [bool]$trustHealth.success) {
+    throw 'Supervised prestage driver could not attest the installed bootstrap trust core.'
+  }
+}
+finally { Microsoft.PowerShell.Core\Remove-Module $trustModule -Force -ErrorAction SilentlyContinue }
 
 [pscustomobject][ordered]@{
     success = $true
@@ -1123,6 +1150,7 @@ else {
     producerMode = [string]$evidence.producerMode
     supervisedAdminPrestage = [bool]$evidence.supervisedAdminPrestage
     prestageRoot = $prestage
+    bootstrapTrustHealthy = $true
 }
 } finally {
     if ([IO.Directory]::Exists($workRoot)) {

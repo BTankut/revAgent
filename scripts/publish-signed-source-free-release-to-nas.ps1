@@ -1516,20 +1516,16 @@ function Get-RevAgentChannelReleaseSequenceStatus {
 
 function Assert-RevAgentProductionTrustedKeysDocument {
     param([Parameter(Mandatory = $true)][string]$Path)
-    $document = Get-Content -Raw -LiteralPath $Path -Encoding UTF8 | ConvertFrom-Json
-    $properties = @($document.trustedKeys.PSObject.Properties)
-    if ($properties.Count -ne 1 -or -not [string]::Equals([string]$properties[0].Name, $productionSigningKeyId, [StringComparison]::Ordinal)) {
-        throw "Production trusted-key document must contain exactly one '$productionSigningKeyId' key."
+    $modulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.BootstrapTrust.psm1'
+    $module = Import-Module $modulePath -Force -PassThru
+    $validator = $module.ExportedCommands['Assert-RevAgentBootstrapTrustedKeySet']
+    if ($null -eq $validator) {
+        throw 'Bootstrap-trust module does not export the production trusted-key validator.'
     }
-    $key = $properties[0].Value
-    $normalizedXml = ([string]$key.publicKeyXml).Trim() -replace '\s+', ''
-    $algorithm = [Security.Cryptography.SHA256]::Create()
-    try { $computedFingerprint = ([BitConverter]::ToString($algorithm.ComputeHash([Text.Encoding]::UTF8.GetBytes($normalizedXml)))).Replace('-', '') }
-    finally { $algorithm.Dispose() }
-    if (-not [string]::Equals([string]$key.algorithm, 'RS256', [StringComparison]::Ordinal) -or
-        -not [string]::Equals([string]$key.publicKeyFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) -or
-        -not [string]::Equals($computedFingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase)) {
-        throw 'Production trusted-key document does not match the pinned RS256 release key.'
+    $validation = & $validator -Bytes ([IO.File]::ReadAllBytes($Path))
+    if (-not [bool]$validation.success -or
+        @($validation.keys | Where-Object { [string]::Equals([string]$_.keyId, $productionSigningKeyId, [StringComparison]::Ordinal) -and [string]::Equals([string]$_.fingerprint, $productionSigningFingerprint, [StringComparison]::OrdinalIgnoreCase) }).Count -ne 1) {
+        throw 'Production trusted-key document does not contain the pinned q3 identity within the bounded two-key transition contract.'
     }
 }
 

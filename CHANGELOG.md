@@ -4,6 +4,60 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Closed K0 with the E2 machine trust core and fixed SYSTEM broker. The
+  supervised five-file IT kit now installs an administrator-owned verifier set
+  under `%ProgramData%\DPE\revAgent\trust`, a release-independent broker, and
+  the fixed `\DPE\revAgent\revAgent Bootstrap Trust Broker` task. A standard
+  user stages the complete signed release and nonce request in profile-local
+  LocalAppData `release-inbox`/`broker-requests` roots. SYSTEM never reads NAS;
+  it discovers queues through the 64-bit HKLM `ProfileList` with bounded,
+  round-robin fairness (128 profiles, 16 candidates per profile, two terminal
+  results per SID/invocation, 16 total by default and 64 maximum). It
+  independently verifies the local channel, manifest, package, embedded
+  trusted-key bytes, and signed component hashes before applying the protected
+  bootstrap. Nonce results use protected
+  `%ProgramData%\DPE\revAgent\bootstrap-broker\results\principal-<SID>` buckets
+  with 16-file per-SID, 128-bucket, and 2048-file global caps. The broker
+  reserves the requester's protected result bucket before snapshot acquisition
+  or privileged apply. At exactly 128 buckets, a new SID is rejected before
+  apply while an existing SID remains serviceable within its per-SID cap.
+  There is no ProgramData request queue; any legacy
+  `bootstrap-broker\requests` directory is ignored and is not an authority. The
+  lock, snapshots, apply scratch, and
+  `bootstrap-broker\trust-transactions` are SYSTEM/Administrators-only.
+  Successful apply starts the local launcher with
+  `--post-refresh`, so both clean install and all eight stale manifest-bound
+  bootstrap components self-heal from one user double-click.
+  The fixed `%ProgramData%\DPE\revAgent\.bootstrap-install.lock` is held from
+  before trust installation through immediate trust health and local-bootstrap
+  commit; a contender fails closed as `bootstrap_install_busy` without
+  performing trust or bootstrap mutation. The prestage installer commits and
+  health-attests trust before local bootstrap,
+  preserves a healthy fixed task, fully attests the private
+  `.bootstrap-transactions\<random>` local candidate before promotion, restores
+  the exact prior directory identity on pre-commit failure, and treats
+  post-commit prior-root cleanup failure as deferred warning rather than
+  rollback.
+  The dormant caller-parameter/UAC transport was deleted; missing machine trust
+  remains a fail-closed exit 84 with the exact five-file E1 supervised-kit
+  direction, while 80/81 cover broker busy/timeout outcomes.
+- Prepared public-key rotation without activating a new key: release creation,
+  CD, NAS publication, protected snapshots, prestage evidence, broker, and
+  readiness accept the pinned `revagent-prod-rsa-2026q3` key plus at most one
+  strictly later `revagent-prod-rsa-YYYYqN` public key. The package embeds the
+  exact externally verified key-document bytes and signs their component hash;
+  readiness checks package/published/input identity and can optionally report
+  local trust-core/task health without installing from NAS. No `2026q4` key was
+  added and no old-key removal or E3 Authenticode work was started.
+- D2 (final G13 adequacy), D3 (available MDM/GPO deployment authority), and D4
+  (the q3-to-future-key rotation date/window and overlap) remain open operator
+  decisions. q3 remains the only active signing identity; `2026q4` is a future
+  placeholder only, and E3 has not started.
+- **R9 first-release warning:** E2 itself changes manifest-bound bootstrap
+  components. Its first separately approved stable release therefore still
+  requires the planned one-time E2-enabled fleet prestage/rebind. Once that
+  trust core is installed, later changes to all eight bound components use the
+  broker self-heal path and no longer strand the fleet.
 - Added the E1 supervised administrator prestage kit: one exact Windows
   PowerShell 5.1 driver and CMD wrapper replace the two-shell repository
   checkout, pasted block, and four hand-copied literals with one double-click,
@@ -17,8 +71,9 @@ All notable revAgent workstation deployment changes are tracked here.
   the supervised producer principal/mode and the protected consumer verifies
   that provenance. E1 does not alter exit 84, wake dormant Refresh branches,
   or change any of the eight manifest-bound bootstrap components; it authorizes
-  neither pilot nor stable publication. The K0 fleet warning remains open until
-  E2.
+  neither pilot nor stable publication. E2 subsequently extends this same
+  exact-five outer kit through signed package roles so it also installs the
+  machine trust core, broker, and fixed SYSTEM task.
 - Replaced the local bootstrap's 10-second GUI startup stderr pipe with direct
   `%LOCALAPPDATA%\DPE\revAgent\logs\gui-launch-stderr-*.log` redirection. Quick
   nonzero exits still surface the exact exit code and captured stderr, while a
@@ -48,15 +103,16 @@ All notable revAgent workstation deployment changes are tracked here.
 - Recorded the #246/#255/#256 publisher alignment fixes: the repository
   launcher, embedded publisher template, completion behavior, and legacy
   `Revit MCP Updater STABLE.cmd` alias now share the exact-managed contract.
-- **Fleet rebind warning (K0):** stable `2026.07.20.574-11020d1a` is already
+- **Fleet rebind history (K0, closed by E2):** stable
+  `2026.07.20.574-11020d1a` is already
   published, and #258/#259 changed four of the eight manifest-bound
   local-bootstrap components. Every older protected bootstrap therefore reports
   `bootstrap_refresh_required` on its next operator-started update/GUI path.
-  Before the E2 machine-trust-core/broker path is live, publishing such content
-  requires a supervised fleet re-prestage/refresh plan. The installed product and
-  audit-only task keep running, but the next STABLE/GUI update attempt stops at
-  exit 84. Use E1 only for urgent individual machines; defer the general fleet
-  pass until E2 can rebind and self-heal in one transition.
+  The installed product and audit-only task keep running, but those machines
+  stop at exit 84 until they receive the E2-enabled kit. The planned fleet pass
+  must therefore combine trust-core installation and bootstrap rebind in one
+  transition; after that one-time pass, stale bootstrap changes self-heal via
+  the independently verifying SYSTEM broker.
 - Release bookkeeping note (O3): at the next separately approved NAS stable
   publication, move the applicable `Unreleased` entries under the exact
   published version heading instead of leaving them as rolling history.
@@ -69,30 +125,28 @@ All notable revAgent workstation deployment changes are tracked here.
   seeds a fake launcher and now proves the absent-to-machine-created lifecycle,
   zero user-phase rewrites, canonical arguments, and the exact
   `MachinePhaseOnly`/`NoScheduledTask`/`RunNow` control-flow placement.
-- Added bounded STABLE refresh-coordinator transport and race hardening for a
-  future independently authenticated elevation anchor: standard-user release
-  acquisition, local staging, a read-only held script, elevated self-hash,
-  nonce-bound results, bounded no-follow cleanup, and distinct 79-82
-  UAC/coordinator outcomes. PowerShell 5.1 fixtures exercise those internals,
-  but the current unanchored NAS Refresh path does not use them to authorize
-  elevation and they are not pristine-machine self-service evidence.
+- Historical implementation, now deleted and superseded by E2: the bounded
+  STABLE refresh coordinator once carried a dormant caller-parameter/UAC
+  transport with 79-82 outcomes. It never authorized pristine-machine
+  self-service. E2 removed that transport; the fixed argument-free SYSTEM broker
+  now consumes profile-local requests and returns protected per-SID results.
 - Stable publication now transactionally exact-manages the 13-file operator
   surface: two STABLE launchers, the refresh CMD/PowerShell pair, pinned public
   trusted keys, and four legacy compatibility stubs in both the NAS root and
   `tools`. Canonical readiness verifies this surface and rejects unmanaged CMD
   entry points, while the signed source CD remains CMD-free.
-- Enforced the G13 no-certificate decision: any NAS Refresh path that would
+- Historical G13 baseline, superseded operationally by the E2 machine verifier:
+  any NAS Refresh path that would
   elevate, including a missing or stale protected bootstrap and direct
   `-ElevatedApply`, now returns exit 84 before UAC and directs the operator to
-  supervised manual high-assurance prestage/refresh. Existing operation remains
+  supervised prestage/refresh. Existing operation remains
   normal only when the protected bootstrap is current and verified, so STABLE
   bypasses Refresh and opens the protected local GUI. The current
   repository/workflow has detached RS256 release signing and verifies the
   third-party Node MSI Authenticode identity, but has no revAgent Windows
-  Authenticode signing certificate/service or signed bootstrap broker. A future
-  signed broker or equivalent IT-prestaged machine verifier/key may re-enable
-  self-service bootstrap install/refresh only after independent elevated
-  verification.
+  Authenticode signing certificate/service. E2 later supplied the equivalent
+  IT-prestaged verifier and fixed broker, so healthy E2-prestaged machines now
+  self-heal; missing/unhealthy trust still returns uniform exit 84 to the E1 kit.
 - Fixed protected Install/Repair on Windows PowerShell 5.1 failing while
   atomically overwriting an existing updater configuration because
   `File.Replace` received a null backup path. Installer writes now use a

@@ -96,7 +96,12 @@ try {
     $privateKeyXml = $rsa.ToXmlString($true)
     $privateKeyXml | Set-Content -LiteralPath $privateKeyPath -Encoding UTF8
     $publicKeyXml = $rsa.ToXmlString($false)
-    $trustedKeys = @{ trustedKeys = @{} }
+    $trustedKeys = [ordered]@{
+        schemaVersion = 1
+        app = 'revAgent'
+        generatedAtUtc = '2026-07-20T00:00:00Z'
+        trustedKeys = @{}
+    }
     $trustedKeys.trustedKeys[$keyId] = [pscustomobject][ordered]@{
         publicKeyXml = $publicKeyXml
         publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
@@ -114,6 +119,7 @@ try {
         -Force `
         -SigningPrivateKeyPath $privateKeyPath `
         -SigningKeyId $keyId `
+        -TrustedReleaseKeysPath $trustedKeysPath `
         -AllowTestSigningIdentity `
         -NodeMsiPath $nodeMsiSourcePath `
         -ReleaseSequence $releaseSequence `
@@ -134,6 +140,34 @@ try {
     Assert-Equal ([long]$signedReport.nodeMsi.actualSizeBytes) ([long]$signedReport.nodeMsi.signedSizeBytes) "Readiness must bind the actual Node MSI size to signed metadata."
     Assert-Equal ([string]$signedReport.nodeMsi.authenticodeStatus) "TestBypass" "Disposable test-signing readiness should report its bounded Authenticode bypass."
     Assert-True (@($signedReport.checks | Where-Object { $_.name -like "node_msi_*" -and -not $_.success }).Count -eq 0) "A valid signed test Node MSI sidecar should pass every Node MSI readiness check."
+    Assert-True ([bool]$signedReport.trustedKeyValidation.success) 'Readiness must validate the closed public trusted-key document contract.'
+    Assert-True ([bool]$signedReport.packageTrustedKeys.success -and [bool]$signedReport.packageTrustedKeys.exactBytesMatch) 'Readiness must bind packaged trusted-key bytes to signed metadata and the publisher input.'
+    Assert-Equal ([string]$signedReport.packageTrustedKeys.packageSha256) ([string]$signedReport.packageTrustedKeys.publisherInputSha256) 'Packaged trusted-key SHA-256 must equal the verified publisher input.'
+    Assert-True (-not [bool]$signedReport.machineTrust.inspected -and [bool]$signedReport.machineTrust.reportOnly) 'Local machine trust health must remain opt-in and non-gating.'
+
+    $emptyMachineTrustRoot = Join-Path $tempRoot 'empty-programdata'
+    New-Item -ItemType Directory -Path $emptyMachineTrustRoot -Force | Out-Null
+    $missingMachineTrustReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $trustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -AllowTestSigningIdentity `
+        -InspectLocalBootstrapTrust `
+        -BootstrapTrustProgramDataRoot $emptyMachineTrustRoot `
+        -BootstrapTrustTaskProvider { param($Layout) return $null }
+    Assert-True ([bool]$missingMachineTrustReport.success) 'Read-only local machine-trust reporting must not change signed-release readiness.'
+    Assert-True ([bool]$missingMachineTrustReport.machineTrust.inspected -and -not [bool]$missingMachineTrustReport.machineTrust.healthy -and [bool]$missingMachineTrustReport.machineTrust.reportOnly) 'Readiness must report a missing local trust core/task without installing or gating the signed release.'
+
+    $reformattedTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-reformatted.json'
+    [IO.File]::WriteAllText($reformattedTrustedKeysPath, ($trustedKeys | ConvertTo-Json -Depth 8 -Compress), [Text.UTF8Encoding]::new($false))
+    $reformattedKeyReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
+        -ReleaseRoot $signedRoot `
+        -TrustedKeysPath $reformattedTrustedKeysPath `
+        -RepoRoot $RepoRoot `
+        -AllowTestSigningIdentity `
+        -ReportOnly
+    Assert-True (-not [bool]$reformattedKeyReport.success) 'Readiness accepted semantically equivalent but byte-distinct external trusted keys against the signed package.'
+    Assert-True (@($reformattedKeyReport.checks | Where-Object { $_.name -eq 'package_trusted_keys_exact_identity' -and -not [bool]$_.success }).Count -eq 1) 'Readiness did not surface the packaged/external trusted-key byte-identity failure.'
 
     Assert-Equal @(Get-ChildItem -LiteralPath $signedRoot -Recurse -File -Filter '*.cmd').Count 0 'Source release fixture must remain free of unsigned CMD first-hop entry points.'
     $unpublishedSurfaceReport = & (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1') `
