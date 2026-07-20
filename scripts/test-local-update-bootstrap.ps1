@@ -64,7 +64,7 @@ try {
     Assert-True ([string]::Equals([string]$runtimeSmoke.workingDirectory, $expectedRuntimeDirectory, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI runtime does not use the trusted Windows PowerShell working directory."
     Assert-True ([string]$runtimeSmoke.arguments -match '-STA\s+-NoProfile\s+-WindowStyle\s+Hidden' -and [string]$runtimeSmoke.arguments -match '"C:\\Program Files\\revAgent Bootstrap Smoke\\Install-revAgent-Updater-GUI\.ps1"') "Bootstrap GUI runtime smoke test did not preserve the exact hidden STA argument contract."
     Assert-True ([string]::IsNullOrWhiteSpace([string]$runtimeSmoke.verb) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.userName) -and [string]::IsNullOrWhiteSpace([string]$runtimeSmoke.domain) -and -not [bool]$runtimeSmoke.hasPassword) "Bootstrap GUI runtime must preserve the current interactive token without a verb or alternate credentials."
-    Assert-True (-not [bool]$runtimeSmoke.redirectStandardInput -and -not [bool]$runtimeSmoke.redirectStandardOutput -and [bool]$runtimeSmoke.redirectStandardError) "Production bootstrap GUI runtime must redirect startup stderr without redirecting stdin/stdout."
+    Assert-True (-not [bool]$runtimeSmoke.redirectStandardInput -and -not [bool]$runtimeSmoke.redirectStandardOutput -and -not [bool]$runtimeSmoke.redirectStandardError -and [string]$runtimeSmoke.stderrRedirectionMode -eq 'direct_file') "Production bootstrap GUI runtime must leave ProcessStartInfo pipes closed and use direct-file startup stderr redirection."
 
     Write-Host "Test GUI pre-window failure log and nonzero exit"
     $windowsPowerShell = Join-Path ([Environment]::SystemDirectory) 'WindowsPowerShell\v1.0\powershell.exe'
@@ -98,7 +98,8 @@ try {
     $launchFunctionNames = @('New-RevAgentGuiLaunchStderrLogPath', 'Write-RevAgentGuiLaunchFailureLog', 'Show-RevAgentGuiLaunchFailure', 'Start-RevAgentBootstrapGuiProcess')
     $launchFunctionAsts = @($bootstrapAst.FindAll({ param($node) $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -in $launchFunctionNames }, $true))
     Assert-True ($launchFunctionAsts.Count -eq $launchFunctionNames.Count) "Bootstrap GUI launch-failure functions could not be loaded for executable coverage."
-    $launchModule = New-Module -ScriptBlock ([scriptblock]::Create((@($launchFunctionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n")))
+    $launchFunctionSource = @($launchFunctionAsts | ForEach-Object { $_.Extent.Text }) -join "`r`n`r`n"
+    $launchModule = New-Module -ScriptBlock ([scriptblock]::Create($launchFunctionSource))
     $quickFailureScript = Join-Path $temp 'gui-quick-failure.ps1'
     $quickFailureMarker = 'quick-gui-stderr-' + [Guid]::NewGuid().ToString('N')
     [IO.File]::WriteAllText($quickFailureScript, "[Console]::Error.WriteLine('$quickFailureMarker'); exit 23", [Text.UTF8Encoding]::new($false))
@@ -107,7 +108,7 @@ try {
     $quickFailureStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $quickFailureScript + '"'
     $quickFailureStartInfo.UseShellExecute = $false
     $quickFailureStartInfo.CreateNoWindow = $true
-    $quickFailureStartInfo.RedirectStandardError = $true
+    $quickFailureStartInfo.RedirectStandardError = $false
     $quickFailureStartInfo.WorkingDirectory = Split-Path -Parent $windowsPowerShell
     $stderrLogsBefore = @{}
     if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
@@ -124,55 +125,127 @@ try {
     $quickFailureLogText = Get-Content -Raw -LiteralPath $newStderrLogs[0].FullName
     Assert-True ($quickFailureLogText -match [regex]::Escape($quickFailureMarker) -and $quickFailureLogText -match 'exitCode=23') "Bootstrap GUI stderr log is missing exit/stderr evidence."
     Remove-Item -LiteralPath $newStderrLogs[0].FullName -Force
-    Remove-Module $launchModule -Force
 
-    Write-Host "Test direct GUI child process identity and working-directory semantics"
-    $probeScript = @'
+    Write-Host "Test long-lived GUI stderr survives bootstrap-parent exit without a pipe"
+    $longLivedMarkerPath = Join-Path $temp ('gui-long-lived-' + [Guid]::NewGuid().ToString('N') + '.marker')
+    $longLivedGatePath = Join-Path $temp ('gui-long-lived-' + [Guid]::NewGuid().ToString('N') + '.gate')
+    $longLivedMarker = 'long-lived-gui-stderr-' + [Guid]::NewGuid().ToString('N')
+    $writerTemplate = @'
+$gateDeadline = [DateTime]::UtcNow.AddSeconds(20)
+while (-not [IO.File]::Exists('__GATE_PATH__') -and [DateTime]::UtcNow -lt $gateDeadline) { Start-Sleep -Milliseconds 50 }
+if (-not [IO.File]::Exists('__GATE_PATH__')) { exit 31 }
+$chunk = 'x' * 8192
+for ($index = 0; $index -lt 512; $index++) { [Console]::Error.Write($chunk) }
+[Console]::Error.WriteLine('__STDERR_MARKER__')
+[IO.File]::WriteAllText('__MARKER_PATH__', 'complete', [Text.UTF8Encoding]::new($false))
+'@
+    $writerSource = $writerTemplate.Replace('__STDERR_MARKER__', $longLivedMarker)
+    $writerSource = $writerSource.Replace('__MARKER_PATH__', $longLivedMarkerPath.Replace("'", "''"))
+    $writerSource = $writerSource.Replace('__GATE_PATH__', $longLivedGatePath.Replace("'", "''"))
+    $encodedWriter = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($writerSource))
+    $longLivedHarnessPath = Join-Path $temp 'gui-long-lived-parent.ps1'
+    $harnessTemplate = @'
+__LAUNCH_FUNCTIONS__
+$startInfo = [Diagnostics.ProcessStartInfo]::new()
+$startInfo.FileName = '__WINDOWS_POWERSHELL__'
+$startInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand __WRITER_COMMAND__'
+$startInfo.UseShellExecute = $false
+$startInfo.CreateNoWindow = $true
+$startInfo.RedirectStandardError = $false
+$startInfo.WorkingDirectory = '__WINDOWS_POWERSHELL_ROOT__'
+Start-RevAgentBootstrapGuiProcess -StartInfo $startInfo -StartupWaitMilliseconds 100 -SuppressNotification
+'@
+    $harnessSource = $harnessTemplate.Replace('__LAUNCH_FUNCTIONS__', $launchFunctionSource)
+    $harnessSource = $harnessSource.Replace('__WINDOWS_POWERSHELL__', $windowsPowerShell.Replace("'", "''"))
+    $harnessSource = $harnessSource.Replace('__WINDOWS_POWERSHELL_ROOT__', (Split-Path -Parent $windowsPowerShell).Replace("'", "''"))
+    $harnessSource = $harnessSource.Replace('__WRITER_COMMAND__', $encodedWriter)
+    [IO.File]::WriteAllText($longLivedHarnessPath, $harnessSource, [Text.UTF8Encoding]::new($false))
+
+    $longLivedLogsBefore = @{}
+    if (Test-Path -LiteralPath $guiLogDirectory -PathType Container) {
+        Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-launch-stderr-*.log' -File | ForEach-Object { $longLivedLogsBefore[$_.FullName] = $true }
+    }
+    $longLivedParentStartInfo = [Diagnostics.ProcessStartInfo]::new()
+    $longLivedParentStartInfo.FileName = $windowsPowerShell
+    $longLivedParentStartInfo.Arguments = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "' + $longLivedHarnessPath + '"'
+    $longLivedParentStartInfo.UseShellExecute = $false
+    $longLivedParentStartInfo.CreateNoWindow = $true
+    $longLivedParentStartInfo.RedirectStandardOutput = $false
+    $longLivedParentStartInfo.RedirectStandardError = $false
+    $longLivedParentStartInfo.WorkingDirectory = Split-Path -Parent $windowsPowerShell
+    $longLivedParent = [Diagnostics.Process]::Start($longLivedParentStartInfo)
+    Assert-True ($null -ne $longLivedParent) "Long-lived GUI bootstrap parent did not start."
+    try {
+        [void]$longLivedParent.Handle
+        Assert-True ($longLivedParent.WaitForExit(5000)) "Long-lived GUI bootstrap parent did not exit after transferring stderr ownership to the child log."
+        Assert-True ($longLivedParent.ExitCode -eq 0) "Long-lived GUI bootstrap parent returned a failure. exitCode=$($longLivedParent.ExitCode)"
+    }
+    finally {
+        if (-not $longLivedParent.HasExited) { try { $longLivedParent.Kill() } catch { } }
+        $longLivedParent.Dispose()
+    }
+    Assert-True (-not (Test-Path -LiteralPath $longLivedMarkerPath)) "Long-lived GUI completed before the bootstrap parent exited; the fixture did not prove post-parent stderr ownership."
+    [IO.File]::WriteAllText($longLivedGatePath, 'continue', [Text.UTF8Encoding]::new($false))
+
+    $longLivedDeadline = [DateTime]::UtcNow.AddSeconds(20)
+    while (-not (Test-Path -LiteralPath $longLivedMarkerPath -PathType Leaf) -and [DateTime]::UtcNow -lt $longLivedDeadline) {
+        Start-Sleep -Milliseconds 100
+    }
+    Assert-True (Test-Path -LiteralPath $longLivedMarkerPath -PathType Leaf) "Long-lived GUI blocked after its bootstrap parent exited; direct stderr-file redirection did not drain the full payload."
+    $longLivedLogs = @(Get-ChildItem -LiteralPath $guiLogDirectory -Filter 'gui-launch-stderr-*.log' -File | Where-Object { -not $longLivedLogsBefore.ContainsKey($_.FullName) })
+    Assert-True ($longLivedLogs.Count -eq 1) "Long-lived GUI launch did not create exactly one direct stderr log."
+    $longLivedLogText = [IO.File]::ReadAllText($longLivedLogs[0].FullName)
+    Assert-True ($longLivedLogs[0].Length -gt 3000000 -and $longLivedLogText -match [regex]::Escape($longLivedMarker)) "Long-lived GUI direct stderr log is incomplete."
+    Remove-Item -LiteralPath $longLivedLogs[0].FullName -Force
+
+    $bootstrapLaunchSource = Get-Content -Raw -LiteralPath $bootstrapSourcePath
+    Assert-True ($bootstrapLaunchSource -notmatch 'ReadToEndAsync' -and $bootstrapLaunchSource -match 'Microsoft\.PowerShell\.Management\\Start-Process' -and $bootstrapLaunchSource -match '-RedirectStandardError\s+\$stderrLogPath' -and $bootstrapLaunchSource -match '\[void\]\$guiProcess\.Handle') "Bootstrap GUI launch still owns an orphanable stderr pipe or lacks the direct-file/handle-pin contract."
+
+    Write-Host "Test production GUI launch preserves identity and trusted resolution"
+    $probeResultPath = Join-Path $temp ('gui-launch-identity-' + [Guid]::NewGuid().ToString('N') + '.json')
+    $probeTemplate = @'
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-[pscustomobject]@{
+$result = [pscustomobject]@{
     sid = $identity.User.Value
     name = $identity.Name
     isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
     processPath = [Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
     workingDirectory = [Environment]::CurrentDirectory
-} | ConvertTo-Json -Compress
+}
+[IO.File]::WriteAllText('__PROBE_RESULT_PATH__', ($result | ConvertTo-Json -Compress), [Text.UTF8Encoding]::new($false))
 '@
+    $probeScript = $probeTemplate.Replace('__PROBE_RESULT_PATH__', $probeResultPath.Replace("'", "''"))
     $encodedProbe = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($probeScript))
     $probeStartInfo = $runtimeSmoke.processStartInfo
     Assert-True ($probeStartInfo -is [Diagnostics.ProcessStartInfo]) "Runtime smoke test did not return its production ProcessStartInfo instance."
     $probeStartInfo.Arguments = "-NoProfile -EncodedCommand $encodedProbe"
-    $probeStartInfo.RedirectStandardOutput = $true
-    $probeStartInfo.RedirectStandardError = $true
+    $probeStartInfo.RedirectStandardOutput = $false
+    $probeStartInfo.RedirectStandardError = $false
     $poisonRoot = Join-Path $temp "poisoned-launch-resolution"
     New-Item -ItemType Directory -Path $poisonRoot -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) "where.exe") -Destination (Join-Path $poisonRoot "powershell.exe") -Force
     Copy-Item -LiteralPath (Join-Path ([Environment]::SystemDirectory) "where.exe") -Destination (Join-Path $poisonRoot "cmd.exe") -Force
     $originalPath = $env:PATH
     $originalLocation = Get-Location
-    $probeProcess = $null
     try {
         $env:PATH = $poisonRoot
         Set-Location -LiteralPath $poisonRoot
-        $probeProcess = [Diagnostics.Process]::Start($probeStartInfo)
-        Assert-True ($probeProcess.WaitForExit(15000)) "Direct bootstrap GUI child identity probe timed out."
-        $probeStdout = $probeProcess.StandardOutput.ReadToEnd().Trim()
-        $probeStderr = $probeProcess.StandardError.ReadToEnd().Trim()
-        Assert-True ($probeProcess.ExitCode -eq 0) "Direct bootstrap GUI child identity probe failed. stderr=$probeStderr"
+        & $launchModule { Start-RevAgentBootstrapGuiProcess -StartInfo $args[0] -StartupWaitMilliseconds 5000 -SuppressNotification } $probeStartInfo
     }
     finally {
-        if ($null -ne $probeProcess -and -not $probeProcess.HasExited) { try { $probeProcess.Kill() } catch { } }
         Set-Location -LiteralPath $originalLocation.Path
         $env:PATH = $originalPath
-        if ($null -ne $probeProcess) { $probeProcess.Dispose() }
     }
-    $probeResult = $probeStdout | ConvertFrom-Json
+    Assert-True (Test-Path -LiteralPath $probeResultPath -PathType Leaf) "Production bootstrap GUI launch did not complete its child identity probe."
+    $probeResult = Get-Content -Raw -LiteralPath $probeResultPath | ConvertFrom-Json
     $parentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $parentPrincipal = [Security.Principal.WindowsPrincipal]::new($parentIdentity)
     Assert-True ([string]::Equals([string]$probeResult.processPath, [string]$runtimeSmoke.powershellPath, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child resolved through poisoned PATH instead of the absolute trusted PowerShell executable."
     Assert-True ([string]::Equals([string]$probeResult.workingDirectory, $expectedRuntimeDirectory, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child inherited a caller-controlled working directory."
     Assert-True ([string]$probeResult.sid -eq [string]$parentIdentity.User.Value -and [string]::Equals([string]$probeResult.name, [string]$parentIdentity.Name, [StringComparison]::OrdinalIgnoreCase)) "Bootstrap GUI child did not preserve the current interactive identity."
     Assert-True ([bool]$probeResult.isAdministrator -eq [bool]$parentPrincipal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) "Bootstrap GUI child changed the parent token's administrator state."
+    Remove-Module $launchModule -Force
     New-Item -ItemType Directory -Path (Join-Path $fakeRelease "channels") -Force | Out-Null
     $hashes = [ordered]@{}
     foreach ($entry in $sources.GetEnumerator()) { $hashes[$entry.Key] = (Get-FileHash -Algorithm SHA256 -LiteralPath $entry.Value).Hash }

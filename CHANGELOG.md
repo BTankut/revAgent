@@ -4,6 +4,13 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Replaced the local bootstrap's 10-second GUI startup stderr pipe with direct
+  `%LOCALAPPDATA%\DPE\revAgent\logs\gui-launch-stderr-*.log` redirection. Quick
+  nonzero exits still surface the exact exit code and captured stderr, while a
+  long-lived GUI can continue writing after the bootstrap parent exits without
+  blocking on an ownerless pipe. **R9 delivery warning:** this changes the
+  manifest-bound `Start-revAgent-Update.ps1`; publishing it before E2 would
+  require fleet re-prestage/broker refresh and is not authorized by this PR.
 - Activated bounded stale bootstrap TEMP cleanup from the hash-verified local
   updater GUI after its `Shown` startup-complete marker. The one-shot maintenance
   timer calls an exported protected-permissions primitive, preserves active-lock,
