@@ -1,7 +1,7 @@
 # Protected local bootstrap prestage
 
-This document covers the normal STABLE entry point and the supervised manual
-high-assurance/recovery procedure.
+This document covers the normal STABLE entry point, the primary supervised IT
+prestage kit, and the longer manual high-assurance recovery procedure.
 
 The contract is `config/bootstrap-prestage-evidence.schema.json`; the adjacent
 example contains non-production placeholder hashes.
@@ -45,12 +45,65 @@ revAgent Authenticode code-signing certificate/service or signed bootstrap
 broker. Self-service bootstrap install/refresh may be re-enabled only when an
 Authenticode-signed broker, or an equivalent IT-prestaged machine verifier and
 pinned production key, independently revalidates the detached release signature
-after elevation. Until then, use the manual procedure below for administrator-
+after elevation. Until then, use the supervised IT kit below for administrator-
 side trust establishment or refresh.
 
-## Manual high-assurance/recovery prestage
+## Primary path: supervised IT prestage kit
 
-Use this two-shell procedure only with a clean merged checkout and verifier/key
+The signed source-free CD workflow produces a separate short-lived artifact
+named `revagent-supervised-prestage-kit-<run-id>-<run-attempt>`. It is created
+only by an explicit `workflow_dispatch`, has one-day retention, and is not an
+input to either the pilot or stable NAS publisher. For a prestage-only run,
+leave both `publish_to_pilot` and `publish_to_nas` false. The workflow records
+the kit ZIP SHA-256 in the protected run summary.
+
+The downloaded artifact contains the kit ZIP and its checksum sidecar. The ZIP
+itself has exactly these five public/runtime files:
+
+- `IT-Prestage-revAgent.cmd`
+- `scripts\Invoke-RevAgentSupervisedPrestage.ps1`
+- `scripts\New-RevAgentBootstrapPrestageEvidence.ps1`
+- `installer\lib\RevAgent.DistributionIntegrity.psm1`
+- `config\release-trusted-keys.json`
+
+IT must compare the downloaded ZIP SHA-256 with the value in the protected
+workflow run summary before distribution. Move the verified ZIP through an
+IT-controlled channel such as MDM, a protected IT share, or supervised USB,
+then extract it to an IT-controlled local NTFS directory; the kit wrapper moves
+the hash-sealed inputs through an administrator-only local staging flow. Keep
+the exact directory layout. Do **not** run it from Downloads,
+Desktop, another standard-user-writable folder/share, the writable NAS `tools`
+tree, or a signed release root/ZIP. This kit is an online coordinator: the
+target still needs access to the canonical signed
+NAS channel, manifest, package, and release-owned dependencies.
+
+On the target workstation, close Revit and any revAgent installer/updater,
+then double-click `IT-Prestage-revAgent.cmd`. Accept the single administrator
+elevation prompt. The wrapper selects the canonical 64-bit Windows PowerShell
+5.1 host, rejects non-`FullLanguage` policy with exit 78, and runs the exact
+bundled driver. The driver performs evidence production, signed-package
+extraction, the legacy shared-`DPE` ACL migration when required, protected
+ProgramData staging, bootstrap installation, state verification, and shortcut
+verification without a repository checkout, pasted code, or hand-copied hash
+literals. Its supervised operating budget is under five minutes; record and
+investigate any target that exceeds it.
+
+After success, use only the protected local launcher:
+
+```text
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
+```
+
+This E1 kit does not re-enable self-service Refresh, alter exit 84, change any
+of the eight manifest-bound bootstrap components, authorize a pilot/stable NAS
+publish, or install a release-independent SYSTEM broker. Missing or stale
+bootstrap still fails closed and directs IT back to this kit until E2 is
+delivered.
+
+## Emergency fallback: manual high-assurance/recovery prestage
+
+Use this two-shell procedure only when the primary kit cannot be used, with a
+clean merged checkout and verifier/key
 material obtained by the administrator or IT through a channel independent of
 the standard user being bootstrapped. Signed-release verification and evidence
 production happen before elevation. The elevated shell only stages the already
@@ -523,8 +576,8 @@ Production NAS `tools` contains only the exact managed CMD allowlist documented
 in `installer\nas\README.md`. Only a current, verified protected bootstrap stays
 on the normal local GUI path. A missing bootstrap or a local launcher that is
 stale against its signed manifest component enters Refresh and stops with exit
-84 before UAC. Complete this supervised two-shell prestage/refresh procedure,
-then rerun the protected local launcher.
+84 before UAC. Complete the supervised kit path (or this emergency two-shell
+procedure), then rerun the protected local launcher.
 
 The prestage evidence and protected bootstrap include the complete signed
 module closure needed before the GUI can start:

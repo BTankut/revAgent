@@ -17,8 +17,9 @@ local bootstrap under `C:\ProgramData\DPE\revAgent\bootstrap`. Only a current,
 verified bootstrap follows the normal local GUI path. On a clean workstation,
 or when that bootstrap is stale, the exact-managed
 `tools\revAgent Updater STABLE.cmd` enters Refresh and returns exit 84 before
-UAC. It directs the operator to supervised manual high-assurance
-prestage/refresh and does not perform self-service bootstrap elevation.
+UAC. It directs the operator to the supervised IT prestage kit and does not
+perform self-service bootstrap elevation. The long manual procedure remains an
+emergency fallback.
 
 ```text
 Code change
@@ -149,6 +150,15 @@ as one immutable, one-day GitHub Actions artifact. The build job exposes the
 exact artifact id, artifact digest, and signed source-channel SHA-256 to the
 publish job; an ordinary `main` push performs build/validation without an
 artifact upload.
+
+An explicit dispatch also creates a separate one-day
+`revagent-supervised-prestage-kit-<run>-<attempt>` artifact below local
+`RUNNER_TEMP`. Its deterministic ZIP contains exactly five public/runtime
+files and its SHA-256 is written to the protected run summary. The artifact is
+IT-only: it is not a signed-release artifact, is not linked into the publish
+job, and must never be copied into NAS `tools`, a signed release ZIP/root, or a
+standard-user-writable share. For a prestage-only run, leave both publish
+inputs false.
 
 When protected `main` is updated, the workflow builds and validates the signed
 release root. Before publish, the second job verifies through GitHub REST that
@@ -322,15 +332,23 @@ older workstation bootstraps because #258/#259 changed the bootstrap script,
 launcher, updater GUI, and privileged-snapshot updater. Installed revAgent
 operation continues, but the next operator-started STABLE/GUI update path is
 blocked until supervised rebind. Use the E1 kit only for an urgent individual
-machine and defer the general fleet pass until E2. Do not publish another
+machine: verify its ZIP SHA-256 against the protected CD run summary,
+distribute it through an IT-controlled channel, preserve the exact five-file
+layout, and double-click `IT-Prestage-revAgent.cmd` for one UAC and an
+under-five-minute supervised rebind. It requires no repo checkout, pasted
+block, or copied hash literals; its sealed wrapper copies hash-pinned inputs to
+an administrator-only local staging directory before elevated execution. Do
+not run it from a standard-user-writable Downloads/Desktop/share path. Defer
+the general fleet pass until E2. Do not publish another
 eight-component change before E2 without the same warning in the PR and
 changelog and a separately approved rollout window.
 
 Self-service bootstrap install/refresh may be re-enabled only when an
 Authenticode-signed bootstrap broker, or an equivalent IT-prestaged verifier
 and pinned key, independently revalidates the detached release signature after
-elevation. Until then, use the supervised manual high-assurance/recovery
-procedure. The repository-side `scripts\install-revagent-local-bootstrap.ps1`
+elevation. Until then, use the primary supervised IT kit in
+`docs/BOOTSTRAP_PRESTAGE.md`; use its manual high-assurance block only for
+emergency recovery. The repository-side `scripts\install-revagent-local-bootstrap.ps1`
 is source material, never a repo- or NAS-side elevated entrypoint.
 
 After prestage, close Revit and run:

@@ -3,8 +3,9 @@
 This folder contains the installable workstation payload for revAgent. End
 users with a current, verified protected bootstrap should normally update
 through its local/NAS entry rather than running these scripts manually. A
-pristine or stale-bootstrap workstation first requires the supervised manual
-high-assurance prestage/refresh procedure described below.
+pristine or stale-bootstrap workstation first requires the supervised IT
+prestage kit described below; the manual high-assurance procedure is an
+emergency fallback.
 
 The implementation still contains legacy cleanup names and external SDK names
 such as `RevitMCPSDK`; do not rename those when documenting exact compatibility
@@ -41,8 +42,7 @@ On the current release, this is intentionally not a self-service bootstrap
 installer or refresher. If the protected bootstrap is missing or fails current
 verification as stale, any NAS Refresh path that would elevate returns exit 84
 before requesting UAC; direct `-ElevatedApply` is disabled by the same guard.
-The operator is directed to the supervised manual high-assurance/recovery
-procedure in
+The operator is directed to the primary supervised IT prestage kit in
 [`docs/BOOTSTRAP_PRESTAGE.md`](../docs/BOOTSTRAP_PRESTAGE.md). Only a current,
 verified protected bootstrap bypasses Refresh and starts the protected local
 GUI normally. Do not interpret the published launcher or clean-install fixtures
@@ -57,12 +57,17 @@ independently revalidating the release in the elevated phase. The NAS tree is
 not itself that trust anchor; do not elevate a loose NAS GUI, installer, or
 module.
 
-The supervised procedure copies the hash-authenticated prestage installer to
+The one-UAC, five-file kit copies the hash-authenticated prestage installer to
 `C:\ProgramData\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`
 with OS/admin-only commands, protects the path, and executes only the staged
-copy with independently obtained evidence. Never elevate the repository-side
+copy with independently obtained evidence. It requires no repository checkout,
+pasted block, or copied hash literals. Never elevate the repository-side
 script. The staged installer places the signed bootstrap and clickable launcher
-under `C:\ProgramData\DPE\revAgent\bootstrap`.
+under `C:\ProgramData\DPE\revAgent\bootstrap`. The verified kit must travel
+through an IT-only channel; never place it in NAS `tools`, a signed release, or
+a standard-user-writable Downloads/Desktop/share path. The wrapper hash-seals
+the four elevated inputs and runs them only from an administrator-only local
+staging directory.
 
 After supervised prestage/refresh, or on a workstation that already has a
 current and verified protected bootstrap, close Revit and run the protected

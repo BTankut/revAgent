@@ -119,6 +119,14 @@ function New-TestRsaProvider {
     return [System.Security.Cryptography.RSACryptoServiceProvider]::new(2048, $cspParameters)
 }
 
+function Get-Sha256ForBytes {
+    param([Parameter(Mandatory = $true)][byte[]]$Bytes)
+
+    $sha256 = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha256.ComputeHash($Bytes))).Replace('-', '') }
+    finally { $sha256.Dispose() }
+}
+
 function Get-TestTreeDigest {
     param([Parameter(Mandatory = $true)][string]$Root)
 
@@ -164,6 +172,296 @@ try {
     }
     $trustedKeysPath = Join-Path $secretRoot "release-trusted-keys.json"
     $trustedKeys | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $trustedKeysPath -Encoding UTF8
+
+    Write-Host "Test deterministic IT-only supervised prestage kit artifact"
+    $prestageKitBuilder = Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageKit.ps1'
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-production-pin-rejection') `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot | Out-Null
+    } -Pattern 'exactly the pinned revagent-prod-rsa-2026q3|pinned RS256 identity' -Message 'Production prestage kit accepted a test signing-key identity.'
+
+    $prestageKitRootA = Join-Path $tempRoot 'prestage-kit-a'
+    $prestageKitRootB = Join-Path $tempRoot 'prestage-kit-b'
+    $prestageKitPoisonRoot = Join-Path $tempRoot 'prestage-kit-poison-modules'
+    $prestageKitPoisonModule = Join-Path $prestageKitPoisonRoot 'Microsoft.PowerShell.Utility'
+    $prestageKitPoisonMarker = Join-Path $tempRoot 'prestage-kit-poison-loaded.txt'
+    New-Item -ItemType Directory -Path $prestageKitPoisonModule | Out-Null
+    $prestageKitPoisonMarkerLiteral = $prestageKitPoisonMarker.Replace("'", "''")
+    [IO.File]::WriteAllText((Join-Path $prestageKitPoisonModule 'Microsoft.PowerShell.Utility.psm1'), "[IO.File]::WriteAllText('$prestageKitPoisonMarkerLiteral','loaded'); function Get-FileHash { throw 'poisoned' }", [Text.UTF8Encoding]::new($false))
+    [IO.File]::WriteAllText((Join-Path $prestageKitPoisonModule 'Microsoft.PowerShell.Utility.psd1'), "@{ RootModule='Microsoft.PowerShell.Utility.psm1'; ModuleVersion='99.0.0'; FunctionsToExport=@('Get-FileHash') }", [Text.UTF8Encoding]::new($false))
+    $prestageKitOriginalModulePath = $env:PSModulePath
+    try {
+        $env:PSModulePath = $prestageKitPoisonRoot + [IO.Path]::PathSeparator + $prestageKitOriginalModulePath
+        $prestageKitA = & $prestageKitBuilder `
+            -OutputDirectory $prestageKitRootA `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys
+        $env:PSModulePath = $prestageKitPoisonRoot + [IO.Path]::PathSeparator + $prestageKitOriginalModulePath
+        $prestageKitB = & $prestageKitBuilder `
+            -OutputDirectory $prestageKitRootB `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys
+    }
+    finally { $env:PSModulePath = $prestageKitOriginalModulePath }
+    Assert-True (-not (Test-Path -LiteralPath $prestageKitPoisonMarker)) 'Supervised prestage kit builder loaded a user-controlled module from inherited PSModulePath.'
+    Assert-True ([bool]$prestageKitA.success -and [bool]$prestageKitB.success -and [int]$prestageKitA.entryCount -eq 5 -and [int]$prestageKitB.entryCount -eq 5) 'Supervised prestage kit producer did not emit the exact five-file contract.'
+    Assert-Equal ([string]$prestageKitA.sha256) ([string]$prestageKitB.sha256) 'Supervised prestage kit ZIP is not deterministic for identical source bytes.'
+    Assert-True ((Get-Content -Raw -LiteralPath $prestageKitA.checksumPath) -match ('(?i)^' + [regex]::Escape([string]$prestageKitA.sha256) + ' \*revAgent-supervised-prestage-kit\.zip')) 'Supervised prestage kit checksum sidecar does not bind the exact ZIP name and SHA-256.'
+
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $prestageKitArchive = [IO.Compression.ZipFile]::OpenRead([string]$prestageKitA.zipPath)
+    try {
+        $prestageKitNames = @($prestageKitArchive.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+        $expectedPrestageKitNames = @(
+            'IT-Prestage-revAgent.cmd',
+            'config/release-trusted-keys.json',
+            'installer/lib/RevAgent.DistributionIntegrity.psm1',
+            'scripts/Invoke-RevAgentSupervisedPrestage.ps1',
+            'scripts/New-RevAgentBootstrapPrestageEvidence.ps1'
+        ) | Sort-Object
+        Assert-True ($prestageKitNames.Count -eq 5 -and @((Compare-Object $expectedPrestageKitNames $prestageKitNames -SyncWindow 0)).Count -eq 0) 'Supervised prestage kit ZIP contains files outside its exact public allowlist.'
+        $prestageKitEntryBytes = @{}
+        foreach ($entryName in $expectedPrestageKitNames) {
+            $entry = @($prestageKitArchive.Entries | Where-Object { [string]::Equals($_.FullName, $entryName, [StringComparison]::Ordinal) })
+            Assert-Equal $entry.Count 1 "Supervised prestage kit ZIP entry multiplicity drifted for $entryName."
+            $entryStream = $entry[0].Open()
+            $memory = [IO.MemoryStream]::new()
+            try { $entryStream.CopyTo($memory); $prestageKitEntryBytes[$entryName] = $memory.ToArray() }
+            finally { $memory.Dispose(); $entryStream.Dispose() }
+        }
+        $sealedWrapperText = ([Text.UTF8Encoding]::new($false, $true)).GetString([byte[]]$prestageKitEntryBytes['IT-Prestage-revAgent.cmd'])
+        Assert-True ($sealedWrapperText -notmatch '__REVAGENT_[A-Z0-9_]+__') 'Supervised prestage kit ZIP contains an unsealed CMD placeholder.'
+        $sealedPinMap = [ordered]@{
+            REVAGENT_PRESTAGE_DRIVER_SHA256 = 'scripts/Invoke-RevAgentSupervisedPrestage.ps1'
+            REVAGENT_PRESTAGE_EVIDENCE_SHA256 = 'scripts/New-RevAgentBootstrapPrestageEvidence.ps1'
+            REVAGENT_PRESTAGE_INTEGRITY_SHA256 = 'installer/lib/RevAgent.DistributionIntegrity.psm1'
+            REVAGENT_PRESTAGE_TRUSTED_KEYS_SHA256 = 'config/release-trusted-keys.json'
+        }
+        foreach ($sealedPin in $sealedPinMap.GetEnumerator()) {
+            $expectedPin = Get-Sha256ForBytes ([byte[]]$prestageKitEntryBytes[[string]$sealedPin.Value])
+            Assert-True ($sealedWrapperText -match ('(?m)^set "{0}={1}"\r?$' -f [regex]::Escape([string]$sealedPin.Key), [regex]::Escape($expectedPin))) "Supervised prestage wrapper does not pin exact ZIP bytes for $($sealedPin.Value)."
+        }
+        $originalTrustedKeyBytes = [IO.File]::ReadAllBytes($trustedKeysPath)
+        $packagedTrustedKeyBytes = [byte[]]$prestageKitEntryBytes['config/release-trusted-keys.json']
+        Assert-True ($originalTrustedKeyBytes.Length -eq $packagedTrustedKeyBytes.Length -and
+            [string]::Equals((Get-Sha256ForBytes $originalTrustedKeyBytes), (Get-Sha256ForBytes $packagedTrustedKeyBytes), [StringComparison]::Ordinal)) 'Supervised prestage kit must preserve the exact validated trusted-key JSON bytes.'
+    }
+    finally { $prestageKitArchive.Dispose() }
+
+    $privateTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-private-material.json'
+    $privateKeyXml = $rsa.ToXmlString($true)
+    @{
+        trustedKeys = @{
+            $keyId = [ordered]@{
+                publicKeyXml = $privateKeyXml
+                publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $privateKeyXml
+                algorithm = 'RS256'
+            }
+        }
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $privateTrustedKeysPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-private-material-rejection') `
+            -TrustedKeysPath $privateTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'private or unexpected RSA parameters|forbidden private/secret material|forbidden (?:raw JSON contains )?private RSA XML material|forbidden decoded private RSA XML material' -Message 'Supervised prestage kit accepted private RSA material disguised as a trusted-key document.'
+
+    $extraTopLevelTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-extra-top-level.json'
+    [ordered]@{
+        trustedKeys = $trustedKeys.trustedKeys
+        metadata = 'not part of the public schema'
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $extraTopLevelTrustedKeysPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-extra-top-level-rejection') `
+            -TrustedKeysPath $extraTopLevelTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'properties must exactly match the public allowlist: trustedKeys' -Message 'Supervised prestage kit accepted a trusted-key top-level property outside the exact allowlist.'
+
+    $extraRecordTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-extra-record-property.json'
+    [ordered]@{
+        trustedKeys = [ordered]@{
+            $keyId = [ordered]@{
+                publicKeyXml = $publicKeyXml
+                publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+                algorithm = 'RS256'
+                comment = 'not part of the public schema'
+            }
+        }
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $extraRecordTrustedKeysPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-extra-record-rejection') `
+            -TrustedKeysPath $extraRecordTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'entry properties must exactly match the public allowlist' -Message 'Supervised prestage kit accepted a trusted-key record property outside the exact allowlist.'
+
+    foreach ($privateJwkField in @('d', 'p', 'q', 'dp', 'dq', 'qi')) {
+        $privateJwkTrustedKeysPath = Join-Path $secretRoot ("release-trusted-keys-private-jwk-$privateJwkField.json")
+        $privateJwkRecord = [ordered]@{
+            publicKeyXml = $publicKeyXml
+            publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+            algorithm = 'RS256'
+        }
+        $privateJwkRecord[$privateJwkField] = 'private-jwk-material'
+        [ordered]@{
+            trustedKeys = [ordered]@{ $keyId = $privateJwkRecord }
+        } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $privateJwkTrustedKeysPath -Encoding UTF8
+        Assert-ThrowsLike -Action {
+            & $prestageKitBuilder `
+                -OutputDirectory (Join-Path $tempRoot ("prestage-kit-private-jwk-$privateJwkField-rejection")) `
+                -TrustedKeysPath $privateJwkTrustedKeysPath `
+                -RepoRoot $RepoRoot `
+                -AllowTestTrustedKeys | Out-Null
+        } -Pattern 'raw JSON contains a forbidden private JWK' -Message "Supervised prestage kit accepted private JWK field '$privateJwkField' in raw trusted-key JSON."
+    }
+
+    $validTrustedKeyMapJson = $trustedKeys.trustedKeys | ConvertTo-Json -Depth 8 -Compress
+    $duplicateTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-duplicate-escaped-decoy.json'
+    $duplicateTrustedKeysJson = '{"trustedKeys":{"decoy":{"\u0064":"private-decoy"}},"trustedKeys":' + $validTrustedKeyMapJson + '}'
+    [IO.File]::WriteAllText($duplicateTrustedKeysPath, $duplicateTrustedKeysJson, [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-duplicate-trusted-keys-rejection') `
+            -TrustedKeysPath $duplicateTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'duplicate decoded property name.*trustedKeys' -Message 'Supervised prestage kit accepted duplicate trustedKeys after PS5 JSON normalization discarded the escaped private decoy.'
+
+    $publicKeyJson = $publicKeyXml | ConvertTo-Json -Compress
+    $publicKeyFingerprintJson = (Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml) | ConvertTo-Json -Compress
+    $duplicateEscapedRecordPath = Join-Path $secretRoot 'release-trusted-keys-duplicate-escaped-record-name.json'
+    $duplicateEscapedRecordJson = '{"trustedKeys":{"' + $keyId + '":{"algorithm":"RS256","\u0061lgorithm":"RS256","publicKeyXml":' + $publicKeyJson + ',"publicKeyFingerprint":' + $publicKeyFingerprintJson + '}}}'
+    [IO.File]::WriteAllText($duplicateEscapedRecordPath, $duplicateEscapedRecordJson, [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-duplicate-escaped-record-rejection') `
+            -TrustedKeysPath $duplicateEscapedRecordPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'duplicate decoded property name.*algorithm' -Message 'Supervised prestage kit accepted duplicate key-record names after JSON escape decoding.'
+
+    $escapedPrivateJwkNames = [ordered]@{
+        d = '\u0064'
+        p = '\u0070'
+        q = '\u0071'
+        dp = '\u0064\u0070'
+        dq = '\u0064\u0071'
+        qi = '\u0071\u0069'
+    }
+    foreach ($escapedPrivateJwk in $escapedPrivateJwkNames.GetEnumerator()) {
+        $escapedPrivateJwkPath = Join-Path $secretRoot ("release-trusted-keys-escaped-private-jwk-$($escapedPrivateJwk.Key).json")
+        $escapedPrivateJwkJson = '{"trustedKeys":{"' + $keyId + '":{"publicKeyXml":' + $publicKeyJson + ',"publicKeyFingerprint":' + $publicKeyFingerprintJson + ',"algorithm":"RS256","' + [string]$escapedPrivateJwk.Value + '":"private-jwk-material"}}}'
+        [IO.File]::WriteAllText($escapedPrivateJwkPath, $escapedPrivateJwkJson, [Text.UTF8Encoding]::new($false))
+        Assert-ThrowsLike -Action {
+            & $prestageKitBuilder `
+                -OutputDirectory (Join-Path $tempRoot ("prestage-kit-escaped-private-jwk-$($escapedPrivateJwk.Key)-rejection")) `
+                -TrustedKeysPath $escapedPrivateJwkPath `
+                -RepoRoot $RepoRoot `
+                -AllowTestTrustedKeys | Out-Null
+        } -Pattern ('forbidden decoded private JWK.*' + [regex]::Escape([string]$escapedPrivateJwk.Key)) -Message "Supervised prestage kit accepted escaped private JWK field '$($escapedPrivateJwk.Key)'."
+    }
+
+    $escapedPemTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-escaped-private-pem.json'
+    $escapedPemValue = '\u002d\u002d\u002d\u002d\u002dBEGIN PRIVATE KEY\u002d\u002d\u002d\u002d\u002dAAECAwQ='
+    $escapedPemJson = '{"trustedKeys":{"' + $keyId + '":{"publicKeyXml":' + $publicKeyJson + ',"publicKeyFingerprint":' + $publicKeyFingerprintJson + ',"algorithm":"RS256","comment":"' + $escapedPemValue + '"}}}'
+    [IO.File]::WriteAllText($escapedPemTrustedKeysPath, $escapedPemJson, [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-escaped-private-pem-rejection') `
+            -TrustedKeysPath $escapedPemTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'forbidden decoded PEM private-key material' -Message 'Supervised prestage kit accepted escaped PEM private-key material under an innocent property.'
+
+    $escapedPrivateXmlPath = Join-Path $secretRoot 'release-trusted-keys-escaped-private-rsa-xml.json'
+    $escapedPrivateXmlJson = '{"trustedKeys":{"' + $keyId + '":{"publicKeyXml":"\u003cRSAKeyValue\u003e\u003cD\u003eAAECAwQ=\u003c/D\u003e\u003c/RSAKeyValue\u003e","publicKeyFingerprint":' + $publicKeyFingerprintJson + ',"algorithm":"RS256"}}}'
+    [IO.File]::WriteAllText($escapedPrivateXmlPath, $escapedPrivateXmlJson, [Text.UTF8Encoding]::new($false))
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-escaped-private-rsa-xml-rejection') `
+            -TrustedKeysPath $escapedPrivateXmlPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'forbidden decoded private RSA XML material' -Message 'Supervised prestage kit accepted escaped private RSA XML material.'
+
+    $privatePemTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-private-pem.json'
+    [ordered]@{
+        trustedKeys = [ordered]@{
+            $keyId = [ordered]@{
+                publicKeyXml = '-----BEGIN PRIVATE KEY-----AAECAwQ=-----END PRIVATE KEY-----'
+                publicKeyFingerprint = ('A' * 64)
+                algorithm = 'RS256'
+            }
+        }
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $privatePemTrustedKeysPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-private-pem-rejection') `
+            -TrustedKeysPath $privatePemTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'raw JSON contains forbidden PEM private-key material' -Message 'Supervised prestage kit accepted PEM private-key material in an allowed JSON property.'
+
+    $innocentPemTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-innocent-field-private-pem.json'
+    [ordered]@{
+        trustedKeys = [ordered]@{
+            $keyId = [ordered]@{
+                publicKeyXml = $publicKeyXml
+                publicKeyFingerprint = Get-RevAgentPublicKeyFingerprint -PublicKeyXml $publicKeyXml
+                algorithm = 'RS256'
+                comment = '-----BEGIN RSA PRIVATE KEY-----AAECAwQ=-----END RSA PRIVATE KEY-----'
+            }
+        }
+    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $innocentPemTrustedKeysPath -Encoding UTF8
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-innocent-field-private-pem-rejection') `
+            -TrustedKeysPath $innocentPemTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'raw JSON contains forbidden PEM private-key material' -Message 'Supervised prestage kit accepted PEM private-key material hidden under an innocent extra property.'
+
+    $hardlinkedTrustedKeysPath = Join-Path $secretRoot 'release-trusted-keys-hardlinked.json'
+    Copy-Item -LiteralPath $trustedKeysPath -Destination $hardlinkedTrustedKeysPath
+    New-Item -ItemType HardLink -Path (Join-Path $secretRoot 'release-trusted-keys-hardlinked-alias.json') -Target $hardlinkedTrustedKeysPath | Out-Null
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $tempRoot 'prestage-kit-hardlink-rejection') `
+            -TrustedKeysPath $hardlinkedTrustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'exactly one hardlink reference|filesystem link/reparse component' -Message 'Supervised prestage kit accepted a multiply linked trusted-key source.'
+
+    $junctionOutputTarget = Join-Path $tempRoot 'prestage-kit-junction-target'
+    $junctionOutputParent = Join-Path $tempRoot 'prestage-kit-junction-parent'
+    New-Item -ItemType Directory -Path $junctionOutputTarget | Out-Null
+    New-Item -ItemType Junction -Path $junctionOutputParent -Target $junctionOutputTarget | Out-Null
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory (Join-Path $junctionOutputParent 'kit') `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'filesystem link/reparse component' -Message 'Supervised prestage kit accepted a reparse-point output ancestor.'
+
+    $preexistingPrestageKitRoot = Join-Path $tempRoot 'preexisting-prestage-kit-root'
+    New-Item -ItemType Directory -Path $preexistingPrestageKitRoot | Out-Null
+    Assert-ThrowsLike -Action {
+        & $prestageKitBuilder `
+            -OutputDirectory $preexistingPrestageKitRoot `
+            -TrustedKeysPath $trustedKeysPath `
+            -RepoRoot $RepoRoot `
+            -AllowTestTrustedKeys | Out-Null
+    } -Pattern 'already exists|refusing replacement' -Message 'Supervised prestage kit reused a preexisting output root.'
+
     $nodeMsiPath = Join-Path $tempRoot 'node-v24.14.1-x64.msi'
     $nodeMsiBytes = [Text.Encoding]::UTF8.GetBytes('revAgent signed-CD test-only Node.js MSI fixture; never use outside disposable TEMP roots.')
     [IO.File]::WriteAllBytes($nodeMsiPath, $nodeMsiBytes)
@@ -1073,12 +1371,16 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     Assert-True ($workflowText -match 'https://nodejs\.org/dist/v24\.14\.1/node-v24\.14\.1-x64\.msi' -and $workflowText -match 'FD8BA3E8262738959CAD50E6F6E71D689EAB7DD09FC7231B51D78ABE7852D4EC' -and $workflowText -match '32387072') 'CD workflow must download and pin the exact official Node.js MSI hash and size.'
     Assert-True ($workflowText -match 'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, S=California, C=US' -and $workflowText -match 'Get-AuthenticodeSignature' -and $workflowText -match 'SignatureStatus\]::Valid') 'CD workflow must validate the exact OpenJS Authenticode identity.'
     Assert-True ($workflowText -match 'REVAGENT_NODE_MSI_PATH' -and $workflowText -match 'NodeMsiPath = \$env:REVAGENT_NODE_MSI_PATH') 'CD workflow must pass only its verified Node.js MSI path into the producer.'
+    Assert-True ($workflowText -match 'Build IT-only supervised prestage kit' -and $workflowText -match 'New-RevAgentBootstrapPrestageKit\.ps1' -and $workflowText -match 'revagent-supervised-prestage-kit-\$\{\{ github\.run_id \}\}-\$\{\{ github\.run_attempt \}\}' -and $workflowText -match 'kit_sha256') 'CD workflow must build, identify, and upload the supervised prestage kit as a separate artifact.'
+    Assert-True ($workflowText -match '(?s)Upload short-lived IT supervised prestage kit.*?if:\s*\$\{\{ github\.event_name == ''workflow_dispatch'' \}\}.*?retention-days:\s*1.*?compression-level:\s*0.*?overwrite:\s*false' -and $workflowText -match '\$kitRoot = Join-Path \$env:RUNNER_TEMP' -and $workflowText -match 'REVAGENT_PRESTAGE_KIT_ROOT=\$kitRoot') 'Supervised prestage kit artifact must be explicit-dispatch-only, short-lived, immutable, and rooted outside the signed release tree.'
+    Assert-True ($workflowText -notmatch 'prestage_kit_artifact_(id|digest)' -and $workflowText -notmatch 'needs\.build-signed-release\.outputs\.prestage') 'Supervised prestage kit identity must not be linked into the signed-release publish job.'
 
     $producerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\invoke-signed-source-free-cd.ps1")
     $publisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\publish-signed-source-free-release-to-nas.ps1")
     $readinessText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\check-signed-stable-readiness.ps1')
     $legacyPublisherText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\publish-nas-release.ps1")
     $bootstrapEvidenceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "scripts\New-RevAgentBootstrapPrestageEvidence.ps1")
+    $prestageKitBuilderText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'scripts\New-RevAgentBootstrapPrestageKit.ps1')
     $retiredPromoterText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\nas\promote-nas-release.ps1")
     $claudeWorkflowText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot ".github\workflows\claude-review.yml")
     $stableLauncherSourceText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd')
@@ -1086,6 +1388,17 @@ if (-not (Assert-RevAgentProtectedReleaseSnapshot -SnapshotRoot `$snapshot.snaps
     $productionSigningKeyId = 'revagent-prod-rsa-2026q3'
     $productionSigningFingerprint = '32F8BD0B4E905BB58606FB226459C09A6AE2CFC10A4E94203566FE4ADD7BBE33'
     Assert-True ($producerText -match 'test-ci\.ps1' -and $producerText -match 'RequireSigning') "CD producer should run engineering gates and require signing."
+    Assert-True ($prestageKitBuilderText -match "'IT-Prestage-revAgent\.cmd'" -and $prestageKitBuilderText -match "'scripts/Invoke-RevAgentSupervisedPrestage\.ps1'" -and $prestageKitBuilderText -match "'scripts/New-RevAgentBootstrapPrestageEvidence\.ps1'" -and $prestageKitBuilderText -match "'installer/lib/RevAgent\.DistributionIntegrity\.psm1'" -and $prestageKitBuilderText -match "'config/release-trusted-keys\.json'" -and $prestageKitBuilderText -match 'FileMode\]::CreateNew' -and $prestageKitBuilderText -match '1980, 1, 1' -and $prestageKitBuilderText -match 'GetLinkCount' -and $prestageKitBuilderText -match 'RUNNER_TEMP' -and $prestageKitBuilderText -notmatch 'RUNNER_WORKSPACE' -and $prestageKitBuilderText -notmatch 'SigningPrivateKeyPath') 'Supervised prestage kit builder must enforce its deterministic exact public allowlist, TEMP-only output, no-link policy, and no-private-key input.'
+    foreach ($forbiddenKitSurfaceName in @(
+        'IT-Prestage-revAgent.cmd',
+        'Invoke-RevAgentSupervisedPrestage.ps1',
+        'New-RevAgentBootstrapPrestageKit.ps1',
+        'revAgent-supervised-prestage-kit'
+    )) {
+        foreach ($releasePublisherSurface in @($producerText, $publisherText, $legacyPublisherText)) {
+            Assert-True ($releasePublisherSurface -notmatch [regex]::Escape($forbiddenKitSurfaceName)) "IT-only supervised prestage kit surface leaked into a signed-release/NAS publisher allowlist: $forbiddenKitSurfaceName"
+        }
+    }
     Assert-True ($producerText -match 'NodeMsiPath is required for production signed source-free CD' -and $producerText -match '\$publishArgs\["NodeMsiPath"\] = \$nodeMsiFullPath') 'CD producer must require and forward one explicit Node.js MSI asset in production.'
     foreach ($productionPinSurface in @($producerText, $publisherText, $legacyPublisherText, $bootstrapEvidenceText)) {
         Assert-True ($productionPinSurface -match [regex]::Escape($productionSigningKeyId) -and $productionPinSurface -match [regex]::Escape($productionSigningFingerprint)) "Every production signing/prestage surface must pin the exact production key id and fingerprint."
