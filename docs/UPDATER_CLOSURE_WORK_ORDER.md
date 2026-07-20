@@ -34,8 +34,17 @@ Exit 84 kapısı yalnız temiz makineleri değil, **mevcut makinelerin #245 baya
   `Install-revAgent-Updater-GUI.ps1`, `Invoke-revAgent-PrivilegedSnapshotUpdate.ps1`). Yani **bu içerikle
   yapılan ilk yayın, bootstrap'ı kurulu HER makineyi bir sonraki STABLE.cmd çalıştırmasında exit 84'e düşürür**
   ve her biri denetimli manuel prestage ister (makine başına ~2 saatlik mevcut prosedür).
-- **Operatör kontrolü (hemen):** #258 sonrası bir NAS yayını yapıldıysa filo şu an bu durumdadır; yapılmadıysa
-  E1 (prestage kiti) hazır olana kadar **8 bağlı dosyaya dokunan yayın yapılmamalıdır**.
+- **D1 CEVAPLANDI — risk KURULU (armed):** NAS'taki güncel stable **`2026.07.20.574-11020d1a`**dır
+  (#259/HEAD içeriği yayımlandı). Filo güncellenmedi; yalnızca O1–O4 sırasında kurulan **1 yeni makine**
+  574'e bağlı ve sağlıklı. Diğer TÜM mevcut makinelerin bootstrap'ları eski release'e bağlı olduğundan,
+  STABLE launcher'ı (veya masaüstü kısayolu → yerel launcher → `:RefreshStableIfBound`) bir dahaki
+  çalıştırmalarında doğrulama `bootstrap_refresh_required` verecek → NAS'taki yeni refresh aracı →
+  **exit 84 SECURITY STOP**. Etki: kurulu ürün çalışmaya devam eder (zamanlanmış görev audit-only),
+  yalnızca güncelleme/GUI akışı bloklanır — makine başına bir IT dokunuşuna kadar.
+- **Filo stratejisi (öneri):** Mevcut makinelere ~2 saatlik manuel prestage koşturMA. Acil güncelleme
+  gereken tekil makine çıkarsa E1 kitiyle çöz; filo genelini **E2 tamamlandıktan sonra TEK geçişte**
+  E2-etkin kit ile ele al (güven çekirdeği + broker + 574+ rebind aynı dokunuşta) — böylece her makineye
+  bir daha asla elle dokunulmaz. 574'teki yeni makine de E2 yayını rebind edeceği için aynı tek geçişe dahildir.
 
 ### Ek zorunlu kurallar
 
@@ -194,8 +203,9 @@ pinning omurgasını değiştirir!) + GPO Trusted Publishers/AllSigned veya WDAC
 
 ## Operatöre (Barış) karar/aksiyon soruları — asistan bunları PR açıklamasında yanıt bekleyen kutu olarak listeler
 
-- **D1:** #258 sonrası NAS yayını yapıldı mı? Yapıldıysa K0 şimdiden aktif → E1 kiti aciliyeti artar
-  (mevcut makineler ilk STABLE.cmd'de 84 alacak).
+- **D1 (CEVAPLANDI, 2026-07-20):** Evet — NAS'ta `Stable 2026.07.20.574-11020d1a` yayımlandı; filo
+  güncellenmedi, yalnız 1 yeni makine 574 ile kuruldu. K0 kurulu durumda → E1 kiti acil; filo tek geçişi
+  E2 sonrasına planlanır (bkz. K0 filo stratejisi).
 - **D2:** G13 çıtası: "ürün akışı kullanıcı güveni aklayamaz" (E2, öneri) yeterli mi, yoksa "UAC diyaloğu
   yayıncıyı kanıtlamalı" (E3) mı isteniyor?
 - **D3:** DPE'de MDM/GPO erişimi var mı? (Varsa E1/E2 kiti filoya tek push; yoksa makine başına bir IT dokunuşu.)
