@@ -4,6 +4,21 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added the E1 supervised administrator prestage kit: one exact Windows
+  PowerShell 5.1 driver and CMD wrapper replace the two-shell repository
+  checkout, pasted block, and four hand-copied literals with one double-click,
+  one UAC, and an under-five-minute operating target. Signed CD builds a
+  deterministic exact-five-file ZIP, records its SHA-256, and exposes it only
+  as a separate one-day IT artifact; it is never linked to the NAS publisher,
+  signed release, or writable NAS `tools` surface. The built CMD seals the
+  exact four elevated-input hashes, copies only those bytes into an
+  administrator-only local staging directory, and never elevates a mutable
+  source-kit pathname. The evidence contract records
+  the supervised producer principal/mode and the protected consumer verifies
+  that provenance. E1 does not alter exit 84, wake dormant Refresh branches,
+  or change any of the eight manifest-bound bootstrap components; it authorizes
+  neither pilot nor stable publication. The K0 fleet warning remains open until
+  E2.
 - Replaced the local bootstrap's 10-second GUI startup stderr pipe with direct
   `%LOCALAPPDATA%\DPE\revAgent\logs\gui-launch-stderr-*.log` redirection. Quick
   nonzero exits still surface the exact exit code and captured stderr, while a

@@ -8,6 +8,8 @@
     "schemaVersion",
     "app",
     "evidenceType",
+    "producerMode",
+    "supervisedAdminPrestage",
     "generatedAtUtc",
     "generatedBySid",
     "release",
@@ -19,8 +21,10 @@
     "schemaVersion": { "const": 1 },
     "app": { "const": "revAgent" },
     "evidenceType": { "const": "bootstrap-prestage" },
+    "producerMode": { "enum": ["unelevated-coordinator", "supervised-admin-prestage"] },
+    "supervisedAdminPrestage": { "type": "boolean" },
     "generatedAtUtc": { "type": "string", "format": "date-time" },
-    "generatedBySid": { "type": "string", "pattern": "^S-[0-9-]+$" },
+    "generatedBySid": { "type": "string", "pattern": "^S-[0-9]+(?:-[0-9]+)+$" },
     "release": {
       "type": "object",
       "additionalProperties": false,
@@ -86,7 +90,15 @@
       }
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "supervisedAdminPrestage": { "const": true } } },
+      "then": { "properties": { "producerMode": { "const": "supervised-admin-prestage" } } },
+      "else": { "properties": { "producerMode": { "const": "unelevated-coordinator" } } }
+    }
+  ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[A-Fa-f0-9]{64}$" }
-  }
+  },
+  "$comment": "producerMode and supervisedAdminPrestage are intentionally redundant audit evidence and must agree."
 }

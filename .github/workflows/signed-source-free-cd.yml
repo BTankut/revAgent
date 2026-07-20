@@ -281,6 +281,55 @@ jobs:
           "REVAGENT_SIGNED_BUILD_ROOT=$releaseRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           "source_channel_sha256=$sourceChannelSha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
+      - name: Build IT-only supervised prestage kit
+        id: build-supervised-prestage-kit
+        shell: pwsh
+        env:
+          REVAGENT_TRUSTED_RELEASE_KEYS_PATH: ${{ vars.REVAGENT_TRUSTED_RELEASE_KEYS_PATH }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if ([string]::IsNullOrWhiteSpace($env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH)) {
+            throw "Required protected environment variable is missing: REVAGENT_TRUSTED_RELEASE_KEYS_PATH"
+          }
+
+          $kitRoot = Join-Path $env:RUNNER_TEMP ("revagent-supervised-prestage-kit-{0}-{1}" -f $env:GITHUB_RUN_ID, $env:GITHUB_RUN_ATTEMPT)
+          if (Test-Path -LiteralPath $kitRoot) {
+            throw "Job-unique supervised prestage kit root already exists; refusing cleanup or reuse: $kitRoot"
+          }
+          $kit = .\scripts\New-RevAgentBootstrapPrestageKit.ps1 `
+            -OutputDirectory $kitRoot `
+            -TrustedKeysPath $env:REVAGENT_TRUSTED_RELEASE_KEYS_PATH
+          $expectedEntries = @(
+            'IT-Prestage-revAgent.cmd'
+            'config/release-trusted-keys.json'
+            'installer/lib/RevAgent.DistributionIntegrity.psm1'
+            'scripts/Invoke-RevAgentSupervisedPrestage.ps1'
+            'scripts/New-RevAgentBootstrapPrestageEvidence.ps1'
+          ) | Sort-Object
+          $actualEntries = @($kit.entries | ForEach-Object { [string]$_ } | Sort-Object)
+          if (-not [bool]$kit.success -or [int]$kit.entryCount -ne 5 -or
+              @((Compare-Object $expectedEntries $actualEntries -SyncWindow 0)).Count -ne 0 -or
+              [string]$kit.sha256 -notmatch '^[A-Fa-f0-9]{64}$') {
+            throw "Supervised prestage kit producer did not return the exact public five-file contract."
+          }
+
+          "REVAGENT_PRESTAGE_KIT_ROOT=$kitRoot" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "kit_sha256=$(([string]$kit.sha256).ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "Supervised prestage kit SHA-256: ``$(([string]$kit.sha256).ToLowerInvariant())``" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+
+      - name: Upload short-lived IT supervised prestage kit
+        id: supervised-prestage-kit-artifact
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: revagent-supervised-prestage-kit-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ env.REVAGENT_PRESTAGE_KIT_ROOT }}
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          overwrite: false
+          include-hidden-files: false
+
       - name: Upload immutable signed release artifact
         id: signed-release-artifact
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}

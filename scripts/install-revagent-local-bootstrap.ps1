@@ -483,9 +483,31 @@ $expectedEvidence = Read-RevAgentPrestageBoundedFile -Path $ExpectedHashesPath -
 $strictUtf8 = New-Object Text.UTF8Encoding($false, $true)
 $expectedDocument = $strictUtf8.GetString([byte[]]$expectedEvidence.Bytes) | ConvertFrom-Json
 Assert-RevAgentPrestageFileUnchanged -Evidence $expectedEvidence -MaxBytes 65536
+$producerModeProperty = $expectedDocument.PSObject.Properties['producerMode']
+$supervisedModeProperty = $expectedDocument.PSObject.Properties['supervisedAdminPrestage']
+$producerMode = if ($null -eq $producerModeProperty) { '' } else { [string]$producerModeProperty.Value }
+$supervisedAdminPrestage = if ($null -eq $supervisedModeProperty) { $false } else { [bool]$supervisedModeProperty.Value }
+$generatedBySid = [string]$expectedDocument.generatedBySid
+$currentConsumerSid = [string][Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+$generatedBySidValid = $false
+if ($generatedBySid -match '^S-[0-9]+(?:-[0-9]+)+$') {
+    try {
+        $parsedGeneratedBySid = [Security.Principal.SecurityIdentifier]::new($generatedBySid)
+        $generatedBySidValid = [string]::Equals([string]$parsedGeneratedBySid.Value, $generatedBySid, [StringComparison]::OrdinalIgnoreCase)
+    }
+    catch { $generatedBySidValid = $false }
+}
+$producerModeValid =
+    ([string]::Equals($producerMode, 'unelevated-coordinator', [StringComparison]::Ordinal) -and -not $supervisedAdminPrestage) -or
+    ([string]::Equals($producerMode, 'supervised-admin-prestage', [StringComparison]::Ordinal) -and $supervisedAdminPrestage)
 if ([int]$expectedDocument.schemaVersion -ne 1 -or
     -not [string]::Equals([string]$expectedDocument.app, "revAgent", [StringComparison]::Ordinal) -or
     -not [string]::Equals([string]$expectedDocument.evidenceType, "bootstrap-prestage", [StringComparison]::Ordinal) -or
+    $null -eq $producerModeProperty -or
+    $null -eq $supervisedModeProperty -or
+    -not $producerModeValid -or
+    -not $generatedBySidValid -or
+    ($supervisedAdminPrestage -and -not [string]::Equals($generatedBySid, $currentConsumerSid, [StringComparison]::OrdinalIgnoreCase)) -or
     -not [bool]$expectedDocument.release.signatureVerified -or
     [long]$expectedDocument.release.releaseSequence -le 0 -or
     [long]$expectedDocument.release.highestAcceptedReleaseSequence -lt [long]$expectedDocument.release.releaseSequence -or
@@ -545,7 +567,7 @@ try {
         -TrustedKeysPath $TrustedKeysPath `
         -ExpectedSourceHashes $expected `
         -AuthenticatedRelease $expectedDocument.release `
-        -SourceAuthenticationMethod "coordinator-admin-independent-prestage" `
+        -SourceAuthenticationMethod $producerMode `
         -DesktopShortcutRoot $DesktopShortcutRoot `
         -ConfirmIndependentlyAuthenticatedSource `
         -AllowTestRoot:$AllowTestRoot

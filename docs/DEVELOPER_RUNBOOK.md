@@ -1023,12 +1023,13 @@ code-and-prestage rollout, not an in-place multi-key trust expansion:
    runner key path/id variables in the same change window.
 3. Merge through the protected PR gates, build and validate a source-free
    release signed only by the replacement key, but do not promote NAS stable.
-4. Generate authenticated bootstrap-prestage evidence from that staged signed
-   release. Use the two-shell procedure in `docs/BOOTSTRAP_PRESTAGE.md` to stage
-   the replacement single-key trust and matching protected bootstrap on the
-   developer/canary machine, then on every required online workstation. Record
-   offline machines as pending; they must be prestaged before they can consume
-   the replacement-key stable release.
+4. Generate the supervised IT prestage kit from that staged signed release.
+   Use the primary kit procedure in `docs/BOOTSTRAP_PRESTAGE.md` to stage the
+   replacement single-key trust and matching protected bootstrap on the
+   developer/canary machine, then on every required online workstation. The
+   two-shell block is emergency recovery only. Record offline machines as
+   pending; they must be prestaged before they can consume the replacement-key
+   stable release.
 5. Verify the protected bootstrap state and signed readiness on the staged
    machines, then explicitly publish the replacement-key release to NAS stable
    and run the normal developer/canary and online-fleet audit.
@@ -1067,6 +1068,15 @@ requires the build-bound source-channel SHA-256. A normal `main` push still
 runs signed build/validation without uploading a publish artifact. This keeps
 signing and publish separated by environment and by the protected `main` merge
 gate without trusting a cross-job pathname handoff.
+
+An explicit workflow dispatch also builds a separate, one-day
+`revagent-supervised-prestage-kit-<run>-<attempt>` artifact below
+`RUNNER_TEMP`. Its deterministic ZIP contains exactly the CMD wrapper, the
+supervised driver, the evidence producer, the public integrity module, and the
+protected-runner-injected public trusted-key document; the protected run
+summary records its SHA-256. This IT-only artifact is never exposed as a build
+job output to the NAS publish job and is not added to a signed release or NAS
+`tools` allowlist. A prestage-only dispatch leaves both publish inputs false.
 
 The publish job runs
 `scripts/publish-signed-source-free-release-to-nas.ps1`; it does not rebuild or
@@ -1126,7 +1136,7 @@ Self-service bootstrap install/refresh may be re-enabled only after an
 Authenticode-signed bootstrap broker, or an equivalent IT-prestaged machine
 verifier and pinned production key, independently revalidates the detached
 release signature after elevation. Until then, a missing or stale protected
-bootstrap fails closed to the supervised manual prestage/refresh below. The
+bootstrap fails closed to the supervised IT prestage kit below. The
 bootstrap root and state are
 SYSTEM/Administrators-owned, standard-user read/execute only, link/hardlink
 guarded, and checked with effective directory and file-write probes. The local
@@ -1135,19 +1145,21 @@ must also match their current signed release-manifest components exactly.
 `RevAgent.Permissions.psm1` is a required protected sibling of
 `RevAgent.SourceFreeMigration.psm1`; both are independently hash-bound in
 `bootstrap-state.json` before the GUI imports either module.
-The repository-side prestage installer must never itself be elevated. Its bytes
-must first be matched to the independent evidence and copied with OS/admin-only
-commands to
+The repository-side prestage installer must never itself be elevated. The
+primary five-file IT kit runs one exact Windows PowerShell 5.1 driver, produces
+independent signed-release evidence, and copies the matched installer with
+OS/admin-only commands to
 `%ProgramData%\DPE\revAgent\prestage\install-revagent-local-bootstrap.ps1`;
 only that protected canonical copy may run. The evidence binds both the staged
 installer (`localBootstrapInstallerScript`) and its imported module.
-The exact two-shell procedure is `docs/BOOTSTRAP_PRESTAGE.md`. Its unelevated
-producer opens the pinned distribution-integrity verifier without write/delete
-sharing, hashes the exact acquired bytes, and executes those bytes as an
-in-memory module; it never imports the pathname after the hash check. The
-producer then verifies the signed release and emits schema-versioned evidence;
-the fresh elevated shell stages those bytes with built-in OS APIs and exact ACLs.
-The elevated consumer must never derive replacement evidence.
+The exact primary and emergency procedures are in
+`docs/BOOTSTRAP_PRESTAGE.md`. The primary path is one double-click, one UAC,
+under five minutes, and requires no repository checkout, pasted block, or
+copied literals. The emergency two-shell producer still opens the pinned
+distribution-integrity verifier without write/delete sharing, hashes the exact
+acquired bytes, and executes those bytes as an in-memory module; it never
+imports the pathname after the hash check. Neither elevated path may derive
+replacement evidence from unauthenticated caller input.
 When the server supports Windows ACL telemetry, inspect it without mutation
 with:
 

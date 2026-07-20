@@ -1,13 +1,15 @@
 <#
 .SYNOPSIS
-    Produce unelevated, signed-release-derived bootstrap prestage hash evidence.
+    Produce signed-release-derived bootstrap prestage hash evidence.
 
 .DESCRIPTION
     This coordinator-side producer verifies the signed channel and release
     manifest before deriving the exact hashes consumed by the elevated canonical
     prestage installer. The elevated consumer never derives or rewrites this
     evidence. Run this script before copying the evidence and installer into the
-    administrator-only ProgramData prestage directory.
+    administrator-only ProgramData prestage directory. Normal coordinator use
+    remains unelevated. The explicit SupervisedAdminPrestage mode is reserved
+    for the IT-operated, single-principal supervised prestage driver.
 #>
 
 [CmdletBinding()]
@@ -18,13 +20,32 @@ param(
     [ValidateSet("stable", "pilot")][string]$Channel = "stable",
     [string]$RepoRoot = "",
     [switch]$AllowTestRoot,
+    [switch]$SupervisedAdminPrestage,
     [Parameter(DontShow = $true)][scriptblock]$IntegrityModuleBytesVerifiedHook,
+    [Parameter(DontShow = $true)][scriptblock]$TrustedKeysBytesVerifiedHook,
     [Parameter(DontShow = $true)][string]$TestMachineName = "",
-    [Parameter(DontShow = $true)][scriptblock]$TestAfterPilotAuthorizationHook
+    [Parameter(DontShow = $true)][scriptblock]$TestAfterPilotAuthorizationHook,
+    [Parameter(DontShow = $true)][ValidateSet("", "elevated", "standard")][string]$TestAdministratorState = ""
 )
 
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
+$systemDirectory = [Environment]::SystemDirectory
+$trustedModuleRoots = [Collections.Generic.List[string]]::new()
+foreach ($candidateModuleRoot in @(
+    [IO.Path]::Combine($PSHOME, "Modules"),
+    [IO.Path]::Combine($systemDirectory, "WindowsPowerShell", "v1.0", "Modules")
+)) {
+    if ([IO.Directory]::Exists($candidateModuleRoot) -and -not $trustedModuleRoots.Contains($candidateModuleRoot)) {
+        [void]$trustedModuleRoots.Add($candidateModuleRoot)
+    }
+}
+$env:PSModulePath = [string]::Join([IO.Path]::PathSeparator, $trustedModuleRoots.ToArray())
+foreach ($moduleName in @("Microsoft.PowerShell.Management", "Microsoft.PowerShell.Utility", "Microsoft.PowerShell.Security")) {
+    $manifest = [IO.Path]::Combine($PSHOME, "Modules", $moduleName, ($moduleName + ".psd1"))
+    if (-not [IO.File]::Exists($manifest)) { throw "Required trusted PowerShell module was not found: $manifest" }
+    Microsoft.PowerShell.Core\Import-Module -Name $manifest -Force -ErrorAction Stop
+}
 
 if ([string]::IsNullOrWhiteSpace($RepoRoot)) { $RepoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path }
 $RepoRoot = [IO.Path]::GetFullPath($RepoRoot).TrimEnd("\")
@@ -35,7 +56,27 @@ $canonicalReleaseRoot = [IO.Path]::GetFullPath("\\dpe-nas\Dpe-Ortak\Baris Tankut
 
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = [Security.Principal.WindowsPrincipal]::new($identity)
-if (-not $AllowTestRoot -and $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+$isAdministrator = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not [string]::IsNullOrWhiteSpace($TestAdministratorState) -and -not $AllowTestRoot) {
+    throw "TestAdministratorState is available only with -AllowTestRoot."
+}
+if ($AllowTestRoot) {
+    # Preserve the existing fixture behavior when no explicit token state is
+    # requested. Tests can still exercise both production policy branches.
+    $isAdministrator = if ([string]::Equals($TestAdministratorState, "elevated", [StringComparison]::Ordinal)) {
+        $true
+    }
+    elseif ([string]::Equals($TestAdministratorState, "standard", [StringComparison]::Ordinal)) {
+        $false
+    }
+    else {
+        [bool]$SupervisedAdminPrestage
+    }
+}
+if ($SupervisedAdminPrestage -and -not $isAdministrator) {
+    throw "Supervised administrator prestage evidence requires an elevated Windows PowerShell process."
+}
+if (-not $SupervisedAdminPrestage -and $isAdministrator) {
     throw "Bootstrap prestage evidence must be produced before elevation in the normal coordinator process."
 }
 if (-not $AllowTestRoot -and -not [string]::Equals($ReleaseRoot, $canonicalReleaseRoot, [StringComparison]::OrdinalIgnoreCase)) {
@@ -47,7 +88,7 @@ if ($AllowTestRoot) {
         throw "AllowTestRoot is limited to disposable release fixtures below TEMP."
     }
 }
-if (($null -ne $IntegrityModuleBytesVerifiedHook -or -not [string]::IsNullOrWhiteSpace($TestMachineName) -or $null -ne $TestAfterPilotAuthorizationHook) -and -not $AllowTestRoot) {
+if (($null -ne $IntegrityModuleBytesVerifiedHook -or $null -ne $TrustedKeysBytesVerifiedHook -or -not [string]::IsNullOrWhiteSpace($TestMachineName) -or $null -ne $TestAfterPilotAuthorizationHook -or -not [string]::IsNullOrWhiteSpace($TestAdministratorState)) -and -not $AllowTestRoot) {
     throw "Evidence producer test seams are available only with -AllowTestRoot."
 }
 
@@ -138,6 +179,41 @@ function Import-RevAgentPinnedModuleBytes {
     return $module
 }
 
+function Read-RevAgentEvidenceBoundedBytes {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$StopRoot,
+        [int]$MaxBytes = 65536
+    )
+
+    $fullPath = [IO.Path]::GetFullPath($Path)
+    Assert-RevAgentEvidencePathNoLinks -Path $fullPath -StopRoot $StopRoot
+    $stream = $null
+    try {
+        # Parse and hash only this acquired byte snapshot. FileShare.Read denies
+        # concurrent write, delete, and rename while acquisition is in flight.
+        $stream = [IO.File]::Open($fullPath, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+        if ($stream.Length -lt 1 -or $stream.Length -gt $MaxBytes) {
+            throw "Evidence input size is outside the bounded 1..$MaxBytes byte policy. path=$fullPath size=$($stream.Length)"
+        }
+        $bytes = New-Object byte[] ([int]$stream.Length)
+        $offset = 0
+        while ($offset -lt $bytes.Length) {
+            $read = $stream.Read($bytes, $offset, $bytes.Length - $offset)
+            if ($read -le 0) { throw "Evidence input ended before its declared length: $fullPath" }
+            $offset += $read
+        }
+        if ($stream.ReadByte() -ne -1) { throw "Evidence input grew while it was being read: $fullPath" }
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $sha256 = ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '') }
+        finally { $sha.Dispose() }
+        return [pscustomobject][ordered]@{ Bytes = $bytes; Sha256 = $sha256 }
+    }
+    finally {
+        if ($null -ne $stream) { $stream.Dispose() }
+    }
+}
+
 if (Test-RevAgentEvidencePathUnderRoot -Path $OutputPath -Root $ReleaseRoot) { throw "Evidence output must not be written into the signed release root." }
 if (Test-Path -LiteralPath $OutputPath) { throw "Evidence output already exists; refusing replacement: $OutputPath" }
 $outputParent = Split-Path -Parent $OutputPath
@@ -148,7 +224,21 @@ $integrityModulePath = Join-Path $RepoRoot "installer\lib\RevAgent.DistributionI
 $pinnedIntegrityModuleHash = "DF8F31B60432CC26FD73345CEE143E90B4235BA2DE08779813DAEDBC8563282E"
 $integrityModuleBytes = Read-RevAgentPinnedModuleBytes -Path $integrityModulePath -ExpectedSha256 $pinnedIntegrityModuleHash
 if ($null -ne $IntegrityModuleBytesVerifiedHook) { & $IntegrityModuleBytesVerifiedHook $integrityModulePath }
-$trustedKeys = Get-Content -Raw -LiteralPath $TrustedKeysPath | ConvertFrom-Json
+$trustedKeysStopRoot = if (Test-RevAgentEvidencePathUnderRoot -Path $TrustedKeysPath -Root $RepoRoot) {
+    $RepoRoot
+}
+elseif (Test-RevAgentEvidencePathUnderRoot -Path $TrustedKeysPath -Root $ReleaseRoot) {
+    $ReleaseRoot
+}
+else {
+    [IO.Path]::GetPathRoot($TrustedKeysPath)
+}
+$trustedKeysEvidence = Read-RevAgentEvidenceBoundedBytes -Path $TrustedKeysPath -StopRoot $trustedKeysStopRoot
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$trustedKeysText = $strictUtf8.GetString([byte[]]$trustedKeysEvidence.Bytes)
+if ($trustedKeysText.Length -gt 0 -and $trustedKeysText[0] -eq [char]0xFEFF) { $trustedKeysText = $trustedKeysText.Substring(1) }
+$trustedKeys = $trustedKeysText | ConvertFrom-Json
+if ($null -ne $TrustedKeysBytesVerifiedHook) { & $TrustedKeysBytesVerifiedHook $TrustedKeysPath ([string]$trustedKeysEvidence.Sha256) }
 if (-not $AllowTestRoot) {
     $productionKeyId = "revagent-prod-rsa-2026q3"
     $trustedKeyProperties = @($trustedKeys.trustedKeys.PSObject.Properties)
@@ -251,6 +341,8 @@ $evidence = [ordered]@{
     schemaVersion = 1
     app = "revAgent"
     evidenceType = "bootstrap-prestage"
+    producerMode = if ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
+    supervisedAdminPrestage = [bool]$SupervisedAdminPrestage
     generatedAtUtc = [DateTime]::UtcNow.ToString("o")
     generatedBySid = [string]$identity.User.Value
     release = [ordered]@{
@@ -260,9 +352,9 @@ $evidence = [ordered]@{
         releaseSequence = [long]$integrity.releaseSequence
         minimumAcceptedReleaseSequence = [long]$integrity.minimumAcceptedReleaseSequence
         highestAcceptedReleaseSequence = [long]$integrity.highestAcceptedReleaseSequence
-        channelManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $channelPath).Hash
-        releaseManifestSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash
-        packageSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash
+        channelManifestSha256 = (Microsoft.PowerShell.Utility\Get-FileHash -Algorithm SHA256 -LiteralPath $channelPath).Hash
+        releaseManifestSha256 = (Microsoft.PowerShell.Utility\Get-FileHash -Algorithm SHA256 -LiteralPath $manifestPath).Hash
+        packageSha256 = (Microsoft.PowerShell.Utility\Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash
         signatureVerified = $true
         pilotPolicy = $pilotPolicy
     }
@@ -277,7 +369,7 @@ $evidence = [ordered]@{
         sourceFreeMigration = [string]$componentHashes.sourceFreeMigration
         releaseSnapshot = [string]$componentHashes.releaseSnapshot
         privilegedSnapshotUpdate = [string]$componentHashes.privilegedSnapshotUpdate
-        trustedKeys = (Get-FileHash -Algorithm SHA256 -LiteralPath $TrustedKeysPath).Hash
+        trustedKeys = [string]$trustedKeysEvidence.Sha256
     }
 }
 $bytes = [Text.UTF8Encoding]::new($false).GetBytes(($evidence | ConvertTo-Json -Depth 10))
@@ -293,7 +385,9 @@ finally { if ($null -ne $stream) { $stream.Dispose() } }
     success = $true
     action = "bootstrap-prestage-evidence"
     outputPath = $OutputPath
-    outputSha256 = (Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash
+    outputSha256 = (Microsoft.PowerShell.Utility\Get-FileHash -Algorithm SHA256 -LiteralPath $OutputPath).Hash
     version = [string]$channelDocument.version
     signatureVerified = $true
+    producerMode = if ($SupervisedAdminPrestage) { "supervised-admin-prestage" } else { "unelevated-coordinator" }
+    supervisedAdminPrestage = [bool]$SupervisedAdminPrestage
 }

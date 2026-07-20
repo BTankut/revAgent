@@ -253,6 +253,10 @@ $result = [pscustomobject]@{
         schemaVersion = 1
         app = "revAgent"
         evidenceType = "bootstrap-prestage"
+        producerMode = "unelevated-coordinator"
+        supervisedAdminPrestage = $false
+        generatedAtUtc = [DateTime]::UtcNow.ToString("o")
+        generatedBySid = "S-1-5-19"
         release = [ordered]@{
             root = $fakeRelease; channel = 'stable'; version = '2099.01.01.test'
             releaseSequence = 10; minimumAcceptedReleaseSequence = 1; highestAcceptedReleaseSequence = 10
@@ -506,6 +510,10 @@ catch { [Console]::Error.WriteLine(`$_.Exception.ToString()); exit 1 }
                 schemaVersion = 1
                 app = "revAgent"
                 evidenceType = "bootstrap-prestage"
+                producerMode = "unelevated-coordinator"
+                supervisedAdminPrestage = $false
+                generatedAtUtc = [DateTime]::UtcNow.ToString("o")
+                generatedBySid = "S-1-5-19"
                 release = [ordered]@{
                     root = $fakeRelease; channel = 'stable'; version = '2099.01.01.test'
                     releaseSequence = 10; minimumAcceptedReleaseSequence = 1; highestAcceptedReleaseSequence = 10
