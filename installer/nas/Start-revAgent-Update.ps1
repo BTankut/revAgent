@@ -39,7 +39,7 @@ function New-RevAgentBootstrapGuiStartInfo {
     $startInfo.Arguments = ($arguments | ForEach-Object { if ($_ -match '[\s"]') { '"' + ($_ -replace '"', '\"') + '"' } else { $_ } }) -join " "
     $startInfo.UseShellExecute = $false
     $startInfo.CreateNoWindow = $true
-    $startInfo.RedirectStandardError = $true
+    $startInfo.RedirectStandardError = $false
     $startInfo.WorkingDirectory = Split-Path -Parent $powershellPath
     return $startInfo
 }
@@ -94,18 +94,48 @@ function Start-RevAgentBootstrapGuiProcess {
         [switch]$SuppressNotification
     )
 
-    $guiProcess = [Diagnostics.Process]::Start($StartInfo)
-    if ($null -eq $guiProcess) { throw 'revAgent updater GUI process did not start.' }
-    $stderrReadTask = $guiProcess.StandardError.ReadToEndAsync()
-    if (-not $guiProcess.WaitForExit($StartupWaitMilliseconds)) { return }
-
-    $guiProcess.WaitForExit()
-    $guiExitCode = [int]$guiProcess.ExitCode
-    $guiStandardError = [string]$stderrReadTask.GetAwaiter().GetResult()
-    $guiProcess.Dispose()
-    if ($guiExitCode -eq 0) { return }
-
     $stderrLogPath = New-RevAgentGuiLaunchStderrLogPath
+    $guiProcess = $null
+    $guiExitCode = $null
+    try {
+        $guiProcess = Microsoft.PowerShell.Management\Start-Process `
+            -FilePath ([string]$StartInfo.FileName) `
+            -ArgumentList ([string]$StartInfo.Arguments) `
+            -WorkingDirectory ([string]$StartInfo.WorkingDirectory) `
+            -WindowStyle Hidden `
+            -RedirectStandardError $stderrLogPath `
+            -PassThru `
+            -ErrorAction Stop
+        if ($null -eq $guiProcess) { throw 'revAgent updater GUI process did not start.' }
+
+        # Pin the native handle before the quick-exit check. Windows PowerShell
+        # 5.1 can otherwise surface an already-exited Start-Process result whose
+        # ExitCode has not yet been associated with a process handle.
+        [void]$guiProcess.Handle
+        if (-not $guiProcess.WaitForExit($StartupWaitMilliseconds)) { return }
+
+        $guiProcess.WaitForExit()
+        $guiExitCode = [int]$guiProcess.ExitCode
+    }
+    finally {
+        if ($null -ne $guiProcess) { $guiProcess.Dispose() }
+    }
+
+    if ($guiExitCode -eq 0) {
+        try { [IO.File]::Delete($stderrLogPath) }
+        catch { }
+        return
+    }
+
+    $guiStandardError = ''
+    try {
+        if ([IO.File]::Exists($stderrLogPath)) {
+            $guiStandardError = [IO.File]::ReadAllText($stderrLogPath)
+        }
+    }
+    catch {
+        $guiStandardError = 'stderr log read failed: ' + [string]$_.Exception.Message
+    }
     Write-RevAgentGuiLaunchFailureLog -Path $stderrLogPath -ExitCode $guiExitCode -StandardError $guiStandardError
     $launchFailureMessage = "revAgent updater window exited during startup with code $guiExitCode. Diagnostic log: $stderrLogPath"
     if (-not $SuppressNotification) { Show-RevAgentGuiLaunchFailure -Message $launchFailureMessage }
@@ -146,6 +176,7 @@ if ($RuntimePathSmokeTest) {
         redirectStandardInput = [bool]$runtimeStartInfo.RedirectStandardInput
         redirectStandardOutput = [bool]$runtimeStartInfo.RedirectStandardOutput
         redirectStandardError = [bool]$runtimeStartInfo.RedirectStandardError
+        stderrRedirectionMode = 'direct_file'
         processStartInfo = $runtimeStartInfo
     }
     return
