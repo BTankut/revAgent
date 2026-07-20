@@ -1935,6 +1935,251 @@ function Invoke-RevitMcpManagedPermissionRepair {
     }
 }
 
+function Get-RevAgentBootstrapTemporaryPathInfo {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$TempRoot
+    )
+
+    $root = [System.IO.Path]::GetFullPath($TempRoot).TrimEnd('\')
+    $fullPath = [System.IO.Path]::GetFullPath($Path)
+    $parent = [System.IO.Path]::GetDirectoryName($fullPath).TrimEnd('\')
+    if (-not [string]::Equals($parent, $root, [System.StringComparison]::OrdinalIgnoreCase)) { return $null }
+
+    $name = [System.IO.Path]::GetFileName($fullPath)
+    $mode = ''
+    $attemptId = ''
+    $kind = ''
+    if ($name -match '^revagent-bootstrap-(install|refresh)-source-([0-9a-f]{32})$') {
+        $mode = [string]$Matches[1]
+        $attemptId = [string]$Matches[2]
+        $kind = 'source'
+    }
+    elseif ($name -match '^revagent-bootstrap-(install|refresh)-source-([0-9a-f]{32})\.lock$') {
+        $mode = [string]$Matches[1]
+        $attemptId = [string]$Matches[2]
+        $kind = 'lock'
+    }
+    elseif ($name -match '^revagent-bootstrap-(install|refresh)-evidence-([0-9a-f]{32})\.json$') {
+        $mode = [string]$Matches[1]
+        $attemptId = [string]$Matches[2]
+        $kind = 'evidence'
+    }
+    elseif ($name -match '^revagent-bootstrap-trusted-keys-([0-9a-f]{32})\.json$') {
+        $mode = 'install'
+        $attemptId = [string]$Matches[1]
+        $kind = 'trustedKeys'
+    }
+    elseif ($name -match '^revagent-bootstrap-elevated-script-([0-9a-f]{32})\.ps1$') {
+        $mode = 'elevated'
+        $attemptId = [string]$Matches[1]
+        $kind = 'elevatedScript'
+    }
+    elseif ($name -match '^revagent-bootstrap-coordinator-result-([0-9a-f]{32})\.json$') {
+        $mode = 'coordinator'
+        $attemptId = [string]$Matches[1]
+        $kind = 'coordinatorResult'
+    }
+    else {
+        return $null
+    }
+
+    return [pscustomobject][ordered]@{
+        Path = $fullPath
+        Mode = $mode
+        AttemptId = $attemptId
+        Kind = $kind
+        LockPath = if ($mode -in @('install', 'refresh')) {
+            Join-Path $root ("revagent-bootstrap-{0}-source-{1}.lock" -f $mode, $attemptId)
+        }
+        else { '' }
+    }
+}
+
+function Clear-RevAgentBootstrapTemporaryDirectoryNoFollow {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string]$CleanupRoot,
+        [Parameter(Mandatory = $true)][object]$State,
+        [ValidateRange(0, 64)][int]$Depth = 0
+    )
+
+    if ($Depth -gt [int]$State.MaxDepth) { throw "Bootstrap TEMP cleanup exceeded its maximum depth: $Path" }
+    $root = [System.IO.Path]::GetFullPath($CleanupRoot).TrimEnd('\')
+    $fullPath = [System.IO.Path]::GetFullPath($Path).TrimEnd('\')
+    if (-not [string]::Equals($fullPath, $root, [System.StringComparison]::OrdinalIgnoreCase) -and
+        -not $fullPath.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Bootstrap TEMP cleanup escaped its exact root. path=$fullPath root=$root"
+    }
+
+    $guard = [RevAgent.PermissionNativeFileInfo]::OpenNoMutation($fullPath, $true)
+    $unlinkReparsePoint = $false
+    try {
+        $attributes = [System.IO.FileAttributes][RevAgent.PermissionNativeFileInfo]::GetAttributes($guard)
+        if (($attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+            $unlinkReparsePoint = $true
+        }
+        elseif (($attributes -band [System.IO.FileAttributes]::Directory) -eq 0) {
+            throw "Bootstrap TEMP cleanup expected a directory: $fullPath"
+        }
+        else {
+            $guardIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($guard)
+            $passCount = 0
+            while ($true) {
+                $passCount++
+                if ($passCount -gt [int]$State.MaxPassesPerDirectory) {
+                    throw "Bootstrap TEMP cleanup exceeded its bounded enumeration passes: $fullPath"
+                }
+                $pathIdentity = [RevAgent.PermissionNativeFileInfo]::GetIdentity($fullPath, $true)
+                if (-not [string]::Equals($pathIdentity, $guardIdentity, [System.StringComparison]::Ordinal)) {
+                    throw "Bootstrap TEMP directory identity changed during cleanup: $fullPath"
+                }
+
+                $children = @([System.IO.Directory]::EnumerateFileSystemEntries($fullPath))
+                if ($children.Count -eq 0) { break }
+                foreach ($childPathValue in $children) {
+                    $State.ItemCount = [int]$State.ItemCount + 1
+                    if ([int]$State.ItemCount -gt [int]$State.MaxItems) {
+                        throw "Bootstrap TEMP cleanup exceeded its bounded item count: $root"
+                    }
+                    $childPath = [System.IO.Path]::GetFullPath([string]$childPathValue)
+                    if (-not $childPath.StartsWith($root + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                        throw "Bootstrap TEMP cleanup encountered an out-of-root child: $childPath"
+                    }
+
+                    $childAttributes = [System.IO.File]::GetAttributes($childPath)
+                    $isDirectory = ($childAttributes -band [System.IO.FileAttributes]::Directory) -ne 0
+                    $isReparsePoint = ($childAttributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+                    if ($isDirectory) {
+                        if ($isReparsePoint) {
+                            [RevAgent.PermissionNativeFileInfo]::RemoveDirectoryLink($childPath)
+                        }
+                        else {
+                            Clear-RevAgentBootstrapTemporaryDirectoryNoFollow `
+                                -Path $childPath `
+                                -CleanupRoot $root `
+                                -State $State `
+                                -Depth ($Depth + 1)
+                            if ([System.IO.Directory]::Exists($childPath)) {
+                                [System.IO.Directory]::Delete($childPath, $false)
+                            }
+                        }
+                    }
+                    else {
+                        [System.IO.File]::Delete($childPath)
+                    }
+                }
+            }
+        }
+    }
+    finally { $guard.Dispose() }
+
+    if ($unlinkReparsePoint -and [System.IO.Directory]::Exists($fullPath)) {
+        [RevAgent.PermissionNativeFileInfo]::RemoveDirectoryLink($fullPath)
+    }
+}
+
+function Remove-RevAgentBootstrapTemporaryPath {
+    param(
+        [AllowEmptyString()][string]$Path,
+        [Parameter(Mandatory = $true)][string]$TempRoot
+    )
+
+    if ([string]::IsNullOrWhiteSpace($Path)) { return }
+    try {
+        $pathInfo = Get-RevAgentBootstrapTemporaryPathInfo -Path $Path -TempRoot $TempRoot
+        if ($null -eq $pathInfo -or -not (Test-Path -LiteralPath $pathInfo.Path)) { return }
+        $item = Microsoft.PowerShell.Management\Get-Item -LiteralPath $pathInfo.Path -Force -ErrorAction Stop
+        if ($item.PSIsContainer) {
+            if (($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+                [RevAgent.PermissionNativeFileInfo]::RemoveDirectoryLink([string]$pathInfo.Path)
+                return
+            }
+            $cleanupState = [pscustomobject]@{
+                ItemCount = 0
+                MaxItems = 100000
+                MaxDepth = 64
+                MaxPassesPerDirectory = 32
+            }
+            Clear-RevAgentBootstrapTemporaryDirectoryNoFollow `
+                -Path $pathInfo.Path `
+                -CleanupRoot $pathInfo.Path `
+                -State $cleanupState
+            if ([System.IO.Directory]::Exists([string]$pathInfo.Path)) {
+                [System.IO.Directory]::Delete([string]$pathInfo.Path, $false)
+            }
+        }
+        else {
+            [System.IO.File]::Delete([string]$pathInfo.Path)
+        }
+    }
+    catch {
+        # Opportunistic cleanup must never replace the updater's real result.
+    }
+}
+
+function Remove-StaleRevAgentBootstrapTemporaryItems {
+    [CmdletBinding()]
+    param(
+        [string]$TempRoot = ([System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\')),
+        [ValidateRange(1, 8760)][int]$MinimumAgeHours = 24
+    )
+
+    $cleanupMutex = $null
+    $mutexAcquired = $false
+    try {
+        $root = [System.IO.Path]::GetFullPath($TempRoot).TrimEnd('\')
+        if (-not [System.IO.Directory]::Exists($root)) { return }
+        if (([System.IO.File]::GetAttributes($root) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { return }
+
+        $cleanupMutex = [System.Threading.Mutex]::new($false, 'Local\revAgentBootstrapTempCleanup')
+        try { $mutexAcquired = $cleanupMutex.WaitOne(0) }
+        catch [System.Threading.AbandonedMutexException] { $mutexAcquired = $true }
+        if (-not $mutexAcquired) { return }
+
+        $cutoffUtc = [DateTime]::UtcNow.AddHours(-$MinimumAgeHours)
+        $candidates = @(Microsoft.PowerShell.Management\Get-ChildItem -LiteralPath $root -Filter 'revagent-bootstrap-*' -Force -ErrorAction SilentlyContinue |
+                Microsoft.PowerShell.Utility\Sort-Object @{ Expression = { if ($_.PSIsContainer) { 0 } elseif ($_.Name -like '*.lock') { 2 } else { 1 } } }, Name)
+        foreach ($candidate in $candidates) {
+            try {
+                $pathInfo = Get-RevAgentBootstrapTemporaryPathInfo -Path $candidate.FullName -TempRoot $root
+                if ($null -eq $pathInfo -or $pathInfo.Kind -eq 'coordinatorResult') { continue }
+                if (($candidate.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if ($candidate.CreationTimeUtc -gt $cutoffUtc -or $candidate.LastWriteTimeUtc -gt $cutoffUtc) { continue }
+
+                $lockProbe = $null
+                if (-not [string]::IsNullOrWhiteSpace([string]$pathInfo.LockPath) -and [System.IO.File]::Exists([string]$pathInfo.LockPath)) {
+                    try {
+                        $lockProbe = [System.IO.File]::Open([string]$pathInfo.LockPath, [System.IO.FileMode]::Open, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::None)
+                    }
+                    catch { continue }
+                    finally {
+                        if ($null -ne $lockProbe) { $lockProbe.Dispose() }
+                    }
+                }
+
+                $current = Microsoft.PowerShell.Management\Get-Item -LiteralPath $candidate.FullName -Force -ErrorAction Stop
+                if (($current.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+                if ($current.CreationTimeUtc -gt $cutoffUtc -or $current.LastWriteTimeUtc -gt $cutoffUtc) { continue }
+                Remove-RevAgentBootstrapTemporaryPath -Path $current.FullName -TempRoot $root
+            }
+            catch {
+                # Opportunistic stale cleanup is intentionally silent.
+            }
+        }
+    }
+    catch {
+        # Opportunistic stale cleanup is intentionally silent.
+    }
+    finally {
+        if ($mutexAcquired -and $null -ne $cleanupMutex) {
+            try { $cleanupMutex.ReleaseMutex() }
+            catch { }
+        }
+        if ($null -ne $cleanupMutex) { $cleanupMutex.Dispose() }
+    }
+}
+
 $revAgentFunctionAliases = @{
     "Resolve-RevAgentInteractiveUserBinding" = "Resolve-RevitMcpInteractiveUserBinding"
     "Get-RevAgentManagedPermissionTargets" = "Get-RevitMcpManagedPermissionTargets"
@@ -1967,5 +2212,6 @@ Export-ModuleMember -Function `
     Protect-RevitMcpCanonicalAddinSurface, `
     Close-RevitMcpCanonicalAddinMutationGuard, `
     Protect-RevitMcpManagedExecutionTree, `
-    Grant-RevitMcpUserStateAccess
+    Grant-RevitMcpUserStateAccess, `
+    Remove-StaleRevAgentBootstrapTemporaryItems
 Export-ModuleMember -Alias @($revAgentFunctionAliases.Keys)

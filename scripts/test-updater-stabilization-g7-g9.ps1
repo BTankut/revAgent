@@ -20,6 +20,8 @@ $refreshCmdPath = Join-Path $RepoRoot 'installer\nas\Refresh-revAgent-LocalBoots
 $stableLauncherPath = Join-Path $RepoRoot 'installer\nas\revAgent Updater STABLE.cmd'
 $legacyStableLauncherPath = Join-Path $RepoRoot 'installer\nas\Revit MCP Updater STABLE.cmd'
 $localLauncherPath = Join-Path $RepoRoot 'installer\nas\Start-revAgent-Update.cmd'
+$guiPath = Join-Path $RepoRoot 'installer\nas\Install-revAgent-Updater-GUI.ps1'
+$permissionsModulePath = Join-Path $RepoRoot 'installer\lib\RevAgent.Permissions.psm1'
 
 function Assert-True {
     param([bool]$Condition, [string]$Message)
@@ -79,6 +81,9 @@ $refreshCmdText = Get-Content -Raw -LiteralPath $refreshCmdPath
 $stableLauncherText = Get-Content -Raw -LiteralPath $stableLauncherPath
 $legacyStableLauncherText = Get-Content -Raw -LiteralPath $legacyStableLauncherPath
 $localLauncherText = Get-Content -Raw -LiteralPath $localLauncherPath
+$guiText = Get-Content -Raw -LiteralPath $guiPath
+$permissionsModule = Import-Module $permissionsModulePath -Force -PassThru
+$staleCleanupCommand = Get-Command ("{0}\Remove-StaleRevAgentBootstrapTemporaryItems" -f $permissionsModule.Name) -ErrorAction Stop
 
 $functionNames = @(
     'Get-Sha256Hex',
@@ -259,10 +264,10 @@ try {
     Set-OldFixtureTimestamp -Path $staleEvidence
     Set-OldFixtureTimestamp -Path $staleLockPath
     $staleLock = [IO.File]::Open($staleLockPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
-    & $fixtureModule { param($TempRoot) Remove-StaleRevAgentBootstrapTemporaryItems -TempRoot $TempRoot -MinimumAgeHours 1 } $fixtureRoot
+    & $staleCleanupCommand -TempRoot $fixtureRoot -MinimumAgeHours 1
     Assert-True ((Test-Path -LiteralPath $staleSource) -and (Test-Path -LiteralPath $staleEvidence) -and (Test-Path -LiteralPath $staleLockPath)) 'Stale cleanup removed an in-use bootstrap attempt.'
     $staleLock.Dispose()
-    & $fixtureModule { param($TempRoot) Remove-StaleRevAgentBootstrapTemporaryItems -TempRoot $TempRoot -MinimumAgeHours 1 } $fixtureRoot
+    & $staleCleanupCommand -TempRoot $fixtureRoot -MinimumAgeHours 1
     Assert-True (-not (Test-Path -LiteralPath $staleSource) -and -not (Test-Path -LiteralPath $staleEvidence) -and -not (Test-Path -LiteralPath $staleLockPath)) 'Unlocked stale bootstrap TEMP items were not removed.'
 
     $junctionId = [Guid]::NewGuid().ToString('N')
@@ -271,9 +276,32 @@ try {
     New-Item -ItemType Directory -Path $junctionTarget | Out-Null
     [IO.File]::WriteAllText((Join-Path $junctionTarget 'keep.txt'), 'keep')
     New-Item -ItemType Junction -Path $junctionPath -Target $junctionTarget | Out-Null
-    & $fixtureModule { param($TempRoot) Remove-StaleRevAgentBootstrapTemporaryItems -TempRoot $TempRoot -MinimumAgeHours 1 } $fixtureRoot
+    & $staleCleanupCommand -TempRoot $fixtureRoot -MinimumAgeHours 1
     Assert-True ((Test-Path -LiteralPath $junctionPath) -and (Test-Path -LiteralPath (Join-Path $junctionTarget 'keep.txt'))) 'Stale cleanup traversed or removed a reparse-point candidate.'
     [IO.Directory]::Delete($junctionPath)
+
+    Write-Host 'Test G7 cleanup is bound to post-Shown GUI maintenance and remains best-effort'
+    $guiTokens = $null
+    $guiParseErrors = $null
+    $guiAst = [Management.Automation.Language.Parser]::ParseFile($guiPath, [ref]$guiTokens, [ref]$guiParseErrors)
+    Assert-True (@($guiParseErrors).Count -eq 0) 'Updater GUI did not parse for startup-maintenance coverage.'
+    $maintenanceFunction = @($guiAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-RevAgentGuiStartupMaintenance'
+            }, $true))[0]
+    Assert-True ($null -ne $maintenanceFunction) 'GUI startup-maintenance producer was not found.'
+    $maintenanceModule = New-Module -ScriptBlock ([scriptblock]::Create($maintenanceFunction.Extent.Text))
+    $maintenanceCalls = [Collections.Generic.List[int]]::new()
+    $successfulCleanup = { param([int]$MinimumAgeHours) [void]$maintenanceCalls.Add($MinimumAgeHours) }.GetNewClosure()
+    & $maintenanceModule { param($Command) Invoke-RevAgentGuiStartupMaintenance -CleanupCommand $Command -MinimumAgeHours 7 } $successfulCleanup
+    Assert-True ($maintenanceCalls.Count -eq 1 -and $maintenanceCalls[0] -eq 7) 'GUI startup maintenance did not invoke the production cleanup command exactly once.'
+    $throwingCleanup = { param([int]$MinimumAgeHours) throw "maintenance-only-$MinimumAgeHours" }
+    $maintenanceFailureEscaped = $false
+    try { & $maintenanceModule { param($Command) Invoke-RevAgentGuiStartupMaintenance -CleanupCommand $Command } $throwingCleanup }
+    catch { $maintenanceFailureEscaped = $true }
+    Assert-True (-not $maintenanceFailureEscaped) 'GUI startup maintenance allowed a cleanup-only failure to escape.'
+    Assert-True ($guiText -match '(?s)\$form\.Add_Shown\(\{\s*\$script:GuiStartupCompleted\s*=\s*\$true\s*Start-RevAgentGuiStartupMaintenance\s*\}\)' -and $guiText -match 'GuiStaleBootstrapCleanupCommand' -and $guiText -match 'System\.Windows\.Forms\.Timer') 'GUI cleanup is not scheduled exactly after the Shown startup-complete marker.'
+    Remove-Module $maintenanceModule -Force
 
     Write-Host 'Test G8 nonce marker plus task state and LastTaskResult synchronization'
     $bootstrapFixture = Join-Path $fixtureRoot 'Start-revAgent-Update.ps1'
@@ -549,6 +577,7 @@ try {
     Write-Host 'Updater stabilization G7-G9 tests passed.' -ForegroundColor Green
 }
 finally {
+    if ($null -ne $permissionsModule) { Remove-Module $permissionsModule -Force -ErrorAction SilentlyContinue }
     foreach ($markerPath in $markerPaths) {
         if ([IO.File]::Exists($markerPath)) {
             try { [IO.File]::Delete($markerPath) }
