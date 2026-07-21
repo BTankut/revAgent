@@ -102,6 +102,17 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   the legacy 60/300 s thresholds are dropped.
 - **RES-21 (F20) — Canonical idempotency key defined once in O1:** the composite string `rsid + "/" + invocation_id`.
   WP3's journal PK and WP4's audit uniqueness constraint reference that exact definition.
+- **RES-22 (Codex review, PR #266) — Phase-1 IdP coherence: DP-5 decides; recommended default flips to
+  Keycloak-in-Compose.** WP4 chose Keycloak with grounded rationale (MCP OAuth needs dynamic client
+  registration, which Entra ID lacks — this directly gates WP9's third-party clients; the office has no
+  central IdP today; the on-prem/air-gapped variant needs a local IdP anyway), while WP8's DP-5 default said
+  Entra ID and WP5's Compose stack provisioned no Keycloak. Resolution: the Gateway implements generic OIDC
+  only (`OIDC_*` config) so both paths stay open; the DP-5 recommended default becomes Keycloak-in-Compose
+  (WP5 adds the `keycloak` service + heap-tuned config to the Phase-1 Compose stack when DP-5 confirms);
+  Entra ID remains the alternative if the operator confirms an office M365 tenant AND the WP9 client
+  evaluation proves OAuth works against it without DCR. WP8's W1-7 operator task "Entra ID app registration"
+  is amended to "confirm IdP direction (DP-5)". Section 07's parity rows 2/7 were also amended inline per
+  RES-8/RES-20 (same review).
 
 ---
 
@@ -195,7 +206,8 @@ rewrite evaluated; GAP-16 old telemetry alive; GAP-13.4 pilot updater task disab
 ## 7. Operator decision checklist (confirm before build — full one-pagers per DP in section 08(g))
 
 DP-1 bridge tech (.NET 8, default) · DP-2 transport (WSS primary + Streamable-HTTP fallback) · DP-3 tunnel
-(Cloudflare) · DP-4 domain (`gateway.<domain>`) · DP-5 OIDC (Entra ID) · DP-6 LLM provider/models/region ·
+(Cloudflare) · DP-4 domain (`gateway.<domain>`) · DP-5 IdP (recommended: Keycloak-in-Compose per RES-22;
+Entra ID alternative gated on M365 tenant + WP9 OAuth verification) · DP-6 LLM provider/models/region ·
 DP-7 seats (named) · DP-8 host hardware + LTE failover · DP-9 update signing (reuse RS256 chain) ·
 **DP-10 designer client + licensing (WP9 — now a Build-phase gate)** · DP-11 backup target · DP-12 pilot
 machine/user + cutover date · DP-13 monorepo layout (`packages/gateway|bridge|protocol`) · DP-14 Node MSI

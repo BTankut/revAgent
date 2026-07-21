@@ -138,7 +138,7 @@ Numbered checklist; each with recommended default. DP-1/DP-2/DP-13 gate build st
 2. **DP-2 Gateway↔bridge transport instantiation for O1.** *Default: WSS (single persistent socket, JSON messages) with Streamable-HTTP/SSE fallback for proxy-hostile networks (R4).* D3/§5.7 allow either; O1 spec fixes one primary.
 3. **DP-3 Tunnel choice.** *Default: Cloudflare Tunnel (named tunnel, own domain).* Matches §7 "Cloudflare-Tunnel-style"; the dashboard add-on already has a legacy cloudflared root, so the pattern is familiar (addons/dashboard/installer/install-dashboard-tunnel.ps1:9).
 4. **DP-4 Domain name.** *Default: `gateway.<company-domain>` on a domain the firm controls.* Must exist before pilot — bridges connect to a DNS name, never an IP (§5.4, §7).
-5. **DP-5 OIDC provider.** *Default: Microsoft Entra ID (office M365 tenant) via standard OIDC; Keycloak container as the on-prem-variant fallback later.* Gateway speaks generic OIDC either way (§5.1.4).
+5. **DP-5 OIDC provider.** *Default (amended per RES-22): Keycloak container in the Phase-1 Compose stack — MCP OAuth needs dynamic client registration (Entra ID lacks it, which gates the WP9 third-party clients), the office has no central IdP today, and the on-prem variant needs a local IdP anyway. Entra ID remains the alternative if an office M365 tenant is confirmed AND the WP9 client evaluation proves OAuth against it.* Gateway speaks generic OIDC either way (§5.1.4).
 6. **DP-6 LLM provider + models.** *Default: current cloud provider via the D8 OpenAI-compatible adapter; pick the small router model (§5.2 stage 2) and confirm region for §5.8 latency placement.* Keys live only at the gateway (§6).
 7. **DP-7 Seat model.** *Default: named seats, enforced at bridge/session connect time (§5.1.4).* Concurrent seats deferred to SaaS phase.
 8. **DP-8 Gateway host hardware check.** *Default: confirm spare PC ≥ 4 cores/16 GB/500 GB SSD, Ubuntu Server 24.04 LTS, UPS-backed, NOT co-located with the 24/7 dev machine (§7); decide LTE failover now (R1).* 
@@ -170,7 +170,7 @@ Numbered checklist; each with recommended default. DP-1/DP-2/DP-13 gate build st
 
 **W1-6 — Phase-1 Compose skeleton (0.5 d).** `deploy/phase1/docker-compose.yml`: gateway, `postgres:16`, Caddy (auto-TLS), object-storage volume; `.env.example` with every environment-specific value externalized (12-factor per §7); no secrets in repo.
 
-**W1-7 — Operator parallel tasks (0 dev-days; Baris, this week).** Register/confirm domain (DP-4); create tunnel account (DP-3); Entra ID app registration (DP-5); inventory the spare PC against DP-8 and install Ubuntu Server; confirm LLM key/region (DP-6).
+**W1-7 — Operator parallel tasks (0 dev-days; Baris, this week).** Register/confirm domain (DP-4); create tunnel account (DP-3); confirm IdP direction (DP-5, per RES-22 — only if Entra is chosen does an app registration happen this week); inventory the spare PC against DP-8 and install Ubuntu Server; confirm LLM key/region (DP-6).
 
 **W1-8 — P8 artifacts started (0.5 d).** Skeletons for `docs/plan/MASTER_PLAN.md` (milestone tracker), rollback-criterion draft (P8-T5), and comms announcement draft (P8-T6) so the cutover-facing documents accrete from week 1 instead of being written under pressure at M8.
 
