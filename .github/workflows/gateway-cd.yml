@@ -1,0 +1,38 @@
+name: Gateway CD (M0 stub)
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - package.json
+      - package-lock.json
+      - packages/gateway/**
+      - packages/protocol/**
+      - .github/workflows/gateway-cd.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-gateway-image:
+    name: Build Gateway image (stub)
+    # Fail closed at M0. P5-T4/M6 supplies the Dockerfile, Linux runner, and
+    # explicit repository variable before this build lane can execute.
+    if: ${{ vars.REVAGENT_GATEWAY_CD_ENABLED == 'true' }}
+    runs-on: [self-hosted, Linux, revagent-gateway]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Require the Phase-1 Gateway Dockerfile
+        shell: bash
+        run: test -f packages/gateway/Dockerfile
+
+      - name: Build commit-addressed Gateway image
+        shell: bash
+        run: docker build --file packages/gateway/Dockerfile --tag "revagent-gateway:sha-${GITHUB_SHA::12}" .
+
+      # M0 boundary: registry push, deploy, health gate, and rollback land at M6.

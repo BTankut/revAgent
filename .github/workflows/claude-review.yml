@@ -117,11 +117,26 @@ jobs:
             PR NUMBER: ${{ github.event.pull_request.number }}
 
             The PR branch is checked out locally with full git history. Gather context:
-            `gh pr view` (title/body) and `gh pr diff` (the canonical changed lines).
+            `gh pr view` (title/body/labels) and `gh pr diff` (the canonical changed lines).
             Then INVESTIGATE FREELY: use Read / Grep / Glob and read-only git
             (git log / show / blame / diff / grep) to follow any suspicious change into
             the rest of the codebase before drawing a conclusion. Do not limit yourself
             to the diff - verify how changed code is actually used elsewhere.
+
+            MIGRATION FEATURE FREEZE (P8-T8; mandatory blocking rule):
+            - Frozen paths are installer/runtime-mcp-server/src/tools/** and
+              src/revit-plugin/**.
+            - Read the PR labels with `gh pr view`. If the diff touches either frozen
+              path and the exact `migration-freeze-exception` label is absent, post one
+              verified `important:` inline comment on a frozen-path change and return a
+              blocking verdict. This is a documented-rule violation even if the code is
+              otherwise correct.
+            - The exception label is not blanket permission. When it is present, verify
+              that the PR is an explicitly planned migration protocol/transport
+              adaptation or has a dated exception recorded in docs/decisions/DP-log.md;
+              otherwise flag it as blocking.
+            - Do not propose legacy feature work as a fix. The old production path stays
+              behavior-frozen until the migration freeze is formally lifted.
 
             CRITICAL: We only want HIGH SIGNAL issues. Flag an issue ONLY when, after
             checking it against the real code, one of these clearly holds:
