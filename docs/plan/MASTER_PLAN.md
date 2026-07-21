@@ -35,7 +35,7 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 | Phase-1 Compose skeleton | Gateway + Postgres 16 + Caddy + filesystem object store in PR [#273](https://github.com/BTankut/revAgent/pull/273) | `in_progress` | Review; DP-5 separately decides whether Keycloak is added |
 | GAP-13.1 publish freeze | Release-freeze guard is on `main` via PR [#267](https://github.com/BTankut/revAgent/pull/267) | `passed` | Keep locked; emergency exception remains operator-gated |
 | GAP-13.2 updater-abstinence communication | Draft in `docs/plan/COMMS_ANNOUNCEMENT_DRAFT.md` | `in_progress` | Approve, send to every fleet user, record acknowledgements; verify scheduled tasks are no-ops |
-| WP9 designer-client matrix | Separate Week-1 artifact required | `not_started` | WP9 evaluates real clients, including confirm and file workflows |
+| WP9 designer-client matrix | 15 hard gates + 15 conformance cases in draft PR [#275](https://github.com/BTankut/revAgent/pull/275) | `in_progress` | Review; DP-10 remains open until hands-on client/IdP/Revit evidence exists |
 | DP-8 Ubuntu host ready/reachable | Operator-confirmed dedicated host: `bt@192.168.90.154`, ED25519 key-only SSH, password and keyboard-interactive disabled; recorded in PR [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | W1-7 retains operational reachability evidence and remaining host/tunnel actions; do not re-provision |
 
 M0 must not be marked accepted while DP-1/DP-2/DP-13 remain unresolved.
