@@ -4,6 +4,24 @@ on:
   push:
     branches:
       - main
+    # Migration interim regime (docs/implementation-plan/00-INDEX.md section 5):
+    # the fleet runs the frozen NAS stack until the Gateway/Bridge cutover, so the
+    # signed CD build only needs to run when frozen-stack sources change - not on
+    # gateway/bridge/docs commits. The weekly scheduled run below keeps proving the
+    # frozen stack is still rebuildable (iron-rule rebuildability evidence).
+    paths:
+      - 'installer/**'
+      - 'src/**'
+      - 'scripts/**'
+      - 'config/**'
+      - 'addons/**'
+      - 'references/**'
+      - 'AGENTS.md'
+      - 'SKILL.md'
+      - '.github/workflows/signed-source-free-cd.yml'
+  schedule:
+    # Weekly frozen-stack rebuildability check (Mondays 03:00 UTC). Never publishes.
+    - cron: '0 3 * * 1'
   workflow_dispatch:
     inputs:
       runner_labels_json:
@@ -80,6 +98,24 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or
               -not [string]::Equals($checkedOutSha, $env:GITHUB_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Checked out build commit does not equal GITHUB_SHA. expected=$env:GITHUB_SHA actual=$checkedOutSha"
+          }
+
+      - name: Enforce migration release freeze (fail fast before build)
+        if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
+        shell: pwsh
+        env:
+          REVAGENT_MIGRATION_RELEASE_FREEZE: ${{ vars.MIGRATION_RELEASE_FREEZE }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not [string]::Equals($env:REVAGENT_MIGRATION_RELEASE_FREEZE, 'off', [System.StringComparison]::Ordinal)) {
+            Write-Host 'BLOCKED: the migration release freeze is in force (docs/implementation-plan/00-INDEX.md, section 5).'
+            Write-Host 'The fleet stays on the frozen NAS stack until the Gateway/Bridge cutover. Any publish that changes'
+            Write-Host 'the release-bound bootstrap components strands installed machines at exit 84 (K0, PR #260 record).'
+            Write-Host ''
+            Write-Host 'Unlock (emergency security-patch exception path ONLY, GAP-13.3): set the repository variable'
+            Write-Host 'MIGRATION_RELEASE_FREEZE=off, dispatch the publish with operator approval, then delete/reset the'
+            Write-Host 'variable and log the exception in docs/decisions/DP-log.md.'
+            throw 'Migration release freeze is active; production publish refused.'
           }
 
       - name: Validate main commit gates before production publish
@@ -302,6 +338,18 @@ jobs:
     environment: revagent-production-publish
 
     steps:
+      - name: Enforce migration release freeze (authoritative gate before any NAS write)
+        shell: pwsh
+        env:
+          REVAGENT_MIGRATION_RELEASE_FREEZE: ${{ vars.MIGRATION_RELEASE_FREEZE }}
+        run: |
+          $ErrorActionPreference = "Stop"
+          if (-not [string]::Equals($env:REVAGENT_MIGRATION_RELEASE_FREEZE, 'off', [System.StringComparison]::Ordinal)) {
+            Write-Host 'BLOCKED: the migration release freeze is in force (docs/implementation-plan/00-INDEX.md, section 5).'
+            Write-Host 'See the build-job freeze step for the documented unlock/exception procedure (GAP-13.3).'
+            throw 'Migration release freeze is active; production publish refused.'
+          }
+
       - name: Checkout main
         uses: actions/checkout@v6
         with:
