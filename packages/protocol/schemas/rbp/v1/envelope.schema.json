@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.local/rbp/v1/envelope.schema.json",
+  "title": "RbpEnvelope",
+  "description": "M0 scaffold for the RBP/1 envelope. Message-specific payload schemas land during O1 conformance implementation.",
+  "type": "object",
+  "required": [
+    "v",
+    "type",
+    "id",
+    "ts",
+    "payload"
+  ],
+  "properties": {
+    "v": {
+      "const": 1
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "hello",
+        "hello_ack",
+        "session_register",
+        "session_registered",
+        "session_resume",
+        "resume_ack",
+        "session_unregister",
+        "heartbeat",
+        "heartbeat_ack",
+        "invoke",
+        "invoke_batch",
+        "result",
+        "partial",
+        "error",
+        "cancel",
+        "doc_context_update",
+        "manifest_check",
+        "manifest_info",
+        "goodbye"
+      ]
+    },
+    "id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "rsid": {
+      "type": "string",
+      "minLength": 1
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ack": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ts": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "additionalProperties": true
+}
