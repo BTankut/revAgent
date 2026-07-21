@@ -63,6 +63,10 @@ on:
         required: true
         type: boolean
         default: false
+      publish_confirmation:
+        description: 'Typed approval for production publish: enter exactly PUBLISH-TO-FLEET when publish_to_nas or publish_to_pilot is true. Substitute for environment required-reviewer protection, which is unavailable on this repository plan.'
+        required: false
+        default: ''
 
 permissions:
   actions: write
@@ -105,6 +109,7 @@ jobs:
         shell: pwsh
         env:
           REVAGENT_MIGRATION_RELEASE_FREEZE: ${{ vars.MIGRATION_RELEASE_FREEZE }}
+          REVAGENT_PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
         run: |
           $ErrorActionPreference = "Stop"
           if (-not [string]::Equals($env:REVAGENT_MIGRATION_RELEASE_FREEZE, 'off', [System.StringComparison]::Ordinal)) {
@@ -116,6 +121,11 @@ jobs:
             Write-Host 'MIGRATION_RELEASE_FREEZE=off, dispatch the publish with operator approval, then delete/reset the'
             Write-Host 'variable and log the exception in docs/decisions/DP-log.md.'
             throw 'Migration release freeze is active; production publish refused.'
+          }
+          if (-not [string]::Equals($env:REVAGENT_PUBLISH_CONFIRMATION, 'PUBLISH-TO-FLEET', [System.StringComparison]::Ordinal)) {
+            Write-Host 'BLOCKED: production publish requires the typed approval input.'
+            Write-Host 'Re-run the dispatch with publish_confirmation set to exactly: PUBLISH-TO-FLEET'
+            throw 'publish_confirmation missing or wrong; production publish refused.'
           }
 
       - name: Validate main commit gates before production publish
@@ -342,12 +352,17 @@ jobs:
         shell: pwsh
         env:
           REVAGENT_MIGRATION_RELEASE_FREEZE: ${{ vars.MIGRATION_RELEASE_FREEZE }}
+          REVAGENT_PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
         run: |
           $ErrorActionPreference = "Stop"
           if (-not [string]::Equals($env:REVAGENT_MIGRATION_RELEASE_FREEZE, 'off', [System.StringComparison]::Ordinal)) {
             Write-Host 'BLOCKED: the migration release freeze is in force (docs/implementation-plan/00-INDEX.md, section 5).'
             Write-Host 'See the build-job freeze step for the documented unlock/exception procedure (GAP-13.3).'
             throw 'Migration release freeze is active; production publish refused.'
+          }
+          if (-not [string]::Equals($env:REVAGENT_PUBLISH_CONFIRMATION, 'PUBLISH-TO-FLEET', [System.StringComparison]::Ordinal)) {
+            Write-Host 'BLOCKED: production publish requires publish_confirmation to be exactly PUBLISH-TO-FLEET.'
+            throw 'publish_confirmation missing or wrong; production publish refused.'
           }
 
       - name: Checkout main
