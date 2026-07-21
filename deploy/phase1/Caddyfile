@@ -1,0 +1,14 @@
+{
+	email {$ACME_EMAIL}
+	admin off
+}
+
+{$GATEWAY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy gateway:8080
+
+	log {
+		output stdout
+		format json
+	}
+}

@@ -1,0 +1,102 @@
+name: revagent-phase1
+
+services:
+  gateway:
+    image: ${GATEWAY_IMAGE:?set GATEWAY_IMAGE in the deployment environment}
+    restart: unless-stopped
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    environment:
+      - DATABASE_URL
+      - GATEWAY_PUBLIC_URL
+      - LLM_API_KEY
+      - LLM_PROVIDER_BASE_URL
+      - LOG_LEVEL
+      - OBJECT_STORE_DRIVER=fs
+      - OBJECT_STORE_ROOT=/var/lib/revagent/objects
+      - OIDC_CLIENT_ID
+      - OIDC_CLIENT_SECRET
+      - OIDC_ISSUER_URL
+      - PORT=8080
+    volumes:
+      - type: bind
+        source: ${OBJECT_STORE_HOST_PATH:-/opt/revagent/data/objects}
+        target: /var/lib/revagent/objects
+    depends_on:
+      postgres:
+        condition: service_healthy
+    expose:
+      - "8080"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8080/healthz').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+      - data
+
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB
+      - POSTGRES_PASSWORD
+      - POSTGRES_USER
+    volumes:
+      - type: bind
+        source: ${POSTGRES_DATA_HOST_PATH:-/opt/revagent/data/postgres}
+        target: /var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    stop_grace_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL}
+      GATEWAY_DOMAIN: ${GATEWAY_DOMAIN:?set GATEWAY_DOMAIN}
+    ports:
+      - ${CADDY_HTTP_BIND:-0.0.0.0}:${CADDY_HTTP_PORT:-80}:80
+      - ${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443
+      - ${CADDY_HTTPS_BIND:-0.0.0.0}:${CADDY_HTTPS_PORT:-443}:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - type: bind
+        source: ${CADDY_DATA_HOST_PATH:-/opt/revagent/data/caddy/data}
+        target: /data
+      - type: bind
+        source: ${CADDY_CONFIG_HOST_PATH:-/opt/revagent/data/caddy/config}
+        target: /config
+    depends_on:
+      gateway:
+        condition: service_healthy
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - edge
+
+networks:
+  edge:
+  data:
+    internal: true
