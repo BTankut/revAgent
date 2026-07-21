@@ -36,9 +36,9 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 | GAP-13.1 publish freeze | Release-freeze guard is on `main` via PR [#267](https://github.com/BTankut/revAgent/pull/267) | `passed` | Keep locked; emergency exception remains operator-gated |
 | GAP-13.2 updater-abstinence communication | Draft in `docs/plan/COMMS_ANNOUNCEMENT_DRAFT.md` | `in_progress` | Approve, send to every fleet user, record acknowledgements; verify scheduled tasks are no-ops |
 | WP9 designer-client matrix | Separate Week-1 artifact required | `not_started` | WP9 evaluates real clients, including confirm and file workflows |
-| Ubuntu host reachable | No current reachability evidence recorded | `blocked_operator` | W1-7: provision approved DP-8 host and record SSH/reachability evidence |
+| DP-8 Ubuntu host ready/reachable | Operator-confirmed dedicated host: `bt@192.168.90.154`, ED25519 key-only SSH, password and keyboard-interactive disabled; recorded in PR [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | W1-7 retains operational reachability evidence and remaining host/tunnel actions; do not re-provision |
 
-M0 must not be marked accepted while DP-1/DP-2/DP-13 or Ubuntu reachability remains unresolved.
+M0 must not be marked accepted while DP-1/DP-2/DP-13 remain unresolved.
 
 ## Milestones
 
