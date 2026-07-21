@@ -4,11 +4,12 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { gatewayScaffold } from "./index.js";
 
 describe("gateway scaffold", () => {
-  it("keeps transport implementation outside W1-2", () => {
+  it("keeps the W1-5 transport spike separate from production transport", () => {
     expect(gatewayScaffold).toMatchObject({
       milestone: "M0",
       protocol: "RBP/1",
       transportImplemented: false,
+      transportSpikeAvailable: true,
     });
   });
 
