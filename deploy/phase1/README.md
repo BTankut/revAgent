@@ -1,6 +1,6 @@
 # revAgent Phase-1 Compose Skeleton
 
-This M0 skeleton fixes the intended service and configuration boundaries without claiming a deployable Gateway image exists yet. It defines the Gateway, PostgreSQL 16, and Caddy with automatic TLS. Large result objects use the Phase-1 filesystem driver on a dedicated host bind mount; MinIO is intentionally absent.
+This M0 skeleton fixes the intended service and configuration boundaries without claiming a deployable Gateway image exists yet. It defines the Gateway, PostgreSQL 16, and a loopback-only Caddy origin. Cloudflare terminates public TLS; Caddy accepts plain HTTP only through the host connector at `127.0.0.1:8081`. Large result objects use the Phase-1 filesystem driver on a dedicated host bind mount; MinIO is intentionally absent.
 
 ## Validate
 
@@ -15,7 +15,7 @@ docker compose \
   config --quiet
 ```
 
-Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR digest, connect the confirmed `gateway.revagent.app` DNS name and `revagent-gateway-prod` Cloudflare tunnel to the approved origin, and supply real Postgres and OIDC credentials from the root-owned host environment. The tunnel connector/origin is still an open operational input. Only Caddy publishes host ports; PostgreSQL remains on an internal Compose network.
+Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR digest and supply real Postgres and OIDC credentials from the root-owned host environment. The confirmed `revagent-gateway-prod` tunnel (`bb68cbcb-eedf-474e-aaee-145d160ed004`) routes `gateway.revagent.app` to `http://127.0.0.1:8081`. Only Caddy publishes that loopback host port; PostgreSQL remains on an internal Compose network. Do not change `CADDY_ORIGIN_BIND` to a LAN/WAN address: doing so bypasses the Cloudflare ingress and access-policy boundary.
 
 The external `DATABASE_URL` must use the Compose service name `postgres` and credentials matching `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Compose receives sensitive values by environment name; the YAML contains neither secret values nor secret-scanner suppressions.
 
