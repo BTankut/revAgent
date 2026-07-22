@@ -1,0 +1,516 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.local/addin-loopback/v1/mcp-status.schema.json",
+  "title": "RevAgent add-in loopback v1 mcp_status method",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/successResponse"
+    },
+    {
+      "$ref": "https://schemas.revagent.local/addin-loopback/v1/json-rpc-response.schema.json#/$defs/errorResponse"
+    }
+  ],
+  "$defs": {
+    "request": {
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/requestId"
+        },
+        "method": {
+          "const": "mcp_status"
+        },
+        "params": {
+          "type": "object",
+          "maxProperties": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "batchableCommand": {
+      "type": "object",
+      "required": [
+        "method",
+        "effect",
+        "transactionPolicy",
+        "rollbackDisposition",
+        "parameterProfile"
+      ],
+      "properties": {
+        "method": {
+          "enum": [
+            "get_current_view_elements",
+            "get_current_view_info",
+            "get_selected_elements",
+            "list_open_views",
+            "get_ui_state",
+            "find_elements",
+            "inspect_levels",
+            "inspect_sheet_text",
+            "inspect_schedules",
+            "count_annotations",
+            "extract_spatial_snapshot",
+            "get_spatial_change_state",
+            "delete_review_view"
+          ]
+        },
+        "effect": {
+          "enum": [
+            "read_only",
+            "model_transaction"
+          ]
+        },
+        "transactionPolicy": {
+          "enum": [
+            "none",
+            "nested_transaction_required"
+          ]
+        },
+        "rollbackDisposition": {
+          "enum": [
+            "discard_result_on_batch_rollback",
+            "transaction_group_rollback"
+          ]
+        },
+        "parameterProfile": {
+          "enum": [
+            "ordinary_v1",
+            "delete_review_view_commit_v1"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "delete_review_view"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effect": {
+                "const": "model_transaction"
+              },
+              "transactionPolicy": {
+                "const": "nested_transaction_required"
+              },
+              "rollbackDisposition": {
+                "const": "transaction_group_rollback"
+              },
+              "parameterProfile": {
+                "const": "delete_review_view_commit_v1"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "effect": {
+                "const": "read_only"
+              },
+              "transactionPolicy": {
+                "const": "none"
+              },
+              "rollbackDisposition": {
+                "const": "discard_result_on_batch_rollback"
+              },
+              "parameterProfile": {
+                "const": "ordinary_v1"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "batchAtomicCapability": {
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "method",
+        "maxSteps",
+        "maxRequestPayloadBytes",
+        "maxResponsePayloadBytes",
+        "transactionBoundary",
+        "rollbackPolicy",
+        "batchableCommands"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "method": {
+          "const": "execute_batch"
+        },
+        "maxSteps": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "maxRequestPayloadBytes": {
+          "type": "integer",
+          "minimum": 1048576,
+          "maximum": 134217728
+        },
+        "maxResponsePayloadBytes": {
+          "const": 33554432
+        },
+        "transactionBoundary": {
+          "const": "revit_transaction_group"
+        },
+        "rollbackPolicy": {
+          "const": "rollback_on_non_success"
+        },
+        "batchableCommands": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 13,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/batchableCommand"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "documentContextCapability": {
+      "type": "object",
+      "required": [
+        "contractVersion",
+        "method",
+        "source",
+        "pollIntervalMs",
+        "uiThreadRoundTrip"
+      ],
+      "properties": {
+        "contractVersion": {
+          "const": 1
+        },
+        "method": {
+          "const": "get_document_context"
+        },
+        "source": {
+          "const": "application_events_cache"
+        },
+        "pollIntervalMs": {
+          "const": 15000
+        },
+        "uiThreadRoundTrip": {
+          "const": false
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "resultContractVersion",
+        "addinLoopbackContractVersion",
+        "addinVersion",
+        "revit",
+        "service",
+        "sessionCapabilities",
+        "capabilityContracts",
+        "activeTask",
+        "recentTasks",
+        "recentHistoryCount",
+        "recentHistoryCapacity",
+        "plan"
+      ],
+      "properties": {
+        "resultContractVersion": {
+          "const": 2
+        },
+        "addinLoopbackContractVersion": {
+          "const": 1
+        },
+        "addinVersion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "revit": {
+          "type": "object",
+          "required": [
+            "version",
+            "build",
+            "processId"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "pattern": "^[0-9]{4}$"
+            },
+            "build": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "processId": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "additionalProperties": false
+        },
+        "service": {
+          "type": "object",
+          "required": [
+            "isRunning",
+            "port",
+            "binding",
+            "boundAddresses",
+            "framing"
+          ],
+          "properties": {
+            "isRunning": {
+              "const": true
+            },
+            "port": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 65535
+            },
+            "binding": {
+              "const": "loopback_only"
+            },
+            "boundAddresses": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 2,
+              "uniqueItems": true,
+              "items": {
+                "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/loopbackAddress"
+              }
+            },
+            "framing": {
+              "type": "object",
+              "required": [
+                "protocol",
+                "headerBytes",
+                "byteOrder",
+                "payloadEncoding",
+                "maxRequestPayloadBytes",
+                "maxResponsePayloadBytes"
+              ],
+              "properties": {
+                "protocol": {
+                  "const": "length_prefixed_jsonrpc_v1"
+                },
+                "headerBytes": {
+                  "const": 4
+                },
+                "byteOrder": {
+                  "const": "big_endian"
+                },
+                "payloadEncoding": {
+                  "const": "utf-8"
+                },
+                "maxRequestPayloadBytes": {
+                  "type": "integer",
+                  "minimum": 1048576,
+                  "maximum": 134217728
+                },
+                "maxResponsePayloadBytes": {
+                  "const": 33554432
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "additionalProperties": false
+        },
+        "sessionCapabilities": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "batch_atomic",
+              "doc_context_cached_v1"
+            ]
+          }
+        },
+        "capabilityContracts": {
+          "type": "object",
+          "properties": {
+            "batch_atomic": {
+              "$ref": "#/$defs/batchAtomicCapability"
+            },
+            "doc_context_cached_v1": {
+              "$ref": "#/$defs/documentContextCapability"
+            }
+          },
+          "additionalProperties": false
+        },
+        "activeTask": {
+          "oneOf": [
+            {
+              "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/taskInfo"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "recentTasks": {
+          "type": "array",
+          "maxItems": 100,
+          "items": {
+            "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/taskInfo"
+          }
+        },
+        "recentHistoryCount": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "recentHistoryCapacity": {
+          "const": 100
+        },
+        "plan": {
+          "type": "object",
+          "required": [
+            "pending",
+            "completed"
+          ],
+          "properties": {
+            "pending": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            },
+            "completed": {
+              "type": "array",
+              "maxItems": 100,
+              "items": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              }
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sessionCapabilities": {
+                "type": "array",
+                "contains": {
+                  "const": "batch_atomic"
+                }
+              }
+            },
+            "required": [
+              "sessionCapabilities"
+            ]
+          },
+          "then": {
+            "properties": {
+              "capabilityContracts": {
+                "type": "object",
+                "properties": {
+                  "batch_atomic": {
+                    "$ref": "#/$defs/batchAtomicCapability"
+                  }
+                },
+                "required": [
+                  "batch_atomic"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "capabilityContracts": {
+                "type": "object",
+                "properties": {
+                  "batch_atomic": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "sessionCapabilities": {
+                "type": "array",
+                "contains": {
+                  "const": "doc_context_cached_v1"
+                }
+              }
+            },
+            "required": [
+              "sessionCapabilities"
+            ]
+          },
+          "then": {
+            "properties": {
+              "capabilityContracts": {
+                "type": "object",
+                "properties": {
+                  "doc_context_cached_v1": {
+                    "$ref": "#/$defs/documentContextCapability"
+                  }
+                },
+                "required": [
+                  "doc_context_cached_v1"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "capabilityContracts": {
+                "type": "object",
+                "properties": {
+                  "doc_context_cached_v1": false
+                }
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "successResponse": {
+      "allOf": [
+        {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/json-rpc-response.schema.json#/$defs/successResponse"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/result"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

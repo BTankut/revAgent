@@ -24,7 +24,7 @@
     "clean": "node scripts/clean.mjs",
     "conformance": "node scripts/run-conformance.mjs",
     "generate": "node scripts/generate-types.mjs",
-    "lint": "eslint src",
+    "lint": "eslint src tests",
     "prepack": "npm run build",
     "typecheck": "npm run generate && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
     "test": "npm run generate && vitest run && npm run build && npm run conformance"

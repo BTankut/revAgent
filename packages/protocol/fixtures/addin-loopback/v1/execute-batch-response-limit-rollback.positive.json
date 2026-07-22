@@ -1,0 +1,84 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000060",
+    "method": "execute_batch",
+    "params": {
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000060",
+      "batchDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "atomic": true,
+      "rollbackPolicy": "rollback_on_non_success",
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000061",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_response_limit",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:9999999999999999999999999999999999999999999999999999999999999999",
+          "effect": "model_transaction"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000062",
+          "method": "find_elements",
+          "params": {
+            "query": "all"
+          },
+          "paramsDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "effect": "read_only"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000060",
+    "result": {
+      "resultContractVersion": 2,
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000060",
+      "batchDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+      "atomic": true,
+      "status": "failed",
+      "transactionState": "rolled_back",
+      "failedStepIndex": 1,
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000061",
+          "method": "delete_review_view",
+          "executionState": "completed",
+          "effectState": "rolled_back",
+          "resultSuppressed": "batch_rolled_back"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000062",
+          "method": "find_elements",
+          "executionState": "failed",
+          "effectState": "discarded",
+          "error": {
+            "code": "response_payload_limit",
+            "message": "Tentative aggregate response exceeds the advertised payload cap.",
+            "maxResponsePayloadBytes": 33554432,
+            "tentativeResponsePayloadBytes": 33554433
+          },
+          "resultSuppressed": "batch_rolled_back"
+        }
+      ],
+      "rollback": {
+        "attempted": true,
+        "succeeded": true,
+        "triggerStepIndex": 1,
+        "triggerState": "failed"
+      }
+    }
+  }
+}

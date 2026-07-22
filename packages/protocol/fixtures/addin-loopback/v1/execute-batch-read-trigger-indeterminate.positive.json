@@ -1,0 +1,64 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000050",
+    "method": "execute_batch",
+    "params": {
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000050",
+      "batchDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "atomic": true,
+      "rollbackPolicy": "rollback_on_non_success",
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000051",
+          "method": "find_elements",
+          "params": {
+            "query": "pump"
+          },
+          "paramsDigest": "sha256:8888888888888888888888888888888888888888888888888888888888888888",
+          "effect": "read_only"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000050",
+    "result": {
+      "resultContractVersion": 2,
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000050",
+      "batchDigest": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
+      "atomic": true,
+      "status": "indeterminate",
+      "transactionState": "indeterminate",
+      "failedStepIndex": 0,
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000051",
+          "method": "find_elements",
+          "executionState": "indeterminate",
+          "effectState": "discarded",
+          "error": {
+            "code": "invalid_result",
+            "message": "Read result was not safely classified"
+          },
+          "resultSuppressed": "batch_indeterminate"
+        }
+      ],
+      "rollback": {
+        "attempted": true,
+        "succeeded": false,
+        "triggerStepIndex": 0,
+        "triggerState": "indeterminate",
+        "error": {
+          "code": "rollback_failure",
+          "message": "TransactionGroup rollback failed"
+        }
+      }
+    }
+  }
+}

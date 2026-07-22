@@ -1,0 +1,38 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "context-probe-1",
+    "method": "get_document_context",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "context-probe-1",
+    "result": {
+      "resultContractVersion": 2,
+      "documentContextContractVersion": 1,
+      "capturedAtUtc": "2026-07-22T12:00:00.000Z",
+      "revision": 7,
+      "cacheState": "ready",
+      "unavailableReason": null,
+      "documents": [
+        {
+          "documentId": "doc-session-1",
+          "title": "Project A",
+          "pathDigest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "isWorkshared": true,
+          "isActive": true
+        }
+      ],
+      "activeDocumentId": "doc-session-1",
+      "activeView": {
+        "documentId": "doc-session-1",
+        "id": "123",
+        "name": "Level 2 HVAC",
+        "type": "FloorPlan",
+        "level": "Level 2"
+      },
+      "disciplineHint": "mech"
+    }
+  }
+}

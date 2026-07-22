@@ -1,0 +1,83 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000020",
+    "method": "execute_batch",
+    "params": {
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000020",
+      "batchDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "atomic": true,
+      "rollbackPolicy": "rollback_on_non_success",
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000021",
+          "method": "find_elements",
+          "params": {
+            "query": "fan coil"
+          },
+          "paramsDigest": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "effect": "read_only"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000022",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_commit",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "effect": "model_transaction"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000020",
+    "result": {
+      "resultContractVersion": 2,
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000020",
+      "batchDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "atomic": true,
+      "status": "completed",
+      "transactionState": "committed",
+      "failedStepIndex": null,
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000021",
+          "method": "find_elements",
+          "executionState": "completed",
+          "effectState": "read_only",
+          "result": {
+            "success": true,
+            "count": 1
+          }
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000022",
+          "method": "delete_review_view",
+          "executionState": "completed",
+          "effectState": "committed",
+          "result": {
+            "success": true
+          }
+        }
+      ],
+      "rollback": {
+        "attempted": false,
+        "succeeded": null,
+        "triggerStepIndex": null,
+        "triggerState": null
+      }
+    }
+  }
+}

@@ -37,3 +37,11 @@ The authoritative protocol document remains
 schema and pure-contract portion; it does not by itself prove the full v1.0
 freeze. Transport interoperability, journal crash recovery, Gateway/Bridge
 simulators, and real add-in evidence remain separate conformance gates.
+
+The add-in-facing contract is versioned independently under
+`schemas/addin-loopback/v1`. It fixes the loopback JSON-RPC response,
+`mcp_status`, cached `get_document_context`, and atomic `execute_batch` shapes.
+Golden positive/negative vectors live under `fixtures/addin-loopback/v1` and
+are exercised by Vitest. These artifacts are schema/semantic prerequisites
+only; they do not claim a running listener, Revit transaction, or M1
+executable conformance result.
