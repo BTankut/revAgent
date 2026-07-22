@@ -30,6 +30,6 @@ export interface ConformanceCaseExecutor {
   executeCase(caseId: string): Promise<unknown>;
 }
 
-// These are contracts only. O1-T3/T4/T5 implementations register adapters in a
-// later change; this package intentionally starts no process and executes no case.
+// O1-T3/T4/T5 process adapters register here. The executable suite runner still
+// fails closed when any component or case adapter is absent.
 export type HarnessAdapterRegistry = Readonly<Partial<Record<ComponentId, HarnessComponentAdapter>>>;

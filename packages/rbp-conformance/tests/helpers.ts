@@ -18,6 +18,7 @@ import type {
   ExecutionPlan,
   RunReport,
 } from "../src/index.js";
+import { evaluateResourceSamples } from "../src/resourceMetrics.js";
 
 const COMMIT_SHA = "1".repeat(40);
 const TREE_SHA = "2".repeat(40);
@@ -134,11 +135,12 @@ export function createPassingReport(sequence: 1 | 2 | 3 = 1): RunReport {
       finishedAt: new Date(start.getTime() + 110 + caseIndex * 10).toISOString(),
       durationMs: 10,
       bindings: entry.bindings.map((binding) => ({ ...binding, status: "passed" as const, durationMs: 5 })),
-      assertions: entry.assertions.map((assertion) => ({
+      assertions: entry.assertions.map((assertion, assertionIndex) => ({
         ...assertion,
         passed: true,
         expected: true,
         actual: true,
+        observationIds: [`${entry.caseId}-observation-${assertionIndex + 1}`],
         evidenceSha256: evidence[0]!.sha256,
         message: null,
       })),
@@ -147,6 +149,20 @@ export function createPassingReport(sequence: 1 | 2 | 3 = 1): RunReport {
     };
   });
   report.timing = { suiteDurationMs: 1000, setupDurationMs: 50, teardownDurationMs: 50 };
+  report.resources.samples = Array.from({ length: 8 }, (_, index) => ({
+    index,
+    offsetMs: index * 250,
+    residentBytes: 100_000_000 + index * 1024,
+    openFileDescriptorCount: 12,
+    journalPendingCount: 0,
+  }));
+  report.resources.evaluation = evaluateResourceSamples(report.resources, 0);
+  report.leaks = {
+    openFileDescriptorDelta: report.resources.evaluation.openFileDescriptorGrowth,
+    residentBytesDelta: report.resources.evaluation.residentGrowthBytes,
+    journalPendingDelta: report.resources.evaluation.journalPendingGrowth,
+    orphanProcessCount: report.resources.evaluation.orphanProcessCount,
+  };
   report.artifacts = [
     ...report.components.map((component, index) =>
       artifact(
@@ -211,6 +227,17 @@ export function materializeRunEvidence(report: RunReport, root: string): RunRepo
       runId: report.run.runId,
       caseId: result.caseId,
       source: "journal_snapshot",
+      observations: result.assertions.map((assertion, assertionIndex) => ({
+        schemaVersion: "rbp-process-observation/v1",
+        observationId: assertion.observationIds[0],
+        runId: report.run.runId,
+        caseId: result.caseId,
+        binding: "wss",
+        componentId: "bridge_simulator",
+        kind: "bridge_snapshot",
+        at: result.finishedAt,
+        payload: { assertionIndex },
+      })),
       assertions: result.assertions.map(({ assertionId, subvectorId, statement, category, passed, expected, actual }) => ({
         assertionId,
         subvectorId,
@@ -219,6 +246,7 @@ export function materializeRunEvidence(report: RunReport, root: string): RunRepo
         passed,
         expected,
         actual,
+        observationIds: result.assertions.find((entry) => entry.assertionId === assertionId)!.observationIds,
       })),
     });
     writeEvidence(root, journal, journalContent);
@@ -246,7 +274,7 @@ export function materializeRunEvidence(report: RunReport, root: string): RunRepo
   writeEvidence(
     root,
     leaks,
-    stableJson({ schemaVersion: "rbp-conformance-leaks/v1", runId: report.run.runId, timing: report.timing, leaks: report.leaks }),
+    stableJson({ schemaVersion: "rbp-conformance-leaks/v1", runId: report.run.runId, timing: report.timing, leaks: report.leaks, resources: report.resources }),
   );
   const junit = report.artifacts.find(({ kind }) => kind === "junit")!;
   writeEvidence(root, junit, runReportToJUnitXml(report));

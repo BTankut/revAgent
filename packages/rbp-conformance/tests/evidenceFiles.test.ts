@@ -114,6 +114,7 @@ describe("retained run evidence content", () => {
           runId: report.run.runId,
           timing: report.timing,
           leaks: { ...report.leaks, residentBytesDelta: 1 },
+          resources: report.resources,
         }),
       );
       const validation = evaluatePassingRun(report, { verifyArtifactFiles: true, artifactRoot: root });

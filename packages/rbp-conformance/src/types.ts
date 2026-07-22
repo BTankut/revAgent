@@ -105,7 +105,9 @@ export type ArtifactKind =
   | "leak_metrics"
   | "aggregate_report"
   | "aggregate_junit"
-  | "case_evidence";
+  | "case_evidence"
+  | "soak_report"
+  | "soak_metrics";
 
 export interface ArtifactEvidence {
   kind: ArtifactKind;
@@ -123,6 +125,7 @@ export interface AssertionResult {
   passed: boolean | null;
   expected: unknown;
   actual: unknown;
+  observationIds: string[];
   evidenceSha256: string | null;
   message: string | null;
 }
@@ -159,6 +162,47 @@ export interface LeakCounters {
   orphanProcessCount: number;
 }
 
+export type ResourceSamplingMode = "bounded_slope" | "post_gc";
+
+export interface ResourceSample {
+  index: number;
+  offsetMs: number;
+  residentBytes: number;
+  openFileDescriptorCount: number;
+  journalPendingCount: number;
+}
+
+export interface ResourcePolicy {
+  warmupSamples: 2;
+  minimumMeasuredSamples: 6;
+  maxResidentGrowthBytes: 67108864;
+  maxResidentSlopeBytesPerSecond: 2097152;
+  maxOpenFileDescriptorGrowth: 0;
+  maxJournalPendingGrowth: 0;
+  maxOrphanProcessCount: 0;
+}
+
+export interface ResourceEvaluation {
+  sampleCount: number;
+  measuredSampleCount: number;
+  residentGrowthBytes: number;
+  residentSlopeBytesPerSecond: number;
+  openFileDescriptorGrowth: number;
+  journalPendingGrowth: number;
+  orphanProcessCount: number;
+  passed: boolean;
+}
+
+export interface ResourceProfile {
+  schemaVersion: "rbp-resource-profile/v1";
+  samplingMode: ResourceSamplingMode;
+  sampleIntervalMs: number;
+  policy: ResourcePolicy;
+  gcConfirmedComponents: ComponentId[];
+  samples: ResourceSample[];
+  evaluation: ResourceEvaluation | null;
+}
+
 export interface RunReport {
   schemaVersion: "rbp-conformance-run/v1";
   manifest: ManifestIdentity;
@@ -181,6 +225,7 @@ export interface RunReport {
     teardownDurationMs: number | null;
   };
   leaks: LeakCounters;
+  resources: ResourceProfile;
   artifacts: ArtifactEvidence[];
 }
 
@@ -233,6 +278,26 @@ export interface EvidenceAssertionRecord {
   passed: boolean;
   expected: unknown;
   actual: unknown;
+  observationIds: string[];
+}
+
+export interface ProcessObservationRecord {
+  schemaVersion: "rbp-process-observation/v1";
+  observationId: string;
+  runId: string;
+  caseId: string;
+  binding: Binding;
+  componentId: ComponentId;
+  kind:
+    | "control_result"
+    | "wire_event"
+    | "gateway_snapshot"
+    | "bridge_snapshot"
+    | "fixture_snapshot"
+    | "fixture_execution_count"
+    | "resource_sample";
+  at: string;
+  payload: unknown;
 }
 
 export interface CaseEvidenceDocument {
@@ -240,6 +305,7 @@ export interface CaseEvidenceDocument {
   runId: string;
   caseId: string;
   source: "journal_snapshot" | "case_evidence";
+  observations: ProcessObservationRecord[];
   assertions: EvidenceAssertionRecord[];
 }
 
@@ -268,6 +334,60 @@ export interface LeakMetricsDocument {
   runId: string;
   timing: RunReport["timing"];
   leaks: LeakCounters;
+  resources: ResourceProfile;
+}
+
+export type SoakMode = "smoke" | "one_hour";
+export type SoakStatus = "passed" | "failed" | "error";
+
+export interface SoakCycleRecord {
+  cycle: number;
+  binding: Binding;
+  startedAt: string;
+  finishedAt: string;
+  reconnects: number;
+  proxyChurns: number;
+  heartbeatAcks: number;
+  controlRoundTrips: number;
+  journalPending: number;
+  passed: boolean;
+}
+
+export interface SoakMetricRecord {
+  schemaVersion: "rbp-reconnect-soak-metric/v1";
+  runId: string;
+  mode: SoakMode;
+  cycle: number;
+  binding: Binding;
+  at: string;
+  reconnects: number;
+  proxyChurns: number;
+  heartbeatAcks: number;
+  controlRoundTrips: number;
+  journalPending: number;
+  resourceSample: ResourceSample;
+}
+
+export interface SoakReport {
+  schemaVersion: "rbp-reconnect-soak/v1";
+  manifest: ManifestIdentity;
+  mode: SoakMode;
+  runId: string;
+  status: SoakStatus;
+  source: SourceIdentity;
+  components: Array<{
+    id: ComponentId;
+    interfaceVersion: string;
+    identity: ComponentIdentity;
+  }>;
+  startedAt: string;
+  finishedAt: string;
+  requestedDurationMs: number;
+  actualDurationMs: number;
+  cycles: SoakCycleRecord[];
+  resources: ResourceProfile;
+  artifacts: ArtifactEvidence[];
+  failure: FailureEvidence | null;
 }
 
 export interface AggregateCaseResult {
@@ -338,6 +458,8 @@ export interface ConformanceManifest {
     leakMetrics: string;
     aggregateReport: string;
     aggregateJunit: string;
+    soakReport: string;
+    soakMetrics: string;
     hashAlgorithm: "sha256";
   };
   cases: ManifestCase[];
@@ -362,6 +484,7 @@ export interface PassingValidationOptions {
   artifactRoot?: string;
   verifyArtifactFiles?: boolean;
   aggregateReportFile?: string;
+  soakReportFile?: string;
 }
 
 export interface AggregateInput {

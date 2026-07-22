@@ -1,4 +1,5 @@
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
+import { emptyResourceProfile } from "./resourceMetrics.js";
 import { validateExecutionPlanStructure } from "./validator.js";
 import type { ExecutionPlan, RunReport } from "./types.js";
 
@@ -58,6 +59,7 @@ export function createUnexecutedRunReport(plan: ExecutionPlan): RunReport {
         passed: null,
         expected: assertion.expected,
         actual: null,
+        observationIds: [],
         evidenceSha256: null,
         message: "unexecuted",
       })),
@@ -75,6 +77,7 @@ export function createUnexecutedRunReport(plan: ExecutionPlan): RunReport {
       journalPendingDelta: 0,
       orphanProcessCount: 0,
     },
+    resources: emptyResourceProfile(),
     artifacts: [],
   };
 }

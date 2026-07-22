@@ -34,7 +34,12 @@ describe("fail-closed run validation", () => {
     ["omitted C40 sub-vector", (report: ReturnType<typeof createPassingReport>) => { report.cases[39]!.assertions.pop(); }, "case.assertion_contract"],
     ["missing assertion evidence", (report: ReturnType<typeof createPassingReport>) => { report.cases[0]!.assertions[0]!.evidenceSha256 = null; }, "assertion.missing_evidence"],
     ["missing required wire trace", (report: ReturnType<typeof createPassingReport>) => { report.cases[0]!.artifacts.shift(); }, "artifact.required"],
-    ["fd leak", (report: ReturnType<typeof createPassingReport>) => { report.leaks.openFileDescriptorDelta = 1; }, "run.resource_leak"],
+    ["fd leak", (report: ReturnType<typeof createPassingReport>) => {
+      report.resources.samples.at(-1)!.openFileDescriptorCount += 1;
+      report.resources.evaluation!.openFileDescriptorGrowth = 1;
+      report.resources.evaluation!.passed = false;
+      report.leaks.openFileDescriptorDelta = 1;
+    }, "run.resource_leak"],
     ["false run exit", (report: ReturnType<typeof createPassingReport>) => { report.run.exitCode = 1; }, "run.incomplete"],
   ])("rejects %s", (_name, mutate, expectedCode) => {
     const report = createPassingReport();

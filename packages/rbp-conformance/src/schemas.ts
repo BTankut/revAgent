@@ -7,9 +7,10 @@ import executionPlanSchema from "../schemas/v1/execution-plan.schema.json" with 
 import junitSchema from "../schemas/v1/junit-mapping.schema.json" with { type: "json" };
 import manifestSchema from "../schemas/v1/manifest.schema.json" with { type: "json" };
 import runSchema from "../schemas/v1/run-report.schema.json" with { type: "json" };
+import soakSchema from "../schemas/v1/soak-report.schema.json" with { type: "json" };
 import type { ValidationIssue } from "./types.js";
 
-export type SchemaName = "manifest" | "executionPlan" | "run" | "junit" | "aggregate";
+export type SchemaName = "manifest" | "executionPlan" | "run" | "junit" | "aggregate" | "soak";
 
 const ajv = new Ajv({ allErrors: true, allowUnionTypes: true, strict: true });
 (addFormats as unknown as (instance: Ajv) => void)(ajv);
@@ -22,6 +23,7 @@ const validators: Record<SchemaName, ValidateFunction> = {
   run: ajv.compile(runSchema),
   junit: ajv.compile(junitSchema),
   aggregate: ajv.compile(aggregateSchema),
+  soak: ajv.compile(soakSchema),
 };
 
 function toIssues(errors: ErrorObject[] | null | undefined): ValidationIssue[] {

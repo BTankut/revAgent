@@ -35,6 +35,8 @@
     "leakMetrics": "runs/{run_id}/metrics/leaks.json",
     "aggregateReport": "aggregate/three-run-report.json",
     "aggregateJunit": "aggregate/junit.xml",
+    "soakReport": "soak/{mode}/{run_id}/soak-report.json",
+    "soakMetrics": "soak/{mode}/{run_id}/metrics.jsonl",
     "hashAlgorithm": "sha256"
   },
   "cases": [

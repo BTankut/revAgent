@@ -39,7 +39,7 @@
     "retainedEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["root", "runReport", "junit", "componentLog", "wireTrace", "journalSnapshot", "caseEvidence", "leakMetrics", "aggregateReport", "aggregateJunit", "hashAlgorithm"],
+      "required": ["root", "runReport", "junit", "componentLog", "wireTrace", "journalSnapshot", "caseEvidence", "leakMetrics", "aggregateReport", "aggregateJunit", "soakReport", "soakMetrics", "hashAlgorithm"],
       "properties": {
         "root": { "type": "string", "const": "artifacts/conformance/rbp-v1/1.0-rc.1" },
         "runReport": { "type": "string", "minLength": 1 },
@@ -51,6 +51,8 @@
         "leakMetrics": { "type": "string", "minLength": 1 },
         "aggregateReport": { "type": "string", "minLength": 1 },
         "aggregateJunit": { "type": "string", "minLength": 1 },
+        "soakReport": { "type": "string", "minLength": 1 },
+        "soakMetrics": { "type": "string", "minLength": 1 },
         "hashAlgorithm": { "type": "string", "const": "sha256" }
       }
     },

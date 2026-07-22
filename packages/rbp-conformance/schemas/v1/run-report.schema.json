@@ -4,7 +4,7 @@
   "title": "RBP conformance run report",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "manifest", "run", "source", "components", "cases", "timing", "leaks", "artifacts"],
+  "required": ["schemaVersion", "manifest", "run", "source", "components", "cases", "timing", "leaks", "resources", "artifacts"],
   "properties": {
     "schemaVersion": { "type": "string", "const": "rbp-conformance-run/v1" },
     "manifest": { "$ref": "common.schema.json#/definitions/manifestIdentity" },
@@ -37,6 +37,7 @@
       }
     },
     "leaks": { "$ref": "common.schema.json#/definitions/leakCounters" },
+    "resources": { "$ref": "common.schema.json#/definitions/resourceProfile" },
     "artifacts": { "type": "array", "items": { "$ref": "common.schema.json#/definitions/artifact" } }
   }
 }

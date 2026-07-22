@@ -113,7 +113,7 @@
       "additionalProperties": false,
       "required": ["kind", "path", "sha256", "bytes", "mediaType"],
       "properties": {
-        "kind": { "enum": ["run_report", "junit", "component_log", "wire_trace", "journal_snapshot", "leak_metrics", "aggregate_report", "aggregate_junit", "case_evidence"] },
+        "kind": { "enum": ["run_report", "junit", "component_log", "wire_trace", "journal_snapshot", "leak_metrics", "aggregate_report", "aggregate_junit", "case_evidence", "soak_report", "soak_metrics"] },
         "path": { "$ref": "#/definitions/relativePath" },
         "sha256": { "$ref": "#/definitions/sha256" },
         "bytes": { "type": "integer", "minimum": 0 },
@@ -131,10 +131,69 @@
         "orphanProcessCount": { "type": "integer", "minimum": 0 }
       }
     },
+    "resourcePolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["warmupSamples", "minimumMeasuredSamples", "maxResidentGrowthBytes", "maxResidentSlopeBytesPerSecond", "maxOpenFileDescriptorGrowth", "maxJournalPendingGrowth", "maxOrphanProcessCount"],
+      "properties": {
+        "warmupSamples": { "type": "integer", "const": 2 },
+        "minimumMeasuredSamples": { "type": "integer", "const": 6 },
+        "maxResidentGrowthBytes": { "type": "integer", "const": 67108864 },
+        "maxResidentSlopeBytesPerSecond": { "type": "integer", "const": 2097152 },
+        "maxOpenFileDescriptorGrowth": { "type": "integer", "const": 0 },
+        "maxJournalPendingGrowth": { "type": "integer", "const": 0 },
+        "maxOrphanProcessCount": { "type": "integer", "const": 0 }
+      }
+    },
+    "resourceSample": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["index", "offsetMs", "residentBytes", "openFileDescriptorCount", "journalPendingCount"],
+      "properties": {
+        "index": { "type": "integer", "minimum": 0 },
+        "offsetMs": { "type": "integer", "minimum": 0 },
+        "residentBytes": { "type": "integer", "minimum": 0 },
+        "openFileDescriptorCount": { "type": "integer", "minimum": 0 },
+        "journalPendingCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "resourceEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sampleCount", "measuredSampleCount", "residentGrowthBytes", "residentSlopeBytesPerSecond", "openFileDescriptorGrowth", "journalPendingGrowth", "orphanProcessCount", "passed"],
+      "properties": {
+        "sampleCount": { "type": "integer", "minimum": 0 },
+        "measuredSampleCount": { "type": "integer", "minimum": 0 },
+        "residentGrowthBytes": { "type": "integer" },
+        "residentSlopeBytesPerSecond": { "type": "integer" },
+        "openFileDescriptorGrowth": { "type": "integer" },
+        "journalPendingGrowth": { "type": "integer" },
+        "orphanProcessCount": { "type": "integer", "minimum": 0 },
+        "passed": { "type": "boolean" }
+      }
+    },
+    "resourceProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "samplingMode", "sampleIntervalMs", "policy", "gcConfirmedComponents", "samples", "evaluation"],
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "rbp-resource-profile/v1" },
+        "samplingMode": { "enum": ["bounded_slope", "post_gc"] },
+        "sampleIntervalMs": { "type": "integer", "minimum": 100, "maximum": 30000 },
+        "policy": { "$ref": "#/definitions/resourcePolicy" },
+        "gcConfirmedComponents": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] }
+        },
+        "samples": { "type": "array", "items": { "$ref": "#/definitions/resourceSample" } },
+        "evaluation": { "anyOf": [{ "$ref": "#/definitions/resourceEvaluation" }, { "type": "null" }] }
+      }
+    },
     "assertion": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["assertionId", "subvectorId", "statement", "category", "passed", "expected", "actual", "evidenceSha256", "message"],
+      "required": ["assertionId", "subvectorId", "statement", "category", "passed", "expected", "actual", "observationIds", "evidenceSha256", "message"],
       "properties": {
         "assertionId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)-[A-Z0-9-]+$" },
         "subvectorId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
@@ -143,6 +202,7 @@
         "passed": { "type": ["boolean", "null"] },
         "expected": {},
         "actual": {},
+        "observationIds": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$" } },
         "evidenceSha256": { "anyOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }] },
         "message": { "type": ["string", "null"] }
       }

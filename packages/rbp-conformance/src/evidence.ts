@@ -13,6 +13,7 @@ import type {
   ComponentLogRecord,
   EvidenceAssertionRecord,
   LeakMetricsDocument,
+  ProcessObservationRecord,
   RunReport,
   ValidationIssue,
 } from "./types.js";
@@ -31,6 +32,7 @@ interface LoadResult {
 interface ParsedCaseEvidence {
   artifact: ArtifactEvidence;
   assertions: EvidenceAssertionRecord[];
+  observationIds: Set<string>;
 }
 
 const NONEMPTY_KINDS = new Set<ArtifactEvidence["kind"]>([
@@ -153,7 +155,7 @@ function parseEvidenceAssertions(value: unknown, issuePath: string, issues: Vali
     return [];
   }
   return value.flatMap((entry, index) => {
-    if (!isRecord(entry) || !exactKeys(entry, ["assertionId", "subvectorId", "statement", "category", "passed", "expected", "actual"])) {
+    if (!isRecord(entry) || !exactKeys(entry, ["assertionId", "subvectorId", "statement", "category", "passed", "expected", "actual", "observationIds"])) {
       push(issues, `${issuePath}/${index}`, "artifact.assertion_shape", "evidence assertion has unknown or missing fields");
       return [];
     }
@@ -162,13 +164,61 @@ function parseEvidenceAssertions(value: unknown, issuePath: string, issues: Vali
       typeof entry.subvectorId !== "string" ||
       typeof entry.statement !== "string" ||
       typeof entry.category !== "string" ||
-      entry.passed !== true
+      entry.passed !== true ||
+      !Array.isArray(entry.observationIds) ||
+      entry.observationIds.length < 1 ||
+      !entry.observationIds.every((id) => typeof id === "string") ||
+      new Set(entry.observationIds).size !== entry.observationIds.length
     ) {
       push(issues, `${issuePath}/${index}`, "artifact.assertion_value", "evidence assertion requires canonical identity/statement/category fields and passed=true");
       return [];
     }
     return [entry as unknown as EvidenceAssertionRecord];
   });
+}
+
+function parseObservations(
+  value: unknown,
+  report: RunReport,
+  result: CaseResult,
+  issuePath: string,
+  issues: ValidationIssue[],
+): ProcessObservationRecord[] {
+  if (!Array.isArray(value)) {
+    push(issues, issuePath, "artifact.observations", "observations must be an array");
+    return [];
+  }
+  const observations = value.flatMap((entry, index) => {
+    const rowPath = `${issuePath}/${index}`;
+    if (!isRecord(entry) || !exactKeys(entry, ["schemaVersion", "observationId", "runId", "caseId", "binding", "componentId", "kind", "at", "payload"])) {
+      push(issues, rowPath, "artifact.observation_shape", "process observation has unknown or missing fields");
+      return [];
+    }
+    if (
+      entry.schemaVersion !== "rbp-process-observation/v1" ||
+      typeof entry.observationId !== "string" ||
+      entry.runId !== report.run.runId ||
+      entry.caseId !== result.caseId ||
+      entry.binding !== "wss" && entry.binding !== "streamable_http_sse" ||
+      !["gateway_stub", "bridge_simulator", "addin_loopback_fixture"].includes(String(entry.componentId)) ||
+      !["control_result", "wire_event", "gateway_snapshot", "bridge_snapshot", "fixture_snapshot", "fixture_execution_count", "resource_sample"].includes(String(entry.kind)) ||
+      typeof entry.at !== "string" || Number.isNaN(Date.parse(entry.at))
+    ) {
+      push(issues, rowPath, "artifact.observation_identity", "process observation identity is not bound to this run/case/stack");
+      return [];
+    }
+    const at = Date.parse(entry.at);
+    const started = result.startedAt === null ? Number.NaN : Date.parse(result.startedAt);
+    const finished = result.finishedAt === null ? Number.NaN : Date.parse(result.finishedAt);
+    if (!Number.isNaN(started) && !Number.isNaN(finished) && (at < started || at > finished)) {
+      push(issues, `${rowPath}/at`, "artifact.observation_time", "process observation falls outside its case interval");
+    }
+    return [entry as unknown as ProcessObservationRecord];
+  });
+  if (new Set(observations.map(({ observationId }) => observationId)).size !== observations.length) {
+    push(issues, issuePath, "artifact.duplicate_observation", "process observation ids must be unique within one evidence document");
+  }
+  return observations;
 }
 
 function parseCaseEvidenceDocument(
@@ -180,7 +230,7 @@ function parseCaseEvidenceDocument(
   issues: ValidationIssue[],
 ): ParsedCaseEvidence | undefined {
   const parsed = parseJson(file.text, issuePath, issues);
-  if (!isRecord(parsed) || !exactKeys(parsed, ["schemaVersion", "runId", "caseId", "source", "assertions"])) {
+  if (!isRecord(parsed) || !exactKeys(parsed, ["schemaVersion", "runId", "caseId", "source", "observations", "assertions"])) {
     push(issues, issuePath, "artifact.case_evidence_shape", "case evidence must use the exact rbp-case-evidence/v1 shape");
     return undefined;
   }
@@ -193,9 +243,11 @@ function parseCaseEvidenceDocument(
   ) {
     push(issues, issuePath, "artifact.case_evidence_identity", "case evidence identity/source does not match its run and case");
   }
+  const observations = parseObservations(parsed.observations, report, result, `${issuePath}/observations`, issues);
   return {
     artifact,
     assertions: parseEvidenceAssertions(parsed.assertions, `${issuePath}/assertions`, issues),
+    observationIds: new Set(observations.map(({ observationId }) => observationId)),
   };
 }
 
@@ -235,7 +287,7 @@ function parseWireTrace(
     }
     assertions.push(...parseEvidenceAssertions(parsed.assertions, `${rowPath}/assertions`, issues));
   }
-  return { artifact, assertions };
+  return { artifact, assertions, observationIds: new Set() };
 }
 
 function validateComponentLog(
@@ -271,7 +323,7 @@ function validateComponentLog(
 
 function validateLeakMetrics(file: LoadedFile, report: RunReport, issuePath: string, issues: ValidationIssue[]): void {
   const parsed = parseJson(file.text, issuePath, issues);
-  if (!isRecord(parsed) || !exactKeys(parsed, ["schemaVersion", "runId", "timing", "leaks"])) {
+  if (!isRecord(parsed) || !exactKeys(parsed, ["schemaVersion", "runId", "timing", "leaks", "resources"])) {
     push(issues, issuePath, "artifact.leak_metrics_shape", "leak metrics must use the exact rbp-conformance-leaks/v1 shape");
     return;
   }
@@ -280,6 +332,7 @@ function validateLeakMetrics(file: LoadedFile, report: RunReport, issuePath: str
     runId: report.run.runId,
     timing: report.timing,
     leaks: report.leaks,
+    resources: report.resources,
   };
   if (stableJson(parsed) !== stableJson(expected)) {
     push(issues, issuePath, "artifact.leak_metrics_mismatch", "leak/timing metrics do not match the run report summary fields");
@@ -340,6 +393,7 @@ function assertionEvidenceMatches(assertion: AssertionResult, record: EvidenceAs
     passed: assertion.passed,
     expected: assertion.expected,
     actual: assertion.actual,
+    observationIds: assertion.observationIds,
   }) === stableJson(record);
 }
 
@@ -420,10 +474,16 @@ export function verifyRunEvidenceFiles(report: RunReport, artifactRoot: string):
       const matches = parsedEvidence.filter(({ artifact }) => artifact.sha256 === assertion.evidenceSha256);
       if (matches.length !== 1) {
         push(issues, `/cases/${caseIndex}/assertions/${assertionIndex}/evidenceSha256`, "assertion.unbound_evidence", "assertion digest must identify exactly one parsed artifact in the same case");
+        if (matches.length === 0) {
+          push(issues, `/cases/${caseIndex}/assertions/${assertionIndex}`, "assertion.content_mismatch", "retained evidence content does not contain the canonical assertion and its process observations");
+        }
         return;
       }
       if (!matches[0]!.assertions.some((record) => assertionEvidenceMatches(assertion, record))) {
         push(issues, `/cases/${caseIndex}/assertions/${assertionIndex}`, "assertion.content_mismatch", "retained evidence content does not contain the exact canonical assertion identity/statement/category/outcome/expected/actual tuple");
+      }
+      if (assertion.observationIds.length < 1 || assertion.observationIds.some((id) => !matches[0]!.observationIds.has(id))) {
+        push(issues, `/cases/${caseIndex}/assertions/${assertionIndex}/observationIds`, "assertion.unbound_observation", "every assertion observation id must resolve inside the same retained case evidence artifact");
       }
     });
   });

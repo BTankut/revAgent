@@ -3,6 +3,7 @@ import path from "node:path";
 import { loadConfinedEvidenceFile, verifyAggregateEvidenceFiles, verifyRunEvidenceFiles } from "./evidence.js";
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
 import { classifyRunStatus } from "./runClassification.js";
+import { resourceProfileIssues } from "./resourceMetrics.js";
 import { validateSchema } from "./schemas.js";
 import { stableJson } from "./stableJson.js";
 import type {
@@ -287,6 +288,9 @@ function caseAlignmentIssues(report: RunReport, requirePassing: boolean): Valida
         if (assertion.evidenceSha256 === null || !evidenceHashes.has(assertion.evidenceSha256)) {
           issue(issues, `${base}/assertions/${assertionIndex}/evidenceSha256`, "assertion.missing_evidence", "passing assertion must reference a retained case artifact digest");
         }
+        if (assertion.observationIds.length < 1 || new Set(assertion.observationIds).size !== assertion.observationIds.length) {
+          issue(issues, `${base}/assertions/${assertionIndex}/observationIds`, "assertion.missing_observation", "passing assertion must bind one or more unique same-case process observations");
+        }
       }
       if (result.failure !== null) {
         issue(issues, `${base}/failure`, "case.false_green", "passing case cannot retain a failure object");
@@ -308,9 +312,7 @@ function passingRunIssues(report: RunReport, options: PassingValidationOptions):
   if (report.timing.suiteDurationMs === null || report.timing.setupDurationMs === null || report.timing.teardownDurationMs === null) {
     issue(issues, "/timing", "run.missing_timing", "passing run requires complete timing counters");
   }
-  if (Object.values(report.leaks).some((value) => value !== 0)) {
-    issue(issues, "/leaks", "run.resource_leak", "all fd/memory/journal/orphan-process leak counters must be zero");
-  }
+  issues.push(...resourceProfileIssues(report.resources, report.leaks));
   if (options.expectedCommitSha !== undefined && report.source.commitSha !== options.expectedCommitSha) {
     issue(issues, "/source/commitSha", "source.stale_commit", "report commit does not match the requested commit");
   }

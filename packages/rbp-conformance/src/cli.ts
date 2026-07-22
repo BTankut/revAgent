@@ -8,6 +8,7 @@ import { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js"
 import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
+import { assertPassingSoakReport } from "./soak.js";
 import type { AggregateInput, AggregateReport, PassingValidationOptions, RunReport } from "./types.js";
 import {
   assertPassingAggregateReport,
@@ -23,6 +24,7 @@ function usage(): never {
       "Usage:",
       "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
+      "  rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance junit <run-report.json> <junit.xml>",
       "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]",
       "  rbp-conformance summary <aggregate.json> <summary.md>",
@@ -103,6 +105,16 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     options.aggregateReportFile = resolveFrom(cwd, file);
     assertPassingAggregateReport(report, options);
     process.stdout.write("RBP conformance three-run aggregate: PASS\n");
+    return;
+  }
+  if (command === "validate-soak") {
+    const [file, ...flags] = rest;
+    if (file === undefined) usage();
+    const report = readJson(file, cwd);
+    const options = validationOptions(flags, cwd);
+    options.soakReportFile = resolveFrom(cwd, file);
+    assertPassingSoakReport(report, options);
+    process.stdout.write("RBP reconnect/proxy-churn soak: PASS\n");
     return;
   }
   if (command === "junit") {

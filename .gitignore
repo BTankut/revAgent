@@ -28,6 +28,7 @@
 *.tmp
 *.zip
 scripts/.tmp-phase1b-*
+/artifacts/conformance/
 
 # Large offline dependency payloads are kept locally/NAS-side, not in Git.
 installer/nas/dependencies/
