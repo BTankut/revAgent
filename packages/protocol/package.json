@@ -1,0 +1,37 @@
+{
+  "name": "@revagent/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./schemas/*": "./schemas/*"
+  },
+  "files": [
+    "dist",
+    "schemas"
+  ],
+  "scripts": {
+    "build": "npm run generate && tsc -p tsconfig.json",
+    "check:generated": "npm run generate && git diff --exit-code src/generated",
+    "generate": "node scripts/generate-types.mjs",
+    "lint": "eslint src",
+    "typecheck": "npm run generate && tsc -p tsconfig.json --noEmit",
+    "test": "npm run generate && vitest run"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1"
+  },
+  "devDependencies": {
+    "json-schema-to-typescript": "^15.0.4"
+  }
+}

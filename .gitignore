@@ -8,8 +8,16 @@
 **/[Oo]bj/
 **/[Pp]ackages/
 
+# The root migration workspace is source, not a NuGet packages output folder.
+!/packages/
+!/packages/**
+/packages/**/[Bb]in/
+/packages/**/[Oo]bj/
+
 # Node and Python local dependencies/caches
 **/node_modules/
+**/dist/
+**/coverage/
 **/__pycache__/
 *.pyc
 
