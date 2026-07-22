@@ -230,9 +230,10 @@ confirmed) · DP-3 tunnel (Cloudflare, `revagent-gateway-prod`, confirmed) · DP
 (`gateway.revagent.app`, confirmed) · DP-5 IdP (recommended: Keycloak-in-Compose per RES-22;
 Entra ID alternative gated on M365 tenant + WP9 OAuth verification) · DP-6 not applicable to Phase 1
 (external-loop client; no Gateway LLM key) ·
-DP-7 seats (named) · DP-8 host hardware + LTE failover · DP-9 update signing (reuse RS256 chain) ·
+DP-7 seats (named) · DP-8 host confirmed and live SSH/resource proof retained; router has no dual-WAN/LTE
+and the operator accepted WAN-outage risk on 2026-07-22 · DP-9 update signing (reuse RS256 chain) ·
 **DP-10 existing ChatGPT/Codex Desktop remote-MCP conformance (selection confirmed; WP9 gate)** · DP-11
-backup target · DP-12 pilot machine/user + cutover date · DP-13 monorepo layout
+backup target · DP-12 dedicated/SSH-ready `NET01` confirmed, with pilot user/window still pending · DP-13 monorepo layout
 (`packages/gateway|bridge|protocol`, confirmed) · DP-14 Node MSI disposition · DP-15 historical-data archive
 location. Gate mapping: DP-1/2/13 before build; DP-3/4/8/9/10-conformance/12 before pilot; rest before
 cutover.
@@ -251,13 +252,24 @@ cutover.
   watch items for the three places this is at risk.
 - **R-F Amendment protocol.** If implementation reveals a RES-* or section decision to be wrong, do not
   silently diverge: record a dated amendment in `docs/decisions/DP-log.md` and update this index.
+- **R-G Operator task cards.** Whenever an operator action remains, every implementation report MUST end
+  with a separate, non-optional `## OPERATÖR GÖREV KARTLARI` section. Each card MUST state: (1) **NE** —
+  exact numbered steps, commands, and screens; (2) **NEDEN** — the gate or milestone it opens; (3) **NE
+  ZAMANA KADAR** — the blocked gate and latest required point; (4) **KANIT** — the exact evidence location;
+  and (5) **CEVAP FORMATI** — the single-message reply that is sufficient to continue. Operator work MUST
+  never remain only embedded in a plan or runbook. The implementing assistant MUST use its available SSH
+  access to `bt@192.168.90.154` and execute every server-side action it can safely perform, retaining command
+  output as evidence. Only account authorization, physical/network work, decisions, and user communications
+  remain operator-owned.
 
 ## 9. Week 1 (starts tomorrow)
 
 Section 08(h) is the authoritative list: DP checkpoint session; monorepo scaffold (`packages/*`, existing dirs
 untouched); O1 spec v0.9 draft; CI skeleton (`gateway-gates` job + freeze clause); transport spike (35-tool
 catalog served over Streamable HTTP — swap point `installer/runtime-mcp-server/src/index.ts:19-20`); Phase-1
-Compose skeleton; operator parallel tasks (tunnel connector/origin + DNS/TLS proof, IdP direction, host
-reachability evidence, LTE disposition; no Phase-1 Gateway LLM key per RES-23);
-plan/rollback/comms artifact skeletons. **Plus from this index:** GAP-13 items 1–2 (publish-freeze lock +
-updater-abstinence comms) and the WP9 evaluation matrix draft.
+Compose skeleton; parallel operational work split by R-G (the implementing assistant owns SSH-executable
+host reachability, tunnel connector/origin preparation, and DNS/TLS proof; the operator owns IdP/account
+authorization, physical/network changes, decisions, and user communications). The router has no dual-WAN/LTE
+and the operator accepted WAN-outage risk; there is no Phase-1 Gateway LLM key per RES-23. Include the
+plan/rollback/comms artifact skeletons. **Plus from this index:** GAP-13 items 1–2 (publish-freeze
+lock + updater-abstinence comms) and the WP9 evaluation matrix draft.

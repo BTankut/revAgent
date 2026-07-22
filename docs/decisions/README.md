@@ -31,4 +31,4 @@ The authoritative status ledger is `DP-log.md`. A recommendation in a one-pager 
 
 ## Operator checkpoint
 
-The 2026-07-22 written checkpoint confirmed DP-1, DP-2, DP-3, DP-4, DP-8 host selection, DP-10 client selection, and DP-13; DP-12 names only `NET01`; DP-6 is not applicable to Phase 1. DP-1/DP-2/DP-13 satisfy the decision portion of the M0 build-entry gate. DP-3/DP-4/DP-8/DP-9/DP-10 conformance/DP-12 readiness evidence must still satisfy their executable pilot gates. The remaining decisions must close before fleet transition.
+The 2026-07-22 written checkpoints confirmed DP-1, DP-2, DP-3, DP-4, DP-8 host selection, DP-10 client selection, and DP-13; DP-12 assigns the registered and dedicated `NET01` pilot machine but still needs its named user/window roles; DP-6 is not applicable to Phase 1. Barış Tankut explicitly confirmed operator attribution for RES-23 and DP-3/DP-4/DP-10/DP-12. DP-1/DP-2/DP-13 satisfy the decision portion of the M0 build-entry gate. DP-3/DP-4/DP-8/DP-9/DP-10 conformance/DP-12 readiness evidence must still satisfy their executable pilot gates. The remaining decisions must close before fleet transition.

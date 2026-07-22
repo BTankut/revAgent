@@ -3,11 +3,13 @@
 **Status:** Partially confirmed
 **Decision date:** 2026-07-22
 **Gate:** Pilot entry
-**Recorded machine:** `NET01` (registered; SSH access available)
+**Recorded machine:** `NET01` (registered; dedicated to this work; waiting; stored SSH access available)
 
 ## Decision
 
-`NET01` is the pilot workstation. Name the pilot user, backup operator, five-working-day pilot window, and fleet transition date/window before pilot entry.
+Barış Tankut confirmed `NET01` as the pilot workstation and confirmed that it is fully allocated to this
+work, waiting, and reachable through the stored SSH path at the requested date/time. Name the pilot user,
+backup operator, five-working-day pilot window, and fleet transition date/window before pilot entry.
 
 ## Selection requirements
 
@@ -18,4 +20,6 @@
 
 ## Remaining fields
 
-Record pilot user, pilot start/end, transition start/end, decision owner, fallback operator, and communications owner in `DP-log.md`; retain the live readiness evidence from NET01.
+Operator attribution and the machine allocation are closed by the 2026-07-22 checkpoint. Record pilot user,
+pilot start/end, transition start/end, fallback operator, and communications owner in `DP-log.md`; retain the
+live readiness evidence from NET01.

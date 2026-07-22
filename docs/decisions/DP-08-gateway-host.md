@@ -20,12 +20,40 @@ This confirmation was supplied explicitly in the M0 goal instruction and must no
 
 The repository records only the non-secret connection identity above. Private keys, host credentials, tunnel tokens, runtime secrets, and recovery material must remain outside git.
 
+## M0 live reachability evidence — 2026-07-22
+
+The implementing assistant collected this evidence directly through BatchMode public-key SSH:
+
+```text
+$ ssh -o BatchMode=yes bt@192.168.90.154 'whoami; hostname; lsb_release -a; nproc; free -h; df -h; uname -a'
+bt
+revagent
+Distributor ID: Ubuntu
+Description: Ubuntu 26.04 LTS
+Release: 26.04
+Codename: resolute
+8
+Mem: 30Gi total, 776Mi used, 28Gi free, 5.0Mi shared, 1.2Gi buff/cache, 29Gi available
+Swap: 8.0Gi total, 0B used, 8.0Gi free
+/: 226G size, 12G used, 204G available, 6%
+/boot: 2.0G size, 97M used, 1.7G available, 6%
+/boot/efi: 1.1G size, 6.4M used, 1.1G available, 1%
+/mnt/hdd-data: 916G size, 2.1M used, 870G available, 1%
+Linux revagent 7.0.0-28-generic #28-Ubuntu SMP PREEMPT_DYNAMIC Sun Jun 21 01:01:36 UTC 2026 x86_64 GNU/Linux
+```
+
+The omitted `df -h` rows were only tmpfs/credential pseudo-mounts. This evidence passes the M0 live
+reachability and resource-inventory requirement; it does not claim production service readiness.
+
 ## Remaining operational verification
 
-The host choice is confirmed, but the M0 `ready/reachable` gate remains `in_progress` until command output is retained.
+The host choice and M0 live reachability are confirmed. Later operational readiness remains open:
 
-- **Owner:** Barış / office network operations
-- **Next action:** capture live SSH reachability plus Ubuntu, Docker/Compose, storage, power-recovery, UPS, and resource-headroom evidence.
-- **LTE next action:** before M7/pilot, verify router dual-WAN/LTE capability and record the device/SIM/provider choice; if deferred, record a dated acceptance of WAN-outage risk and its next review gate.
+- **Implementation owner:** revAgent implementation assistant through the confirmed SSH path.
+- **M7 evidence still required:** install and verify Docker/Compose and the production tunnel/origin only
+  after their frozen configuration exists; retain power-recovery and UPS evidence.
+- **WAN resilience disposition:** the router has no dual-WAN/LTE capability. Barış Tankut accepted the
+  resulting WAN-outage risk on 2026-07-22. This closes the LTE decision item without claiming redundant
+  connectivity; M7 operations evidence must carry the accepted single-WAN limitation explicitly.
 
 These checks validate the confirmed host; they do not reopen DP-8.
