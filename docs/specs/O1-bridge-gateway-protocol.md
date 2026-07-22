@@ -3,9 +3,9 @@
 | Field | Value |
 |---|---|
 | Protocol name | RBP/1 (RevAgent Bridge Protocol, version 1) |
-| Document version | 0.9 |
-| Status | Draft, in review |
-| Milestone | M0 draft; M1 freezes v1.0 after review and conformance feedback |
+| Document version | 1.0-rc.1 |
+| Status | Normative freeze candidate; not frozen until Section 22 evidence is green |
+| Milestone | M1 semantic closure; the v1.0 tag remains conditional on schemas, vectors, and interop evidence |
 | Updated | 2026-07-22 |
 | Owner | WP1 / O1 |
 
@@ -22,9 +22,9 @@ The key words MUST, MUST NOT, REQUIRED, SHOULD, SHOULD NOT, and MAY are normativ
 
 ## 1. INDEX amendment compliance
 
-This v0.9 draft incorporates the coordinator resolutions that override the original package plan.
+This v1.0 release candidate incorporates the coordinator resolutions that override the original package plan.
 
-| Resolution | Canonical v0.9 rule |
+| Resolution | Canonical RBP/1 rule |
 |---|---|
 | RES-2 | The bridge is a .NET 8 self-contained Windows service. RBP journal semantics are implementation-neutral and require a durable SQLite-class store; this specification does not depend on Node or `better-sqlite3`. |
 | RES-3 | Document context is sourced from the add-in's cached `get_document_context` command and polled by the bridge every 15 seconds. `get_current_view_info` and `list_open_views` are not used as the standing context poll. |
@@ -59,7 +59,9 @@ This v0.9 draft incorporates the coordinator resolutions that override the origi
 - Bridge installer, service hosting, tray UX, and update-apply mechanics
 - Add-in TCP framing changes or RevitMCPSDK changes
 - APS execution
-- The final GAP-7 file-ingress mechanism; it is selected with DP-10/WP9 and must be added as a capability-gated extension before v1.0 if required for pilot
+- Client-to-Gateway file upload, Gateway `artifact_ref` lifecycle, and Gateway north-MCP resource delivery.
+  Section 13.1 defines only the RBP output carrier. WP2 owns Gateway ingress/storage/resource semantics and
+  WP9 owns hands-on client interoperability under `docs/implementation-plan/00-INDEX.md` Section 4.
 
 ### 2.3 Protocol boundaries
 
@@ -85,6 +87,8 @@ Model files do not traverse RBP/1. Tool parameters, bounded results, progress, d
 | `seq` | Sender | Monotonic JSON-safe integer from 1 through 9,007,199,254,740,991 (`2^53-1`) per `rsid`, per direction, continuing across reconnects |
 | `resume_token` | Gateway | Opaque secret bound to device, `rsid`, and expiry; not an actor credential |
 | `confirmation_id` | Gateway policy layer | Correlates an approved preview/action; never minted or approved by the bridge |
+| `verification_hold_id` | Derived | Stable `vh:` digest over one `rsid`, one mutation scope, and the ordered canonical idempotency keys whose effects are unknown; correlation only, never the hold lookup key |
+| `artifact_id` | Bridge | UUIDv7 for one sanitized output file within one invocation; stable across retransmission/replay and unique within that invocation |
 
 The OIDC user is the authoritative human actor. A Windows username supplied by session registration is an operational hint only and MUST NOT replace the authenticated actor in audit records.
 
@@ -118,9 +122,45 @@ Expected refusal responses are:
 
 A Streamable HTTP/SSE fallback is REQUIRED behind the `transport_streamable_http` capability. RBP
 envelopes, ordering, acknowledgement, resume, journal, and error semantics are identical on both bindings.
-The exact HTTP request/stream lifecycle is a v1.0 freeze blocker and MUST NOT be improvised before its golden
-vectors and proxy/interoperability evidence are recorded. The fallback does not switch an active WSS
-connection in place; it reconnects and resumes through the negotiated fallback binding.
+The capability is provisioned in the signed enrollment/server profile so a bridge can select the fallback
+when WSS cannot open; the bridge also declares it in `hello`, and the Gateway grants it in `hello_ack`.
+An untrusted redirect or an unauthenticated discovery response cannot enable the fallback.
+
+The fallback binding is frozen as follows:
+
+1. The bridge first attempts WSS. When a retryable network/proxy/upgrade failure prevents WSS from opening,
+   and only when `transport_streamable_http` is provisioned, it MAY try the fallback once within the same
+   connection attempt. Authentication, authorization, version, or TLS-certificate failures never trigger a
+   transport downgrade.
+2. The bridge creates a fallback connection with `POST /bridge/v1/http/connections`. It sends the same
+   `Authorization`, `X-RBP-Versions`, and TLS requirements as WSS, uses `Content-Type: application/json` and
+   `Accept: application/json`, and places the complete unsequenced `hello` object in the request body.
+3. Success is `201 Created` with `RBP-Connection-Id: <opaque>` and one `hello_ack` JSON object in the body;
+   its `payload.connection_id` MUST match the header exactly. The connection id is bound to the authenticated
+   device and is not an actor credential. It MUST NOT be
+   accepted without the same bearer credential on later requests.
+4. The bridge then opens `GET /bridge/v1/http/connections/{connection_id}/events` with
+   `Accept: text/event-stream`. A `200` response establishes the Gateway-to-bridge stream. Each RBP object is
+   one SSE event with `event: rbp` and exactly one UTF-8, single-line JSON `data:` value. SSE `id` and
+   `Last-Event-ID` are not RBP sequence authority and MUST NOT be used for replay. Comment-only keepalives are
+   allowed and do not replace RBP heartbeat/ack messages.
+5. Bridge-to-Gateway messages use
+   `POST /bridge/v1/http/connections/{connection_id}/messages`, one complete RBP object per
+   `application/json` request. Success is `202 Accepted` only after durable transport acceptance. Lifecycle
+   control requests are serialized; session data requests are serialized per `rsid`, while distinct sessions
+   and connection heartbeats may use independent HTTP/2 streams. RBP `seq`, not HTTP completion order, remains
+   data ordering authority.
+6. The bridge sends `session_register` or `session_resume` only after the SSE request returns `200`. Gateway
+   data after `hello_ack` is emitted only on the SSE stream. An SSE EOF/reset, an unknown/expired connection
+   id (`404`/`410`), or an uplink request whose durable acceptance is unknown ends that transport connection.
+   The bridge creates a new connection, performs `hello` again, resumes each `rsid`, and relies on RBP
+   acknowledgement plus journal redelivery; it never reattaches with `Last-Event-ID`.
+7. The same message and reconstructed-result limits apply before Base64/SSE expansion. Intermediaries MUST
+   disable response buffering and compression transformations that delay SSE delivery; proxy evidence MUST
+   show heartbeat, progress, cancellation, forced EOF, and resume behavior.
+
+The fallback never switches an active WSS connection in place. One connection cycle has at most one active
+binding, and transport selection does not change invocation identity or journal state.
 
 ### 4.2 Connection opening
 
@@ -132,10 +172,29 @@ After transport authentication:
 4. No version overlap closes with `4426` and an update-manifest pointer.
 5. Authentication loss closes with `4401`; authorization/seat refusal closes with `4403`.
 
+Connection-opening failures occur before an RBP invocation error can be delivered and are handled as follows:
+
+| Opening outcome | Treatment |
+|---|---|
+| DNS/TCP timeout or reset; proxy/upgrade rejection that does not authenticate; HTTP `408`, `429`, `502`, `503`, or `504` | Connection-scoped retryable `environment` condition. Try the provisioned fallback once when eligible, then apply Section 4.3. Honor a valid bounded `Retry-After` as an additional server delay. |
+| HTTP `401`/`403` or WSS close `4401`/`4403` | `auth`/authorization refusal. Do not try the fallback and pause automatic retries until credential, enrollment, seat, or operator state changes. |
+| HTTP `426` or WSS close `4426` | `unsupported` protocol window. Follow the signed manifest/update path; do not reconnect unchanged. |
+| Certificate, hostname, or trust-chain validation failure | Local terminal security configuration fault. Do not downgrade transport or disable certificate validation; pause until trust/configuration changes. |
+| Malformed `hello_ack`, unexpected successful status/body, or a message before `hello_ack` | `protocol` fault; close the partial connection and apply bounded backoff after recording safe diagnostics. |
+
+For this table, `Retry-After` is accepted only as a non-negative delta-seconds value or a valid HTTP-date no
+more than 15 minutes in the future. The next attempt waits the greater of that value and the Section 4.3
+full-jitter delay; malformed, negative, or farther-future values are ignored and audited. This server delay
+does not reset or skip the attempt index.
+
+No opening failure fabricates a terminal outcome for an already journaled invocation. Resumable work follows
+Sections 6.2 and 12; pending-window expiry preserves the mutating indeterminate rule.
+
 ### 4.3 Reconnect backoff
 
-Every unsuccessful connection attempt or connection that leaves `steady` before 120 continuous seconds
-increments attempt index `n`, starting at zero. Before the next automatic attempt, the bridge waits:
+The retry wait uses a zero-based attempt index. The first automatic retry after a failed connection cycle uses
+`n=0`; each later unsuccessful cycle uses `n=1`, `n=2`, and so on. A connection that leaves `steady` before
+120 continuous seconds also consumes the next index. Before that automatic attempt, the bridge waits:
 
 ```text
 limit_ms = min(60000, 1000 * 2^n)
@@ -167,7 +226,9 @@ One RBP message is one JSON object. Under WSS, one object occupies one text fram
 
 Rules:
 
-- `v` is the selected protocol integer and MUST remain constant for the connection.
+- `hello` and `hello_ack` are the only pre-negotiation objects and MUST omit top-level `v`;
+  `hello_ack.payload.protocol` selects it. Every later object requires `v` equal to that selected integer for
+  the life of the connection.
 - `id` is a sender-minted UUIDv7 envelope identifier. It is not the idempotency key.
 - `rsid` and `seq` are REQUIRED on session data messages and absent on connection control messages. `ack` is an optional cumulative acknowledgement piggyback.
 - `ts` is diagnostic only. Ordering authority is `seq`; clock skew is tolerated.
@@ -233,6 +294,8 @@ The bridge sends one `session_register` for each discovered Revit process:
     "machine": {"hostname": "WS01", "fingerprint": "sha256:..."},
     "revit": {"version": "2022", "build": "...", "pid": 1234},
     "addin_version": "2026.07.22.0",
+    "result_contract_version": 2,
+    "session_capabilities": ["batch_atomic", "doc_context_cached_v1"],
     "bridge_version": "0.1.0",
     "documents": [
       {
@@ -258,7 +321,8 @@ The Gateway validates the device/session association and returns:
     "resume_token": "opaque",
     "resume_expires_at": "2026-07-23T12:00:00.000Z",
     "principal": {"tenant_id": "tenant_uuid", "user_id": "user_uuid"},
-    "seat": {"granted": true, "seat_id": "seat_uuid"}
+    "seat": {"granted": true, "seat_id": "seat_uuid"},
+    "granted_session_capabilities": ["batch_atomic", "doc_context_cached_v1"]
   }
 }
 ```
@@ -274,8 +338,33 @@ and seat assignment; a bridge cannot claim or choose them in `session_register`.
 payload/enrollment mismatch is `auth`, closes/refuses with `4403`, and is audited as a seat-identity spoof
 attempt. The north-side OIDC actor for an invocation is retained separately from this bridge principal.
 
-Revit exit sends `session_unregister`; pending invocations end with `addin_unreachable` only when non-execution
-is known. A possibly dispatched mutation follows the indeterminate rules below.
+`addin_version`, `result_contract_version`, and `session_capabilities` are REQUIRED per local Revit session.
+The bridge derives them from successful loopback shape/capability probes; it MUST NOT infer them from a file
+name or Revit version. The v1 session capability names are `batch_atomic` and `doc_context_cached_v1`.
+`batch_atomic` requires working `execute_batch`; `doc_context_cached_v1` requires working
+`get_document_context`. Unknown capability names are ignored within RBP/1. The Gateway returns only the
+intersection it accepts in `granted_session_capabilities`, and dispatch MUST test that per-`rsid` grant rather
+than a connection-wide version string. The adapted pilot add-in MUST expose the source version/capability data
+through its `mcp_status`/`get_document_context` contract; absence or contradiction fails that session's pilot
+registration rather than being guessed.
+
+Revit exit sends this unsequenced control message:
+
+```json
+{
+  "type": "session_unregister",
+  "payload": {
+    "rsid": "rs_7f3a",
+    "reason": "revit_exited"
+  }
+}
+```
+
+Both fields are REQUIRED. `reason` is the closed v1 enum `revit_exited`, `bridge_shutdown`,
+`session_replaced`, or `operator_requested`. Acceptance revokes that session's resume token and prevents new
+dispatch. Pending invocations end with `addin_unreachable` only when non-execution is known. A possibly
+dispatched mutation follows the indeterminate rules below; unregistration never fabricates a known failure or
+clears a recovery hold.
 
 ### 6.2 Resume
 
@@ -319,12 +408,104 @@ After the 10-minute pending window, outcome handling depends on mutation risk:
   `retryable:true`, provided no concurrent execution remains possible.
 - A mutating invocation whose dispatch or commit cannot be disproved MUST end as `journal_indeterminate`
   with `retryable:false`, `outcome:"indeterminate"`, and `verification_required:true`.
-- The Gateway MUST persist a recovery hold keyed by `rsid + "/" + invocation_id` and MUST NOT mint or
-  dispatch a replacement mutation until an explicit read-only verification has executed and been audited.
-  If the verification cannot prove the safe next action, operator intervention is REQUIRED.
 
-Changing `invocation_id` MUST NOT be used to bypass this hold. A transport timeout, process exit, or
-`addin_unreachable` signal cannot downgrade an unknown mutating outcome into a retryable environment fault.
+#### 6.2.1 Mutation recovery hold
+
+The canonical idempotency key identifies the uncertain operation; it is not the key used to block later
+mutations. Every invocation and batch step carries a server-authored `mutation_scope`: it is `null` for an
+ordinary read and is REQUIRED to be one of these objects for `mutating:true`:
+
+```json
+{"kind":"session"}
+```
+
+```json
+{"kind":"document","document_id":"doc_session_stable_id"}
+```
+
+The Gateway uses document scope only when the target is one exact document currently registered under that
+`rsid`; implicit-active-document, multi-document, UI-global, or otherwise uncertain writes use the conservative
+session scope. A session scope conflicts with every mutation scope under that `rsid`; a document scope conflicts
+with the same document scope and any session scope. Unknown scope kinds or a document not registered to the
+session are terminal `protocol` faults.
+
+For each distinct conflicting scope whose effect is unknown, both Gateway and bridge persist an active hold
+indexed by `(rsid, mutation_scope)`, not by the next invocation id. Its stable correlation id is:
+
+```text
+hold_material = {"mutation_scope":<scope>,"origin_idempotency_keys":[<ordered keys>],"rsid":<rsid>}
+verification_hold_id = "vh:" + lowercase_hex(SHA-256(UTF-8-without-BOM(RFC8785-JCS(hold_material))))
+```
+
+For one invocation the origin list has one key. For an uncertain atomic batch, each scope's list contains, in
+input order, every possibly executed mutating step key in that scope. If any uncertain step uses session scope,
+one session hold contains all possibly executed mutating origin keys and subsumes document holds for that
+batch; otherwise there is one hold per affected document. Before minting or dispatching **every** new mutating
+invocation or batch, the Gateway MUST query its durable conflict index. Before writing the first add-in byte,
+the bridge MUST perform the same check against its durable local index. An active conflict returns the original
+hold's `journal_indeterminate` error without add-in contact even when `invocation_id` or `batch_id` is fresh.
+Redelivery of an origin key and a correlated read-only verification are the only operations exempt from this
+block.
+
+A verification read is an ordinary `mutating:false` `invoke` with this server-authored correlation block:
+
+```json
+{
+  "verification": {
+    "hold_id": "vh:9c6c84634429ac77c06a69a975688e815a44217a9e47c7a845dd7da4dbcb6a7b",
+    "mutation_scope": {"kind":"document","document_id":"doc_session_stable_id"},
+    "purpose": "resolve_indeterminate"
+  }
+}
+```
+
+The bridge validates the active hold before executing the read and journals `hold_id`, scope, verification
+`invocation_id`, and terminal raw-response digest together. A successful read is evidence, not clearance.
+The hold remains blocking when the read fails, is omitted, is ambiguous, or cannot prove either non-execution
+or the intended postcondition; operator intervention is then REQUIRED.
+
+Clearance has the deterministic state transition
+`active -> evidence_recorded -> resolved_pending_bridge -> cleared`. After an audited Gateway decision, exactly
+one next mutation may carry this entry in `recovery_clearances[]`:
+
+```json
+{
+  "hold_id": "vh:9c6c84634429ac77c06a69a975688e815a44217a9e47c7a845dd7da4dbcb6a7b",
+  "mutation_scope": {"kind":"document","document_id":"doc_session_stable_id"},
+  "resolution_id": "0197a3c2-0000-7000-8000-000000000101",
+  "basis": "verification_read",
+  "verification_invocation_id": "0197a3c2-0000-7000-8000-000000000099",
+  "evidence_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+  "decision": "postcondition_verified",
+  "audit_id": "0197a3c2-0000-7000-8000-000000000102"
+}
+```
+
+Every displayed field is REQUIRED. `basis` is `verification_read` or `late_terminal`;
+`verification_invocation_id` is a UUIDv7 for the former and explicit `null` for the latter. `decision` is
+`non_execution_proven` or `postcondition_verified`. No `inconclusive` value is a clearance: an inconclusive
+attempt is retained as evidence while the hold stays `active`. `hold_id` is `vh:` plus 64 lowercase
+hexadecimal characters; `evidence_digest` is `sha256:` plus 64 lowercase hexadecimal characters;
+`resolution_id` and `audit_id` are Gateway-minted UUIDv7 values. A `recovery_clearances` array has unique
+`hold_id` values sorted by ascending Unicode code point so its batch-digest representation is deterministic;
+it contains every and only active hold that conflicts with that envelope's mutation scopes.
+
+The Gateway permits only that evidence-bound envelope while `resolved_pending_bridge`; every unrelated
+mutation remains blocked. The bridge MUST match the clearance to its active hold and durable evidence, then
+atomically mark the hold `cleared` with acceptance of the new invocation before any add-in byte. A mismatch is
+a terminal `protocol` fault. Durable acceptance/acknowledgement lets the Gateway finish the same transition.
+Duplicate delivery of the identical envelope is idempotent; a changed clearance is not.
+
+If a real add-in outcome becomes durable after `journal_indeterminate`, the bridge stores it as late evidence
+without overwriting the original indeterminate classification or clearing the scope. Redelivery of the origin
+key returns that durable outcome with `replayed:true`, `late_after_indeterminate:true`,
+`verification_hold_id`, and its exact result digest. The Gateway may use a conclusive late terminal as the
+`late_terminal` clearance basis; otherwise it still requires the correlated verification read. Hold creation,
+every verification attempt, resolution, late evidence, and clearing are retained for at least the journal
+retention period and linked in audit by hold/resolution ids.
+
+Changing `invocation_id`, changing `batch_id`, reconnecting, re-registering the same resumable session, a
+transport timeout, process exit, or `addin_unreachable` signal MUST NOT bypass or downgrade this hold.
 
 ### 6.3 Graceful close
 
@@ -357,7 +538,8 @@ Required payload:
   "capabilities": [
     "journal_v1",
     "chunked_results",
-    "doc_context_cached_v1"
+    "artifact_result_v1",
+    "transport_streamable_http"
   ],
   "bridge_version": "0.1.0",
   "device_id": "device_uuid",
@@ -366,7 +548,10 @@ Required payload:
 }
 ```
 
-`batch_atomic` is advertised only when the discovered add-in supports `execute_batch`. `transport_streamable_http` describes a bridge implementation capability; it does not switch the active connection in place.
+`hello.capabilities` describes connection/bridge implementation features. Add-in-dependent features are
+declared and granted per session under Section 6.1; in particular, `batch_atomic` is not inferred from a
+connection-wide `addin_versions` list. `transport_streamable_http` does not switch the active connection in
+place. `artifact_result_v1` enables the constrained output path in Section 13.1.
 
 ### 7.2 `hello_ack`
 
@@ -376,7 +561,12 @@ Required payload:
 {
   "protocol": 1,
   "connection_id": "conn_uuid",
-  "granted_capabilities": ["journal_v1", "chunked_results"],
+  "granted_capabilities": [
+    "journal_v1",
+    "chunked_results",
+    "artifact_result_v1",
+    "transport_streamable_http"
+  ],
   "heartbeat_interval_ms": 15000,
   "limits": {
     "max_params_bytes": 4194304,
@@ -506,11 +696,14 @@ A second Gateway data-plane invocation for the same `rsid` before the first is t
     "params": {},
     "timeout_ms": 120000,
     "mutating": false,
+    "mutation_scope": null,
     "policy": {
       "class": "auto",
       "decision": "auto",
       "confirmation_id": null
     },
+    "verification": null,
+    "recovery_clearances": [],
     "display": {
       "task_name": "Inspect schedules",
       "logical_tool_name": "core.schedule.inspect",
@@ -526,6 +719,10 @@ Rules:
 - `method` and functional `params` are forwarded verbatim except for server-authored display/audit side-channel fields.
 - `mutating`, policy class, and policy decision come from the Gateway registry/dispatcher, never the model or client arguments.
 - `confirm` requires `decision:"confirmed"` plus `confirmation_id`; `gated` requires `decision:"gated_approved"` plus `confirmation_id`. Structurally invalid policy state is rejected before add-in dispatch.
+- `mutation_scope`, `verification`, and `recovery_clearances` are REQUIRED fields. `mutation_scope` is `null`
+  exactly for non-mutating calls and follows Section 6.2.1 for mutations. `verification` is `null` except on a
+  correlated read-only verification. `recovery_clearances` is an array, empty unless Section 6.2.1 authorizes
+  the envelope; bridge-local code never invents any of these values.
 - The bridge journals the invocation before writing the first add-in byte.
 
 ### 10.3 Result
@@ -541,6 +738,8 @@ Rules:
     "status": "completed",
     "result": {},
     "replayed": false,
+    "payload_omitted": false,
+    "late_after_indeterminate": false,
     "metrics": {
       "execute_ms": 425,
       "request_bytes": 512,
@@ -551,7 +750,28 @@ Rules:
 }
 ```
 
-For `kind:"invocation"`, `status` is `completed` or `guarded`. A guarded add-in result remains a result, not a transport failure. Add-in `resultContractVersion` is passed through without coupling it to RBP version.
+For `kind:"invocation"`, `status` is `completed` or `guarded`. A guarded add-in result remains a result, not
+a transport failure. `guarded_reason` is REQUIRED exactly when `status:"guarded"` and MUST be absent for
+`completed`. It is a stable lower-snake-case reason code of 1–64 ASCII characters
+(`[a-z][a-z0-9_]{0,63}`), derived from the add-in's `reason`/`guardedReason`; when a legacy guarded payload has
+no usable code, the bridge uses `unspecified_guarded` and preserves the original bounded detail inside
+`result`. Add-in `resultContractVersion` is passed through without coupling it to RBP version.
+
+`payload_omitted` defaults to false. When false, `result` is REQUIRED. `payload_omitted:true` is legal only on
+a journal replay (`replayed:true`) of a terminal `completed` or `guarded` outcome whose original payload is no
+longer retained; `result` MUST then be absent and `result_digest` is REQUIRED. `result_digest` is `sha256:`
+plus lowercase hexadecimal SHA-256 of the exact raw UTF-8 add-in JSON-RPC response body bytes after removing
+the 4-byte length prefix and before parsing or RBP wrapping.
+`result_digest` is also REQUIRED, while retaining the full `result`, for a terminal read carrying a non-null
+Section 6.2.1 `verification` correlation. The bridge journals and returns that same digest so a later
+`recovery_clearances[].evidence_digest` can be checked independently by both peers.
+Omission is not success evidence: the Gateway MUST perform an audited read-based recovery/verification and
+MUST NOT reconstruct or blindly repeat a mutation. First delivery MUST NOT omit its terminal payload.
+
+`late_after_indeterminate` defaults to false. It may be true only on a journal replay of a durable outcome
+recorded after the same invocation had produced `journal_indeterminate`; `replayed:true`,
+`verification_hold_id`, and `result_digest` are then REQUIRED. It is recovery evidence under Section 6.2.1,
+not a second user-visible execution result and not automatic permission for another mutation.
 
 ## 11. Batch invocation
 
@@ -566,19 +786,23 @@ The RBP message type is `invoke_batch`. The additive add-in command used for one
     "batch_id": "0197a3c2-0000-7000-8000-000000000020",
     "atomic": true,
     "timeout_ms": 120000,
+    "recovery_clearances": [],
     "steps": [
       {
         "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
         "method": "send_code_to_revit",
         "params": {},
+        "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
         "mutating": true,
+        "mutation_scope": {"kind":"document","document_id":"doc_session_stable_id"},
         "policy": {
           "class": "confirm",
           "decision": "confirmed",
           "confirmation_id": "confirmation_uuid"
         }
       }
-    ]
+    ],
+    "batch_digest": "sha256:d97fa7c0f37c8e0986e0a6a16d2f7573da2a374ad3cf3d32f9f0301d0880f9d5"
   }
 }
 ```
@@ -587,9 +811,39 @@ Rules:
 
 - Every step has its own canonical idempotency key and journal row; all steps share `batch_id`.
 - Every step carries the same server-authored policy block required by an ordinary invocation. A batch MUST NOT combine a preview and its approved commit; all required confirmations must already bind to the exact step parameters before batching.
-- With negotiated `batch_atomic`, `atomic:true` is sent to the add-in as one length-prefixed `execute_batch` request and executes under one Revit `TransactionGroup`.
+- `params`, `params_digest`, and `mutation_scope` are REQUIRED on every step; `params` MUST NOT be omitted or
+  replaced by its digest. The bridge recomputes Section 12.1's digest over the present functional `params` and
+  rejects any mismatch before journal or add-in dispatch. `mutation_scope` is `null` exactly for a read step.
+- Top-level `recovery_clearances` is REQUIRED and may be empty. Correlated verification reads MUST be sent as
+  individual `invoke` messages and MUST NOT be hidden inside a batch. The Gateway and bridge check every step
+  scope plus all supplied clearances against Section 6.2.1 before any step is dispatched.
+- `batch_digest` is REQUIRED and is computed over the unambiguous semantic representation below. The bridge
+  recomputes it and rejects a mismatch before creating any step row:
+
+  ```text
+  batch_digest_material = {
+    "atomic": atomic,
+    "batch_id": batch_id,
+    "recovery_clearances": recovery_clearances,
+    "steps": [
+      {"invocation_id":...,"method":...,"mutating":...,"mutation_scope":...,
+       "params_digest":...,"policy":{"class":...,"confirmation_id":...,"decision":...}}, ...
+    ],
+    "timeout_ms": timeout_ms
+  }
+  batch_digest = "sha256:" + lowercase_hex(
+    SHA-256(UTF-8-without-BOM(RFC8785-JCS(batch_digest_material))))
+  ```
+
+  All displayed fields are present; `confirmation_id` is explicitly `null` when unused. Input step order is
+  preserved. `display` is not a batch-step field. There is therefore no omitted-step, raw-JSON, or implicit
+  default representation from which a different digest may be derived.
+- With `batch_atomic` in that `rsid`'s `granted_session_capabilities`, `atomic:true` is sent to the add-in as one length-prefixed `execute_batch` request and executes under one Revit `TransactionGroup`.
 - Without `batch_atomic`, `atomic:true` returns terminal `unsupported` without executing any step.
-- `atomic:false` MAY execute by ordered bridge fan-out. It stops at the first failed step and returns `failed_step_index`; no atomicity is claimed.
+- `atomic:false` MAY execute by ordered bridge fan-out. On the first delivery it stops at the first
+  `guarded|failed|cancelled|indeterminate` step; every later input step is `not_started`. It returns
+  `failed_step_index` for that first non-success step; no atomicity is claimed. In particular, a guarded step
+  never allows the next step to run merely because it arrived in a `result` rather than an `error`.
 - `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be recursively nested as batch steps.
 - The pilot artifact includes the adapted add-in and MUST demonstrate the `batch_atomic` path before cutover.
 
@@ -625,6 +879,8 @@ the top level of that payload, not hidden in a step result or metrics object:
         "error": {
           "retryable": false,
           "fault_class": "revit_api",
+          "outcome": "known",
+          "verification_required": false,
           "message": "bounded operator-safe message"
         },
         "replayed": false
@@ -646,7 +902,15 @@ Batch `status` is `completed`, `guarded`, `failed`, `cancelled`, or `indetermina
 `failed_step_index` is `null` only when every step completed; otherwise it is the zero-based first
 `guarded|failed|cancelled|indeterminate` step. Every input step appears exactly once and in input order.
 A step status is `completed`, `guarded`, `failed`, `cancelled`, `indeterminate`, or `not_started`; exactly one
-of `result` or `error` is present when applicable.
+of `result` or `error` is present when applicable. A guarded step requires `guarded_reason` under Section
+10.3. A completed/guarded step MAY use the same replay-only `payload_omitted` plus `result_digest` contract;
+`not_started` never carries result, error, or omission fields.
+
+A nested batch `error` uses the complete Section 15 invocation-error body except that `invocation_id` is
+carried by the enclosing step. `retryable`, `fault_class`, `outcome`, `verification_required`, and `message`
+are all REQUIRED. For `journal_indeterminate`, `verification_hold_id` and `mutation_scope` are also REQUIRED;
+`outcome` is `indeterminate` and `verification_required` is true. A nested error MUST NOT rely on batch status
+to supply or infer any of those fields.
 
 For `atomic:true`, success requires `transaction_state:"committed"`. A clean `TransactionGroup` rollback
 uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. If the add-in or bridge dies
@@ -661,10 +925,25 @@ indeterminate. `replayed:true` at batch level means that this delivery executed 
 The bridge MUST use a local durable SQLite-class store. The implementation language and database library are not part of RBP/1. The logical record contains:
 
 ```text
-rsid, invocation_id, idempotency_key, batch_id?, batch_index?, method, mutating,
-params_digest, state, terminal_outcome?, result_digest?, verification_hold?,
+rsid, invocation_id, idempotency_key, batch_id?, batch_index?, method, mutating, mutation_scope,
+params_digest, state, terminal_outcome?, result_digest?, verification_hold_id?,
+verification_correlation?, late_terminal_outcome?, late_result_digest?,
 created_at, started_at?, finished_at?
 ```
+
+The hold store is a distinct durable relation, not an invocation-row flag:
+
+```text
+rsid, scope_jcs, verification_hold_id, ordered_origin_idempotency_keys,
+state(active|evidence_recorded|resolved_pending_bridge|cleared),
+verification_invocation_id?, evidence_digest?, resolution_id?, resolution_basis?,
+resolution_decision?, audit_id?, created_at, cleared_at?
+```
+
+`scope_jcs` is the exact RFC 8785 JCS string of `mutation_scope`. A uniqueness constraint prevents two
+uncleared rows for the same `(rsid,scope_jcs)`; the conflict query additionally makes the session-scope row
+conflict with every document row under the same `rsid`. Hold and invocation/journal transitions required by
+Section 6.2.1 occur in one local transaction where they meet.
 
 Allowed states are:
 
@@ -693,37 +972,54 @@ serialization apply; no additional Unicode normalization is performed. Therefore
 ordering or escape differences do not create a mismatch, while a real value change does. Implementations
 MUST share golden vectors covering property order, number formatting, Unicode, and escapes.
 
-The bridge also compares `method`, `mutating`, the full policy/confirmation block, and batch position
-separately; a matching `params_digest` cannot authorize a changed method or policy. For a batch, a durable
-coordination row additionally binds `batch_id`, `atomic`, ordered step invocation ids, methods, policy blocks,
-and step `params_digest` values before any add-in byte is written.
+The bridge also compares `method`, `mutating`, `mutation_scope`, the full policy/confirmation block, and batch
+position separately; a matching `params_digest` cannot authorize a changed method, scope, or policy. For a
+batch, the explicit on-wire step `params_digest` is first verified against the present `params`, then the
+Section 11 canonical `batch_digest` is verified. A durable coordination row binds that `batch_digest`,
+`batch_id`, `atomic`, timeout, recovery clearances, and the complete ordered step representation before any
+add-in byte is written. Step omission is invalid; no journal path reconstructs a batch from a prefix or from
+digest-only steps.
 
 ### 12.2 Redelivery rules
 
 For an existing canonical idempotency key:
 
-1. A terminal row replays the stored outcome with `replayed:true`; the add-in is not called.
-2. `received` or `executing` with `mutating:false` MAY be executed once more. This is a recovery/failure path, so the bridge MAY consult `mcp_status` first to avoid colliding with a still-running add-in task.
-3. `received` or `executing` with `mutating:true` MUST NOT be re-executed. Return `journal_indeterminate` with
-   `retryable:false`, `outcome:"indeterminate"`, and `verification_required:true`; the Gateway installs the
-   recovery hold from Section 6.2 before any new invocation id is considered.
-4. The same key with a different `params_digest` is a terminal `protocol` fault.
+1. A known terminal row replays the stored outcome with `replayed:true`; the add-in is not called.
+2. An indeterminate row with a later durable terminal outcome returns that outcome as evidence-only replay
+   with `replayed:true`, `late_after_indeterminate:true`, `verification_hold_id`, and the exact late-result
+   digest; the add-in is not called and the Section 6.2.1 hold is not automatically cleared.
+3. `received` or `executing` with `mutating:false` MAY be executed once more. This is a recovery/failure path,
+   so the bridge MAY consult `mcp_status` first to avoid colliding with a still-running add-in task.
+4. `received` or `executing` with `mutating:true` MUST NOT be re-executed. Return `journal_indeterminate` with
+   `retryable:false`, `outcome:"indeterminate"`, `verification_required:true`, `verification_hold_id`, and
+   `mutation_scope`; install the Section 6.2.1 scope hold before any fresh id is considered.
+5. The same key with a different `params_digest`, method, scope, policy, clearance, or batch binding is a
+   terminal `protocol` fault.
 
-The journal MUST retain entries for at least seven days and longer than every supported resume/redelivery window. The Phase-1 implementation SHOULD default to 14 days. It MUST NOT prune non-terminal entries merely to satisfy a row cap. Large terminal results MAY retain only a digest and return `payload_omitted:true`; the Gateway then performs a read-based recovery instead of guessing.
+The journal MUST retain entries for at least seven days and longer than every supported resume/redelivery
+window. The Phase-1 implementation SHOULD default to 14 days. It MUST NOT prune non-terminal entries or any
+`active|evidence_recorded|resolved_pending_bridge` hold merely to satisfy a row cap; cleared holds and their
+evidence remain for at least the journal retention period. Large terminal results MAY retain only a digest and
+return `payload_omitted:true` under the exact Section 10.3 field conditions; the Gateway then performs a
+read-based recovery instead of guessing.
 
 #### `invoke_batch` redelivery
 
-The batch coordination row is checked before any step row. A repeated `batch_id` with a changed `atomic`
-value, ordered step identity, method, policy binding, or step digest is a terminal `protocol` fault.
+The batch coordination row is checked before any step row. A repeated `batch_id` with a changed verified
+`batch_digest` or any changed `atomic`, timeout, clearance, ordered step identity, method, mutation scope,
+policy binding, canonical params value, or step digest is a terminal `protocol` fault. Harmless JSON property
+order/escape reserialization that yields the same RFC 8785 value is not a mismatch.
 
 For `atomic:false` redelivery:
 
 1. Terminal prefix steps are replayed from their journals and never re-executed.
 2. A terminal `guarded|failed|cancelled|indeterminate` step stops the batch; later steps are returned as
    `not_started`.
-3. The first non-terminal read step MAY execute once under rule 2 above. The first non-terminal mutating step
-   becomes `indeterminate`, stops the batch, and requires verification. Only after a recovered step is
-   terminal-successful may ordered `not_started` successors execute.
+3. The first non-terminal read step MAY execute once under the invocation redelivery rule 3 above. The first
+   non-terminal mutating step
+   becomes `indeterminate`, installs its Section 6.2.1 scope hold, stops the batch, and requires correlated
+   verification. Only after a recovered step is terminal-successful may ordered `not_started` successors
+   execute, and only when no active hold conflicts with a successor mutation.
 4. The response always uses the Section 11.1 carrier. It may therefore contain a mix of replayed terminal,
    newly terminal, indeterminate, and `not_started` steps. `failed_step_index` identifies the first
    non-success step. Batch `replayed:true` is permitted only when no step executed during this delivery.
@@ -731,9 +1027,10 @@ For `atomic:false` redelivery:
 For `atomic:true` redelivery, a durable terminal batch outcome is replayed with identical semantics without calling
 the add-in. A coordination row still in `received` may execute only when it durably proves that no add-in byte
 was sent. Once atomic dispatch may have started, any missing terminal outcome makes the whole transaction and
-all possibly mutating steps indeterminate; no individual step is retried. Read-only verification of the
-intended postconditions is mandatory before another mutation, and inconclusive verification requires an
-operator.
+all possibly mutating steps indeterminate; no individual step is retried. One Section 6.2.1 hold is installed
+per distinct conflicting mutation scope with the ordered possibly executed step keys as origins. Read-only
+verification of the intended postconditions is mandatory before another conflicting mutation, and
+inconclusive verification keeps every affected scope blocked until an operator-backed conclusive resolution.
 
 ## 13. Partial results, progress, and backpressure
 
@@ -743,6 +1040,7 @@ operator.
 {
   "kind":"chunk",
   "invocation_id":"...",
+  "stream_id":"result",
   "chunk_index":0,
   "encoding":"base64",
   "content_type":"application/json",
@@ -756,15 +1054,124 @@ operator.
 
 - `encoding` is exactly `base64` in RBP/1. `data` is RFC 4648 standard padded Base64 with no whitespace.
   The 1 MiB chunk limit applies to decoded bytes, not Base64 text.
-- Chunk payloads are ordered from `chunk_index:0`; a duplicate index must contain identical decoded bytes
-  and is not appended twice. Sequence acknowledgement/retransmission follows Section 5.2.
-- A chunked invocation ends with one terminal `result` carrying `chunked:true`, `content_type`,
-  `total_chunks`, `total_size`, and `sha256`. `total_size` and `sha256:` plus lowercase hexadecimal SHA-256
-  are computed over the concatenation of decoded chunk bytes in index order.
+- `stream_id` is REQUIRED and identifies one reconstruction stream within the invocation. `result` is reserved
+  for a chunked structured-result stream; an artifact stream uses `artifact:<artifact_id>`. `chunk_index` starts
+  at zero independently for each stream. A duplicate `(invocation_id,stream_id,chunk_index)` must contain
+  identical decoded bytes and is not appended twice; reuse with different bytes is a `protocol` fault.
+  Sequence acknowledgement/retransmission follows Section 5.2 and preserves all stream identity fields.
+- An artifact chunk additionally requires `artifact_id` and zero-based `artifact_index`; they MUST match its
+  `stream_id` and the terminal Section 13.1 descriptor. Those fields MUST be absent on `stream_id:"result"`.
+  Every chunk in one stream has the same `content_type`, which also matches its terminal descriptor.
+- A chunked non-artifact result ends with one terminal `result` carrying `chunked:true`,
+  `stream_id:"result"`, `content_type`, `total_chunks`, `total_size`, and `sha256`. Artifact streams use their
+  own terminal descriptors under Section 13.1. Every size and `sha256:` plus lowercase hexadecimal SHA-256 is
+  computed per stream over decoded chunk bytes in index order; bytes from different streams are never
+  concatenated into one implicit digest.
 - Long-running add-in waits SHOULD emit progress every 10 seconds.
 - The bridge pauses data emission while the transport's buffered outbound data exceeds 8 MiB.
 - Control messages and heartbeats MUST remain serviceable while result chunks are backpressured.
-- Total reconstructed result size is limited to 32 MiB. Larger results fail with `oversize`; Gateway-side `result_ref` hygiene is a separate layer and does not raise this wire limit.
+- The combined decoded bytes of the structured-result stream and every artifact stream are limited to 32 MiB
+  per invocation. Larger results fail with `oversize`; Gateway-side result/artifact hygiene is a separate WP2
+  layer and does not raise this wire limit.
+
+### 13.1 GAP-7 RBP multi-file output carrier
+
+RBP/1 does not add a general Gateway-to-workstation `file_fetch` message and does not define client upload,
+`artifact_ref`, retention, or north-MCP resource behavior. Those are WP2 Gateway responsibilities in
+`docs/implementation-plan/02-gateway-core.md`; actual Codex Desktop file/image behavior is a WP9 gate under
+`docs/implementation-plan/00-INDEX.md` Section 4. O1 stubs may inject or consume bytes to test this carrier,
+but that evidence MUST NOT mark a north-bound WP2/WP9 requirement passed.
+
+Workstation-produced output, including a tool result containing multiple PNG/JPEG files, uses
+`artifact_result_v1` as follows:
+
+1. The signed registry contract declares each result field that may contain one artifact path or an ordered
+   list of artifact paths. Export parameters target the bridge-managed spool root. For every returned path, the
+   bridge canonicalizes it, requires a regular non-reparse file beneath that root, opens it without following
+   links, and verifies size after open. An arbitrary add-in string is never readable. One invalid member fails
+   the whole artifact conversion; valid siblings are not silently returned as a partial set. Validation and
+   descriptor assignment for every member finish before the first artifact chunk is emitted.
+2. The bridge walks declared fields and list members in deterministic field/input order, assigns contiguous
+   `artifact_index` values from zero, and mints one `artifact_id` per file. It replaces every local path in the
+   sanitized structured result with exactly `{artifact_id,artifact_index}`. No drive, directory, raw model
+   path, or uncorrelated basename survives in that result.
+3. Each file is one independent Section 13 chunk stream. Every chunk carries
+   `stream_id:"artifact:<artifact_id>"`, the same `artifact_id`, the same `artifact_index`, and a per-stream
+   `chunk_index` starting at zero. Interleaving streams is allowed; ordering within each stream and the
+   invocation's ordinary `seq`/ack behavior remain authoritative.
+4. The one terminal invocation `result` carries an `artifacts` array in `artifact_index` order. Every entry
+   requires `{artifact_id,artifact_index,stream_id,filename,content_type,total_chunks,total_size,sha256}`.
+   `filename` is a basename only. IDs and indices are unique, indices are contiguous, `stream_id` is exactly
+   `artifact:<artifact_id>`, and count/size/digest values describe only that stream. A maximum of 16 artifact
+   entries and the combined 32 MiB invocation limit apply. `chunked:true` and the sanitized `result` mapping
+   are REQUIRED when `artifacts` is non-empty.
+5. The Gateway RBP receiver verifies the sanitized-result mapping, descriptor uniqueness/contiguity, every
+   reconstructed stream, and the combined limit before durably accepting the terminal carrier. What WP2 does
+   with those verified bytes—and whether a north client can receive them—is outside RBP/1.
+6. Local spool cleanup occurs only after durable acknowledgement of the terminal carrier or bounded expiry and
+   is owned by the Bridge implementation. Retransmission/replay preserves artifact ids, indices, descriptors,
+   stream ids, and bytes exactly. `artifacts` MUST be absent when `payload_omitted:true`; if retained artifact
+   bytes cannot be replayed exactly, the ordinary omission/read-recovery contract applies and no stale
+   descriptor claims a usable file.
+
+One artifact chunk and the terminal two-file mapping therefore have these shapes:
+
+```json
+{
+  "kind": "chunk",
+  "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+  "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000201",
+  "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+  "artifact_index": 0,
+  "chunk_index": 0,
+  "encoding": "base64",
+  "content_type": "application/octet-stream",
+  "data": "UE5HMQ=="
+}
+```
+
+```json
+{
+  "kind": "invocation",
+  "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+  "status": "completed",
+  "result": {
+    "files": [
+      {"artifact_id":"0197a3c2-0000-7000-8000-000000000201","artifact_index":0},
+      {"artifact_id":"0197a3c2-0000-7000-8000-000000000202","artifact_index":1}
+    ]
+  },
+  "chunked": true,
+  "artifacts": [
+    {
+      "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+      "artifact_index": 0,
+      "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000201",
+      "filename": "plan.bin",
+      "content_type": "application/octet-stream",
+      "total_chunks": 1,
+      "total_size": 4,
+      "sha256": "sha256:b8fc6f9ab4621d16761cbc0335bbd804b0ebcc3d1d2aa8c757687501adc51aaa"
+    },
+    {
+      "artifact_id": "0197a3c2-0000-7000-8000-000000000202",
+      "artifact_index": 1,
+      "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000202",
+      "filename": "detail.bin",
+      "content_type": "application/octet-stream",
+      "total_chunks": 1,
+      "total_size": 4,
+      "sha256": "sha256:6811c03a4f0a72e5d984d9feb5f2f8b30135f1085340e99c32364e6b20f9d608"
+    }
+  ],
+  "replayed": false,
+  "payload_omitted": false,
+  "late_after_indeterminate": false
+}
+```
+
+This closes only the multi-file RBP output transport. It neither specifies nor proves client-origin upload,
+Gateway resource authorization, image display/download, or DP-10 acceptance.
 
 ## 14. Document context
 
@@ -812,6 +1219,8 @@ Raw model paths SHOULD be represented by bounded metadata and digests according 
   "fault_class": "parameter",
   "outcome": "known",
   "verification_required": false,
+  "replayed": false,
+  "late_after_indeterminate": false,
   "message": "bounded operator-safe message",
   "addin_error": {"code": -32602, "message": "optional bounded detail"}
 }
@@ -834,11 +1243,20 @@ Raw model paths SHOULD be represented by bounded metadata and digests according 
 | `cancelled` | false | Gateway abandoned the invocation; late real outcome remains journaled |
 
 `outcome` is `known` unless the fault is `journal_indeterminate`, where it MUST be `indeterminate` and
-`verification_required` MUST be true. Retryability is explicit on every error. The orchestrator, not the
-bridge, owns bounded retry policy. A write is never blindly retried: after the first add-in byte may have been
-sent, transport timeout, process loss, cancellation uncertainty, or add-in unreachability MUST be classified
-through the journal. If non-execution cannot be proved, `journal_indeterminate` replaces the otherwise
-retryable environment class and activates the Section 6.2 verification hold.
+`verification_required` MUST be true. A `journal_indeterminate` invocation or nested batch error also requires
+the affected `verification_hold_id` and `mutation_scope`. Retryability, outcome, and verification requirement
+are explicit on every top-level or nested error; no parent status supplies them by implication.
+
+`replayed` and `late_after_indeterminate` default to false. A known terminal error discovered after an earlier
+indeterminate classification may be returned only on origin-key redelivery with both true plus
+`verification_hold_id` and a required `result_digest` over the exact durable raw response/error evidence. It
+follows Section 6.2.1 and does not clear the hold by itself.
+
+The orchestrator, not the bridge, owns bounded retry policy. A write is never blindly retried: after the first
+add-in byte may have been sent, transport timeout, process loss, cancellation uncertainty, or add-in
+unreachability MUST be classified through the journal. If non-execution cannot be proved,
+`journal_indeterminate` replaces the otherwise retryable environment class and activates the Section 6.2.1
+scope hold.
 
 ## 16. Cancellation
 
@@ -930,6 +1348,7 @@ An update notice MAY also ride `hello_ack` or `heartbeat_ack`. A bridge MUST ver
 | Serialized invocation params | 4 MiB |
 | Partial chunk | 1 MiB |
 | Total reconstructed invocation result | 32 MiB |
+| Artifact streams per invocation | 16 |
 | Control message | 64 KiB |
 | `doc_context_update` | 256 KiB |
 | Default invocation timeout | 120 seconds |
@@ -950,7 +1369,8 @@ The bridge MUST reject oversize params before contacting the add-in. Negotiated 
 - Params and terminal outcomes are journaled with digests; secrets and full raw paths are excluded by policy.
 - Every Gateway invocation produces exactly one audit record keyed by tenant plus the canonical idempotency key; redelivery updates that record instead of duplicating it.
 - Approval is a separate audit event carrying actor, time, preview/action identity, and `confirmation_id`.
-- `guarded=true` is protected product behavior and remains distinct from a failed operation.
+- RBP `status:"guarded"`, derived from an add-in `guarded:true` result and paired with the required
+  `guarded_reason`, is protected product behavior and remains distinct from a failed operation.
 - No successful transport acknowledgement is evidence that a model transaction committed; terminal result fields and journal state are authoritative.
 
 ## 21. Minimum conformance suite for v1.0 freeze
@@ -984,29 +1404,74 @@ The implementation-independent harness uses a Gateway stub, bridge simulator, an
 25. Cross-device/cross-rsid resume and invocation authorization negatives
 26. Gateway `N`/`N-1` compatibility plus within-version additive-change vectors
 27. Reconnect full-jitter bounds, 60-second cap, and reset only after 120 seconds continuously steady
-28. Pending-expiry mutation returns an indeterminate outcome, installs the verification hold, and blocks a new-id write until an audited verification read clears it
-29. Mixed terminal/non-terminal `atomic:false` batch redelivery plus atomic terminal replay/indeterminate recovery
-30. RFC 8785 `params_digest` golden vectors for property order, number formatting, Unicode, and escapes
-31. `heartbeat_ack`, resume, cancel, goodbye, and manifest payload-schema positive/negative vectors
-32. Chunk Base64 alphabet/padding, decoded-byte limit, reconstruction size, and decoded-content digest
+28. Pending-expiry mutation installs the `(rsid,mutation_scope)` conflict hold; fresh-id invoke and batch writes
+    are blocked; correlated read and late-terminal evidence exercise every retained/cleared transition and an
+    invalid or inconclusive clearance never opens dispatch
+29. Mixed terminal/non-terminal `atomic:false` batch redelivery plus atomic terminal replay/indeterminate
+    recovery; every nested error carries explicit outcome/verification fields and affected scope holds
+30. RFC 8785 `params_digest`, explicit per-step digest, and `batch_digest` golden vectors cover property order,
+    number formatting, Unicode, escapes, step omission, params/digest mismatch, and changed policy/scope/clearance
+31. `heartbeat_ack`, registration/unregistration/resume, cancel, goodbye, and manifest payload-schema positive/negative vectors
+32. Chunk Base64 alphabet/padding, per-stream identity/indexing, decoded-byte limits, reconstruction size, and
+    decoded-content digest
 33. Loopback-only discovery/connect rejection for wildcard, LAN, hostname-resolved remote, and override targets
 34. Session document-schema and seat/user spoof rejection against authenticated enrollment
 35. Maximum-safe `seq` acceptance, unsafe `2^53` rejection, no-wrap renewal, duplicate, and gap behavior
-36. WSS-primary and Streamable HTTP/SSE fallback interop produce identical journal/resume outcomes
+36. WSS-primary and the exact Streamable HTTP/SSE create/events/messages lifecycle produce identical journal/resume outcomes, including opening-error and proxy-buffering vectors
+37. Every `session_unregister` reason revokes resume, prevents new dispatch, and preserves a possibly dispatched mutation as indeterminate
+38. `status:"guarded"` requires a valid `guarded_reason`; first-delivery `atomic:false` stops on that guarded step and marks all successors `not_started`
+39. `payload_omitted` positive/negative vectors enforce replay-only use, required digest, absent result, and audited read-based recovery
+40. GAP-7 RBP artifact vectors reject raw/local/traversal/reparse paths and prove multi-file
+    `artifact_id`/`artifact_index` mapping, independent chunk streams, descriptor/digest/size verification,
+    retransmission identity, and all-or-nothing invalid-member rejection; no north-client claim is made
 
 The required pilot stack additionally runs a real-add-in smoke covering each method family, one confirm-class write, forced reconnect, and one atomic batch.
 
-## 22. v0.9 review checklist and v1.0 freeze blockers
+## 22. v1.0 freeze gate
 
-The following remain open review items; v0.9 is intentionally not marked frozen:
+The `1.0-rc.1` text closes the known semantic review items: primary/fallback lifecycle and opening failures,
+zero-based backoff, version window, per-session capability/version fields, unregistration, guarded and omitted
+result fields, first-delivery and redelivery batch behavior, session/scope mutation recovery holds, explicit
+verification/late-evidence clearance, RFC 8785 invocation and batch digest inputs, complete nested errors, and
+the multi-file RBP-side GAP-7 output carrier.
 
-- Freeze the Streamable HTTP/SSE fallback binding selected by DP-2 and attach proxy/interoperability evidence.
-- Publish JSON Schemas under `packages/protocol` that match every payload and conditional envelope rule in this document.
-- Confirm add-in capability/version fields exposed by `mcp_status` and `get_document_context`.
-- Resolve the GAP-7 file-ingress/artifact-upload mechanism with the WP9 client evaluation; add only the selected capability-gated messages.
-- Review batchable command restrictions with the add-in implementation owner.
-- Run the conformance golden vectors and fold findings into this document.
-- Confirm that the Gateway audit schema and bridge journal both materialize the exact RES-21 key.
-- Record the review outcome in `docs/decisions/DP-log.md`; any normative change follows R-F.
+The document is nevertheless **not frozen or tagged v1.0** until all of this evidence is merged:
 
-M1 freezes this document as v1.0 only after the checklist is complete and the required conformance evidence is attached.
+- JSON Schemas under `packages/protocol/schemas/rbp/v1` cover every payload, conditional result/batch field,
+  control/data envelope prohibition, and capability gate in this document; generated types are byte-stable.
+- The Section 21 golden-vector/conformance suite is green and its machine-readable report is retained.
+- WSS and Streamable HTTP/SSE pass proxy/interoperability tests against the same journal/resume fixtures.
+- The exact loopback fixture proves the required `mcp_status`/`get_document_context` version and per-session
+  capability fields, loopback rejection, and `execute_batch` success/rollback wire behavior.
+- The add-in implementation owner accepts the batchable-command restrictions and atomic rollback evidence.
+- GAP-7 RBP stub vectors prove the Section 13.1 multi-file output carrier, stream/descriptor integrity, spool
+  confinement, acknowledgement/replay, and cleanup without a general RBP `file_fetch`. WP2/WP9 retain all
+  client upload, `artifact_ref`, north-resource authorization, and display/download evidence.
+- Gateway audit and bridge journal evidence materialize the exact RES-21 key, and the dated review outcome plus
+  any normative R-F amendments are recorded in `docs/decisions/DP-log.md`.
+
+Evidence is reported in three non-interchangeable tiers:
+
+1. **Semantic/schema evidence:** this `1.0-rc.1` text, complete payload schemas, clean generated-type diff, and
+   byte-exact golden vectors show that the proposed contract is internally expressible. They do not prove a
+   running bridge, Gateway, journal, add-in fixture, or live Revit path and MUST NOT be reported as full M1.
+2. **Executable M1 evidence:** O1-T3 add-in loopback fixture, O1-T4 bridge simulator, O1-T5 Gateway stub, and
+   O1-T6 complete Section 21 suite must produce retained machine-readable results. Until those artifacts are
+   linked and green, the protocol remains `1.0-rc.1` and the M1 freeze/tag gate is pending.
+3. **Pilot evidence:** O1-T7 exercises the adapted add-in on real Windows/Revit after protocol freeze; WP9
+   separately proves the selected client. These are pilot-entry gates and cannot be substituted by schema,
+   simulator, or fixture results.
+
+If T3–T7 implementation evidence reveals that a required field, state transition, digest, carrier, or safety
+rule cannot be implemented as written, the owner MUST leave the affected gate red and record a dated R-F
+amendment before changing the normative contract. Weakening a vector, adding an undocumented tolerance, or
+calling a partial tier “passed” is not conformance.
+
+Only the evidence-closing change may replace the metadata version with `1.0`, set status to `Frozen`, and
+create `rbp/v1.0.0`. Any semantic finding before that change updates the release candidate and its vectors;
+any semantic change after it follows Section 7.3 versioning rules.
+
+The real adapted-add-in smoke in Section 21 and WP9 hands-on DP-10 artifact/client evidence remain separate
+pilot-entry gates after protocol freeze; they are not prerequisites for the M1 semantic tag. They MUST validate
+the frozen contract, and an incompatibility cannot be papered over: it requires the applicable additive
+capability or protocol-version/R-F change before pilot use.
