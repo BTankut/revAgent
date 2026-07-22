@@ -1,10 +1,10 @@
 # revAgent Target-Architecture Migration Master Plan
 
-**Document state:** living M0 skeleton
+**Document state:** living migration tracker
 
-**Current milestone:** M0 — in progress
+**Current milestone:** M1 — in progress
 
-**Phase-0 exit:** not met
+**Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
 **Last updated:** 2026-07-22
 
@@ -27,28 +27,35 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 
 | Phase-0 exit evidence | Current evidence | State | Next owner/action |
 |---|---|---|---|
-| DP-1, DP-2, and DP-13 recorded | Operator confirmed .NET 8 self-contained Bridge, WSS primary + Streamable HTTP/SSE fallback, and the proposed monorepo layout on 2026-07-22; recorded in draft PR [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | Merge #268 first; implementation/demonstration gates remain separate |
-| O1 v0.9 in review | Full RBP/1 draft in PR [#269](https://github.com/BTankut/revAgent/pull/269) | `in_progress` | Complete one review pass; v1.0 freeze is M1 |
-| Monorepo scaffold | Gateway/protocol/bridge boundary in PR [#270](https://github.com/BTankut/revAgent/pull/270) | `in_progress` | Review and merge through protected flow |
-| CI green, including `gateway-gates` | Both jobs passed in [run 29874789704](https://github.com/BTankut/revAgent/actions/runs/29874789704) for PR [#271](https://github.com/BTankut/revAgent/pull/271) | `passed` | Review and merge through protected flow |
+| DP-1, DP-2, and DP-13 recorded | Operator confirmed .NET 8 self-contained Bridge, WSS primary + Streamable HTTP/SSE fallback, and the proposed monorepo layout on 2026-07-22; the record merged through [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | Carry the decisions forward without reopening them; implementation/demonstration gates remain separate |
+| O1 v0.9 review baseline | The full RBP/1 draft and W1 closure corrections merged through [#269](https://github.com/BTankut/revAgent/pull/269) after the operator-authorized closure review | `passed` | M1 owns semantic/schema hardening, executable T2-T6 conformance, and the conditional v1.0 freeze |
+| Monorepo scaffold | The Gateway/protocol/bridge boundary merged through [#270](https://github.com/BTankut/revAgent/pull/270); root overrides and generated clean-diff enforcement are present | `passed` | Keep legacy/frozen paths outside ordinary migration PRs |
+| CI green, including `gateway-gates` | PR [#271](https://github.com/BTankut/revAgent/pull/271) merged the additive jobs; Engineering and Gateway jobs passed for exact `main` commit `fdedd61` in [run 29929124082](https://github.com/BTankut/revAgent/actions/runs/29929124082) | `passed` | Keep both jobs green through M1; a legacy-suite regression is a freeze-violation signal |
 | Existing 35-tool catalog served over Streamable HTTP; latency recorded | External client 35/35; p95 `tools/list` 13.946 ms in PR [#272](https://github.com/BTankut/revAgent/pull/272) | `passed` | Review transport-spike limits; do not treat as production SLA |
-| Phase-1 Compose skeleton | Gateway + Postgres 16 + Caddy + filesystem object store in PR [#273](https://github.com/BTankut/revAgent/pull/273) | `in_progress` | Review; DP-5 separately decides whether Keycloak is added |
+| Phase-1 Compose skeleton | Gateway + Postgres 16 + Caddy + filesystem object store merged through [#273](https://github.com/BTankut/revAgent/pull/273); hash-matched artifacts and `docker compose config --quiet` host proof are retained through [#274](https://github.com/BTankut/revAgent/pull/274) | `passed` | DP-5 separately decides whether Keycloak is added; no origin container or connector service is started yet |
 | GAP-13.1 publish freeze | Release-freeze guard is on `main` via PR [#267](https://github.com/BTankut/revAgent/pull/267) | `passed` | Keep locked; emergency exception remains operator-gated |
 | GAP-13.2 updater-abstinence communication | Barış Tankut approved the notice and reported sending it to users through WhatsApp on 2026-07-22; recorded in `docs/plan/GAP13_2_UPDATER_ABSTINENCE_NOTICE.md` | `in_progress` | Record exact group/recipient list, timestamp/message evidence, expected/acknowledged counts, and missing-recipient follow-up; separately verify scheduled tasks exit without changes |
-| WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; hands-on remote-MCP gates remain in draft PR [#275](https://github.com/BTankut/revAgent/pull/275) | `in_progress` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility; selection alone is not conformance |
+| WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; the M0 comparison matrix merged through [#275](https://github.com/BTankut/revAgent/pull/275) | `passed` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility in the separate DP-10 hands-on gate; selection alone is not conformance |
 | DP-8 host selection and live reachability evidence | BatchMode SSH evidence retained in PR [#268](https://github.com/BTankut/revAgent/pull/268): Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM, 204 GiB free root storage, and 870 GiB free data storage; router has no dual-WAN/LTE and Barış Tankut accepted WAN-outage risk on 2026-07-22 | `passed` | M0 reachability is closed. Under R-G, the implementation assistant owns later Docker/Compose and tunnel/origin work; retain power/UPS and production-readiness evidence for M7 |
 | DP-3/DP-4 connector and domain staging | `cloudflared` 2026.7.2, matching tunnel credential hash, `gateway.revagent.app` → `http://127.0.0.1:8081` ingress validation, bounded QUIC/HTTP2 proof, Docker Engine 29.6.2/Compose v5.3.1, hash-matched PR #273 artifacts, and configuration validation are retained in `docs/decisions/DP-03-04-cloudflare-staging.md`; zero containers/listeners and connector disabled/inactive | `passed` | After the immutable Gateway image and root-owned environment exist, start the real origin, enable the connector, and retain public `/healthz`, TLS, restart, and reconnect evidence for pilot entry |
 | DP-12 NET01 live readiness | Public-key SSH, Windows/resources, Revit 2022, Codex AppX, revAgent stable, and protected bootstrap evidence retained in `docs/decisions/DP-12-NET01-readiness-2026-07-22.md`; stale updater launcher lacks `-AuditOnly` and last task result is `1` | `in_progress` | Technical team neutralizes or repairs the updater through the controlled pilot path without bypassing the release freeze; operator names pilot user, dates, fallback, and communications owner |
 
-M0 remains open until the updated O1 review is accepted and all current-head protected checks are green.
-Live Ubuntu-host reachability is retained in #268; DP-1/DP-2/DP-13 are no longer operator-decision blockers.
+The core M0 exit defined by the Week-1 objective is evidenced by merged PRs #268-#275: the decisions are
+recorded, O1 v0.9 completed its closure review, the monorepo and Compose scaffolds exist, the 35-tool HTTP
+spike passed, and the new-package CI is present. PR #276 adds live NET01 evidence. Exact-main run
+29929124082 completed green, so M0 is `passed`; only the milestone decision owner may promote it to
+`accepted`.
+
+GAP-13.2's exact WhatsApp distribution/acknowledgement proof and scheduled-task neutrality, DP-12 updater
+neutralization and named pilot roles/window, WP9 hands-on conformance, and active-origin/tunnel proof are
+pilot-entry carry-forwards. They remain open and are not silently converted into M0 completion evidence.
 
 ## Milestones
 
 | Milestone | Outcome and executable exit demonstration | Depends on | Primary owner(s) | State |
 |---|---|---|---|---|
-| M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `in_progress` |
-| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults | M0 | WP1 | `not_started` |
+| M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `passed` |
+| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults | M0 | WP1 | `in_progress` |
 | M2 | North MCP endpoint serves capability index/deferred schemas and dispatches the relocated catalog through executor abstractions | M1 | WP2 | `not_started` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `not_started` |
 | M4 | **Vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with audit evidence | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
