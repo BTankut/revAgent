@@ -23,8 +23,14 @@ export interface BindingExecutionEvidence {
   measurements: AssertionMeasurement[];
 }
 
+export interface CaseExecutionSupport {
+  supported: boolean;
+  reason?: string;
+}
+
 export interface LiveConformanceStack {
   components: ComponentEvidence[];
+  caseSupport(caseId: string, binding: Binding): CaseExecutionSupport;
   executeBinding(caseId: string, binding: Binding): Promise<BindingExecutionEvidence>;
   sampleResources(): Promise<Omit<ResourceSample, "index" | "offsetMs">>;
   stop(): Promise<{ orphanProcessCount: number }>;
@@ -136,8 +142,30 @@ export async function executeConformanceRun(input: {
     const ledger = new CaseObservationLedger(report.run.runId, manifestCase.id);
     const bindingEvidence: BindingExecutionEvidence[] = [];
     let failure: Error | undefined;
+    let unsupportedReason: string | undefined;
     for (const [bindingIndex, binding] of manifestCase.bindings.entries()) {
       const bindingStartedMs = Date.now();
+      let support: CaseExecutionSupport;
+      try {
+        support = stack.caseSupport(manifestCase.id, binding);
+      } catch (error) {
+        failure = error instanceof Error ? error : new Error(String(error));
+        result.bindings[bindingIndex] = {
+          binding,
+          status: "error",
+          durationMs: Date.now() - bindingStartedMs,
+        };
+        break;
+      }
+      if (support.supported !== true) {
+        unsupportedReason = support.reason?.trim() || `suite driver does not support ${manifestCase.id}/${binding}`;
+        result.bindings[bindingIndex] = {
+          binding,
+          status: "not_run",
+          durationMs: Date.now() - bindingStartedMs,
+        };
+        break;
+      }
       try {
         const evidence = await stack.executeBinding(manifestCase.id, binding);
         evidence.observations.forEach((observation) => ledger.add(observation));
@@ -161,11 +189,11 @@ export async function executeConformanceRun(input: {
     const caseFinishedMs = Date.now();
     result.finishedAt = new Date(caseFinishedMs).toISOString();
     result.durationMs = caseFinishedMs - caseStartedMs;
-    result.status = failure === undefined && result.bindings.every(({ status }) => status === "passed") &&
+    result.status = unsupportedReason === undefined && failure === undefined && result.bindings.every(({ status }) => status === "passed") &&
       result.assertions.every(({ passed }) => passed === true) ? "passed" : failure === undefined ? "failed" : "error";
     result.failure = result.status === "passed" ? null : {
-      code: failure === undefined ? "assertion_failed" : "case_driver_error",
-      message: failure?.message ?? "one or more runner-computed assertions did not meet canonical semantics",
+      code: unsupportedReason !== undefined ? "unsupported_case" : failure === undefined ? "assertion_failed" : "case_driver_error",
+      message: unsupportedReason ?? failure?.message ?? "one or more runner-computed assertions did not meet canonical semantics",
     };
 
     for (const binding of manifestCase.bindings) {

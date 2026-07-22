@@ -14,7 +14,22 @@ export { assertPassingSoakReport, evaluatePassingSoak, validateSoakReport } from
 export { runReconnectSoak } from "./soakRunner.js";
 export type { ReconnectSoakAdapter, SoakClock, SoakCycleObservation } from "./soakRunner.js";
 export { executeConformanceRun } from "./suiteRunner.js";
-export type { BindingExecutionEvidence, LiveConformanceStack, ThreeProcessSuiteDriver } from "./suiteRunner.js";
+export type { BindingExecutionEvidence, CaseExecutionSupport, LiveConformanceStack, ThreeProcessSuiteDriver } from "./suiteRunner.js";
+export {
+  BRIDGE_CONTROL_ACTIONS,
+  CASE_CONTROL_OBSERVATION_MAP,
+  FIXTURE_CONTROL_ACTIONS,
+  GATEWAY_CONTROL_ACTIONS,
+  HARNESS_ACTIONS,
+  caseProgram,
+} from "./casePrograms.js";
+export type {
+  BindingArguments,
+  CanonicalAssertionProbe,
+  CaseControlStep,
+  CaseObservationRequirement,
+  ConformanceCaseProgram,
+} from "./casePrograms.js";
 export { runCli } from "./cli.js";
 export {
   assertPassingAggregateReport,

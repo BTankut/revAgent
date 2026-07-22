@@ -22,6 +22,18 @@ missing observations, cross-case ids, duplicate ids, a missing binding, or an
 unsupported case stays failed. The package does not include a synthetic
 passing driver.
 
+`CASE_CONTROL_OBSERVATION_MAP` is the ordered forty-case choreography catalog.
+It pins the exact T3 fixture JSONL control, T4 Bridge JSONL control, T5 Gateway
+HTTP control, and parent-owned raw transport/process primitives needed by each
+case. Every canonical sub-vector is bound to named, same-case raw observations
+and the parent runner owns its predicate. `LiveConformanceStack.caseSupport`
+must positively declare support for each case/binding before execution. A
+negative declaration leaves that binding `not_run`, marks the case failed, and
+does not call the case executor.
+Each binding program begins with an isolated fresh trio using the exact
+execution-plan identities; state and credentials from one case cannot make a
+later case pass or fail.
+
 Retained evidence belongs below
 `artifacts/conformance/rbp-v1/1.0-rc.1/`. The manifest defines the exact run,
 JUnit, aggregate, log, trace, journal, and metric path templates. Nothing below
