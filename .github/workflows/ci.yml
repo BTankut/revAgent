@@ -51,6 +51,9 @@ jobs:
           .\scripts\test-signed-source-free-cd.ps1
           .\scripts\test-desktop-launcher-cleanup.ps1
 
+  # Bounded M0 exception to P-CD-3: RES-24 and the dated R-F record land first
+  # through PR #268. Existing CI jobs remain unchanged; later Gateway CI uses
+  # its dedicated workflow.
   gateway-gates:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
@@ -75,5 +78,5 @@ jobs:
       - name: Type-check migration packages
         run: npm run typecheck
 
-      - name: Test migration packages
+      - name: Verify generated protocol types and test migration packages
         run: npm test
