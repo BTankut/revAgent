@@ -6,6 +6,7 @@ import {
   canonicalizeJson,
   makeBatchDigest,
   makeIdempotencyKey,
+  makeMutationHoldId,
   makeParamsDigest,
   parseRbpFrame,
   rbpEnvelopeErrors,
@@ -318,6 +319,74 @@ describe("RBP/1 batch result semantics", () => {
     }
     return envelope;
   }
+
+  function atomicIndeterminatePayload(): Record<string, unknown> {
+    const envelope = clone(positiveByName.get("batch_indeterminate_result"));
+    if (envelope === undefined) {
+      throw new Error("missing batch_indeterminate_result fixture");
+    }
+    return envelope;
+  }
+
+  it("accepts every possibly executed atomic step as indeterminate", () => {
+    const envelope = atomicIndeterminatePayload();
+    expect(validateRbpEnvelope(envelope)).toBe(true);
+
+    const payload = envelope.payload as Record<string, unknown>;
+    const steps = payload.steps as Array<Record<string, unknown>>;
+    const expectedHoldId = makeMutationHoldId(
+      "rs_7f3a",
+      { kind: "document", document_id: "doc-01" },
+      steps.map((step) => `rs_7f3a/${String(step.invocation_id)}`),
+    );
+    expect(expectedHoldId).toBe(
+      "vh:4cf5818836b3d0e890ebc20548b0f863479f3ce996370947ad6c8067f437bad7",
+    );
+    expect(steps.map((step) => (step.error as Record<string, unknown>).verification_hold_id)).toEqual([
+      expectedHoldId,
+      expectedHoldId,
+      expectedHoldId,
+    ]);
+  });
+
+  it("keeps the stop-after-first-non-success rule for atomic:false", () => {
+    const envelope = atomicIndeterminatePayload();
+    const payload = envelope.payload as Record<string, unknown>;
+    payload.atomic = false;
+    payload.transaction_state = "not_applicable";
+
+    expect(validateRbpEnvelope(envelope)).toBe(false);
+    expect(rbpEnvelopeErrors()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ keyword: "rbpSemantic", instancePath: "/payload/steps/1/status" }),
+        expect.objectContaining({ keyword: "rbpSemantic", instancePath: "/payload/steps/2/status" }),
+      ]),
+    );
+  });
+
+  it("keeps the stop-after-first-failure rule for a clean atomic rollback", () => {
+    const envelope = clone(positiveByName.get("batch_failed_result"));
+    if (envelope === undefined) {
+      throw new Error("missing batch_failed_result fixture");
+    }
+    const payload = envelope.payload as Record<string, unknown>;
+    payload.atomic = true;
+    payload.transaction_state = "rolled_back";
+    (payload.steps as Array<Record<string, unknown>>)[2] = {
+      index: 2,
+      invocation_id: "0197a3c2-0000-7000-8000-000000000023",
+      status: "completed",
+      result: {},
+      replayed: false,
+    };
+
+    expect(validateRbpEnvelope(envelope)).toBe(false);
+    expect(rbpEnvelopeErrors()).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ keyword: "rbpSemantic", instancePath: "/payload/steps/2/status" }),
+      ]),
+    );
+  });
 
   it("rejects failed_step_index that is not the first non-success step", () => {
     const envelope = batchPayload();
