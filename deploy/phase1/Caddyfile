@@ -1,0 +1,16 @@
+{
+	admin off
+	# Cloudflare terminates public TLS. This listener is a loopback-only HTTP
+	# origin published by Compose at 127.0.0.1:8081.
+	auto_https off
+}
+
+http://{$GATEWAY_DOMAIN} {
+	encode zstd gzip
+	reverse_proxy gateway:8080
+
+	log {
+		output stdout
+		format json
+	}
+}
