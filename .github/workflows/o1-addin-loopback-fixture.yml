@@ -1,0 +1,71 @@
+name: O1 add-in loopback fixture
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/o1-addin-loopback-fixture.yml'
+      - 'packages/addin-loopback-fixture/**'
+      - 'packages/protocol/**'
+      - 'docs/specs/O1-bridge-gateway-protocol.md'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - 'eslint.config.js'
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/o1-addin-loopback-fixture.yml'
+      - 'packages/addin-loopback-fixture/**'
+      - 'packages/protocol/**'
+      - 'docs/specs/O1-bridge-gateway-protocol.md'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.base.json'
+      - 'eslint.config.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: o1-addin-loopback-fixture-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fixture-linux:
+    name: Add-in loopback fixture (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install locked migration dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify generated protocol contract
+        run: |
+          npm run check:generated
+          npm test --workspace @revagent/protocol
+
+      - name: Lint and type-check fixture
+        run: |
+          npm run lint --workspace @revagent/addin-loopback-fixture
+          npm run typecheck --workspace @revagent/addin-loopback-fixture
+
+      - name: Build and test fixture including signal cleanup
+        run: npm test --workspace @revagent/addin-loopback-fixture
+
+      - name: Verify package boundary
+        run: npm pack --dry-run --workspace @revagent/addin-loopback-fixture
