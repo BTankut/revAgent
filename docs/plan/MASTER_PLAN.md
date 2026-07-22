@@ -27,18 +27,18 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 
 | Phase-0 exit evidence | Current evidence | State | Next owner/action |
 |---|---|---|---|
-| DP-1, DP-2, and DP-13 recorded | Decision pack and pending outcomes in draft PR [#268](https://github.com/BTankut/revAgent/pull/268) | `blocked_operator` | Operator records explicit choices and dates |
+| DP-1, DP-2, and DP-13 recorded | Operator confirmed .NET 8 self-contained Bridge, WSS primary + Streamable HTTP/SSE fallback, and the proposed monorepo layout on 2026-07-22; recorded in draft PR [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | Merge #268 first; implementation/demonstration gates remain separate |
 | O1 v0.9 in review | Full RBP/1 draft in PR [#269](https://github.com/BTankut/revAgent/pull/269) | `in_progress` | Complete one review pass; v1.0 freeze is M1 |
 | Monorepo scaffold | Gateway/protocol/bridge boundary in PR [#270](https://github.com/BTankut/revAgent/pull/270) | `in_progress` | Review and merge through protected flow |
 | CI green, including `gateway-gates` | Both jobs passed in [run 29874789704](https://github.com/BTankut/revAgent/actions/runs/29874789704) for PR [#271](https://github.com/BTankut/revAgent/pull/271) | `passed` | Review and merge through protected flow |
 | Existing 35-tool catalog served over Streamable HTTP; latency recorded | External client 35/35; p95 `tools/list` 13.946 ms in PR [#272](https://github.com/BTankut/revAgent/pull/272) | `passed` | Review transport-spike limits; do not treat as production SLA |
 | Phase-1 Compose skeleton | Gateway + Postgres 16 + Caddy + filesystem object store in PR [#273](https://github.com/BTankut/revAgent/pull/273) | `in_progress` | Review; DP-5 separately decides whether Keycloak is added |
 | GAP-13.1 publish freeze | Release-freeze guard is on `main` via PR [#267](https://github.com/BTankut/revAgent/pull/267) | `passed` | Keep locked; emergency exception remains operator-gated |
-| GAP-13.2 updater-abstinence communication | Draft in `docs/plan/COMMS_ANNOUNCEMENT_DRAFT.md` | `in_progress` | Approve, send to every fleet user, record acknowledgements; verify scheduled tasks are no-ops |
-| WP9 designer-client matrix | 15 hard gates + 15 conformance cases in draft PR [#275](https://github.com/BTankut/revAgent/pull/275) | `in_progress` | Review; DP-10 remains open until hands-on client/IdP/Revit evidence exists |
-| DP-8 Ubuntu host ready/reachable | Operator-confirmed dedicated host: `bt@192.168.90.154`, ED25519 key-only SSH, password and keyboard-interactive disabled; recorded in PR [#268](https://github.com/BTankut/revAgent/pull/268) | `accepted` | W1-7 retains operational reachability evidence and remaining host/tunnel actions; do not re-provision |
+| GAP-13.2 updater-abstinence communication | Independently sendable draft in `docs/plan/GAP13_2_UPDATER_ABSTINENCE_NOTICE.md` | `in_progress` | Approve its own sign-off row, send to every fleet user, record receipt confirmations; separately verify scheduled tasks exit without changes |
+| WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; hands-on remote-MCP gates remain in draft PR [#275](https://github.com/BTankut/revAgent/pull/275) | `in_progress` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility; selection alone is not conformance |
+| DP-8 host selection and live reachability evidence | Dedicated host selection recorded as `bt@192.168.90.154`, ED25519 key-only SSH, password and keyboard-interactive disabled; no retained live reachability command evidence yet | `in_progress` | Barış / office network operations: capture SSH, OS, Docker/Compose, storage, UPS, and resource evidence; record LTE decision/accepted risk before M7 |
 
-M0 must not be marked accepted while DP-1/DP-2/DP-13 remain unresolved.
+M0 remains open until the updated O1 review is accepted, current-head CI is green, and live Ubuntu-host reachability evidence is retained. DP-1/DP-2/DP-13 are no longer operator-decision blockers.
 
 ## Milestones
 
@@ -48,7 +48,7 @@ M0 must not be marked accepted while DP-1/DP-2/DP-13 remain unresolved.
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults | M0 | WP1 | `not_started` |
 | M2 | North MCP endpoint serves capability index/deferred schemas and dispatches the relocated catalog through executor abstractions | M1 | WP2 | `not_started` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `not_started` |
-| M4 | Chosen WP9 client → Gateway → Bridge → live Revit executes one read and one confirm-class write with audit evidence | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
+| M4 | **Vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with audit evidence | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | `not_started` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | `not_started` |
 | M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | `not_started` |

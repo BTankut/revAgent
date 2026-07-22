@@ -16,6 +16,27 @@ This artifact starts P8-T5. It does not authorize a rollback, a NAS publish, or 
 4. Close Revit before restoring add-in/runtime files. Preserve evidence before remediation.
 5. A successful same-version repair is not proof that an older signed sequence can be installed. If any machine accepted a higher signed release, the rehearsed rollback must account for the explicit per-machine signed-release rollback guard.
 
+## Exit-84 constraint and exact per-machine recovery command
+
+This runbook is executable by an operator only while each workstation retains a current protected trust
+anchor. Rollback is not a fleet-wide push: the following command MUST be run interactively on every rostered
+machine, one machine at a time, after Revit is closed:
+
+```text
+C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd
+```
+
+Before running it, the operator verifies that this exact launcher and its protected bootstrap are present and
+current. The operator records machine name, Windows user, start/end time, command exit code, restored release
+identity, and smoke result.
+
+If the protected bootstrap is missing or stale, the NAS Refresh path stops **before UAC with exit 84**; the
+guarded direct elevated-apply path is not a bypass. On exit 84 the operator MUST stop recovery on that machine,
+preserve the output, and follow the supervised high-assurance procedure in `docs/BOOTSTRAP_PRESTAGE.md`.
+Running loose NAS scripts, lowering a signed sequence, or reporting the machine restored is prohibited until
+that prestage and the exact launcher command above succeed. No scheduled task or single coordinator command
+substitutes for the per-machine invocation.
+
 ## Fields to freeze before signature
 
 | Field | Required value |
@@ -42,10 +63,11 @@ The bracket-free final wording, exact outage limit, and deadline must be signed 
 
 - [ ] Frozen NAS release identity and exact hashes captured; channel verified restorable and no higher release scheduled.
 - [ ] Publish-freeze guard verified; emergency exception owners named.
-- [ ] Every target machine verified to retain the three rollback trust-anchor paths.
+- [ ] Every target machine verified to retain the three rollback trust-anchor paths and the exact launcher `C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd` is present/current.
 - [ ] P3 uninstaller dry-run proves those paths are excluded.
 - [ ] Pilot updater scheduled task disabled without deleting bootstrap; inverse rollback step tested.
-- [ ] Scratch-machine rollback rehearsed using the same signed release and actual client/Codex registration path.
+- [ ] Scratch-machine rollback rehearsed with the exact per-machine launcher command above; exit code and restored signed identity retained.
+- [ ] Exit-84 drill proves a missing/stale protected bootstrap stops before UAC and routes the operator to `docs/BOOTSTRAP_PRESTAGE.md` without an ad-hoc bypass.
 - [ ] Revit-close, user-session, elevation, and Store-bound Codex attestation prerequisites rehearsed.
 - [ ] Per-machine and fleet duration measured and cutover window sized accordingly.
 - [ ] Current and rollback client instructions prepared and user-contact roster complete.
@@ -56,11 +78,17 @@ The bracket-free final wording, exact outage limit, and deadline must be signed 
 1. Decision owner declares rollback and records trigger, time, affected evidence ids, and fleet scope.
 2. Stop new Gateway dispatch, preserve logs/audit rows, and notify all users to stop assistant actions while leaving Revit project files untouched.
 3. Confirm the NAS channel remains frozen at the pre-cutover signed identity. Do not republish or lower a sequence as an ad-hoc recovery step.
-4. For each rostered machine: close Revit; verify bootstrap/prestage/trusted-key paths; run the rehearsed protected interactive restore/repair path; restore only the managed Codex MCP sections, AGENTS/skill material, and updater task required by the old stack.
+4. For each rostered machine: close Revit; verify bootstrap/prestage/trusted-key paths and the exact launcher; run `C:\ProgramData\DPE\revAgent\bootstrap\Start-revAgent-Update.cmd`; if it returns exit 84, stop that machine and execute the supervised `docs/BOOTSTRAP_PRESTAGE.md` path before retrying the same launcher. Restore only the managed Codex MCP sections, AGENTS/skill material, and updater task required by the old stack.
 5. Re-enable the NAS updater scheduled task on the pilot machine only as the rehearsed inverse of pilot neutralization; verify task identity and action before enabling it.
 6. Run the old-stack smoke on every machine: MCP registration, Revit status, one read-only live-model query, and user-visible result. Do not use a model write as the first rollback smoke.
 7. Record pass/fail, timestamps, release identity, and operator for every machine. The fleet remains unavailable until all machines pass or the incident owner declares a separate safety state.
 8. Preserve the new-stack evidence and open a root-cause record. A return to the new path requires a corrected build and a repeated pilot, not an in-place mixed-estate retry.
+
+Per-machine execution record:
+
+| Machine | Launcher present/current | Start/end | Exit code | Restored release identity | Smoke | Operator |
+|---|---|---|---:|---|---|---|
+| `TBD` | `TBD` | `TBD` | `TBD` | `TBD` | `TBD` | `TBD` |
 
 ## Honest time/cost boundary
 
