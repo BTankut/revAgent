@@ -1,0 +1,94 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v1/aggregate-report.schema.json",
+  "title": "RBP conformance three-run aggregate",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "manifest", "reportPath", "generatedAt", "source", "status", "consecutive", "runs", "summary", "cases", "artifacts"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "rbp-conformance-aggregate/v1" },
+    "manifest": { "$ref": "common.schema.json#/definitions/manifestIdentity" },
+    "reportPath": { "$ref": "common.schema.json#/definitions/relativePath" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "source": { "$ref": "common.schema.json#/definitions/sourceIdentity" },
+    "status": { "enum": ["passed", "failed", "incomplete"] },
+    "consecutive": { "type": "boolean" },
+    "runs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["runId", "sequence", "status", "startedAt", "finishedAt", "durationMs", "manifest", "source", "components", "bindings", "reportPath", "reportSha256"],
+        "properties": {
+          "runId": { "type": "string", "minLength": 1 },
+          "sequence": { "type": "integer", "minimum": 1, "maximum": 3 },
+          "status": { "enum": ["initialized", "running", "passed", "failed", "error"] },
+          "startedAt": { "type": ["string", "null"], "format": "date-time" },
+          "finishedAt": { "type": ["string", "null"], "format": "date-time" },
+          "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+          "manifest": { "$ref": "common.schema.json#/definitions/manifestIdentity" },
+          "source": { "$ref": "common.schema.json#/definitions/sourceIdentity" },
+          "components": {
+            "type": "array",
+            "minItems": 3,
+            "maxItems": 3,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["id", "interfaceVersion", "identity"],
+              "properties": {
+                "id": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] },
+                "interfaceVersion": { "type": "string", "minLength": 1 },
+                "identity": {
+                  "anyOf": [
+                    { "$ref": "common.schema.json#/definitions/componentIdentity" },
+                    { "type": "null" }
+                  ]
+                }
+              }
+            }
+          },
+          "bindings": {
+            "type": "array",
+            "minItems": 2,
+            "maxItems": 2,
+            "items": { "enum": ["wss", "streamable_http_sse"] }
+          },
+          "reportPath": { "$ref": "common.schema.json#/definitions/relativePath" },
+          "reportSha256": { "$ref": "common.schema.json#/definitions/sha256" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requiredRuns", "passingRuns", "failedRuns", "incompleteRuns", "totalDurationMs"],
+      "properties": {
+        "requiredRuns": { "type": "integer", "const": 3 },
+        "passingRuns": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "failedRuns": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "incompleteRuns": { "type": "integer", "minimum": 0, "maximum": 3 },
+        "totalDurationMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 40,
+      "maxItems": 40,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["caseId", "title", "runStatuses", "passedAllRuns"],
+        "properties": {
+          "caseId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)$" },
+          "title": { "type": "string", "minLength": 1 },
+          "runStatuses": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "enum": ["not_run", "running", "passed", "failed", "error", "skipped"] } },
+          "passedAllRuns": { "type": "boolean" }
+        }
+      }
+    },
+    "artifacts": { "type": "array", "items": { "$ref": "common.schema.json#/definitions/artifact" } }
+  }
+}

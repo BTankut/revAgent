@@ -1,0 +1,167 @@
+#!/usr/bin/env node
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js";
+import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
+import { canonicalManifest } from "./manifest.js";
+import { stableJson } from "./stableJson.js";
+import type { AggregateInput, AggregateReport, PassingValidationOptions, RunReport } from "./types.js";
+import {
+  assertPassingAggregateReport,
+  assertPassingRunReport,
+  ConformanceValidationError,
+  validateAggregateReportStructure,
+  validateRunReportStructure,
+} from "./validator.js";
+
+function usage(): never {
+  throw new Error(
+    [
+      "Usage:",
+      "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
+      "  rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
+      "  rbp-conformance junit <run-report.json> <junit.xml>",
+      "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]",
+      "  rbp-conformance summary <aggregate.json> <summary.md>",
+    ].join("\n"),
+  );
+}
+
+function resolveFrom(cwd: string, file: string): string {
+  return path.isAbsolute(file) ? file : path.resolve(cwd, file);
+}
+
+function readJson(file: string, cwd: string): unknown {
+  return JSON.parse(readFileSync(resolveFrom(cwd, file), "utf8")) as unknown;
+}
+
+function writeText(file: string, contents: string, cwd: string): void {
+  const target = resolveFrom(cwd, file);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, contents, "utf8");
+}
+
+function validationOptions(args: string[], cwd: string): PassingValidationOptions {
+  const options: PassingValidationOptions = { verifyArtifactFiles: true, artifactRoot: cwd };
+  for (let index = 0; index < args.length; index += 1) {
+    const name = args[index];
+    const value = args[index + 1];
+    if (value === undefined) {
+      usage();
+    }
+    if (name === "--expected-commit") {
+      options.expectedCommitSha = value;
+    } else if (name === "--expected-tree") {
+      options.expectedTreeSha = value;
+    } else if (name === "--artifact-root") {
+      options.artifactRoot = resolveFrom(cwd, value);
+    } else {
+      usage();
+    }
+    index += 1;
+  }
+  return options;
+}
+
+function runInput(file: string, cwd: string, artifactRoot: string): AggregateInput {
+  const resolvedFile = resolveFrom(cwd, file);
+  const bytes = readFileSync(resolvedFile);
+  const report = JSON.parse(bytes.toString("utf8")) as unknown;
+  const validation = validateRunReportStructure(report);
+  if (!validation.ok || validation.value === undefined) {
+    throw new ConformanceValidationError(`Invalid run report ${file}`, validation.issues);
+  }
+  const reportPath = path.relative(artifactRoot, resolvedFile).replaceAll("\\", "/");
+  if (reportPath.startsWith("..") || path.isAbsolute(reportPath)) {
+    throw new Error(`Run report must be retained below the artifact root: ${file}`);
+  }
+  return {
+    report: validation.value,
+    reportPath,
+    reportSha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+export function runCli(args: string[], cwd: string = process.cwd()): void {
+  const [command, ...rest] = args;
+  if (command === "validate-run") {
+    const [file, ...flags] = rest;
+    if (file === undefined) usage();
+    const report = readJson(file, cwd);
+    assertPassingRunReport(report, validationOptions(flags, cwd));
+    process.stdout.write("RBP conformance run: PASS\n");
+    return;
+  }
+  if (command === "validate-aggregate") {
+    const [file, ...flags] = rest;
+    if (file === undefined) usage();
+    const report = readJson(file, cwd);
+    const options = validationOptions(flags, cwd);
+    options.aggregateReportFile = resolveFrom(cwd, file);
+    assertPassingAggregateReport(report, options);
+    process.stdout.write("RBP conformance three-run aggregate: PASS\n");
+    return;
+  }
+  if (command === "junit") {
+    if (rest.length !== 2) usage();
+    const report = readJson(rest[0]!, cwd) as RunReport;
+    const validation = validateRunReportStructure(report);
+    if (!validation.ok || validation.value === undefined) {
+      throw new ConformanceValidationError("Cannot map an invalid run report", validation.issues);
+    }
+    writeText(rest[1]!, runReportToJUnitXml(validation.value), cwd);
+    return;
+  }
+  if (command === "aggregate") {
+    if (rest.length < 3) usage();
+    const options = validationOptions(rest.slice(3), cwd);
+    const artifactRoot = path.resolve(options.artifactRoot ?? cwd);
+    const inputs = rest.slice(0, 3).map((file) => runInput(file, cwd, artifactRoot));
+    inputs.forEach(({ report }) => assertPassingRunReport(report, { ...options, artifactRoot }));
+    const aggregate = createThreeRunAggregate(inputs);
+    const junitXml = aggregateReportToJUnitXml(aggregate);
+    const junitPath = `${canonicalManifest.retainedEvidence.root}/${canonicalManifest.retainedEvidence.aggregateJunit}`;
+    const junitBytes = Buffer.from(junitXml, "utf8");
+    aggregate.artifacts.push({
+      kind: "aggregate_junit",
+      path: junitPath,
+      sha256: createHash("sha256").update(junitBytes).digest("hex"),
+      bytes: junitBytes.length,
+      mediaType: "application/xml",
+    });
+    writeText(junitPath, junitXml, artifactRoot);
+    const aggregateReportFile = path.resolve(artifactRoot, aggregate.reportPath);
+    assertPassingAggregateReport(aggregate, { ...options, artifactRoot, aggregateReportFile });
+    writeText(aggregate.reportPath, stableJson(aggregate), artifactRoot);
+    return;
+  }
+  if (command === "summary") {
+    if (rest.length !== 2) usage();
+    const aggregate = readJson(rest[0]!, cwd);
+    const validation = validateAggregateReportStructure(aggregate);
+    if (!validation.ok || validation.value === undefined) {
+      throw new ConformanceValidationError("Cannot summarize an invalid aggregate", validation.issues);
+    }
+    writeText(rest[1]!, renderAggregateSummary(validation.value as AggregateReport), cwd);
+    return;
+  }
+  usage();
+}
+
+const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
+
+if (isDirectInvocation) {
+  try {
+    runCli(process.argv.slice(2));
+  } catch (error) {
+    if (error instanceof ConformanceValidationError) {
+      process.stderr.write(`${error.message}\n${stableJson({ issues: error.issues })}`);
+    } else {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+    }
+    process.exitCode = 1;
+  }
+}

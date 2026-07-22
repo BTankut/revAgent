@@ -1,0 +1,197 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json",
+  "definitions": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "gitSha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40,64}$"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._{}\\-/]+$"
+    },
+    "manifestIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "sha256", "specVersion"],
+      "properties": {
+        "id": { "type": "string", "const": "rbp-v1.0-freeze-section-21" },
+        "version": { "type": "string", "const": "1" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "specVersion": { "type": "string", "const": "1.0-rc.1" }
+      }
+    },
+    "sourceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "commitSha", "treeSha", "dirty"],
+      "properties": {
+        "repository": { "type": "string", "minLength": 1 },
+        "commitSha": { "$ref": "#/definitions/gitSha" },
+        "treeSha": { "$ref": "#/definitions/gitSha" },
+        "dirty": { "type": "boolean", "const": false }
+      }
+    },
+    "componentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "protocolVersion", "commitSha", "treeSha", "executableSha256"],
+      "properties": {
+        "version": { "type": "string", "minLength": 1 },
+        "protocolVersion": { "type": "string", "const": "1.0-rc.1" },
+        "commitSha": { "$ref": "#/definitions/gitSha" },
+        "treeSha": { "$ref": "#/definitions/gitSha" },
+        "executableSha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "command": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["executable", "args", "workingDirectory", "environmentKeys", "readiness", "shutdown"],
+      "properties": {
+        "executable": { "type": "string", "minLength": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "workingDirectory": { "$ref": "#/definitions/relativePath" },
+        "environmentKeys": { "type": "array", "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" } },
+        "readiness": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kind", "value", "timeoutMs"],
+          "properties": {
+            "kind": { "enum": ["stdout_pattern", "tcp_loopback", "http_loopback", "process_alive"] },
+            "value": { "type": "string", "minLength": 1 },
+            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 120000 }
+          }
+        },
+        "shutdown": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["signal", "timeoutMs"],
+          "properties": {
+            "signal": { "enum": ["SIGINT", "SIGTERM", "stdin_eof"] },
+            "timeoutMs": { "type": "integer", "minimum": 1, "maximum": 30000 }
+          }
+        }
+      }
+    },
+    "componentEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "interfaceVersion", "expectedIdentity", "observedIdentity", "command", "process"],
+      "properties": {
+        "id": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] },
+        "interfaceVersion": { "type": "string", "minLength": 1 },
+        "expectedIdentity": { "$ref": "#/definitions/componentIdentity" },
+        "observedIdentity": {
+          "anyOf": [
+            { "$ref": "#/definitions/componentIdentity" },
+            { "type": "null" }
+          ]
+        },
+        "command": { "$ref": "#/definitions/command" },
+        "process": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["pid", "startedAt", "readyAt", "stoppedAt", "exitCode"],
+          "properties": {
+            "pid": { "type": ["integer", "null"], "minimum": 1 },
+            "startedAt": { "type": ["string", "null"], "format": "date-time" },
+            "readyAt": { "type": ["string", "null"], "format": "date-time" },
+            "stoppedAt": { "type": ["string", "null"], "format": "date-time" },
+            "exitCode": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path", "sha256", "bytes", "mediaType"],
+      "properties": {
+        "kind": { "enum": ["run_report", "junit", "component_log", "wire_trace", "journal_snapshot", "leak_metrics", "aggregate_report", "aggregate_junit", "case_evidence"] },
+        "path": { "$ref": "#/definitions/relativePath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "mediaType": { "type": "string", "minLength": 1 }
+      }
+    },
+    "leakCounters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["openFileDescriptorDelta", "residentBytesDelta", "journalPendingDelta", "orphanProcessCount"],
+      "properties": {
+        "openFileDescriptorDelta": { "type": "integer" },
+        "residentBytesDelta": { "type": "integer" },
+        "journalPendingDelta": { "type": "integer" },
+        "orphanProcessCount": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "assertion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assertionId", "subvectorId", "statement", "category", "passed", "expected", "actual", "evidenceSha256", "message"],
+      "properties": {
+        "assertionId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)-[A-Z0-9-]+$" },
+        "subvectorId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "statement": { "type": "string", "minLength": 1 },
+        "category": { "enum": ["wire_behavior", "journal_truth", "execution_count", "authorization", "timing", "resource_leak", "artifact_integrity", "compatibility", "schema", "recovery", "transport_parity", "discovery", "safety"] },
+        "passed": { "type": ["boolean", "null"] },
+        "expected": {},
+        "actual": {},
+        "evidenceSha256": { "anyOf": [{ "$ref": "#/definitions/sha256" }, { "type": "null" }] },
+        "message": { "type": ["string", "null"] }
+      }
+    },
+    "bindingResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding", "status", "durationMs"],
+      "properties": {
+        "binding": { "enum": ["wss", "streamable_http_sse"] },
+        "status": { "enum": ["not_run", "running", "passed", "failed", "error", "skipped"] },
+        "durationMs": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "title", "status", "startedAt", "finishedAt", "durationMs", "requiredComponents", "bindings", "assertions", "artifacts", "failure"],
+      "properties": {
+        "caseId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)$" },
+        "title": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["not_run", "running", "passed", "failed", "error", "skipped"] },
+        "startedAt": { "type": ["string", "null"], "format": "date-time" },
+        "finishedAt": { "type": ["string", "null"], "format": "date-time" },
+        "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+        "requiredComponents": {
+          "type": "array",
+          "minItems": 3,
+          "maxItems": 3,
+          "items": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] }
+        },
+        "bindings": { "type": "array", "minItems": 2, "maxItems": 2, "items": { "$ref": "#/definitions/bindingResult" } },
+        "assertions": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/assertion" } },
+        "artifacts": { "type": "array", "items": { "$ref": "#/definitions/artifact" } },
+        "failure": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["code", "message"],
+              "properties": {
+                "code": { "type": "string", "minLength": 1 },
+                "message": { "type": "string", "minLength": 1 }
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}
