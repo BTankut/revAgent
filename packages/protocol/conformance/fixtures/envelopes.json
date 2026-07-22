@@ -1,0 +1,1486 @@
+{
+  "positive": [
+    {
+      "name": "hello",
+      "scope": "control",
+      "type": "hello",
+      "payload": {
+        "min_protocol": 1,
+        "max_protocol": 1,
+        "capabilities": [
+          "journal_v1",
+          "chunked_results",
+          "doc_context_cached_v1"
+        ],
+        "bridge_version": "0.1.0",
+        "device_id": "device-01",
+        "machine": {
+          "hostname": "WS01",
+          "os": "Windows 11"
+        },
+        "addin_versions": [
+          "2026.07.22.0"
+        ]
+      }
+    },
+    {
+      "name": "hello_ack",
+      "scope": "control",
+      "type": "hello_ack",
+      "payload": {
+        "protocol": 1,
+        "connection_id": "connection-01",
+        "granted_capabilities": [
+          "journal_v1",
+          "chunked_results"
+        ],
+        "heartbeat_interval_ms": 15000,
+        "limits": {
+          "max_params_bytes": 4194304,
+          "max_result_bytes": 33554432,
+          "max_partial_bytes": 1048576
+        },
+        "manifest": {
+          "latest_bridge_version": "0.1.0",
+          "manifest_url": "/bridge/update/manifest"
+        }
+      }
+    },
+    {
+      "name": "session_register",
+      "scope": "control",
+      "type": "session_register",
+      "payload": {
+        "local_session_key": "port:8080:pid:1234",
+        "user_hint": {
+          "name": "BT"
+        },
+        "machine": {
+          "hostname": "WS01",
+          "fingerprint": "sha256:0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "revit": {
+          "version": "2022",
+          "build": "22.1.0",
+          "pid": 1234
+        },
+        "addin_version": "2026.07.22.0",
+        "result_contract_version": 2,
+        "session_capabilities": [
+          "batch_atomic",
+          "doc_context_cached_v1"
+        ],
+        "bridge_version": "0.1.0",
+        "documents": [
+          {
+            "document_id": "doc-01",
+            "title": "Project A",
+            "path_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "is_workshared": true,
+            "is_active": true
+          }
+        ],
+        "port": 8080
+      }
+    },
+    {
+      "name": "session_registered",
+      "scope": "control",
+      "type": "session_registered",
+      "payload": {
+        "rsid": "rs_7f3a",
+        "resume_token": "opaque-token",
+        "resume_expires_at": "2026-07-23T12:00:00.000Z",
+        "principal": {
+          "tenant_id": "tenant-01",
+          "user_id": "user-01"
+        },
+        "seat": {
+          "granted": true,
+          "seat_id": "seat-01"
+        },
+        "granted_session_capabilities": [
+          "batch_atomic",
+          "doc_context_cached_v1"
+        ]
+      }
+    },
+    {
+      "name": "session_resume",
+      "scope": "control",
+      "type": "session_resume",
+      "payload": {
+        "rsid": "rs_7f3a",
+        "resume_token": "opaque-token",
+        "last_rx_seq": 409
+      }
+    },
+    {
+      "name": "resume_ack",
+      "scope": "control",
+      "type": "resume_ack",
+      "payload": {
+        "rsid": "rs_7f3a",
+        "last_rx_seq": 412,
+        "resume_expires_at": "2026-07-23T12:00:00.000Z"
+      }
+    },
+    {
+      "name": "session_unregister",
+      "scope": "control",
+      "type": "session_unregister",
+      "payload": {
+        "rsid": "rs_7f3a",
+        "reason": "revit_exited"
+      }
+    },
+    {
+      "name": "heartbeat",
+      "scope": "control",
+      "type": "heartbeat",
+      "payload": {
+        "bridge_version": "0.1.0",
+        "acks": [
+          {
+            "rsid": "rs_7f3a",
+            "seq": 42
+          }
+        ],
+        "sessions": [
+          {
+            "rsid": "rs_7f3a",
+            "port": 8080,
+            "revit_status": {
+              "active_task": null,
+              "addin_reachable": true
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "heartbeat_ack",
+      "scope": "control",
+      "type": "heartbeat_ack",
+      "payload": {
+        "server_time": "2026-07-22T12:00:15.000Z",
+        "acks": [
+          {
+            "rsid": "rs_7f3a",
+            "seq": 30
+          }
+        ],
+        "update_available": {
+          "channel": "stable",
+          "manifest_url": "/bridge/update/manifest"
+        }
+      }
+    },
+    {
+      "name": "invoke",
+      "scope": "data",
+      "type": "invoke",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "method": "inspect_schedules",
+        "params": {},
+        "timeout_ms": 120000,
+        "mutating": false,
+        "mutation_scope": null,
+        "policy": {
+          "class": "auto",
+          "decision": "auto",
+          "confirmation_id": null
+        },
+        "verification": null,
+        "recovery_clearances": [],
+        "display": {
+          "task_name": "Inspect schedules",
+          "logical_tool_name": "core.schedule.inspect",
+          "parent_task_id": null
+        }
+      }
+    },
+    {
+      "name": "invoke_batch",
+      "scope": "data",
+      "type": "invoke_batch",
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "inspect_schedules",
+            "params": {},
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "auto",
+              "confirmation_id": null
+            }
+          }
+        ],
+        "batch_digest": "sha256:1fc2059e586e0c429fd0793b31ca910f4f4188d87813e7cce102f0a2882b48ac"
+      }
+    },
+    {
+      "name": "verification_invoke",
+      "scope": "data",
+      "type": "invoke",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000099",
+        "method": "inspect_schedules",
+        "params": {},
+        "timeout_ms": 120000,
+        "mutating": false,
+        "mutation_scope": null,
+        "policy": {
+          "class": "auto",
+          "decision": "auto",
+          "confirmation_id": null
+        },
+        "verification": {
+          "hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+          "mutation_scope": {
+            "kind": "document",
+            "document_id": "doc-01"
+          },
+          "purpose": "resolve_indeterminate"
+        },
+        "recovery_clearances": []
+      }
+    },
+    {
+      "name": "mutating_clearance_invoke",
+      "scope": "data",
+      "type": "invoke",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000103",
+        "method": "set_element_parameter",
+        "params": {
+          "element_id": 42
+        },
+        "timeout_ms": 120000,
+        "mutating": true,
+        "mutation_scope": {
+          "kind": "document",
+          "document_id": "doc-01"
+        },
+        "policy": {
+          "class": "confirm",
+          "decision": "confirmed",
+          "confirmation_id": "confirmation-01"
+        },
+        "verification": null,
+        "recovery_clearances": [
+          {
+            "hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+            "mutation_scope": {
+              "kind": "document",
+              "document_id": "doc-01"
+            },
+            "resolution_id": "0197a3c2-0000-7000-8000-000000000101",
+            "basis": "verification_read",
+            "verification_invocation_id": "0197a3c2-0000-7000-8000-000000000099",
+            "evidence_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "decision": "postcondition_verified",
+            "audit_id": "0197a3c2-0000-7000-8000-000000000102"
+          }
+        ]
+      }
+    },
+    {
+      "name": "invocation_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "invocation",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "status": "completed",
+        "result": {},
+        "replayed": false,
+        "metrics": {
+          "execute_ms": 425,
+          "request_bytes": 512,
+          "response_bytes": 4096,
+          "framing": "length-prefixed"
+        }
+      }
+    },
+    {
+      "name": "guarded_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "invocation",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000011",
+        "status": "guarded",
+        "guarded_reason": "confirmation_required",
+        "result": {
+          "guarded": true
+        },
+        "metrics": {
+          "execute_ms": 5,
+          "request_bytes": 64,
+          "response_bytes": 128,
+          "framing": "length-prefixed"
+        }
+      }
+    },
+    {
+      "name": "omitted_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "invocation",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000012",
+        "status": "completed",
+        "payload_omitted": true,
+        "result_digest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "replayed": true,
+        "metrics": {
+          "execute_ms": 5,
+          "request_bytes": 64,
+          "response_bytes": 1048577,
+          "framing": "length-prefixed"
+        }
+      }
+    },
+    {
+      "name": "batch_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "status": "completed",
+        "transaction_state": "not_applicable",
+        "failed_step_index": null,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": false
+          }
+        ],
+        "replayed": false
+      }
+    },
+    {
+      "name": "late_invocation_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "invocation",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "status": "completed",
+        "result": {
+          "verified": true
+        },
+        "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "replayed": true,
+        "late_after_indeterminate": true,
+        "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+        "metrics": {
+          "execute_ms": 425,
+          "request_bytes": 512,
+          "response_bytes": 4096,
+          "framing": "length-prefixed"
+        }
+      }
+    },
+    {
+      "name": "artifact_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "invocation",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "status": "completed",
+        "result": {
+          "files": [
+            {
+              "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+              "artifact_index": 0
+            }
+          ]
+        },
+        "chunked": true,
+        "artifacts": [
+          {
+            "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+            "artifact_index": 0,
+            "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000201",
+            "filename": "plan.png",
+            "content_type": "image/png",
+            "total_chunks": 1,
+            "total_size": 4,
+            "sha256": "sha256:b8fc6f9ab4621d16761cbc0335bbd804b0ebcc3d1d2aa8c757687501adc51aaa"
+          }
+        ],
+        "replayed": false,
+        "late_after_indeterminate": false,
+        "metrics": {
+          "execute_ms": 425,
+          "request_bytes": 512,
+          "response_bytes": 4096,
+          "framing": "length-prefixed"
+        }
+      }
+    },
+    {
+      "name": "batch_failed_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "status": "failed",
+        "transaction_state": "not_applicable",
+        "failed_step_index": 1,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "bounded operator-safe message"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ],
+        "replayed": false
+      }
+    },
+    {
+      "name": "batch_cancelled_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "status": "cancelled",
+        "transaction_state": "not_applicable",
+        "failed_step_index": 0,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "cancelled",
+            "error": {
+              "retryable": false,
+              "fault_class": "cancelled",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "cancel acknowledged"
+            },
+            "replayed": false
+          }
+        ],
+        "replayed": false
+      }
+    },
+    {
+      "name": "batch_late_failed_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "status": "failed",
+        "transaction_state": "not_applicable",
+        "failed_step_index": 0,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "late_after_indeterminate": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "message": "late durable failure"
+            },
+            "replayed": true,
+            "late_after_indeterminate": true,
+            "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+            "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ],
+        "replayed": true
+      }
+    },
+    {
+      "name": "batch_indeterminate_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "status": "indeterminate",
+        "transaction_state": "indeterminate",
+        "failed_step_index": 1,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": false,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "mutation_scope": {
+                "kind": "document",
+                "document_id": "doc-01"
+              },
+              "message": "verification required"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ],
+        "replayed": false
+      }
+    },
+    {
+      "name": "partial_chunk",
+      "scope": "data",
+      "type": "partial",
+      "payload": {
+        "kind": "chunk",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "stream_id": "result",
+        "chunk_index": 0,
+        "encoding": "base64",
+        "content_type": "application/json",
+        "data": "e30="
+      }
+    },
+    {
+      "name": "partial_progress",
+      "scope": "data",
+      "type": "partial",
+      "payload": {
+        "kind": "progress",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "progress": {
+          "elapsed_ms": 10000,
+          "note": "waiting_for_revit"
+        }
+      }
+    },
+    {
+      "name": "artifact_chunk",
+      "scope": "data",
+      "type": "partial",
+      "payload": {
+        "kind": "chunk",
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000201",
+        "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+        "artifact_index": 0,
+        "chunk_index": 0,
+        "encoding": "base64",
+        "content_type": "image/png",
+        "data": "UE5HMQ=="
+      }
+    },
+    {
+      "name": "invocation_error",
+      "scope": "data",
+      "type": "error",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "retryable": false,
+        "fault_class": "parameter",
+        "outcome": "known",
+        "verification_required": false,
+        "message": "invalid parameters",
+        "addin_error": {
+          "code": -32602,
+          "message": "bounded detail"
+        }
+      }
+    },
+    {
+      "name": "connection_error",
+      "scope": "control",
+      "type": "error",
+      "payload": {
+        "retryable": false,
+        "fault_class": "protocol",
+        "outcome": "known",
+        "verification_required": false,
+        "message": "malformed first frame"
+      }
+    },
+    {
+      "name": "indeterminate_error",
+      "scope": "data",
+      "type": "error",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "retryable": false,
+        "fault_class": "journal_indeterminate",
+        "outcome": "indeterminate",
+        "verification_required": true,
+        "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+        "mutation_scope": {
+          "kind": "document",
+          "document_id": "doc-01"
+        },
+        "message": "verification required"
+      }
+    },
+    {
+      "name": "late_error",
+      "scope": "data",
+      "type": "error",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "retryable": false,
+        "fault_class": "revit_api",
+        "outcome": "known",
+        "verification_required": false,
+        "replayed": true,
+        "late_after_indeterminate": true,
+        "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+        "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+        "message": "late durable failure"
+      }
+    },
+    {
+      "name": "cancel",
+      "scope": "data",
+      "type": "cancel",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+        "reason": "user_requested"
+      }
+    },
+    {
+      "name": "doc_context_update",
+      "scope": "data",
+      "type": "doc_context_update",
+      "payload": {
+        "documents": [
+          {
+            "document_id": "doc-01",
+            "title": "Project A",
+            "path_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+            "is_workshared": true,
+            "is_active": true
+          }
+        ],
+        "active_document": "doc-01",
+        "active_view": {
+          "id": "123",
+          "name": "Level 2 HVAC",
+          "type": "FloorPlan",
+          "level": "Level 2"
+        },
+        "discipline_hint": "mech"
+      }
+    },
+    {
+      "name": "manifest_check",
+      "scope": "control",
+      "type": "manifest_check",
+      "payload": {
+        "bridge_version": "0.1.0",
+        "addin_versions": [
+          "2026.07.22.0"
+        ],
+        "channel": "stable",
+        "highest_accepted_release_sequence": 574
+      }
+    },
+    {
+      "name": "manifest_info",
+      "scope": "control",
+      "type": "manifest_info",
+      "payload": {
+        "status": "update_available",
+        "channel": "stable",
+        "latest_version": "0.2.0",
+        "min_supported_version": "0.1.0",
+        "release_sequence": 575,
+        "rollout_cohort": "pilot",
+        "manifest_url": "/bridge/update/manifest/575",
+        "signature_url": "/bridge/update/manifest/575.sig"
+      }
+    },
+    {
+      "name": "goodbye",
+      "scope": "control",
+      "type": "goodbye",
+      "payload": {
+        "reason": "server_draining",
+        "retry_after_ms": 30000,
+        "message": "planned maintenance"
+      }
+    }
+  ],
+  "negative": [
+    {
+      "name": "control_rejects_rsid",
+      "base": "hello",
+      "patch": {
+        "rsid": "rs_7f3a"
+      }
+    },
+    {
+      "name": "control_rejects_seq",
+      "base": "hello",
+      "patch": {
+        "seq": 1
+      }
+    },
+    {
+      "name": "control_rejects_ack",
+      "base": "heartbeat",
+      "patch": {
+        "ack": 1
+      }
+    },
+    {
+      "name": "data_requires_rsid",
+      "base": "invoke",
+      "remove": [
+        "rsid"
+      ]
+    },
+    {
+      "name": "data_requires_seq",
+      "base": "invoke",
+      "remove": [
+        "seq"
+      ]
+    },
+    {
+      "name": "unsafe_seq",
+      "base": "invoke",
+      "patch": {
+        "seq": 9007199254740992
+      }
+    },
+    {
+      "name": "session_register_authority_spoof",
+      "base": "session_register",
+      "payload_patch": {
+        "tenant_id": "claimed-tenant"
+      }
+    },
+    {
+      "name": "invalid_policy_confirmation",
+      "base": "invoke",
+      "payload_patch": {
+        "policy": {
+          "class": "confirm",
+          "decision": "confirmed",
+          "confirmation_id": null
+        }
+      }
+    },
+    {
+      "name": "batch_rejects_recursive_execute_batch",
+      "base": "invoke_batch",
+      "payload_patch": {
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "execute_batch",
+            "params": {},
+            "mutating": true,
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation-01"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "guarded_requires_reason",
+      "base": "guarded_result",
+      "payload_remove": [
+        "guarded_reason"
+      ]
+    },
+    {
+      "name": "guarded_reason_rejects_uppercase",
+      "base": "guarded_result",
+      "payload_patch": {
+        "guarded_reason": "Confirmation_required"
+      }
+    },
+    {
+      "name": "guarded_reason_rejects_over_64_chars",
+      "base": "guarded_result",
+      "payload_patch": {
+        "guarded_reason": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    },
+    {
+      "name": "batch_guarded_reason_rejects_hyphen",
+      "base": "batch_result",
+      "payload_patch": {
+        "status": "guarded",
+        "failed_step_index": 0,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "guarded",
+            "guarded_reason": "confirmation-required",
+            "result": {
+              "guarded": true
+            },
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "completed_rejects_guarded_reason",
+      "base": "invocation_result",
+      "payload_patch": {
+        "guarded_reason": "not_applicable"
+      }
+    },
+    {
+      "name": "omitted_result_requires_digest",
+      "base": "omitted_result",
+      "payload_remove": [
+        "result_digest"
+      ]
+    },
+    {
+      "name": "omitted_result_rejects_inline_payload",
+      "base": "omitted_result",
+      "payload_patch": {
+        "result": {}
+      }
+    },
+    {
+      "name": "omitted_result_is_replay_only",
+      "base": "omitted_result",
+      "payload_patch": {
+        "replayed": false
+      }
+    },
+    {
+      "name": "indeterminate_fault_contract",
+      "base": "invocation_error",
+      "payload_patch": {
+        "fault_class": "journal_indeterminate",
+        "retryable": true,
+        "outcome": "known",
+        "verification_required": false
+      }
+    },
+    {
+      "name": "error_requires_outcome",
+      "base": "invocation_error",
+      "payload_remove": [
+        "outcome"
+      ]
+    },
+    {
+      "name": "bad_chunk_base64",
+      "base": "partial_chunk",
+      "payload_patch": {
+        "data": "not-base64!"
+      }
+    },
+    {
+      "name": "manifest_update_requires_urls",
+      "base": "manifest_info",
+      "payload_remove": [
+        "signature_url"
+      ]
+    },
+    {
+      "name": "goodbye_retry_reason_constraint",
+      "base": "goodbye",
+      "payload_patch": {
+        "reason": "shutdown"
+      }
+    },
+    {
+      "name": "connection_error_fault_class_constraint",
+      "base": "connection_error",
+      "payload_patch": {
+        "fault_class": "parameter"
+      }
+    },
+    {
+      "name": "connection_error_rejects_late_invocation_fields",
+      "base": "connection_error",
+      "payload_patch": {
+        "replayed": true,
+        "late_after_indeterminate": true,
+        "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+        "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+      }
+    },
+    {
+      "name": "atomic_failed_cannot_be_committed",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "atomic": true,
+        "transaction_state": "committed"
+      }
+    },
+    {
+      "name": "atomic_indeterminate_cannot_be_committed",
+      "base": "batch_indeterminate_result",
+      "payload_patch": {
+        "transaction_state": "committed"
+      }
+    },
+    {
+      "name": "indeterminate_step_requires_indeterminate_fault",
+      "base": "batch_indeterminate_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "wrongly classified known outcome"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "known_failed_step_rejects_indeterminate_fault",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": false,
+              "message": "wrong status"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "failed_step_rejects_cancelled_fault",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "cancelled",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "wrong failed fault class"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "cancelled_step_requires_cancelled_fault",
+      "base": "batch_cancelled_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "cancelled",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "wrong cancelled fault class"
+            },
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "nested_error_replay_cannot_exceed_step",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "message": "nested replay cannot outrun its carrier"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "read_invocation_requires_null_scope",
+      "base": "invoke",
+      "payload_patch": {
+        "mutation_scope": {
+          "kind": "session"
+        }
+      }
+    },
+    {
+      "name": "mutation_requires_non_null_scope",
+      "base": "invoke",
+      "payload_patch": {
+        "mutating": true,
+        "mutation_scope": null
+      }
+    },
+    {
+      "name": "mutation_rejects_verification_correlation",
+      "base": "mutating_clearance_invoke",
+      "payload_patch": {
+        "verification": {
+          "hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+          "mutation_scope": {
+            "kind": "document",
+            "document_id": "doc-01"
+          },
+          "purpose": "resolve_indeterminate"
+        }
+      }
+    },
+    {
+      "name": "read_rejects_recovery_clearance",
+      "base": "invoke",
+      "payload_patch": {
+        "recovery_clearances": [
+          {
+            "hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+            "mutation_scope": {
+              "kind": "document",
+              "document_id": "doc-01"
+            },
+            "resolution_id": "0197a3c2-0000-7000-8000-000000000101",
+            "basis": "verification_read",
+            "verification_invocation_id": "0197a3c2-0000-7000-8000-000000000099",
+            "evidence_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "decision": "postcondition_verified",
+            "audit_id": "0197a3c2-0000-7000-8000-000000000102"
+          }
+        ]
+      }
+    },
+    {
+      "name": "late_clearance_requires_null_verification_id",
+      "base": "mutating_clearance_invoke",
+      "payload_patch": {
+        "recovery_clearances": [
+          {
+            "hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+            "mutation_scope": {
+              "kind": "document",
+              "document_id": "doc-01"
+            },
+            "resolution_id": "0197a3c2-0000-7000-8000-000000000101",
+            "basis": "late_terminal",
+            "verification_invocation_id": "0197a3c2-0000-7000-8000-000000000099",
+            "evidence_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "decision": "postcondition_verified",
+            "audit_id": "0197a3c2-0000-7000-8000-000000000102"
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_step_requires_raw_params",
+      "base": "invoke_batch",
+      "payload_patch": {
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "inspect_schedules",
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "auto",
+              "confirmation_id": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_step_params_digest_mismatch",
+      "base": "invoke_batch",
+      "payload_patch": {
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "inspect_schedules",
+            "params": {},
+            "params_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "auto",
+              "confirmation_id": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_digest_mismatch",
+      "base": "invoke_batch",
+      "payload_patch": {
+        "batch_digest": "sha256:5555555555555555555555555555555555555555555555555555555555555555"
+      }
+    },
+    {
+      "name": "batch_step_rejects_display",
+      "base": "invoke_batch",
+      "payload_patch": {
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "inspect_schedules",
+            "params": {},
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "auto",
+              "confirmation_id": null
+            },
+            "display": {
+              "task_name": "not allowed in batch digest"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "result_stream_rejects_artifact_identity",
+      "base": "partial_chunk",
+      "payload_patch": {
+        "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+        "artifact_index": 0
+      }
+    },
+    {
+      "name": "artifact_stream_requires_artifact_id",
+      "base": "artifact_chunk",
+      "payload_remove": [
+        "artifact_id"
+      ]
+    },
+    {
+      "name": "artifact_stream_identity_mismatch",
+      "base": "artifact_chunk",
+      "payload_patch": {
+        "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000202"
+      }
+    },
+    {
+      "name": "artifact_descriptor_index_mismatch",
+      "base": "artifact_result",
+      "payload_patch": {
+        "artifacts": [
+          {
+            "artifact_id": "0197a3c2-0000-7000-8000-000000000201",
+            "artifact_index": 1,
+            "stream_id": "artifact:0197a3c2-0000-7000-8000-000000000201",
+            "filename": "plan.png",
+            "content_type": "image/png",
+            "total_chunks": 1,
+            "total_size": 4,
+            "sha256": "sha256:b8fc6f9ab4621d16761cbc0335bbd804b0ebcc3d1d2aa8c757687501adc51aaa"
+          }
+        ]
+      }
+    },
+    {
+      "name": "late_result_requires_replayed_true",
+      "base": "late_invocation_result",
+      "payload_patch": {
+        "replayed": false
+      }
+    },
+    {
+      "name": "late_result_requires_hold_id",
+      "base": "late_invocation_result",
+      "payload_remove": [
+        "verification_hold_id"
+      ]
+    },
+    {
+      "name": "batch_late_step_requires_hold_id",
+      "base": "batch_late_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "late_after_indeterminate": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "message": "late durable failure"
+            },
+            "replayed": true,
+            "late_after_indeterminate": true,
+            "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_late_step_requires_result_digest",
+      "base": "batch_late_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "late_after_indeterminate": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "message": "late durable failure"
+            },
+            "replayed": true,
+            "late_after_indeterminate": true,
+            "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333"
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_late_hold_must_match_nested_error",
+      "base": "batch_late_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "late_after_indeterminate": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+              "message": "late durable failure"
+            },
+            "replayed": true,
+            "late_after_indeterminate": true,
+            "verification_hold_id": "vh:5555555555555555555555555555555555555555555555555555555555555555",
+            "result_digest": "sha256:4444444444444444444444444444444444444444444444444444444444444444"
+          }
+        ]
+      }
+    },
+    {
+      "name": "indeterminate_error_requires_hold_id",
+      "base": "indeterminate_error",
+      "payload_remove": [
+        "verification_hold_id"
+      ]
+    },
+    {
+      "name": "known_error_rejects_unscoped_hold",
+      "base": "invocation_error",
+      "payload_patch": {
+        "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    },
+    {
+      "name": "batch_nested_error_requires_outcome",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "verification_required": false,
+              "replayed": false,
+              "message": "missing outcome"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    }
+  ]
+}

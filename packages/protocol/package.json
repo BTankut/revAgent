@@ -14,15 +14,20 @@
   },
   "files": [
     "dist",
-    "schemas"
+    "schemas",
+    "conformance",
+    "scripts/run-conformance.mjs"
   ],
   "scripts": {
-    "build": "npm run generate && tsc -p tsconfig.json",
+    "build": "npm run generate && npm run clean && tsc -p tsconfig.json",
     "check:generated": "npm run generate && git diff --exit-code src/generated",
+    "clean": "node scripts/clean.mjs",
+    "conformance": "node scripts/run-conformance.mjs",
     "generate": "node scripts/generate-types.mjs",
     "lint": "eslint src",
-    "typecheck": "npm run generate && tsc -p tsconfig.json --noEmit",
-    "test": "npm run generate && vitest run"
+    "prepack": "npm run build",
+    "typecheck": "npm run generate && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.type-tests.json",
+    "test": "npm run generate && vitest run && npm run build && npm run conformance"
   },
   "engines": {
     "node": ">=20"

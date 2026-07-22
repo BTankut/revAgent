@@ -1,0 +1,63 @@
+{
+  "vectors": [
+    {
+      "name": "property-order",
+      "params": {
+        "b": 1,
+        "a": 2
+      },
+      "canonical": "{\"a\":2,\"b\":1}",
+      "digest": "sha256:d3626ac30a87e6f7a6428233b3c68299976865fa5508e4267c5415c76af7a772"
+    },
+    {
+      "name": "number-formatting",
+      "params": {
+        "z": 0,
+        "tiny": 1e-27,
+        "n": 1e+30,
+        "m": 4.5
+      },
+      "canonical": "{\"m\":4.5,\"n\":1e+30,\"tiny\":1e-27,\"z\":0}",
+      "digest": "sha256:230e6e89166cd51849b56b9dcfc833a402e443cea0d41a565c546af3871f2144"
+    },
+    {
+      "name": "unicode-order-without-normalization",
+      "params": {
+        "€": "euro",
+        "😀": "emoji",
+        "é": "composed",
+        "é": "decomposed"
+      },
+      "canonical": "{\"é\":\"decomposed\",\"é\":\"composed\",\"€\":\"euro\",\"😀\":\"emoji\"}",
+      "digest": "sha256:2544793b7b356740ca0939db9439bf57bd73181e0f73005080bc36d359d53c77"
+    },
+    {
+      "name": "escapes",
+      "params": {
+        "string": "line\nquote\"slash\\solidus/control\u000f"
+      },
+      "canonical": "{\"string\":\"line\\nquote\\\"slash\\\\solidus/control\\u000f\"}",
+      "digest": "sha256:1102141e04f079b89f7f43dee0ecf3bc4ec15ce8b5b33bf3424519acd5e145a5"
+    },
+    {
+      "name": "rfc8785-section-3-2-3",
+      "params": {
+        "numbers": [
+          333333333.33333329,
+          1e+30,
+          4.5,
+          0.002,
+          1e-27
+        ],
+        "string": "€$\u000f\nA'B\"\\\\\"/",
+        "literals": [
+          null,
+          true,
+          false
+        ]
+      },
+      "canonical": "{\"literals\":[null,true,false],\"numbers\":[333333333.3333333,1e+30,4.5,0.002,1e-27],\"string\":\"€$\\u000f\\nA'B\\\"\\\\\\\\\\\"/\"}",
+      "digest": "sha256:2d5e01a318d0f0879ab568c4be289c8b1f64ef8921a53c6277d5e069978baacb"
+    }
+  ]
+}
