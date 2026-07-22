@@ -18,6 +18,7 @@
   ],
   "scripts": {
     "build": "npm run generate && tsc -p tsconfig.json",
+    "check:generated": "npm run generate && git diff --exit-code src/generated",
     "generate": "node scripts/generate-types.mjs",
     "lint": "eslint src",
     "typecheck": "npm run generate && tsc -p tsconfig.json --noEmit",

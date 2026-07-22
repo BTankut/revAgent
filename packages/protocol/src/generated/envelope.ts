@@ -3,7 +3,9 @@
 /**
  * M0 scaffold for the RBP/1 envelope. Message-specific payload schemas land during O1 conformance implementation.
  */
-export interface RbpEnvelope {
+export type RbpEnvelope = {
+  [k: string]: unknown;
+} & {
   v: 1;
   type:
     | "hello"
@@ -34,4 +36,4 @@ export interface RbpEnvelope {
     [k: string]: unknown;
   };
   [k: string]: unknown;
-}
+};
