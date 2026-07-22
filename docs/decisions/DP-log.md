@@ -21,7 +21,7 @@
 | DP-9 | Bridge update signing | Pilot entry | awaiting_confirmation | Recommended: reuse the detached RS256 pinned-key chain | — | Confirm existing production key custody and bridge-manifest signing use. |
 | DP-10 | Phase-1 designer client | Pilot entry | confirmed_pending_conformance | Existing authorized ChatGPT/Codex Desktop client | 2026-07-22 | Barış Tankut confirmed operator attribution on 2026-07-22. Client installation, subscription, and user session are user responsibilities; revAgent owns remote MCP registration and end-to-end compatibility verification. WP9 conformance must pass before pilot/cutover. |
 | DP-11 | Backup target | Cutover entry | awaiting_confirmation | Recommended: S3-compatible off-host bucket | — | Record provider, region, owner, and budget. |
-| DP-12 | Pilot user/machine and cutover window | Pilot entry | partially_confirmed | Pilot machine: `NET01` (registered, dedicated to this work, waiting, and reachable by stored SSH access at the requested date/time) | 2026-07-22 | Barış Tankut confirmed operator attribution and the machine allocation on 2026-07-22. Name the pilot user, concrete pilot/cutover window, fallback operator, and communications owner before pilot entry; retain live NET01 readiness evidence separately. |
+| DP-12 | Pilot user/machine and cutover window | Pilot entry | partially_confirmed | Pilot machine: `NET01` (registered, dedicated to this work, waiting, and reachable by stored SSH access at the requested date/time) | 2026-07-22 | Barış Tankut confirmed operator attribution and the machine allocation. Live SSH/resource/installed-surface evidence is retained in `DP-12-NET01-readiness-2026-07-22.md`; the stale non-`AuditOnly` updater task and the named user/window/roles remain open. |
 | DP-13 | Monorepo layout | M0 / build entry | confirmed | `packages/gateway`, `packages/bridge`, `packages/protocol`; legacy directories untouched | 2026-07-22 | Operator-confirmed; the W1 scaffold must preserve the frozen legacy paths and independent runtime lockfile. |
 | DP-14 | Node MSI disposition | Cutover entry | awaiting_confirmation | Recommended: keep through insurance, remove only at Retire if no other owner needs it | — | Confirm shared-machine dependencies before removal. |
 | DP-15 | Historical usage archive | Cutover entry | awaiting_confirmation | Recommended: read-only NAS archive through insurance, then cold storage; no Postgres migration | — | Record final archive location, retention, and access owner. |
@@ -67,6 +67,19 @@ The implementing assistant then installed Docker Engine 29.6.2 and Compose v5.3.
 PR #273 origin artifacts root-owned under `/opt/revagent/deploy/phase1`, and passed configuration-only
 Compose validation. No container or TCP 8081 listener was started. The stale Ookla Ubuntu 26.04 apt source
 that blocked package-index refresh was moved to the reversible `.list.disabled` form and retained.
+
+### 2026-07-22 — DP-12 NET01 live readiness evidence
+
+Under R-G, the implementation assistant used the stored machine-specific SSH selector and proved that
+`NET01` is reachable, idle, dedicated-capacity Windows 11 hardware with Revit 2022, the OpenAI Codex AppX,
+the frozen revAgent stable package, and the protected rollback launcher present. Exact non-secret evidence is
+retained in `DP-12-NET01-readiness-2026-07-22.md`.
+
+The same read-only audit found that the installed `revAgent Auto Update` hidden launcher lacks `-AuditOnly`
+and recorded task result `1`. The current source-side audit-only correction post-dates the installed frozen
+package. No task, updater, installer, model, or direct repair was executed. GAP-13.2 scheduled-task proof and
+DP-12 pilot readiness therefore remain open until a controlled technical-team neutralization/repair is
+evidenced; this work is not assigned to the pilot user.
 
 ## Amendments
 
