@@ -50,3 +50,33 @@ jobs:
           .\scripts\test-signed-stable-readiness.ps1
           .\scripts\test-signed-source-free-cd.ps1
           .\scripts\test-desktop-launcher-cleanup.ps1
+
+  # Bounded M0 exception to P-CD-3: RES-24 and the dated R-F record land first
+  # through PR #268. Existing CI jobs remain unchanged; later Gateway CI uses
+  # its dedicated workflow.
+  gateway-gates:
+    name: Gateway gates
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.x
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install migration workspace dependencies
+        run: npm ci
+
+      - name: Lint migration packages
+        run: npm run lint
+
+      - name: Type-check migration packages
+        run: npm run typecheck
+
+      - name: Verify generated protocol types and test migration packages
+        run: npm test
