@@ -170,11 +170,13 @@ export class FaultController {
   }
 
   snapshot(): {
+    heldInboundFrames: number;
     heldOutboundFrames: number;
     bufferedSseConnections: string[];
     activeTimers: number;
   } {
     return {
+      heldInboundFrames: this.held.filter((entry) => entry.direction === "bridge_to_gateway").length,
       heldOutboundFrames: this.held.filter((entry) => entry.direction === "gateway_to_bridge").length,
       bufferedSseConnections: [...this.bufferedSse].sort(),
       activeTimers: this.scheduled.size,

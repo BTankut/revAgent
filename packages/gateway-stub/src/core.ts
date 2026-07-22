@@ -227,9 +227,6 @@ export class GatewayStubCore {
     this.store = store;
     this.clock = options.clock ?? new SystemClock();
     this.supportedProtocols = normalizeSupportedProtocols(options.supportedProtocols ?? [1]);
-    if (this.supportedProtocols.some((protocol) => protocol !== 1)) {
-      throw new TypeError("the O1-T5 stub implements only the RBP/1 bootstrap compatibility window");
-    }
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
       "chunked_results",
@@ -324,6 +321,13 @@ export class GatewayStubCore {
       }
       throw error;
     }
+    if (selected !== 1) {
+      throw new GatewayStubFault(
+        `RBP/${selected} wire adapter is not implemented by the O1-T5 v1 stub`,
+        "unsupported",
+        4426,
+      );
+    }
 
     const provisioned = new Set(runtime.transport.device.provisionedCapabilities);
     const requested = new Set(hello.payload.capabilities);
@@ -401,7 +405,7 @@ export class GatewayStubCore {
       connectionId,
       runtime.transport.binding,
       "bridge_to_gateway",
-      envelope.type,
+      envelope.type === "partial" ? envelope.payload.kind : envelope.type,
       async () => this.processEnvelope(connectionId, envelope),
     );
   }
@@ -705,6 +709,9 @@ export class GatewayStubCore {
     }
     const envelope = await this.store.update((draft) => this.makeControlEnvelope(draft, "error", {
       retryable: false,
+      // O1 connection-level errors are deliberately limited to protocol/auth.
+      // Richer classes remain invocation-scoped data faults; an unsupported or
+      // environment connection guard therefore closes as a protocol fault.
       fault_class: fault.faultClass === "auth" ? "auth" : "protocol",
       outcome: "known",
       verification_required: false,
@@ -742,6 +749,7 @@ export class GatewayStubCore {
         ),
         activeTimers: faultSnapshot.activeTimers,
         bufferedSseConnections: faultSnapshot.bufferedSseConnections,
+        heldInboundFrames: faultSnapshot.heldInboundFrames,
         heldOutboundFrames: faultSnapshot.heldOutboundFrames,
       },
     };

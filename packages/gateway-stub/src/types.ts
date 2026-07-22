@@ -250,6 +250,7 @@ export interface GatewayStubSnapshot {
     connectionPhases: Record<string, ConnectionPhase>;
     activeTimers: number;
     bufferedSseConnections: string[];
+    heldInboundFrames: number;
     heldOutboundFrames: number;
   };
 }

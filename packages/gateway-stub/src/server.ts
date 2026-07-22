@@ -19,6 +19,7 @@ import type {
   DispatchPayloadRecoveryRequest,
   GatewayStubHandle,
   GatewayStubServerOptions,
+  GatewayClock,
   LateTerminalEvidenceRequest,
   TestTransportConnection,
   VerificationEvidenceRequest,
@@ -100,6 +101,10 @@ class SseTransport implements ServerTransport {
   }
 
   readonly binding = "http_sse" as const;
+
+  get attached(): boolean {
+    return this.response !== null;
+  }
 
   attach(response: ServerResponse): void {
     if (this.response !== null) {
@@ -245,8 +250,17 @@ type ControlCommand =
   | { action: "dispatch_batch"; request: DispatchBatchRequest }
   | { action: "dispatch_cancel"; request: DispatchCancelRequest }
   | { action: "dispatch_payload_recovery"; request: DispatchPayloadRecoveryRequest }
+  | { action: "set_clock"; now_ms: number }
   | { action: "liveness_sweep" }
   | { action: "snapshot" };
+
+function isControllableClock(
+  clock: GatewayClock | undefined,
+): clock is GatewayClock & { setNowMs(value: number): void } {
+  return clock !== undefined &&
+    "setNowMs" in clock &&
+    typeof (clock as { setNowMs?: unknown }).setNowMs === "function";
+}
 
 export async function startGatewayStub(options: GatewayStubServerOptions): Promise<GatewayStubHandle> {
   const host = options.host ?? "127.0.0.1";
@@ -388,7 +402,14 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         const headers: Record<string, string> = openingFault.retryAfter === undefined
           ? {}
           : { "retry-after": openingFault.retryAfter };
-        json(response, openingFault.status, { error: "injected_opening_fault" }, headers);
+        json(response, openingFault.status, openingFault.status === 426
+          ? {
+              error: "injected_opening_fault",
+              min_protocol: Math.min(...core.supportedProtocols),
+              max_protocol: Math.max(...core.supportedProtocols),
+              manifest_url: "/bridge/update/manifest",
+            }
+          : { error: "injected_opening_fault" }, headers);
         return;
       }
       if (!isJsonMediaType(request.headers["content-type"])) {
@@ -433,6 +454,9 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       if (request.headers.accept !== "text/event-stream") {
         throw new HttpRequestError(406, "SSE events require Accept: text/event-stream");
       }
+      if (transport.attached) {
+        throw new HttpRequestError(409, "SSE stream already attached");
+      }
       response.writeHead(200, {
         "cache-control": "no-cache, no-transform",
         connection: "keep-alive",
@@ -471,7 +495,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       const frame = await readBody(request, MAX_HTTP_MESSAGE_BYTES);
       try {
         const acceptance = await core.receiveFrame(connectionId, frame);
-        if (acceptance !== "delivered") {
+        if (acceptance === "dropped") {
           await closeConnection(connectionId, "uplink_acceptance_unknown");
           response.destroy();
           return;
@@ -559,6 +583,16 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         case "dispatch_payload_recovery":
           result = await core.dispatchPayloadRecovery(body.request);
           break;
+        case "set_clock":
+          if (!isControllableClock(options.clock)) {
+            throw new HttpRequestError(409, "Gateway stub was not started with a controllable clock");
+          }
+          if (!Number.isSafeInteger(body.now_ms) || body.now_ms < 0) {
+            throw new HttpRequestError(400, "set_clock now_ms must be a non-negative safe integer");
+          }
+          options.clock.setNowMs(body.now_ms);
+          result = { now_ms: options.clock.nowMs() };
+          break;
         case "liveness_sweep": {
           const connectionIds = await core.livenessSweep();
           for (const connectionId of connectionIds) {
@@ -590,7 +624,14 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         const headers: Record<string, string> = openingFault.retryAfter === undefined
           ? {}
           : { "Retry-After": openingFault.retryAfter };
-        rawUpgradeResponse(socket, openingFault.status, { error: "injected_opening_fault" }, headers);
+        rawUpgradeResponse(socket, openingFault.status, openingFault.status === 426
+          ? {
+              error: "injected_opening_fault",
+              min_protocol: Math.min(...core.supportedProtocols),
+              max_protocol: Math.max(...core.supportedProtocols),
+              manifest_url: "/bridge/update/manifest",
+            }
+          : { error: "injected_opening_fault" }, headers);
         return;
       }
       let device: AuthenticatedDevice;
@@ -641,7 +682,14 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
               ? error
               : new GatewayStubFault(error instanceof Error ? error.message : "protocol failure", "protocol", 4400);
             await core.sendConnectionFault(connectionId, fault).catch(() => undefined);
-            await closeConnection(connectionId, fault.message, fault.closeCode);
+            const closeReason = fault.closeCode === 4426
+              ? JSON.stringify({
+                  min_protocol: Math.min(...core.supportedProtocols),
+                  max_protocol: Math.max(...core.supportedProtocols),
+                  manifest_url: "/bridge/update/manifest",
+                })
+              : fault.message;
+            await closeConnection(connectionId, closeReason, fault.closeCode);
           });
         });
         websocket.once("close", () => {

@@ -42,8 +42,11 @@ advertised URLs to `wss://` and `https://`.
 The normative pre-negotiation `hello` and `hello_ack` omit top-level `v`; all
 later messages require the selected version. Both bindings call the corrected
 `@revagent/protocol` parser/validator at the raw frame boundary. This M1 stub
-implements the RBP/1 bootstrap compatibility window; a future RBP/2 harness
-must add and test the required N/N-1 adapter before selecting protocol 2.
+implements the RBP/1 bootstrap wire. A test deployment may advertise an N/N-1
+window such as `[2,1]` to prove that an RBP/1 bridge still selects and receives
+RBP/1. A v2-only `hello` remains fail-closed with `4426`/HTTP `426` and the
+manifest pointer until a real RBP/2 adapter and vectors exist; the stub never
+pretends that changing only the version integer implements RBP/2.
 
 The exact fallback endpoints are:
 
@@ -56,7 +59,11 @@ The loopback-only `POST /__rbp_test/control` surface requires
 frames, buffer/flush SSE, force disconnect/expiry, install scope holds, submit
 T2-validated verification or late-terminal journal evidence, dispatch work,
 start an explicit digest-bound `dispatch_payload_recovery`, and return a
-redacted durable snapshot. Evidence submission deliberately requires both the
+redacted durable snapshot. A held HTTP uplink is transport-accepted with `202`;
+its durable sequence state advances only when `flush_held` delivers the frame.
+When the CLI starts with `--clock-start-ms`, `set_clock` plus
+`liveness_sweep` drives the same deterministic liveness transitions without
+wall-clock sleeps. Evidence submission deliberately requires both the
 accepted digest-bound terminal and the complete simulator journal record; an
 uncorrelated result digest cannot advance a hold. Recovery-clearance holds stay
 `resolved_pending_bridge` until the Bridge durably acknowledges the authorized
@@ -64,11 +71,14 @@ dispatch. Gateway expiry preserves the original terminal classification and
 retains any later Bridge terminal as evidence. Post-cancel success is retained
 as evidence but is not exposed as ordinary success.
 
-The readiness record identifies the component, protocol and control-contract
-versions, control authentication header, endpoints, PID, and supported shutdown
-signals. It never contains the device credential or control token. Durable
-snapshots likewise retain token digests and derived identity only, never raw
-credentials.
+The CLI accepts explicit `--supported-protocols`,
+`--connection-capabilities`, `--session-capabilities`, and `--clock-start-ms`
+test-harness overrides. Unknown or duplicate options fail before readiness.
+The readiness record identifies the component, configured protocol window,
+control-contract version, deterministic-clock mode, control authentication
+header, endpoints, PID, and supported shutdown signals. It never contains the
+device credential or control token. Durable snapshots likewise retain token
+digests and derived identity only, never raw credentials.
 
 Run locally:
 
