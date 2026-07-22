@@ -34,23 +34,6 @@ function parseArgs(args: readonly string[]): CliOptions {
 async function main(): Promise<void> {
   const fixture = new AddinLoopbackFixture(parseArgs(process.argv.slice(2)));
   const address = await fixture.start();
-  process.stdout.write(
-    `${JSON.stringify({
-      ready: true,
-      contract: "addin-loopback/v1",
-      controlVersion: FIXTURE_CONTROL_VERSION,
-      maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
-      actions: [
-        "plan_fault",
-        "release_stall",
-        "apply_document_context",
-        "snapshot_evidence",
-        "shutdown",
-      ],
-      host: address.host,
-      port: address.port,
-    })}\n`,
-  );
   const control = new FixtureJsonlControl(
     fixture,
     process.stdin,
@@ -70,6 +53,23 @@ async function main(): Promise<void> {
   };
   process.once("SIGINT", () => void shutdown());
   process.once("SIGTERM", () => void shutdown());
+  process.stdout.write(
+    `${JSON.stringify({
+      ready: true,
+      contract: "addin-loopback/v1",
+      controlVersion: FIXTURE_CONTROL_VERSION,
+      maxControlLineBytes: MAX_CONTROL_LINE_BYTES,
+      actions: [
+        "plan_fault",
+        "release_stall",
+        "apply_document_context",
+        "snapshot_evidence",
+        "shutdown",
+      ],
+      host: address.host,
+      port: address.port,
+    })}\n`,
+  );
 }
 
 main().catch((error: unknown) => {
