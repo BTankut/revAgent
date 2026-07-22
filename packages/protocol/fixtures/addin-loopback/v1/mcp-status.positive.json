@@ -1,0 +1,84 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "status-probe-1",
+    "method": "mcp_status",
+    "params": {}
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "status-probe-1",
+    "result": {
+      "resultContractVersion": 2,
+      "addinLoopbackContractVersion": 1,
+      "addinVersion": "2026.07.22.0",
+      "revit": {
+        "version": "2026",
+        "build": "2026.0.1",
+        "processId": 4242
+      },
+      "service": {
+        "isRunning": true,
+        "port": 8080,
+        "binding": "loopback_only",
+        "boundAddresses": [
+          "127.0.0.1"
+        ],
+        "framing": {
+          "protocol": "length_prefixed_jsonrpc_v1",
+          "headerBytes": 4,
+          "byteOrder": "big_endian",
+          "payloadEncoding": "utf-8",
+          "maxRequestPayloadBytes": 16777216,
+          "maxResponsePayloadBytes": 33554432
+        }
+      },
+      "sessionCapabilities": [
+        "batch_atomic",
+        "doc_context_cached_v1"
+      ],
+      "capabilityContracts": {
+        "batch_atomic": {
+          "contractVersion": 1,
+          "method": "execute_batch",
+          "maxSteps": 32,
+          "maxRequestPayloadBytes": 16777216,
+          "maxResponsePayloadBytes": 33554432,
+          "transactionBoundary": "revit_transaction_group",
+          "rollbackPolicy": "rollback_on_non_success",
+          "batchableCommands": [
+            {
+              "method": "find_elements",
+              "effect": "read_only",
+              "transactionPolicy": "none",
+              "rollbackDisposition": "discard_result_on_batch_rollback",
+              "parameterProfile": "ordinary_v1"
+            },
+            {
+              "method": "delete_review_view",
+              "effect": "model_transaction",
+              "transactionPolicy": "nested_transaction_required",
+              "rollbackDisposition": "transaction_group_rollback",
+              "parameterProfile": "delete_review_view_commit_v1"
+            }
+          ]
+        },
+        "doc_context_cached_v1": {
+          "contractVersion": 1,
+          "method": "get_document_context",
+          "source": "application_events_cache",
+          "pollIntervalMs": 15000,
+          "uiThreadRoundTrip": false
+        }
+      },
+      "activeTask": null,
+      "recentTasks": [],
+      "recentHistoryCount": 0,
+      "recentHistoryCapacity": 100,
+      "plan": {
+        "pending": [],
+        "completed": []
+      }
+    }
+  }
+}

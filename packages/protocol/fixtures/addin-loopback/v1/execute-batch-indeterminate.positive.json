@@ -1,0 +1,108 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000040",
+    "method": "execute_batch",
+    "params": {
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000040",
+      "batchDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "atomic": true,
+      "rollbackPolicy": "rollback_on_non_success",
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000041",
+          "method": "find_elements",
+          "params": {
+            "query": "air handling unit"
+          },
+          "paramsDigest": "sha256:4444444444444444444444444444444444444444444444444444444444444444",
+          "effect": "read_only"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000042",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_indeterminate_a",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:5555555555555555555555555555555555555555555555555555555555555555",
+          "effect": "model_transaction"
+        },
+        {
+          "index": 2,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000043",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_indeterminate_b",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+          "effect": "model_transaction"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000040",
+    "result": {
+      "resultContractVersion": 2,
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000040",
+      "batchDigest": "sha256:3333333333333333333333333333333333333333333333333333333333333333",
+      "atomic": true,
+      "status": "indeterminate",
+      "transactionState": "indeterminate",
+      "failedStepIndex": 2,
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000041",
+          "method": "find_elements",
+          "executionState": "completed",
+          "effectState": "discarded",
+          "resultSuppressed": "batch_indeterminate"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000042",
+          "method": "delete_review_view",
+          "executionState": "completed",
+          "effectState": "indeterminate",
+          "resultSuppressed": "batch_indeterminate"
+        },
+        {
+          "index": 2,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000043",
+          "method": "delete_review_view",
+          "executionState": "failed",
+          "effectState": "indeterminate",
+          "error": {
+            "code": "command_failure",
+            "message": "Fixture command failed before rollback failure"
+          },
+          "resultSuppressed": "batch_indeterminate"
+        }
+      ],
+      "rollback": {
+        "attempted": true,
+        "succeeded": false,
+        "triggerStepIndex": 2,
+        "triggerState": "failed",
+        "error": {
+          "code": "rollback_failure",
+          "message": "TransactionGroup rollback failed"
+        }
+      }
+    }
+  }
+}

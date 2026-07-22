@@ -1,0 +1,177 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json",
+  "title": "RevAgent add-in loopback v1 common definitions",
+  "$defs": {
+    "requestId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128
+    },
+    "methodName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,127}$"
+    },
+    "uuidV7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "loopbackAddress": {
+      "type": "string",
+      "anyOf": [
+        {
+          "const": "::1"
+        },
+        {
+          "format": "ipv4",
+          "pattern": "^127\\."
+        }
+      ]
+    },
+    "taskInfo": {
+      "type": "object",
+      "required": [
+        "id",
+        "requestId",
+        "method",
+        "taskName",
+        "state",
+        "startedAtUtc",
+        "finishedAtUtc",
+        "elapsedMs",
+        "port",
+        "error",
+        "framing",
+        "requestBytes",
+        "receiveMs",
+        "parseMs",
+        "executeMs",
+        "responseBytes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "requestId": {
+          "$ref": "#/$defs/requestId"
+        },
+        "method": {
+          "$ref": "#/$defs/methodName"
+        },
+        "wrapperAction": {
+          "$ref": "#/$defs/methodName"
+        },
+        "logicalToolName": {
+          "$ref": "#/$defs/methodName"
+        },
+        "taskName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentTaskName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "parentTaskId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "state": {
+          "enum": [
+            "running",
+            "completed",
+            "guarded",
+            "failed"
+          ]
+        },
+        "startedAtUtc": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "finishedAtUtc": {
+          "oneOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "elapsedMs": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "error": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 600
+        },
+        "framing": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "length-prefixed",
+            "legacy-json",
+            null
+          ]
+        },
+        "requestBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "receiveMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "parseMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "executeMs": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "responseBytes": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

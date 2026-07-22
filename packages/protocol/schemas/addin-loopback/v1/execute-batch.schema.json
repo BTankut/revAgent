@@ -1,0 +1,982 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.local/addin-loopback/v1/execute-batch.schema.json",
+  "title": "RevAgent add-in loopback v1 execute_batch method",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/request"
+    },
+    {
+      "$ref": "#/$defs/successResponse"
+    },
+    {
+      "$ref": "https://schemas.revagent.local/addin-loopback/v1/json-rpc-response.schema.json#/$defs/errorResponse"
+    }
+  ],
+  "$defs": {
+    "eligibleMethod": {
+      "enum": [
+        "get_current_view_elements",
+        "get_current_view_info",
+        "get_selected_elements",
+        "list_open_views",
+        "get_ui_state",
+        "find_elements",
+        "inspect_levels",
+        "inspect_sheet_text",
+        "inspect_schedules",
+        "count_annotations",
+        "extract_spatial_snapshot",
+        "get_spatial_change_state",
+        "delete_review_view"
+      ]
+    },
+    "ordinaryReservedParamName": {
+      "enum": [
+        "target",
+        "host",
+        "port",
+        "timeoutMs",
+        "statusRefreshTimeoutMs",
+        "refreshStatusAfterCommand",
+        "responseMode",
+        "transactionMode",
+        "parseJsonResult",
+        "taskName",
+        "taskId",
+        "wrapperAction",
+        "logicalToolName",
+        "toolName",
+        "parentTaskName",
+        "parentTaskId",
+        "suppressTaskStatusWindow",
+        "display",
+        "invocation_id",
+        "batch_id",
+        "batch_digest",
+        "params_digest",
+        "mutating",
+        "mutation_scope",
+        "policy",
+        "verification",
+        "recovery_clearances",
+        "timeout_ms",
+        "batchContractVersion",
+        "batchId",
+        "batchDigest",
+        "invocationId",
+        "paramsDigest",
+        "effect",
+        "atomic",
+        "rollbackPolicy"
+      ]
+    },
+    "ordinaryParams": {
+      "type": "object",
+      "propertyNames": {
+        "not": {
+          "$ref": "#/$defs/ordinaryReservedParamName"
+        }
+      },
+      "additionalProperties": true
+    },
+    "deleteReviewViewParams": {
+      "type": "object",
+      "required": [
+        "mode",
+        "confirmDelete"
+      ],
+      "properties": {
+        "viewId": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483647
+        },
+        "viewName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512
+        },
+        "viewType": {
+          "const": "ThreeD"
+        },
+        "exactName": {
+          "type": "boolean"
+        },
+        "mode": {
+          "const": "commit"
+        },
+        "confirmDelete": {
+          "const": true
+        }
+      },
+      "oneOf": [
+        {
+          "required": [
+            "viewId"
+          ],
+          "properties": {
+            "viewId": true,
+            "viewName": false,
+            "viewType": true,
+            "exactName": false
+          }
+        },
+        {
+          "required": [
+            "viewName",
+            "exactName"
+          ],
+          "properties": {
+            "viewId": false,
+            "viewName": true,
+            "exactName": {
+              "const": true
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "step": {
+      "type": "object",
+      "required": [
+        "index",
+        "invocationId",
+        "method",
+        "params",
+        "paramsDigest",
+        "effect"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "invocationId": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/uuidV7"
+        },
+        "method": {
+          "$ref": "#/$defs/eligibleMethod"
+        },
+        "params": {
+          "type": "object"
+        },
+        "paramsDigest": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/sha256"
+        },
+        "effect": {
+          "enum": [
+            "read_only",
+            "model_transaction"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "method": {
+                "const": "delete_review_view"
+              }
+            },
+            "required": [
+              "method"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effect": {
+                "const": "model_transaction"
+              },
+              "params": {
+                "$ref": "#/$defs/deleteReviewViewParams"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "effect": {
+                "const": "read_only"
+              },
+              "params": {
+                "$ref": "#/$defs/ordinaryParams"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "params": {
+      "type": "object",
+      "required": [
+        "batchContractVersion",
+        "batchId",
+        "batchDigest",
+        "atomic",
+        "rollbackPolicy",
+        "steps"
+      ],
+      "properties": {
+        "batchContractVersion": {
+          "const": 1
+        },
+        "batchId": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/uuidV7"
+        },
+        "batchDigest": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/sha256"
+        },
+        "atomic": {
+          "const": true
+        },
+        "rollbackPolicy": {
+          "const": "rollback_on_non_success"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/step"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "required": [
+        "jsonrpc",
+        "id",
+        "method",
+        "params"
+      ],
+      "properties": {
+        "jsonrpc": {
+          "const": "2.0"
+        },
+        "id": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/uuidV7"
+        },
+        "method": {
+          "const": "execute_batch"
+        },
+        "params": {
+          "$ref": "#/$defs/params"
+        }
+      },
+      "additionalProperties": false
+    },
+    "stepError": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "enum": [
+            "command_failure",
+            "revit_api",
+            "invalid_result",
+            "response_payload_limit"
+          ]
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        },
+        "maxResponsePayloadBytes": {
+          "const": 33554432
+        },
+        "tentativeResponsePayloadBytes": {
+          "type": "integer",
+          "minimum": 33554433,
+          "maximum": 9007199254740991
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "response_payload_limit"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "required": [
+              "maxResponsePayloadBytes",
+              "tentativeResponsePayloadBytes"
+            ],
+            "properties": {
+              "maxResponsePayloadBytes": true,
+              "tentativeResponsePayloadBytes": true
+            }
+          },
+          "else": {
+            "properties": {
+              "maxResponsePayloadBytes": false,
+              "tentativeResponsePayloadBytes": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "rollbackError": {
+      "type": "object",
+      "required": [
+        "code",
+        "message"
+      ],
+      "properties": {
+        "code": {
+          "const": "rollback_failure"
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 600
+        }
+      },
+      "additionalProperties": false
+    },
+    "stepOutcome": {
+      "type": "object",
+      "required": [
+        "index",
+        "invocationId",
+        "method",
+        "executionState",
+        "effectState"
+      ],
+      "properties": {
+        "index": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 63
+        },
+        "invocationId": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/uuidV7"
+        },
+        "method": {
+          "$ref": "#/$defs/eligibleMethod"
+        },
+        "executionState": {
+          "enum": [
+            "completed",
+            "guarded",
+            "failed",
+            "not_started",
+            "indeterminate"
+          ]
+        },
+        "effectState": {
+          "enum": [
+            "read_only",
+            "committed",
+            "rolled_back",
+            "discarded",
+            "not_started",
+            "indeterminate"
+          ]
+        },
+        "result": true,
+        "guardedReason": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$"
+        },
+        "error": {
+          "$ref": "#/$defs/stepError"
+        },
+        "resultSuppressed": {
+          "enum": [
+            "batch_rolled_back",
+            "batch_indeterminate"
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "executionState": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "executionState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "guardedReason": false,
+              "error": false
+            },
+            "oneOf": [
+              {
+                "required": [
+                  "result"
+                ],
+                "properties": {
+                  "result": true,
+                  "effectState": {
+                    "enum": [
+                      "read_only",
+                      "committed"
+                    ]
+                  },
+                  "resultSuppressed": false
+                }
+              },
+              {
+                "required": [
+                  "resultSuppressed"
+                ],
+                "properties": {
+                  "resultSuppressed": {
+                    "const": "batch_rolled_back"
+                  },
+                  "effectState": {
+                    "enum": [
+                      "rolled_back",
+                      "discarded"
+                    ]
+                  },
+                  "result": false
+                }
+              },
+              {
+                "required": [
+                  "resultSuppressed"
+                ],
+                "properties": {
+                  "resultSuppressed": {
+                    "const": "batch_indeterminate"
+                  },
+                  "effectState": {
+                    "enum": [
+                      "discarded",
+                      "indeterminate"
+                    ]
+                  },
+                  "result": false
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executionState": {
+                "const": "guarded"
+              }
+            },
+            "required": [
+              "executionState"
+            ]
+          },
+          "then": {
+            "required": [
+              "guardedReason",
+              "resultSuppressed"
+            ],
+            "properties": {
+              "guardedReason": {
+                "type": "string",
+                "pattern": "^[a-z][a-z0-9_]{0,63}$"
+              },
+              "resultSuppressed": {
+                "enum": [
+                  "batch_rolled_back",
+                  "batch_indeterminate"
+                ]
+              },
+              "effectState": {
+                "enum": [
+                  "rolled_back",
+                  "discarded",
+                  "indeterminate"
+                ]
+              },
+              "result": false,
+              "error": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executionState": {
+                "const": "failed"
+              }
+            },
+            "required": [
+              "executionState"
+            ]
+          },
+          "then": {
+            "required": [
+              "error",
+              "resultSuppressed"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/$defs/stepError"
+              },
+              "resultSuppressed": {
+                "enum": [
+                  "batch_rolled_back",
+                  "batch_indeterminate"
+                ]
+              },
+              "effectState": {
+                "enum": [
+                  "rolled_back",
+                  "discarded",
+                  "indeterminate"
+                ]
+              },
+              "result": false,
+              "guardedReason": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executionState": {
+                "const": "not_started"
+              }
+            },
+            "required": [
+              "executionState"
+            ]
+          },
+          "then": {
+            "properties": {
+              "effectState": {
+                "const": "not_started"
+              },
+              "result": false,
+              "guardedReason": false,
+              "error": false,
+              "resultSuppressed": false
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "executionState": {
+                "const": "indeterminate"
+              }
+            },
+            "required": [
+              "executionState"
+            ]
+          },
+          "then": {
+            "required": [
+              "error",
+              "resultSuppressed"
+            ],
+            "properties": {
+              "error": {
+                "$ref": "#/$defs/stepError"
+              },
+              "effectState": {
+                "enum": [
+                  "discarded",
+                  "indeterminate"
+                ]
+              },
+              "resultSuppressed": {
+                "const": "batch_indeterminate"
+              },
+              "result": false,
+              "guardedReason": false
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "rollback": {
+      "type": "object",
+      "required": [
+        "attempted",
+        "succeeded",
+        "triggerStepIndex",
+        "triggerState"
+      ],
+      "properties": {
+        "attempted": {
+          "type": "boolean"
+        },
+        "succeeded": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "triggerStepIndex": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 63
+        },
+        "triggerState": {
+          "enum": [
+            "guarded",
+            "failed",
+            "indeterminate",
+            null
+          ]
+        },
+        "error": {
+          "$ref": "#/$defs/rollbackError"
+        }
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": [
+        "resultContractVersion",
+        "batchContractVersion",
+        "batchId",
+        "batchDigest",
+        "atomic",
+        "status",
+        "transactionState",
+        "failedStepIndex",
+        "steps",
+        "rollback"
+      ],
+      "properties": {
+        "resultContractVersion": {
+          "const": 2
+        },
+        "batchContractVersion": {
+          "const": 1
+        },
+        "batchId": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/uuidV7"
+        },
+        "batchDigest": {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/sha256"
+        },
+        "atomic": {
+          "const": true
+        },
+        "status": {
+          "enum": [
+            "completed",
+            "guarded",
+            "failed",
+            "indeterminate"
+          ]
+        },
+        "transactionState": {
+          "enum": [
+            "committed",
+            "rolled_back",
+            "indeterminate"
+          ]
+        },
+        "failedStepIndex": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 63
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "$ref": "#/$defs/stepOutcome"
+          }
+        },
+        "rollback": {
+          "$ref": "#/$defs/rollback"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "transactionState": {
+                "const": "committed"
+              },
+              "failedStepIndex": {
+                "type": "null"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/stepOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "executionState": {
+                          "const": "completed"
+                        },
+                        "effectState": {
+                          "enum": [
+                            "read_only",
+                            "committed"
+                          ]
+                        },
+                        "result": true
+                      },
+                      "required": [
+                        "result"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "rollback": {
+                "type": "object",
+                "properties": {
+                  "attempted": {
+                    "const": false
+                  },
+                  "succeeded": {
+                    "type": "null"
+                  },
+                  "triggerStepIndex": {
+                    "type": "null"
+                  },
+                  "triggerState": {
+                    "type": "null"
+                  },
+                  "error": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "guarded",
+                  "failed"
+                ]
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "transactionState": {
+                "const": "rolled_back"
+              },
+              "failedStepIndex": {
+                "type": "integer"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/stepOutcome"
+                    },
+                    {
+                      "if": {
+                        "type": "object",
+                        "properties": {
+                          "executionState": {
+                            "const": "not_started"
+                          }
+                        },
+                        "required": [
+                          "executionState"
+                        ]
+                      },
+                      "else": {
+                        "type": "object",
+                        "properties": {
+                          "resultSuppressed": {
+                            "const": "batch_rolled_back"
+                          }
+                        },
+                        "required": [
+                          "resultSuppressed"
+                        ]
+                      }
+                    }
+                  ]
+                }
+              },
+              "rollback": {
+                "type": "object",
+                "properties": {
+                  "attempted": {
+                    "const": true
+                  },
+                  "succeeded": {
+                    "const": true
+                  },
+                  "triggerStepIndex": {
+                    "type": "integer"
+                  },
+                  "triggerState": {
+                    "enum": [
+                      "guarded",
+                      "failed"
+                    ]
+                  },
+                  "error": false
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "indeterminate"
+              }
+            },
+            "required": [
+              "status"
+            ]
+          },
+          "then": {
+            "properties": {
+              "transactionState": {
+                "const": "indeterminate"
+              },
+              "failedStepIndex": {
+                "type": "integer"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "allOf": [
+                    {
+                      "$ref": "#/$defs/stepOutcome"
+                    },
+                    {
+                      "type": "object",
+                      "properties": {
+                        "effectState": {
+                          "enum": [
+                            "discarded",
+                            "indeterminate",
+                            "not_started"
+                          ]
+                        }
+                      },
+                      "allOf": [
+                        {
+                          "if": {
+                            "properties": {
+                              "executionState": {
+                                "const": "not_started"
+                              }
+                            },
+                            "required": [
+                              "executionState"
+                            ]
+                          },
+                          "else": {
+                            "properties": {
+                              "resultSuppressed": {
+                                "const": "batch_indeterminate"
+                              }
+                            },
+                            "required": [
+                              "resultSuppressed"
+                            ]
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                }
+              },
+              "rollback": {
+                "type": "object",
+                "properties": {
+                  "attempted": {
+                    "const": true
+                  },
+                  "succeeded": {
+                    "const": false
+                  },
+                  "triggerStepIndex": {
+                    "type": "integer"
+                  },
+                  "triggerState": {
+                    "enum": [
+                      "guarded",
+                      "failed",
+                      "indeterminate"
+                    ]
+                  },
+                  "error": {
+                    "$ref": "#/$defs/rollbackError"
+                  }
+                },
+                "required": [
+                  "error"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "successResponse": {
+      "allOf": [
+        {
+          "$ref": "https://schemas.revagent.local/addin-loopback/v1/json-rpc-response.schema.json#/$defs/successResponse"
+        },
+        {
+          "type": "object",
+          "properties": {
+            "result": {
+              "$ref": "#/$defs/result"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

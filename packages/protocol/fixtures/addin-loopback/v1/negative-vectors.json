@@ -1,0 +1,320 @@
+[
+  {
+    "name": "mcp_status rejects a non-loopback listener address",
+    "base": "mcpStatus.response",
+    "schema": "mcp-status",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/service/boundAddresses/0",
+      "value": "192.168.90.10"
+    }
+  },
+  {
+    "name": "mcp_status rejects a request frame cap above the add-in absolute limit",
+    "base": "mcpStatus.response",
+    "schema": "mcp-status",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/service/framing/maxRequestPayloadBytes",
+      "value": 134217729
+    }
+  },
+  {
+    "name": "mcp_status rejects a capability without its descriptor",
+    "base": "mcpStatus.response",
+    "schema": "mcp-status",
+    "validation": "schema",
+    "mutation": {
+      "operation": "delete",
+      "path": "/result/capabilityContracts/batch_atomic"
+    }
+  },
+  {
+    "name": "mcp_status rejects a batch request cap that differs from framing",
+    "base": "mcpStatus.scenario",
+    "schema": "mcp-status",
+    "validation": "semantic-status",
+    "mutation": {
+      "operation": "replace",
+      "path": "/response/result/capabilityContracts/batch_atomic/maxRequestPayloadBytes",
+      "value": 8388608
+    }
+  },
+  {
+    "name": "mcp_status rejects a forbidden UI command in the batchable set",
+    "base": "mcpStatus.response",
+    "schema": "mcp-status",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/capabilityContracts/batch_atomic/batchableCommands/0/method",
+      "value": "activate_view"
+    }
+  },
+  {
+    "name": "mcp_status rejects batch_atomic without a mutation rollback descriptor",
+    "base": "mcpStatus.scenario",
+    "schema": "mcp-status",
+    "validation": "semantic-status",
+    "mutation": {
+      "operation": "delete",
+      "path": "/response/result/capabilityContracts/batch_atomic/batchableCommands/1"
+    }
+  },
+  {
+    "name": "get_document_context rejects a raw model path",
+    "base": "documentContext.response",
+    "schema": "get-document-context",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/result/documents/0/path",
+      "value": "C:\\Projects\\Project-A.rvt"
+    }
+  },
+  {
+    "name": "get_document_context rejects an active id that does not name the active document",
+    "base": "documentContext.response",
+    "schema": "get-document-context",
+    "validation": "semantic",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/activeDocumentId",
+      "value": "doc-session-other"
+    }
+  },
+  {
+    "name": "get_document_context rejects a view owned by another document",
+    "base": "documentContext.response",
+    "schema": "get-document-context",
+    "validation": "semantic",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/activeView/documentId",
+      "value": "doc-session-other"
+    }
+  },
+  {
+    "name": "execute_batch rejects recursive execute_batch",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/params/steps/0/method",
+      "value": "execute_batch"
+    }
+  },
+  {
+    "name": "execute_batch rejects raw dynamic code",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/params/steps/1/method",
+      "value": "send_code_to_revit"
+    }
+  },
+  {
+    "name": "execute_batch rejects delete-review dry-run params",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/params/steps/1/params/mode",
+      "value": "dryRun"
+    }
+  },
+  {
+    "name": "execute_batch rejects an ambiguous delete-review target",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/params/steps/1/params/viewId",
+      "value": 123
+    }
+  },
+  {
+    "name": "execute_batch rejects runtime-only delete-review fields",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/params/steps/1/params/timeoutMs",
+      "value": 15000
+    }
+  },
+  {
+    "name": "execute_batch rejects runtime-only ordinary params",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/params/steps/0/params/timeoutMs",
+      "value": 15000
+    }
+  },
+  {
+    "name": "execute_batch rejects a non-ThreeD viewType with viewId",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/params/steps/1/params",
+      "value": {
+        "viewId": 123,
+        "viewType": "FloorPlan",
+        "mode": "commit",
+        "confirmDelete": true
+      }
+    }
+  },
+  {
+    "name": "clean rollback rejects rollback_failure as a step error",
+    "base": "batchResponseLimitRollback.response",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/steps/1/error",
+      "value": {
+        "code": "rollback_failure",
+        "message": "Rollback failure belongs only in rollback.error"
+      }
+    }
+  },
+  {
+    "name": "rolled-back batch rejects a leaked step result",
+    "base": "batchRollback.response",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/result/steps/0/result",
+      "value": {
+        "success": true
+      }
+    }
+  },
+  {
+    "name": "rolled-back batch rejects a rollback trigger index mismatch",
+    "base": "batchRollback.scenario",
+    "schema": "execute-batch",
+    "validation": "semantic-batch",
+    "mutation": {
+      "operation": "replace",
+      "path": "/response/result/rollback/triggerStepIndex",
+      "value": 0
+    }
+  },
+  {
+    "name": "failed batch rejects a guarded trigger step",
+    "base": "batchRollback.scenario",
+    "schema": "execute-batch",
+    "validation": "semantic-batch",
+    "mutation": {
+      "operation": "replace",
+      "path": "/response/result/status",
+      "value": "failed"
+    }
+  },
+  {
+    "name": "execute_batch rejects non-contiguous input indices",
+    "base": "batchCommit.scenario",
+    "schema": "execute-batch",
+    "validation": "semantic-batch",
+    "mutation": {
+      "operation": "replace",
+      "path": "/request/params/steps/1/index",
+      "value": 2
+    }
+  },
+  {
+    "name": "execute_batch rejects a response batch id mismatch",
+    "base": "batchCommit.scenario",
+    "schema": "execute-batch",
+    "validation": "semantic-batch",
+    "mutation": {
+      "operation": "replace",
+      "path": "/response/result/batchId",
+      "value": "0197a3c2-0000-7000-8000-000000000099"
+    }
+  },
+  {
+    "name": "rolled-back batch rejects the wrong effect disposition",
+    "base": "batchRollback.scenario",
+    "schema": "execute-batch",
+    "validation": "semantic-batch",
+    "mutation": {
+      "operation": "replace",
+      "path": "/response/result/steps/0/effectState",
+      "value": "discarded"
+    }
+  },
+  {
+    "name": "clean rollback rejects an indeterminate suppression claim",
+    "base": "batchRollback.response",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/steps/1/resultSuppressed",
+      "value": "batch_indeterminate"
+    }
+  },
+  {
+    "name": "indeterminate batch rejects a committed effect claim",
+    "base": "batchIndeterminate.response",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/result/steps/0/effectState",
+      "value": "committed"
+    }
+  },
+  {
+    "name": "JSON-RPC response rejects result and error together",
+    "base": "jsonRpcError",
+    "schema": "json-rpc-response",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/result",
+      "value": {
+        "resultContractVersion": 2
+      }
+    }
+  },
+  {
+    "name": "JSON-RPC post-parse error rejects a null correlation id",
+    "base": "jsonRpcError",
+    "schema": "json-rpc-response",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/id",
+      "value": null
+    }
+  },
+  {
+    "name": "JSON-RPC parse error rejects a fabricated correlation id",
+    "base": "jsonRpcParseError",
+    "schema": "json-rpc-response",
+    "validation": "schema",
+    "mutation": {
+      "operation": "replace",
+      "path": "/id",
+      "value": "fabricated-id"
+    }
+  }
+]

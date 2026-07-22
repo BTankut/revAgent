@@ -790,9 +790,15 @@ The RBP message type is `invoke_batch`. The additive add-in command used for one
     "steps": [
       {
         "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
-        "method": "send_code_to_revit",
-        "params": {},
-        "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+        "method": "delete_review_view",
+        "params": {
+          "viewName": "revAgent_QA_fixture_disposable",
+          "viewType": "ThreeD",
+          "exactName": true,
+          "mode": "commit",
+          "confirmDelete": true
+        },
+        "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
         "mutating": true,
         "mutation_scope": {"kind":"document","document_id":"doc_session_stable_id"},
         "policy": {
@@ -802,7 +808,7 @@ The RBP message type is `invoke_batch`. The additive add-in command used for one
         }
       }
     ],
-    "batch_digest": "sha256:d97fa7c0f37c8e0986e0a6a16d2f7573da2a374ad3cf3d32f9f0301d0880f9d5"
+    "batch_digest": "sha256:c0d85d9f7b43d4ad4c9091b3213574c6fd9accf1250ffa4c45260925618fae41"
   }
 }
 ```
@@ -844,7 +850,8 @@ Rules:
   `guarded|failed|cancelled|indeterminate` step; every later input step is `not_started`. It returns
   `failed_step_index` for that first non-success step; no atomicity is claimed. In particular, a guarded step
   never allows the next step to run merely because it arrived in a `result` rather than an `error`.
-- `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be recursively nested as batch steps.
+- An `atomic:true` step MUST be in the exact session-local Appendix A.2 descriptor set. Raw dynamic code,
+  `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be nested as atomic steps.
 - The pilot artifact includes the adapted add-in and MUST demonstrate the `batch_atomic` path before cutover.
 
 ### 11.1 Batch result carrier
@@ -1475,3 +1482,226 @@ The real adapted-add-in smoke in Section 21 and WP9 hands-on DP-10 artifact/clie
 pilot-entry gates after protocol freeze; they are not prerequisites for the M1 semantic tag. They MUST validate
 the frozen contract, and an incompatibility cannot be papered over: it requires the applicable additive
 capability or protocol-version/R-F change before pilot use.
+
+## Appendix A (normative): add-in loopback contract v1
+
+This appendix closes the versioned contract needed by the O1-T3 add-in loopback fixture. It is an additive
+contract for the adapted add-in; it does not implement the add-in, change the existing four-byte framing, or
+make the Section 22 executable-evidence gate green. The machine-readable sources are:
+
+- `packages/protocol/schemas/addin-loopback/v1/json-rpc-response.schema.json`
+- `packages/protocol/schemas/addin-loopback/v1/mcp-status.schema.json`
+- `packages/protocol/schemas/addin-loopback/v1/get-document-context.schema.json`
+- `packages/protocol/schemas/addin-loopback/v1/execute-batch.schema.json`
+
+The schemas and this appendix are one normative unit. A contradiction is a red O1-T3 result and requires a
+spec/schema correction before freeze; an implementation MUST NOT add a tolerance locally.
+
+### A.1 Binding, framing, and JSON-RPC envelope
+
+The adapted add-in listener MUST bind only IP loopback endpoints. The bridge MUST reject a wildcard, LAN,
+hostname-resolved non-loopback, or remote candidate before sending a JSON-RPC byte and MUST confirm the actual
+listener addresses from `mcp_status.result.service.boundAddresses`. Both checks use the operating system's IP
+loopback predicate; a string prefix check is insufficient. There is no production opt-out.
+
+Every message is one UTF-8 JSON object preceded by an unsigned four-byte big-endian payload length. The v1
+add-in request is exactly `{jsonrpc:"2.0",id,method,params}`. `id` is a non-empty string and is echoed exactly.
+The bridge never sends a JSON-RPC batch array or the legacy unframed dialect.
+
+A success is exactly `{jsonrpc:"2.0",id,result}` and every `result` object carries
+`resultContractVersion:2`. An error is exactly `{jsonrpc:"2.0",id,error:{code,message,data?}}`; `id` is null
+only when parsing did not recover a request id. A response cannot contain both `result` and `error`. Add-in
+loopback v1 uses only the standard JSON-RPC codes `-32700`, `-32600`, `-32601`, `-32602`, and `-32603`.
+
+### A.2 `mcp_status`: discovery and per-session capability authority
+
+The request params are the empty object. The response preserves the existing `activeTask`, `recentTasks`,
+history counters, and plan fields and adds these REQUIRED discovery fields:
+
+| Field | v1 rule |
+|---|---|
+| `addinLoopbackContractVersion` | Integer `1`. It is independent of RBP/1 and `resultContractVersion`. |
+| `addinVersion` | Exact installed product/build identity used in `session_register`. |
+| `revit` | `{version,build,processId}` for this Revit process. |
+| `service` | `{isRunning,port,binding:"loopback_only",boundAddresses:[...],framing:{...}}`; every address is IP loopback. |
+| `sessionCapabilities` | Unique subset of `batch_atomic` and `doc_context_cached_v1`. |
+| `capabilityContracts` | An identically keyed descriptor for every advertised capability and no descriptor for an unadvertised capability. |
+
+Capability strings are claims about this one probed Revit session, not the bridge connection. The bridge MUST
+copy only successfully probed claims into `session_register.session_capabilities`; the Gateway grant remains
+the intersection returned in `session_registered.granted_session_capabilities`. A filename, add-in version,
+Revit version, or another session's probe MUST NOT synthesize a capability.
+
+`service.framing` is exactly
+`{protocol:"length_prefixed_jsonrpc_v1",headerBytes:4,byteOrder:"big_endian",payloadEncoding:"utf-8",maxRequestPayloadBytes,maxResponsePayloadBytes:33554432}`.
+`maxRequestPayloadBytes` is the listener's effective configured cap from 1 MiB through the existing absolute
+128 MiB ceiling; the default is 16 MiB. Both limits count only the BOM-free UTF-8 JSON payload bytes, excluding
+the four-byte header. The header is the exact unsigned big-endian payload-byte count. The bridge MUST serialize
+and byte-count before writing and MUST NOT send a payload above the probed request cap. The add-in independently
+rejects an advertised-cap-plus-one request from its header, returns correlated-id-unavailable `-32600`, and
+closes that socket without JSON parsing or dispatch. An oversized response frame is never emitted. For an
+ordinary mutating command whose handler has already committed, a bounded correlated `-32603` substituted by
+the framing layer is **not** known-failure evidence: the bridge maps it to `indeterminate` with verification
+required. `execute_batch` instead uses the pre-assimilation rule in Appendix A.4 so a size failure can roll
+back cleanly. O1-T3 retains exact max and max-plus-one request/response vectors, including multibyte UTF-8
+input, and counts the header separately.
+
+`doc_context_cached_v1` has the exact descriptor
+`{contractVersion:1,method:"get_document_context",source:"application_events_cache",pollIntervalMs:15000,uiThreadRoundTrip:false}`.
+It may be advertised only when the command returns the Appendix A.3 contract from an application-event-backed
+cache without raising an ExternalEvent.
+
+`batch_atomic` has these REQUIRED descriptor fields:
+
+| Field | Required value/meaning |
+|---|---|
+| `contractVersion` | `1` |
+| `method` | `execute_batch` |
+| `maxSteps` | Runtime limit from 1 through 64; the bridge uses the lower of this and its own limit. |
+| `maxRequestPayloadBytes` | Aggregate BOM-free UTF-8 JSON-RPC request cap; equals `service.framing.maxRequestPayloadBytes`. |
+| `maxResponsePayloadBytes` | Aggregate BOM-free UTF-8 JSON-RPC response cap; equals `service.framing.maxResponsePayloadBytes` (`33554432`). |
+| `transactionBoundary` | `revit_transaction_group` |
+| `rollbackPolicy` | `rollback_on_non_success` |
+| `batchableCommands` | The exact session-local executable subset, with one unique descriptor per method. |
+
+Each `batchableCommands[]` descriptor is
+`{method,effect,transactionPolicy,rollbackDisposition,parameterProfile}`. The hard v1 eligible set is:
+
+```text
+get_current_view_elements, get_current_view_info, get_selected_elements, list_open_views,
+get_ui_state, find_elements, inspect_levels, inspect_sheet_text, inspect_schedules,
+count_annotations, extract_spatial_snapshot, get_spatial_change_state, delete_review_view
+```
+
+The read methods use
+`effect:"read_only"`, `transactionPolicy:"none"`,
+`rollbackDisposition:"discard_result_on_batch_rollback"`, and `parameterProfile:"ordinary_v1"`.
+`delete_review_view` uses
+`effect:"model_transaction"`, `transactionPolicy:"nested_transaction_required"`,
+`rollbackDisposition:"transaction_group_rollback"`, and
+`parameterProfile:"delete_review_view_commit_v1"`. Advertising `batch_atomic` requires this exact
+`delete_review_view` descriptor; a read-only fan-out is not evidence of atomic mutation support. Raw
+`send_code_to_revit` is never batchable: a Revit `TransactionGroup` cannot roll back arbitrary filesystem,
+process, network, static-state, or UI side effects from dynamic code.
+
+The status array MAY advertise a smaller subset when a command assembly is absent, but `execute_batch` MUST
+reject a step not present in that exact array before opening a `TransactionGroup`. The following methods are
+unconditionally non-batchable in v1: `mcp_status`, `get_document_context`, `execute_batch`,
+`send_code_to_revit`, `activate_view`, `close_view`, `clear_selection`, `open_existing_plan_for_element_level`,
+`focus_elements`, `section_box_elements`, and `create_3d_view_for_elements`. This closes recursive dispatch and
+UI/view-state side effects whose rollback is not equivalent to a model `TransactionGroup` rollback. Adding an
+eligible method changes the add-in loopback contract version; it is not an undocumented within-v1 tolerance.
+
+`mcp_status` remains a discovery/heartbeat/failure-diagnostic method. It MUST NOT return to the normal invoke
+hot path as a per-command preflight.
+
+### A.3 `get_document_context`: cached snapshot
+
+The request params are the empty object. Its success result contains exactly:
+
+```text
+resultContractVersion: 2
+documentContextContractVersion: 1
+capturedAtUtc: RFC 3339 timestamp
+revision: non-negative JSON-safe integer
+cacheState: ready | warming | unavailable
+unavailableReason: null for ready, otherwise a bounded non-empty reason
+documents: [{documentId,title,pathDigest,isWorkshared,isActive}, ...]
+activeDocumentId: string | null
+activeView: {documentId,id,name,type,level:string|null} | null
+disciplineHint: bounded token | null
+```
+
+`revision` increases monotonically within the Revit process whenever the normalized snapshot changes.
+`documentId` is stable only for that local add-in session. `pathDigest` is null or lowercase SHA-256 with the
+`sha256:` prefix; a raw model path is never present. A ready snapshot has at most one `isActive:true` document.
+When `activeDocumentId` is non-null, it MUST equal that document's `documentId`; a non-null
+`activeView.documentId` MUST equal that same `activeDocumentId`. When there is no active document,
+`activeView` is null. `warming` and `unavailable` carry no
+documents or active view. These cross-field rules are semantic fixture assertions in addition to JSON Schema.
+
+The bridge polls this command at the Section 14 cadence and maps camelCase add-in fields to the RBP
+`doc_context_update` snake_case fields. It MUST NOT substitute `get_current_view_info` plus `list_open_views`
+for a missing or invalid capability.
+
+### A.4 `execute_batch`: one atomic add-in dispatch
+
+`execute_batch` exists only for RBP `invoke_batch` with `atomic:true` and a granted `batch_atomic` capability.
+The outer JSON-RPC `id` MUST equal `params.batchId`. Params contain exactly
+`batchContractVersion:1`, `batchId`, `batchDigest`, `atomic:true`,
+`rollbackPolicy:"rollback_on_non_success"`, and ordered `steps`.
+
+Each step contains `{index,invocationId,method,params,paramsDigest,effect}`. Indices are contiguous from zero,
+invocation ids are unique, and each method/effect pair MUST match the descriptor in the most recent successful
+probe for that session. The digests are copied for correlation with the already-verified RBP request; they do
+not replace raw params and do not move Section 12.1 digest authority into the add-in. The only v1 mutation
+profile is `delete_review_view_commit_v1`: `params` requires `mode:"commit"`, `confirmDelete:true`, and
+exactly one bounded selector (`viewId`, or a `viewName` with `exactName:true`); optional `viewType` is exactly
+`ThreeD`, including when the selector is `viewId`. Ordinary v1 method params stay open to additive
+method-specific fields, but the following exact reserved-name set is rejected before dispatch:
+`target`, `host`, `port`, `timeoutMs`, `statusRefreshTimeoutMs`, `refreshStatusAfterCommand`, `responseMode`,
+`transactionMode`, `parseJsonResult`, `taskName`, `taskId`, `wrapperAction`, `logicalToolName`, `toolName`,
+`parentTaskName`, `parentTaskId`, `suppressTaskStatusWindow`, `display`, `invocation_id`, `batch_id`,
+`batch_digest`, `params_digest`, `mutating`, `mutation_scope`, `policy`, `verification`,
+`recovery_clearances`, `timeout_ms`, `batchContractVersion`, `batchId`, `batchDigest`, `invocationId`,
+`paramsDigest`, `effect`, `atomic`, `rollbackPolicy`. These are connection, timeout, response-mode,
+display/audit, RBP, or add-in batch-control fields; rejecting these exact names MUST NOT close the params
+object to future functional tool parameters. The batch handler invokes the extracted command seam directly
+on the current Revit API thread; it MUST NOT raise or wait for a nested `ExternalEvent`.
+
+The add-in validates the complete request before Revit execution, then raises exactly one ExternalEvent. On
+the Revit API thread it opens one `TransactionGroup`, executes the advertised command seams directly in input
+order, and never raises/waits for a nested ExternalEvent. After each normalized step result, it constructs the
+exact tentative success envelope for that prefix plus the minimal `not_started` suffix and counts the entire
+BOM-free UTF-8 JSON-RPC payload. If the projection exceeds `maxResponsePayloadBytes`, that current step becomes
+`failed` with `error.code:"response_payload_limit"`, the measured cap and tentative byte count, and the group
+rolls back before `Assimilate()`. Only an all-success envelope at or below the cap may assimilate. The first
+guarded result, other failure-shaped result, or exception likewise stops execution and rolls the whole group
+back; every successor is `not_started`.
+
+The success-envelope result contains
+`{resultContractVersion,batchContractVersion,batchId,batchDigest,atomic,status,transactionState,failedStepIndex,steps,rollback}`.
+The exact terminal matrix is:
+
+| `status` | `transactionState` | `failedStepIndex` | `rollback` |
+|---|---|---|---|
+| `completed` | `committed` | null | `{attempted:false,succeeded:null,triggerStepIndex:null,triggerState:null}` |
+| `guarded` | `rolled_back` | first guarded index | `{attempted:true,succeeded:true,triggerStepIndex:<same>,triggerState:"guarded"}` |
+| `failed` | `rolled_back` | first failed index | `{attempted:true,succeeded:true,triggerStepIndex:<same>,triggerState:"failed"}` |
+| `indeterminate` | `indeterminate` | first non-success / rollback-trigger index | `{attempted:true,succeeded:false,triggerStepIndex:<same>,triggerState:"guarded"|"failed"|"indeterminate",error:{code:"rollback_failure",message}}` |
+
+Every response step repeats `index`, `invocationId`, and `method` and adds `executionState` plus `effectState`.
+On commit, a read has `effectState:"read_only"`, a mutation has `effectState:"committed"`, and each carries its
+result. On rollback, a previously completed/guarded/failed model mutation has `effectState:"rolled_back"`; a
+read result obtained inside the transient group has `effectState:"discarded"`. Neither is exposed: the step
+omits `result` and carries `resultSuppressed:"batch_rolled_back"`. Successors use
+`executionState/effectState:"not_started"` and have no result, error, guard, or suppression field. A guarded
+step has a normalized `guardedReason`; a failed or indeterminate step has bounded structured `error` data.
+`response_payload_limit` additionally carries `maxResponsePayloadBytes:33554432` and
+`tentativeResponsePayloadBytes >= 33554433`; it is a clean failed-step rollback when
+`rollback.succeeded:true`, never a post-commit synthetic failure.
+If rollback itself fails, every possibly executed mutation uses `effectState:"indeterminate"`, every read
+uses `effectState:"discarded"`, and both use `resultSuppressed:"batch_indeterminate"`; no step may retain a
+`committed`, `rolled_back`, or visible-result claim. `rollback.triggerState` equals the triggering step's
+`executionState`. The `rollback_failure` code is reserved exclusively for
+`status:"indeterminate"` / `rollback.succeeded:false` at `rollback.error`; it MUST NOT appear in any step's
+`error` object or in a clean `failed` / `rolled_back` carrier.
+
+Parse, shape, unsupported-method, descriptor-mismatch, and parameter-profile failures detected before the
+group opens use a JSON-RPC error response and execute zero steps. Once the group opens, the add-in returns the
+batch success-envelope result even for a clean guarded/failed rollback. A reported rollback failure is
+`indeterminate`; loss of the socket/process before a valid terminal response is independently promoted by the
+bridge to the Section 11/12 indeterminate path. Transport success is never commit evidence.
+
+The bridge verifies request/response batch id, digest, step count, contiguous indices, invocation ids, methods,
+failure index, rollback trigger, and prefix/suffix state machine before journaling a terminal RBP batch. It maps
+only `completed/committed` to committed RBP effects. A malformed or contradictory response cannot be repaired
+by inference and becomes an indeterminate dispatched batch.
+
+### A.5 Fixture and evidence boundary
+
+The positive and negative JSON fixtures under `packages/protocol/fixtures/addin-loopback/v1`, together with
+the exact aggregate max/max-plus-one byte tests, are golden schema/semantic vectors. They prove the shapes,
+correlation/rollback invariants, and serialization boundaries without Revit. They do
+not prove framing behavior, a listener binding, an ExternalEvent, a `TransactionGroup`, crash behavior, or a
+real rollback. Those remain O1-T3 and O1-T7 executable gates under Sections 21 and 22.

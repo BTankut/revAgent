@@ -1,0 +1,100 @@
+{
+  "request": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000030",
+    "method": "execute_batch",
+    "params": {
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000030",
+      "batchDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "atomic": true,
+      "rollbackPolicy": "rollback_on_non_success",
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000031",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_rollback_a",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+          "effect": "model_transaction"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000032",
+          "method": "delete_review_view",
+          "params": {
+            "viewName": "revAgent_QA_fixture_disposable_rollback_b",
+            "viewType": "ThreeD",
+            "exactName": true,
+            "mode": "commit",
+            "confirmDelete": true
+          },
+          "paramsDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+          "effect": "model_transaction"
+        },
+        {
+          "index": 2,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000033",
+          "method": "find_elements",
+          "params": {
+            "query": "pump"
+          },
+          "paramsDigest": "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+          "effect": "read_only"
+        }
+      ]
+    }
+  },
+  "response": {
+    "jsonrpc": "2.0",
+    "id": "0197a3c2-0000-7000-8000-000000000030",
+    "result": {
+      "resultContractVersion": 2,
+      "batchContractVersion": 1,
+      "batchId": "0197a3c2-0000-7000-8000-000000000030",
+      "batchDigest": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+      "atomic": true,
+      "status": "guarded",
+      "transactionState": "rolled_back",
+      "failedStepIndex": 1,
+      "steps": [
+        {
+          "index": 0,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000031",
+          "method": "delete_review_view",
+          "executionState": "completed",
+          "effectState": "rolled_back",
+          "resultSuppressed": "batch_rolled_back"
+        },
+        {
+          "index": 1,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000032",
+          "method": "delete_review_view",
+          "executionState": "guarded",
+          "effectState": "rolled_back",
+          "guardedReason": "command_guarded",
+          "resultSuppressed": "batch_rolled_back"
+        },
+        {
+          "index": 2,
+          "invocationId": "0197a3c2-0000-7000-8000-000000000033",
+          "method": "find_elements",
+          "executionState": "not_started",
+          "effectState": "not_started"
+        }
+      ],
+      "rollback": {
+        "attempted": true,
+        "succeeded": true,
+        "triggerStepIndex": 1,
+        "triggerState": "guarded"
+      }
+    }
+  }
+}
