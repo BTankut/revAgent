@@ -26,7 +26,7 @@ This v0.9 draft incorporates the coordinator resolutions that override the origi
 
 | Resolution | Canonical v0.9 rule |
 |---|---|
-| RES-2 | The bridge is currently planned as a .NET 8 self-contained Windows service. RBP journal semantics are implementation-neutral and require a durable SQLite-class store; this specification does not depend on Node or `better-sqlite3`. |
+| RES-2 | The bridge is a .NET 8 self-contained Windows service. RBP journal semantics are implementation-neutral and require a durable SQLite-class store; this specification does not depend on Node or `better-sqlite3`. |
 | RES-3 | Document context is sourced from the add-in's cached `get_document_context` command and polled by the bridge every 15 seconds. `get_current_view_info` and `list_open_views` are not used as the standing context poll. |
 | RES-4 | The additive add-in command is named `execute_batch`. `batch_execute` is invalid. Batch behavior is capability-gated by `batch_atomic`. |
 | RES-5 | The pilot runs the same adapted add-in stack intended for cutover, including loopback binding, `execute_batch`, `get_document_context`, and the concurrency fixes. An unchanged-add-in pilot is not sufficient. |
@@ -34,6 +34,7 @@ This v0.9 draft incorporates the coordinator resolutions that override the origi
 | RES-16 | The Gateway dispatcher is the authoritative serial-per-session enforcement point. The bridge queue and add-in defenses are defense-in-depth. |
 | RES-17 | Instance discovery never reads `%TMP%\revAgent-instances.json`. It uses an explicit environment override or a bounded port scan with an `mcp_status` shape probe. |
 | RES-21 | The canonical idempotency key is the exact composite string `rsid + "/" + invocation_id`. Journal and audit storage reference this definition. |
+| RES-25 | Phase 1 uses WSS as the primary RBP binding and provides a capability-gated Streamable HTTP/SSE fallback with identical message semantics. |
 
 ## 2. Scope and boundaries
 
@@ -81,20 +82,25 @@ Model files do not traverse RBP/1. Tool parameters, bounded results, progress, d
 | `invocation_id` | Gateway dispatcher | UUIDv7 for one logical invocation; reused only for retransmission/redelivery of that invocation |
 | `idempotency_key` | Derived | Exact string `rsid + "/" + invocation_id` |
 | `batch_id` | Gateway dispatcher | UUIDv7 correlating an ordered batch and its step invocations |
-| `seq` | Sender | Monotonic unsigned 64-bit data-frame sequence per `rsid`, per direction, continuing across reconnects |
+| `seq` | Sender | Monotonic JSON-safe integer from 1 through 9,007,199,254,740,991 (`2^53-1`) per `rsid`, per direction, continuing across reconnects |
 | `resume_token` | Gateway | Opaque secret bound to device, `rsid`, and expiry; not an actor credential |
 | `confirmation_id` | Gateway policy layer | Correlates an approved preview/action; never minted or approved by the bridge |
 
 The OIDC user is the authoritative human actor. A Windows username supplied by session registration is an operational hint only and MUST NOT replace the authenticated actor in audit records.
 
+`seq` is deliberately narrower than an unsigned 64-bit counter because JSON implementations commonly use
+IEEE-754 numbers. Fractions, exponent forms that do not decode to the exact integer, negative values, and
+values above `2^53-1` are invalid. A sender MUST NOT wrap. Before exhaustion, it MUST drain all acknowledged
+data and register a new `rsid`; receivers MUST reject an unsafe value as a `protocol` fault.
+
 ## 4. Transport profile and authentication
 
 ### 4.1 Phase-1 profile
 
-The provisional Phase-1 profile, pending DP-2 confirmation, is one persistent outbound WSS connection per bridge process:
+DP-2 confirms one persistent outbound WSS connection per bridge process as the primary Phase-1 binding:
 
 ```text
-wss://<gateway-domain>/bridge/v1
+wss://gateway.revagent.app/bridge/v1
 ```
 
 The bridge MUST validate the server certificate and connect to the configured DNS name, never an IP address. The HTTP upgrade carries:
@@ -110,7 +116,11 @@ Expected refusal responses are:
 - `403` for device, tenant, or license refusal
 - `426` with `{min_protocol,max_protocol,manifest_url}` when no protocol version overlaps
 
-A Streamable HTTP fallback is reserved behind the `transport_streamable_http` capability. RBP envelopes and state semantics are transport-independent. The exact HTTP binding is not frozen in v0.9 and must not be improvised by an implementation before DP-2 and the proxy test evidence are recorded.
+A Streamable HTTP/SSE fallback is REQUIRED behind the `transport_streamable_http` capability. RBP
+envelopes, ordering, acknowledgement, resume, journal, and error semantics are identical on both bindings.
+The exact HTTP request/stream lifecycle is a v1.0 freeze blocker and MUST NOT be improvised before its golden
+vectors and proxy/interoperability evidence are recorded. The fallback does not switch an active WSS
+connection in place; it reconnects and resumes through the negotiated fallback binding.
 
 ### 4.2 Connection opening
 
@@ -121,6 +131,22 @@ After transport authentication:
 3. Any non-`hello` first message closes the connection with protocol error `4400`.
 4. No version overlap closes with `4426` and an update-manifest pointer.
 5. Authentication loss closes with `4401`; authorization/seat refusal closes with `4403`.
+
+### 4.3 Reconnect backoff
+
+Every unsuccessful connection attempt or connection that leaves `steady` before 120 continuous seconds
+increments attempt index `n`, starting at zero. Before the next automatic attempt, the bridge waits:
+
+```text
+limit_ms = min(60000, 1000 * 2^n)
+delay_ms = uniform_random_integer(0, limit_ms)
+```
+
+This is exponential backoff with full jitter: 1 second initial base, factor 2, and 60 second cap. A TCP/TLS/WSS
+handshake alone MUST NOT reset the counter. It resets only after 120 continuous seconds in `steady`.
+Authentication or authorization refusal (`401`, `403`, `4401`, `4403`) MUST pause automatic retries until
+credentials, enrollment, authorization, or operator state changes. A `goodbye` reason may further suppress or
+delay reconnect as specified in Section 6.3.
 
 ## 5. Envelope
 
@@ -143,7 +169,7 @@ Rules:
 
 - `v` is the selected protocol integer and MUST remain constant for the connection.
 - `id` is a sender-minted UUIDv7 envelope identifier. It is not the idempotency key.
-- `rsid`, `seq`, and `ack` are REQUIRED on session data messages and absent on connection control messages.
+- `rsid` and `seq` are REQUIRED on session data messages and absent on connection control messages. `ack` is an optional cumulative acknowledgement piggyback.
 - `ts` is diagnostic only. Ordering authority is `seq`; clock skew is tolerated.
 - Unknown fields MUST be ignored within the same protocol version.
 - Unknown message types MUST return `unsupported` unless a negotiated capability declares them.
@@ -166,6 +192,23 @@ invoke, invoke_batch, result, partial, error, cancel, doc_context_update
 ```
 
 A connection-level protocol/auth error without an `rsid` is an unsequenced control response and normally closes the connection. An invocation error is session-scoped data and follows the acknowledgement/retransmission rules.
+
+### 5.2 Sequence, acknowledgement, and retransmission
+
+- The first data message in each direction for an `rsid` has `seq:1`. `ack:0` and `last_rx_seq:0` mean that
+  no data message has yet been durably accepted in the opposite direction.
+- A receiver advances its cumulative acknowledgement only after it has durably accepted every data message
+  through that sequence. It MAY piggyback the value in `ack`; `heartbeat`, `heartbeat_ack`, and resume
+  messages carry explicit per-session acknowledgement state.
+- A sender MUST retain every unacknowledged data envelope and retransmit it after resume in ascending `seq`
+  order. A retransmission preserves `id`, `v`, `type`, `rsid`, `seq`, and the complete `payload`; only `ack`
+  and diagnostic `ts` MAY be refreshed.
+- A duplicate `seq` with the same retained envelope identity is acknowledged but MUST NOT be dispatched
+  again. A duplicate with different immutable fields is a terminal `protocol` fault.
+- A forward gap MUST NOT be guessed across. The receiver closes or enters resume and requests retransmission
+  from the last contiguous sequence. Out-of-order data is never exposed to invocation logic.
+- Cumulative acknowledgement removes only transport retransmission state. It does not delete an invocation
+  journal row and is not evidence that a Revit mutation committed.
 
 ## 6. Connection and session lifecycle
 
@@ -191,7 +234,15 @@ The bridge sends one `session_register` for each discovered Revit process:
     "revit": {"version": "2022", "build": "...", "pid": 1234},
     "addin_version": "2026.07.22.0",
     "bridge_version": "0.1.0",
-    "documents": [],
+    "documents": [
+      {
+        "document_id": "doc_session_stable_id",
+        "title": "Project A",
+        "path_digest": "sha256:lowercase-hex-or-null",
+        "is_workshared": true,
+        "is_active": true
+      }
+    ],
     "port": 8080
   }
 }
@@ -206,23 +257,92 @@ The Gateway validates the device/session association and returns:
     "rsid": "rs_7f3a",
     "resume_token": "opaque",
     "resume_expires_at": "2026-07-23T12:00:00.000Z",
-    "seat": {"granted": true}
+    "principal": {"tenant_id": "tenant_uuid", "user_id": "user_uuid"},
+    "seat": {"granted": true, "seat_id": "seat_uuid"}
   }
 }
 ```
 
-`local_session_key` is diagnostic and MUST NOT become a cross-device identifier. Revit exit sends `session_unregister`; pending invocations end with `addin_unreachable` unless a final journal outcome is already durable.
+Each `documents[]` object requires `document_id`, `title`, `path_digest`, `is_workshared`, and `is_active`.
+`path_digest` is either `null` or `sha256:` plus 64 lowercase hexadecimal characters; a raw model path MUST
+NOT be sent. `document_id` is stable only within the registered add-in session. At most one document may have
+`is_active:true`.
+
+`local_session_key` and `user_hint` are diagnostic only and MUST NOT become authority or cross-device
+identifiers. The Gateway derives `tenant_id`, `user_id`, and `seat_id` from the authenticated device enrollment
+and seat assignment; a bridge cannot claim or choose them in `session_register`. Missing assignment or a
+payload/enrollment mismatch is `auth`, closes/refuses with `4403`, and is audited as a seat-identity spoof
+attempt. The north-side OIDC actor for an invocation is retained separately from this bridge principal.
+
+Revit exit sends `session_unregister`; pending invocations end with `addin_unreachable` only when non-execution
+is known. A possibly dispatched mutation follows the indeterminate rules below.
 
 ### 6.2 Resume
 
-On reconnect, the bridge sends `session_resume` per `rsid` with the resume token and the last received data sequence. The Gateway returns `resume_ack` with its last received sequence. Both peers retransmit unacknowledged data messages in ascending sequence order.
+On reconnect, the bridge sends one control message per resumable session:
+
+```json
+{
+  "type": "session_resume",
+  "payload": {
+    "rsid": "rs_7f3a",
+    "resume_token": "opaque",
+    "last_rx_seq": 409
+  }
+}
+```
+
+The Gateway returns:
+
+```json
+{
+  "type": "resume_ack",
+  "payload": {
+    "rsid": "rs_7f3a",
+    "last_rx_seq": 412,
+    "resume_expires_at": "2026-07-23T12:00:00.000Z"
+  }
+}
+```
+
+`last_rx_seq` is the largest contiguous data sequence durably accepted from the other peer. Both peers
+retransmit unacknowledged data messages in ascending sequence order under Section 5.2.
 
 - Pending Gateway invocations are held for 10 minutes after disconnect.
 - An `rsid` remains resumable for 24 hours unless explicitly unregistered or revoked.
 - Resume state is durable Gateway state; a Gateway process restart MUST NOT erase it.
 - Redelivered invokes always pass through the bridge journal rules in Section 12.
 
-After the 10-minute pending window, the Gateway completes the invocation with a retryable environment error and lets the orchestrator decide the next action. It MUST NOT mint a transparent replacement write invocation.
+After the 10-minute pending window, outcome handling depends on mutation risk:
+
+- A non-mutating invocation whose durable terminal outcome is unavailable MAY end as `environment` with
+  `retryable:true`, provided no concurrent execution remains possible.
+- A mutating invocation whose dispatch or commit cannot be disproved MUST end as `journal_indeterminate`
+  with `retryable:false`, `outcome:"indeterminate"`, and `verification_required:true`.
+- The Gateway MUST persist a recovery hold keyed by `rsid + "/" + invocation_id` and MUST NOT mint or
+  dispatch a replacement mutation until an explicit read-only verification has executed and been audited.
+  If the verification cannot prove the safe next action, operator intervention is REQUIRED.
+
+Changing `invocation_id` MUST NOT be used to bypass this hold. A transport timeout, process exit, or
+`addin_unreachable` signal cannot downgrade an unknown mutating outcome into a retryable environment fault.
+
+### 6.3 Graceful close
+
+`goodbye` is a connection-control message with this payload:
+
+```json
+{
+  "reason": "server_draining",
+  "retry_after_ms": 30000,
+  "message": "bounded operator-safe detail"
+}
+```
+
+`reason` is the closed v1 enum `shutdown`, `update`, `server_draining`, `protocol_error`, or `auth_revoked`.
+`retry_after_ms` is optional and valid only for `update` or `server_draining`. `shutdown` suppresses automatic
+reconnect until the local service starts again; `auth_revoked` suppresses it until credential/enrollment state
+changes; `protocol_error` follows normal backoff after the offending state is corrected. `goodbye` does not
+acknowledge data or erase resume/journal state.
 
 ## 7. Negotiation messages
 
@@ -272,6 +392,20 @@ Required payload:
 
 The bridge MUST apply the negotiated limits even if its local limits are higher.
 
+### 7.3 Compatibility window and within-version changes
+
+For every deployed protocol generation `N`, the Gateway MUST accept and correctly serve RBP `N` and
+`N-1` concurrently; RBP/1 is the bootstrap exception until RBP/2 exists. `hello_ack` selects the highest
+mutually supported integer. One Gateway deployment MUST NOT force the whole fleet against a `4426` wall
+during a staged Bridge rollout.
+
+Within one protocol integer, changes are additive only: peers MAY add optional fields, behavior with a
+backward-compatible default, or messages gated by a negotiated capability. Adding a required field, removing
+or renaming a field, changing a type/unit/meaning, or adding a closed-enum value that an older peer would reject
+requires a new protocol integer. Unknown optional fields remain ignorable under Section 5. The `/bridge/v1`
+path names the Phase-1 endpoint profile rather than bypassing negotiation; it remains routable for the complete
+`N`/`N-1` support window.
+
 ## 8. Local Revit discovery
 
 Discovery is bridge-local and bounded:
@@ -283,6 +417,12 @@ Discovery is bridge-local and bounded:
 
 The bridge MUST NOT read `%TMP%\revAgent-instances.json` or any legacy alias of that file. No production writer exists, so it cannot be authoritative. A future discovery extension requires a negotiated capability and an R-F-reviewed spec change.
 
+Every discovery probe and add-in connection MUST target only an IP loopback address (`127.0.0.0/8` or
+`::1`). The bridge MUST NOT connect to a LAN, wildcard, hostname-resolved non-loopback, or remote target even
+when supplied through an override. A non-loopback candidate is rejected and audited before any JSON-RPC byte
+is sent. The adapted add-in MUST bind its listener to loopback only; a wildcard listener fails pilot
+conformance.
+
 ## 9. Heartbeat and liveness
 
 The bridge sends one connection-scoped `heartbeat` every 15 seconds. It includes all registered sessions:
@@ -292,6 +432,9 @@ The bridge sends one connection-scoped `heartbeat` every 15 seconds. It includes
   "type": "heartbeat",
   "payload": {
     "bridge_version": "0.1.0",
+    "acks": [
+      {"rsid": "rs_7f3a", "seq": 42}
+    ],
     "sessions": [
       {
         "rsid": "rs_7f3a",
@@ -312,7 +455,33 @@ Liveness thresholds are canonical across Gateway and admin UI:
 - `degraded`: silence from 35 seconds until less than 65 seconds
 - `disconnected`: silence of 65 seconds or more
 
-The Gateway replies with `heartbeat_ack`, including cumulative sequence acknowledgements and an optional update notice. If the bridge receives no acknowledgement for 10 seconds after a heartbeat, it closes and reconnects.
+The Gateway replies:
+
+```json
+{
+  "type": "heartbeat_ack",
+  "payload": {
+    "server_time": "2026-07-22T12:00:15.000Z",
+    "acks": [
+      {"rsid": "rs_7f3a", "seq": 30}
+    ],
+    "update_available": {
+      "channel": "stable",
+      "manifest_url": "/bridge/update/manifest"
+    }
+  }
+}
+```
+
+`acks` and `sessions` are REQUIRED. Each heartbeat acknowledgement is the largest contiguous
+Gateway-to-bridge data sequence durably accepted for that `rsid`; zero means none. This supplies reverse
+direction acknowledgement even when the bridge has no data message to send.
+
+`server_time` and `acks` are REQUIRED; `update_available` is optional. Each `acks[].seq` is the largest
+contiguous bridge-to-Gateway data sequence durably accepted for that `rsid`, using zero when none exists.
+This acknowledgement participates in Section 5.2 but does not acknowledge the reverse direction. If the
+bridge receives no `heartbeat_ack` for 10 seconds after a heartbeat, it closes and reconnects using Section
+4.3.
 
 The bridge MAY poll local `mcp_status` to populate the heartbeat snapshot. It MUST NOT issue `mcp_status` before every invocation. After a failed or timed-out invocation, it MAY consult `mcp_status` to distinguish an active Revit task from an unreachable add-in and enrich the resulting structured fault.
 
@@ -367,6 +536,7 @@ Rules:
   "rsid": "rs_7f3a",
   "seq": 18,
   "payload": {
+    "kind": "invocation",
     "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
     "status": "completed",
     "result": {},
@@ -381,7 +551,7 @@ Rules:
 }
 ```
 
-`status` is `completed` or `guarded`. A guarded add-in result remains a result, not a transport failure. Add-in `resultContractVersion` is passed through without coupling it to RBP version.
+For `kind:"invocation"`, `status` is `completed` or `guarded`. A guarded add-in result remains a result, not a transport failure. Add-in `resultContractVersion` is passed through without coupling it to RBP version.
 
 ## 11. Batch invocation
 
@@ -423,6 +593,67 @@ Rules:
 - `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be recursively nested as batch steps.
 - The pilot artifact includes the adapted add-in and MUST demonstrate the `batch_atomic` path before cutover.
 
+### 11.1 Batch result carrier
+
+Every batch terminates with one `result` whose `payload.kind` is `batch`. `failed_step_index` is carried at
+the top level of that payload, not hidden in a step result or metrics object:
+
+```json
+{
+  "type": "result",
+  "rsid": "rs_7f3a",
+  "seq": 22,
+  "payload": {
+    "kind": "batch",
+    "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+    "atomic": false,
+    "status": "failed",
+    "transaction_state": "not_applicable",
+    "failed_step_index": 1,
+    "steps": [
+      {
+        "index": 0,
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+        "status": "completed",
+        "result": {},
+        "replayed": true
+      },
+      {
+        "index": 1,
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+        "status": "failed",
+        "error": {
+          "retryable": false,
+          "fault_class": "revit_api",
+          "message": "bounded operator-safe message"
+        },
+        "replayed": false
+      },
+      {
+        "index": 2,
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+        "status": "not_started",
+        "replayed": false
+      }
+    ],
+    "replayed": false
+  }
+}
+```
+
+Batch `status` is `completed`, `guarded`, `failed`, `cancelled`, or `indeterminate`.
+`transaction_state` is `committed`, `rolled_back`, `not_applicable`, or `indeterminate`.
+`failed_step_index` is `null` only when every step completed; otherwise it is the zero-based first
+`guarded|failed|cancelled|indeterminate` step. Every input step appears exactly once and in input order.
+A step status is `completed`, `guarded`, `failed`, `cancelled`, `indeterminate`, or `not_started`; exactly one
+of `result` or `error` is present when applicable.
+
+For `atomic:true`, success requires `transaction_state:"committed"`. A clean `TransactionGroup` rollback
+uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. If the add-in or bridge dies
+after atomic dispatch without a durable terminal batch outcome, the whole batch uses
+`status:"indeterminate"`, `transaction_state:"indeterminate"`, and every possibly executed mutating step is
+indeterminate. `replayed:true` at batch level means that this delivery executed no add-in step.
+
 ## 12. Idempotency journal
 
 ### 12.1 Required storage behavior
@@ -430,15 +661,15 @@ Rules:
 The bridge MUST use a local durable SQLite-class store. The implementation language and database library are not part of RBP/1. The logical record contains:
 
 ```text
-rsid, invocation_id, idempotency_key, batch_id?, method, mutating,
-params_digest, state, terminal_outcome?, result_digest?,
+rsid, invocation_id, idempotency_key, batch_id?, batch_index?, method, mutating,
+params_digest, state, terminal_outcome?, result_digest?, verification_hold?,
 created_at, started_at?, finished_at?
 ```
 
 Allowed states are:
 
 ```text
-received -> executing -> completed|failed|guarded|cancelled
+received -> executing -> completed|failed|guarded|cancelled|indeterminate
 ```
 
 Durability ordering is mandatory:
@@ -449,31 +680,87 @@ Durability ordering is mandatory:
 
 A crash after add-in completion but before terminal persistence leaves `executing` and is indeterminate by design.
 
+`params_digest` is computed exactly as follows:
+
+```text
+canonical_params_bytes = UTF-8 without BOM of RFC 8785 JCS(params)
+params_digest = "sha256:" + lowercase_hex(SHA-256(canonical_params_bytes))
+```
+
+The input is the functional `params` JSON value before display/audit side-channel fields are merged. Duplicate
+keys and non-finite numbers are rejected before canonicalization. RFC 8785 object-key ordering and number
+serialization apply; no additional Unicode normalization is performed. Therefore harmless JSON property
+ordering or escape differences do not create a mismatch, while a real value change does. Implementations
+MUST share golden vectors covering property order, number formatting, Unicode, and escapes.
+
+The bridge also compares `method`, `mutating`, the full policy/confirmation block, and batch position
+separately; a matching `params_digest` cannot authorize a changed method or policy. For a batch, a durable
+coordination row additionally binds `batch_id`, `atomic`, ordered step invocation ids, methods, policy blocks,
+and step `params_digest` values before any add-in byte is written.
+
 ### 12.2 Redelivery rules
 
 For an existing canonical idempotency key:
 
 1. A terminal row replays the stored outcome with `replayed:true`; the add-in is not called.
 2. `received` or `executing` with `mutating:false` MAY be executed once more. This is a recovery/failure path, so the bridge MAY consult `mcp_status` first to avoid colliding with a still-running add-in task.
-3. `received` or `executing` with `mutating:true` MUST NOT be re-executed. Return terminal `journal_indeterminate`; the orchestrator must perform a verification read before any new invocation id is considered.
+3. `received` or `executing` with `mutating:true` MUST NOT be re-executed. Return `journal_indeterminate` with
+   `retryable:false`, `outcome:"indeterminate"`, and `verification_required:true`; the Gateway installs the
+   recovery hold from Section 6.2 before any new invocation id is considered.
 4. The same key with a different `params_digest` is a terminal `protocol` fault.
 
 The journal MUST retain entries for at least seven days and longer than every supported resume/redelivery window. The Phase-1 implementation SHOULD default to 14 days. It MUST NOT prune non-terminal entries merely to satisfy a row cap. Large terminal results MAY retain only a digest and return `payload_omitted:true`; the Gateway then performs a read-based recovery instead of guessing.
+
+#### `invoke_batch` redelivery
+
+The batch coordination row is checked before any step row. A repeated `batch_id` with a changed `atomic`
+value, ordered step identity, method, policy binding, or step digest is a terminal `protocol` fault.
+
+For `atomic:false` redelivery:
+
+1. Terminal prefix steps are replayed from their journals and never re-executed.
+2. A terminal `guarded|failed|cancelled|indeterminate` step stops the batch; later steps are returned as
+   `not_started`.
+3. The first non-terminal read step MAY execute once under rule 2 above. The first non-terminal mutating step
+   becomes `indeterminate`, stops the batch, and requires verification. Only after a recovered step is
+   terminal-successful may ordered `not_started` successors execute.
+4. The response always uses the Section 11.1 carrier. It may therefore contain a mix of replayed terminal,
+   newly terminal, indeterminate, and `not_started` steps. `failed_step_index` identifies the first
+   non-success step. Batch `replayed:true` is permitted only when no step executed during this delivery.
+
+For `atomic:true` redelivery, a durable terminal batch outcome is replayed with identical semantics without calling
+the add-in. A coordination row still in `received` may execute only when it durably proves that no add-in byte
+was sent. Once atomic dispatch may have started, any missing terminal outcome makes the whole transaction and
+all possibly mutating steps indeterminate; no individual step is retried. Read-only verification of the
+intended postconditions is mandatory before another mutation, and inconclusive verification requires an
+operator.
 
 ## 13. Partial results, progress, and backpressure
 
 `partial` has two forms:
 
 ```json
-{"kind":"chunk","invocation_id":"...","chunk_index":0,"data":"..."}
+{
+  "kind":"chunk",
+  "invocation_id":"...",
+  "chunk_index":0,
+  "encoding":"base64",
+  "content_type":"application/json",
+  "data":"eyJyZXN1bHQiOi4uLn0="
+}
 ```
 
 ```json
 {"kind":"progress","invocation_id":"...","progress":{"elapsed_ms":10000,"note":"waiting_for_revit"}}
 ```
 
-- Chunk payloads MUST be at most 1 MiB and ordered by `chunk_index`.
-- A chunked invocation ends with one terminal `result` carrying `chunked:true`, `total_chunks`, `total_size`, and `sha256`.
+- `encoding` is exactly `base64` in RBP/1. `data` is RFC 4648 standard padded Base64 with no whitespace.
+  The 1 MiB chunk limit applies to decoded bytes, not Base64 text.
+- Chunk payloads are ordered from `chunk_index:0`; a duplicate index must contain identical decoded bytes
+  and is not appended twice. Sequence acknowledgement/retransmission follows Section 5.2.
+- A chunked invocation ends with one terminal `result` carrying `chunked:true`, `content_type`,
+  `total_chunks`, `total_size`, and `sha256`. `total_size` and `sha256:` plus lowercase hexadecimal SHA-256
+  are computed over the concatenation of decoded chunk bytes in index order.
 - Long-running add-in waits SHOULD emit progress every 10 seconds.
 - The bridge pauses data emission while the transport's buffered outbound data exceeds 8 MiB.
 - Control messages and heartbeats MUST remain serviceable while result chunks are backpressured.
@@ -523,6 +810,8 @@ Raw model paths SHOULD be represented by bounded metadata and digests according 
   "invocation_id": "optional",
   "retryable": false,
   "fault_class": "parameter",
+  "outcome": "known",
+  "verification_required": false,
   "message": "bounded operator-safe message",
   "addin_error": {"code": -32602, "message": "optional bounded detail"}
 }
@@ -535,22 +824,43 @@ Raw model paths SHOULD be represented by bounded metadata and digests according 
 | `policy` | false | Invalid policy decision or missing confirmation correlation |
 | `unsupported` | false | Unsupported method, capability, version, or atomic batch request |
 | `parameter` | false | Invalid invocation parameters or add-in invalid-request/parse error |
+| `environment` | true when non-mutating or known-not-dispatched | Transient transport/process/host condition with a known non-committing outcome; never a label for an unknown write |
 | `revit_busy` | true | Failure-path diagnosis shows a competing/manual active Revit task |
-| `revit_timeout` | read: true; write: false | Deadline exceeded; writes require journal/verification handling |
+| `revit_timeout` | read: true; write after dispatch: false | Deadline exceeded; a possibly dispatched write is promoted to `journal_indeterminate` |
 | `revit_api` | false | Add-in command executed and returned/threw a Revit/API failure |
-| `addin_unreachable` | true | Local TCP connect/reset or Revit exit |
+| `addin_unreachable` | true only before dispatch or for a safe read | Local TCP connect/reset or Revit exit; a possibly dispatched write is promoted to `journal_indeterminate` |
 | `journal_indeterminate` | false | A mutating invocation may have executed; verification is required |
 | `oversize` | false | Negotiated size limit exceeded |
 | `cancelled` | false | Gateway abandoned the invocation; late real outcome remains journaled |
 
-Retryability is explicit on every error. The orchestrator, not the bridge, owns bounded retry policy. Revit writes are never blindly retried.
+`outcome` is `known` unless the fault is `journal_indeterminate`, where it MUST be `indeterminate` and
+`verification_required` MUST be true. Retryability is explicit on every error. The orchestrator, not the
+bridge, owns bounded retry policy. A write is never blindly retried: after the first add-in byte may have been
+sent, transport timeout, process loss, cancellation uncertainty, or add-in unreachability MUST be classified
+through the journal. If non-execution cannot be proved, `journal_indeterminate` replaces the otherwise
+retryable environment class and activates the Section 6.2 verification hold.
 
 ## 16. Cancellation
 
-`cancel {invocation_id}` is best effort. The existing add-in ExternalEvent path has no abort contract.
+`cancel` is a sequenced data message:
+
+```json
+{
+  "type": "cancel",
+  "rsid": "rs_7f3a",
+  "seq": 44,
+  "payload": {
+    "invocation_id": "0197a3c2-0000-7000-8000-000000000010",
+    "reason": "user_requested"
+  }
+}
+```
+
+`reason` is the closed v1 enum `user_requested`, `client_disconnected`, `deadline_exceeded`, or
+`gateway_shutdown`. Cancellation is best effort. The existing add-in ExternalEvent path has no abort contract.
 
 - If the invocation has not reached the add-in, the bridge cancels and journals it.
-- If it is already executing, the bridge marks the Gateway request abandoned, waits for the real add-in outcome, journals that outcome, suppresses it as the user-visible result, and returns `cancelled`.
+- If it is already executing, the bridge marks the Gateway request abandoned, waits for the real add-in outcome, journals that outcome, suppresses it as the user-visible result, and returns `cancelled` only when the real outcome is known. Loss before a mutating terminal outcome returns `journal_indeterminate`, never a false cancellation success.
 - Cancellation MUST NOT erase evidence of a model mutation that completed after abandonment.
 
 ## 17. Add-in pass-through contract
@@ -575,7 +885,40 @@ Legacy raw/unframed JSON is never emitted by the bridge. The add-in framing dete
 
 RBP/1 defines transport shapes; O9 owns signing, rollout, download, apply, and rollback semantics.
 
-`manifest_check` carries `{bridge_version, channel, highest_accepted_release_sequence}`. `manifest_info` carries `{latest_version,min_supported_version,artifact_url,signature_url,release_sequence,rollout_cohort}`.
+`manifest_check` payload:
+
+```json
+{
+  "bridge_version": "0.1.0",
+  "addin_versions": ["2026.07.22.0"],
+  "channel": "stable",
+  "highest_accepted_release_sequence": 574
+}
+```
+
+All fields are REQUIRED. `channel` is a bounded server-configured channel name; release sequence is a
+non-negative JSON-safe integer.
+
+`manifest_info` payload:
+
+```json
+{
+  "status": "update_available",
+  "channel": "stable",
+  "latest_version": "0.2.0",
+  "min_supported_version": "0.1.0",
+  "release_sequence": 575,
+  "rollout_cohort": "pilot",
+  "manifest_url": "/bridge/update/manifest/575",
+  "signature_url": "/bridge/update/manifest/575.sig"
+}
+```
+
+`status` is the closed v1 enum `up_to_date`, `update_available`, or `update_required`. `channel`,
+`latest_version`, `min_supported_version`, and `release_sequence` are REQUIRED. `rollout_cohort`,
+`manifest_url`, and `signature_url` are REQUIRED when an update is available/required and absent otherwise.
+Artifact URLs, hashes, platform files, and apply instructions live inside the signed O9 manifest rather than
+being duplicated as unsigned RBP fields.
 
 An update notice MAY also ride `hello_ack` or `heartbeat_ack`. A bridge MUST verify the signed manifest and anti-rollback sequence through O9 before applying it; transport receipt is not trust.
 
@@ -593,6 +936,7 @@ An update notice MAY also ride `hello_ack` or `heartbeat_ack`. A bridge MUST ver
 | Gateway timeout grace | 10 seconds |
 | Pending-disconnect hold | 10 minutes |
 | Session resume lifetime | 24 hours |
+| Maximum `seq` / acknowledgement value | 9,007,199,254,740,991 (`2^53-1`) |
 
 The bridge MUST reject oversize params before contacting the add-in. Negotiated values MAY lower these limits but cannot raise them above an implementation's safe local cap.
 
@@ -601,6 +945,7 @@ The bridge MUST reject oversize params before contacting the add-in. Negotiated 
 - Every connection is TLS-authenticated by device token; the token MUST NOT appear in logs, diagnostics, or protocol traces.
 - Resume tokens are scoped to device and `rsid`; cross-session resume fails closed.
 - The Gateway binds tenant, authenticated user, device, `rsid`, policy decision, tool version, and idempotency key before dispatch.
+- Session registration cannot choose its tenant, user, or seat; those are bound from authenticated device enrollment and recorded separately from the north-side OIDC actor.
 - The bridge MUST accept invocations only for its registered sessions.
 - Params and terminal outcomes are journaled with digests; secrets and full raw paths are excluded by policy.
 - Every Gateway invocation produces exactly one audit record keyed by tenant plus the canonical idempotency key; redelivery updates that record instead of duplicating it.
@@ -637,6 +982,17 @@ The implementation-independent harness uses a Gateway stub, bridge simulator, an
 23. `get_document_context` propagation within 15 seconds without ExternalEvent polling
 24. Duplicate/reordered data-frame handling across reconnect
 25. Cross-device/cross-rsid resume and invocation authorization negatives
+26. Gateway `N`/`N-1` compatibility plus within-version additive-change vectors
+27. Reconnect full-jitter bounds, 60-second cap, and reset only after 120 seconds continuously steady
+28. Pending-expiry mutation returns an indeterminate outcome, installs the verification hold, and blocks a new-id write until an audited verification read clears it
+29. Mixed terminal/non-terminal `atomic:false` batch redelivery plus atomic terminal replay/indeterminate recovery
+30. RFC 8785 `params_digest` golden vectors for property order, number formatting, Unicode, and escapes
+31. `heartbeat_ack`, resume, cancel, goodbye, and manifest payload-schema positive/negative vectors
+32. Chunk Base64 alphabet/padding, decoded-byte limit, reconstruction size, and decoded-content digest
+33. Loopback-only discovery/connect rejection for wildcard, LAN, hostname-resolved remote, and override targets
+34. Session document-schema and seat/user spoof rejection against authenticated enrollment
+35. Maximum-safe `seq` acceptance, unsafe `2^53` rejection, no-wrap renewal, duplicate, and gap behavior
+36. WSS-primary and Streamable HTTP/SSE fallback interop produce identical journal/resume outcomes
 
 The required pilot stack additionally runs a real-add-in smoke covering each method family, one confirm-class write, forced reconnect, and one atomic batch.
 
@@ -644,8 +1000,8 @@ The required pilot stack additionally runs a real-add-in smoke covering each met
 
 The following remain open review items; v0.9 is intentionally not marked frozen:
 
-- Record DP-2 and bind the selected Phase-1 transport profile.
-- Review all message payloads and publish JSON Schemas under `packages/protocol`.
+- Freeze the Streamable HTTP/SSE fallback binding selected by DP-2 and attach proxy/interoperability evidence.
+- Publish JSON Schemas under `packages/protocol` that match every payload and conditional envelope rule in this document.
 - Confirm add-in capability/version fields exposed by `mcp_status` and `get_document_context`.
 - Resolve the GAP-7 file-ingress/artifact-upload mechanism with the WP9 client evaluation; add only the selected capability-gated messages.
 - Review batchable command restrictions with the add-in implementation owner.
