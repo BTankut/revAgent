@@ -101,4 +101,44 @@ describe("forty-case process suite runner", () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 15_000);
+
+  it("stops the live stack when an error is thrown after startup", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-suite-cleanup-"));
+    const plan = createPlan();
+    const startedAt = "2026-07-22T00:00:00.000Z";
+    const components = plan.components.map((component, index) => ({
+      ...component,
+      observedIdentity: { ...component.expectedIdentity },
+      process: {
+        pid: 3000 + index,
+        startedAt,
+        readyAt: startedAt,
+        stoppedAt: null,
+        exitCode: null,
+      },
+    }));
+    let stopCalls = 0;
+    try {
+      await expect(executeConformanceRun({
+        plan,
+        artifactRoot: root,
+        seed: "cleanup-unit-test",
+        driver: {
+          start: async () => ({
+            components,
+            caseSupport: () => ({ supported: true }),
+            executeBinding: async () => ({ observations: [], measurements: [] }),
+            sampleResources: async () => { throw new Error("planned resource sample failure"); },
+            stop: async () => {
+              stopCalls += 1;
+              return { orphanProcessCount: 0 };
+            },
+          }),
+        },
+      })).rejects.toThrow("planned resource sample failure");
+      expect(stopCalls).toBe(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

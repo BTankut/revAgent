@@ -6,7 +6,9 @@ import {
   FIXTURE_CONTROL_ACTIONS,
   GATEWAY_CONTROL_ACTIONS,
   HARNESS_ACTIONS,
+  assertValidCaseControlStepSemantics,
 } from "../src/casePrograms.js";
+import type { CaseControlStep } from "../src/casePrograms.js";
 import { canonicalManifest } from "../src/manifest.js";
 import { ASSERTION_EVIDENCE_BINDINGS } from "../src/observationLedger.js";
 
@@ -78,6 +80,10 @@ describe("exact forty-case control and observation catalog", () => {
       expect(program.steps[1]).toMatchObject({ channel: "parent_harness", action: "begin_wire_capture" });
       expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
       for (const step of program.steps) {
+        expect(step.expectedOutcome).toEqual({ kind: "success" });
+        expect(step.execution).toEqual({ mode: "sequential" });
+        expect(step.captures).toEqual([]);
+        expect(() => assertValidCaseControlStepSemantics(step)).not.toThrow();
         const actions = step.channel === "gateway_http_control"
           ? GATEWAY_CONTROL_ACTIONS
           : step.channel === "bridge_jsonl_control"
@@ -98,6 +104,49 @@ describe("exact forty-case control and observation catalog", () => {
         expect(probe.observationAliases.every((alias) => aliases.has(alias))).toBe(true);
       }
     }
+  });
+
+  it("validates typed outcomes, async execution metadata, barriers, and captures", () => {
+    const template = CASE_CONTROL_OBSERVATION_MAP.values().next().value!.steps[0]!;
+    const variants: CaseControlStep[] = [
+      {
+        ...template,
+        expectedOutcome: { kind: "control_error", code: "planned_error", messageIncludes: "planned" },
+        execution: { mode: "async_start", handle: "first.request" },
+        captures: [{ name: "error.code", source: "control_error", jsonPointer: "/code" }],
+      },
+      {
+        ...template,
+        expectedOutcome: { kind: "http_status", status: 409 },
+        execution: { mode: "async_join", handles: ["first.request"] },
+        captures: [
+          { name: "response.body", source: "http_body", jsonPointer: "" },
+          { name: "retry.after", source: "http_header", header: "Retry-After" },
+        ],
+      },
+      {
+        ...template,
+        expectedOutcome: { kind: "close", code: 1008, reasonIncludes: "policy" },
+        execution: { mode: "barrier", handles: "all" },
+        captures: [{ name: "close.code", source: "close", field: "code" }],
+      },
+    ];
+    for (const step of variants) expect(() => assertValidCaseControlStepSemantics(step)).not.toThrow();
+  });
+
+  it("rejects incomplete or ambiguous execution semantics", () => {
+    const template = CASE_CONTROL_OBSERVATION_MAP.values().next().value!.steps[0]!;
+    expect(() => assertValidCaseControlStepSemantics({
+      ...template,
+      execution: { mode: "async_join", handles: [] },
+    })).toThrow(/at least one handle/u);
+    expect(() => assertValidCaseControlStepSemantics({
+      ...template,
+      captures: [
+        { name: "same", source: "result", jsonPointer: "/one" },
+        { name: "same", source: "result", jsonPointer: "/two" },
+      ],
+    })).toThrow(/unique/u);
   });
 
   it("uses the exact action-specific T3/T4/T5 request-key surfaces for both bindings", () => {

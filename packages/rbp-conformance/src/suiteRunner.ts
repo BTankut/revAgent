@@ -118,15 +118,20 @@ export async function executeConformanceRun(input: {
   const setupStartedMs = Date.now();
   const stack = await input.driver.start(input.plan, input.artifactRoot);
   const setupFinishedMs = Date.now();
+  let stopAttempted = false;
+  let runError: unknown;
+  const stopStack = async (): Promise<{ orphanProcessCount: number }> => {
+    stopAttempted = true;
+    return await stack.stop();
+  };
+  try {
   if (stack.components.map(({ id }) => id).join("|") !== input.plan.components.map(({ id }) => id).join("|")) {
-    await stack.stop();
     throw new Error("suite driver did not start the exact canonical three-process stack");
   }
   for (const [index, component] of stack.components.entries()) {
     if (stableJson(component.expectedIdentity) !== stableJson(input.plan.components[index]!.expectedIdentity) ||
       stableJson(component.observedIdentity) !== stableJson(input.plan.components[index]!.expectedIdentity) ||
       component.process.pid === null || component.process.readyAt === null) {
-      await stack.stop();
       throw new Error(`suite driver component ${component.id} lacks exact executable/source/readiness identity`);
     }
   }
@@ -260,7 +265,7 @@ export async function executeConformanceRun(input: {
     resourceSamples.push({ index: resourceSamples.length, offsetMs: Date.now() - runStartedMs, ...sample });
   }
   const teardownStartedMs = Date.now();
-  const stopped = await stack.stop();
+  const stopped = await stopStack();
   const teardownFinishedMs = Date.now();
   report.resources = {
     schemaVersion: "rbp-resource-profile/v1",
@@ -330,4 +335,16 @@ export async function executeConformanceRun(input: {
   mkdirSync(path.dirname(reportTarget), { recursive: true });
   writeFileSync(reportTarget, stableJson(report), "utf8");
   return { report, reportPath };
+  } catch (error) {
+    runError = error;
+    throw error;
+  } finally {
+    if (!stopAttempted) {
+      try {
+        await stopStack();
+      } catch (cleanupError) {
+        if (runError === undefined) throw cleanupError;
+      }
+    }
+  }
 }

@@ -21,6 +21,7 @@ export {
   FIXTURE_CONTROL_ACTIONS,
   GATEWAY_CONTROL_ACTIONS,
   HARNESS_ACTIONS,
+  assertValidCaseControlStepSemantics,
   caseProgram,
 } from "./casePrograms.js";
 export type {
@@ -29,6 +30,9 @@ export type {
   CaseControlStep,
   CaseObservationRequirement,
   ConformanceCaseProgram,
+  StepCaptureMetadata,
+  StepExecutionSemantics,
+  StepExpectedOutcome,
 } from "./casePrograms.js";
 export { runCli } from "./cli.js";
 export {
@@ -44,7 +48,8 @@ export {
 export { sha256Json, sha256Text, stableJson } from "./stableJson.js";
 export { buildExecutionPlan, resolveSourceIdentity, sha256File } from "./executionPlan.js";
 export { ASSERTION_EVIDENCE_BINDINGS, CaseObservationLedger } from "./observationLedger.js";
-export { MAX_CONTROL_LINE_BYTES, StrictJsonlProcess, StrictReadyProcess, strictHttpControl } from "./processHarness.js";
+export { ControlResponseError, MAX_CONTROL_LINE_BYTES, StrictJsonlProcess, StrictReadyProcess, strictHttpControl } from "./processHarness.js";
+export type { StartedControlRequest } from "./processHarness.js";
 export { assertLinuxProcfs, sampleProcessResources, survivingProcesses } from "./processResources.js";
 export { ASSERTION_CATEGORIES, BINDINGS, COMPONENT_IDS } from "./types.js";
 export type {

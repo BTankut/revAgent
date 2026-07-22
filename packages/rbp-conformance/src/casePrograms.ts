@@ -77,10 +77,30 @@ export interface BindingArguments {
   streamable_http_sse?: Readonly<Record<string, unknown>>;
 }
 
+export type StepExpectedOutcome =
+  | { kind: "success" }
+  | { kind: "control_error"; code: string; messageIncludes?: string }
+  | { kind: "http_status"; status: number }
+  | { kind: "close"; code: number; reasonIncludes?: string };
+
+export type StepExecutionSemantics =
+  | { mode: "sequential" }
+  | { mode: "async_start"; handle: string }
+  | { mode: "async_join"; handles: string[] }
+  | { mode: "barrier"; handles: "all" | string[] };
+
+export type StepCaptureMetadata =
+  | { name: string; source: "result" | "control_error" | "http_body"; jsonPointer: string }
+  | { name: string; source: "http_header"; header: string }
+  | { name: string; source: "close"; field: "code" | "reason" };
+
 interface BaseControlStep {
   stepId: string;
   phase: "setup" | "stimulus" | "observation" | "cleanup";
   arguments: BindingArguments;
+  expectedOutcome: StepExpectedOutcome;
+  execution: StepExecutionSemantics;
+  captures: StepCaptureMetadata[];
 }
 
 export type CaseControlStep =
@@ -153,7 +173,17 @@ function gateway(
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
 ): CaseControlStep {
-  return { stepId, phase, channel: "gateway_http_control", componentId: "gateway_stub", action, arguments: actionArguments };
+  return {
+    stepId,
+    phase,
+    channel: "gateway_http_control",
+    componentId: "gateway_stub",
+    action,
+    arguments: actionArguments,
+    expectedOutcome: { kind: "success" },
+    execution: { mode: "sequential" },
+    captures: [],
+  };
 }
 
 function bridge(
@@ -162,7 +192,17 @@ function bridge(
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
 ): CaseControlStep {
-  return { stepId, phase, channel: "bridge_jsonl_control", componentId: "bridge_simulator", action, arguments: actionArguments };
+  return {
+    stepId,
+    phase,
+    channel: "bridge_jsonl_control",
+    componentId: "bridge_simulator",
+    action,
+    arguments: actionArguments,
+    expectedOutcome: { kind: "success" },
+    execution: { mode: "sequential" },
+    captures: [],
+  };
 }
 
 function fixture(
@@ -171,7 +211,17 @@ function fixture(
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
 ): CaseControlStep {
-  return { stepId, phase, channel: "fixture_jsonl_control", componentId: "addin_loopback_fixture", action, arguments: actionArguments };
+  return {
+    stepId,
+    phase,
+    channel: "fixture_jsonl_control",
+    componentId: "addin_loopback_fixture",
+    action,
+    arguments: actionArguments,
+    expectedOutcome: { kind: "success" },
+    execution: { mode: "sequential" },
+    captures: [],
+  };
 }
 
 function harness(
@@ -180,7 +230,94 @@ function harness(
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
 ): CaseControlStep {
-  return { stepId, phase, channel: "parent_harness", componentId: null, action, arguments: actionArguments };
+  return {
+    stepId,
+    phase,
+    channel: "parent_harness",
+    componentId: null,
+    action,
+    arguments: actionArguments,
+    expectedOutcome: { kind: "success" },
+    execution: { mode: "sequential" },
+    captures: [],
+  };
+}
+
+const METADATA_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
+const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
+
+function assertMetadataName(value: string, label: string): void {
+  if (!METADATA_NAME.test(value)) throw new Error(`${label} must be a non-empty metadata name`);
+}
+
+export function assertValidCaseControlStepSemantics(step: CaseControlStep): void {
+  const expected = step.expectedOutcome;
+  switch (expected.kind) {
+    case "success":
+      break;
+    case "control_error":
+      if (expected.code.length === 0) throw new Error(`${step.stepId} control-error code must not be empty`);
+      if (expected.messageIncludes !== undefined && expected.messageIncludes.length === 0) {
+        throw new Error(`${step.stepId} control-error message fragment must not be empty`);
+      }
+      break;
+    case "http_status":
+      if (!Number.isInteger(expected.status) || expected.status < 100 || expected.status > 599) {
+        throw new Error(`${step.stepId} expected HTTP status must be an integer from 100 through 599`);
+      }
+      break;
+    case "close":
+      if (!Number.isInteger(expected.code) || expected.code < 1000 || expected.code > 4999) {
+        throw new Error(`${step.stepId} expected close code must be an integer from 1000 through 4999`);
+      }
+      if (expected.reasonIncludes !== undefined && expected.reasonIncludes.length === 0) {
+        throw new Error(`${step.stepId} close-reason fragment must not be empty`);
+      }
+      break;
+    default:
+      throw new Error(`${step.stepId} has an unknown expected outcome`);
+  }
+
+  const execution = step.execution;
+  switch (execution.mode) {
+    case "sequential":
+      break;
+    case "async_start":
+      assertMetadataName(execution.handle, `${step.stepId} async handle`);
+      break;
+    case "async_join":
+      if (execution.handles.length === 0) throw new Error(`${step.stepId} async join must name at least one handle`);
+      for (const handle of execution.handles) assertMetadataName(handle, `${step.stepId} async join handle`);
+      if (new Set(execution.handles).size !== execution.handles.length) {
+        throw new Error(`${step.stepId} async join handles must be unique`);
+      }
+      break;
+    case "barrier":
+      if (execution.handles !== "all") {
+        if (execution.handles.length === 0) throw new Error(`${step.stepId} barrier must name handles or use all`);
+        for (const handle of execution.handles) assertMetadataName(handle, `${step.stepId} barrier handle`);
+        if (new Set(execution.handles).size !== execution.handles.length) {
+          throw new Error(`${step.stepId} barrier handles must be unique`);
+        }
+      }
+      break;
+    default:
+      throw new Error(`${step.stepId} has unknown execution semantics`);
+  }
+
+  const captureNames = new Set<string>();
+  for (const capture of step.captures) {
+    assertMetadataName(capture.name, `${step.stepId} capture name`);
+    if (captureNames.has(capture.name)) throw new Error(`${step.stepId} capture names must be unique`);
+    captureNames.add(capture.name);
+    if (capture.source === "http_header") {
+      if (!HTTP_HEADER_NAME.test(capture.header)) throw new Error(`${step.stepId} capture header is invalid`);
+    } else if (capture.source === "close") {
+      if (capture.field !== "code" && capture.field !== "reason") throw new Error(`${step.stepId} close capture field is invalid`);
+    } else if (capture.jsonPointer !== "" && !capture.jsonPointer.startsWith("/")) {
+      throw new Error(`${step.stepId} capture JSON pointer must be empty or begin with a slash`);
+    }
+  }
 }
 
 function hello(caseId: string, suffix = "initial"): Record<string, unknown> {
@@ -1165,6 +1302,7 @@ function buildProgram(definition: ProgramDefinition): ConformanceCaseProgram {
     ...definition.controls,
     ...finalEvidenceSteps(definition.caseId),
   ];
+  for (const step of steps) assertValidCaseControlStepSemantics(step);
   return {
     caseId: definition.caseId,
     bindings: [...manifestCase.bindings],

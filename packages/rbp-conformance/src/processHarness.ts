@@ -49,6 +49,23 @@ interface PendingResponse {
   timer: NodeJS.Timeout;
 }
 
+export interface StartedControlRequest {
+  id: string;
+  response: Promise<JsonValue>;
+}
+
+export class ControlResponseError extends Error {
+  constructor(
+    readonly componentId: ComponentId,
+    readonly correlationId: string,
+    readonly code: string,
+    readonly controlMessage: string,
+  ) {
+    super(`${componentId} control failed: ${code} ${controlMessage}`);
+    this.name = "ControlResponseError";
+  }
+}
+
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -113,8 +130,9 @@ export class StrictJsonlProcess {
   readonly process: ProcessEvidence;
   readonly readiness: JsonlReadiness;
   readonly pid: number;
-  #chain = Promise.resolve<JsonValue>(null);
-  #pending: PendingResponse | null = null;
+  #sequentialTail = Promise.resolve<void>(undefined);
+  readonly #pending = new Map<string, PendingResponse>();
+  readonly #responseOrder: string[] = [];
   #closed = false;
   #exit: Promise<{ code: number; at: string }>;
   #exitResolve!: (value: { code: number; at: string }) => void;
@@ -139,11 +157,7 @@ export class StrictJsonlProcess {
       this.process.stoppedAt = at;
       this.process.exitCode = normalized;
       this.#closed = true;
-      if (this.#pending !== null) {
-        clearTimeout(this.#pending.timer);
-        this.#pending.reject(new Error(`${this.componentId} exited before control response`));
-        this.#pending = null;
-      }
+      this.#rejectAllPending(new Error(`${this.componentId} exited before control response`));
       this.#exitResolve({ code: normalized, at });
     });
   }
@@ -164,6 +178,10 @@ export class StrictJsonlProcess {
     let stderrBuffer = Buffer.alloc(0);
     let settled = false;
     const active: { instance?: StrictJsonlProcess } = {};
+    const appendTranscript = (record: ProcessTranscriptRecord): void => {
+      transcript.push(record);
+      active.instance?.transcript.push(record);
+    };
     const readiness = new Promise<{ value: JsonlReadiness; at: string }>((resolve, reject) => {
       const timer = setTimeout(() => {
         reject(new Error(`${options.componentId} readiness timed out`));
@@ -201,7 +219,7 @@ export class StrictJsonlProcess {
           }
           let lineText: string;
           try { lineText = decodeUtf8(line, `${options.componentId} stdout line`); } catch { lineText = "<invalid-utf8>"; }
-          transcript.push({ stream: "stdout", at: new Date().toISOString(), line: lineText });
+          appendTranscript({ stream: "stdout", at: new Date().toISOString(), line: lineText });
           try {
             const parsed = parseJsonObject(line, `${options.componentId} stdout line`);
             if (!settled) {
@@ -233,7 +251,7 @@ export class StrictJsonlProcess {
           stderrBuffer = stderrBuffer.subarray(newline + 1);
           if (line.at(-1) === 0x0d) line = line.subarray(0, line.length - 1);
           try {
-            transcript.push({ stream: "stderr", at: new Date().toISOString(), line: decodeUtf8(line, `${options.componentId} stderr line`) });
+            appendTranscript({ stream: "stderr", at: new Date().toISOString(), line: decodeUtf8(line, `${options.componentId} stderr line`) });
           } catch (error) {
             fail(error instanceof Error ? error : new Error(String(error)));
           }
@@ -249,39 +267,56 @@ export class StrictJsonlProcess {
   #consumeResponse(value: JsonObject): void {
     try {
       assertExactResponseShape(value);
-      const pending = this.#pending;
-      if (pending === null || value.id !== pending.id) {
+      const id = value.id as string;
+      const expectedId = this.#responseOrder[0];
+      const pending = this.#pending.get(id);
+      if (pending === undefined || id !== expectedId) {
         throw new Error(`${this.componentId} emitted an unsolicited or out-of-order control response`);
       }
-      this.#pending = null;
+      this.#responseOrder.shift();
+      this.#pending.delete(id);
       clearTimeout(pending.timer);
       if (value.ok === true) pending.resolve(value.result as JsonValue);
       else {
         const error = value.error as JsonObject;
-        pending.reject(new Error(`${this.componentId} control failed: ${String(error.code)} ${String(error.message)}`));
+        pending.reject(new ControlResponseError(
+          this.componentId,
+          id,
+          String(error.code),
+          String(error.message),
+        ));
       }
     } catch (error) {
+      const failure = error instanceof Error ? error : new Error(String(error));
+      this.#rejectAllPending(failure);
       this.child.kill("SIGTERM");
-      if (this.#pending !== null) {
-        clearTimeout(this.#pending.timer);
-        this.#pending.reject(error instanceof Error ? error : new Error(String(error)));
-        this.#pending = null;
-      }
     }
   }
 
-  request(action: string, fields: Readonly<Record<string, JsonValue>> = {}, timeoutMs = 30_000): Promise<JsonValue> {
-    if (this.#closed) return Promise.reject(new Error(`${this.componentId} is closed`));
-    this.#chain = this.#chain.then(() => new Promise<JsonValue>((resolve, reject) => {
+  #rejectAllPending(error: Error): void {
+    for (const pending of this.#pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(error);
+    }
+    this.#pending.clear();
+    this.#responseOrder.length = 0;
+  }
+
+  #beginRequest(
+    action: string,
+    fields: Readonly<Record<string, JsonValue>>,
+    timeoutMs: number,
+  ): StartedControlRequest {
+    const id = `${this.componentId}-${++this.#controlCounter}`;
+    const response = new Promise<JsonValue>((resolve, reject) => {
+      if (this.#closed) {
+        reject(new Error(`${this.componentId} is closed`));
+        return;
+      }
       if (!this.readiness.actions.includes(action)) {
         reject(new Error(`${this.componentId} did not advertise control action ${action}`));
         return;
       }
-      if (this.#pending !== null) {
-        reject(new Error(`${this.componentId} control FIFO invariant was violated`));
-        return;
-      }
-      const id = `${this.componentId}-${++this.#controlCounter}`;
       const record = { controlVersion: 1, id, action, ...fields };
       const bytes = Buffer.from(`${JSON.stringify(record)}\n`, "utf8");
       if (bytes.length > MAX_CONTROL_LINE_BYTES) {
@@ -289,21 +324,51 @@ export class StrictJsonlProcess {
         return;
       }
       const timer = setTimeout(() => {
-        if (this.#pending?.id !== id) return;
-        this.#pending = null;
-        reject(new Error(`${this.componentId} control ${action} timed out`));
+        if (!this.#pending.has(id)) return;
+        const failure = new Error(`${this.componentId} control ${action} timed out`);
+        this.#rejectAllPending(failure);
         this.child.kill("SIGTERM");
       }, timeoutMs);
-      this.#pending = { id, resolve, reject, timer };
+      this.#pending.set(id, { id, resolve, reject, timer });
+      this.#responseOrder.push(id);
       this.child.stdin.write(bytes, (error) => {
-        if (error !== undefined && error !== null && this.#pending?.id === id) {
-          clearTimeout(timer);
-          this.#pending = null;
-          reject(error);
+        if (error !== undefined && error !== null && this.#pending.has(id)) {
+          this.#rejectAllPending(error);
+          this.child.kill("SIGTERM");
         }
       });
-    }));
-    return this.#chain;
+    });
+    return { id, response };
+  }
+
+  startConcurrentRequest(
+    action: string,
+    fields: Readonly<Record<string, JsonValue>> = {},
+    timeoutMs = 30_000,
+  ): StartedControlRequest {
+    const started = this.#beginRequest(action, fields, timeoutMs);
+    // An explicitly non-awaited request is joined later by correlation id. Keep
+    // Node from treating the intentional gap as an unhandled rejection.
+    void started.response.catch(() => undefined);
+    return started;
+  }
+
+  requestConcurrent(
+    action: string,
+    fields: Readonly<Record<string, JsonValue>> = {},
+    timeoutMs = 30_000,
+  ): Promise<JsonValue> {
+    return this.startConcurrentRequest(action, fields, timeoutMs).response;
+  }
+
+  request(action: string, fields: Readonly<Record<string, JsonValue>> = {}, timeoutMs = 30_000): Promise<JsonValue> {
+    const response = this.#sequentialTail.then(async () =>
+      await this.#beginRequest(action, fields, timeoutMs).response);
+    this.#sequentialTail = response.then(
+      () => undefined,
+      () => undefined,
+    );
+    return response;
   }
 
   async stop(): Promise<{ stoppedAt: string; exitCode: number }> {
