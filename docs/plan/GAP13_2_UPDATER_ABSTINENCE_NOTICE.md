@@ -2,24 +2,29 @@
 
 **Amaç:** STABLE güncelleyicinin geçiş hazırlığı sırasında elle çalıştırılmasını önlemek
 
-**Durum:** Gönderim onayı bekliyor; onaydan hemen sonra gönderilebilir
+**Durum:** Barış Tankut tarafından 2026-07-22 tarihinde onaylandı ve kullanıcılara WhatsApp ile
+gönderildi; kesin gönderim/alıntı ve alındı-onayı kanıtı tamamlanıyor
 
 ## Bağımsız onay ve gönderim kaydı
 
 | Alan | Kayıt |
 |---|---|
-| Onaylayan | `TBD` |
-| Onay tarihi/saati | `TBD` |
-| Gönderim sahibi | `TBD` |
-| Gönderim kanalı | `TBD` |
-| Hedef gönderim zamanı | `Onaydan hemen sonra` |
-| Alındı onayı sahibi | `TBD` |
-| Alındı onayı son tarihi | `TBD` |
+| Onaylayan | `Barış Tankut` |
+| Onay tarihi/saati | `2026-07-22` — saat bildirilmedi |
+| Gönderim sahibi | `Barış Tankut` — operatör checkpoint beyanı |
+| Gönderim kanalı | `WhatsApp` |
+| Gönderim durumu/zamanı | `2026-07-22 tarihinde tamamlandı` — saat bildirilmedi |
+| Alındı onayı sahibi | Henüz kaydedilmedi |
+| Alındı onayı son tarihi | Henüz kaydedilmedi |
 
-Yukarıdaki **Onaylayan** ve **Onay tarihi/saati** alanları dolmadan metin gönderilmez. Bu kısa duyurunun
-onayı, daha sonraki geçiş duyurusunu veya teknik bir işlemi onaylamaz.
+Bu kısa duyurunun onayı ve gönderimi, daha sonraki geçiş duyurusunu veya teknik bir işlemi onaylamaz.
+Operatör beyanı onaylayan kişiyi, tarihi, kanalı ve genel hedefi kanıtlar; kesin grup/alıcı listesi,
+gönderim saati, birebir gönderilen metin ve alındı-onayı sayıları ayrıca kaydedilmelidir.
 
-## Gönderilecek metin
+## Onaylanan nihai metin
+
+Bu metin onaylı referans metindir. Gönderilen WhatsApp ile birebir eşleştiği ancak mesaj bilgisi veya
+ekran görüntüsü kaydedildiğinde doğrulanmış sayılır.
 
 **Konu: revAgent STABLE güncelleyiciyi elle çalıştırmayın**
 
@@ -31,7 +36,7 @@ revAgent geçiş hazırlığı tamamlanana ve yeni bir duyuru yapılana kadar:
   `Install-revAgent-Updater-GUI.cmd` dosyasını elle çalıştırmayın.
 - Bilgisayarınızdaki revAgent/ChatGPT/Codex ayarlarını, zamanlanmış görevleri veya
   `C:\ProgramData\DPE\revAgent` içeriğini kendiniz silmeyin, taşımayın veya değiştirmeyin.
-- Güncelleme isteyen bir uyarı görürseniz ekran görüntüsünü `TBD destek kişisi/kanalı` ile paylaşın; kendi
+- Güncelleme isteyen bir uyarı görürseniz ekran görüntüsünü bu WhatsApp konuşmasında paylaşın; kendi
   başınıza onarım, yeniden kurulum veya geri dönüş denemeyin.
 - Acil bir güvenlik düzeltmesi gerekirse teknik ekip ayrıca iletişime geçecektir. Kullanıcıdan NAS yayını
   yapması veya korumasız bir kurulum komutu çalıştırması istenmeyecektir.
@@ -39,7 +44,7 @@ revAgent geçiş hazırlığı tamamlanana ve yeni bir duyuru yapılana kadar:
 STABLE kanal dondurulmuştur. Zamanlanmış güncelleme görevlerinin bu durumda değişiklik yapmadan çıktığı
 teknik ekip tarafından ayrıca doğrulanacaktır; bu doğrulama tamamlanmış kabul edilmemelidir.
 
-Lütfen bu mesajı aldığınızı `TBD yöntem/kanal` üzerinden `TBD son tarih` öncesinde onaylayın.
+Lütfen bu mesajı gördüğünüzde aynı WhatsApp konuşmasında **Aldım** yazarak onaylayın.
 
 Teşekkürler.
 
@@ -47,9 +52,9 @@ Teşekkürler.
 
 | Alan | Kayıt |
 |---|---|
-| Gönderilen kullanıcı/grup listesi | `TBD` |
-| Gönderim tarihi/saati | `TBD` |
-| Kanal/ileti kimliği | `TBD` |
-| Beklenen alıcı sayısı | `TBD` |
-| Alındı onayı veren sayısı | `TBD` |
-| Eksik alındı onayı takibi | `TBD` |
+| Gönderilen kullanıcı/grup listesi | Kullanıcılar — kesin grup/alıcı listesi henüz kaydedilmedi |
+| Gönderim tarihi/saati | `2026-07-22` — saat henüz kaydedilmedi |
+| Kanal/ileti kimliği | WhatsApp — sohbet/mesaj kimliği veya ekran görüntüsü henüz kaydedilmedi |
+| Beklenen alıcı sayısı | Henüz kaydedilmedi |
+| Alındı onayı veren sayısı | Henüz kaydedilmedi |
+| Eksik alındı onayı takibi | Alıcı ve alındı-onayı sayıları kaydedildikten sonra tamamlanacak |

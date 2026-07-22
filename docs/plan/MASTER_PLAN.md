@@ -34,11 +34,12 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 | Existing 35-tool catalog served over Streamable HTTP; latency recorded | External client 35/35; p95 `tools/list` 13.946 ms in PR [#272](https://github.com/BTankut/revAgent/pull/272) | `passed` | Review transport-spike limits; do not treat as production SLA |
 | Phase-1 Compose skeleton | Gateway + Postgres 16 + Caddy + filesystem object store in PR [#273](https://github.com/BTankut/revAgent/pull/273) | `in_progress` | Review; DP-5 separately decides whether Keycloak is added |
 | GAP-13.1 publish freeze | Release-freeze guard is on `main` via PR [#267](https://github.com/BTankut/revAgent/pull/267) | `passed` | Keep locked; emergency exception remains operator-gated |
-| GAP-13.2 updater-abstinence communication | Independently sendable draft in `docs/plan/GAP13_2_UPDATER_ABSTINENCE_NOTICE.md` | `in_progress` | Approve its own sign-off row, send to every fleet user, record receipt confirmations; separately verify scheduled tasks exit without changes |
+| GAP-13.2 updater-abstinence communication | Barış Tankut approved the notice and reported sending it to users through WhatsApp on 2026-07-22; recorded in `docs/plan/GAP13_2_UPDATER_ABSTINENCE_NOTICE.md` | `in_progress` | Record exact group/recipient list, timestamp/message evidence, expected/acknowledged counts, and missing-recipient follow-up; separately verify scheduled tasks exit without changes |
 | WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; hands-on remote-MCP gates remain in draft PR [#275](https://github.com/BTankut/revAgent/pull/275) | `in_progress` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility; selection alone is not conformance |
-| DP-8 host selection and live reachability evidence | Dedicated host selection recorded as `bt@192.168.90.154`, ED25519 key-only SSH, password and keyboard-interactive disabled; no retained live reachability command evidence yet | `in_progress` | Barış / office network operations: capture SSH, OS, Docker/Compose, storage, UPS, and resource evidence; record LTE decision/accepted risk before M7 |
+| DP-8 host selection and live reachability evidence | BatchMode SSH evidence retained in PR [#268](https://github.com/BTankut/revAgent/pull/268): Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM, 204 GiB free root storage, and 870 GiB free data storage; router has no dual-WAN/LTE and Barış Tankut accepted WAN-outage risk on 2026-07-22 | `passed` | M0 reachability is closed. Under R-G, the implementation assistant owns later Docker/Compose and tunnel/origin work; retain power/UPS and production-readiness evidence for M7 |
 
-M0 remains open until the updated O1 review is accepted, current-head CI is green, and live Ubuntu-host reachability evidence is retained. DP-1/DP-2/DP-13 are no longer operator-decision blockers.
+M0 remains open until the updated O1 review is accepted and all current-head protected checks are green.
+Live Ubuntu-host reachability is retained in #268; DP-1/DP-2/DP-13 are no longer operator-decision blockers.
 
 ## Milestones
 
