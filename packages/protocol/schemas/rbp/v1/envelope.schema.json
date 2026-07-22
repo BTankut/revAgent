@@ -4,6 +4,55 @@
   "title": "RbpEnvelope",
   "description": "RBP/1 envelope with message-specific payload and control/data constraints.",
   "$defs": {
+    "preNegotiationBase": {
+      "type": "object",
+      "required": [
+        "type",
+        "id",
+        "ts",
+        "payload"
+      ],
+      "properties": {
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "v"
+            ]
+          },
+          {
+            "required": [
+              "rsid"
+            ]
+          },
+          {
+            "required": [
+              "seq"
+            ]
+          },
+          {
+            "required": [
+              "ack"
+            ]
+          }
+        ]
+      },
+      "additionalProperties": true
+    },
     "messageBase": {
       "type": "object",
       "required": [
@@ -87,7 +136,7 @@
     "helloEnvelope": {
       "allOf": [
         {
-          "$ref": "#/$defs/controlBase"
+          "$ref": "#/$defs/preNegotiationBase"
         },
         {
           "properties": {
@@ -104,7 +153,7 @@
     "helloAckEnvelope": {
       "allOf": [
         {
-          "$ref": "#/$defs/controlBase"
+          "$ref": "#/$defs/preNegotiationBase"
         },
         {
           "properties": {

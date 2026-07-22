@@ -24,15 +24,12 @@ export type RbpEnvelope =
   | ManifestCheckEnvelope
   | ManifestInfoEnvelope
   | GoodbyeEnvelope;
-export type HelloEnvelope = ControlBase & {
+export type HelloEnvelope = PreNegotiationBase & {
   type?: "hello";
   payload?: Hello;
   [k: string]: unknown;
 };
-export type ControlBase = MessageBase & {
-  [k: string]: unknown;
-};
-export type HelloAckEnvelope = ControlBase & {
+export type HelloAckEnvelope = PreNegotiationBase & {
   type?: "hello_ack";
   payload?: HelloAck;
   [k: string]: unknown;
@@ -40,6 +37,9 @@ export type HelloAckEnvelope = ControlBase & {
 export type SessionRegisterEnvelope = ControlBase & {
   type?: "session_register";
   payload?: SessionRegister;
+  [k: string]: unknown;
+};
+export type ControlBase = MessageBase & {
   [k: string]: unknown;
 };
 export type Documents = Document[];
@@ -548,13 +548,9 @@ export type Goodbye = {
   [k: string]: unknown;
 };
 
-export interface MessageBase {
-  v: 1;
+export interface PreNegotiationBase {
   type: string;
   id: string;
-  rsid?: string;
-  seq?: number;
-  ack?: number;
   ts: string;
   payload: {
     [k: string]: unknown;
@@ -590,6 +586,19 @@ export interface HelloAck {
   manifest: {
     latest_bridge_version: string;
     manifest_url: string;
+    [k: string]: unknown;
+  };
+  [k: string]: unknown;
+}
+export interface MessageBase {
+  v: 1;
+  type: string;
+  id: string;
+  rsid?: string;
+  seq?: number;
+  ack?: number;
+  ts: string;
+  payload: {
     [k: string]: unknown;
   };
   [k: string]: unknown;

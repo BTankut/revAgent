@@ -541,6 +541,18 @@ export type Goodbye = GoodbyeBase &
     | { reason: "shutdown" | "protocol_error" | "auth_revoked"; retry_after_ms?: never }
   );
 
+export interface PreNegotiationEnvelope<TType extends string, TPayload> {
+  v?: never;
+  type: TType;
+  id: string;
+  ts: string;
+  payload: TPayload;
+  rsid?: never;
+  seq?: never;
+  ack?: never;
+  [key: string]: unknown;
+}
+
 export interface MessageBase<TType extends string, TPayload> {
   v: 1;
   type: TType;
@@ -562,8 +574,8 @@ export type DataEnvelope<TType extends string, TPayload> = MessageBase<TType, TP
   ack?: number;
 };
 
-export type HelloEnvelope = ControlEnvelope<"hello", Hello>;
-export type HelloAckEnvelope = ControlEnvelope<"hello_ack", HelloAck>;
+export type HelloEnvelope = PreNegotiationEnvelope<"hello", Hello>;
+export type HelloAckEnvelope = PreNegotiationEnvelope<"hello_ack", HelloAck>;
 export type SessionRegisterEnvelope = ControlEnvelope<"session_register", SessionRegister>;
 export type SessionRegisteredEnvelope = ControlEnvelope<"session_registered", SessionRegistered>;
 export type SessionResumeEnvelope = ControlEnvelope<"session_resume", SessionResume>;

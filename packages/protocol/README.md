@@ -11,8 +11,10 @@ This package is the implementation boundary for the O1 bridge-to-Gateway contrac
 
 `schemas/rbp/v1/envelope.schema.json` is the public entry point. It references
 `common.schema.json` and `payloads.schema.json`, covers every RBP/1 message type,
-requires `rsid` and `seq` on session data, and rejects `rsid`, `seq`, and `ack`
-on connection-control messages. A connection-level `error` is the explicit
+omits and rejects `v` on the pre-negotiation `hello`/`hello_ack` pair, requires
+the selected `v` on every post-negotiation object, additionally requires `rsid`
+and `seq` on session data, and rejects `rsid`, `seq`, and `ack` on
+connection-control messages. A connection-level `error` is the explicit
 exception carrier defined by the spec: it is unsequenced, permits only
 `protocol` or `auth`, and cannot carry an `invocation_id`.
 
