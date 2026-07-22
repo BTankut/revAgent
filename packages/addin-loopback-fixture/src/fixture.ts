@@ -18,6 +18,7 @@ import {
   jsonPayloadBytes,
 } from "./framing.js";
 import {
+  BATCH_MAX_INLINE_RESULT_BYTES,
   BATCHABLE_DESCRIPTORS,
   ContractValidationError,
   LoopbackContractValidator,
@@ -175,6 +176,16 @@ function invalidResult(message: unknown): HandlerOutcome {
     state: "failed",
     error: { code: "invalid_result", message: boundedMessage(message) },
   };
+}
+
+function hasDeclaredArtifactShape(value: JsonValue): boolean {
+  if (!isObject(value) || !Array.isArray(value.files) || value.files.length === 0) return false;
+  return value.files.some((entry) =>
+    isObject(entry) &&
+    (typeof entry.path === "string" ||
+      typeof entry.fileName === "string" ||
+      typeof entry.contentBase64 === "string")
+  );
 }
 
 function jsonValueError(
@@ -1021,6 +1032,7 @@ export class AddinLoopbackFixture {
     const batchId = String(params.batchId);
     const batchDigest = String(params.batchDigest);
     const steps = (params.steps as unknown[]).map((entry) => entry as BatchStep);
+    const maxAggregateResultBytes = Number(params.maxAggregateResultBytes);
     const group = new TestTransactionGroup(this.#modelState, fault.rollbackFailure === true);
     group.start();
     const executed: ExecutedStep[] = [];
@@ -1073,6 +1085,16 @@ export class AddinLoopbackFixture {
       } else {
         outcome = await this.#callHandler(registration.handler, step.params, context);
       }
+      if (outcome.state === "completed") {
+        const inlineBytes = jsonPayloadBytes(outcome.result).byteLength;
+        if (hasDeclaredArtifactShape(outcome.result)) {
+          outcome = invalidResult("batch-inline-only command returned artifact data");
+        } else if (inlineBytes > BATCH_MAX_INLINE_RESULT_BYTES) {
+          outcome = invalidResult(
+            `batch-inline-only command result exceeds ${BATCH_MAX_INLINE_RESULT_BYTES} bytes`,
+          );
+        }
+      }
       this.#recordOutcome(step.invocationId, step.method, ordinal, outcome);
       executed.push({ step, outcome });
       if (outcome.state !== "completed") {
@@ -1082,7 +1104,7 @@ export class AddinLoopbackFixture {
 
       const projection = this.#batchProjection(batchId, batchDigest, steps, executed);
       const tentativeBytes = jsonPayloadBytes({ jsonrpc: "2.0", id: requestId, result: projection }).byteLength;
-      if (tentativeBytes > MAX_RESPONSE_PAYLOAD_BYTES) {
+      if (tentativeBytes > maxAggregateResultBytes) {
         executed[executed.length - 1] = {
           step,
           outcome: {
@@ -1090,7 +1112,7 @@ export class AddinLoopbackFixture {
             error: {
               code: "response_payload_limit",
               message: "Tentative batch response exceeds aggregate cap",
-              maxResponsePayloadBytes: MAX_RESPONSE_PAYLOAD_BYTES,
+              maxResponsePayloadBytes: maxAggregateResultBytes,
               tentativeResponsePayloadBytes: tentativeBytes,
             },
           },

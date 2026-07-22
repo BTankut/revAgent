@@ -68,7 +68,8 @@
         "paramsDigest",
         "effect",
         "atomic",
-        "rollbackPolicy"
+        "rollbackPolicy",
+        "maxAggregateResultBytes"
       ]
     },
     "ordinaryParams": {
@@ -217,6 +218,7 @@
         "batchDigest",
         "atomic",
         "rollbackPolicy",
+        "maxAggregateResultBytes",
         "steps"
       ],
       "properties": {
@@ -234,6 +236,11 @@
         },
         "rollbackPolicy": {
           "const": "rollback_on_non_success"
+        },
+        "maxAggregateResultBytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
         },
         "steps": {
           "type": "array",
@@ -291,11 +298,13 @@
           "maxLength": 600
         },
         "maxResponsePayloadBytes": {
-          "const": 33554432
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 33554432
         },
         "tentativeResponsePayloadBytes": {
           "type": "integer",
-          "minimum": 33554433,
+          "minimum": 2,
           "maximum": 9007199254740991
         }
       },

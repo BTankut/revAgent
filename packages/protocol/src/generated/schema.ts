@@ -396,6 +396,8 @@ export type BatchStepResult = {
 } & {
   [k: string]: unknown;
 } & {
+  [k: string]: unknown;
+} & {
   index: number;
   invocation_id: string;
   status: "completed" | "guarded" | "failed" | "cancelled" | "indeterminate" | "not_started";
@@ -403,6 +405,7 @@ export type BatchStepResult = {
   payload_omitted?: boolean;
   result_digest?: string;
   guarded_reason?: string;
+  effect_state?: "read_only" | "committed" | "not_committed";
   error?: ErrorDetail;
   replayed: boolean;
   late_after_indeterminate?: boolean;
@@ -416,6 +419,7 @@ export type BatchStepResult = {
   payload_omitted?: boolean;
   result_digest?: string;
   guarded_reason?: string;
+  effect_state?: "read_only" | "committed" | "not_committed";
   error?: ErrorDetail;
   replayed: boolean;
   late_after_indeterminate?: boolean;
@@ -576,7 +580,7 @@ export interface HelloAck {
   protocol: 1;
   connection_id: string;
   granted_capabilities: string[];
-  heartbeat_interval_ms: number;
+  heartbeat_interval_ms: 15000;
   limits: {
     max_params_bytes: number;
     max_result_bytes: number;

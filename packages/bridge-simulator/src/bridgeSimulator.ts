@@ -34,12 +34,17 @@ import {
   type SessionUnregister,
   type TerminalJournalOutcome,
 } from "@revagent/protocol";
-import type { JsonObject } from "@revagent/addin-loopback-fixture";
+import {
+  BATCH_MAX_INLINE_RESULT_BYTES,
+  type JsonObject,
+} from "@revagent/addin-loopback-fixture";
 
 import type {
   ArtifactSpool,
   ArtifactCarrier,
   ArtifactInput,
+  ChunkedResultCarrier,
+  DurableResultCarrier,
 } from "./artifacts.js";
 import type {
   DurableBridgeJournal,
@@ -61,10 +66,18 @@ export interface BridgeNegotiatedLimits {
   readonly maxPartialBytes: number;
 }
 
+export interface RecoverableDurableDelivery {
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly mutationScope: InvokeEnvelope["payload"]["mutation_scope"];
+  readonly outcome: Extract<BridgeInvocationOutcome, { readonly kind: "result" }>;
+}
+
 export type BridgeCrashPoint =
   | "after_received_before_dispatch"
   | "after_executing_before_addin_write"
-  | "after_addin_response_before_terminal";
+  | "after_addin_response_before_terminal"
+  | "after_non_atomic_step_terminal_before_batch_terminal";
 
 export class InjectedBridgeCrash extends Error {
   public constructor(public readonly point: BridgeCrashPoint) {
@@ -94,6 +107,7 @@ export type BridgeInvocationOutcome =
       readonly verificationHoldId: string | null;
       readonly partials: readonly Extract<RbpPartial, { kind: "chunk" }>[];
       readonly artifactCarrier: ArtifactCarrier | null;
+      readonly resultCarrier: ChunkedResultCarrier | null;
       readonly addinContacted: boolean;
     }
   | {
@@ -117,7 +131,10 @@ export type BridgeInvocationOutcome =
       readonly verificationRequired: boolean;
       readonly verificationHoldId: string | null;
       readonly replayed: boolean;
+      readonly lateAfterIndeterminate: boolean;
+      readonly resultDigest: string | null;
       readonly addinContacted: boolean;
+      readonly effectState?: "read_only" | "committed" | "not_committed";
       readonly message: string;
     }
   | {
@@ -291,7 +308,15 @@ function bindingFromInvoke(payload: InvokeEnvelope["payload"], rsid: string): In
 function knownError(
   faultClass: Extract<BridgeInvocationOutcome, { kind: "error" }>["faultClass"],
   message: string,
-  options: { readonly retryable?: boolean; readonly replayed?: boolean; readonly addinContacted?: boolean } = {},
+  options: {
+    readonly retryable?: boolean;
+    readonly replayed?: boolean;
+    readonly lateAfterIndeterminate?: boolean;
+    readonly verificationHoldId?: string | null;
+    readonly resultDigest?: string | null;
+    readonly addinContacted?: boolean;
+    readonly effectState?: "read_only" | "committed" | "not_committed";
+  } = {},
 ): BridgeInvocationOutcome {
   return {
     kind: "error",
@@ -299,10 +324,24 @@ function knownError(
     retryable: options.retryable ?? false,
     outcome: "known",
     verificationRequired: false,
-    verificationHoldId: null,
+    verificationHoldId: options.verificationHoldId ?? null,
     replayed: options.replayed ?? false,
+    lateAfterIndeterminate: options.lateAfterIndeterminate ?? false,
+    resultDigest: options.resultDigest ?? null,
     addinContacted: options.addinContacted ?? false,
+    ...(options.effectState === undefined ? {} : { effectState: options.effectState }),
     message: message.slice(0, 240),
+  };
+}
+
+function replayedBatchOutcome(outcome: BridgeBatchOutcome): BridgeBatchOutcome {
+  if (outcome.kind !== "batch" || outcome.steps === undefined) return { ...outcome, replayed: true };
+  return {
+    ...outcome,
+    replayed: true,
+    steps: outcome.steps.map((step) => step.kind === "not_started"
+      ? { ...step, replayed: false }
+      : { ...step, replayed: true }),
   };
 }
 
@@ -336,13 +375,23 @@ function owns(value: JsonObject, key: string): boolean {
   return Object.prototype.hasOwnProperty.call(value, key);
 }
 
-function validAddinStepError(value: unknown): value is JsonObject {
+function hasDeclaredArtifactShape(value: unknown): boolean {
+  if (!isObject(value) || !Array.isArray(value.files) || value.files.length === 0) return false;
+  return value.files.some((entry) =>
+    isObject(entry) &&
+    (typeof entry.path === "string" ||
+      typeof entry.fileName === "string" ||
+      typeof entry.contentBase64 === "string")
+  );
+}
+
+function validAddinStepError(value: unknown, maxAggregateResultBytes: number): value is JsonObject {
   if (!isObject(value) || typeof value.code !== "string" || typeof value.message !== "string") return false;
   if (value.code === "rollback_failure") return false;
   if (value.code === "response_payload_limit") {
-    return value.maxResponsePayloadBytes === 33_554_432 &&
+    return value.maxResponsePayloadBytes === maxAggregateResultBytes &&
       Number.isSafeInteger(value.tentativeResponsePayloadBytes) &&
-      Number(value.tentativeResponsePayloadBytes) >= 33_554_433;
+      Number(value.tentativeResponsePayloadBytes) > maxAggregateResultBytes;
   }
   return value.code === "command_failure" || value.code === "revit_api" || value.code === "invalid_result";
 }
@@ -351,8 +400,16 @@ function validateAtomicBatchResult(
   value: unknown,
   envelope: InvokeBatchEnvelope,
   resultContractVersion: number,
+  maxAggregateResultBytes: number,
 ): ValidAtomicBatchResult | null {
   if (!isObject(value) || !Array.isArray(value.steps) || !isObject(value.rollback)) return null;
+  if (
+    Buffer.byteLength(canonicalizeJson({
+      jsonrpc: "2.0",
+      id: envelope.payload.batch_id,
+      result: value,
+    }), "utf8") > maxAggregateResultBytes
+  ) return null;
   const status = value.status;
   const transactionState = value.transactionState;
   const failedStepIndex = value.failedStepIndex;
@@ -395,10 +452,15 @@ function validateAtomicBatchResult(
         row.effectState !== (step.mutating ? "committed" : "read_only") ||
         !owns(row, "result") || owns(row, "resultSuppressed") || owns(row, "guardedReason") || owns(row, "error")
       ) return null;
+      if (
+        hasDeclaredArtifactShape(row.result) ||
+        Buffer.byteLength(canonicalizeJson(row.result as JsonValue), "utf8") > BATCH_MAX_INLINE_RESULT_BYTES
+      ) return null;
     }
     return { result: value, rows, status: "completed", transactionState: "committed", failedStepIndex: null };
   }
 
+  if (failedStepIndex === null) return null;
   const failureIndex = Number(failedStepIndex);
   if (firstNonSuccess !== failureIndex) return null;
   const trigger = rows[failureIndex];
@@ -417,6 +479,10 @@ function validateAtomicBatchResult(
     !isObject(rollback.error) || rollback.error.code !== "rollback_failure" ||
     typeof rollback.error.message !== "string" ||
     !["guarded", "failed", "indeterminate"].includes(String(triggerState))
+  ) return null;
+  if (
+    status === "indeterminate" &&
+    !rows.some((row, index) => envelope.payload.steps[index]?.mutating === true && row.executionState !== "not_started")
   ) return null;
 
   const suppression = status === "indeterminate" ? "batch_indeterminate" : "batch_rolled_back";
@@ -445,7 +511,7 @@ function validateAtomicBatchResult(
         owns(row, "error")
       ) return null;
     } else if (row.executionState === "failed" || row.executionState === "indeterminate") {
-      if (!validAddinStepError(row.error) || owns(row, "guardedReason")) return null;
+      if (!validAddinStepError(row.error, maxAggregateResultBytes) || owns(row, "guardedReason")) return null;
     } else {
       return null;
     }
@@ -470,10 +536,44 @@ export class BridgeSimulator {
     maxResultBytes: MAX_RESULT_BYTES,
     maxPartialBytes: INLINE_JOURNAL_PAYLOAD_BYTES,
   };
+  #grantedConnectionCapabilities = new Set([
+    "journal_v1",
+    "chunked_results",
+    "artifact_result_v1",
+    "transport_streamable_http",
+  ]);
 
   public constructor(journal: DurableBridgeJournal, spool: ArtifactSpool) {
     this.#journal = journal;
     this.#spool = spool;
+    for (const retained of journal.deliveryCarriersNeedingExpiry()) {
+      const carrier = JSON.parse(retained.carrierJson) as DurableResultCarrier;
+      spool.expire(carrier);
+      journal.markDeliveryCarrierExpired(retained.cleanupId);
+    }
+    for (const retained of journal.deliveryCarriersNeedingCleanup()) {
+      const carrier = JSON.parse(retained.carrierJson) as DurableResultCarrier;
+      spool.acknowledge(carrier);
+      journal.markDeliveryCarrierCleaned(retained.rsid, retained.seq);
+    }
+    const referencedDirectories = new Set<string>();
+    for (const carrierJson of journal.retainedDeliveryCarrierJsons()) {
+      const carrier = JSON.parse(carrierJson) as DurableResultCarrier;
+      referencedDirectories.add(carrier.retainedDirectory);
+    }
+    for (const record of journal.listInvocations()) {
+      for (const terminal of [record.terminalOutcome, record.lateTerminalOutcome]) {
+        const payload = terminal?.payload;
+        if (!isObject(payload)) continue;
+        for (const key of ["artifact_carrier", "result_carrier"] as const) {
+          const carrier = payload[key];
+          if (isObject(carrier) && typeof carrier.retainedDirectory === "string") {
+            referencedDirectories.add(carrier.retainedDirectory);
+          }
+        }
+      }
+    }
+    spool.reconcileOrphans(referencedDirectories);
   }
 
   public get journal(): DurableBridgeJournal {
@@ -493,6 +593,58 @@ export class BridgeSimulator {
       throw new RangeError("negotiated Bridge limits exceed the RBP/1 implementation caps");
     }
     this.#limits = { ...limits };
+  }
+
+  public applyNegotiatedCapabilities(capabilities: readonly string[]): void {
+    this.#grantedConnectionCapabilities = new Set(capabilities);
+  }
+
+  /**
+   * Rehydrates terminal artifact outcomes that were committed before their
+   * sequence-independent delivery plan could be staged.  This closes the
+   * process-crash window after add-in completion and before peer enqueue: the
+   * inbound sequence may already be durable, so Gateway redelivery is not a
+   * reliable recovery trigger.
+   */
+  public recoverableDurableDeliveries(): readonly RecoverableDurableDelivery[] {
+    const recovered: RecoverableDurableDelivery[] = [];
+    for (const record of this.#journal.listInvocations()) {
+      const disposition = this.#journal.durableDeliveryDisposition(
+        record.binding.rsid,
+        record.binding.invocationId,
+      );
+      if (
+        record.binding.batchId !== undefined ||
+        record.terminalOutcome === null ||
+        disposition !== null
+      ) continue;
+      const retained = record.terminalOutcome.payload;
+      if (
+        !isObject(retained) ||
+        (!isObject(retained.artifact_carrier) && !isObject(retained.result_carrier))
+      ) continue;
+      const outcome = this.#replayOutcome(
+        record.terminalOutcome,
+        false,
+        record.verificationHoldId,
+        { rsid: record.binding.rsid, invocationId: record.binding.invocationId },
+      );
+      if (
+        outcome.kind !== "result" ||
+        (outcome.artifactCarrier === null && outcome.resultCarrier === null)
+      ) {
+        throw new Error(
+          `undelivered durable carrier is unavailable for ${record.binding.rsid}/${record.binding.invocationId}`,
+        );
+      }
+      recovered.push({
+        rsid: record.binding.rsid,
+        invocationId: record.binding.invocationId,
+        mutationScope: record.binding.mutationScope,
+        outcome,
+      });
+    }
+    return recovered;
   }
 
   public buildHello(input: {
@@ -629,6 +781,11 @@ export class BridgeSimulator {
     const session = this.#sessions.get(rsid);
     if (session === undefined) return [];
     const decisions = this.#journal.unregisterSession(rsid);
+    for (const retained of this.#journal.deliveryCarriersNeedingExpiry()) {
+      const carrier = JSON.parse(retained.carrierJson) as DurableResultCarrier;
+      this.#spool.expire(carrier);
+      this.#journal.markDeliveryCarrierExpired(retained.cleanupId);
+    }
     this.#sessions.delete(rsid);
     session.probe.client.close();
     return decisions;
@@ -643,6 +800,10 @@ export class BridgeSimulator {
     }
     const session = this.#sessions.get(envelope.rsid);
     if (session === undefined) return knownError("protocol", "invoke targets an unregistered rsid");
+    const sequence = this.acceptInboundEnvelope(envelope as unknown as DataEnvelopeSnapshot);
+    if (sequence.kind === "protocol_fault" || sequence.kind === "gap") {
+      return knownError("protocol", `inbound sequence rejected: ${sequence.kind}`);
+    }
     const computedParamsDigest = makeParamsDigest(envelope.payload.params as JsonValue);
     const transmittedParamsDigest = envelope.payload.params_digest;
     if (
@@ -656,10 +817,6 @@ export class BridgeSimulator {
       return knownError("oversize", `params exceed negotiated ${this.#limits.maxParamsBytes} byte limit`);
     }
 
-    const sequence = this.acceptInboundEnvelope(envelope as unknown as DataEnvelopeSnapshot);
-    if (sequence.kind === "protocol_fault" || sequence.kind === "gap") {
-      return knownError("protocol", `inbound sequence rejected: ${sequence.kind}`);
-    }
     const binding = bindingFromInvoke(envelope.payload, envelope.rsid);
     const dispatchIdentity = dataEnvelopeImmutableDigest(envelope as unknown as DataEnvelopeSnapshot);
     let accepted;
@@ -679,16 +836,24 @@ export class BridgeSimulator {
         verificationRequired: true,
         verificationHoldId: hold?.holdId ?? null,
         replayed: false,
+        lateAfterIndeterminate: false,
+        resultDigest: null,
         addinContacted: false,
         message: "conflicting mutation recovery hold is active",
       };
     }
     if (accepted.kind === "protocol_fault") return knownError("protocol", accepted.reason);
     if (accepted.kind === "replay_terminal") {
-      return this.#replayOutcome(accepted.outcome, false, accepted.record.verificationHoldId);
+      return this.#replayOutcome(accepted.outcome, false, accepted.record.verificationHoldId, {
+        rsid: accepted.record.binding.rsid,
+        invocationId: accepted.record.binding.invocationId,
+      });
     }
     if (accepted.kind === "replay_late_terminal") {
-      return this.#replayOutcome(accepted.outcome, true, accepted.verificationHoldId);
+      return this.#replayOutcome(accepted.outcome, true, accepted.verificationHoldId, {
+        rsid: accepted.record.binding.rsid,
+        invocationId: accepted.record.binding.invocationId,
+      });
     }
     if (
       accepted.kind === "return_indeterminate" ||
@@ -703,6 +868,8 @@ export class BridgeSimulator {
         verificationRequired: true,
         verificationHoldId: holdId,
         replayed: true,
+        lateAfterIndeterminate: false,
+        resultDigest: null,
         addinContacted: false,
         message: "mutation outcome is indeterminate; verification is required",
       };
@@ -765,6 +932,8 @@ export class BridgeSimulator {
             verificationRequired: true,
             verificationHoldId: record.verificationHoldId,
             replayed: false,
+            lateAfterIndeterminate: false,
+            resultDigest: null,
             addinContacted: true,
             message: "add-in response was lost after mutation dispatch",
           };
@@ -817,6 +986,14 @@ export class BridgeSimulator {
     if (session === undefined) {
       return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "protocol", message: "batch targets an unregistered rsid" };
     }
+    const sequence = acceptInboundData(
+      this.#journal.loadSequence(envelope.rsid),
+      envelope as unknown as DataEnvelopeSnapshot,
+    );
+    if (sequence.kind === "protocol_fault" || sequence.kind === "gap") {
+      return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "protocol", message: `inbound batch sequence rejected: ${sequence.kind}` };
+    }
+    if (sequence.kind === "accepted") this.#journal.saveSequence(sequence.state);
     const semanticDigest = makeBatchDigest({
       atomic: envelope.payload.atomic,
       batch_id: envelope.payload.batch_id,
@@ -858,24 +1035,22 @@ export class BridgeSimulator {
     if (envelope.payload.atomic && !session.grantedSessionCapabilities.includes("batch_atomic")) {
       return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "unsupported", message: "atomic batch requires batch_atomic" };
     }
-    if (envelope.payload.atomic) {
-      for (const step of envelope.payload.steps) {
-        const descriptor = session.probe.batchableCommands.find((entry) => entry.method === step.method);
-        const expectedEffect = step.mutating ? "model_transaction" : "read_only";
-        if (descriptor === undefined || descriptor.effect !== expectedEffect) {
-          return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "unsupported", message: "batch method/effect was not attested by the add-in probe" };
-        }
+    for (const step of envelope.payload.steps) {
+      const descriptor = session.probe.batchableCommands.find((entry) => entry.method === step.method);
+      const expectedEffect = step.mutating ? "model_transaction" : "read_only";
+      if (
+        descriptor === undefined ||
+        descriptor.effect !== expectedEffect ||
+        descriptor.resultDelivery !== "inline_only"
+      ) {
+        return {
+          kind: "error",
+          batchId: envelope.payload.batch_id,
+          faultClass: "unsupported",
+          message: "batch method/effect/inline-only output was not attested by the add-in probe",
+        };
       }
     }
-
-    const sequence = acceptInboundData(
-      this.#journal.loadSequence(envelope.rsid),
-      envelope as unknown as DataEnvelopeSnapshot,
-    );
-    if (sequence.kind === "protocol_fault" || sequence.kind === "gap") {
-      return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "protocol", message: `inbound batch sequence rejected: ${sequence.kind}` };
-    }
-    if (sequence.kind === "accepted") this.#journal.saveSequence(sequence.state);
 
     const dispatchIdentity = dataEnvelopeImmutableDigest(envelope as unknown as DataEnvelopeSnapshot);
     const bindingStatus = this.#journal.acceptBatchBinding({
@@ -890,13 +1065,14 @@ export class BridgeSimulator {
     const durableBatchTerminal = this.#journal.getBatchTerminal(envelope.payload.batch_id);
     if (durableBatchTerminal !== null) {
       const replay = JSON.parse(durableBatchTerminal) as BridgeBatchOutcome;
-      return { ...replay, replayed: true };
+      return replayedBatchOutcome(replay);
     }
     const coordination = this.#journal.getBatchCoordination(envelope.payload.batch_id);
     if (envelope.payload.atomic && coordination?.state === "indeterminate") {
       return this.#atomicBatchIndeterminate(
         envelope,
         "atomic add-in dispatch was interrupted before a durable terminal carrier",
+        bindingStatus === "replayed",
       );
     }
     const bindings: InvocationJournalBinding[] = envelope.payload.steps.map((step, index) => ({
@@ -929,6 +1105,7 @@ export class BridgeSimulator {
         message: `batch mutation is held: ${hold.holdId}`,
         verificationHoldId: hold.holdId,
         mutationScope: hold.mutationScope,
+        replayed: bindingStatus === "replayed",
       };
     }
     if (accepted.kind === "protocol_fault") {
@@ -939,10 +1116,16 @@ export class BridgeSimulator {
       (decision: BatchInvocationDecision): BridgeInvocationOutcome | undefined => {
         if (decision.kind === "accepted" || decision.kind === "reexecute_read") return undefined;
         if (decision.kind === "replay_terminal") {
-          return this.#replayOutcome(decision.outcome, false, decision.record.verificationHoldId);
+          return this.#replayOutcome(decision.outcome, false, decision.record.verificationHoldId, {
+            rsid: decision.record.binding.rsid,
+            invocationId: decision.record.binding.invocationId,
+          });
         }
         if (decision.kind === "replay_late_terminal") {
-          return this.#replayOutcome(decision.outcome, true, decision.verificationHoldId);
+          return this.#replayOutcome(decision.outcome, true, decision.verificationHoldId, {
+            rsid: decision.record.binding.rsid,
+            invocationId: decision.record.binding.invocationId,
+          });
         }
         if (decision.kind === "read_recovery_already_consumed") {
           return knownError("environment", "batch read recovery already consumed", { replayed: true });
@@ -958,6 +1141,8 @@ export class BridgeSimulator {
           verificationRequired: true,
           verificationHoldId: decision.record.verificationHoldId,
           replayed: true,
+          lateAfterIndeterminate: false,
+          resultDigest: null,
           addinContacted: false,
           message: "batch mutation outcome is indeterminate",
         };
@@ -1029,6 +1214,7 @@ export class BridgeSimulator {
         outcomes,
         bindingStatus === "replayed",
         dispatchIdentity,
+        options,
       );
     } finally {
       this.#active.delete(envelope.rsid);
@@ -1043,8 +1229,14 @@ export class BridgeSimulator {
     initialOutcomes: Array<BridgeInvocationOutcome | undefined>,
     bindingReplayed: boolean,
     dispatchIdentity: string,
+    options: { readonly crashAt?: BridgeCrashPoint },
   ): Promise<BridgeBatchOutcome> {
     const outcomes = [...initialOutcomes];
+    const carrierOverheadReserve = 65_536 + envelope.payload.steps.length * 2_048;
+    let consumedCarrierBytes = carrierOverheadReserve + outcomes.reduce((total, outcome) => {
+      if (outcome?.kind !== "result" || outcome.payloadOmitted) return total;
+      return total + Buffer.byteLength(canonicalizeJson(outcome.result ?? null), "utf8");
+    }, 0);
     let stop = false;
     for (const [index, step] of envelope.payload.steps.entries()) {
       const previous = outcomes[index];
@@ -1089,6 +1281,8 @@ export class BridgeSimulator {
             verificationRequired: true,
             verificationHoldId: hold?.holdId ?? null,
             replayed: false,
+            lateAfterIndeterminate: false,
+            resultDigest: null,
             addinContacted: false,
             message: "batch successor is blocked by a mutation recovery hold",
           };
@@ -1108,6 +1302,26 @@ export class BridgeSimulator {
         }
       }
       const stepEnvelope = this.#batchStepEnvelope(envelope, index);
+      const inlineResultLimit = session.probe.batchableCommands.find(
+        (entry) => entry.method === step.method,
+      )?.maxInlineResultBytes;
+      if (inlineResultLimit === undefined) {
+        throw new Error("accepted batch step lost its inline-only descriptor");
+      }
+      const remainingCarrierBytes = this.#limits.maxResultBytes - consumedCarrierBytes;
+      if (remainingCarrierBytes <= 0) {
+        const effectState = step.mutating ? "not_committed" : "read_only";
+        const message = "aggregate batch result budget was exhausted before this step dispatched";
+        this.#journal.recordTerminal(envelope.rsid, step.invocation_id, {
+          status: "failed",
+          payloadRetained: true,
+          payload: { fault_class: "protocol", message, effect_state: effectState },
+        });
+        outcomes[index] = knownError("protocol", message, { effectState });
+        stop = true;
+        continue;
+      }
+      let crashAfterDurableStep = false;
       try {
         const response = await session.probe.client.request(
           step.invocation_id,
@@ -1115,8 +1329,25 @@ export class BridgeSimulator {
           step.params as JsonObject,
           envelope.payload.timeout_ms,
         );
-        const outcome = this.#commitResponse(session, stepEnvelope, response);
+        const outcome = this.#commitResponse(
+          session,
+          stepEnvelope,
+          response,
+          null,
+          "batch_inline_only",
+          Math.min(inlineResultLimit, remainingCarrierBytes),
+        );
         outcomes[index] = outcome;
+        if (outcome.kind === "result" && !outcome.payloadOmitted) {
+          consumedCarrierBytes += Buffer.byteLength(
+            canonicalizeJson(outcome.result ?? null),
+            "utf8",
+          );
+        }
+        crashAfterDurableStep =
+          options.crashAt === "after_non_atomic_step_terminal_before_batch_terminal" &&
+          outcome.kind === "error" &&
+          outcome.effectState !== undefined;
         if (outcome.kind === "error" || (outcome.kind === "result" && outcome.status !== "completed")) stop = true;
       } catch (error) {
         if (step.mutating) {
@@ -1129,6 +1360,8 @@ export class BridgeSimulator {
             verificationRequired: true,
             verificationHoldId: record.verificationHoldId,
             replayed: false,
+            lateAfterIndeterminate: false,
+            resultDigest: null,
             addinContacted: true,
             message: "batch step response lost after dispatch",
           };
@@ -1147,6 +1380,9 @@ export class BridgeSimulator {
         }
         stop = true;
       }
+      if (crashAfterDurableStep) {
+        throw new InjectedBridgeCrash("after_non_atomic_step_terminal_before_batch_terminal");
+      }
     }
     const completed = outcomes.map((outcome) =>
       outcome ?? { kind: "not_started" as const, replayed: false, addinContacted: false as const },
@@ -1159,7 +1395,9 @@ export class BridgeSimulator {
       transactionState: "not_applicable",
       failedStepIndex: summary.failedStepIndex,
       steps: completed,
-      replayed: bindingReplayed && completed.every((outcome) => outcome.replayed),
+      replayed: bindingReplayed && completed.every((outcome) =>
+        outcome.kind === "not_started" || outcome.replayed
+      ),
     };
     this.#journal.commitBatchTerminal({
       batchId: envelope.payload.batch_id,
@@ -1191,6 +1429,7 @@ export class BridgeSimulator {
       batchDigest: envelope.payload.batch_digest,
       atomic: true,
       rollbackPolicy: "rollback_on_non_success",
+      maxAggregateResultBytes: this.#limits.maxResultBytes,
       steps: envelope.payload.steps.map((step, index) => ({
         index,
         invocationId: step.invocation_id,
@@ -1221,6 +1460,7 @@ export class BridgeSimulator {
       response.message.result,
       envelope,
       session.probe.resultContractVersion,
+      this.#limits.maxResultBytes,
     );
     if (validated === null) {
       return this.#atomicBatchIndeterminate(envelope, "execute_batch response correlation failed");
@@ -1240,6 +1480,7 @@ export class BridgeSimulator {
         outcome: TerminalJournalOutcome;
       }> = [];
       const outcomes = envelope.payload.steps.map((step, index): BridgeInvocationOutcome => {
+        const row = rows[index] as JsonObject;
         const heldRecord = heldByInvocation.get(step.invocation_id);
         if (heldRecord !== undefined) {
           return {
@@ -1250,11 +1491,12 @@ export class BridgeSimulator {
             verificationRequired: true,
             verificationHoldId: heldRecord.verificationHoldId,
             replayed: false,
+            lateAfterIndeterminate: false,
+            resultDigest: null,
             addinContacted: true,
             message: "atomic batch rollback outcome is indeterminate",
           };
         }
-        const row = rows[index] as JsonObject;
         if (row.executionState === "not_started") {
           knownEntries.push({
             invocationId: step.invocation_id,
@@ -1262,19 +1504,52 @@ export class BridgeSimulator {
           });
           return { kind: "not_started", replayed: false, addinContacted: false };
         }
-        const terminalStatus = "failed" as const;
+        if (row.executionState === "completed") {
+          const result = {
+            execution_state: "completed",
+            effect_state: String(row.effectState),
+            result_suppressed: String(row.resultSuppressed),
+          } as JsonValue;
+          knownEntries.push({
+            invocationId: step.invocation_id,
+            outcome: this.#terminalOutcome("completed", result, digest(response.payload)),
+          });
+          return {
+            kind: "result",
+            status: "completed",
+            result,
+            replayed: false,
+            payloadOmitted: false,
+            resultDigest: digest(response.payload),
+            lateAfterIndeterminate: false,
+            verificationHoldId: null,
+            partials: [],
+            artifactCarrier: null,
+            resultCarrier: null,
+            addinContacted: true,
+          };
+        }
+        const rowError = isObject(row.error) ? row.error : {};
+        const message = typeof rowError.message === "string"
+          ? rowError.message.slice(0, 240)
+          : "atomic batch result suppressed";
+        const errorPayload = { fault_class: "revit_api", message } as JsonValue;
         knownEntries.push({
           invocationId: step.invocation_id,
-          outcome: this.#terminalOutcome(terminalStatus, row as unknown as JsonValue, digest(response.payload)),
+          outcome: this.#terminalOutcome("failed", errorPayload, digest(response.payload)),
         });
-        return knownError("revit_api", "atomic batch result suppressed", { addinContacted: true });
+        return knownError("revit_api", message, { addinContacted: true });
       });
+      const summary = summarizeBatchOutcomes(outcomes);
+      if (summary.status !== "indeterminate" || summary.failedStepIndex === null) {
+        throw new Error("atomic indeterminate mapping lost its first uncertain mutation");
+      }
       const batch: BridgeBatchOutcome = {
         kind: "batch",
         batchId: envelope.payload.batch_id,
         status: "indeterminate",
         transactionState: "indeterminate",
-        failedStepIndex: failedStepIndex as number,
+        failedStepIndex: summary.failedStepIndex,
         steps: outcomes,
         replayed: false,
       };
@@ -1308,6 +1583,7 @@ export class BridgeSimulator {
           verificationHoldId: null,
           partials: [],
           artifactCarrier: null,
+          resultCarrier: null,
           addinContacted: true,
         };
       }
@@ -1319,15 +1595,48 @@ export class BridgeSimulator {
         });
         return { kind: "not_started", replayed: false, addinContacted: false };
       }
+      if (index < (failedStepIndex as number)) {
+        const result = {
+          execution_state: "completed",
+          effect_state: String(row.effectState),
+          result_suppressed: String(row.resultSuppressed),
+        } as JsonValue;
+        stepTerminals.push({
+          invocationId: step.invocation_id,
+          outcome: this.#terminalOutcome("completed", result, rawDigest),
+        });
+        return {
+          kind: "result",
+          status: "completed",
+          result,
+          replayed: false,
+          payloadOmitted: false,
+          resultDigest: rawDigest,
+          lateAfterIndeterminate: false,
+          verificationHoldId: null,
+          partials: [],
+          artifactCarrier: null,
+          resultCarrier: null,
+          addinContacted: true,
+        };
+      }
       const terminalStatus = isGuarded
         ? "guarded"
         : "failed";
       const reason = isGuarded ? guardedReason(row) : undefined;
+      const rowError = isObject(row.error) ? row.error : {};
+      const message = typeof rowError.message === "string"
+        ? rowError.message.slice(0, 240)
+        : "atomic batch rolled back";
+      const failureClass = rowError.code === "response_payload_limit" ? "oversize" : "revit_api";
+      const terminalPayload = isGuarded
+        ? row as unknown as JsonValue
+        : { fault_class: failureClass, message } as JsonValue;
       stepTerminals.push({
         invocationId: step.invocation_id,
         outcome: this.#terminalOutcome(
           terminalStatus,
-          row as unknown as JsonValue,
+          terminalPayload,
           rawDigest,
           reason,
         ),
@@ -1345,15 +1654,20 @@ export class BridgeSimulator {
           verificationHoldId: null,
           partials: [],
           artifactCarrier: null,
+          resultCarrier: null,
           addinContacted: true,
         };
       }
       return knownError(
-        "revit_api",
-        "atomic batch rolled back",
+        failureClass,
+        message,
         { addinContacted: true },
       );
     });
+    const summary = summarizeBatchOutcomes(outcomes);
+    if (summary.status !== status || summary.failedStepIndex !== failedStepIndex) {
+      throw new Error("atomic batch carrier mapping disagrees with the validated first non-success step");
+    }
     const batch: BridgeBatchOutcome = {
       kind: "batch",
       batchId: envelope.payload.batch_id,
@@ -1376,7 +1690,16 @@ export class BridgeSimulator {
   #atomicBatchIndeterminate(
     envelope: InvokeBatchEnvelope,
     message: string,
+    replayed = false,
   ): BridgeBatchOutcome {
+    const firstMutation = envelope.payload.steps.findIndex((step) => step.mutating);
+    const readUnavailableMessage =
+      `atomic batch read result is unavailable because the terminal carrier is unknown: ${message}`
+        .slice(0, 240);
+    const readFailurePayload = {
+      fault_class: "environment",
+      message: readUnavailableMessage,
+    } as JsonValue;
     const mutatingRecords = envelope.payload.steps
       .filter((step) => step.mutating)
       .map((step) => this.#journal.getInvocation(envelope.rsid, step.invocation_id))
@@ -1390,25 +1713,28 @@ export class BridgeSimulator {
         .map((record) => [record.binding.invocationId, record]),
     );
     const readTerminals = envelope.payload.steps
-      .filter((step) => !step.mutating)
-      .filter((step) => {
+      .map((step) => ({ step }))
+      .filter(({ step }) => !step.mutating)
+      .filter(({ step }) => {
         const record = this.#journal.getInvocation(envelope.rsid, step.invocation_id);
         return record !== null && record.terminalOutcome === null && record.state !== "indeterminate";
       })
-      .map((step) => ({
-        rsid: envelope.rsid,
+      .map(({ step }) => ({
         invocationId: step.invocation_id,
         outcome: {
           status: "failed" as const,
           payloadRetained: true,
-          payload: { message: message.slice(0, 240) } as JsonValue,
+          payload: readFailurePayload,
         },
       }));
-    this.#journal.recordTerminals(readTerminals);
     const outcomes = envelope.payload.steps.map((step): BridgeInvocationOutcome => {
       const record = heldByInvocation.get(step.invocation_id);
       if (record === undefined) {
-        return knownError("environment", message, { retryable: true, addinContacted: true });
+        return knownError("environment", readUnavailableMessage, {
+          retryable: true,
+          replayed,
+          addinContacted: false,
+        });
       }
       return {
         kind: "error",
@@ -1417,26 +1743,36 @@ export class BridgeSimulator {
         outcome: "indeterminate",
         verificationRequired: true,
         verificationHoldId: record.verificationHoldId,
-        replayed: false,
+        replayed,
+        lateAfterIndeterminate: false,
+        resultDigest: null,
         addinContacted: true,
         message: "atomic batch response is not durably knowable",
       };
     });
-    const firstMutation = envelope.payload.steps.findIndex((step) => step.mutating);
+    const summary = summarizeBatchOutcomes(outcomes);
+    const firstMutationOutcome = firstMutation < 0 ? undefined : outcomes[firstMutation];
+    if (
+      summary.failedStepIndex === null ||
+      (firstMutation >= 0 && firstMutationOutcome?.kind !== "error") ||
+      (firstMutationOutcome?.kind === "error" && firstMutationOutcome.outcome !== "indeterminate") ||
+      (firstMutation < 0 && summary.status !== "failed")
+    ) throw new Error("atomic indeterminate carrier lost its unknown read or mutation state");
     const batch: BridgeBatchOutcome = {
       kind: "batch",
       batchId: envelope.payload.batch_id,
       status: firstMutation >= 0 ? "indeterminate" : "failed",
       transactionState: firstMutation >= 0 ? "indeterminate" : "rolled_back",
-      failedStepIndex: firstMutation >= 0 ? firstMutation : 0,
+      failedStepIndex: summary.failedStepIndex,
       steps: outcomes,
-      replayed: false,
+      replayed,
     };
     this.#journal.commitBatchTerminal({
       batchId: envelope.payload.batch_id,
       rsid: envelope.rsid,
       batchDigest: envelope.payload.batch_digest,
       terminalJson: JSON.stringify(batch),
+      steps: readTerminals,
     });
     return batch;
   }
@@ -1530,8 +1866,16 @@ export class BridgeSimulator {
   public queueOutbound(
     rsid: string,
     draft: { readonly type: string; readonly id: string; readonly ts: string; readonly payload: JsonValue },
-    artifactCarrier: ArtifactCarrier | null = null,
+    deliveryCarrier: DurableResultCarrier | null = null,
+    durableDeliveryDraft: {
+      readonly deliveryId: string;
+      readonly ordinal: number;
+      readonly draftJson: string;
+    } | null = null,
   ): DataEnvelopeSnapshot {
+    if (deliveryCarrier !== null && deliveryCarrier.rsid !== rsid) {
+      throw new Error("durable result carrier rsid does not match its outbound session");
+    }
     const current = this.#journal.loadSequence(rsid);
     if (current.outbox.length !== 0) {
       throw new Error("RBP/1 outbound window=1 is occupied until cumulative ack");
@@ -1545,12 +1889,26 @@ export class BridgeSimulator {
       ack: current.lastRxSeq,
     });
     if (queued.kind !== "queued") throw new Error("sequence renewal is required");
-    if (artifactCarrier === null) this.#journal.saveSequence(queued.state);
+    if (!validateRbpEnvelope(queued.envelope as unknown as RbpEnvelope)) {
+      throw new Error(`Bridge attempted to persist an invalid ${draft.type} data envelope`);
+    }
+    if (durableDeliveryDraft !== null) {
+      this.#journal.saveSequenceAndConsumeDeliveryDraft({
+        state: queued.state,
+        seq: queued.envelope.seq,
+        deliveryId: durableDeliveryDraft.deliveryId,
+        ordinal: durableDeliveryDraft.ordinal,
+        draftJson: durableDeliveryDraft.draftJson,
+        ...(deliveryCarrier === null
+          ? {}
+          : { terminalCarrierJson: JSON.stringify(this.#spool.compact(deliveryCarrier)) }),
+      });
+    } else if (deliveryCarrier === null) this.#journal.saveSequence(queued.state);
     else {
-      this.#journal.saveSequenceWithArtifact(
+      this.#journal.saveSequenceWithCarrier(
         queued.state,
         queued.envelope.seq,
-        JSON.stringify(artifactCarrier),
+        JSON.stringify(this.#spool.compact(deliveryCarrier)),
       );
     }
     return queued.envelope;
@@ -1560,10 +1918,10 @@ export class BridgeSimulator {
     const result = applyCumulativeAck(this.#journal.loadSequence(rsid), ack);
     if (result.kind === "protocol_fault") throw new Error(`invalid cumulative ack: ${result.reason}`);
     this.#journal.saveSequence(result.state);
-    for (const retained of this.#journal.ackedArtifactCarriers(rsid, ack)) {
-      const carrier = JSON.parse(retained.carrierJson) as ArtifactCarrier;
+    for (const retained of this.#journal.ackedDeliveryCarriers(rsid, ack)) {
+      const carrier = JSON.parse(retained.carrierJson) as DurableResultCarrier;
       this.#spool.acknowledge(carrier);
-      this.#journal.markArtifactCarrierCleaned(rsid, retained.seq);
+      this.#journal.markDeliveryCarrierCleaned(rsid, retained.seq);
     }
     return result.acknowledgedSeqs;
   }
@@ -1617,13 +1975,19 @@ export class BridgeSimulator {
       if (record?.state !== "indeterminate" || !envelope.payload.mutating) return;
       const classified = addinOutcome(response);
       const resultDigest = digest(response.payload);
+      const payload = classified.status === "failed"
+        ? (() => {
+            const failure = addinFailureClass(response);
+            return { fault_class: failure.faultClass, message: failure.message } as JsonValue;
+          })()
+        : { bridge_result: classified.result } as JsonValue;
+      const payloadRetained =
+        !hasDeclaredArtifactShape(classified.result) &&
+        Buffer.byteLength(canonicalizeJson(payload), "utf8") <= INLINE_JOURNAL_PAYLOAD_BYTES;
       this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
         status: classified.status,
-        payloadRetained: true,
-        payload: {
-          late_result_status: classified.status,
-          raw_result_digest: resultDigest,
-        },
+        payloadRetained,
+        ...(payloadRetained ? { payload } : {}),
         resultDigest,
         ...(classified.status === "guarded" ? { guardedReason: classified.guardedReason } : {}),
       });
@@ -1638,6 +2002,8 @@ export class BridgeSimulator {
     envelope: InvokeEnvelope,
     response: RawAddinResponse,
     enrichment: AddinFailureStatusEvidence | null = null,
+    deliveryMode: "streamable" | "batch_inline_only" = "streamable",
+    batchInlineResultLimit = this.#limits.maxResultBytes,
   ): BridgeInvocationOutcome {
     const classified = addinOutcome(response);
     const resultDigest = digest(response.payload);
@@ -1654,6 +2020,36 @@ export class BridgeSimulator {
         fault_class: failure.faultClass,
         message: failure.message,
       };
+      if (
+        envelope.payload.mutating &&
+        (failure.faultClass === "revit_timeout" ||
+          failure.faultClass === "addin_unreachable" ||
+          failure.faultClass === "environment")
+      ) {
+        const indeterminate = this.#journal.markIndeterminate(
+          envelope.rsid,
+          envelope.payload.invocation_id,
+        );
+        this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
+          status: "failed",
+          payloadRetained: true,
+          payload,
+          resultDigest,
+        });
+        return {
+          kind: "error",
+          faultClass: "journal_indeterminate",
+          retryable: false,
+          outcome: "indeterminate",
+          verificationRequired: true,
+          verificationHoldId: indeterminate.verificationHoldId,
+          replayed: false,
+          lateAfterIndeterminate: false,
+          resultDigest: null,
+          addinContacted: true,
+          message: "mutation deadline/unreachability left the add-in effect indeterminate",
+        };
+      }
       const terminal = this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
         status: "failed",
         payloadRetained: true,
@@ -1672,12 +2068,36 @@ export class BridgeSimulator {
     }
 
     let artifactCarrier: ArtifactCarrier | null = null;
+    let resultCarrier: ChunkedResultCarrier | null = null;
     let result = classified.result;
     let partials: readonly Extract<RbpPartial, { kind: "chunk" }>[] = [];
     try {
+      if (deliveryMode === "batch_inline_only" && hasDeclaredArtifactShape(classified.result)) {
+        return this.#batchInlineContractViolation(
+          envelope,
+          classified,
+          resultDigest,
+          "batch-inline-only add-in contract returned artifact data",
+        );
+      }
       const fixtureArtifacts = this.#fixtureArtifacts(classified.result);
+      if (deliveryMode === "batch_inline_only" && fixtureArtifacts !== null) {
+        return this.#batchInlineContractViolation(
+          envelope,
+          classified,
+          resultDigest,
+          "batch-inline-only add-in contract returned artifact data",
+        );
+      }
       if (fixtureArtifacts?.kind === "inline") {
+        if (
+          !this.#grantedConnectionCapabilities.has("artifact_result_v1") ||
+          !this.#grantedConnectionCapabilities.has("chunked_results")
+        ) {
+          throw new Error("artifact/chunk capability was not granted for this connection");
+        }
         artifactCarrier = this.#spool.retain(
+          envelope.rsid,
           envelope.payload.invocation_id,
           fixtureArtifacts.inputs,
           this.#limits.maxPartialBytes,
@@ -1689,7 +2109,14 @@ export class BridgeSimulator {
         this.#assertArtifactResultLimit(result, artifactCarrier);
         partials = artifactCarrier.partials;
       } else if (fixtureArtifacts?.kind === "paths") {
+        if (
+          !this.#grantedConnectionCapabilities.has("artifact_result_v1") ||
+          !this.#grantedConnectionCapabilities.has("chunked_results")
+        ) {
+          throw new Error("artifact/chunk capability was not granted for this connection");
+        }
         artifactCarrier = this.#spool.captureDeclaredPaths(
+          envelope.rsid,
           envelope.payload.invocation_id,
           fixtureArtifacts.paths,
           this.#limits.maxPartialBytes,
@@ -1702,33 +2129,43 @@ export class BridgeSimulator {
         partials = artifactCarrier.partials;
       } else {
         const bytes = Buffer.from(canonicalizeJson(classified.result), "utf8");
-        if (bytes.byteLength > this.#limits.maxResultBytes) {
+        const resultLimit = deliveryMode === "batch_inline_only"
+          ? Math.min(this.#limits.maxResultBytes, batchInlineResultLimit)
+          : this.#limits.maxResultBytes;
+        if (bytes.byteLength > resultLimit) {
+          if (deliveryMode === "batch_inline_only") {
+            return this.#batchInlineContractViolation(
+              envelope,
+              classified,
+              resultDigest,
+              `batch inline result exceeds attested ${resultLimit} byte limit`,
+            );
+          }
           throw new RangeError(`result exceeds negotiated ${this.#limits.maxResultBytes} byte limit`);
         }
-        if (bytes.byteLength > this.#limits.maxPartialBytes) {
-        const chunks: Extract<RbpPartial, { kind: "chunk" }>[] = [];
-          for (
-            let offset = 0, chunkIndex = 0;
-            offset < bytes.byteLength;
-            offset += this.#limits.maxPartialBytes, chunkIndex += 1
-          ) {
-          chunks.push({
-            kind: "chunk",
-            invocation_id: envelope.payload.invocation_id,
-            stream_id: "result",
-            chunk_index: chunkIndex,
-            encoding: "base64",
-            content_type: "application/json",
-              data: bytes.subarray(offset, offset + this.#limits.maxPartialBytes).toString("base64"),
-          });
-        }
-        partials = chunks;
+        if (
+          deliveryMode === "streamable" &&
+          bytes.byteLength > this.#limits.maxPartialBytes &&
+          this.#grantedConnectionCapabilities.has("chunked_results")
+        ) {
+          resultCarrier = this.#spool.retainChunkedResult(
+            envelope.rsid,
+            envelope.payload.invocation_id,
+            bytes,
+            this.#limits.maxPartialBytes,
+          );
+          partials = resultCarrier.partials;
         }
       }
     } catch (error) {
       if (artifactCarrier !== null) this.#spool.expire(artifactCarrier);
+      if (resultCarrier !== null) this.#spool.expire(resultCarrier);
       const message = error instanceof Error ? error.message.slice(0, 240) : "artifact/result validation failed";
-      const faultClass = error instanceof RangeError ? "oversize" : "parameter";
+      const faultClass = error instanceof RangeError
+        ? "oversize"
+        : /was not granted for this connection/u.test(message)
+          ? "unsupported"
+          : "parameter";
       const payload: JsonValue = { fault_class: faultClass, message };
       this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
         status: "failed",
@@ -1740,11 +2177,17 @@ export class BridgeSimulator {
     }
 
     const retainedPayload = {
-      bridge_result: result,
-      partials,
-      ...(artifactCarrier === null ? {} : { artifact_carrier: artifactCarrier }),
+      ...(resultCarrier === null ? { bridge_result: result } : {}),
+      partials: artifactCarrier === null && resultCarrier === null ? partials : [],
+      ...(artifactCarrier === null
+        ? {}
+        : { artifact_carrier: this.#spool.compact(artifactCarrier) }),
+      ...(resultCarrier === null
+        ? {}
+        : { result_carrier: this.#spool.compact(resultCarrier) }),
     } as unknown as JsonValue;
-    const retained = Buffer.byteLength(canonicalizeJson(retainedPayload), "utf8") <= INLINE_JOURNAL_PAYLOAD_BYTES;
+    const retained = artifactCarrier !== null || resultCarrier !== null ||
+      Buffer.byteLength(canonicalizeJson(retainedPayload), "utf8") <= INLINE_JOURNAL_PAYLOAD_BYTES;
     const terminal = this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
       status: classified.status,
       payloadRetained: retained,
@@ -1754,6 +2197,7 @@ export class BridgeSimulator {
     });
     if (terminal.abandoned) {
       if (artifactCarrier !== null) this.#spool.expire(artifactCarrier);
+      if (resultCarrier !== null) this.#spool.expire(resultCarrier);
       return knownError("cancelled", "late add-in outcome retained after cancellation", {
         addinContacted: true,
       });
@@ -1770,8 +2214,43 @@ export class BridgeSimulator {
       verificationHoldId: null,
       partials,
       artifactCarrier,
+      resultCarrier,
       addinContacted: true,
     };
+  }
+
+  #batchInlineContractViolation(
+    envelope: InvokeEnvelope,
+    classified: {
+      readonly status: "completed" | "guarded" | "failed";
+      readonly result: JsonValue;
+      readonly guardedReason?: string;
+    },
+    resultDigest: string,
+    message: string,
+  ): BridgeInvocationOutcome {
+    if (classified.status === "failed") {
+      throw new Error("failed add-in outcomes must be classified before delivery handling");
+    }
+    const effectState = envelope.payload.mutating
+      ? classified.status === "completed" ? "committed" : "not_committed"
+      : "read_only";
+    const retainedMessage = message.slice(0, 240);
+    this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
+      status: "failed",
+      payloadRetained: true,
+      payload: {
+        fault_class: "protocol",
+        message: retainedMessage,
+        effect_state: effectState,
+      },
+      resultDigest,
+    });
+    return knownError("protocol", retainedMessage, {
+      addinContacted: true,
+      effectState,
+      resultDigest,
+    });
   }
 
   #fixtureArtifacts(result: JsonValue):
@@ -1827,6 +2306,7 @@ export class BridgeSimulator {
     outcome: TerminalJournalOutcome,
     lateAfterIndeterminate: boolean,
     verificationHoldId: string | null,
+    expectedIdentity?: { readonly rsid: string; readonly invocationId: string },
   ): BridgeInvocationOutcome {
     if (outcome.status === "failed" || outcome.status === "cancelled") {
       const payload = isObject(outcome.payload) ? outcome.payload : {};
@@ -1841,9 +2321,18 @@ export class BridgeSimulator {
           ? retainedClass as Extract<BridgeInvocationOutcome, { kind: "error" }>["faultClass"]
           : "revit_api";
       const message = typeof payload.message === "string" ? payload.message : "terminal journal outcome replay";
+      const effectState = payload.effect_state === "read_only" ||
+        payload.effect_state === "committed" ||
+        payload.effect_state === "not_committed"
+        ? payload.effect_state
+        : undefined;
       return knownError(faultClass, message, {
         replayed: true,
         retryable: faultClass === "environment" || faultClass === "revit_busy" || faultClass === "revit_timeout" || faultClass === "addin_unreachable",
+        lateAfterIndeterminate,
+        verificationHoldId: lateAfterIndeterminate ? verificationHoldId : null,
+        resultDigest: lateAfterIndeterminate ? outcome.resultDigest ?? null : null,
+        ...(effectState === undefined ? {} : { effectState }),
       });
     }
     if (!outcome.payloadRetained) {
@@ -1858,6 +2347,7 @@ export class BridgeSimulator {
         verificationHoldId,
         partials: [],
         artifactCarrier: null,
+        resultCarrier: null,
         addinContacted: false,
       };
     }
@@ -1866,15 +2356,67 @@ export class BridgeSimulator {
     const legacyMessage = isObject(retained.result) ? retained : null;
     const result = owns(retained, "bridge_result")
       ? retained.bridge_result as JsonValue
+      : owns(retained, "result_carrier")
+        ? null
       : legacyMessage !== null
         ? legacyMessage.result as JsonValue
         : payload as JsonValue;
-    const artifactCarrier = isObject(retained.artifact_carrier)
+    let artifactCarrier = isObject(retained.artifact_carrier)
       ? retained.artifact_carrier as unknown as ArtifactCarrier
       : null;
-    const partials = Array.isArray(retained.partials)
+    let resultCarrier = isObject(retained.result_carrier)
+      ? retained.result_carrier as unknown as ChunkedResultCarrier
+      : null;
+    let partials = Array.isArray(retained.partials)
       ? retained.partials as unknown as readonly Extract<RbpPartial, { kind: "chunk" }>[]
-      : artifactCarrier?.partials ?? [];
+      : artifactCarrier?.partials ?? resultCarrier?.partials ?? [];
+    const durableCarrier = artifactCarrier ?? resultCarrier;
+    if (
+      durableCarrier !== null && expectedIdentity !== undefined &&
+      (durableCarrier.rsid !== expectedIdentity.rsid ||
+        durableCarrier.invocationId !== expectedIdentity.invocationId)
+    ) {
+      artifactCarrier = null;
+      resultCarrier = null;
+      partials = [];
+      return {
+        kind: "result",
+        status: outcome.status,
+        ...(outcome.status === "guarded" ? { guardedReason: outcome.guardedReason } : {}),
+        replayed: true,
+        payloadOmitted: true,
+        resultDigest: outcome.resultDigest as string,
+        lateAfterIndeterminate,
+        verificationHoldId,
+        partials,
+        artifactCarrier,
+        resultCarrier,
+        addinContacted: false,
+      };
+    }
+    if ((artifactCarrier !== null || resultCarrier !== null) && partials.length === 0) {
+      try {
+        const carrier = this.#spool.rehydrate(artifactCarrier ?? resultCarrier as ChunkedResultCarrier);
+        if (carrier.kind === "artifacts") artifactCarrier = carrier;
+        else resultCarrier = carrier;
+        partials = carrier.partials;
+      } catch {
+        return {
+          kind: "result",
+          status: outcome.status,
+          ...(outcome.status === "guarded" ? { guardedReason: outcome.guardedReason } : {}),
+          replayed: true,
+          payloadOmitted: true,
+          resultDigest: outcome.resultDigest as string,
+          lateAfterIndeterminate,
+          verificationHoldId,
+          partials: [],
+          artifactCarrier: null,
+          resultCarrier: null,
+          addinContacted: false,
+        };
+      }
+    }
     return {
       kind: "result",
       status: outcome.status,
@@ -1887,6 +2429,7 @@ export class BridgeSimulator {
       verificationHoldId,
       partials,
       artifactCarrier,
+      resultCarrier,
       addinContacted: false,
     };
   }

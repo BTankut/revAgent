@@ -17,7 +17,11 @@ interface StepInput {
   effect?: "read_only" | "model_transaction";
 }
 
-function batchRequest(batchSuffix: number, inputs: readonly StepInput[]): JsonObject {
+function batchRequest(
+  batchSuffix: number,
+  inputs: readonly StepInput[],
+  maxAggregateResultBytes = MAX_RESPONSE_PAYLOAD_BYTES,
+): JsonObject {
   const batchId = uuid7(batchSuffix);
   return request(batchId, "execute_batch", {
     batchContractVersion: 1,
@@ -25,6 +29,7 @@ function batchRequest(batchSuffix: number, inputs: readonly StepInput[]): JsonOb
     batchDigest: DIGEST,
     atomic: true,
     rollbackPolicy: "rollback_on_non_success",
+    maxAggregateResultBytes,
     steps: inputs.map((input, index) => ({
       index,
       invocationId: uuid7(batchSuffix * 100 + index + 1),
@@ -294,7 +299,7 @@ describe("atomic execute_batch fixture", () => {
     expect(fixture.modelState.has("view:uncertain")).toBe(false);
   });
 
-  it("turns response overflow into the triggering failed step before assimilation", async () => {
+  it("rejects an oversized inline step result before assimilation", async () => {
     const { fixture, socket } = await setup();
     fixture.registerHandler("delete_review_view", "model_transaction", (_params, context) => {
       context.transactionGroup?.stage("view:overflow", { deleted: true });
@@ -334,13 +339,75 @@ describe("atomic execute_batch fixture", () => {
       resultSuppressed: "batch_rolled_back",
     });
     expect(limitError).toMatchObject({
-      code: "response_payload_limit",
-      maxResponsePayloadBytes: MAX_RESPONSE_PAYLOAD_BYTES,
+      code: "invalid_result",
     });
-    expect(Number(limitError.tentativeResponsePayloadBytes)).toBeGreaterThan(
-      MAX_RESPONSE_PAYLOAD_BYTES,
-    );
     expect(fixture.modelState.has("view:overflow")).toBe(false);
+  });
+
+  it("uses the negotiated aggregate result cap for tentative batch assimilation", async () => {
+    const { fixture, socket } = await setup();
+    const negotiatedCap = 10 * 1024 * 1024;
+    fixture.registerHandler("get_ui_state", "read_only", () => ({
+      state: "completed",
+      result: { payload: "x".repeat(6 * 1024 * 1024) },
+    }));
+    fixture.registerHandler("get_current_view_info", "read_only", () => ({
+      state: "completed",
+      result: { payload: "y".repeat(6 * 1024 * 1024) },
+    }));
+    const response = await writeAndRead(
+      socket,
+      batchRequest(114, [
+        { method: "get_ui_state" },
+        { method: "get_current_view_info" },
+      ], negotiatedCap),
+    );
+    const error = steps(response)[1]?.error as JsonObject;
+
+    expect(result(response)).toMatchObject({
+      status: "failed",
+      transactionState: "rolled_back",
+      failedStepIndex: 1,
+    });
+    expect(error).toMatchObject({
+      code: "response_payload_limit",
+      maxResponsePayloadBytes: negotiatedCap,
+    });
+    expect(Number(error.tentativeResponsePayloadBytes)).toBeGreaterThan(negotiatedCap);
+  });
+
+  it("rejects artifact-shaped nested results and rolls back prior mutations without echoing paths", async () => {
+    const { fixture, socket } = await setup();
+    const secretPath = "C:\\sensitive\\model-export.xlsx";
+    fixture.registerHandler("delete_review_view", "model_transaction", (_params, context) => {
+      context.transactionGroup?.stage("view:artifact", { deleted: true });
+      return { state: "completed", result: { success: true } };
+    });
+    fixture.registerHandler("get_ui_state", "read_only", () => ({
+      state: "completed",
+      result: { files: [{ path: secretPath, contentType: "application/octet-stream" }] },
+    }));
+    const response = await writeAndRead(socket, batchRequest(115, [
+      {
+        method: "delete_review_view",
+        effect: "model_transaction",
+        params: { viewId: 46, mode: "commit", confirmDelete: true },
+      },
+      { method: "get_ui_state" },
+    ]));
+
+    expect(result(response)).toMatchObject({
+      status: "failed",
+      transactionState: "rolled_back",
+      failedStepIndex: 1,
+    });
+    expect(steps(response)[1]).toMatchObject({
+      executionState: "failed",
+      effectState: "discarded",
+      error: { code: "invalid_result" },
+    });
+    expect(JSON.stringify(response)).not.toContain(secretPath);
+    expect(fixture.modelState.has("view:artifact")).toBe(false);
   });
 
   it("rejects raw dynamic send_code before opening the group or executing a step", async () => {

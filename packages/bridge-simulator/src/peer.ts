@@ -6,6 +6,7 @@ import {
   RBP_HEARTBEAT_DISCONNECTED_AFTER_MS,
   canonicalizeJson,
   createSessionLifecycle,
+  rbpEnvelopeErrors,
   transitionSession,
   validateRbpEnvelope,
   type BatchStepResult,
@@ -25,7 +26,7 @@ import {
   type SessionUnregister,
 } from "@revagent/protocol";
 
-import type { ArtifactCarrier } from "./artifacts.js";
+import type { DurableResultCarrier } from "./artifacts.js";
 import type {
   BridgeSimulator,
   BridgeBatchOutcome,
@@ -49,7 +50,7 @@ interface QueuedDataDraft {
   readonly id: string;
   readonly ts: string;
   readonly payload: JsonValue;
-  readonly artifactCarrier: ArtifactCarrier | null;
+  readonly deliveryCarrier: DurableResultCarrier | null;
 }
 
 export interface BridgeGatewayPeerOptions {
@@ -80,6 +81,9 @@ export interface BridgeGatewayPeerSnapshot {
   readonly sentSeqs: readonly { readonly rsid: string; readonly seq: number }[];
   readonly reconnectAttemptIndex: number;
   readonly heartbeatAckDeadlineAtMs: number | null;
+  readonly grantedCapabilities: readonly string[];
+  readonly retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null;
+  readonly reconnectDelayFloorMs: number;
 }
 
 function defaultId(): string {
@@ -126,6 +130,12 @@ function errorDetail(
     outcome: outcome.outcome,
     verification_required: outcome.verificationRequired,
     replayed: outcome.replayed,
+    ...(outcome.lateAfterIndeterminate
+      ? {
+          late_after_indeterminate: true,
+          result_digest: outcome.resultDigest as string,
+        }
+      : {}),
     ...(outcome.verificationHoldId === null
       ? {}
       : {
@@ -189,7 +199,10 @@ function resultPayload(
 }
 
 function invocationDrafts(
-  envelope: InvokeEnvelope,
+  invocation: {
+    readonly invocationId: string;
+    readonly mutationScope: InvokeEnvelope["payload"]["mutation_scope"];
+  },
   outcome: BridgeInvocationOutcome,
   id: () => string,
   ts: () => string,
@@ -202,15 +215,17 @@ function invocationDrafts(
         id: id(),
         ts: ts(),
         payload: partial as unknown as JsonValue,
-        artifactCarrier: null,
+        deliveryCarrier: null,
       });
     }
     drafts.push({
       type: "result",
       id: id(),
       ts: ts(),
-      payload: resultPayload(envelope.payload.invocation_id, outcome) as unknown as JsonValue,
-      artifactCarrier: outcome.artifactCarrier,
+      payload: resultPayload(invocation.invocationId, outcome) as unknown as JsonValue,
+      deliveryCarrier: outcome.artifactCarrier === null && outcome.resultCarrier === null
+        ? null
+        : { ...(outcome.artifactCarrier ?? outcome.resultCarrier as DurableResultCarrier), partials: [] },
     });
     return drafts;
   }
@@ -220,10 +235,10 @@ function invocationDrafts(
     id: id(),
     ts: ts(),
     payload: {
-      invocation_id: envelope.payload.invocation_id,
-      ...errorDetail(outcome, envelope.payload.mutation_scope),
+      invocation_id: invocation.invocationId,
+      ...errorDetail(outcome, invocation.mutationScope),
     } as unknown as JsonValue,
-    artifactCarrier: null,
+    deliveryCarrier: null,
   });
   return drafts;
 }
@@ -270,10 +285,18 @@ function batchStep(
     invocation_id: invocationId,
     status,
     replayed: outcome.replayed,
+    ...(outcome.effectState === undefined ? {} : { effect_state: outcome.effectState }),
     error: errorDetail(
       outcome,
       envelope.payload.steps[index]?.mutation_scope ?? null,
     ),
+    ...(outcome.lateAfterIndeterminate
+      ? {
+          late_after_indeterminate: true,
+          verification_hold_id: outcome.verificationHoldId as string,
+          result_digest: outcome.resultDigest as string,
+        }
+      : {}),
   } as BatchStepResult;
 }
 
@@ -295,7 +318,7 @@ function batchDraft(
         message: outcome.message ?? "batch rejected",
         outcome: outcome.faultClass === "journal_indeterminate" ? "indeterminate" : "known",
         verification_required: outcome.faultClass === "journal_indeterminate",
-        replayed: false,
+        replayed: outcome.replayed ?? false,
         ...(outcome.faultClass === "journal_indeterminate"
           ? {
               verification_hold_id: outcome.verificationHoldId as string,
@@ -303,7 +326,7 @@ function batchDraft(
             }
           : {}),
       },
-      artifactCarrier: null,
+      deliveryCarrier: null,
     };
   }
   const steps = (outcome.steps ?? []).map((step, index) => batchStep(step, index, envelope));
@@ -321,7 +344,7 @@ function batchDraft(
       steps: steps as unknown as JsonValue,
       replayed: outcome.replayed ?? false,
     },
-    artifactCarrier: null,
+    deliveryCarrier: null,
   };
 }
 
@@ -351,7 +374,11 @@ export class BridgeGatewayPeer {
   #connectedAtMs: number;
   #reconnectAttemptIndex = 0;
   #reconnectTask: Promise<boolean> | null = null;
+  #grantedCapabilities = new Set<string>();
+  #retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null = null;
+  #reconnectDelayFloorMs = 0;
   #inboundError: unknown = null;
+  #asyncTransportFailure: GatewayTransportError | null = null;
   #runLoopActive = false;
   #closed = false;
 
@@ -382,6 +409,7 @@ export class BridgeGatewayPeer {
     for (const session of simulator.registeredSessions()) {
       this.#sessions.set(session.rsid, registeredLifecycle(session.probe.localSessionKey, session.rsid));
     }
+    this.#recoverDurableDeliveries();
   }
 
   public snapshot(nowMs = this.#nowMs()): BridgeGatewayPeerSnapshot {
@@ -397,10 +425,14 @@ export class BridgeGatewayPeer {
       sessions: [...this.#sessions.values()].map((state) => structuredClone(state)),
       pendingRegistrationCount: this.#pendingRegistrations.size,
       pendingResumeCount: this.#pendingResumes.size,
-      queuedDataCount: [...this.#queuedData.values()].reduce((sum, queue) => sum + queue.length, 0),
+      queuedDataCount: [...this.#queuedData.values()].reduce((sum, queue) => sum + queue.length, 0) +
+        this.#simulator.journal.pendingDurableDeliveryDraftCount(),
       sentSeqs: [...this.#sentSeq].map(([rsid, seq]) => ({ rsid, seq })),
       reconnectAttemptIndex: this.#reconnectAttemptIndex,
       heartbeatAckDeadlineAtMs: this.#heartbeatAckDeadlineAtMs,
+      grantedCapabilities: [...this.#grantedCapabilities].sort(),
+      retrySuppressedFault: this.#retrySuppressedFault,
+      reconnectDelayFloorMs: this.#reconnectDelayFloorMs,
     };
   }
 
@@ -423,7 +455,7 @@ export class BridgeGatewayPeer {
           for await (const envelope of observedBinding.messages()) {
             if (this.#shouldStop(signal) || observedBinding !== this.#binding) break;
             if (envelope.type === "invoke" || envelope.type === "invoke_batch" || envelope.type === "cancel") {
-              this.#trackInbound(this.handleInbound(envelope));
+              this.#trackInbound(this.handleInbound(envelope), observedBinding);
             } else {
               await this.handleInbound(envelope);
             }
@@ -433,6 +465,9 @@ export class BridgeGatewayPeer {
           transportFailure = error;
         }
         if (this.#inboundError !== null) throw this.#inboundError;
+        if (transportFailure === null && this.#asyncTransportFailure !== null) {
+          transportFailure = this.#asyncTransportFailure;
+        }
         if (this.#shouldStop(signal)) break;
         if (observedBinding !== this.#binding) continue;
         try {
@@ -447,6 +482,7 @@ export class BridgeGatewayPeer {
           throw transportFailure;
         }
         const reconnected = await this.#attemptReconnect();
+        if (reconnected) this.#asyncTransportFailure = null;
         if (!reconnected && this.#reconnect === undefined) {
           if (transportFailure !== null) throw transportFailure;
           break;
@@ -546,7 +582,7 @@ export class BridgeGatewayPeer {
       id: this.#id(),
       ts: this.#nowIso(),
       payload: context as unknown as JsonValue,
-      artifactCarrier: null,
+    deliveryCarrier: null,
     });
     await this.flushOutbound(rsid);
     return true;
@@ -632,27 +668,35 @@ export class BridgeGatewayPeer {
         }
         const outcome = this.#simulator.cancel(envelope.rsid, envelope.payload.invocation_id);
         if (outcome === null) return;
-        const invokeLike = {
-          ...envelope,
-          type: "invoke",
-          payload: {
-            invocation_id: envelope.payload.invocation_id,
-            method: "cancel",
-            params: {},
-            timeout_ms: 1,
-            mutating: false,
-            mutation_scope: null,
-            policy: { class: "auto", decision: "auto", confirmation_id: null },
-            verification: null,
-            recovery_clearances: [],
-          },
-        } as InvokeEnvelope;
-        this.#enqueueMany(envelope.rsid, invocationDrafts(invokeLike, outcome, this.#id, () => this.#nowIso()));
+        this.#enqueueMany(envelope.rsid, invocationDrafts({
+          invocationId: envelope.payload.invocation_id,
+          mutationScope: null,
+        }, outcome, this.#id, () => this.#nowIso()));
         await this.flushOutbound(envelope.rsid);
         return;
       }
       case "goodbye":
-        await this.close();
+        if (envelope.payload.reason === "shutdown") {
+          await this.close();
+          return;
+        }
+        if (envelope.payload.reason === "auth_revoked") {
+          this.#retrySuppressedFault = "auth";
+          await this.close();
+          return;
+        }
+        if (
+          envelope.payload.reason === "update" ||
+          envelope.payload.reason === "server_draining"
+        ) {
+          this.#reconnectDelayFloorMs = Math.max(
+            this.#reconnectDelayFloorMs,
+            envelope.payload.retry_after_ms ?? 0,
+          );
+        }
+        this.#heartbeatTimedOut = true;
+        this.#heartbeatAckDeadlineAtMs = null;
+        await this.#binding.close();
         return;
       default:
         throw new Error(
@@ -755,7 +799,10 @@ export class BridgeGatewayPeer {
     }
     this.#enqueueMany(
       envelope.rsid,
-      invocationDrafts(envelope, outcome, this.#id, () => this.#nowIso()),
+      invocationDrafts({
+        invocationId: envelope.payload.invocation_id,
+        mutationScope: envelope.payload.mutation_scope,
+      }, outcome, this.#id, () => this.#nowIso()),
     );
     await this.flushOutbound(envelope.rsid);
   }
@@ -777,17 +824,48 @@ export class BridgeGatewayPeer {
   }
 
   #enqueueMany(rsid: string, drafts: readonly QueuedDataDraft[]): void {
+    this.#assertDraftCapabilities(drafts);
+    const terminal = drafts.at(-1);
+    if (drafts.slice(0, -1).some((draft) => draft.deliveryCarrier !== null)) {
+      throw new Error("durable carrier metadata is permitted only on the terminal draft");
+    }
+    if (terminal?.deliveryCarrier !== null && terminal?.deliveryCarrier !== undefined) {
+      this.#simulator.journal.stageDurableDelivery({
+        rsid,
+        deliveryId: `${rsid}/${terminal.deliveryCarrier.invocationId}`,
+        draftJsons: drafts.map((draft) => JSON.stringify(draft)),
+        terminalOrdinal: drafts.length - 1,
+      });
+      return;
+    }
     for (const draft of drafts) this.#enqueueData(rsid, draft);
   }
 
   #enqueueData(rsid: string, draft: QueuedDataDraft): void {
+    this.#assertDraftCapabilities([draft]);
     const queue = this.#queuedData.get(rsid) ?? [];
     queue.push(draft);
     this.#queuedData.set(rsid, queue);
   }
 
+  #recoverDurableDeliveries(): void {
+    for (const recovery of this.#simulator.recoverableDurableDeliveries()) {
+      const drafts = invocationDrafts({
+        invocationId: recovery.invocationId,
+        mutationScope: recovery.mutationScope,
+      }, recovery.outcome, this.#id, () => this.#nowIso());
+      this.#assertDraftCapabilities(drafts);
+      this.#enqueueMany(recovery.rsid, drafts);
+    }
+  }
+
   async #pumpSession(rsid: string): Promise<void> {
-    if (this.#closed || this.#binding.bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) return;
+    const lifecycle = this.#sessions.get(rsid);
+    const binding = this.#binding;
+    if (
+      this.#closed || lifecycle?.dispatchAllowed !== true ||
+      binding.bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES
+    ) return;
     const sequence = this.#simulator.journal.loadSequence(rsid);
     const retained = sequence.outbox[0];
     if (retained !== undefined) {
@@ -795,24 +873,57 @@ export class BridgeGatewayPeer {
       const envelope = this.#resumeRetransmit.delete(rsid)
         ? this.#simulator.retransmit(rsid, this.#nowIso())[0] ?? retained.envelope
         : retained.envelope;
-      await this.#binding.send(envelope as unknown as RbpEnvelope);
+      this.#assertOutboundEnvelopeCapabilities(envelope);
+      await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+      if (binding !== this.#binding) return;
       this.#sentSeq.set(rsid, envelope.seq);
       return;
     }
+    const durable = this.#simulator.journal.nextDurableDeliveryDraft(rsid);
     const queue = this.#queuedData.get(rsid);
-    const draft = queue?.shift();
+    const draft = durable === null
+      ? queue?.[0]
+      : JSON.parse(durable.draftJson) as QueuedDataDraft;
     if (draft === undefined) return;
-    if (queue?.length === 0) this.#queuedData.delete(rsid);
+    this.#assertDraftCapabilities([draft]);
+    if (durable === null) queue?.shift();
+    if (durable === null && queue?.length === 0) this.#queuedData.delete(rsid);
     const envelope = this.#simulator.queueOutbound(
       rsid,
       { type: draft.type, id: draft.id, ts: draft.ts, payload: draft.payload },
-      draft.artifactCarrier,
+      draft.deliveryCarrier,
+      durable === null
+        ? null
+        : {
+            deliveryId: durable.deliveryId,
+            ordinal: durable.ordinal,
+            draftJson: durable.draftJson,
+          },
     );
     if (!validateRbpEnvelope(envelope)) {
-      throw new Error(`Bridge created an invalid ${draft.type} data envelope`);
+      throw new Error(
+        `Bridge created an invalid ${draft.type} data envelope: ${JSON.stringify(rbpEnvelopeErrors())}`,
+      );
     }
-    await this.#binding.send(envelope as unknown as RbpEnvelope);
+    this.#assertOutboundEnvelopeCapabilities(envelope);
+    await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+    if (binding !== this.#binding) return;
     this.#sentSeq.set(rsid, envelope.seq);
+  }
+
+  async #sendData(binding: GatewayBinding, envelope: RbpEnvelope): Promise<void> {
+    try {
+      await binding.send(envelope);
+    } catch (error) {
+      if (error instanceof GatewayTransportError && error.faultClass === "retryable_network") {
+        try {
+          await binding.close();
+        } catch {
+          // Preserve the exact transport-send failure as authoritative.
+        }
+      }
+      throw error;
+    }
   }
 
   async #schedulePump(rsid: string): Promise<void> {
@@ -826,32 +937,105 @@ export class BridgeGatewayPeer {
     }
   }
 
-  #trackInbound(task: Promise<void>): void {
+  #trackInbound(task: Promise<void>, originBinding: GatewayBinding): void {
     this.#inboundTasks.add(task);
     void task.catch(async (error: unknown) => {
-      if (this.#inboundError === null) this.#inboundError = error;
+      if (error instanceof GatewayTransportError && error.faultClass === "retryable_network") {
+        if (this.#asyncTransportFailure === null) this.#asyncTransportFailure = error;
+      } else if (this.#inboundError === null) {
+        this.#inboundError = error;
+      }
       try {
-        await this.#binding.close();
+        await originBinding.close();
       } catch {
         // The original inbound error remains authoritative.
       }
     }).finally(() => this.#inboundTasks.delete(task));
   }
 
-  #applyHelloAckLimits(helloAck: HelloAckEnvelope): void {
+  #applyHelloAckLimits(
+    helloAck: HelloAckEnvelope,
+    bindingKind: GatewayBinding["kind"] = this.#binding.kind,
+  ): void {
+    if (helloAck.payload.heartbeat_interval_ms !== 15_000) {
+      throw new GatewayTransportError(
+        "hello_ack heartbeat_interval_ms must equal 15000",
+        { faultClass: "protocol" },
+      );
+    }
+    const granted = new Set(helloAck.payload.granted_capabilities);
+    if (bindingKind === "streamable_http_sse" && !granted.has("transport_streamable_http")) {
+      throw new GatewayTransportError(
+        "HTTP/SSE binding requires the transport_streamable_http hello_ack grant",
+        { faultClass: "protocol" },
+      );
+    }
     this.#simulator.applyNegotiatedLimits({
       maxParamsBytes: helloAck.payload.limits.max_params_bytes,
       maxResultBytes: helloAck.payload.limits.max_result_bytes,
       maxPartialBytes: helloAck.payload.limits.max_partial_bytes,
     });
+    this.#grantedCapabilities = granted;
+    this.#simulator.applyNegotiatedCapabilities([...granted]);
+  }
+
+  #assertDraftCapabilities(drafts: readonly QueuedDataDraft[]): void {
+    if (
+      drafts.some((draft) => draft.type === "partial") &&
+      !this.#grantedCapabilities.has("chunked_results")
+    ) {
+      throw new GatewayTransportError(
+        "partial emission requires the chunked_results hello_ack grant",
+        { faultClass: "protocol" },
+      );
+    }
+    if (
+      drafts.some((draft) => draft.deliveryCarrier?.kind === "artifacts") &&
+      !this.#grantedCapabilities.has("artifact_result_v1")
+    ) {
+      throw new GatewayTransportError(
+        "artifact emission requires the artifact_result_v1 hello_ack grant",
+        { faultClass: "protocol" },
+      );
+    }
+  }
+
+  #assertOutboundEnvelopeCapabilities(envelope: DataEnvelopeSnapshot): void {
+    const payload = envelope.payload;
+    const record = typeof payload === "object" && payload !== null && !Array.isArray(payload)
+      ? payload as Record<string, unknown>
+      : {};
+    if (
+      (envelope.type === "partial" || record.chunked === true) &&
+      !this.#grantedCapabilities.has("chunked_results")
+    ) {
+      throw new GatewayTransportError(
+        "retained chunked data requires the current chunked_results hello_ack grant",
+        { faultClass: "protocol" },
+      );
+    }
+    if (Array.isArray(record.artifacts) && !this.#grantedCapabilities.has("artifact_result_v1")) {
+      throw new GatewayTransportError(
+        "retained artifact data requires the current artifact_result_v1 hello_ack grant",
+        { faultClass: "protocol" },
+      );
+    }
   }
 
   async #attemptReconnect(): Promise<boolean> {
-    if (this.#closed || this.#reconnect === undefined) return false;
+    if (
+      this.#closed ||
+      this.#reconnect === undefined ||
+      this.#retrySuppressedFault !== null
+    ) return false;
     if (this.#reconnectTask !== null) return await this.#reconnectTask;
     this.#reconnectTask = (async () => {
       const attemptIndex = this.#reconnectAttemptIndex;
-      const delayMs = this.#simulator.reconnectDelay(attemptIndex, this.#reconnectJitter());
+      const delayMs = Math.max(
+        this.#simulator.reconnectDelay(attemptIndex, this.#reconnectJitter()),
+        this.#reconnectDelayFloorMs,
+      );
+      this.#reconnectDelayFloorMs = 0;
       this.#reconnectAttemptIndex += 1;
       await this.#sleep(delayMs);
       if (this.#closed) return false;
@@ -865,21 +1049,23 @@ export class BridgeGatewayPeer {
           nextBinding = null;
           throw new Error("reconnected Gateway binding and hello_ack ids differ");
         }
+        this.#applyHelloAckLimits(next.helloAck, next.binding.kind);
         this.#binding = next.binding;
+        this.#recoverDurableDeliveries();
         this.#heartbeatIntervalMs = next.helloAck.payload.heartbeat_interval_ms;
-        this.#applyHelloAckLimits(next.helloAck);
         const now = this.#nowMs();
         this.#connectedAtMs = now;
         this.#lastHeartbeatSentAtMs = now;
         this.#lastHeartbeatAckAtMs = now;
         this.#heartbeatAckDeadlineAtMs = null;
         this.#heartbeatTimedOut = false;
+        this.#retrySuppressedFault = null;
         this.#sentSeq.clear();
         this.#prepareSessionsForReconnect();
         await this.#resendPendingRegistrations();
         await this.resumeAll();
         return true;
-      } catch {
+      } catch (error) {
         if (nextBinding !== null) {
           try {
             await nextBinding.close();
@@ -888,6 +1074,17 @@ export class BridgeGatewayPeer {
           }
         }
         this.#heartbeatTimedOut = true;
+        if (
+          error instanceof GatewayTransportError &&
+          (error.faultClass === "auth" || error.faultClass === "version" ||
+            error.faultClass === "trust" || error.faultClass === "protocol")
+        ) {
+          this.#retrySuppressedFault = error.faultClass;
+          throw error;
+        }
+        if (error instanceof GatewayTransportError && error.retryAfterMs !== null) {
+          this.#reconnectDelayFloorMs = Math.max(this.#reconnectDelayFloorMs, error.retryAfterMs);
+        }
         return false;
       }
     })();

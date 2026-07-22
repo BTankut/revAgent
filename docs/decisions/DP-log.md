@@ -106,6 +106,18 @@ WSS is the sole Phase-1 transport and the fallback is not built. Both bindings s
 fallback remains capability-gated and cannot enter the pilot until its binding and conformance evidence are
 frozen. The normative amendment is RES-25 in `docs/implementation-plan/00-INDEX.md`.
 
+### 2026-07-22 — R-F: nested batch delivery is inline-only and fail-closed (RES-26)
+
+Executable W1 review showed that RBP/1 has no defined chunk/artifact carrier for a nested batch step. The
+previous plan could therefore admit a command whose result could not be represented honestly in the batch
+terminal. RES-26 requires pre-dispatch, session-local inline-only attestation and an 8 MiB per-step cap;
+atomic dispatch also carries the connection-negotiated aggregate cap into `execute_batch` and validates it
+before assimilation. A post-dispatch violation preserves the known effect as terminal protocol evidence
+(`effect_state` for non-atomic fan-out), suppresses raw path/artifact bytes, and stops successors. Atomic
+malformed/contradictory committed carriers fail closed as indeterminate. This amendment closes a carrier
+contract hole; it does not weaken any batch, rollback, journal, or conformance assertion. The normative
+amendment is RES-26 in `docs/implementation-plan/00-INDEX.md`.
+
 ### 2026-07-22 — R-G: mandatory operator task cards
 
 Source: operator instruction from Barış Tankut, 2026-07-22. Every implementation report that leaves an

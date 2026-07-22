@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { once } from "node:events";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createHttpsServer } from "node:https";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
 
 import {
@@ -14,7 +15,7 @@ import {
   type RbpEnvelope,
 } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
-import { WebSocketServer } from "ws";
+import WebSocket, { WebSocketServer } from "ws";
 
 import { PersistentAddinClient } from "../src/loopback.js";
 import {
@@ -25,8 +26,11 @@ import {
   openPrimaryThenFallback,
   type GatewayBinding,
 } from "../src/transport.js";
+import { createTestTlsIdentity } from "./tlsFixture.js";
 
 let idCounter = 10_000;
+
+const TEST_TLS_HOSTNAME = "gateway.revagent.test";
 
 function uuid(): string {
   idCounter += 1;
@@ -88,6 +92,64 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
 }
 
 describe("strict Gateway transport boundaries", () => {
+  it("completes a real trusted TLS WebSocket hello and data handshake", async () => {
+    const identity = createTestTlsIdentity(TEST_TLS_HOSTNAME);
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    websocketServer.on("connection", (socket, request) => {
+      expect(request.headers.authorization).toBe("Bearer device-token");
+      expect((request.socket as unknown as { readonly servername?: string }).servername).toBe(TEST_TLS_HOSTNAME);
+      socket.on("message", (data, binary) => {
+        expect(binary).toBe(false);
+        const envelope = JSON.parse(data.toString("utf8")) as RbpEnvelope;
+        if (envelope.type === "hello") socket.send(JSON.stringify(helloAck("tls-connection")));
+        else socket.send(JSON.stringify(goodbye()));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new WssGatewayBinding({
+      baseUrl: `wss://${TEST_TLS_HOSTNAME}:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      webSocketFactory: (url, options) => {
+        expect(url).toBe(`wss://${TEST_TLS_HOSTNAME}:${port}/bridge/v1`);
+        const tlsOptions = {
+          ...options,
+          ca: identity.certificate,
+          rejectUnauthorized: true,
+          servername: TEST_TLS_HOSTNAME,
+        } as WebSocket.ClientOptions & { readonly servername: string };
+        return new WebSocket(`wss://127.0.0.1:${port}/bridge/v1`, tlsOptions);
+      },
+    });
+    try {
+      await expect(binding.open(hello())).resolves.toMatchObject({
+        payload: { connection_id: "tls-connection" },
+      });
+      await binding.send({
+        v: 1,
+        type: "heartbeat",
+        id: uuid(),
+        ts: "2026-07-22T00:00:01.500Z",
+        payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+      });
+      await expect(binding.messages()[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { type: "goodbye" },
+      });
+    } finally {
+      await binding.close();
+      websocketServer.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+        server.closeAllConnections();
+      });
+    }
+  });
+
   it("uses T5 numeric-loopback readiness URLs only under the explicit test policy", async () => {
     let resolveSseClosed: () => void = () => undefined;
     const sseClosed = new Promise<void>((resolve) => {
@@ -239,10 +301,21 @@ describe("strict Gateway transport boundaries", () => {
     }
   });
 
-  it("preserves an HTTP 426 upgrade rejection as a terminal version fault", async () => {
+  it("preserves bounded HTTP 426 version metadata and Retry-After without fallback", async () => {
     const server = createHttpServer();
     server.on("upgrade", (_request, socket) => {
-      socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+      const body = JSON.stringify({
+        min_protocol: 2,
+        max_protocol: 3,
+        manifest_url: "/bridge/update/manifest/next",
+      });
+      socket.end(
+        "HTTP/1.1 426 Upgrade Required\r\n" +
+        "Connection: close\r\n" +
+        "Content-Type: application/json\r\n" +
+        "Retry-After: 12\r\n" +
+        `Content-Length: ${Buffer.byteLength(body, "utf8")}\r\n\r\n${body}`,
+      );
     });
     server.listen(0, "127.0.0.1");
     await once(server, "listening");
@@ -257,6 +330,10 @@ describe("strict Gateway transport boundaries", () => {
       await expect(opening).rejects.toMatchObject({
         faultClass: "version",
         httpStatus: 426,
+        protocolMin: 2,
+        protocolMax: 3,
+        manifestUrl: "/bridge/update/manifest/next",
+        retryAfterMs: 12_000,
       });
       await opening.catch((error: unknown) => {
         expect(classifyGatewayTransportFailure(error)).toBe("version");
@@ -313,6 +390,95 @@ describe("strict Gateway transport boundaries", () => {
       }),
     });
     await expect(binding.open(hello())).rejects.toMatchObject({ code: "invalid_utf8" });
+  });
+
+  it("retains HTTP/SSE create 426 metadata and ignores an out-of-window Retry-After", async () => {
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: async () => new Response(JSON.stringify({
+        min_protocol: 2,
+        max_protocol: 4,
+        manifest_url: "/bridge/update/manifest/rbp4",
+      }), {
+        status: 426,
+        headers: { "Content-Type": "application/json", "Retry-After": "901" },
+      }),
+    });
+    await expect(binding.open(hello())).rejects.toMatchObject({
+      faultClass: "version",
+      httpStatus: 426,
+      protocolMin: 2,
+      protocolMax: 4,
+      manifestUrl: "/bridge/update/manifest/rbp4",
+      retryAfterMs: null,
+    });
+  });
+
+  it("treats an invalid UTF-8 WSS hello_ack frame as terminal protocol and never falls back", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    server.on("connection", (socket) => socket.once("message", () => {
+      socket.send(Buffer.from([0xc3, 0x28]), { binary: false });
+    }));
+    const primary = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    let fallbackOpenCount = 0;
+    const fallback = fakeBinding(async () => {
+      fallbackOpenCount += 1;
+      return helloAck("must-not-open");
+    });
+    try {
+      await expect(openPrimaryThenFallback({
+        hello: hello(),
+        wss: primary,
+        fallback,
+        fallbackProvisioned: true,
+        classifyWssFailure: () => "retryable_network",
+      })).rejects.toMatchObject({ faultClass: "protocol" });
+      expect(fallbackOpenCount).toBe(0);
+    } finally {
+      await primary.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
+  it("rejects fallback selection when its hello_ack omits the transport grant", async () => {
+    let fallbackCloseCount = 0;
+    const primary: GatewayBinding = {
+      kind: "wss",
+      connectionId: null,
+      bufferedAmount: 0,
+      open: async () => {
+        throw new GatewayTransportError("network reset", { faultClass: "retryable_network" });
+      },
+      send: async () => undefined,
+      messages: () => ({
+        async *[Symbol.asyncIterator](): AsyncIterator<RbpEnvelope> { return; },
+      }),
+      close: async () => undefined,
+    };
+    const ack = helloAck("missing-fallback-grant");
+    ack.payload.granted_capabilities = ["journal_v1", "chunked_results"];
+    const fallback: GatewayBinding = {
+      ...fakeBinding(async () => ack),
+      close: async () => { fallbackCloseCount += 1; },
+    };
+    await expect(openPrimaryThenFallback({
+      hello: hello(),
+      wss: primary,
+      fallback,
+      fallbackProvisioned: true,
+      classifyWssFailure: () => "retryable_network",
+    })).rejects.toMatchObject({ faultClass: "protocol" });
+    expect(fallbackCloseCount).toBe(1);
   });
 
   it("bounds the WSS hello_ack wait and releases the live socket", async () => {
@@ -402,6 +568,236 @@ describe("strict Gateway transport boundaries", () => {
     expect(binding.bufferedAmount).toBe(0);
     await binding.close();
     expect(eventReaderCancelled).toBe(true);
+  });
+
+  it("classifies a real nested HTTP TLS failure as terminal trust", async () => {
+    const identity = createTestTlsIdentity(TEST_TLS_HOSTNAME);
+    const server = createHttpsServer({ cert: identity.certificate, key: identity.privateKey }, (_request, response) => {
+      response.writeHead(201);
+      response.end();
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: `https://${TEST_TLS_HOSTNAME}`,
+      deviceToken: "device-token",
+      fetchTimeoutMs: 1_000,
+      fetch: async (_input, init) => await fetch(
+        `https://127.0.0.1:${port}/bridge/v1/http/connections`,
+        init,
+      ),
+    });
+    try {
+      await expect(binding.open(hello())).rejects.toMatchObject({ faultClass: "trust" });
+    } finally {
+      await binding.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+        server.closeAllConnections();
+      });
+    }
+  });
+
+  it("bounds header-complete HTTP hello and error bodies that never reach EOF", async () => {
+    let helloCancelled = false;
+    const helloBody = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(Buffer.from(JSON.stringify(helloAck("open-body")), "utf8"));
+      },
+      cancel() {
+        helloCancelled = true;
+      },
+    });
+    const helloBinding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetchTimeoutMs: 20,
+      fetch: async () => new Response(helloBody, {
+        status: 201,
+        headers: { "RBP-Connection-Id": "open-body" },
+      }),
+    });
+    await expect(helloBinding.open(hello())).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      message: expect.stringContaining("body timed out"),
+    });
+    expect(helloCancelled).toBe(true);
+
+    let errorCancelled = false;
+    const errorBinding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetchTimeoutMs: 20,
+      fetch: async () => new Response(new ReadableStream<Uint8Array>({
+        cancel() {
+          errorCancelled = true;
+        },
+      }), { status: 503 }),
+    });
+    await expect(errorBinding.open(hello())).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      httpStatus: 503,
+    });
+    expect(errorCancelled).toBe(true);
+  });
+
+  it.each([408, 429] as const)("treats WSS HTTP %i as fallback-eligible", async (status) => {
+    const server = createHttpServer();
+    server.on("upgrade", (_request, socket) => {
+      socket.end(
+        `HTTP/1.1 ${status} Retry\r\nConnection: close\r\nRetry-After: 30\r\nContent-Length: 0\r\n\r\n`,
+      );
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const primary = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    let fallbackOpenCount = 0;
+    const fallback = fakeBinding(async () => {
+      fallbackOpenCount += 1;
+      return helloAck(`fallback-${status}`);
+    });
+    try {
+      await expect(openPrimaryThenFallback({
+        hello: hello(),
+        wss: primary,
+        fallback,
+        fallbackProvisioned: true,
+        classifyWssFailure: classifyGatewayTransportFailure,
+      })).resolves.toMatchObject({ binding: fallback });
+      expect(fallbackOpenCount).toBe(1);
+    } finally {
+      await primary.close();
+      await closeHttpServer(server);
+    }
+  });
+
+  it.each([200, 302] as const)("treats unexpected WSS HTTP %i as terminal protocol without fallback", async (status) => {
+    const server = createHttpServer();
+    server.on("upgrade", (_request, socket) => {
+      const reason = status === 200 ? "OK" : "Found";
+      socket.end(
+        `HTTP/1.1 ${status} ${reason}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+      );
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const primary = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    let fallbackOpenCount = 0;
+    const fallback = fakeBinding(async () => {
+      fallbackOpenCount += 1;
+      return helloAck(`fallback-${status}`);
+    });
+    try {
+      await expect(openPrimaryThenFallback({
+        hello: hello(),
+        wss: primary,
+        fallback,
+        fallbackProvisioned: true,
+        classifyWssFailure: classifyGatewayTransportFailure,
+      })).rejects.toMatchObject({
+        faultClass: "protocol",
+        httpStatus: status,
+      });
+      expect(fallbackOpenCount).toBe(0);
+    } finally {
+      await primary.close();
+      await closeHttpServer(server);
+    }
+  });
+
+  it.each([404, 410] as const)("treats HTTP/SSE events HTTP %i as retryable connection expiry", async (status) => {
+    let call = 0;
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: async () => {
+        call += 1;
+        if (call === 1) {
+          return new Response(JSON.stringify(helloAck("expired-events")), {
+            status: 201,
+            headers: { "RBP-Connection-Id": "expired-events", "Content-Type": "application/json" },
+          });
+        }
+        return new Response(null, { status });
+      },
+    });
+
+    await expect(binding.open(hello())).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      httpStatus: status,
+    });
+    expect(binding.connectionId).toBeNull();
+    await binding.close();
+  });
+
+  it.each([404, 410] as const)("invalidates HTTP/SSE connection after messages HTTP %i", async (status) => {
+    let call = 0;
+    let eventsCancelled = false;
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: async () => {
+        call += 1;
+        if (call === 1) {
+          return new Response(JSON.stringify(helloAck("expired-send")), {
+            status: 201,
+            headers: { "RBP-Connection-Id": "expired-send", "Content-Type": "application/json" },
+          });
+        }
+        if (call === 2) {
+          return new Response(new ReadableStream<Uint8Array>({
+            cancel() { eventsCancelled = true; },
+          }), { status: 200, headers: { "Content-Type": "text/event-stream" } });
+        }
+        return new Response(null, { status });
+      },
+    });
+    await binding.open(hello());
+    await expect(binding.send({
+      v: 1,
+      type: "heartbeat",
+      id: uuid(),
+      ts: "2026-07-22T00:00:03.000Z",
+      payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+    })).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      httpStatus: status,
+    });
+    expect(binding.connectionId).toBeNull();
+    expect(eventsCancelled).toBe(true);
+    await binding.close();
+  });
+
+  it("retains bounded Retry-After on HTTP/SSE 429", async () => {
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: async () => new Response(null, {
+        status: 429,
+        headers: { "Retry-After": "30" },
+      }),
+    });
+    await expect(binding.open(hello())).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      httpStatus: 429,
+      retryAfterMs: 30_000,
+    });
   });
 });
 

@@ -88,9 +88,7 @@
           "uniqueItems": true
         },
         "heartbeat_interval_ms": {
-          "type": "integer",
-          "minimum": 1,
-          "maximum": 9007199254740991
+          "const": 15000
         },
         "limits": {
           "type": "object",
@@ -1211,6 +1209,13 @@
         "guarded_reason": {
           "$ref": "common.schema.json#/$defs/guardedReason"
         },
+        "effect_state": {
+          "enum": [
+            "read_only",
+            "committed",
+            "not_committed"
+          ]
+        },
         "error": {
           "$ref": "common.schema.json#/$defs/errorDetail"
         },
@@ -1692,6 +1697,33 @@
               "required": [
                 "verification_hold_id"
               ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "effect_state"
+            ]
+          },
+          "then": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              },
+              "error": {
+                "required": [
+                  "fault_class"
+                ],
+                "properties": {
+                  "fault_class": {
+                    "const": "protocol"
+                  }
+                }
+              }
             }
           }
         },

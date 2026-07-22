@@ -35,6 +35,7 @@ export const BATCHABLE_METHODS = [
 ] as const;
 
 export type BatchableMethod = (typeof BATCHABLE_METHODS)[number];
+export const BATCH_MAX_INLINE_RESULT_BYTES = 8_388_608 as const;
 
 export interface BatchableDescriptor {
   readonly method: BatchableMethod;
@@ -44,6 +45,8 @@ export interface BatchableDescriptor {
     | "discard_result_on_batch_rollback"
     | "transaction_group_rollback";
   readonly parameterProfile: "ordinary_v1" | "delete_review_view_commit_v1";
+  readonly resultDelivery: "inline_only";
+  readonly maxInlineResultBytes: typeof BATCH_MAX_INLINE_RESULT_BYTES;
 }
 
 export const BATCHABLE_DESCRIPTORS: readonly BatchableDescriptor[] = BATCHABLE_METHODS.map(
@@ -55,6 +58,8 @@ export const BATCHABLE_DESCRIPTORS: readonly BatchableDescriptor[] = BATCHABLE_M
           transactionPolicy: "nested_transaction_required",
           rollbackDisposition: "transaction_group_rollback",
           parameterProfile: "delete_review_view_commit_v1",
+          resultDelivery: "inline_only",
+          maxInlineResultBytes: BATCH_MAX_INLINE_RESULT_BYTES,
         }
       : {
           method,
@@ -62,6 +67,8 @@ export const BATCHABLE_DESCRIPTORS: readonly BatchableDescriptor[] = BATCHABLE_M
           transactionPolicy: "none",
           rollbackDisposition: "discard_result_on_batch_rollback",
           parameterProfile: "ordinary_v1",
+          resultDelivery: "inline_only",
+          maxInlineResultBytes: BATCH_MAX_INLINE_RESULT_BYTES,
         },
 );
 

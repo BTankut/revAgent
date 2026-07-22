@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
+  MAX_RESPONSE_PAYLOAD_BYTES,
   MAX_CONTROL_LINE_BYTES,
   connectFixture,
   encodeJsonFrame,
@@ -380,6 +381,7 @@ describe("fixture CLI JSONL control and cleanup", () => {
         batchDigest: DIGEST,
         atomic: true,
         rollbackPolicy: "rollback_on_non_success",
+        maxAggregateResultBytes: MAX_RESPONSE_PAYLOAD_BYTES,
         steps: [
           {
             index: 0,

@@ -1,12 +1,14 @@
 import { Buffer } from "node:buffer";
 import { once } from "node:events";
-import { existsSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
 import {
+  applyCumulativeAck,
   type HelloAckEnvelope,
   type HelloEnvelope,
+  type JsonValue,
   type RbpEnvelope,
 } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
@@ -54,7 +56,7 @@ function helloAck(connectionId = "connection-01"): HelloAckEnvelope {
     payload: {
       protocol: 1,
       connection_id: connectionId,
-      granted_capabilities: ["journal_v1", "chunked_results"],
+      granted_capabilities: ["journal_v1", "chunked_results", "transport_streamable_http"],
       heartbeat_interval_ms: 15_000,
       limits: {
         max_params_bytes: 4_194_304,
@@ -62,6 +64,22 @@ function helloAck(connectionId = "connection-01"): HelloAckEnvelope {
         max_partial_bytes: 1_048_576,
       },
       manifest: { latest_bridge_version: "bridge-test", manifest_url: "/bridge/update/manifest" },
+    },
+  };
+}
+
+function inlineResultPayload(invocationId: string): JsonValue {
+  return {
+    kind: "invocation",
+    invocation_id: invocationId,
+    status: "completed",
+    result: {},
+    replayed: false,
+    metrics: {
+      execute_ms: 0,
+      request_bytes: 0,
+      response_bytes: 0,
+      framing: "length-prefixed",
     },
   };
 }
@@ -240,13 +258,50 @@ function fakeBinding(
 }
 
 describe("artifact, outbox, resume, and backoff", () => {
+  it.each(["shortcut.lnk", "pointer.URL", "alias.SyMlInK"])(
+    "rejects producer-side unsafe artifact suffix %s",
+    (filename) => {
+      const root = temporaryRoot();
+      const spool = new ArtifactSpool(join(root.path, "spool"), () => uuid());
+      expect(() => spool.retain(uuid(), uuid(), [{
+        filename,
+        contentType: "application/octet-stream",
+        bytes: Buffer.from("unsafe"),
+      }])).toThrow(/invalid artifact basename/u);
+      root.cleanup();
+    },
+  );
+
+  it("validates ordinary drafts before persisting sequence state", () => {
+    const root = temporaryRoot();
+    const journal = new DurableBridgeJournal(join(root.path, "invalid-outbox.db"));
+    const simulator = new BridgeSimulator(journal, new ArtifactSpool(join(root.path, "spool"), () => uuid()));
+    const rsid = uuid();
+
+    expect(() => simulator.queueOutbound(rsid, {
+      type: "result",
+      id: uuid(),
+      ts: "2026-07-22T00:00:00.000Z",
+      payload: {},
+    })).toThrow(/invalid result data envelope/u);
+    expect(journal.loadSequence(rsid).outbox).toEqual([]);
+
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
   it("reconstructs multi-file output and cleans durable spool only after ack, including after restart", () => {
     const root = temporaryRoot();
     const spoolRoot = join(root.path, "spool");
     let ids = new DeterministicUuid7Source();
     let spool = new ArtifactSpool(spoolRoot, () => ids.next());
+    const rsid = uuid();
     const invocationId = uuid();
-    const carrier = spool.retain(invocationId, [
+    const journalPath = join(root.path, "bridge.db");
+    let journal = new DurableBridgeJournal(journalPath);
+    let simulator = new BridgeSimulator(journal, spool);
+    const carrier = spool.retain(rsid, invocationId, [
       { filename: "report.json", contentType: "application/json", bytes: Buffer.from('{"ok":true}\n') },
       { filename: "evidence.txt", contentType: "text/plain", bytes: Buffer.from("evidence\n") },
     ]);
@@ -257,23 +312,18 @@ describe("artifact, outbox, resume, and backoff", () => {
       '{"ok":true}\n',
       "evidence\n",
     ]);
-
-    const journalPath = join(root.path, "bridge.db");
-    let journal = new DurableBridgeJournal(journalPath);
-    let simulator = new BridgeSimulator(journal, spool);
-    const rsid = uuid();
     const queued = simulator.queueOutbound(rsid, {
       type: "result",
       id: uuid(),
       ts: "2026-07-22T00:00:00.000Z",
-      payload: { invocation_id: invocationId },
+      payload: inlineResultPayload(invocationId),
     }, carrier);
     expect(existsSync(carrier.retainedDirectory)).toBe(true);
     expect(() => simulator.queueOutbound(rsid, {
       type: "result",
       id: uuid(),
       ts: "2026-07-22T00:00:01.000Z",
-      payload: {},
+      payload: inlineResultPayload(uuid()),
     })).toThrow(/window=1/u);
     simulator.close();
     journal.close();
@@ -292,13 +342,79 @@ describe("artifact, outbox, resume, and backoff", () => {
       type: "result",
       id: uuid(),
       ts: "2026-07-22T00:00:03.000Z",
-      payload: {},
+      payload: inlineResultPayload(uuid()),
     });
     expect(next.seq).toBe(queued.seq + 1);
     expect(simulator.reconnectDelay(0, 0)).toBe(0);
     expect(simulator.reconnectDelay(0, 0.999999)).toBe(1000);
     expect(simulator.shouldResetReconnect(119_999)).toBe(false);
     expect(simulator.shouldResetReconnect(120_000)).toBe(true);
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
+  it("finishes ACK cleanup after a crash left only part of the retained directory", () => {
+    const root = temporaryRoot();
+    const spoolRoot = join(root.path, "spool");
+    const journalPath = join(root.path, "partial-cleanup.db");
+    const rsid = uuid();
+    const invocationId = uuid();
+    let journal = new DurableBridgeJournal(journalPath);
+    let spool = new ArtifactSpool(spoolRoot, () => uuid());
+    let simulator = new BridgeSimulator(journal, spool);
+    const carrier = spool.retain(rsid, invocationId, [
+      { filename: "first.txt", contentType: "text/plain", bytes: Buffer.from("first") },
+      { filename: "second.txt", contentType: "text/plain", bytes: Buffer.from("second") },
+    ]);
+    const queued = simulator.queueOutbound(rsid, {
+      type: "result",
+      id: uuid(),
+      ts: "2026-07-22T00:00:00.000Z",
+      payload: inlineResultPayload(invocationId),
+    }, carrier);
+    const acknowledged = applyCumulativeAck(journal.loadSequence(rsid), queued.seq);
+    if (acknowledged.kind !== "advanced") throw new Error("test cumulative ACK was rejected");
+    journal.saveSequence(acknowledged.state);
+    rmSync(carrier.retainedFiles[0] as string);
+    expect(existsSync(carrier.retainedDirectory)).toBe(true);
+    simulator.close();
+    journal.close();
+
+    journal = new DurableBridgeJournal(journalPath);
+    spool = new ArtifactSpool(spoolRoot, () => uuid());
+    expect(() => {
+      simulator = new BridgeSimulator(journal, spool);
+    }).not.toThrow();
+    expect(existsSync(carrier.retainedDirectory)).toBe(false);
+    expect(journal.deliveryCarriersNeedingCleanup()).toEqual([]);
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
+  it("reconciles a crash-left unjournaled spool directory before invocation replay", () => {
+    const root = temporaryRoot();
+    const spoolRoot = join(root.path, "spool");
+    const journalPath = join(root.path, "orphan.db");
+    const rsid = uuid();
+    const invocationId = uuid();
+    let journal = new DurableBridgeJournal(journalPath);
+    let spool = new ArtifactSpool(spoolRoot, () => uuid());
+    let simulator = new BridgeSimulator(journal, spool);
+    const orphan = spool.retain(rsid, invocationId, [
+      { filename: "orphan.txt", contentType: "text/plain", bytes: Buffer.from("orphan") },
+    ]);
+    simulator.close();
+    journal.close();
+
+    journal = new DurableBridgeJournal(journalPath);
+    spool = new ArtifactSpool(spoolRoot, () => uuid());
+    simulator = new BridgeSimulator(journal, spool);
+    expect(existsSync(orphan.retainedDirectory)).toBe(false);
+    expect(() => spool.retain(rsid, invocationId, [
+      { filename: "retry.txt", contentType: "text/plain", bytes: Buffer.from("retry") },
+    ])).not.toThrow();
     simulator.close();
     journal.close();
     root.cleanup();

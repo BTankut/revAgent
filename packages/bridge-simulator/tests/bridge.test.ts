@@ -115,7 +115,7 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     root.cleanup();
   });
 
-  it("rejects an explicit mismatched params_digest before journaling or add-in dispatch", async () => {
+  it("rejects an explicit mismatched params_digest before journaling or add-in dispatch while consuming seq", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
     const rsid = uuid();
@@ -125,6 +125,7 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     const outcome = await simulator.invoke(envelope);
     expect(outcome).toMatchObject({ kind: "error", faultClass: "protocol", addinContacted: false });
     expect(journal.listInvocations()).toEqual([]);
+    expect(journal.loadSequence(rsid).lastRxSeq).toBe(1);
     expect(fixture.getExecutionCount(envelope.payload.invocation_id)).toBe(0);
     simulator.close();
     journal.close();
@@ -309,6 +310,53 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     expect(retained?.lateTerminalOutcome?.resultDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
     expect(journal.listHolds()[0]?.state).toBe("active");
     expect(fixture.getExecutionCount(invocationId)).toBe(1);
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
+  it("never retains or replays a local artifact path from a late mutation response", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const secretPath = "C:\\ProgramData\\DPE\\revAgent\\spool\\secret-export.xlsx";
+    fixture.registerHandler("send_code_to_revit", "model_transaction", () => ({
+      state: "completed",
+      result: {
+        success: true,
+        files: [{ path: secretPath, contentType: "application/octet-stream" }],
+      },
+    }));
+    fixtures.push(fixture);
+    await fixture.start();
+    const rsid = uuid();
+    const invocationId = uuid();
+    fixture.planFault(invocationId, { delayMs: 60 });
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const base = mutationInvoke({ rsid, seq: 1, invocationId });
+    const envelope = { ...base, payload: { ...base.payload, timeout_ms: 10 } };
+
+    await expect(simulator.invoke(envelope)).resolves.toMatchObject({
+      kind: "error",
+      faultClass: "journal_indeterminate",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const record = journal.getInvocation(rsid, invocationId);
+    expect(record?.lateTerminalOutcome).toMatchObject({
+      status: "completed",
+      payloadRetained: false,
+      resultDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    expect(JSON.stringify(record)).not.toContain(secretPath);
+
+    const replay = await simulator.invoke(envelope);
+    expect(replay).toMatchObject({
+      kind: "result",
+      status: "completed",
+      replayed: true,
+      payloadOmitted: true,
+    });
+    expect(JSON.stringify(replay)).not.toContain(secretPath);
+
     simulator.close();
     journal.close();
     root.cleanup();

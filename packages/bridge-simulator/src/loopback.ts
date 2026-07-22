@@ -32,6 +32,8 @@ export interface ProbedAddinSession {
   readonly batchableCommands: readonly {
     readonly method: string;
     readonly effect: "read_only" | "model_transaction";
+    readonly resultDelivery: "inline_only";
+    readonly maxInlineResultBytes: 8_388_608;
   }[];
   readonly maxRequestPayloadBytes: number;
   readonly maxResponsePayloadBytes: number;
@@ -375,6 +377,8 @@ function parseStatus(
   let batchableCommands: Array<{
     readonly method: string;
     readonly effect: "read_only" | "model_transaction";
+    readonly resultDelivery: "inline_only";
+    readonly maxInlineResultBytes: 8_388_608;
   }> = [];
   if (sessionCapabilities.includes("batch_atomic")) {
     const contracts = requiredObject(result, "capabilityContracts");
@@ -392,7 +396,18 @@ function parseStatus(
       if (entry.effect !== "read_only" && entry.effect !== "model_transaction") {
         throw new Error("invalid batchable command effect");
       }
-      return { method: entry.method, effect: entry.effect };
+      if (entry.resultDelivery !== "inline_only") {
+        throw new Error("batchable command does not attest inline-only delivery");
+      }
+      if (entry.maxInlineResultBytes !== 8_388_608) {
+        throw new Error("batchable command has an unsupported inline result cap");
+      }
+      return {
+        method: entry.method,
+        effect: entry.effect,
+        resultDelivery: entry.resultDelivery,
+        maxInlineResultBytes: entry.maxInlineResultBytes,
+      };
     });
     if (new Set(batchableCommands.map((entry) => entry.method)).size !== batchableCommands.length) {
       throw new Error("duplicate batchable command descriptor");

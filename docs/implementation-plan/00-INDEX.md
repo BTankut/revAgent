@@ -131,6 +131,17 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   fallback in Phase 1.** This supersedes WP1 P-O1-1's "WSS sole / fallback not built" wording. Both bindings
   carry identical RBP semantics; the fallback remains capability-gated and must have a frozen binding plus
   proxy/interoperability conformance evidence before v1.0/pilot use.
+- **RES-26 (2026-07-22 R-F review) — Nested batch delivery is inline-only and fail-closed.** RBP/1 defines
+  chunk and artifact carriers only for a top-level invocation, not for a nested batch step. Every method
+  admitted to either atomic or non-atomic `invoke_batch` therefore requires a session-local add-in
+  descriptor with `resultDelivery:"inline_only"` and `maxInlineResultBytes:8388608`. Atomic
+  `execute_batch` also receives the connection-negotiated `maxAggregateResultBytes`, validates each nested
+  result and the tentative aggregate before `TransactionGroup.Assimilate()`, and rolls back on a delivery
+  contract violation. A non-atomic post-dispatch violation stops successors and reports terminal
+  `protocol` with explicit `effect_state`; it never fabricates success, creates an unreachable carrier, or
+  leaks an add-in-local path. A malformed atomic committed carrier is indeterminate, not repaired by
+  inference. This is a protocol clarification required by executable W1 evidence, not a relaxation of the
+  batch or conformance gates.
 
 ---
 

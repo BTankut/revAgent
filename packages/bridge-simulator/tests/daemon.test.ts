@@ -117,7 +117,9 @@ const stateRoots: string[] = [];
 afterEach(async () => {
   for (const processHandle of children.splice(0)) {
     if (processHandle.exitCode === null && processHandle.signalCode === null) processHandle.kill();
-    if (processHandle.exitCode === null) await once(processHandle, "exit").catch(() => undefined);
+    if (processHandle.exitCode === null && processHandle.signalCode === null) {
+      await once(processHandle, "exit").catch(() => undefined);
+    }
   }
   for (const stateRoot of stateRoots.splice(0)) {
     rmSync(stateRoot, { recursive: true, force: true });
@@ -125,6 +127,30 @@ afterEach(async () => {
 });
 
 describe("long-lived Bridge JSONL daemon", () => {
+  it("removes its temporary state root after SIGTERM, including forced Windows termination", async () => {
+    const bridge = child(bridgeCli, ["daemon"]);
+    children.push(bridge);
+    const channel = new JsonLineReader(bridge);
+    const ready = await channel.next();
+    expect(ready).toMatchObject({
+      ready: true,
+      preserveState: false,
+      stateRootSource: "temporary",
+    });
+    const stateRoot = String(ready.stateRoot);
+    stateRoots.push(stateRoot);
+    expect(existsSync(stateRoot)).toBe(true);
+
+    const exited = once(bridge, "exit");
+    expect(bridge.kill("SIGTERM")).toBe(true);
+    await exited;
+    const deadline = Date.now() + 10_000;
+    while (existsSync(stateRoot) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    expect(existsSync(stateRoot)).toBe(false);
+  }, 15_000);
+
   it("exposes granular controls, durable restart evidence, and leak-free shutdown", async () => {
     const fixture = child(fixtureCli, ["--port", "0"]);
     children.push(fixture);

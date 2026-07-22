@@ -9,12 +9,13 @@ import {
   mkdirSync,
   openSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
-  statSync,
+  rmdirSync,
   writeFileSync,
 } from "node:fs";
-import { basename, isAbsolute, join, relative, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 import {
   appendStreamChunk,
@@ -37,13 +38,32 @@ export interface ArtifactInput {
 }
 
 export interface ArtifactCarrier {
+  readonly kind: "artifacts";
+  readonly rsid: string;
   readonly invocationId: string;
   readonly result: { readonly artifacts: readonly ArtifactReference[] };
   readonly partials: readonly Extract<RbpPartial, { kind: "chunk" }>[];
   readonly descriptors: readonly ArtifactDescriptor[];
+  readonly chunkBytes: number;
   readonly retainedDirectory: string;
   readonly retainedFiles: readonly string[];
 }
+
+export interface ChunkedResultCarrier {
+  readonly kind: "chunked_result";
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly partials: readonly Extract<RbpPartial, { kind: "chunk" }>[];
+  readonly chunkBytes: number;
+  readonly contentType: string;
+  readonly totalChunks: number;
+  readonly totalSize: number;
+  readonly sha256: `sha256:${string}`;
+  readonly retainedDirectory: string;
+  readonly retainedFiles: readonly [string];
+}
+
+export type DurableResultCarrier = ArtifactCarrier | ChunkedResultCarrier;
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
@@ -61,8 +81,13 @@ function safeFilename(value: string): boolean {
   ) {
     return false;
   }
+  if (/\.(?:lnk|url|symlink)$/iu.test(value)) return false;
   const stem = (value.split(".", 1)[0] ?? "").toUpperCase();
   return !/^(?:CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM[1-9]|LPT[1-9])$/u.test(stem);
+}
+
+function safeContentType(value: string): boolean {
+  return value.length >= 1 && value.length <= 4_096;
 }
 
 function assertInside(root: string, candidate: string): void {
@@ -70,6 +95,13 @@ function assertInside(root: string, candidate: string): void {
   if (rel === "" || rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error("artifact path is outside the managed spool root");
   }
+}
+
+function safeStorageSegment(value: string, label: string): void {
+  if (
+    value.length < 1 || value.length > 128 || value === "." || value === ".." ||
+    /[\\/\u0000-\u001f\u007f]/u.test(value)
+  ) throw new Error(`${label} is not a safe spool path segment`);
 }
 
 export class DeterministicUuid7Source {
@@ -101,51 +133,60 @@ export class ArtifactSpool {
   }
 
   public captureDeclaredPaths(
+    rsid: string,
     invocationId: string,
     paths: readonly { readonly path: string; readonly contentType: string }[],
     chunkBytes: number = RBP_MAX_DECODED_CHUNK_BYTES,
   ): ArtifactCarrier {
-    const realRoot = realpathSync.native(this.#root);
-    const inputs: ArtifactInput[] = [];
-    for (const entry of paths) {
-      const candidate = resolve(entry.path);
-      assertInside(realRoot, candidate);
-      const realCandidate = realpathSync.native(candidate);
-      assertInside(realRoot, realCandidate);
-      const before = lstatSync(candidate);
-      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
-        throw new Error("artifact source must be a regular non-reparse file");
-      }
-      const descriptor = openSync(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-      let bytes: Buffer;
-      try {
-        const opened = fstatSync(descriptor);
-        if (
-          !opened.isFile() || opened.size !== before.size || opened.dev !== before.dev || opened.ino !== before.ino
-        ) {
-          throw new Error("artifact source changed during validated open");
+    try {
+      const realRoot = realpathSync.native(this.#root);
+      const inputs: ArtifactInput[] = [];
+      for (const entry of paths) {
+        const candidate = resolve(entry.path);
+        assertInside(realRoot, candidate);
+        const realCandidate = realpathSync.native(candidate);
+        assertInside(realRoot, realCandidate);
+        const before = lstatSync(candidate);
+        if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
+          throw new Error("artifact source must be a regular non-reparse file");
         }
-        bytes = readFileSync(descriptor);
-        const openedAfterRead = fstatSync(descriptor);
-        const pathAfterRead = lstatSync(candidate);
-        const realAfterRead = realpathSync.native(candidate);
-        assertInside(realRoot, realAfterRead);
-        if (
-          openedAfterRead.size !== opened.size || openedAfterRead.dev !== opened.dev || openedAfterRead.ino !== opened.ino ||
-          !pathAfterRead.isFile() || pathAfterRead.isSymbolicLink() || pathAfterRead.nlink !== 1 ||
-          pathAfterRead.dev !== opened.dev || pathAfterRead.ino !== opened.ino
-        ) {
-          throw new Error("artifact source changed while reading");
+        const descriptor = openSync(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        let bytes: Buffer;
+        try {
+          const opened = fstatSync(descriptor);
+          if (
+            !opened.isFile() || opened.size !== before.size || opened.dev !== before.dev || opened.ino !== before.ino
+          ) {
+            throw new Error("artifact source changed during validated open");
+          }
+          bytes = readFileSync(descriptor);
+          const openedAfterRead = fstatSync(descriptor);
+          const pathAfterRead = lstatSync(candidate);
+          const realAfterRead = realpathSync.native(candidate);
+          assertInside(realRoot, realAfterRead);
+          if (
+            openedAfterRead.size !== opened.size || openedAfterRead.dev !== opened.dev || openedAfterRead.ino !== opened.ino ||
+            !pathAfterRead.isFile() || pathAfterRead.isSymbolicLink() || pathAfterRead.nlink !== 1 ||
+            pathAfterRead.dev !== opened.dev || pathAfterRead.ino !== opened.ino
+          ) {
+            throw new Error("artifact source changed while reading");
+          }
+        } finally {
+          closeSync(descriptor);
         }
-      } finally {
-        closeSync(descriptor);
+        inputs.push({ filename: basename(candidate), contentType: entry.contentType, bytes });
       }
-      inputs.push({ filename: basename(candidate), contentType: entry.contentType, bytes });
+      return this.retain(rsid, invocationId, inputs, chunkBytes);
+    } catch (error) {
+      if (error instanceof RangeError) {
+        throw new RangeError("declared artifact source exceeds an allowed limit");
+      }
+      throw new Error("declared artifact source could not be captured");
     }
-    return this.retain(invocationId, inputs, chunkBytes);
   }
 
   public retain(
+    rsid: string,
     invocationId: string,
     inputs: readonly ArtifactInput[],
     chunkBytes: number = RBP_MAX_DECODED_CHUNK_BYTES,
@@ -163,12 +204,13 @@ export class ArtifactSpool {
     if (inputs.some((input) => !safeFilename(input.filename))) {
       throw new Error("invalid artifact basename");
     }
+    if (inputs.some((input) => !safeContentType(input.contentType))) {
+      throw new Error("artifact content type must contain from 1 through 4096 characters");
+    }
     const names = new Set(inputs.map((input) => input.filename.toLowerCase()));
     if (names.size !== inputs.length) throw new Error("artifact basenames must be unique");
 
-    const directory = join(this.#root, invocationId);
-    assertInside(this.#root, directory);
-    mkdirSync(directory, { recursive: false });
+    const directory = this.#createInvocationDirectory(rsid, invocationId);
     const partials: Extract<RbpPartial, { kind: "chunk" }>[] = [];
     const descriptors: ArtifactDescriptor[] = [];
     const references: ArtifactReference[] = [];
@@ -211,35 +253,278 @@ export class ArtifactSpool {
       });
     } catch (error) {
       rmSync(directory, { force: true, recursive: true });
+      this.#removeEmptySessionDirectory(directory);
       throw error;
     }
     return {
+      kind: "artifacts",
+      rsid,
       invocationId,
       result: { artifacts: references },
       partials,
       descriptors,
+      chunkBytes,
       retainedDirectory: directory,
       retainedFiles,
     };
   }
 
+  public retainChunkedResult(
+    rsid: string,
+    invocationId: string,
+    bytes: Uint8Array,
+    chunkBytes: number = RBP_MAX_DECODED_CHUNK_BYTES,
+    contentType = "application/json",
+  ): ChunkedResultCarrier {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > RBP_MAX_DECODED_CHUNK_BYTES) {
+      throw new RangeError("result chunk bytes exceed the RBP/1 partial limit");
+    }
+    if (bytes.byteLength < 1 || bytes.byteLength > RBP_MAX_RECONSTRUCTED_INVOCATION_BYTES) {
+      throw new RangeError("chunked result bytes must be between 1 byte and 32 MiB");
+    }
+    if (!safeContentType(contentType)) {
+      throw new Error("chunked result content type must contain from 1 through 4096 characters");
+    }
+    const directory = this.#createInvocationDirectory(rsid, invocationId);
+    const retained = join(directory, "result.json");
+    try {
+      writeFileSync(retained, bytes, { flag: "wx" });
+      const partials: Extract<RbpPartial, { kind: "chunk" }>[] = [];
+      for (let offset = 0, chunkIndex = 0; offset < bytes.byteLength; offset += chunkBytes, chunkIndex += 1) {
+        partials.push({
+          kind: "chunk",
+          invocation_id: invocationId,
+          stream_id: "result",
+          chunk_index: chunkIndex,
+          encoding: "base64",
+          content_type: contentType,
+          data: Buffer.from(bytes.subarray(offset, offset + chunkBytes)).toString("base64"),
+        });
+      }
+      return {
+        kind: "chunked_result",
+        rsid,
+        invocationId,
+        partials,
+        chunkBytes,
+        contentType,
+        totalChunks: partials.length,
+        totalSize: bytes.byteLength,
+        sha256: sha256(bytes),
+        retainedDirectory: directory,
+        retainedFiles: [retained],
+      };
+    } catch (error) {
+      rmSync(directory, { force: true, recursive: true });
+      this.#removeEmptySessionDirectory(directory);
+      throw error;
+    }
+  }
+
+  /** Compact durable metadata; payload bytes remain in the guarded spool. */
+  public compact<T extends DurableResultCarrier>(carrier: T): T {
+    return { ...carrier, partials: [] };
+  }
+
+  /**
+   * Rebuilds the exact chunk plan after restart from a compact durable carrier.
+   * Missing, moved, linked, resized, or digest-mismatched files fail closed so
+   * no stale descriptor can claim replayable artifact bytes.
+   */
+  public rehydrate(carrier: DurableResultCarrier): DurableResultCarrier {
+    if (carrier.kind === "chunked_result") return this.#rehydrateChunkedResult(carrier);
+    if (
+      !Number.isSafeInteger(carrier.chunkBytes) || carrier.chunkBytes < 1 ||
+      carrier.chunkBytes > RBP_MAX_DECODED_CHUNK_BYTES ||
+      carrier.result.artifacts.length !== carrier.descriptors.length ||
+      carrier.retainedFiles.length !== carrier.descriptors.length ||
+      carrier.descriptors.some((descriptor) =>
+        !safeFilename(descriptor.filename) || !safeContentType(descriptor.content_type)
+      )
+    ) {
+      throw new Error("durable artifact carrier shape is invalid");
+    }
+    const directory = this.#assertCarrierDirectory(carrier);
+    const realRoot = realpathSync.native(this.#root);
+    const realDirectory = realpathSync.native(directory);
+    assertInside(realRoot, realDirectory);
+    const directoryStat = lstatSync(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error("durable artifact directory is not a real directory");
+    }
+
+    const partials: Extract<RbpPartial, { kind: "chunk" }>[] = [];
+    carrier.descriptors.forEach((descriptor, index) => {
+      const reference = carrier.result.artifacts[index];
+      const retainedFile = carrier.retainedFiles[index];
+      if (
+        reference === undefined || retainedFile === undefined ||
+        descriptor.artifact_index !== index || reference.artifact_index !== index ||
+        reference.artifact_id !== descriptor.artifact_id ||
+        descriptor.stream_id !== `artifact:${descriptor.artifact_id}`
+      ) {
+        throw new Error("durable artifact descriptor identity mismatch");
+      }
+      const candidate = resolve(retainedFile);
+      assertInside(realDirectory, candidate);
+      const realCandidate = realpathSync.native(candidate);
+      assertInside(realDirectory, realCandidate);
+      const stat = lstatSync(candidate);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+        throw new Error("durable artifact member is not a regular non-reparse file");
+      }
+      const bytes = readFileSync(candidate);
+      if (bytes.byteLength !== descriptor.total_size || sha256(bytes) !== descriptor.sha256) {
+        throw new Error("durable artifact member no longer matches its descriptor");
+      }
+      let chunkIndex = 0;
+      for (let offset = 0; offset < bytes.byteLength; offset += carrier.chunkBytes) {
+        partials.push({
+          kind: "chunk",
+          invocation_id: carrier.invocationId,
+          stream_id: descriptor.stream_id,
+          artifact_id: descriptor.artifact_id,
+          artifact_index: descriptor.artifact_index,
+          chunk_index: chunkIndex,
+          encoding: "base64",
+          content_type: descriptor.content_type,
+          data: bytes.subarray(offset, offset + carrier.chunkBytes).toString("base64"),
+        });
+        chunkIndex += 1;
+      }
+      if (chunkIndex !== descriptor.total_chunks) {
+        throw new Error("durable artifact chunk count no longer matches its descriptor");
+      }
+    });
+    return { ...carrier, partials };
+  }
+
   /** Cleanup is legal only after the terminal carrier has a durable RBP ack. */
-  public acknowledge(carrier: ArtifactCarrier): void {
-    const directory = resolve(carrier.retainedDirectory);
-    assertInside(this.#root, directory);
-    if (!existsSync(directory)) return;
+  public acknowledge(carrier: DurableResultCarrier): void {
+    const directory = this.#assertCarrierDirectory(carrier);
+    if (!existsSync(directory)) {
+      this.#removeEmptySessionDirectory(directory);
+      return;
+    }
+    const directoryStat = lstatSync(directory);
+    if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
+      throw new Error("retained result directory is not a real directory");
+    }
     for (const file of carrier.retainedFiles) {
       const resolvedFile = resolve(file);
       assertInside(directory, resolvedFile);
-      if (statSync(resolvedFile).isDirectory()) throw new Error("retained artifact became a directory");
     }
     rmSync(directory, { force: false, recursive: true });
+    this.#removeEmptySessionDirectory(directory);
   }
 
-  public expire(carrier: ArtifactCarrier): void {
-    const directory = resolve(carrier.retainedDirectory);
-    assertInside(this.#root, directory);
+  public expire(carrier: DurableResultCarrier): void {
+    const directory = this.#assertCarrierDirectory(carrier);
     rmSync(directory, { force: true, recursive: true });
+    this.#removeEmptySessionDirectory(directory);
+  }
+
+  /** Removes crash-left payloads that have no durable journal/plan reference. */
+  public reconcileOrphans(referencedDirectories: ReadonlySet<string>): readonly string[] {
+    const referenced = new Set([...referencedDirectories].map((entry) => resolve(entry)));
+    const removed: string[] = [];
+    for (const sessionEntry of readdirSync(this.#root, { withFileTypes: true })) {
+      const sessionDirectory = join(this.#root, sessionEntry.name);
+      assertInside(this.#root, sessionDirectory);
+      if (!sessionEntry.isDirectory() || sessionEntry.isSymbolicLink()) {
+        rmSync(sessionDirectory, { force: true, recursive: true });
+        removed.push(sessionDirectory);
+        continue;
+      }
+      for (const invocationEntry of readdirSync(sessionDirectory, { withFileTypes: true })) {
+        const invocationDirectory = join(sessionDirectory, invocationEntry.name);
+        assertInside(sessionDirectory, invocationDirectory);
+        if (!referenced.has(resolve(invocationDirectory))) {
+          rmSync(invocationDirectory, { force: true, recursive: true });
+          removed.push(invocationDirectory);
+        }
+      }
+      this.#removeEmptySessionDirectory(join(sessionDirectory, "placeholder"));
+    }
+    return removed;
+  }
+
+  #createInvocationDirectory(rsid: string, invocationId: string): string {
+    safeStorageSegment(rsid, "rsid");
+    safeStorageSegment(invocationId, "invocation id");
+    const sessionDirectory = join(this.#root, rsid);
+    assertInside(this.#root, sessionDirectory);
+    mkdirSync(sessionDirectory, { recursive: true });
+    const sessionStat = lstatSync(sessionDirectory);
+    if (!sessionStat.isDirectory() || sessionStat.isSymbolicLink()) {
+      throw new Error("artifact session spool must be a real directory");
+    }
+    const directory = join(sessionDirectory, invocationId);
+    assertInside(sessionDirectory, directory);
+    mkdirSync(directory, { recursive: false });
+    return directory;
+  }
+
+  #assertCarrierDirectory(carrier: DurableResultCarrier): string {
+    safeStorageSegment(carrier.rsid, "carrier rsid");
+    safeStorageSegment(carrier.invocationId, "carrier invocation id");
+    const directory = resolve(carrier.retainedDirectory);
+    const expected = resolve(this.#root, carrier.rsid, carrier.invocationId);
+    if (directory !== expected) throw new Error("durable result carrier path does not match its composite identity");
+    assertInside(this.#root, directory);
+    return directory;
+  }
+
+  #rehydrateChunkedResult(carrier: ChunkedResultCarrier): ChunkedResultCarrier {
+    if (
+      !Number.isSafeInteger(carrier.chunkBytes) || carrier.chunkBytes < 1 ||
+      carrier.chunkBytes > RBP_MAX_DECODED_CHUNK_BYTES ||
+      carrier.retainedFiles.length !== 1 || !safeContentType(carrier.contentType)
+    ) throw new Error("durable chunked-result carrier shape is invalid");
+    const directory = this.#assertCarrierDirectory(carrier);
+    const realRoot = realpathSync.native(this.#root);
+    const realDirectory = realpathSync.native(directory);
+    assertInside(realRoot, realDirectory);
+    const candidate = resolve(carrier.retainedFiles[0]);
+    assertInside(realDirectory, candidate);
+    const realCandidate = realpathSync.native(candidate);
+    assertInside(realDirectory, realCandidate);
+    const stat = lstatSync(candidate);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+      throw new Error("durable chunked result is not a regular non-reparse file");
+    }
+    const bytes = readFileSync(candidate);
+    if (bytes.byteLength !== carrier.totalSize || sha256(bytes) !== carrier.sha256) {
+      throw new Error("durable chunked result no longer matches its descriptor");
+    }
+    const partials: Extract<RbpPartial, { kind: "chunk" }>[] = [];
+    for (let offset = 0, chunkIndex = 0; offset < bytes.byteLength; offset += carrier.chunkBytes, chunkIndex += 1) {
+      partials.push({
+        kind: "chunk",
+        invocation_id: carrier.invocationId,
+        stream_id: "result",
+        chunk_index: chunkIndex,
+        encoding: "base64",
+        content_type: carrier.contentType,
+        data: bytes.subarray(offset, offset + carrier.chunkBytes).toString("base64"),
+      });
+    }
+    if (partials.length !== carrier.totalChunks) {
+      throw new Error("durable chunked-result count no longer matches its descriptor");
+    }
+    return { ...carrier, partials };
+  }
+
+  #removeEmptySessionDirectory(invocationDirectory: string): void {
+    const sessionDirectory = dirname(invocationDirectory);
+    if (sessionDirectory === this.#root) return;
+    assertInside(this.#root, sessionDirectory);
+    try {
+      rmdirSync(sessionDirectory);
+    } catch (error) {
+      const code = error instanceof Error && "code" in error ? String(error.code) : "";
+      if (code !== "ENOTEMPTY" && code !== "EEXIST" && code !== "ENOENT") throw error;
+    }
   }
 }
 

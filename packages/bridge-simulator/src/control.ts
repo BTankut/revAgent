@@ -244,7 +244,8 @@ function crashPoint(value: unknown): BridgeCrashPoint {
   if (
     value !== "after_received_before_dispatch" &&
     value !== "after_executing_before_addin_write" &&
-    value !== "after_addin_response_before_terminal"
+    value !== "after_addin_response_before_terminal" &&
+    value !== "after_non_atomic_step_terminal_before_batch_terminal"
   ) {
     throw new Error("point must be a supported Bridge crash point");
   }
@@ -737,15 +738,26 @@ export class BridgeDaemonRuntime {
     };
 
     const selected = await openConfiguredTransport();
+    let peer: BridgeGatewayPeer;
+    try {
+      peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
+        nowMs: () => this.#clockMs,
+        reconnect: async () => {
+          const reconnected = await openConfiguredTransport();
+          this.#binding = reconnected.binding;
+          return reconnected;
+        },
+      });
+    } catch (error) {
+      try {
+        await selected.binding.close();
+      } catch {
+        // Preserve the peer construction/recovery error as authoritative.
+      }
+      throw error;
+    }
     this.#binding = selected.binding;
-    this.#peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
-      nowMs: () => this.#clockMs,
-      reconnect: async () => {
-        const reconnected = await openConfiguredTransport();
-        this.#binding = reconnected.binding;
-        return reconnected;
-      },
-    });
+    this.#peer = peer;
     return {
       requestedKind: kind,
       selectedKind: selected.binding.kind,

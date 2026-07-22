@@ -383,6 +383,70 @@ describe("W1 bridge/journal/artifact audit regressions", () => {
     root.cleanup();
   });
 
+  it("rejects an impossible atomic artifact path without retaining or returning the raw path", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    fixtures.push(fixture);
+    await fixture.start();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const envelope = atomicBatch(rsid, 1);
+    const session = simulator.getSession(rsid);
+    if (session === null) throw new Error("test session was not attached");
+    const secretPath = "C:\\ProgramData\\DPE\\revAgent\\spool\\atomic-secret.xlsx";
+    const rows = envelope.payload.steps.map((step, index): JsonObject => ({
+      index,
+      invocationId: step.invocation_id,
+      method: step.method,
+      executionState: "completed",
+      effectState: step.mutating ? "committed" : "read_only",
+      result: index === 0
+        ? { files: [{ path: secretPath, contentType: "application/octet-stream" }] }
+        : { success: true },
+    }));
+    const malformedResult: JsonObject = {
+      resultContractVersion: 2,
+      batchContractVersion: 1,
+      batchId: envelope.payload.batch_id,
+      batchDigest: envelope.payload.batch_digest,
+      atomic: true,
+      status: "completed",
+      transactionState: "committed",
+      failedStepIndex: null,
+      rollback: {
+        attempted: false,
+        succeeded: null,
+        triggerStepIndex: null,
+        triggerState: null,
+      },
+      steps: rows,
+    };
+    const message: JsonObject = {
+      jsonrpc: "2.0",
+      id: envelope.payload.batch_id,
+      result: malformedResult,
+    };
+    Object.defineProperty(session.probe.client, "request", {
+      configurable: true,
+      value: async () => ({ message, payload: Buffer.from(JSON.stringify(message), "utf8") }),
+    });
+
+    const rejected = await simulator.invokeBatch(envelope);
+    expect(rejected).toMatchObject({
+      kind: "batch",
+      status: "indeterminate",
+      transactionState: "indeterminate",
+    });
+    expect(JSON.stringify(rejected)).not.toContain(secretPath);
+    expect(JSON.stringify(journal.listInvocations())).not.toContain(secretPath);
+    expect(JSON.stringify(journal.getBatchCoordination(envelope.payload.batch_id))).not.toContain(secretPath);
+    expect(fixture.getMethodExecutionCount("execute_batch")).toBe(0);
+
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
   it("preserves the exact raw result digest across terminal replay", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -447,10 +511,33 @@ describe("W1 bridge/journal/artifact audit regressions", () => {
       addinContacted: false,
     });
 
+    const missingPath = join(spoolRoot, "operator-secret-missing.txt");
+    declaredPath = missingPath;
+    const missing = readInvoke({ rsid, seq: 2, method: "fixture_path_output" });
+    const missingRejected = await simulator.invoke(missing);
+    expect(missingRejected).toMatchObject({
+      kind: "error",
+      faultClass: "parameter",
+      replayed: false,
+      addinContacted: true,
+      message: "declared artifact source could not be captured",
+    });
+    expect(JSON.stringify(missingRejected)).not.toContain(missingPath);
+    const missingRecord = journal.getInvocation(rsid, missing.payload.invocation_id);
+    expect(missingRecord).toMatchObject({ state: "failed", terminalOutcome: { status: "failed" } });
+    expect(JSON.stringify(missingRecord?.terminalOutcome)).not.toContain(missingPath);
+    await expect(simulator.invoke(missing)).resolves.toMatchObject({
+      kind: "error",
+      faultClass: "parameter",
+      replayed: true,
+      addinContacted: false,
+      message: "declared artifact source could not be captured",
+    });
+
     const safePath = join(spoolRoot, "fixture-source.txt");
     writeFileSync(safePath, "safe fixture evidence\n", "utf8");
     declaredPath = safePath;
-    const safe = readInvoke({ rsid, seq: 2, method: "fixture_path_output" });
+    const safe = readInvoke({ rsid, seq: 3, method: "fixture_path_output" });
     const completed = await simulator.invoke(safe);
     expect(completed).toMatchObject({
       kind: "result",

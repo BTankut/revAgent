@@ -819,12 +819,14 @@ Rules:
 - Every step carries the same server-authored policy block required by an ordinary invocation. A batch MUST NOT combine a preview and its approved commit; all required confirmations must already bind to the exact step parameters before batching.
 - `params`, `params_digest`, and `mutation_scope` are REQUIRED on every step; `params` MUST NOT be omitted or
   replaced by its digest. The bridge recomputes Section 12.1's digest over the present functional `params` and
-  rejects any mismatch before journal or add-in dispatch. `mutation_scope` is `null` exactly for a read step.
+  rejects any mismatch after durable RBP transport-sequence acceptance/ACK advancement, but before an
+  invocation journal row or add-in dispatch. `mutation_scope` is `null` exactly for a read step.
 - Top-level `recovery_clearances` is REQUIRED and may be empty. Correlated verification reads MUST be sent as
   individual `invoke` messages and MUST NOT be hidden inside a batch. The Gateway and bridge check every step
   scope plus all supplied clearances against Section 6.2.1 before any step is dispatched.
 - `batch_digest` is REQUIRED and is computed over the unambiguous semantic representation below. The bridge
-  recomputes it and rejects a mismatch before creating any step row:
+  recomputes it after durable RBP transport-sequence acceptance/ACK advancement and rejects a mismatch before
+  creating any step journal row or contacting the add-in:
 
   ```text
   batch_digest_material = {
@@ -852,6 +854,10 @@ Rules:
   never allows the next step to run merely because it arrived in a `result` rather than an `error`.
 - An `atomic:true` step MUST be in the exact session-local Appendix A.2 descriptor set. Raw dynamic code,
   `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be nested as atomic steps.
+- Every `invoke_batch` step, including `atomic:false` fan-out, MUST be present in the probed Appendix A.2
+  descriptor set with `resultDelivery:"inline_only"`; otherwise the bridge returns `unsupported` before
+  dispatching any step. Nested batch steps never use Section 13 chunk or artifact carriers. A conforming
+  add-in therefore keeps each batch result JSON-inline and path-free within the negotiated result limit.
 - The pilot artifact includes the adapted add-in and MUST demonstrate the `batch_atomic` path before cutover.
 
 ### 11.1 Batch result carrier
@@ -918,6 +924,22 @@ carried by the enclosing step. `retryable`, `fault_class`, `outcome`, `verificat
 are all REQUIRED. For `journal_indeterminate`, `verification_hold_id` and `mutation_scope` are also REQUIRED;
 `outcome` is `indeterminate` and `verification_required` is true. A nested error MUST NOT rely on batch status
 to supply or infer any of those fields.
+
+Batch `status` normally matches the first non-success step. There is one narrow aggregate exception for
+`atomic:true`: when dispatch may have started but the complete add-in terminal carrier is unavailable, an
+unrecoverable read-only step result is `failed` with retryable `environment`, `outcome:"known"`, and
+`verification_required:false`; it MUST NOT be fabricated as `completed`. Every possibly executed mutating
+step remains `journal_indeterminate`. The aggregate batch and transaction stay `indeterminate` whenever such
+a mutating step exists, while `failed_step_index` identifies the earliest unavailable read or indeterminate
+mutation. No other earlier failure class may be hidden behind aggregate `status:"indeterminate"`.
+
+If an attested inline-only command nevertheless returns artifact-shaped data or exceeds the negotiated inline
+result limit after dispatch, the bridge MUST NOT create an unreachable spool carrier. The affected step stops
+the remaining `atomic:false` fan-out with `status:"failed"`, `fault_class:"protocol"`, and explicit
+`effect_state:"read_only"|"committed"|"not_committed"`. When the add-in reported a completed mutation, the
+terminal delivery-fault row uses `effect_state:"committed"` rather than becoming a normal replayable success,
+so a crash cannot run later batch successors. The delivery fault never discards the known model effect. The
+raw artifact/path payload is neither journaled nor placed on the wire.
 
 For `atomic:true`, success requires `transaction_state:"committed"`. A clean `TransactionGroup` rollback
 uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. If the add-in or bridge dies
@@ -1038,6 +1060,9 @@ all possibly mutating steps indeterminate; no individual step is retried. One Se
 per distinct conflicting mutation scope with the ordered possibly executed step keys as origins. Read-only
 verification of the intended postconditions is mandatory before another conflicting mutation, and
 inconclusive verification keeps every affected scope blocked until an operator-backed conclusive resolution.
+Any read result lost with that missing carrier is terminalized as the narrow known `environment` failure from
+Section 11.1, never as a synthetic success. On restart recovery, the resulting batch and all returned terminal
+steps use `replayed:true` because the recovery delivery executes no add-in step.
 
 ## 13. Partial results, progress, and backpressure
 
@@ -1564,8 +1589,19 @@ cache without raising an ExternalEvent.
 | `rollbackPolicy` | `rollback_on_non_success` |
 | `batchableCommands` | The exact session-local executable subset, with one unique descriptor per method. |
 
+Every command descriptor also carries `resultDelivery:"inline_only"` and
+`maxInlineResultBytes:8388608`; together they attest before dispatch that the command never requires RBP
+chunk/artifact delivery and that its canonical result stays within 8 MiB when nested in a batch. For
+`atomic:false`, the bridge reserves bounded wrapper/error/not-started overhead, accounts the actual canonical
+result bytes after each step, and lowers the next step's allowed inline bytes to the remaining negotiated
+aggregate budget. It does not sum theoretical per-step maxima into an artificial batch-length limit. A
+post-dispatch per-step or remaining-aggregate cap violation uses the delivery-fault/effect-state rule in
+Section 11.1 and stops all successors. For `atomic:true`, Appendix A.4 enforces both per-step and tentative
+aggregate limits before `TransactionGroup.Assimilate()`.
+
 Each `batchableCommands[]` descriptor is
-`{method,effect,transactionPolicy,rollbackDisposition,parameterProfile}`. The hard v1 eligible set is:
+`{method,effect,transactionPolicy,rollbackDisposition,parameterProfile,resultDelivery,maxInlineResultBytes}`
+with REQUIRED `resultDelivery:"inline_only"` and `maxInlineResultBytes:8388608`. The hard v1 eligible set is:
 
 ```text
 get_current_view_elements, get_current_view_info, get_selected_elements, list_open_views,
@@ -1629,7 +1665,9 @@ for a missing or invalid capability.
 `execute_batch` exists only for RBP `invoke_batch` with `atomic:true` and a granted `batch_atomic` capability.
 The outer JSON-RPC `id` MUST equal `params.batchId`. Params contain exactly
 `batchContractVersion:1`, `batchId`, `batchDigest`, `atomic:true`,
-`rollbackPolicy:"rollback_on_non_success"`, and ordered `steps`.
+`rollbackPolicy:"rollback_on_non_success"`, `maxAggregateResultBytes`, and ordered `steps`.
+`maxAggregateResultBytes` MUST equal the connection-negotiated RBP `max_result_bytes` and is the authoritative
+aggregate BOM-free UTF-8 JSON-RPC response cap for this dispatch.
 
 Each step contains `{index,invocationId,method,params,paramsDigest,effect}`. Indices are contiguous from zero,
 invocation ids are unique, and each method/effect pair MUST match the descriptor in the most recent successful
@@ -1644,7 +1682,7 @@ method-specific fields, but the following exact reserved-name set is rejected be
 `parentTaskName`, `parentTaskId`, `suppressTaskStatusWindow`, `display`, `invocation_id`, `batch_id`,
 `batch_digest`, `params_digest`, `mutating`, `mutation_scope`, `policy`, `verification`,
 `recovery_clearances`, `timeout_ms`, `batchContractVersion`, `batchId`, `batchDigest`, `invocationId`,
-`paramsDigest`, `effect`, `atomic`, `rollbackPolicy`. These are connection, timeout, response-mode,
+`paramsDigest`, `effect`, `atomic`, `rollbackPolicy`, `maxAggregateResultBytes`. These are connection, timeout, response-mode,
 display/audit, RBP, or add-in batch-control fields; rejecting these exact names MUST NOT close the params
 object to future functional tool parameters. The batch handler invokes the extracted command seam directly
 on the current Revit API thread; it MUST NOT raise or wait for a nested `ExternalEvent`.
@@ -1653,7 +1691,10 @@ The add-in validates the complete request before Revit execution, then raises ex
 the Revit API thread it opens one `TransactionGroup`, executes the advertised command seams directly in input
 order, and never raises/waits for a nested ExternalEvent. After each normalized step result, it constructs the
 exact tentative success envelope for that prefix plus the minimal `not_started` suffix and counts the entire
-BOM-free UTF-8 JSON-RPC payload. If the projection exceeds `maxResponsePayloadBytes`, that current step becomes
+BOM-free UTF-8 JSON-RPC payload. Before making that projection, each completed step result MUST satisfy its
+advertised `resultDelivery:"inline_only"` and `maxInlineResultBytes:8388608`; artifact-shaped or oversized
+step output becomes `invalid_result` and triggers rollback without exposing the raw result. If the projection
+exceeds `maxAggregateResultBytes`, that current step becomes
 `failed` with `error.code:"response_payload_limit"`, the measured cap and tentative byte count, and the group
 rolls back before `Assimilate()`. Only an all-success envelope at or below the cap may assimilate. The first
 guarded result, other failure-shaped result, or exception likewise stops execution and rolls the whole group
@@ -1677,8 +1718,8 @@ read result obtained inside the transient group has `effectState:"discarded"`. N
 omits `result` and carries `resultSuppressed:"batch_rolled_back"`. Successors use
 `executionState/effectState:"not_started"` and have no result, error, guard, or suppression field. A guarded
 step has a normalized `guardedReason`; a failed or indeterminate step has bounded structured `error` data.
-`response_payload_limit` additionally carries `maxResponsePayloadBytes:33554432` and
-`tentativeResponsePayloadBytes >= 33554433`; it is a clean failed-step rollback when
+`response_payload_limit` additionally carries `maxResponsePayloadBytes:<maxAggregateResultBytes>` and
+`tentativeResponsePayloadBytes > maxResponsePayloadBytes`; it is a clean failed-step rollback when
 `rollback.succeeded:true`, never a post-commit synthetic failure.
 If rollback itself fails, every possibly executed mutation uses `effectState:"indeterminate"`, every read
 uses `effectState:"discarded"`, and both use `resultSuppressed:"batch_indeterminate"`; no step may retain a

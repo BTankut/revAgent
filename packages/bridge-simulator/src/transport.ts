@@ -31,6 +31,10 @@ export class GatewayTransportError extends Error {
   public readonly closeCode: number | null;
   public readonly closeReason: string | null;
   public readonly httpStatus: number | null;
+  public readonly protocolMin: number | null;
+  public readonly protocolMax: number | null;
+  public readonly manifestUrl: string | null;
+  public readonly retryAfterMs: number | null;
 
   public constructor(
     message: string,
@@ -39,6 +43,10 @@ export class GatewayTransportError extends Error {
       readonly closeCode?: number;
       readonly closeReason?: string;
       readonly httpStatus?: number;
+      readonly protocolMin?: number;
+      readonly protocolMax?: number;
+      readonly manifestUrl?: string;
+      readonly retryAfterMs?: number;
     },
   ) {
     super(message);
@@ -47,6 +55,10 @@ export class GatewayTransportError extends Error {
     this.closeCode = options.closeCode ?? null;
     this.closeReason = options.closeReason ?? null;
     this.httpStatus = options.httpStatus ?? null;
+    this.protocolMin = options.protocolMin ?? null;
+    this.protocolMax = options.protocolMax ?? null;
+    this.manifestUrl = options.manifestUrl ?? null;
+    this.retryAfterMs = options.retryAfterMs ?? null;
   }
 }
 
@@ -81,6 +93,8 @@ const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
 const DEFAULT_SEND_TIMEOUT_MS = 5_000;
 const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const MAX_RBP_WIRE_FRAME_BYTES = 48 * 1024 * 1024;
+const MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024;
+const MAX_RETRY_AFTER_MS = 15 * 60 * 1_000;
 
 interface QueueWaiter<T> {
   readonly resolve: (value: IteratorResult<T>) => void;
@@ -174,15 +188,25 @@ function isNumericUrlLoopback(host: string): boolean {
 function classForCloseCode(code: number): GatewayTransportFailureClass {
   if (code === 4401 || code === 4403) return "auth";
   if (code === 4426) return "version";
+  if (code === 1002 || code === 1003 || code === 1007 || code === 1008 || code === 1009) {
+    return "protocol";
+  }
   if (code === 4400 || (code >= 4000 && code <= 4999)) return "protocol";
   return "retryable_network";
 }
 
-function classForHttpStatus(status: number): GatewayTransportFailureClass {
+type HttpStatusPhase = "wss_upgrade" | "connection_create" | "events_open" | "message_send";
+
+function classForHttpStatus(status: number, phase: HttpStatusPhase): GatewayTransportFailureClass {
   if (status === 401 || status === 403) return "auth";
   if (status === 426) return "version";
-  if (status >= 400 && status < 500) return "protocol";
-  return "retryable_network";
+  if ([408, 429, 502, 503, 504].includes(status)) return "retryable_network";
+  if ((phase === "events_open" || phase === "message_send") && (status === 404 || status === 410)) {
+    return "retryable_network";
+  }
+  // Redirects, successful-but-unexpected codes, and all other authenticated
+  // HTTP responses are contract failures. They must never select fallback.
+  return "protocol";
 }
 
 function closeError(phase: string, code: number, reasonBytes: Buffer): GatewayTransportError {
@@ -194,25 +218,97 @@ function closeError(phase: string, code: number, reasonBytes: Buffer): GatewayTr
   );
 }
 
-function httpStatusError(phase: string, status: number): GatewayTransportError {
+interface HttpFailureMetadata {
+  readonly protocolMin?: number;
+  readonly protocolMax?: number;
+  readonly manifestUrl?: string;
+  readonly retryAfterMs?: number;
+}
+
+function httpStatusError(
+  phase: string,
+  status: number,
+  statusPhase: HttpStatusPhase,
+  metadata: HttpFailureMetadata = {},
+): GatewayTransportError {
   return new GatewayTransportError(
     `${phase} received HTTP ${status}`,
-    { faultClass: classForHttpStatus(status), httpStatus: status },
+    { faultClass: classForHttpStatus(status, statusPhase), httpStatus: status, ...metadata },
   );
+}
+
+function retryAfterMs(value: string | null, nowMs = Date.now()): number | undefined {
+  if (value === null || value.trim() !== value || value.length === 0) return undefined;
+  if (/^\d+$/u.test(value)) {
+    const seconds = Number(value);
+    if (!Number.isSafeInteger(seconds)) return undefined;
+    const delay = seconds * 1_000;
+    return delay <= MAX_RETRY_AFTER_MS ? delay : undefined;
+  }
+  const dateMs = Date.parse(value);
+  if (!Number.isFinite(dateMs)) return undefined;
+  const delay = Math.ceil(dateMs - nowMs);
+  return delay >= 0 && delay <= MAX_RETRY_AFTER_MS ? delay : undefined;
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function httpFailureMetadata(
+  status: number,
+  headers: { get(name: string): string | null },
+  bytes: Uint8Array,
+): HttpFailureMetadata {
+  const retry = retryAfterMs(headers.get("retry-after"));
+  if (status !== 426 || bytes.byteLength === 0) {
+    return retry === undefined ? {} : { retryAfterMs: retry };
+  }
+  try {
+    const value = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+    if (!isJsonRecord(value)) return retry === undefined ? {} : { retryAfterMs: retry };
+    const protocolMin = value.min_protocol;
+    const protocolMax = value.max_protocol;
+    const manifestUrl = value.manifest_url;
+    return {
+      ...(Number.isSafeInteger(protocolMin) && Number(protocolMin) > 0
+        ? { protocolMin: Number(protocolMin) }
+        : {}),
+      ...(Number.isSafeInteger(protocolMax) && Number(protocolMax) > 0
+        ? { protocolMax: Number(protocolMax) }
+        : {}),
+      ...(typeof manifestUrl === "string" && manifestUrl.length > 0 && manifestUrl.length <= 2_048 &&
+        !/[\u0000-\u001f\u007f]/u.test(manifestUrl)
+        ? { manifestUrl }
+        : {}),
+      ...(retry === undefined ? {} : { retryAfterMs: retry }),
+    };
+  } catch {
+    return retry === undefined ? {} : { retryAfterMs: retry };
+  }
 }
 
 function normalizedTransportError(error: unknown, phase: string): GatewayTransportError {
   if (error instanceof GatewayTransportError) return error;
   const message = error instanceof Error ? error.message : String(error);
-  const normalized = message.toLowerCase();
+  const details: string[] = [];
+  const codes: string[] = [];
+  let cursor: unknown = error;
+  for (let depth = 0; depth < 6 && cursor !== null && cursor !== undefined; depth += 1) {
+    if (cursor instanceof Error) details.push(cursor.message);
+    if (typeof cursor !== "object") break;
+    if ("code" in cursor && typeof cursor.code === "string") codes.push(cursor.code);
+    cursor = "cause" in cursor ? cursor.cause : null;
+  }
+  const normalized = `${details.join(" ")} ${codes.join(" ")}`.toLowerCase();
   const statusMatch = /unexpected server response:\s*(\d{3})/u.exec(normalized);
   if (statusMatch !== null) {
     const status = Number(statusMatch[1]);
-    return httpStatusError(phase, status);
+    return httpStatusError(phase, status, "wss_upgrade");
   }
-  const faultClass = /certificate|tls|trust|self.signed/u.test(normalized)
+  const faultClass = /certificate|tls|trust|self.signed|cert_|self_signed|unable_to_verify|depth_zero/u.test(normalized)
     ? "trust"
-    : /protocol|validation|invalid envelope/u.test(normalized)
+    : /protocol|validation|invalid envelope|utf[ -]?8|invalid websocket frame/u.test(normalized)
       ? "protocol"
       : "retryable_network";
   return new GatewayTransportError(`${phase}: ${message}`, { faultClass });
@@ -245,7 +341,41 @@ function parseEnvelope(bytes: Uint8Array): RbpEnvelope {
   return parseRbpFrame(bytes);
 }
 
-function helloAck(value: RbpEnvelope, expectedConnectionId?: string): HelloAckEnvelope {
+async function readBoundedIncomingBytes(
+  response: IncomingMessage,
+  phase: string,
+): Promise<Uint8Array> {
+  const advertisedValue = response.headers["content-length"];
+  if (advertisedValue !== undefined) {
+    const advertised = Number(Array.isArray(advertisedValue) ? advertisedValue[0] : advertisedValue);
+    if (!Number.isSafeInteger(advertised) || advertised < 0) {
+      response.destroy();
+      throw new Error(`${phase} has an invalid Content-Length`);
+    }
+    if (advertised > MAX_HTTP_ERROR_BODY_BYTES) {
+      response.destroy();
+      throw new Error(`${phase} exceeds ${MAX_HTTP_ERROR_BODY_BYTES} error bytes`);
+    }
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for await (const chunk of response) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+    total += bytes.byteLength;
+    if (total > MAX_HTTP_ERROR_BODY_BYTES) {
+      response.destroy();
+      throw new Error(`${phase} exceeds ${MAX_HTTP_ERROR_BODY_BYTES} error bytes`);
+    }
+    chunks.push(bytes);
+  }
+  return new Uint8Array(Buffer.concat(chunks, total));
+}
+
+function helloAck(
+  value: RbpEnvelope,
+  expectedConnectionId?: string,
+  hello?: HelloEnvelope,
+): HelloAckEnvelope {
   if (value.type !== "hello_ack") throw new Error("Gateway first response must be hello_ack");
   assertPreNegotiationEnvelope(value);
   if (
@@ -253,6 +383,19 @@ function helloAck(value: RbpEnvelope, expectedConnectionId?: string): HelloAckEn
     value.payload.connection_id !== expectedConnectionId
   ) {
     throw new Error("hello_ack connection id does not match transport binding");
+  }
+  if (hello !== undefined) {
+    if (
+      value.payload.protocol < hello.payload.min_protocol ||
+      value.payload.protocol > hello.payload.max_protocol
+    ) {
+      throw new Error("hello_ack selected a protocol outside the Bridge interval");
+    }
+    if (value.payload.granted_capabilities.some(
+      (capability) => !hello.payload.capabilities.includes(capability),
+    )) {
+      throw new Error("hello_ack granted a capability the Bridge did not offer");
+    }
   }
   return value;
 }
@@ -369,10 +512,25 @@ export class WssGatewayBinding implements GatewayBinding {
         finish(closeError("open", code, reason));
       };
       const onUnexpectedResponse = (_request: unknown, response: IncomingMessage): void => {
-        response.resume();
-        finish(httpStatusError("WSS upgrade", response.statusCode ?? 500));
-        socket.once("error", () => undefined);
-        socket.terminate();
+        void (async () => {
+          const status = response.statusCode ?? 500;
+          let metadata: HttpFailureMetadata = {};
+          try {
+            const bytes = await readBoundedIncomingBytes(response, "WSS upgrade rejection");
+            metadata = httpFailureMetadata(status, {
+              get: (name) => {
+                const value = response.headers[name.toLowerCase()];
+                return Array.isArray(value) ? value[0] ?? null : value ?? null;
+              },
+            }, bytes);
+          } catch {
+            // The bounded metadata is optional. The authenticated HTTP status
+            // remains authoritative when the peer sends an invalid/oversize body.
+          }
+          finish(httpStatusError("WSS upgrade", status, "wss_upgrade", metadata));
+          socket.once("error", () => undefined);
+          socket.terminate();
+        })();
       };
       const timeout = setTimeout(() => {
         finish(new GatewayTransportError(
@@ -415,7 +573,7 @@ export class WssGatewayBinding implements GatewayBinding {
         try {
           if (binary) throw new Error("RBP WSS requires text frames");
           const envelope = parseEnvelope(rawDataBytes(data));
-          if (!ackSettled) settleAck(helloAck(envelope));
+          if (!ackSettled) settleAck(helloAck(envelope, undefined, hello));
           else this.#queue.push(envelope);
         } catch (error) {
           const failure = new GatewayTransportError(
@@ -561,38 +719,111 @@ async function timedFetch(
   }
 }
 
-async function readBoundedResponseBytes(response: Response, phase: string): Promise<Uint8Array> {
+type ReaderOutcome =
+  | { readonly kind: "read"; readonly value: ReadableStreamReadResult<Uint8Array> }
+  | { readonly kind: "error"; readonly error: unknown }
+  | { readonly kind: "timeout" };
+
+async function readWithDeadline(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  timeoutMs: number,
+): Promise<ReaderOutcome> {
+  return await new Promise<ReaderOutcome>((resolve) => {
+    let settled = false;
+    const finish = (outcome: ReaderOutcome): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(outcome);
+    };
+    const timeout = setTimeout(() => finish({ kind: "timeout" }), timeoutMs);
+    void reader.read().then(
+      (value) => finish({ kind: "read", value }),
+      (error: unknown) => finish({ kind: "error", error }),
+    );
+  });
+}
+
+async function readBoundedResponseBytes(
+  response: Response,
+  phase: string,
+  timeoutMs: number,
+  maxBytes = MAX_RBP_WIRE_FRAME_BYTES,
+): Promise<Uint8Array> {
   const contentLength = response.headers.get("content-length");
   if (contentLength !== null) {
     const advertised = Number(contentLength);
     if (!Number.isSafeInteger(advertised) || advertised < 0) {
-      await response.body?.cancel("invalid Content-Length");
+      void response.body?.cancel("invalid Content-Length");
       throw new Error(`${phase} has an invalid Content-Length`);
     }
-    if (advertised > MAX_RBP_WIRE_FRAME_BYTES) {
-      await response.body?.cancel("response exceeds raw byte cap");
-      throw new Error(`${phase} exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+    if (advertised > maxBytes) {
+      void response.body?.cancel("response exceeds raw byte cap");
+      throw new Error(`${phase} exceeds ${maxBytes} raw bytes`);
     }
   }
   if (response.body === null) return new Uint8Array();
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  let readPending = false;
+  const deadline = Date.now() + timeoutMs;
   try {
     for (;;) {
-      const next = await reader.read();
+      const remainingMs = deadline - Date.now();
+      if (remainingMs <= 0) {
+        readPending = true;
+        void reader.cancel(`${phase} body timeout`).catch(() => undefined);
+        throw new GatewayTransportError(
+          `${phase} body timed out after ${timeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        );
+      }
+      const outcome = await readWithDeadline(reader, remainingMs);
+      if (outcome.kind === "timeout") {
+        readPending = true;
+        void reader.cancel(`${phase} body timeout`).catch(() => undefined);
+        throw new GatewayTransportError(
+          `${phase} body timed out after ${timeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        );
+      }
+      if (outcome.kind === "error") throw outcome.error;
+      const next = outcome.value;
       if (next.done) break;
       total += next.value.byteLength;
-      if (total > MAX_RBP_WIRE_FRAME_BYTES) {
-        await reader.cancel("response exceeds raw byte cap");
-        throw new Error(`${phase} exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+      if (total > maxBytes) {
+        void reader.cancel("response exceeds raw byte cap").catch(() => undefined);
+        throw new Error(`${phase} exceeds ${maxBytes} raw bytes`);
       }
       chunks.push(next.value);
     }
   } finally {
-    reader.releaseLock();
+    if (!readPending) reader.releaseLock();
   }
   return new Uint8Array(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total));
+}
+
+async function httpResponseError(
+  response: Response,
+  phase: string,
+  statusPhase: HttpStatusPhase,
+  timeoutMs: number,
+): Promise<GatewayTransportError> {
+  let bytes = new Uint8Array();
+  try {
+    bytes = new Uint8Array(
+      await readBoundedResponseBytes(response, phase, timeoutMs, MAX_HTTP_ERROR_BODY_BYTES),
+    );
+  } catch {
+    // Preserve status classification even when optional diagnostics are malformed.
+  }
+  return httpStatusError(
+    phase,
+    response.status,
+    statusPhase,
+    httpFailureMetadata(response.status, response.headers, bytes),
+  );
 }
 
 export class HttpSseGatewayBinding implements GatewayBinding {
@@ -653,14 +884,17 @@ export class HttpSseGatewayBinding implements GatewayBinding {
       body: JSON.stringify(hello),
       redirect: "error",
     }, fetchTimeoutMs, "HTTP/SSE create");
-    if (response.status !== 201) throw httpStatusError("HTTP/SSE create", response.status);
+    if (response.status !== 201) {
+      throw await httpResponseError(response, "HTTP/SSE create", "connection_create", fetchTimeoutMs);
+    }
     const connectionId = response.headers.get("RBP-Connection-Id");
     if (connectionId === null || connectionId.length === 0 || /[\r\n/]/u.test(connectionId)) {
       throw new Error("fallback create omitted a valid RBP-Connection-Id");
     }
     const ack = helloAck(
-      parseEnvelope(await readBoundedResponseBytes(response, "HTTP/SSE hello_ack")),
+      parseEnvelope(await readBoundedResponseBytes(response, "HTTP/SSE hello_ack", fetchTimeoutMs)),
       connectionId,
+      hello,
     );
 
     const abort = new AbortController();
@@ -675,9 +909,9 @@ export class HttpSseGatewayBinding implements GatewayBinding {
       signal: abort.signal,
     }, fetchTimeoutMs, "HTTP/SSE events open");
     if (events.status !== 200 || !events.body) {
+      const failure = await httpResponseError(events, "HTTP/SSE events open", "events_open", fetchTimeoutMs);
       abort.abort();
-      await events.body?.cancel("events response rejected");
-      throw httpStatusError("HTTP/SSE events open", events.status);
+      throw failure;
     }
     const contentType = events.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (contentType !== "text/event-stream") {
@@ -719,7 +953,22 @@ export class HttpSseGatewayBinding implements GatewayBinding {
         "HTTP/SSE message send",
       );
       if (response.status !== 202) {
-        throw httpStatusError("HTTP/SSE message send", response.status);
+        const failure = await httpResponseError(
+          response,
+          "HTTP/SSE message send",
+          "message_send",
+          positiveTimeout(
+            this.#options.fetchTimeoutMs,
+            DEFAULT_FETCH_TIMEOUT_MS,
+            "HTTP/SSE fetch timeout",
+          ),
+        );
+        if (response.status === 404 || response.status === 410) {
+          this.#abort?.abort();
+          this.#abort = null;
+          this.#connectionId = null;
+        }
+        throw failure;
       }
     } finally {
       this.#unacceptedBytes -= Buffer.byteLength(body, "utf8");
@@ -843,9 +1092,22 @@ export async function openPrimaryThenFallback(input: {
     const failure = error instanceof GatewayTransportError
       ? error.faultClass
       : input.classifyWssFailure(error);
-    if (!input.fallbackProvisioned || input.fallback === undefined || failure !== "retryable_network") {
+    if (
+      !input.fallbackProvisioned ||
+      input.fallback === undefined ||
+      failure !== "retryable_network" ||
+      !input.hello.payload.capabilities.includes("transport_streamable_http")
+    ) {
       throw error;
     }
-    return { binding: input.fallback, helloAck: await input.fallback.open(input.hello) };
+    const helloAck = await input.fallback.open(input.hello);
+    if (!helloAck.payload.granted_capabilities.includes("transport_streamable_http")) {
+      await input.fallback.close();
+      throw new GatewayTransportError(
+        "HTTP/SSE fallback hello_ack omitted transport_streamable_http grant",
+        { faultClass: "protocol" },
+      );
+    }
+    return { binding: input.fallback, helloAck };
   }
 }

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { isAbsolute, join, parse, resolve } from "node:path";
@@ -31,6 +32,37 @@ interface DaemonState {
 
 const STATE_ROOT_ENV = "REVAGENT_BRIDGE_STATE_ROOT";
 const MAX_STATE_ROOT_LENGTH = 4_096;
+const TEMP_STATE_PREFIX = "revagent-bridge-daemon-";
+
+function temporaryStateGuardian(root: string): ChildProcess {
+  const script = String.raw`
+const { rmSync } = require("node:fs");
+const { tmpdir } = require("node:os");
+const { basename, dirname, resolve } = require("node:path");
+const root = resolve(process.argv[1] || "");
+const temp = resolve(tmpdir());
+if (dirname(root) !== temp || !basename(root).startsWith("revagent-bridge-daemon-")) process.exit(2);
+const parentPid = process.ppid;
+let cleaned = false;
+const cleanup = () => {
+  if (cleaned) return;
+  cleaned = true;
+  try { rmSync(root, { recursive: true, force: true }); process.exit(0); }
+  catch { process.exit(1); }
+};
+setInterval(() => {
+  try { process.kill(parentPid, 0); }
+  catch { cleanup(); }
+}, 50);
+`;
+  const guardian = spawn(process.execPath, ["-e", script, root], {
+    detached: true,
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  guardian.unref();
+  return guardian;
+}
 
 function absoluteStateRoot(value: string, label: string): string {
   if (
@@ -73,7 +105,7 @@ function daemonState(args: readonly string[]): DaemonState {
     };
   }
   return {
-    root: mkdtempSync(join(tmpdir(), "revagent-bridge-daemon-")),
+    root: mkdtempSync(join(tmpdir(), TEMP_STATE_PREFIX)),
     preserveState: false,
     source: "temporary",
   };
@@ -191,6 +223,12 @@ async function crashRecovery(externalFixture?: ExternalFixtureTarget): Promise<v
 
 async function daemon(args: readonly string[]): Promise<void> {
   const state = daemonState(args);
+  const guardian = state.preserveState ? null : temporaryStateGuardian(state.root);
+  const stopGuardian = (): void => {
+    if (guardian === null) return;
+    if (guardian.exitCode === null && guardian.signalCode === null) guardian.kill("SIGTERM");
+    guardian.unref();
+  };
   let cleaned = false;
   const cleanup = (): void => {
     if (cleaned) return;
@@ -202,11 +240,14 @@ async function daemon(args: readonly string[]): Promise<void> {
     runtime = new BridgeDaemonRuntime(state.root);
   } catch (error) {
     cleanup();
+    stopGuardian();
     throw error;
   }
   const finish = (): void => {
     try {
       cleanup();
+      stopGuardian();
+      process.stdin.pause();
       process.exitCode = 0;
     } catch (error) {
       process.stderr.write(`bridge daemon cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);

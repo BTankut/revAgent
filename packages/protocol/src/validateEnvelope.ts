@@ -343,8 +343,25 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
     );
   }
 
-  const expectedStatus =
-    firstNonSuccess === -1 ? "completed" : payload.steps[firstNonSuccess]?.status;
+  const firstIndeterminate = payload.steps.findIndex((step) => step.status === "indeterminate");
+  const hasExactUnknownCarrierReadPrefix =
+    payload.atomic &&
+    payload.status === "indeterminate" &&
+    payload.transaction_state === "indeterminate" &&
+    firstNonSuccess >= 0 &&
+    firstIndeterminate > firstNonSuccess &&
+    payload.steps.slice(firstNonSuccess, firstIndeterminate).every((step) =>
+      step.status === "failed" &&
+      step.error.fault_class === "environment" &&
+      step.error.retryable === true &&
+      step.error.outcome === "known" &&
+      step.error.verification_required === false
+    );
+  const expectedStatus = hasExactUnknownCarrierReadPrefix
+    ? "indeterminate"
+    : firstNonSuccess === -1
+      ? "completed"
+      : payload.steps[firstNonSuccess]?.status;
   if (payload.status !== expectedStatus) {
     errors.push(
       semanticError(

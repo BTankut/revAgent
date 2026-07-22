@@ -88,12 +88,33 @@ export interface BatchCoordinationState {
   readonly terminalJson: string | null;
 }
 
+export interface DurableDeliveryDraft {
+  readonly deliveryId: string;
+  readonly ordinal: number;
+  readonly draftJson: string;
+}
+
 function parseJson<T>(value: string, label: string): T {
   try {
     return JSON.parse(value) as T;
   } catch {
     throw new Error(`${label} contains invalid JSON`);
   }
+}
+
+function deliveryCarrierFromDraft(draftJson: string): { readonly identity: string; readonly carrierJson: string } | null {
+  const draft = parseJson<unknown>(draftJson, "durable delivery draft");
+  if (typeof draft !== "object" || draft === null || !("deliveryCarrier" in draft)) return null;
+  const carrier = draft.deliveryCarrier;
+  if (
+    typeof carrier !== "object" || carrier === null ||
+    !("rsid" in carrier) || typeof carrier.rsid !== "string" ||
+    !("invocationId" in carrier) || typeof carrier.invocationId !== "string"
+  ) return null;
+  return {
+    identity: `${carrier.rsid}/${carrier.invocationId}`,
+    carrierJson: JSON.stringify(carrier),
+  };
 }
 
 function assertSafeTime(value: number, name: string): void {
@@ -595,7 +616,7 @@ export class DurableBridgeJournal {
         }
       }
 
-      return records.map((record) => {
+      const decisions = records.map((record) => {
         const key = makeIdempotencyKey(rsid, record.binding.invocationId);
         const holdId = record.binding.mutating && record.dispatchMayHaveStarted
           ? installedHolds.find((hold) => hold.originIdempotencyKeys.includes(key))?.holdId ?? null
@@ -608,6 +629,11 @@ export class DurableBridgeJournal {
         this.#saveInvocation(decision.record, atMs, undefined, atMs);
         return decision;
       });
+      this.#queueSessionDeliveryExpiry(rsid, atMs);
+      this.#db.prepare("DELETE FROM artifact_outbox WHERE rsid=?").run(rsid);
+      this.#db.prepare("DELETE FROM artifact_delivery_plan WHERE rsid=?").run(rsid);
+      this.#db.prepare("DELETE FROM session_sequence WHERE rsid=?").run(rsid);
+      return decisions;
     });
   }
 
@@ -718,7 +744,7 @@ export class DurableBridgeJournal {
     });
   }
 
-  public saveSequenceWithArtifact(
+  public saveSequenceWithCarrier(
     state: RbpSequenceState,
     seq: number,
     carrierJson: string,
@@ -737,7 +763,176 @@ export class DurableBridgeJournal {
     });
   }
 
-  public ackedArtifactCarriers(rsid: string, ack: number): readonly {
+  /**
+   * Persists an artifact delivery independently from the RBP sequence window.
+   * The ordered drafts survive a process restart before any one draft is
+   * assigned a sequence number.  Re-staging the same invocation is idempotent:
+   * the first durable plan remains authoritative, including sender-owned ids.
+   */
+  public stageDurableDelivery(input: {
+    readonly rsid: string;
+    readonly deliveryId: string;
+    readonly draftJsons: readonly string[];
+    readonly terminalOrdinal: number;
+    readonly atMs?: number;
+  }): "accepted" | "replayed" {
+    const atMs = input.atMs ?? Date.now();
+    if (input.draftJsons.length === 0) throw new Error("artifact delivery plan is empty");
+    if (input.terminalOrdinal !== input.draftJsons.length - 1) {
+      throw new Error("artifact delivery terminal must be the final ordered draft");
+    }
+    return this.#durable("artifact_delivery_staged", `${input.rsid}/${input.deliveryId}`, atMs, () => {
+      const existing = this.#db
+        .prepare("SELECT rsid,state,terminal_ordinal FROM artifact_delivery_plan WHERE delivery_id=?")
+        .get(input.deliveryId) as {
+          readonly rsid: string;
+          readonly state: string;
+          readonly terminal_ordinal: number;
+        } | undefined;
+      if (existing !== undefined) {
+        if (existing.rsid !== input.rsid || existing.terminal_ordinal !== input.terminalOrdinal) {
+          throw new Error("artifact delivery identity mismatch");
+        }
+        return "replayed";
+      }
+      this.#db.prepare(
+        `INSERT INTO artifact_delivery_plan(
+          delivery_id,rsid,state,terminal_ordinal,terminal_seq,created_at_ms,updated_at_ms
+        ) VALUES(?,?,'pending',?,NULL,?,?)`,
+      ).run(input.deliveryId, input.rsid, input.terminalOrdinal, atMs, atMs);
+      const insert = this.#db.prepare(
+        "INSERT INTO artifact_delivery_draft(delivery_id,ordinal,draft_json) VALUES(?,?,?)",
+      );
+      input.draftJsons.forEach((draftJson, ordinal) => {
+        parseJson<unknown>(draftJson, "artifact delivery draft");
+        insert.run(input.deliveryId, ordinal, draftJson);
+      });
+      return "accepted";
+    });
+  }
+
+  public nextDurableDeliveryDraft(rsid: string): DurableDeliveryDraft | null {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      `SELECT p.delivery_id AS deliveryId,d.ordinal,d.draft_json AS draftJson
+       FROM artifact_delivery_plan p
+       JOIN artifact_delivery_draft d ON d.delivery_id=p.delivery_id
+       WHERE p.rsid=? AND p.state='pending'
+       ORDER BY p.created_at_ms,p.delivery_id,d.ordinal
+       LIMIT 1`,
+    ).get(rsid) as DurableDeliveryDraft | undefined;
+    if (row === undefined) return null;
+    parseJson<unknown>(row.draftJson, "artifact delivery draft");
+    return row;
+  }
+
+  public pendingDurableDeliveryDraftCount(rsid?: string): number {
+    this.#assertOpen();
+    const row = (rsid === undefined
+      ? this.#db.prepare("SELECT COUNT(*) AS count FROM artifact_delivery_draft").get()
+      : this.#db.prepare(
+        `SELECT COUNT(*) AS count
+         FROM artifact_delivery_draft d
+         JOIN artifact_delivery_plan p ON p.delivery_id=d.delivery_id
+         WHERE p.rsid=?`,
+      ).get(rsid)) as { readonly count: number };
+    return row.count;
+  }
+
+  /**
+   * Reports whether an invocation already has a durable artifact delivery in
+   * either the sequence-independent plan or the terminal outbox.  Checking
+   * both stores keeps restart recovery idempotent across the plan migration.
+   */
+  public hasDurableDelivery(rsid: string, invocationId: string): boolean {
+    this.#assertOpen();
+    const deliveryId = `${rsid}/${invocationId}`;
+    const plan = this.#db
+      .prepare("SELECT 1 AS present FROM artifact_delivery_plan WHERE delivery_id=?")
+      .get(deliveryId) as { readonly present: number } | undefined;
+    if (plan !== undefined) return true;
+    const outbox = this.#db
+      .prepare("SELECT carrier_json AS carrierJson FROM artifact_outbox")
+      .all() as Array<{ readonly carrierJson: string }>;
+    return outbox.some((row) => {
+      const carrier = parseJson<unknown>(row.carrierJson, "artifact outbox carrier");
+      return typeof carrier === "object" && carrier !== null &&
+        "rsid" in carrier && carrier.rsid === rsid &&
+        "invocationId" in carrier && carrier.invocationId === invocationId;
+    });
+  }
+
+  public durableDeliveryDisposition(
+    rsid: string,
+    invocationId: string,
+  ): "active" | "acked" | "expired" | null {
+    this.#assertOpen();
+    if (this.hasDurableDelivery(rsid, invocationId)) return "active";
+    const row = this.#db.prepare(
+      "SELECT disposition FROM artifact_delivery_tombstone WHERE delivery_id=? AND rsid=?",
+    ).get(`${rsid}/${invocationId}`, rsid) as { readonly disposition: "acked" | "expired" } | undefined;
+    return row?.disposition ?? null;
+  }
+
+  /**
+   * Assigns one staged artifact draft its sequence and consumes it in the same
+   * FULL-synchronous SQLite transaction.  A crash can therefore reveal either
+   * the still-unsequenced draft or the durable outbox frame, never neither.
+   */
+  public saveSequenceAndConsumeDeliveryDraft(input: {
+    readonly state: RbpSequenceState;
+    readonly seq: number;
+    readonly deliveryId: string;
+    readonly ordinal: number;
+    readonly draftJson: string;
+    readonly terminalCarrierJson?: string;
+    readonly atMs?: number;
+  }): void {
+    const atMs = input.atMs ?? Date.now();
+    this.#durable("artifact_delivery_sequenced", `${input.state.rsid}/${input.seq}`, atMs, () => {
+      const plan = this.#db.prepare(
+        "SELECT rsid,state,terminal_ordinal FROM artifact_delivery_plan WHERE delivery_id=?",
+      ).get(input.deliveryId) as {
+        readonly rsid: string;
+        readonly state: string;
+        readonly terminal_ordinal: number;
+      } | undefined;
+      const draft = this.#db.prepare(
+        "SELECT draft_json FROM artifact_delivery_draft WHERE delivery_id=? AND ordinal=?",
+      ).get(input.deliveryId, input.ordinal) as { readonly draft_json: string } | undefined;
+      const first = this.#db.prepare(
+        "SELECT MIN(ordinal) AS ordinal FROM artifact_delivery_draft WHERE delivery_id=?",
+      ).get(input.deliveryId) as { readonly ordinal: number | null };
+      if (
+        plan === undefined || plan.rsid !== input.state.rsid || plan.state !== "pending" ||
+        draft?.draft_json !== input.draftJson || first.ordinal !== input.ordinal
+      ) {
+        throw new Error("artifact delivery draft is not the next durable member");
+      }
+      const isTerminal = input.ordinal === plan.terminal_ordinal;
+      if (isTerminal !== (input.terminalCarrierJson !== undefined)) {
+        throw new Error("artifact delivery terminal/carrier binding mismatch");
+      }
+      this.#db.prepare(
+        `INSERT INTO session_sequence(rsid,sequence_json,updated_at_ms) VALUES(?,?,?)
+         ON CONFLICT(rsid) DO UPDATE SET sequence_json=excluded.sequence_json,updated_at_ms=excluded.updated_at_ms`,
+      ).run(input.state.rsid, JSON.stringify(input.state), atMs);
+      this.#db.prepare(
+        "DELETE FROM artifact_delivery_draft WHERE delivery_id=? AND ordinal=?",
+      ).run(input.deliveryId, input.ordinal);
+      if (input.terminalCarrierJson !== undefined) {
+        parseJson<unknown>(input.terminalCarrierJson, "artifact terminal carrier");
+        this.#db.prepare(
+          "INSERT INTO artifact_outbox(rsid,seq,carrier_json,created_at_ms) VALUES(?,?,?,?)",
+        ).run(input.state.rsid, input.seq, input.terminalCarrierJson, atMs);
+        this.#db.prepare(
+          "UPDATE artifact_delivery_plan SET state='queued',terminal_seq=?,updated_at_ms=? WHERE delivery_id=?",
+        ).run(input.seq, atMs, input.deliveryId);
+      }
+    });
+  }
+
+  public ackedDeliveryCarriers(rsid: string, ack: number): readonly {
     readonly seq: number;
     readonly carrierJson: string;
   }[] {
@@ -747,10 +942,92 @@ export class DurableBridgeJournal {
       .all(rsid, ack) as Array<{ readonly seq: number; readonly carrierJson: string }>;
   }
 
-  public markArtifactCarrierCleaned(rsid: string, seq: number, atMs = Date.now()): void {
+  public deliveryCarriersNeedingCleanup(): readonly {
+    readonly rsid: string;
+    readonly seq: number;
+    readonly carrierJson: string;
+  }[] {
+    this.#assertOpen();
+    const rows = this.#db.prepare(
+      "SELECT rsid,seq,carrier_json AS carrierJson FROM artifact_outbox ORDER BY rsid,seq",
+    ).all() as Array<{ readonly rsid: string; readonly seq: number; readonly carrierJson: string }>;
+    return rows.filter((row) => row.seq <= this.loadSequence(row.rsid).lastPeerAck);
+  }
+
+  public markDeliveryCarrierCleaned(rsid: string, seq: number, atMs = Date.now()): void {
     this.#durable("artifact_cleaned", `${rsid}/${seq}`, atMs, () => {
+      const plan = this.#db.prepare(
+        "SELECT delivery_id AS deliveryId FROM artifact_delivery_plan WHERE rsid=? AND terminal_seq=?",
+      ).get(rsid, seq) as { readonly deliveryId: string } | undefined;
+      const outbox = this.#db.prepare(
+        "SELECT carrier_json AS carrierJson FROM artifact_outbox WHERE rsid=? AND seq=?",
+      ).get(rsid, seq) as { readonly carrierJson: string } | undefined;
+      const parsed = outbox === undefined ? null : parseJson<unknown>(outbox.carrierJson, "artifact outbox carrier");
+      const deliveryId = plan?.deliveryId ?? (
+        typeof parsed === "object" && parsed !== null &&
+        "rsid" in parsed && parsed.rsid === rsid &&
+        "invocationId" in parsed && typeof parsed.invocationId === "string"
+          ? `${rsid}/${parsed.invocationId}`
+          : null
+      );
+      if (deliveryId === null) throw new Error("artifact ACK cleanup lost its delivery identity");
+      this.#db.prepare(
+        `INSERT INTO artifact_delivery_tombstone(delivery_id,rsid,disposition,updated_at_ms)
+         VALUES(?,?,'acked',?)
+         ON CONFLICT(delivery_id) DO UPDATE SET disposition='acked',updated_at_ms=excluded.updated_at_ms`,
+      ).run(deliveryId, rsid, atMs);
       this.#db.prepare("DELETE FROM artifact_outbox WHERE rsid=? AND seq=?").run(rsid, seq);
+      this.#db.prepare(
+        "DELETE FROM artifact_delivery_plan WHERE rsid=? AND terminal_seq=?",
+      ).run(rsid, seq);
     });
+  }
+
+  public deliveryCarriersNeedingExpiry(): readonly {
+    readonly cleanupId: string;
+    readonly carrierJson: string;
+  }[] {
+    this.#assertOpen();
+    return this.#db.prepare(
+      "SELECT cleanup_id AS cleanupId,carrier_json AS carrierJson FROM artifact_cleanup_queue ORDER BY cleanup_id",
+    ).all() as Array<{ readonly cleanupId: string; readonly carrierJson: string }>;
+  }
+
+  public markDeliveryCarrierExpired(cleanupId: string, atMs = Date.now()): void {
+    this.#durable("artifact_expired", cleanupId, atMs, () => {
+      const cleanup = this.#db.prepare(
+        "SELECT rsid FROM artifact_cleanup_queue WHERE cleanup_id=?",
+      ).get(cleanupId) as { readonly rsid: string } | undefined;
+      if (cleanup === undefined) throw new Error("artifact expiry cleanup identity is missing");
+      this.#db.prepare(
+        `INSERT INTO artifact_delivery_tombstone(delivery_id,rsid,disposition,updated_at_ms)
+         VALUES(?,?,'expired',?)
+         ON CONFLICT(delivery_id) DO UPDATE SET disposition='expired',updated_at_ms=excluded.updated_at_ms`,
+      ).run(cleanupId, cleanup.rsid, atMs);
+      this.#db.prepare("DELETE FROM artifact_cleanup_queue WHERE cleanup_id=?").run(cleanupId);
+    });
+  }
+
+  public retainedDeliveryCarrierJsons(): readonly string[] {
+    this.#assertOpen();
+    const retained = new Set<string>();
+    const outbox = this.#db.prepare("SELECT carrier_json AS carrierJson FROM artifact_outbox")
+      .all() as Array<{ readonly carrierJson: string }>;
+    outbox.forEach((row) => retained.add(row.carrierJson));
+    const terminalDrafts = this.#db.prepare(
+      `SELECT d.draft_json AS draftJson
+       FROM artifact_delivery_plan p
+       JOIN artifact_delivery_draft d
+         ON d.delivery_id=p.delivery_id AND d.ordinal=p.terminal_ordinal`,
+    ).all() as Array<{ readonly draftJson: string }>;
+    for (const row of terminalDrafts) {
+      const carrier = deliveryCarrierFromDraft(row.draftJson);
+      if (carrier !== null) retained.add(carrier.carrierJson);
+    }
+    const expiry = this.#db.prepare("SELECT carrier_json AS carrierJson FROM artifact_cleanup_queue")
+      .all() as Array<{ readonly carrierJson: string }>;
+    expiry.forEach((row) => retained.add(row.carrierJson));
+    return [...retained];
   }
 
   public acceptBatchBinding(input: {
@@ -1101,6 +1378,60 @@ export class DurableBridgeJournal {
     });
   }
 
+  #queueSessionDeliveryExpiry(rsid: string, atMs: number): void {
+    const carriers = new Map<string, string>();
+    const outbox = this.#db.prepare(
+      "SELECT carrier_json AS carrierJson FROM artifact_outbox WHERE rsid=?",
+    ).all(rsid) as Array<{ readonly carrierJson: string }>;
+    for (const row of outbox) {
+      const carrier = parseJson<unknown>(row.carrierJson, "artifact outbox carrier");
+      if (
+        typeof carrier === "object" && carrier !== null &&
+        "rsid" in carrier && carrier.rsid === rsid &&
+        "invocationId" in carrier && typeof carrier.invocationId === "string"
+      ) carriers.set(`${rsid}/${carrier.invocationId}`, row.carrierJson);
+    }
+    const terminalDrafts = this.#db.prepare(
+      `SELECT d.draft_json AS draftJson
+       FROM artifact_delivery_plan p
+       JOIN artifact_delivery_draft d
+         ON d.delivery_id=p.delivery_id AND d.ordinal=p.terminal_ordinal
+       WHERE p.rsid=?`,
+    ).all(rsid) as Array<{ readonly draftJson: string }>;
+    for (const row of terminalDrafts) {
+      const carrier = deliveryCarrierFromDraft(row.draftJson);
+      if (carrier !== null && carrier.identity.startsWith(`${rsid}/`)) {
+        carriers.set(carrier.identity, carrier.carrierJson);
+      }
+    }
+    for (const record of this.listInvocations()) {
+      if (record.binding.rsid !== rsid) continue;
+      for (const terminal of [record.terminalOutcome, record.lateTerminalOutcome]) {
+        if (!terminal?.payloadRetained || typeof terminal.payload !== "object" || terminal.payload === null) continue;
+        const payload = terminal.payload as Record<string, unknown>;
+        for (const key of ["artifact_carrier", "result_carrier"] as const) {
+          const carrier = payload[key];
+          if (
+            typeof carrier !== "object" || carrier === null ||
+            !("rsid" in carrier) || carrier.rsid !== rsid ||
+            !("invocationId" in carrier) || typeof carrier.invocationId !== "string"
+          ) continue;
+          const identity = `${rsid}/${carrier.invocationId}`;
+          const tombstone = this.#db.prepare(
+            "SELECT 1 AS present FROM artifact_delivery_tombstone WHERE delivery_id=?",
+          ).get(identity) as { readonly present: number } | undefined;
+          if (tombstone === undefined) carriers.set(identity, JSON.stringify(carrier));
+        }
+      }
+    }
+    const insert = this.#db.prepare(
+      `INSERT INTO artifact_cleanup_queue(cleanup_id,rsid,carrier_json,created_at_ms)
+       VALUES(?,?,?,?)
+       ON CONFLICT(cleanup_id) DO UPDATE SET carrier_json=excluded.carrier_json`,
+    );
+    for (const [identity, carrierJson] of carriers) insert.run(identity, rsid, carrierJson, atMs);
+  }
+
   #migrate(): void {
     this.#db.exec(`
       CREATE TABLE IF NOT EXISTS journal_meta(
@@ -1170,6 +1501,38 @@ export class DurableBridgeJournal {
         carrier_json TEXT NOT NULL,
         created_at_ms INTEGER NOT NULL,
         PRIMARY KEY(rsid,seq)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS artifact_delivery_plan(
+        delivery_id TEXT PRIMARY KEY,
+        rsid TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('pending','queued')),
+        terminal_ordinal INTEGER NOT NULL CHECK(terminal_ordinal >= 0),
+        terminal_seq INTEGER CHECK(terminal_seq IS NULL OR (terminal_seq >= 1 AND terminal_seq <= 9007199254740991)),
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        CHECK((state='pending' AND terminal_seq IS NULL) OR (state='queued' AND terminal_seq IS NOT NULL))
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS artifact_delivery_draft(
+        delivery_id TEXT NOT NULL REFERENCES artifact_delivery_plan(delivery_id) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+        draft_json TEXT NOT NULL,
+        PRIMARY KEY(delivery_id,ordinal)
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS artifact_cleanup_queue(
+        cleanup_id TEXT PRIMARY KEY,
+        rsid TEXT NOT NULL,
+        carrier_json TEXT NOT NULL,
+        created_at_ms INTEGER NOT NULL
+      ) STRICT;
+
+      CREATE TABLE IF NOT EXISTS artifact_delivery_tombstone(
+        delivery_id TEXT PRIMARY KEY,
+        rsid TEXT NOT NULL,
+        disposition TEXT NOT NULL CHECK(disposition IN ('acked','expired')),
+        updated_at_ms INTEGER NOT NULL
       ) STRICT;
 
       CREATE TABLE IF NOT EXISTS durability_events(
