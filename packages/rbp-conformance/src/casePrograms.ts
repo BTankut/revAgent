@@ -22,6 +22,7 @@ export const GATEWAY_CONTROL_ACTIONS = [
   "dispatch_cancel",
   "dispatch_payload_recovery",
   "liveness_sweep",
+  "set_clock",
   "snapshot",
 ] as const;
 
@@ -205,12 +206,14 @@ function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): Ca
     bridge(`${prefix}.open`, "open_transport", byBinding(
       {
         kind: "wss",
+        endpointPolicy: "loopback_test_readiness",
         deviceToken: "{{case.device_token}}",
         wssUrl: "{{gateway.ready.ws_url}}",
         hello: hello(caseId),
       },
       {
         kind: "streamable_http_sse",
+        endpointPolicy: "loopback_test_readiness",
         deviceToken: "{{case.device_token}}",
         fallbackUrl: "{{gateway.ready.http_connection_url}}",
         hello: hello(caseId),
@@ -358,7 +361,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         { rule: { direction: "gateway_to_bridge", action: "drop", binding: "wss", messageType: "heartbeat_ack", remaining: 8 } },
         { rule: { direction: "gateway_to_bridge", action: "drop", binding: "http_sse", messageType: "heartbeat_ack", remaining: 8 } },
       )),
+      gateway("o1-c06.clock-35s", "set_clock", args({ now_ms: 35_000 })),
       bridge("o1-c06.tick-35s", "tick", args({ nowMs: 35_000 })),
+      gateway("o1-c06.clock-65s", "set_clock", args({ now_ms: 65_000 })),
       bridge("o1-c06.tick-65s", "tick", args({ nowMs: 65_000 })),
       gateway("o1-c06.sweep", "liveness_sweep"),
     ],
@@ -375,9 +380,10 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       harness("o1-c07.restart-gateway", "restart_component", args({ componentId: "gateway_stub", preserveState: true })),
       bridge("o1-c07.restart-bridge", "restart_simulator"),
       bridge("o1-c07.reopen", "open_transport", byBinding(
-        { kind: "wss", deviceToken: "{{case.device_token}}", wssUrl: "{{gateway.ready.ws_url}}", hello: hello("O1-C07", "reconnect") },
-        { kind: "streamable_http_sse", deviceToken: "{{case.device_token}}", fallbackUrl: "{{gateway.ready.http_connection_url}}", hello: hello("O1-C07", "reconnect") },
+        { kind: "wss", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", wssUrl: "{{gateway.ready.ws_url}}", hello: hello("O1-C07", "reconnect") },
+        { kind: "streamable_http_sse", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", fallbackUrl: "{{gateway.ready.http_connection_url}}", hello: hello("O1-C07", "reconnect") },
       )),
+      bridge("o1-c07.restart-run-loop", "start_run_loop", args()),
       bridge("o1-c07.resume", "session_resume", args({ rsid: "{{case.rsid}}" })),
       bridge("o1-c07.flush", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
       gateway("o1-c07.flush-held", "flush_held"),
@@ -874,8 +880,8 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         preserveState: true,
       })),
       bridge("o1-c36.open-other-binding", "open_transport", byBinding(
-        { kind: "streamable_http_sse", deviceToken: "{{case.device_token}}", fallbackUrl: "{{gateway.ready.http_connection_url}}", hello: hello("O1-C36", "other-binding") },
-        { kind: "wss", deviceToken: "{{case.device_token}}", wssUrl: "{{gateway.ready.ws_url}}", hello: hello("O1-C36", "other-binding") },
+        { kind: "streamable_http_sse", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", fallbackUrl: "{{gateway.ready.http_connection_url}}", hello: hello("O1-C36", "other-binding") },
+        { kind: "wss", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", wssUrl: "{{gateway.ready.ws_url}}", hello: hello("O1-C36", "other-binding") },
       )),
       gateway("o1-c36.buffer-sse", "set_sse_buffering", args({
         connection_id: "{{case.sse_connection_id}}",

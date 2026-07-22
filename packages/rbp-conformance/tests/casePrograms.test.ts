@@ -26,6 +26,7 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   "gateway_http_control:dispatch_cancel": { required: ["request"] },
   "gateway_http_control:dispatch_payload_recovery": { required: ["request"] },
   "gateway_http_control:liveness_sweep": { required: [] },
+  "gateway_http_control:set_clock": { required: ["now_ms"] },
   "gateway_http_control:snapshot": { required: [] },
   "bridge_jsonl_control:discover_fixture": { required: [], optional: ["host", "port", "firstPort", "lastPort", "probeTimeoutMs"] },
   "bridge_jsonl_control:attach_fixture_session": {
@@ -34,7 +35,7 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   },
   "bridge_jsonl_control:open_transport": {
     required: ["kind", "deviceToken", "hello"],
-    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned"],
+    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned", "endpointPolicy"],
   },
   "bridge_jsonl_control:start_run_loop": { required: [] },
   "bridge_jsonl_control:session_register": { required: ["probeIndex", "userHint", "hostname", "fingerprint", "bridgeVersion"] },
