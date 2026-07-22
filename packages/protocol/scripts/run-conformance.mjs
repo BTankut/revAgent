@@ -36,12 +36,15 @@ function messageId(index) {
 
 function materialize(vector, index) {
   const envelope = {
-    v: 1,
     type: vector.type,
     id: messageId(index),
     ts: "2026-07-22T12:00:00.000Z",
     payload: clone(vector.payload),
   };
+
+  if (vector.scope !== "pre_negotiation") {
+    envelope.v = 1;
+  }
 
   if (vector.scope === "data") {
     envelope.rsid = "rs_7f3a";
@@ -199,8 +202,8 @@ requireFrameError(new Uint8Array([0xef, 0xbb, 0xbf, 0x7b, 0x7d]), "utf8_bom");
 requireFrameError(new Uint8Array([0xc3, 0x28]), "invalid_utf8");
 requireFrameError(wireEncoder.encode("{"), "invalid_json");
 const duplicateKeyFrame = JSON.stringify(bases.get("hello")).replace(
-  '{"v":1',
-  '{"v":1,"v":1',
+  '{"type":"hello"',
+  '{"type":"hello","type":"hello"',
 );
 requireFrameError(wireEncoder.encode(duplicateKeyFrame), "duplicate_key");
 

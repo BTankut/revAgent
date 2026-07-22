@@ -2,7 +2,7 @@
   "positive": [
     {
       "name": "hello",
-      "scope": "control",
+      "scope": "pre_negotiation",
       "type": "hello",
       "payload": {
         "min_protocol": 1,
@@ -25,7 +25,7 @@
     },
     {
       "name": "hello_ack",
-      "scope": "control",
+      "scope": "pre_negotiation",
       "type": "hello_ack",
       "payload": {
         "protocol": 1,
@@ -773,6 +773,48 @@
     }
   ],
   "negative": [
+    {
+      "name": "hello_rejects_negotiated_version",
+      "base": "hello",
+      "patch": {
+        "v": 1
+      }
+    },
+    {
+      "name": "hello_ack_rejects_negotiated_version",
+      "base": "hello_ack",
+      "patch": {
+        "v": 1
+      }
+    },
+    {
+      "name": "post_negotiation_control_requires_version",
+      "base": "heartbeat",
+      "remove": [
+        "v"
+      ]
+    },
+    {
+      "name": "post_negotiation_control_rejects_other_version",
+      "base": "heartbeat",
+      "patch": {
+        "v": 2
+      }
+    },
+    {
+      "name": "post_negotiation_data_requires_version",
+      "base": "invoke",
+      "remove": [
+        "v"
+      ]
+    },
+    {
+      "name": "post_negotiation_data_rejects_other_version",
+      "base": "invoke",
+      "patch": {
+        "v": 2
+      }
+    },
     {
       "name": "control_rejects_rsid",
       "base": "hello",

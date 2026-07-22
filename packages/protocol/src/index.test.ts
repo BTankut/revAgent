@@ -25,7 +25,7 @@ import {
 
 interface EnvelopeVector {
   name: string;
-  scope: "control" | "data";
+  scope: "pre_negotiation" | "control" | "data";
   type: string;
   payload: Record<string, unknown>;
 }
@@ -96,12 +96,15 @@ function messageId(index: number): string {
 
 function materialize(vector: EnvelopeVector, index: number): Record<string, unknown> {
   const envelope: Record<string, unknown> = {
-    v: RBP_PROTOCOL_VERSION,
     type: vector.type,
     id: messageId(index),
     ts: "2026-07-22T12:00:00.000Z",
     payload: clone(vector.payload),
   };
+
+  if (vector.scope !== "pre_negotiation") {
+    envelope.v = RBP_PROTOCOL_VERSION;
+  }
 
   if (vector.scope === "data") {
     envelope.rsid = "rs_7f3a";
@@ -619,7 +622,10 @@ describe("raw UTF-8 frame parsing and normative byte limits", () => {
     const hello = clone(positiveByName.get("hello"));
     expect(hello).toBeDefined();
     if (hello !== undefined) {
-      const duplicate = JSON.stringify(hello).replace('{"v":1', '{"v":1,"v":1');
+      const duplicate = JSON.stringify(hello).replace(
+        '{"type":"hello"',
+        '{"type":"hello","type":"hello"',
+      );
       expectFrameError(wireEncoder.encode(duplicate), "duplicate_key");
     }
   });

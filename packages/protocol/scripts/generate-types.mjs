@@ -11,8 +11,8 @@ const rawOutputPath = resolve(packageRoot, "src/generated/schema.ts");
 const outputPath = resolve(packageRoot, "src/generated/envelope.ts");
 
 const bindings = [
-  ["HelloEnvelope", "control", "hello", "Hello", "hello"],
-  ["HelloAckEnvelope", "control", "hello_ack", "HelloAck", "helloAck"],
+  ["HelloEnvelope", "preNegotiation", "hello", "Hello", "hello"],
+  ["HelloAckEnvelope", "preNegotiation", "hello_ack", "HelloAck", "helloAck"],
   ["SessionRegisterEnvelope", "control", "session_register", "SessionRegister", "sessionRegister"],
   ["SessionRegisteredEnvelope", "control", "session_registered", "SessionRegistered", "sessionRegistered"],
   ["SessionResumeEnvelope", "control", "session_resume", "SessionResume", "sessionResume"],
@@ -65,6 +65,12 @@ function assertRequired(label, actual, expected) {
 
 assertRequired("messageBase", envelopeSchema.$defs.messageBase.required, [
   "v",
+  "type",
+  "id",
+  "ts",
+  "payload",
+]);
+assertRequired("preNegotiationBase", envelopeSchema.$defs.preNegotiationBase.required, [
   "type",
   "id",
   "ts",
@@ -145,7 +151,12 @@ const importNames = [
 
 const aliases = bindings
   .map(([name, scope, type, payload]) => {
-    const base = scope === "control" ? "ControlEnvelope" : "DataEnvelope";
+    const base =
+      scope === "preNegotiation"
+        ? "PreNegotiationEnvelope"
+        : scope === "control"
+          ? "ControlEnvelope"
+          : "DataEnvelope";
     return `export type ${name} = ${base}<"${type}", ${payload}>;`;
   })
   .join("\n");
@@ -659,6 +670,18 @@ export type Goodbye = GoodbyeBase &
     | { reason: "update" | "server_draining"; retry_after_ms?: number }
     | { reason: "shutdown" | "protocol_error" | "auth_revoked"; retry_after_ms?: never }
   );
+
+export interface PreNegotiationEnvelope<TType extends string, TPayload> {
+  v?: never;
+  type: TType;
+  id: string;
+  ts: string;
+  payload: TPayload;
+  rsid?: never;
+  seq?: never;
+  ack?: never;
+  [key: string]: unknown;
+}
 
 export interface MessageBase<TType extends string, TPayload> {
   v: 1;

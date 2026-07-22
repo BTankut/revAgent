@@ -12,7 +12,6 @@ import type {
 } from "../src/index.js";
 
 const hello: HelloEnvelope = {
-  v: 1,
   type: "hello",
   id: "0197a3c2-0000-7000-8000-000000000001",
   ts: "2026-07-22T12:00:00.000Z",
@@ -25,6 +24,12 @@ const hello: HelloEnvelope = {
     machine: { hostname: "WS01", os: "Windows" },
     addin_versions: [],
   },
+};
+
+const illegalNegotiatedVersion: HelloEnvelope = {
+  ...hello,
+  // @ts-expect-error hello and hello_ack omit v before negotiation
+  v: 1,
 };
 
 const illegalControlField: HelloEnvelope = {
@@ -404,6 +409,7 @@ const invalidIndeterminateError: DataErrorEnvelope = {
 };
 
 void illegalControlField;
+void illegalNegotiatedVersion;
 void illegalControlSeq;
 void illegalControlAck;
 void dataMissingRsid;
