@@ -22,4 +22,8 @@ Bridges and external MCP clients use `gateway.revagent.app`. Clients must never 
 
 ## Remaining operational gate
 
-Bind the FQDN to the confirmed Cloudflare tunnel, record the DNS provider/account owner and recovery contact, and retain TLS/reachability evidence. Do not commit tunnel tokens or registrar secrets.
+The FQDN resolves through Cloudflare and the staged ingress rule maps it to the loopback-only origin;
+HTTPS reaches the Cloudflare edge and currently returns the expected HTTP 530 while the connector is
+intentionally stopped. Evidence is retained in `DP-03-04-cloudflare-staging.md`. Before pilot entry,
+record the DNS/account recovery owner and prove public TLS plus `/healthz` through the active real
+origin. Do not commit tunnel tokens or registrar secrets.

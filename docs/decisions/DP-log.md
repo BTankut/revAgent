@@ -12,8 +12,8 @@
 |---|---|---|---|---|---|---|
 | DP-1 | Bridge technology | M0 / build entry | confirmed | .NET 8 self-contained single-file Windows service | 2026-07-22 | Operator-confirmed; scaffold and Bridge implementation use this stack. |
 | DP-2 | Gateway-to-bridge transport | M0 / build entry | confirmed | WSS primary; Streamable HTTP/SSE fallback | 2026-07-22 | Operator-confirmed. RES-25 records the R-F amendment to WP1 P-O1-1; the fallback binding and conformance evidence remain v1.0/pilot work. |
-| DP-3 | Outbound tunnel | Pilot entry | confirmed | Cloudflare Tunnel object `revagent-gateway-prod`; UUID `bb68cbcb-eedf-474e-aaee-145d160ed004` | 2026-07-22 | Barış Tankut confirmed operator attribution on 2026-07-22. Connector/origin remains an executable pilot-entry item; no tunnel credential belongs in git. |
-| DP-4 | Gateway domain | Pilot entry | confirmed | `gateway.revagent.app` | 2026-07-22 | Barış Tankut confirmed operator attribution on 2026-07-22. Bind DNS to the confirmed tunnel and retain TLS/reachability evidence before pilot entry. |
+| DP-3 | Outbound tunnel | Pilot entry | confirmed | Cloudflare Tunnel object `revagent-gateway-prod`; UUID `bb68cbcb-eedf-474e-aaee-145d160ed004` | 2026-07-22 | Barış Tankut confirmed operator attribution. Connector credential/config and a bounded QUIC+HTTP/2 edge proof are staged on the Gateway host; the service remains deliberately disabled/inactive until the real origin exists. |
+| DP-4 | Gateway domain | Pilot entry | confirmed | `gateway.revagent.app` | 2026-07-22 | Barış Tankut confirmed operator attribution. DNS/edge TLS and the staged `http://127.0.0.1:8081` ingress are evidenced; active-origin `/healthz` and restart proof remain pilot gates. |
 | DP-5 | Phase-1 identity provider | Cutover entry | awaiting_confirmation | Recommended: Keycloak in Compose, through generic `OIDC_*` configuration | — | RES-22 governs. Entra ID remains conditional on an office M365 tenant and successful WP9 OAuth testing without DCR. |
 | DP-6 | LLM provider, models, and region | Phase 1 | not_applicable_phase1 | The authorized ChatGPT/Codex Desktop client retains the Phase-1 agentic loop; the Gateway uses no LLM API key | 2026-07-22 | RES-23 removes DP-6 from the Phase-1 pilot gate. The long-term in-house-loop/provider choice remains a later D9 implementation decision. |
 | DP-7 | Seat model | Cutover entry | awaiting_confirmation | Recommended: named-user seats per module | — | Confirm reassignment and procurement policy. |
@@ -41,8 +41,10 @@
   risk as of 2026-07-22.
 - Live host evidence: BatchMode SSH reached `bt@192.168.90.154`; Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM,
   204 GiB free root storage, and 870 GiB free data storage were retained in `DP-08-gateway-host.md`.
-- Deferred operational evidence: Cloudflare connector/origin, DNS/TLS reachability, Docker/Compose,
-  power-recovery/UPS, and later production-readiness proof.
+- Staged operational evidence: `DP-03-04-cloudflare-staging.md` records `cloudflared` 2026.7.2,
+  credential-hash parity, loopback ingress validation, QUIC/HTTP2 edge proof, Docker Engine 29.6.2,
+  Compose v5.3.1, hash-matched PR #273 artifacts, configuration validation, and the deliberate stopped
+  state. Active-origin `/healthz`, power-recovery/UPS, and later production-readiness proof remain open.
 - Executable gates remain independent of decision acceptance: WP9 must prove the selected client's remote-MCP path; NET01 and the Gateway host must produce retained readiness evidence.
 
 ### 2026-07-22 — Operator attribution closure
@@ -51,6 +53,20 @@ Barış Tankut explicitly confirmed that RES-23 direction and the DP-3, DP-4, DP
 are operator-owned. This dated confirmation closes the earlier `attribution asserted, not repo-provable`
 evidence gap. It confirms authorship of the decisions; it does not substitute for the separately required
 tunnel, reachability, client-conformance, or pilot-execution evidence.
+
+### 2026-07-22 — DP-3/DP-4 connector staging evidence
+
+Under R-G, the implementation assistant used the confirmed SSH path rather than assigning server work
+to the operator. Cloudflared 2026.7.2, the existing tunnel credential, root-owned locally managed config,
+and a disabled systemd unit were staged on `revagent`. Ingress validation bound
+`gateway.revagent.app` to `http://127.0.0.1:8081`; bounded QUIC and HTTP/2 edge checks passed. The unit
+was returned to `disabled`/`inactive` because no real Gateway/Caddy origin exists yet. Exact non-secret
+evidence is retained in `DP-03-04-cloudflare-staging.md`; no new Cloudflare authorization was required.
+
+The implementing assistant then installed Docker Engine 29.6.2 and Compose v5.3.1, staged the hash-matched
+PR #273 origin artifacts root-owned under `/opt/revagent/deploy/phase1`, and passed configuration-only
+Compose validation. No container or TCP 8081 listener was started. The stale Ookla Ubuntu 26.04 apt source
+that blocked package-index refresh was moved to the reversible `.list.disabled` form and retained.
 
 ## Amendments
 
