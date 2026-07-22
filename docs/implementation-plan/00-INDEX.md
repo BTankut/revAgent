@@ -113,6 +113,24 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   evaluation proves OAuth works against it without DCR. WP8's W1-7 operator task "Entra ID app registration"
   is amended to "confirm IdP direction (DP-5)". Section 07's parity rows 2/7 were also amended inline per
   RES-8/RES-20 (same review).
+- **RES-23 (2026-07-22 operator checkpoint) — Phase-1 uses the existing authorized ChatGPT/Codex Desktop
+  as an external MCP client.** The client owns the Phase-1 agentic loop; the Gateway does not hold an LLM
+  API key and does not implement the in-house loop during Phase 1. This is a bounded use of the external
+  client path already permitted by D9, not a change to the long-term in-house-loop target. It supersedes
+  WP3 P-CODEX-1 and every Phase-1 instruction that says the pilot must be fully off Codex: cutover removes
+  the legacy local stdio/NAS registrations, then revAgent registers the selected client's remote MCP path
+  and proves end-to-end compatibility. Client installation, subscription, and user session remain the
+  user's responsibility. DP-10 selection is closed; WP9 conformance remains a pilot/cutover gate, and a
+  failed conformance run blocks the pilot rather than silently selecting another client. DP-6 is not
+  applicable to Phase 1 and is removed from the pilot-entry decision gate.
+- **RES-24 (2026-07-22 R-F review) — W1-4 has one bounded `ci.yml` exception to P-CD-3.** The Week-1
+  authoritative task explicitly requires an additive `gateway-gates` job in `.github/workflows/ci.yml`.
+  PR #271 may add that job without changing any existing job or the signed release workflow. This exception
+  ends with the M0 skeleton; later Gateway CI/CD follows P-CD-3 through dedicated workflow files.
+- **RES-25 (2026-07-22 operator checkpoint) — DP-2 requires WSS primary plus a Streamable HTTP/SSE
+  fallback in Phase 1.** This supersedes WP1 P-O1-1's "WSS sole / fallback not built" wording. Both bindings
+  carry identical RBP semantics; the fallback remains capability-gated and must have a frozen binding plus
+  proxy/interoperability conformance evidence before v1.0/pilot use.
 
 ---
 
@@ -146,22 +164,24 @@ adaptations sequenced before pilot (RES-5).
 
 ## 4. WP9 — Phase-1 designer client (O8 execution) — NEW package
 
-**Why:** the critics' #1 practical finding — as originally drafted, no package delivered the thing a designer
-opens and types into after Codex desktop is removed at cutover. ~11 of 12 fleet users are Turkish-speaking
-designers, not CLI users.
+**Why:** the critics' #1 practical finding — as originally drafted, no package owned registering and proving
+the client a designer uses after the legacy local MCP path is removed. ~11 of 12 fleet users are
+Turkish-speaking designers, not CLI users.
 
-**Scope:** (1) Candidate evaluation against a written matrix: Streamable HTTP + OAuth (with DCR per WP4's
-IdP), the GAP-2 confirm round-trip, streaming, local-file workflows (Excel reconciliation, exported-image
-viewing — GAP-7), Turkish-friendly non-developer UX, per-seat cost, manageability. Candidates: Claude
-Desktop (default for designers), Claude Code (developers/power users), other compliant MCP clients.
-(2) DP-10 becomes a Build-phase decision with a licensing/cost line, recorded before pilot entry.
-(3) Delivery: per-machine install/config/login/MCP-registration steps, contributed to the WP8-T4 cutover
-runbook; conformance test (login → read query → confirm-class write → result visible in Revit).
-(4) Pilot binding: the pilot user works ≥5 real workdays fully off Codex on the chosen client before pilot
-exit. (5) The WP8-T6 quickstart/retraining pack is written against the chosen client.
+**Scope:** (1) DP-10 selected the existing authorized ChatGPT/Codex Desktop client on 2026-07-22. WP9 now
+verifies it against the written matrix: Streamable HTTP + OAuth (with DCR per WP4's IdP), the GAP-2 confirm
+round-trip, streaming, local-file workflows (Excel reconciliation, exported-image viewing — GAP-7),
+Turkish-friendly non-developer UX, and supportability. Claude and other compliant MCP clients remain
+comparison/fallback candidates only; changing the selection requires a dated DP-10 amendment.
+(2) Client installation, subscription, and user session are user-owned prerequisites. revAgent owns remote
+MCP registration instructions and end-to-end conformance evidence.
+(3) Delivery: remote-MCP registration and smoke steps, contributed to the WP8-T4 cutover runbook;
+conformance test (login → read query → confirm-class write → result visible in Revit).
+(4) Pilot binding: the pilot user works ≥5 real workdays fully off the legacy local stdio/NAS path on the
+selected client before pilot exit. (5) The WP8-T6 quickstart/retraining pack is written for that remote path.
 
-**Estimate:** 4–6 dev-days + license procurement (operator). **Dependencies:** WP2 north surface (M2), WP4
-OIDC (M5). **Gates:** DP-10 closed before M8 entry; conformance test green on the chosen client.
+**Estimate:** 4–6 dev-days; client subscription remains user-owned. **Dependencies:** WP2 north surface
+(M2), WP4 OIDC (M5). **Gates:** DP-10 selection is closed; conformance must be green before M8 entry.
 
 ---
 
@@ -205,14 +225,18 @@ rewrite evaluated; GAP-16 old telemetry alive; GAP-13.4 pilot updater task disab
 
 ## 7. Operator decision checklist (confirm before build — full one-pagers per DP in section 08(g))
 
-DP-1 bridge tech (.NET 8, default) · DP-2 transport (WSS primary + Streamable-HTTP fallback) · DP-3 tunnel
-(Cloudflare) · DP-4 domain (`gateway.<domain>`) · DP-5 IdP (recommended: Keycloak-in-Compose per RES-22;
-Entra ID alternative gated on M365 tenant + WP9 OAuth verification) · DP-6 LLM provider/models/region ·
-DP-7 seats (named) · DP-8 host hardware + LTE failover · DP-9 update signing (reuse RS256 chain) ·
-**DP-10 designer client + licensing (WP9 — now a Build-phase gate)** · DP-11 backup target · DP-12 pilot
-machine/user + cutover date · DP-13 monorepo layout (`packages/gateway|bridge|protocol`) · DP-14 Node MSI
-disposition · DP-15 historical-data archive location. Gate mapping: DP-1/2/13 before build; DP-3/4/6/8/9/10/12
-before pilot; rest before cutover.
+DP-1 bridge tech (.NET 8, confirmed) · DP-2 transport (WSS primary + Streamable-HTTP/SSE fallback,
+confirmed) · DP-3 tunnel (Cloudflare, `revagent-gateway-prod`, confirmed) · DP-4 domain
+(`gateway.revagent.app`, confirmed) · DP-5 IdP (recommended: Keycloak-in-Compose per RES-22;
+Entra ID alternative gated on M365 tenant + WP9 OAuth verification) · DP-6 not applicable to Phase 1
+(external-loop client; no Gateway LLM key) ·
+DP-7 seats (named) · DP-8 host confirmed and live SSH/resource proof retained; router has no dual-WAN/LTE
+and the operator accepted WAN-outage risk on 2026-07-22 · DP-9 update signing (reuse RS256 chain) ·
+**DP-10 existing ChatGPT/Codex Desktop remote-MCP conformance (selection confirmed; WP9 gate)** · DP-11
+backup target · DP-12 dedicated/SSH-ready `NET01` confirmed, with pilot user/window still pending · DP-13 monorepo layout
+(`packages/gateway|bridge|protocol`, confirmed) · DP-14 Node MSI disposition · DP-15 historical-data archive
+location. Gate mapping: DP-1/2/13 before build; DP-3/4/8/9/10-conformance/12 before pilot; rest before
+cutover.
 
 ---
 
@@ -228,12 +252,24 @@ before pilot; rest before cutover.
   watch items for the three places this is at risk.
 - **R-F Amendment protocol.** If implementation reveals a RES-* or section decision to be wrong, do not
   silently diverge: record a dated amendment in `docs/decisions/DP-log.md` and update this index.
+- **R-G Operator task cards.** Whenever an operator action remains, every implementation report MUST end
+  with a separate, non-optional `## OPERATÖR GÖREV KARTLARI` section. Each card MUST state: (1) **NE** —
+  exact numbered steps, commands, and screens; (2) **NEDEN** — the gate or milestone it opens; (3) **NE
+  ZAMANA KADAR** — the blocked gate and latest required point; (4) **KANIT** — the exact evidence location;
+  and (5) **CEVAP FORMATI** — the single-message reply that is sufficient to continue. Operator work MUST
+  never remain only embedded in a plan or runbook. The implementing assistant MUST use its available SSH
+  access to `bt@192.168.90.154` and execute every server-side action it can safely perform, retaining command
+  output as evidence. Only account authorization, physical/network work, decisions, and user communications
+  remain operator-owned.
 
 ## 9. Week 1 (starts tomorrow)
 
 Section 08(h) is the authoritative list: DP checkpoint session; monorepo scaffold (`packages/*`, existing dirs
 untouched); O1 spec v0.9 draft; CI skeleton (`gateway-gates` job + freeze clause); transport spike (35-tool
 catalog served over Streamable HTTP — swap point `installer/runtime-mcp-server/src/index.ts:19-20`); Phase-1
-Compose skeleton; operator parallel tasks (domain, tunnel account, Entra app, host prep, LLM key/region);
-plan/rollback/comms artifact skeletons. **Plus from this index:** GAP-13 items 1–2 (publish-freeze lock +
-updater-abstinence comms) and the WP9 evaluation matrix draft.
+Compose skeleton; parallel operational work split by R-G (the implementing assistant owns SSH-executable
+host reachability, tunnel connector/origin preparation, and DNS/TLS proof; the operator owns IdP/account
+authorization, physical/network changes, decisions, and user communications). The router has no dual-WAN/LTE
+and the operator accepted WAN-outage risk; there is no Phase-1 Gateway LLM key per RES-23. Include the
+plan/rollback/comms artifact skeletons. **Plus from this index:** GAP-13 items 1–2 (publish-freeze
+lock + updater-abstinence comms) and the WP9 evaluation matrix draft.
