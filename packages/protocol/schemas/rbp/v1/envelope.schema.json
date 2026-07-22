@@ -1,105 +1,490 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.revagent.local/rbp/v1/envelope.schema.json",
+  "$id": "https://schemas.revagent.app/rbp/v1/envelope.schema.json",
   "title": "RbpEnvelope",
-  "description": "M0 scaffold for the RBP/1 envelope. Message-specific payload schemas land during O1 conformance implementation.",
-  "type": "object",
-  "required": [
-    "v",
-    "type",
-    "id",
-    "ts",
-    "payload"
-  ],
-  "properties": {
-    "v": {
-      "const": 1
+  "description": "RBP/1 envelope with message-specific payload and control/data constraints.",
+  "$defs": {
+    "messageBase": {
+      "type": "object",
+      "required": [
+        "v",
+        "type",
+        "id",
+        "ts",
+        "payload"
+      ],
+      "properties": {
+        "v": {
+          "const": 1
+        },
+        "type": {
+          "type": "string"
+        },
+        "id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "rsid": {
+          "$ref": "common.schema.json#/$defs/rsid"
+        },
+        "seq": {
+          "$ref": "common.schema.json#/$defs/sequence"
+        },
+        "ack": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "ts": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "payload": {
+          "type": "object"
+        }
+      },
+      "additionalProperties": true
     },
-    "type": {
-      "type": "string",
-      "enum": [
-        "hello",
-        "hello_ack",
-        "session_register",
-        "session_registered",
-        "session_resume",
-        "resume_ack",
-        "session_unregister",
-        "heartbeat",
-        "heartbeat_ack",
-        "invoke",
-        "invoke_batch",
-        "result",
-        "partial",
-        "error",
-        "cancel",
-        "doc_context_update",
-        "manifest_check",
-        "manifest_info",
-        "goodbye"
-      ]
-    },
-    "id": {
-      "type": "string",
-      "minLength": 1
-    },
-    "rsid": {
-      "type": "string",
-      "minLength": 1
-    },
-    "seq": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    },
-    "ack": {
-      "type": "integer",
-      "minimum": 0,
-      "maximum": 9007199254740991
-    },
-    "ts": {
-      "type": "string",
-      "format": "date-time"
-    },
-    "payload": {
-      "type": "object"
-    }
-  },
-  "allOf": [
-    {
-      "if": {
-        "properties": {
-          "type": {
-            "enum": [
-              "invoke",
-              "invoke_batch",
-              "result",
-              "partial",
-              "error",
-              "cancel",
-              "doc_context_update"
+    "controlBase": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/messageBase"
+        },
+        {
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "rsid"
+                ]
+              },
+              {
+                "required": [
+                  "seq"
+                ]
+              },
+              {
+                "required": [
+                  "ack"
+                ]
+              }
             ]
           }
         }
-      },
-      "then": {
-        "required": [
-          "rsid",
-          "seq"
-        ],
-        "properties": {
-          "rsid": {
-            "type": "string",
-            "minLength": 1
-          },
-          "seq": {
-            "type": "integer",
-            "minimum": 1,
-            "maximum": 9007199254740991
+      ]
+    },
+    "dataBase": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/messageBase"
+        },
+        {
+          "type": "object",
+          "required": [
+            "rsid",
+            "seq"
+          ]
+        }
+      ]
+    },
+    "helloEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "hello"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/hello"
+            }
           }
         }
-      }
+      ]
+    },
+    "helloAckEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "hello_ack"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/helloAck"
+            }
+          }
+        }
+      ]
+    },
+    "sessionRegisterEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "session_register"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/sessionRegister"
+            }
+          }
+        }
+      ]
+    },
+    "sessionRegisteredEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "session_registered"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/sessionRegistered"
+            }
+          }
+        }
+      ]
+    },
+    "sessionResumeEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "session_resume"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/sessionResume"
+            }
+          }
+        }
+      ]
+    },
+    "resumeAckEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "resume_ack"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/resumeAck"
+            }
+          }
+        }
+      ]
+    },
+    "sessionUnregisterEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "session_unregister"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/sessionUnregister"
+            }
+          }
+        }
+      ]
+    },
+    "heartbeatEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "heartbeat"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/heartbeat"
+            }
+          }
+        }
+      ]
+    },
+    "heartbeatAckEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "heartbeat_ack"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/heartbeatAck"
+            }
+          }
+        }
+      ]
+    },
+    "invokeEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "invoke"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/invoke"
+            }
+          }
+        }
+      ]
+    },
+    "invokeBatchEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "invoke_batch"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/invokeBatch"
+            }
+          }
+        }
+      ]
+    },
+    "resultEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "result"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/result"
+            }
+          }
+        }
+      ]
+    },
+    "partialEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "partial"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/partial"
+            }
+          }
+        }
+      ]
+    },
+    "dataErrorEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "error"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/error"
+            }
+          }
+        }
+      ]
+    },
+    "connectionErrorEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "error"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/connectionError"
+            }
+          }
+        }
+      ]
+    },
+    "cancelEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "cancel"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/cancel"
+            }
+          }
+        }
+      ]
+    },
+    "docContextUpdateEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/dataBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "doc_context_update"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/docContextUpdate"
+            }
+          }
+        }
+      ]
+    },
+    "manifestCheckEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "manifest_check"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/manifestCheck"
+            }
+          }
+        }
+      ]
+    },
+    "manifestInfoEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "manifest_info"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/manifestInfo"
+            }
+          }
+        }
+      ]
+    },
+    "goodbyeEnvelope": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/controlBase"
+        },
+        {
+          "properties": {
+            "type": {
+              "const": "goodbye"
+            },
+            "payload": {
+              "$ref": "payloads.schema.json#/$defs/goodbye"
+            }
+          }
+        }
+      ]
     }
-  ],
-  "additionalProperties": true
+  },
+  "oneOf": [
+    {
+      "$ref": "#/$defs/helloEnvelope"
+    },
+    {
+      "$ref": "#/$defs/helloAckEnvelope"
+    },
+    {
+      "$ref": "#/$defs/sessionRegisterEnvelope"
+    },
+    {
+      "$ref": "#/$defs/sessionRegisteredEnvelope"
+    },
+    {
+      "$ref": "#/$defs/sessionResumeEnvelope"
+    },
+    {
+      "$ref": "#/$defs/resumeAckEnvelope"
+    },
+    {
+      "$ref": "#/$defs/sessionUnregisterEnvelope"
+    },
+    {
+      "$ref": "#/$defs/heartbeatEnvelope"
+    },
+    {
+      "$ref": "#/$defs/heartbeatAckEnvelope"
+    },
+    {
+      "$ref": "#/$defs/invokeEnvelope"
+    },
+    {
+      "$ref": "#/$defs/invokeBatchEnvelope"
+    },
+    {
+      "$ref": "#/$defs/resultEnvelope"
+    },
+    {
+      "$ref": "#/$defs/partialEnvelope"
+    },
+    {
+      "$ref": "#/$defs/dataErrorEnvelope"
+    },
+    {
+      "$ref": "#/$defs/connectionErrorEnvelope"
+    },
+    {
+      "$ref": "#/$defs/cancelEnvelope"
+    },
+    {
+      "$ref": "#/$defs/docContextUpdateEnvelope"
+    },
+    {
+      "$ref": "#/$defs/manifestCheckEnvelope"
+    },
+    {
+      "$ref": "#/$defs/manifestInfoEnvelope"
+    },
+    {
+      "$ref": "#/$defs/goodbyeEnvelope"
+    }
+  ]
 }

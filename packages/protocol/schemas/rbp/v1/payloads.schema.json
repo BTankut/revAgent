@@ -1,0 +1,2333 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.revagent.app/rbp/v1/payloads.schema.json",
+  "title": "RBP/1 message payloads",
+  "$defs": {
+    "hello": {
+      "type": "object",
+      "required": [
+        "min_protocol",
+        "max_protocol",
+        "capabilities",
+        "bridge_version",
+        "device_id",
+        "machine",
+        "addin_versions"
+      ],
+      "properties": {
+        "min_protocol": {
+          "const": 1
+        },
+        "max_protocol": {
+          "const": 1
+        },
+        "capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/capability"
+          },
+          "uniqueItems": true
+        },
+        "bridge_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "device_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "machine": {
+          "type": "object",
+          "required": [
+            "hostname",
+            "os"
+          ],
+          "properties": {
+            "hostname": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "os": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "fingerprint": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            }
+          },
+          "additionalProperties": true
+        },
+        "addin_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/version"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "helloAck": {
+      "type": "object",
+      "required": [
+        "protocol",
+        "connection_id",
+        "granted_capabilities",
+        "heartbeat_interval_ms",
+        "limits",
+        "manifest"
+      ],
+      "properties": {
+        "protocol": {
+          "const": 1
+        },
+        "connection_id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "granted_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/capability"
+          },
+          "uniqueItems": true
+        },
+        "heartbeat_interval_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "limits": {
+          "type": "object",
+          "required": [
+            "max_params_bytes",
+            "max_result_bytes",
+            "max_partial_bytes"
+          ],
+          "properties": {
+            "max_params_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 4194304
+            },
+            "max_result_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 33554432
+            },
+            "max_partial_bytes": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 1048576
+            }
+          },
+          "additionalProperties": true
+        },
+        "manifest": {
+          "type": "object",
+          "required": [
+            "latest_bridge_version",
+            "manifest_url"
+          ],
+          "properties": {
+            "latest_bridge_version": {
+              "$ref": "common.schema.json#/$defs/version"
+            },
+            "manifest_url": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "sessionRegister": {
+      "type": "object",
+      "required": [
+        "local_session_key",
+        "user_hint",
+        "machine",
+        "revit",
+        "addin_version",
+        "result_contract_version",
+        "session_capabilities",
+        "bridge_version",
+        "documents",
+        "port"
+      ],
+      "properties": {
+        "local_session_key": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "user_hint": {
+          "type": "object",
+          "required": [
+            "name"
+          ],
+          "properties": {
+            "name": {
+              "$ref": "common.schema.json#/$defs/boundedString"
+            }
+          },
+          "additionalProperties": true
+        },
+        "machine": {
+          "type": "object",
+          "required": [
+            "hostname",
+            "fingerprint"
+          ],
+          "properties": {
+            "hostname": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "fingerprint": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            }
+          },
+          "additionalProperties": true
+        },
+        "revit": {
+          "type": "object",
+          "required": [
+            "version",
+            "build",
+            "pid"
+          ],
+          "properties": {
+            "version": {
+              "$ref": "common.schema.json#/$defs/version"
+            },
+            "build": {
+              "$ref": "common.schema.json#/$defs/version"
+            },
+            "pid": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          },
+          "additionalProperties": true
+        },
+        "addin_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "result_contract_version": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "session_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/capability"
+          },
+          "uniqueItems": true
+        },
+        "bridge_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "documents": {
+          "$ref": "common.schema.json#/$defs/documents"
+        },
+        "port": {
+          "$ref": "common.schema.json#/$defs/port"
+        }
+      },
+      "not": {
+        "anyOf": [
+          {
+            "required": [
+              "tenant_id"
+            ]
+          },
+          {
+            "required": [
+              "user_id"
+            ]
+          },
+          {
+            "required": [
+              "seat_id"
+            ]
+          },
+          {
+            "required": [
+              "principal"
+            ]
+          },
+          {
+            "required": [
+              "seat"
+            ]
+          }
+        ]
+      },
+      "additionalProperties": true
+    },
+    "sessionRegistered": {
+      "type": "object",
+      "required": [
+        "rsid",
+        "resume_token",
+        "resume_expires_at",
+        "principal",
+        "seat",
+        "granted_session_capabilities"
+      ],
+      "properties": {
+        "rsid": {
+          "$ref": "common.schema.json#/$defs/rsid"
+        },
+        "resume_token": {
+          "$ref": "common.schema.json#/$defs/opaqueToken"
+        },
+        "resume_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "principal": {
+          "type": "object",
+          "required": [
+            "tenant_id",
+            "user_id"
+          ],
+          "properties": {
+            "tenant_id": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "user_id": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            }
+          },
+          "additionalProperties": true
+        },
+        "seat": {
+          "type": "object",
+          "required": [
+            "granted",
+            "seat_id"
+          ],
+          "properties": {
+            "granted": {
+              "const": true
+            },
+            "seat_id": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            }
+          },
+          "additionalProperties": true
+        },
+        "granted_session_capabilities": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/capability"
+          },
+          "uniqueItems": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "sessionResume": {
+      "type": "object",
+      "required": [
+        "rsid",
+        "resume_token",
+        "last_rx_seq"
+      ],
+      "properties": {
+        "rsid": {
+          "$ref": "common.schema.json#/$defs/rsid"
+        },
+        "resume_token": {
+          "$ref": "common.schema.json#/$defs/opaqueToken"
+        },
+        "last_rx_seq": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": true
+    },
+    "resumeAck": {
+      "type": "object",
+      "required": [
+        "rsid",
+        "last_rx_seq",
+        "resume_expires_at"
+      ],
+      "properties": {
+        "rsid": {
+          "$ref": "common.schema.json#/$defs/rsid"
+        },
+        "last_rx_seq": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "resume_expires_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "additionalProperties": true
+    },
+    "sessionUnregister": {
+      "type": "object",
+      "required": [
+        "rsid",
+        "reason"
+      ],
+      "properties": {
+        "rsid": {
+          "$ref": "common.schema.json#/$defs/rsid"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "revit_exited",
+            "bridge_shutdown",
+            "session_replaced",
+            "operator_requested"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "heartbeat": {
+      "type": "object",
+      "required": [
+        "bridge_version",
+        "acks",
+        "sessions"
+      ],
+      "properties": {
+        "bridge_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "acks": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/ackEntry"
+          }
+        },
+        "sessions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": [
+              "rsid",
+              "port",
+              "revit_status"
+            ],
+            "properties": {
+              "rsid": {
+                "$ref": "common.schema.json#/$defs/rsid"
+              },
+              "port": {
+                "$ref": "common.schema.json#/$defs/port"
+              },
+              "revit_status": {
+                "type": "object",
+                "required": [
+                  "active_task",
+                  "addin_reachable"
+                ],
+                "properties": {
+                  "active_task": {
+                    "oneOf": [
+                      {
+                        "type": "null"
+                      },
+                      {
+                        "type": "object",
+                        "required": [
+                          "name",
+                          "method",
+                          "elapsed_ms"
+                        ],
+                        "properties": {
+                          "name": {
+                            "$ref": "common.schema.json#/$defs/boundedString"
+                          },
+                          "method": {
+                            "$ref": "common.schema.json#/$defs/nonEmptyString"
+                          },
+                          "elapsed_ms": {
+                            "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+                          }
+                        },
+                        "additionalProperties": true
+                      }
+                    ]
+                  },
+                  "addin_reachable": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": true
+              }
+            },
+            "additionalProperties": true
+          }
+        }
+      },
+      "additionalProperties": true
+    },
+    "heartbeatAck": {
+      "type": "object",
+      "required": [
+        "server_time",
+        "acks"
+      ],
+      "properties": {
+        "server_time": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "acks": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/ackEntry"
+          }
+        },
+        "update_available": {
+          "type": "object",
+          "required": [
+            "channel",
+            "manifest_url"
+          ],
+          "properties": {
+            "channel": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "manifest_url": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "additionalProperties": true
+    },
+    "verification": {
+      "type": "object",
+      "required": [
+        "hold_id",
+        "mutation_scope",
+        "purpose"
+      ],
+      "properties": {
+        "hold_id": {
+          "$ref": "common.schema.json#/$defs/verificationHoldId"
+        },
+        "mutation_scope": {
+          "$ref": "common.schema.json#/$defs/mutationScope"
+        },
+        "purpose": {
+          "const": "resolve_indeterminate"
+        }
+      },
+      "additionalProperties": true
+    },
+    "recoveryClearance": {
+      "type": "object",
+      "required": [
+        "hold_id",
+        "mutation_scope",
+        "resolution_id",
+        "basis",
+        "verification_invocation_id",
+        "evidence_digest",
+        "decision",
+        "audit_id"
+      ],
+      "properties": {
+        "hold_id": {
+          "$ref": "common.schema.json#/$defs/verificationHoldId"
+        },
+        "mutation_scope": {
+          "$ref": "common.schema.json#/$defs/mutationScope"
+        },
+        "resolution_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "basis": {
+          "type": "string",
+          "enum": [
+            "verification_read",
+            "late_terminal"
+          ]
+        },
+        "verification_invocation_id": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/uuidV7"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "evidence_digest": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "decision": {
+          "type": "string",
+          "enum": [
+            "non_execution_proven",
+            "postcondition_verified"
+          ]
+        },
+        "audit_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "basis"
+            ],
+            "properties": {
+              "basis": {
+                "const": "verification_read"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "verification_invocation_id": {
+                "$ref": "common.schema.json#/$defs/uuidV7"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "verification_invocation_id": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "recoveryClearances": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/recoveryClearance"
+      },
+      "uniqueItems": true
+    },
+    "artifactDescriptor": {
+      "type": "object",
+      "required": [
+        "artifact_id",
+        "artifact_index",
+        "stream_id",
+        "filename",
+        "content_type",
+        "total_chunks",
+        "total_size",
+        "sha256"
+      ],
+      "properties": {
+        "artifact_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "artifact_index": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "stream_id": {
+          "type": "string",
+          "pattern": "^artifact:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "filename": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 255,
+          "pattern": "^[^/\\\\]+$"
+        },
+        "content_type": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "total_chunks": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "total_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 33554432
+        },
+        "sha256": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": true
+    },
+    "invocationFields": {
+      "type": "object",
+      "required": [
+        "invocation_id",
+        "method",
+        "params",
+        "mutating",
+        "mutation_scope",
+        "policy"
+      ],
+      "properties": {
+        "invocation_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "method": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "params": {},
+        "mutating": {
+          "type": "boolean"
+        },
+        "mutation_scope": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/mutationScope"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "policy": {
+          "$ref": "common.schema.json#/$defs/policy"
+        },
+        "display": {
+          "$ref": "common.schema.json#/$defs/display"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "mutating"
+            ],
+            "properties": {
+              "mutating": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "mutation_scope": {
+                "$ref": "common.schema.json#/$defs/mutationScope"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "mutation_scope": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "invoke": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/invocationFields"
+        },
+        {
+          "type": "object",
+          "required": [
+            "timeout_ms",
+            "verification",
+            "recovery_clearances"
+          ],
+          "properties": {
+            "timeout_ms": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 9007199254740991
+            },
+            "verification": {
+              "oneOf": [
+                {
+                  "$ref": "#/$defs/verification"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            },
+            "recovery_clearances": {
+              "$ref": "#/$defs/recoveryClearances"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "mutating"
+                ],
+                "properties": {
+                  "mutating": {
+                    "const": true
+                  }
+                }
+              },
+              "then": {
+                "properties": {
+                  "verification": {
+                    "type": "null"
+                  }
+                }
+              },
+              "else": {
+                "properties": {
+                  "recovery_clearances": {
+                    "maxItems": 0
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "batchStep": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/invocationFields"
+        },
+        {
+          "required": [
+            "params_digest"
+          ],
+          "properties": {
+            "method": {
+              "type": "string",
+              "not": {
+                "enum": [
+                  "execute_batch",
+                  "mcp_status"
+                ]
+              }
+            },
+            "params_digest": {
+              "$ref": "common.schema.json#/$defs/sha256"
+            }
+          },
+          "not": {
+            "required": [
+              "display"
+            ]
+          }
+        }
+      ]
+    },
+    "invokeBatch": {
+      "type": "object",
+      "required": [
+        "batch_id",
+        "atomic",
+        "timeout_ms",
+        "recovery_clearances",
+        "steps",
+        "batch_digest"
+      ],
+      "properties": {
+        "batch_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "atomic": {
+          "type": "boolean"
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "recovery_clearances": {
+          "$ref": "#/$defs/recoveryClearances"
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/batchStep"
+          }
+        },
+        "batch_digest": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        }
+      },
+      "additionalProperties": true
+    },
+    "invocationResult": {
+      "type": "object",
+      "required": [
+        "kind",
+        "invocation_id",
+        "status",
+        "metrics"
+      ],
+      "properties": {
+        "kind": {
+          "const": "invocation"
+        },
+        "invocation_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "guarded"
+          ]
+        },
+        "result": {},
+        "guarded_reason": {
+          "$ref": "common.schema.json#/$defs/guardedReason"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "late_after_indeterminate": {
+          "type": "boolean"
+        },
+        "verification_hold_id": {
+          "$ref": "common.schema.json#/$defs/verificationHoldId"
+        },
+        "payload_omitted": {
+          "type": "boolean"
+        },
+        "result_digest": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "metrics": {
+          "$ref": "common.schema.json#/$defs/metrics"
+        },
+        "chunked": {
+          "type": "boolean"
+        },
+        "stream_id": {
+          "const": "result"
+        },
+        "content_type": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "total_chunks": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "total_size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 33554432
+        },
+        "sha256": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "artifacts": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/artifactDescriptor"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "guarded"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "guarded_reason"
+            ]
+          },
+          "else": {
+            "not": {
+              "required": [
+                "guarded_reason"
+              ]
+            }
+          }
+        },
+        {
+          "oneOf": [
+            {
+              "required": [
+                "result"
+              ],
+              "properties": {
+                "payload_omitted": {
+                  "const": false
+                },
+                "chunked": {
+                  "const": false
+                }
+              },
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "stream_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "content_type"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "total_chunks"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "total_size"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sha256"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "artifacts"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "payload_omitted",
+                "result_digest"
+              ],
+              "properties": {
+                "payload_omitted": {
+                  "const": true
+                }
+              },
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "result"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "chunked"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "artifacts"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "chunked",
+                "stream_id",
+                "content_type",
+                "total_chunks",
+                "total_size",
+                "sha256"
+              ],
+              "properties": {
+                "chunked": {
+                  "const": true
+                },
+                "stream_id": {
+                  "const": "result"
+                }
+              },
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "result"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "payload_omitted"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "artifacts"
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "required": [
+                "result",
+                "chunked",
+                "artifacts"
+              ],
+              "properties": {
+                "payload_omitted": {
+                  "const": false
+                },
+                "chunked": {
+                  "const": true
+                }
+              },
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "stream_id"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "content_type"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "total_chunks"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "total_size"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "sha256"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        {
+          "if": {
+            "required": [
+              "late_after_indeterminate"
+            ],
+            "properties": {
+              "late_after_indeterminate": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "replayed",
+              "verification_hold_id",
+              "result_digest"
+            ],
+            "properties": {
+              "replayed": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "verification_hold_id"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "payload_omitted"
+            ],
+            "properties": {
+              "payload_omitted": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "replayed"
+            ],
+            "properties": {
+              "replayed": {
+                "const": true
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "batchStepResult": {
+      "type": "object",
+      "required": [
+        "index",
+        "invocation_id",
+        "status",
+        "replayed"
+      ],
+      "properties": {
+        "index": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "invocation_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "guarded",
+            "failed",
+            "cancelled",
+            "indeterminate",
+            "not_started"
+          ]
+        },
+        "result": {},
+        "payload_omitted": {
+          "type": "boolean"
+        },
+        "result_digest": {
+          "$ref": "common.schema.json#/$defs/sha256"
+        },
+        "guarded_reason": {
+          "$ref": "common.schema.json#/$defs/guardedReason"
+        },
+        "error": {
+          "$ref": "common.schema.json#/$defs/errorDetail"
+        },
+        "replayed": {
+          "type": "boolean"
+        },
+        "late_after_indeterminate": {
+          "type": "boolean"
+        },
+        "verification_hold_id": {
+          "$ref": "common.schema.json#/$defs/verificationHoldId"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "$ref": "common.schema.json#/$defs/inlineOrOmittedResult"
+              },
+              {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "error"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "guarded_reason"
+                      ]
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "guarded"
+              }
+            }
+          },
+          "then": {
+            "allOf": [
+              {
+                "$ref": "common.schema.json#/$defs/inlineOrOmittedResult"
+              },
+              {
+                "required": [
+                  "guarded_reason"
+                ],
+                "not": {
+                  "required": [
+                    "error"
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "failed"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "required": [
+                  "fault_class"
+                ],
+                "properties": {
+                  "fault_class": {
+                    "not": {
+                      "enum": [
+                        "cancelled",
+                        "journal_indeterminate"
+                      ]
+                    }
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "result"
+                  ]
+                },
+                {
+                  "required": [
+                    "payload_omitted"
+                  ]
+                },
+                {
+                  "required": [
+                    "guarded_reason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "cancelled"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "required": [
+                  "fault_class"
+                ],
+                "properties": {
+                  "fault_class": {
+                    "const": "cancelled"
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "result"
+                  ]
+                },
+                {
+                  "required": [
+                    "payload_omitted"
+                  ]
+                },
+                {
+                  "required": [
+                    "guarded_reason"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "indeterminate"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "required": [
+                  "fault_class"
+                ],
+                "properties": {
+                  "fault_class": {
+                    "const": "journal_indeterminate"
+                  }
+                }
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "result"
+                  ]
+                },
+                {
+                  "required": [
+                    "payload_omitted"
+                  ]
+                },
+                {
+                  "required": [
+                    "result_digest"
+                  ]
+                },
+                {
+                  "required": [
+                    "guarded_reason"
+                  ]
+                },
+                {
+                  "required": [
+                    "late_after_indeterminate"
+                  ]
+                },
+                {
+                  "required": [
+                    "verification_hold_id"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "not_started"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "replayed": {
+                "const": false
+              }
+            },
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "result"
+                  ]
+                },
+                {
+                  "required": [
+                    "payload_omitted"
+                  ]
+                },
+                {
+                  "required": [
+                    "result_digest"
+                  ]
+                },
+                {
+                  "required": [
+                    "guarded_reason"
+                  ]
+                },
+                {
+                  "required": [
+                    "error"
+                  ]
+                },
+                {
+                  "required": [
+                    "late_after_indeterminate"
+                  ]
+                },
+                {
+                  "required": [
+                    "verification_hold_id"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "error",
+              "replayed"
+            ],
+            "properties": {
+              "replayed": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "required": [
+                  "replayed"
+                ],
+                "properties": {
+                  "replayed": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "required": [
+                  "replayed"
+                ],
+                "properties": {
+                  "replayed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "replayed": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "error",
+              "late_after_indeterminate"
+            ],
+            "properties": {
+              "late_after_indeterminate": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "error": {
+                "required": [
+                  "replayed",
+                  "late_after_indeterminate",
+                  "verification_hold_id",
+                  "result_digest"
+                ],
+                "properties": {
+                  "replayed": {
+                    "const": true
+                  },
+                  "late_after_indeterminate": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "error"
+            ],
+            "properties": {
+              "error": {
+                "required": [
+                  "late_after_indeterminate"
+                ],
+                "properties": {
+                  "late_after_indeterminate": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "late_after_indeterminate",
+              "replayed",
+              "verification_hold_id",
+              "result_digest"
+            ],
+            "properties": {
+              "late_after_indeterminate": {
+                "const": true
+              },
+              "replayed": {
+                "const": true
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "failed",
+                  "cancelled"
+                ]
+              }
+            },
+            "not": {
+              "required": [
+                "late_after_indeterminate"
+              ],
+              "properties": {
+                "late_after_indeterminate": {
+                  "const": true
+                }
+              }
+            }
+          },
+          "then": {
+            "not": {
+              "required": [
+                "result_digest"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "late_after_indeterminate"
+            ],
+            "properties": {
+              "late_after_indeterminate": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "replayed",
+              "verification_hold_id",
+              "result_digest"
+            ],
+            "properties": {
+              "replayed": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "verification_hold_id"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "payload_omitted"
+            ],
+            "properties": {
+              "payload_omitted": {
+                "const": true
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "replayed": {
+                "const": true
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "batchResult": {
+      "type": "object",
+      "required": [
+        "kind",
+        "batch_id",
+        "atomic",
+        "status",
+        "transaction_state",
+        "failed_step_index",
+        "steps",
+        "replayed"
+      ],
+      "properties": {
+        "kind": {
+          "const": "batch"
+        },
+        "batch_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "atomic": {
+          "type": "boolean"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "completed",
+            "guarded",
+            "failed",
+            "cancelled",
+            "indeterminate"
+          ]
+        },
+        "transaction_state": {
+          "type": "string",
+          "enum": [
+            "committed",
+            "rolled_back",
+            "not_applicable",
+            "indeterminate"
+          ]
+        },
+        "failed_step_index": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/batchStepResult"
+          }
+        },
+        "replayed": {
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "atomic"
+            ],
+            "properties": {
+              "atomic": {
+                "const": false
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transaction_state": {
+                "const": "not_applicable"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "atomic",
+              "status"
+            ],
+            "properties": {
+              "atomic": {
+                "const": true
+              },
+              "status": {
+                "const": "completed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transaction_state": {
+                "const": "committed"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "atomic",
+              "status"
+            ],
+            "properties": {
+              "atomic": {
+                "const": true
+              },
+              "status": {
+                "enum": [
+                  "guarded",
+                  "failed",
+                  "cancelled"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transaction_state": {
+                "const": "rolled_back"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "atomic",
+              "status"
+            ],
+            "properties": {
+              "atomic": {
+                "const": true
+              },
+              "status": {
+                "const": "indeterminate"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transaction_state": {
+                "const": "indeterminate"
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "result": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/invocationResult"
+        },
+        {
+          "$ref": "#/$defs/batchResult"
+        }
+      ]
+    },
+    "partial": {
+      "oneOf": [
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "invocation_id",
+            "stream_id",
+            "chunk_index",
+            "encoding",
+            "content_type",
+            "data"
+          ],
+          "properties": {
+            "kind": {
+              "const": "chunk"
+            },
+            "invocation_id": {
+              "$ref": "common.schema.json#/$defs/uuidV7"
+            },
+            "stream_id": {
+              "type": "string",
+              "pattern": "^(?:result|artifact:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$"
+            },
+            "artifact_id": {
+              "$ref": "common.schema.json#/$defs/uuidV7"
+            },
+            "artifact_index": {
+              "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+            },
+            "chunk_index": {
+              "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+            },
+            "encoding": {
+              "const": "base64"
+            },
+            "content_type": {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            "data": {
+              "type": "string",
+              "minLength": 4,
+              "maxLength": 1398104,
+              "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+            }
+          },
+          "allOf": [
+            {
+              "if": {
+                "required": [
+                  "stream_id"
+                ],
+                "properties": {
+                  "stream_id": {
+                    "const": "result"
+                  }
+                }
+              },
+              "then": {
+                "not": {
+                  "anyOf": [
+                    {
+                      "required": [
+                        "artifact_id"
+                      ]
+                    },
+                    {
+                      "required": [
+                        "artifact_index"
+                      ]
+                    }
+                  ]
+                }
+              },
+              "else": {
+                "required": [
+                  "artifact_id",
+                  "artifact_index"
+                ]
+              }
+            }
+          ],
+          "additionalProperties": true
+        },
+        {
+          "type": "object",
+          "required": [
+            "kind",
+            "invocation_id",
+            "progress"
+          ],
+          "properties": {
+            "kind": {
+              "const": "progress"
+            },
+            "invocation_id": {
+              "$ref": "common.schema.json#/$defs/uuidV7"
+            },
+            "progress": {
+              "type": "object",
+              "required": [
+                "elapsed_ms",
+                "note"
+              ],
+              "properties": {
+                "elapsed_ms": {
+                  "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+                },
+                "note": {
+                  "$ref": "common.schema.json#/$defs/boundedString"
+                }
+              },
+              "additionalProperties": true
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "error": {
+      "allOf": [
+        {
+          "$ref": "common.schema.json#/$defs/errorDetail"
+        },
+        {
+          "type": "object",
+          "required": [
+            "outcome",
+            "verification_required"
+          ],
+          "properties": {
+            "invocation_id": {
+              "$ref": "common.schema.json#/$defs/uuidV7"
+            }
+          },
+          "additionalProperties": true
+        }
+      ]
+    },
+    "connectionError": {
+      "allOf": [
+        {
+          "$ref": "#/$defs/error"
+        },
+        {
+          "properties": {
+            "fault_class": {
+              "type": "string",
+              "enum": [
+                "protocol",
+                "auth"
+              ]
+            }
+          },
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "invocation_id"
+                ]
+              },
+              {
+                "required": [
+                  "verification_hold_id"
+                ]
+              },
+              {
+                "required": [
+                  "mutation_scope"
+                ]
+              },
+              {
+                "required": [
+                  "result_digest"
+                ]
+              },
+              {
+                "required": [
+                  "late_after_indeterminate"
+                ],
+                "properties": {
+                  "late_after_indeterminate": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "cancel": {
+      "type": "object",
+      "required": [
+        "invocation_id",
+        "reason"
+      ],
+      "properties": {
+        "invocation_id": {
+          "$ref": "common.schema.json#/$defs/uuidV7"
+        },
+        "reason": {
+          "type": "string",
+          "enum": [
+            "user_requested",
+            "client_disconnected",
+            "deadline_exceeded",
+            "gateway_shutdown"
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "activeView": {
+      "type": "object",
+      "required": [
+        "id",
+        "name",
+        "type"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "name": {
+          "$ref": "common.schema.json#/$defs/boundedString"
+        },
+        "type": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "level": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/boundedString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "additionalProperties": true
+    },
+    "docContextUpdate": {
+      "type": "object",
+      "required": [
+        "documents",
+        "active_document",
+        "active_view"
+      ],
+      "properties": {
+        "documents": {
+          "$ref": "common.schema.json#/$defs/documents"
+        },
+        "active_document": {
+          "oneOf": [
+            {
+              "$ref": "common.schema.json#/$defs/nonEmptyString"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "active_view": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/activeView"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "discipline_hint": {
+          "$ref": "common.schema.json#/$defs/boundedString"
+        }
+      },
+      "additionalProperties": true
+    },
+    "manifestCheck": {
+      "type": "object",
+      "required": [
+        "bridge_version",
+        "addin_versions",
+        "channel",
+        "highest_accepted_release_sequence"
+      ],
+      "properties": {
+        "bridge_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "addin_versions": {
+          "type": "array",
+          "items": {
+            "$ref": "common.schema.json#/$defs/version"
+          },
+          "uniqueItems": true
+        },
+        "channel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "highest_accepted_release_sequence": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        }
+      },
+      "additionalProperties": true
+    },
+    "manifestInfo": {
+      "type": "object",
+      "required": [
+        "status",
+        "channel",
+        "latest_version",
+        "min_supported_version",
+        "release_sequence"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "up_to_date",
+            "update_available",
+            "update_required"
+          ]
+        },
+        "channel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "latest_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "min_supported_version": {
+          "$ref": "common.schema.json#/$defs/version"
+        },
+        "release_sequence": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "rollout_cohort": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "manifest_url": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        },
+        "signature_url": {
+          "$ref": "common.schema.json#/$defs/nonEmptyString"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "enum": [
+                  "update_available",
+                  "update_required"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "rollout_cohort",
+              "manifest_url",
+              "signature_url"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "rollout_cohort"
+                  ]
+                },
+                {
+                  "required": [
+                    "manifest_url"
+                  ]
+                },
+                {
+                  "required": [
+                    "signature_url"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    },
+    "goodbye": {
+      "type": "object",
+      "required": [
+        "reason"
+      ],
+      "properties": {
+        "reason": {
+          "type": "string",
+          "enum": [
+            "shutdown",
+            "update",
+            "server_draining",
+            "protocol_error",
+            "auth_revoked"
+          ]
+        },
+        "retry_after_ms": {
+          "$ref": "common.schema.json#/$defs/safeNonNegativeInteger"
+        },
+        "message": {
+          "$ref": "common.schema.json#/$defs/boundedString"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "required": [
+              "retry_after_ms"
+            ]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "type": "string",
+                "enum": [
+                  "update",
+                  "server_draining"
+                ]
+              }
+            }
+          }
+        }
+      ],
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "invocation_params": {
+    "limit_bytes": 4194304,
+    "accepted_bytes": 4194304,
+    "rejected_bytes": 4194305
+  },
+  "inline_result": {
+    "limit_bytes": 33554432,
+    "accepted_bytes": 33554432,
+    "rejected_bytes": 33554433
+  },
+  "control_frame": {
+    "limit_bytes": 65536,
+    "accepted_bytes": 65536,
+    "rejected_bytes": 65537
+  },
+  "doc_context_update_frame": {
+    "limit_bytes": 262144,
+    "accepted_bytes": 262144,
+    "rejected_bytes": 262145
+  }
+}

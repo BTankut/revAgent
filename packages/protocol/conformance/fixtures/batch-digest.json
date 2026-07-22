@@ -1,0 +1,55 @@
+{
+  "vectors": [
+    {
+      "name": "single-read-step",
+      "input": {
+        "atomic": false,
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "inspect_schedules",
+            "mutating": false,
+            "mutation_scope": null,
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "policy": {
+              "class": "auto",
+              "confirmation_id": null,
+              "decision": "auto"
+            }
+          }
+        ],
+        "timeout_ms": 120000
+      },
+      "digest": "sha256:1fc2059e586e0c429fd0793b31ca910f4f4188d87813e7cce102f0a2882b48ac"
+    },
+    {
+      "name": "normative-mutating-step",
+      "input": {
+        "timeout_ms": 120000,
+        "steps": [
+          {
+            "policy": {
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid",
+              "class": "confirm"
+            },
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutation_scope": {
+              "document_id": "doc_session_stable_id",
+              "kind": "document"
+            },
+            "mutating": true,
+            "method": "send_code_to_revit",
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021"
+          }
+        ],
+        "recovery_clearances": [],
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true
+      },
+      "digest": "sha256:d97fa7c0f37c8e0986e0a6a16d2f7573da2a374ad3cf3d32f9f0301d0880f9d5"
+    }
+  ]
+}

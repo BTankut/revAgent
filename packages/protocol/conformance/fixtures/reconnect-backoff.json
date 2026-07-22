@@ -1,0 +1,56 @@
+{
+  "limits": [
+    {
+      "attempt_index": 0,
+      "limit_ms": 1000
+    },
+    {
+      "attempt_index": 1,
+      "limit_ms": 2000
+    },
+    {
+      "attempt_index": 5,
+      "limit_ms": 32000
+    },
+    {
+      "attempt_index": 6,
+      "limit_ms": 60000
+    },
+    {
+      "attempt_index": 30,
+      "limit_ms": 60000
+    }
+  ],
+  "jitter": [
+    {
+      "attempt_index": 0,
+      "sample": 0,
+      "delay_ms": 0
+    },
+    {
+      "attempt_index": 0,
+      "sample": 0.5,
+      "delay_ms": 500
+    },
+    {
+      "attempt_index": 0,
+      "sample": 0.999999,
+      "delay_ms": 1000
+    },
+    {
+      "attempt_index": 6,
+      "sample": 0.5,
+      "delay_ms": 30000
+    }
+  ],
+  "reset": [
+    {
+      "steady_ms": 119999,
+      "reset": false
+    },
+    {
+      "steady_ms": 120000,
+      "reset": true
+    }
+  ]
+}
