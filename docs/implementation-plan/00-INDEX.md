@@ -25,7 +25,7 @@ section 08(g)). Line numbers cite `11020d1`; re-verify before editing code.
 | Pkg | File | Scope | Owns |
 |---|---|---|---|
 | WP1 | `01-protocol-O1.md` | Bridge↔Gateway RPC protocol spec (RBP/1) | **O1** |
-| WP2 | `02-gateway-core.md` | Gateway core: orchestration, provider layer, tool registry, north MCP surface, context projection, runtime relocation, **docs-MCP internalization (GAP-3)**, **module packaging seam (O6)**, Mode-B stubs | **O6**; O2 interfaces (stub only) |
+| WP2 | `02-gateway-core.md` | Phase-1 Gateway: north MCP, registry/policy, capability index + deferred schemas (`tool_search`/`tool_schema`), executor dispatch, production RBP ingress, immutable handler-module packaging, **docs-MCP internalization (GAP-3)**, **module packaging seam (O6)**, and Mode-B interface stubs; post-Phase-1: in-house orchestration/provider/context and O2 implementation | **O6**; O2 interfaces now, internals on later activation |
 | WP3 | `03-bridge-addin-installer.md` | .NET bridge, add-in adaptation, workstation installer/uninstaller, **bridge self-update incl. its CD lane (GAP-12)** | **O9** |
 | WP4 | `04-data-auth-schemas.md` | Postgres schema, OIDC/device auth, licensing, event schema | **O3, O5, O7** |
 | WP5 | `05-phase1-infra-cicd.md` | Office host, Compose, tunnel, warm standby, gateway CD, backup/restore | **O10** |
@@ -35,7 +35,8 @@ section 08(g)). Line numbers cite `11020d1`; re-verify before editing code.
 | **WP9** | §4 below (new) | **Phase-1 designer client: evaluate, deliver, verify (O8 execution)** | O8 (delivery) |
 
 O2 (code-exec sandbox) is a **named deferred package**: owner-on-activation = WP2 team, trigger = post-cutover,
-before any local-LLM commitment; WP2's four stub interfaces are its frozen contract (RES-11).
+before any local-LLM commitment. Per RES-29, M2 ships only the four non-executable Mode-B interface stubs from
+the WP2 plan; runtime, egress, resource-limit, and filesystem decisions remain deferred until O2 activation.
 
 > **Label remap warning:** section 08 uses its own internal package labels that do NOT match the section
 > numbering (its "P6" is installer/CI/O9, while file 06 is APS). Read section 08's labels by area name and
@@ -163,6 +164,20 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   absence or incompleteness does not block their start. A substantive semantic
   or safety finding still follows R-F and the affected gate remains red.
   M2/M3 execution still requires its separately authorized operator kickoff.
+- **RES-29 (2026-07-25 R-F/operator kickoff) — M2 keeps the external-client boundary and the
+  registry-driven Mode A discovery surface.** The authorized ChatGPT/Codex Desktop client owns Phase-1
+  conversation state, model calls, planning, retries, and the agentic loop; the Gateway has no LLM key,
+  provider adapter, prompt projection, planner/router, or sub-agent loop. M2 still delivers the north MCP
+  Streamable HTTP + OAuth seam, Tool Registry, a byte-stable capability index, deferred schemas through
+  `tool_search`/`tool_schema`, a small pinned callable set, registry/policy/confirmation middleware, executor
+  dispatch to bridge/internal executors, production RBP ingress, docs-MCP internalization, and immutable
+  content-hashed handler packaging from unchanged frozen sources. Mode B is interface stubs only; O2 remains
+  explicitly deferred under RES-11. M2 imports the frozen RBP/1 package and MUST NOT edit
+  `packages/protocol/**` without a new dated R-F amendment plus operator approval. M2 code merges require the
+  dedicated Gateway CI lane; the bounded RES-24 `ci.yml` exception ended at M0. M4 is a separate
+  external-client vertical slice and cannot begin before operator-channel M2 closure approval. This is a
+  bounded Phase-1 use of D9's external-client path and does not reopen D1-D12 or remove the eventual in-house
+  loop target.
 
 ---
 
@@ -172,11 +187,11 @@ From section 10; each owner folds these into its package before starting it.
 
 | Gap | Pri | Owner | Binding content |
 |---|---|---|---|
-| GAP-2 confirm round-trip | P0 | WP2 + WP9 | Normative confirm flow over plain MCP: preview result + expiring single-use `confirm_token` re-invocation, journal-linked to `invocation_id`; approval itself is an audit event (who/when); conformance test against the chosen client. |
-| GAP-3 docs-MCP relocation | P0 | WP2 | Register `revit-api-docs` tools as gateway-internal executor; capability index; pilot scenario list. Capability must NOT be silently lost at cutover. |
+| GAP-2 confirm round-trip | P0 | WP2 + WP9 | Normative confirm flow over plain MCP: preview result + expiring single-use `confirm_token` re-invocation, journal-linked to the originating preview `invocation_id`; approval and commit audit rows retain that preview id plus `confirmation_id`; conformance test against the chosen client. |
+| GAP-3 docs-MCP relocation | P0 | WP2 | Register `revit-api-docs` tools as `internal_mcp`; include them in the Phase-1 capability index and deferred-schema/search surface, and include pilot scenarios. Capability must NOT be silently lost at cutover. |
 | GAP-13 interim regime | P0 | WP8 (+WP5) | See §5 — execute the first two items THIS WEEK, before build starts. |
-| GAP-5 instruction-layer rewrite | P1 | WP2, WP8 gates | Rewrite AGENTS/SKILL content for new tool names, in-house loop, confirm flow (today's content is Codex-desktop-specific); version in registry; eval pass (`evals/evals.json`) before pilot. |
-| GAP-7 relocated-tool local deps | P1 | WP2 + WP1/WP9 | Inventory + per-tool disposition: spatial SQLite store is workstation-local (`spatialStore.ts:776-780`) and spawns PowerShell (`:708-721`) → re-key tenant+device gateway-side or disable-at-cutover with operator sign-off; Excel reconciliation needs a file-ingress path (RBP/1 `file_fetch` message or client-side upload — decide in DP-10 context); exported-image paths must surface usably in the new client. Stress-test WP2's relocation estimate against this. |
+| GAP-5 instruction-layer rewrite | P1 | WP2, WP8 gates | Rewrite AGENTS/SKILL content for remote names, external-client loop ownership, server confirmation, and file resources; version in registry and pass the applicable `evals/evals.json` cases before pilot. The later in-house-loop instruction variant activates only with its milestone. |
+| GAP-7 packaged-handler local deps | P1 | WP2 + WP1/WP9 | Inventory + per-tool disposition: spatial SQLite/PowerShell behavior is re-keyed tenant+device+document gateway-side or disabled-at-cutover with operator sign-off; Excel/CSV uses authenticated client upload; exported images use authorized multi-file MCP resources. There is no generic RBP `file_fetch`. Package enabled handlers as hash-bound build artifacts without moving frozen source, and stress-test WP2's packaging estimate. |
 | GAP-12 bridge CD lane | P1 | WP3 | Windows-runner lane: build .NET bridge → sign manifest (RS256 pinned chain) → publish artifacts → write `bridge_releases`/channel rows; pilot→stable promotion discipline mirrors today's CD. Blocks Build-exit criterion 5. |
 | GAP-9 assistant-down UX | P2 | WP3 + WP8-T6 | Bridge tray/status behavior when gateway unreachable; "assistant-down ≠ Revit-down" comms text. |
 | GAP-10 D6 Phase-1 posture | P2 | WP2 + WP8 | One paragraph: single-namespace Phase 1 satisfies D6 trivially; milestone for planner/router + sub-agents activation. |
@@ -239,16 +254,18 @@ Binding rules:
 
 ## 6. Milestones & calendar (summary — full detail in section 08)
 
-M0 decisions/scaffold/spike → **M1 O1 spec frozen** → M2 gateway minimal loop ∥ M3 bridge + add-in
-adaptations (RES-5) → M4 vertical slice (client → gateway → bridge → live Revit, incl. confirm flow) →
+M0 decisions/scaffold/spike → **M1 O1 spec frozen** → M2 north MCP + registry/capability index/deferred
+schemas + policy/dispatch + RBP ingress + Mode-B stubs ∥
+M3 bridge + add-in adaptations (RES-5) → M4 pre-production-auth vertical slice (external client → gateway →
+bridge → live Revit, incl. confirm flow) →
 M5 auth/data → M6 installer/uninstaller/self-update + bridge CD lane (GAP-12) → M7 ops readiness (O10 drill,
 O11 parity) → M8 pilot (≥5 real workdays, on the WP9 client, self-update proven) → M9 fleet cutover
 (~12 machines, one window) → M10 insurance (2 wks) → Retire.
 
-Critical path ≈ 90 dev-days; program total ≈ 120–135 dev-days; **cutover at ~19–20 working weeks, NAS
-retirement at ~5.5–6 months** (20% Build contingency included). Backfill lanes during pilot/insurance:
-WP7 dashboards, WP2 hardening (router, sub-agents, projection), then post-Retire: APS (WP6 Phase 2), web
-chat client, O2.
+Critical path ≈ 108 dev-days; program total ≈ 138–153 dev-days; **cutover at ~23–24 working weeks, NAS
+retirement at ~6.5–7 months** (20% Build contingency included). Backfill lanes during pilot/insurance:
+WP7 dashboards and WP2 external-client/registry/dispatcher hardening; then post-Retire or a separately approved
+activation milestone: in-house router/sub-agents/projection, APS (WP6 Phase 2), web chat client, and O2.
 
 **Additional pilot-entry gates from this index:** WP9 client chosen + conformance green; GAP-5 instruction
 rewrite evaluated; GAP-16 old telemetry alive; GAP-13.4 pilot updater task disabled.
@@ -345,6 +362,31 @@ This checkpoint supersedes §8.1 only for M1 closing and the next-lane start:
    Neither M2 nor M3 starts from this approval; each requires a separate,
    authorized kickoff. The §8.1 package/assistant lane boundaries remain in
    force.
+
+### 8.3 2026-07-25 WP2/M2 kickoff
+
+This checkpoint authorizes only the WP2/M2 lane:
+
+1. Rebase draft PR [#288](https://github.com/BTankut/revAgent/pull/288) onto
+   the protected M1-close `main`, preserve RES-26/27/28, renumber its
+   colliding amendment to RES-29, pass the normal docs-only protected gates,
+   and merge it before M2 implementation starts.
+2. M2 work uses `codex/wp2-*` branches and task-sized `[WP2][M2]` draft PRs.
+   It may edit `packages/gateway/**` and Gateway-owned documentation only.
+   `packages/bridge/**` and `src/revit-plugin/**` are closed to this lane.
+3. `packages/protocol/**` is frozen RBP/1 input. M2 imports it without edits.
+   Any discovered contract defect requires a new dated R-F amendment and
+   explicit operator approval before that path changes.
+4. Phase 1 uses ChatGPT/Codex Desktop as the external MCP client. M2 builds
+   the north MCP Streamable HTTP + OAuth seam, registry/capability index,
+   deferred schemas via `tool_search`/`tool_schema`, bridge/internal executor
+   dispatch, Mode-B interface stubs, and docs-MCP internalization. It does not
+   build an in-house agentic loop or introduce a Gateway LLM key/provider.
+5. The first implementation PR proves the north endpoint skeleton,
+   registry-derived capability index, and one executor-dispatched tool against
+   the M1 bridge simulator. M2 exits only through its authoritative gate demo
+   and report. The assistant then stops; M4 requires a separate
+   operator-channel closing approval.
 
 ## 9. Week 1 (starts tomorrow)
 

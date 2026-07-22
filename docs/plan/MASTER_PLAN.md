@@ -58,11 +58,11 @@ assistant receives that lane. Neither M2 nor M3 starts from this closing
 approval; each requires a separate authorized kickoff. The current assistant
 stops after PR #290 merge and closeout reporting.
 
-Draft PR [#288](https://github.com/BTankut/revAgent/pull/288) retains the M2
-planning already performed and remains on hold. Its proposed M2 `RES-26`
-collides with the authoritative nested-batch `RES-26` on `main`; after M1
-approval, WP2 must use a newly numbered dated R-F amendment to reconcile the
-proposal before the draft advances. Draft PR
+Draft PR [#288](https://github.com/BTankut/revAgent/pull/288) carries the
+authorized M2 planning alignment. Its former `RES-26` collision with the
+authoritative nested-batch resolution is closed as dated `RES-29`, which keeps
+the external-client loop boundary while retaining capability-index/deferred
+schema discovery and Mode-B interface stubs in M2. Draft PR
 [#289](https://github.com/BTankut/revAgent/pull/289) is the frozen M3 handoff
 record; this assistant will not continue, ready, or merge it.
 
@@ -99,15 +99,21 @@ pilot-entry carry-forwards. They remain open and are not silently converted into
 |---|---|---|---|---|
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `passed` |
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | `accepted` |
-| M2 | North MCP endpoint serves capability index/deferred schemas and dispatches the relocated catalog through executor abstractions | M1 | WP2 | `not_started` |
+| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | `not_started` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `not_started` |
-| M4 | **Vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with audit evidence | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
+| M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | `not_started` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | `not_started` |
 | M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | `not_started` |
 | M8 | Pilot uses the same client/add-in stack intended for cutover for at least five real working days; forced failures and one signed update pass | M4, M6, M7 | WP8/WP9 with pilot user | `not_started` |
 | M9 | Rehearsed runbook, signed rollback criterion, retraining, and per-machine read/confirm-write smoke complete for the entire fleet | M8 | WP8 with WP3/WP5/WP9 | `not_started` |
 | M10 | Two-week insurance window closes, NAS archive/retire checklist passes, residual trust anchors are removed, and freeze is formally lifted | M9 | WP8/WP5/WP7 | `not_started` |
+
+RES-29 applies RES-23 to the operational tracker: M2/M4 exercise D9's permitted external-client path and do
+not implement the in-house agentic loop, Gateway LLM provider, prompt/context engine, or frozen-source
+relocation. M2 does retain the registry-driven capability-index/deferred-schema surface and Mode-B interface
+stubs. M4 deliberately uses a deterministic/pre-production identity seam because M5 owns real OIDC, device
+enrollment, seats, and two-tenant negatives. The long-term D1-D12 architecture remains unchanged.
 
 ## Work-package map
 
@@ -119,7 +125,7 @@ maintenance and is not additional M1 gate evidence.
 | Work package | Milestone lane |
 |---|---|
 | WP1 — O1 protocol | M0 draft → M1 freeze → M4 conformance |
-| WP2 — Gateway/tool registry/north MCP | M0 scaffold/spike → M2 minimal loop → M4/M5 hardening |
+| WP2 — Gateway/tool registry/north MCP | M0 scaffold/spike → M2 external-client north MCP/registry/policy/dispatch/RBP + packaged handlers → M4 pre-production slice → M5 production-auth integration |
 | WP3 — Bridge/add-in/installer/O9 | M3 bridge + pre-pilot adaptations → M6 installer/self-update → M8/M9 support |
 | WP4 — Data/auth/licensing/events | M5 implementation → M7 restore/parity inputs |
 | WP5 — Phase-1 infra/CD/O10 | M0 Compose → M4 host slice → M7 ops readiness → M9/M10 infra checks |
