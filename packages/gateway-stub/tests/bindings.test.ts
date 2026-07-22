@@ -3,7 +3,7 @@ import type { IncomingHttpHeaders, IncomingMessage } from "node:http";
 import { request as httpsRequest } from "node:https";
 
 import type { RbpEnvelope } from "@revagent/protocol";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
 import { startGatewayStub } from "../src/server.js";
@@ -52,6 +52,17 @@ async function start(
   });
   handles.push(handle);
   return handle;
+}
+
+async function postControl(handle: GatewayStubHandle, body: unknown): Promise<Response> {
+  return fetch(handle.controlUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-rbp-test-control": handle.controlToken,
+    },
+    body: JSON.stringify(body),
+  });
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs = 2_000): Promise<void> {
@@ -353,6 +364,263 @@ for (const [binding, connect] of [
 }
 
 describe("opening and proxy fault controls", () => {
+  it("returns one shared close promise to every concurrent caller, including rejection", async () => {
+    const successful = await start("shared-close-success");
+    const first = successful.close();
+    const second = successful.close();
+    expect(second).toBe(first);
+    await expect(Promise.all([first, second])).resolves.toEqual([undefined, undefined]);
+
+    const failing = await start("shared-close-rejection");
+    handles.splice(handles.indexOf(failing), 1);
+    const failure = new Error("injected core close failure");
+    vi.spyOn(failing.core, "close").mockRejectedValueOnce(failure);
+    const rejectedFirst = failing.close();
+    const rejectedSecond = failing.close();
+    expect(rejectedSecond).toBe(rejectedFirst);
+    await expect(rejectedFirst).rejects.toBe(failure);
+    await expect(rejectedSecond).rejects.toBe(failure);
+  });
+
+  it("keeps the shared handle close pending until an actual deferred callback exits", async () => {
+    const handle = await start("shared-close-delivery-barrier");
+    let startCallback: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => { startCallback = resolve; });
+    let releaseCallback: () => void = () => undefined;
+    const release = new Promise<void>((resolve) => { releaseCallback = resolve; });
+    let callbackFinished = false;
+    handle.core.faults.enqueueFrame({
+      direction: "bridge_to_gateway",
+      binding: "http_sse",
+      action: "delay",
+      messageType: "heartbeat",
+      delayMs: 0,
+    });
+    const delivery = await handle.core.faults.apply(
+      "synthetic-connection",
+      "http_sse",
+      "bridge_to_gateway",
+      "heartbeat",
+      async () => {
+        startCallback();
+        await release;
+        callbackFinished = true;
+      },
+    );
+    await within(started, "synthetic deferred callback start");
+
+    let closeFinished = false;
+    const closing = handle.close().then(() => { closeFinished = true; });
+    await expect(delivery.completion).resolves.toMatchObject({ state: "cancelled" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(closeFinished).toBe(false);
+    expect(callbackFinished).toBe(false);
+    expect(handle.core.snapshot().runtime.activeDeliveries).toBe(1);
+
+    releaseCallback();
+    await within(closing, "shared close delivery barrier");
+    expect(callbackFinished).toBe(true);
+    expect(handle.core.snapshot().runtime.activeDeliveries).toBe(0);
+  });
+
+  it("keeps an explicit connection close behind that connection's real callback barrier", async () => {
+    const handle = await start("connection-close-delivery-barrier");
+    const peer = await ssePeer(handle);
+    const connectionId = peer.helloAck.payload.connection_id;
+    if (typeof connectionId !== "string") throw new Error("fallback hello_ack omitted connection_id");
+    let startCallback: () => void = () => undefined;
+    const started = new Promise<void>((resolve) => { startCallback = resolve; });
+    let releaseCallback: () => void = () => undefined;
+    const release = new Promise<void>((resolve) => { releaseCallback = resolve; });
+    let callbackFinished = false;
+    handle.core.faults.enqueueFrame({
+      direction: "bridge_to_gateway",
+      binding: "http_sse",
+      action: "delay",
+      messageType: "heartbeat",
+      delayMs: 0,
+    });
+    const delivery = await handle.core.faults.apply(
+      connectionId,
+      "http_sse",
+      "bridge_to_gateway",
+      "heartbeat",
+      async () => {
+        startCallback();
+        await release;
+        callbackFinished = true;
+      },
+    );
+    await within(started, "connection callback start");
+
+    let disconnectFinished = false;
+    const disconnect = postControl(handle, { action: "disconnect", connection_id: connectionId })
+      .then((response) => {
+        disconnectFinished = true;
+        return response;
+      });
+    await expect(delivery.completion).resolves.toMatchObject({ state: "cancelled" });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(disconnectFinished).toBe(false);
+    expect(callbackFinished).toBe(false);
+
+    releaseCallback();
+    expect((await within(disconnect, "connection close callback barrier")).status).toBe(200);
+    expect(callbackFinished).toBe(true);
+    expect(handle.core.snapshot().runtime).toMatchObject({ activeDeliveries: 0, openConnections: 0 });
+    await peer.close();
+  });
+
+  it("runs listener and core barriers even when one connection close fails", async () => {
+    const handle = await start("all-settled-handle-close");
+    await ssePeer(handle);
+    const failure = new Error("synthetic disconnect failure");
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection").mockRejectedValueOnce(failure);
+    const coreClose = vi.spyOn(handle.core, "close");
+
+    await expect(handle.close()).rejects.toThrow("synthetic disconnect failure");
+    expect(coreClose).toHaveBeenCalledOnce();
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    disconnect.mockRestore();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("observes peer-EOF cleanup rejection and reports it from the shared handle close", async () => {
+    const handle = await start("observed-peer-eof-failure");
+    const peer = await ssePeer(handle);
+    const failure = new Error("synthetic eof cleanup failure");
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection").mockRejectedValueOnce(failure);
+
+    await peer.close();
+    await waitFor(() => disconnect.mock.calls.length >= 1);
+    disconnect.mockRestore();
+    await expect(handle.close()).rejects.toThrow("synthetic eof cleanup failure");
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("observes WSS protocol-failure cleanup rejection and reports it from handle close", async () => {
+    const handle = await start("observed-wss-protocol-close-failure");
+    const socket = await openRawWebSocket(handle);
+    const helloAck = nextRawMessage(socket);
+    socket.send(JSON.stringify(hello(300)));
+    await helloAck;
+
+    const failure = new Error("synthetic WSS protocol cleanup failure");
+    let rejectDisconnect: (error: Error) => void = () => undefined;
+    const pendingDisconnect = new Promise<void>((_resolve, reject) => {
+      rejectDisconnect = reject;
+    });
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection").mockReturnValueOnce(pendingDisconnect);
+    const closed = nextCloseCode(socket);
+    socket.send(Buffer.from([0x01]), { binary: true });
+    expect(await closed).toBe(4400);
+    await waitFor(() => disconnect.mock.calls.length === 1);
+    let closeFinished = false;
+    const closing = handle.close().finally(() => { closeFinished = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(closeFinished).toBe(false);
+    rejectDisconnect(failure);
+    disconnect.mockRestore();
+
+    await expect(closing).rejects.toThrow("synthetic WSS protocol cleanup failure");
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("observes automatic liveness-sweep cleanup rejection and reports it from handle close", async () => {
+    const handle = await start("observed-liveness-sweep-close-failure", {
+      livenessSweepMs: 5,
+    });
+    const peer = await ssePeer(handle);
+    const connectionId = peer.helloAck.payload.connection_id;
+    if (typeof connectionId !== "string") throw new Error("fallback hello_ack omitted connection_id");
+
+    const failure = new Error("synthetic liveness cleanup failure");
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection").mockRejectedValueOnce(failure);
+    const sweep = vi.spyOn(handle.core, "livenessSweep").mockResolvedValueOnce([connectionId]);
+    await waitFor(() => disconnect.mock.calls.length >= 1);
+    sweep.mockRestore();
+    disconnect.mockRestore();
+
+    await expect(handle.close()).rejects.toThrow("synthetic liveness cleanup failure");
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("reports simultaneous liveness close failures once each without an aggregate wrapper duplicate", async () => {
+    const handle = await start("deduped-liveness-close-failures", { livenessSweepMs: 5 });
+    const firstPeer = await ssePeer(handle);
+    const secondPeer = await ssePeer(handle);
+    const firstId = firstPeer.helloAck.payload.connection_id;
+    const secondId = secondPeer.helloAck.payload.connection_id;
+    if (typeof firstId !== "string" || typeof secondId !== "string") {
+      throw new Error("fallback hello_ack omitted connection_id");
+    }
+    const firstFailure = new Error("first liveness cleanup failure");
+    const secondFailure = new Error("second liveness cleanup failure");
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection")
+      .mockRejectedValueOnce(firstFailure)
+      .mockRejectedValueOnce(secondFailure);
+    const sweep = vi.spyOn(handle.core, "livenessSweep").mockResolvedValueOnce([firstId, secondId]);
+
+    await waitFor(() => disconnect.mock.calls.length >= 2);
+    sweep.mockRestore();
+    disconnect.mockRestore();
+    let closeError: unknown;
+    try {
+      await handle.close();
+    } catch (error) {
+      closeError = error;
+    }
+    expect(closeError).toBeInstanceOf(AggregateError);
+    expect((closeError as AggregateError).errors).toEqual([firstFailure, secondFailure]);
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("drains a fallback create paused after durable hello without arming a shutdown deadline", async () => {
+    const handle = await start("fallback-create-shutdown-race", { sseAttachTimeoutMs: 25 });
+    const originalAcceptHello = handle.core.acceptHello.bind(handle.core);
+    let markAccepted: () => void = () => undefined;
+    const accepted = new Promise<void>((resolve) => { markAccepted = resolve; });
+    let releaseAccept: () => void = () => undefined;
+    const release = new Promise<void>((resolve) => { releaseAccept = resolve; });
+    vi.spyOn(handle.core, "acceptHello").mockImplementationOnce(async (...arguments_) => {
+      const ack = await originalAcceptHello(...arguments_);
+      markAccepted();
+      await release;
+      return ack;
+    });
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection");
+    const creating = fetch(handle.httpConnectionUrl, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${TOKEN}`,
+        "content-type": "application/json",
+        "x-rbp-versions": "1",
+      },
+      body: JSON.stringify(hello(302)),
+    });
+    void creating.catch(() => undefined);
+    await within(accepted, "durable fallback hello");
+
+    let closeFinished = false;
+    const closing = handle.close().finally(() => { closeFinished = true; });
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+    expect(closeFinished).toBe(false);
+    releaseAccept();
+    await closing;
+    const createStatus = await creating.then((response) => response.status, () => 0);
+    expect([0, 503]).toContain(createStatus);
+    const disconnectCallsAfterClose = disconnect.mock.calls.length;
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    expect(disconnect.mock.calls.length).toBe(disconnectCallsAfterClose);
+    expect(handle.core.snapshot().runtime).toMatchObject({ openConnections: 0, activeDeliveries: 0 });
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
   it("injects exact HTTP opening errors with Retry-After and buffers SSE until explicitly flushed", async () => {
     const handle = await start("fault-controls");
     handle.core.faults.enqueueOpening({
@@ -381,26 +649,38 @@ describe("opening and proxy fault controls", () => {
       const connectionId = peer.helloAck.payload.connection_id as string;
       handle.core.faults.setSseBuffering(connectionId, true);
       const invocationId = uuid7(112);
-      const dispatched = await handle.core.dispatchInvoke({
-        rsid,
-        payload: readInvoke(invocationId),
+      const dispatchResponse = await postControl(handle, {
+        action: "dispatch_invoke",
+        request: { rsid, payload: readInvoke(invocationId) },
       });
+      expect(dispatchResponse.status).toBe(200);
+      const dispatched = await dispatchResponse.json() as RbpEnvelope;
       expect(handle.core.snapshot().runtime).toMatchObject({ heldOutboundFrames: 1 });
-      expect(await handle.core.faults.flushHeld(connectionId)).toBe(1);
+      expect(await handle.core.faults.flushHeld(connectionId)).toEqual({
+        selected: 1,
+        delivered: 1,
+        cancelled: 0,
+        failed: 0,
+      });
       expect(await peer.next()).toEqual(dispatched);
       expect(handle.core.snapshot().runtime).toMatchObject({ heldOutboundFrames: 0 });
 
-      handle.core.faults.enqueueFrame({
-        direction: "bridge_to_gateway",
-        binding: "http_sse",
-        action: "hold",
-        messageType: "chunk",
-        remaining: 2,
+      const queuedHold = await postControl(handle, {
+        action: "enqueue_frame_fault",
+        rule: {
+          direction: "bridge_to_gateway",
+          binding: "http_sse",
+          action: "hold",
+          messageType: "chunk",
+          remaining: 2,
+        },
       });
+      expect(queuedHold.status).toBe(200);
+      expect(await queuedHold.json()).toEqual({ queued: true });
       const bytes = Buffer.from("hello world", "utf8");
       const chunks = [bytes.subarray(0, 5), bytes.subarray(5)];
-      for (const [chunkIndex, chunk] of chunks.entries()) {
-        await expect(peer.send({
+      const pendingChunkPosts = chunks.map(async (chunk, chunkIndex) =>
+        peer.send({
           v: 1,
           type: "partial",
           id: uuid7(113 + chunkIndex),
@@ -417,8 +697,8 @@ describe("opening and proxy fault controls", () => {
             content_type: "text/plain",
             data: chunk.toString("base64"),
           },
-        })).resolves.toBeUndefined();
-      }
+        }));
+      await waitFor(() => handle.core.snapshot().runtime.heldInboundFrames === 2);
       expect(handle.core.snapshot().sessions[rsid]).toMatchObject({
         inFlight: { correlationId: invocationId },
         sequence: { lastRxSeq: 0 },
@@ -426,7 +706,10 @@ describe("opening and proxy fault controls", () => {
       });
       expect(handle.core.snapshot().runtime).toMatchObject({ heldInboundFrames: 2 });
 
-      expect(await handle.core.faults.flushHeld(connectionId)).toBe(2);
+      const flushed = await postControl(handle, { action: "flush_held", connection_id: connectionId });
+      expect(flushed.status).toBe(200);
+      expect(await flushed.json()).toEqual({ selected: 2, flushed: 2, cancelled: 0, failed: 0 });
+      await expect(Promise.all(pendingChunkPosts)).resolves.toEqual([undefined, undefined]);
       expect(handle.core.snapshot().sessions[rsid]).toMatchObject({
         inFlight: { correlationId: invocationId },
         sequence: { lastRxSeq: 2 },
@@ -514,6 +797,289 @@ describe("opening and proxy fault controls", () => {
     }
   });
 
+  it("keeps delayed HTTP acceptance pending until durable processing completes", async () => {
+    const handle = await start("delayed-http-uplink");
+    const peer = await ssePeer(handle);
+    try {
+      const queued = await postControl(handle, {
+        action: "enqueue_frame_fault",
+        rule: {
+          direction: "bridge_to_gateway",
+          binding: "http_sse",
+          action: "delay",
+          delayMs: 50,
+          messageType: "session_register",
+        },
+      });
+      expect(queued.status).toBe(200);
+      const pending = peer.send(controlEnvelope("session_register", sessionRegister(), 218));
+      await waitFor(() => handle.core.snapshot().runtime.activeTimers === 1);
+      expect(Object.keys(handle.core.snapshot().sessions)).toEqual([]);
+      await expect(pending).resolves.toBeUndefined();
+      expect((await peer.next()).type).toBe("session_registered");
+      expect(handle.core.snapshot().runtime.activeTimers).toBe(0);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it("does not report a held HTTP frame accepted when shutdown cancels it, and restart restores no phantom delivery", async () => {
+    const retainedStatePath = await statePath("held-http-shutdown");
+    const handle = await startGatewayStub({
+      statePath: retainedStatePath,
+      tokenTable,
+      livenessSweepMs: 0,
+    });
+    handles.push(handle);
+    const peer = await ssePeer(handle);
+    try {
+      const queued = await postControl(handle, {
+        action: "enqueue_frame_fault",
+        rule: {
+          direction: "bridge_to_gateway",
+          binding: "http_sse",
+          action: "hold",
+          messageType: "session_register",
+        },
+      });
+      expect(queued.status).toBe(200);
+      const pending = peer.send(controlEnvelope("session_register", sessionRegister(), 219));
+      void pending.catch(() => undefined);
+      await waitFor(() => handle.core.snapshot().runtime.heldInboundFrames === 1);
+
+      await handle.close();
+      await expect(pending).rejects.toThrow();
+      expect(handle.core.snapshot().runtime.heldInboundFrames).toBe(0);
+      expect(Object.keys(handle.core.snapshot().sessions)).toEqual([]);
+
+      const reopened = await startGatewayStub({
+        statePath: retainedStatePath,
+        tokenTable,
+        livenessSweepMs: 0,
+      });
+      handles.push(reopened);
+      expect(reopened.core.snapshot().runtime.heldInboundFrames).toBe(0);
+      expect(Object.keys(reopened.core.snapshot().sessions)).toEqual([]);
+    } finally {
+      await peer.close();
+    }
+  });
+
+  it("propagates a deferred WSS processing failure and closes acceptance-unknown transport state", async () => {
+    const handle = await start("deferred-wss-failure");
+    const socket = await openRawWebSocket(handle);
+    try {
+      socket.send(JSON.stringify(hello(220)));
+      const helloAck = await nextRawMessage(socket);
+      const connectionId = helloAck.payload.connection_id as string;
+      socket.send(JSON.stringify(controlEnvelope("session_register", sessionRegister(), 221)));
+      const registered = await nextRawMessage(socket) as Extract<RbpEnvelope, { type: "session_registered" }>;
+      const rsid = registered.payload.rsid;
+      const invocationId = uuid7(222);
+      await handle.core.dispatchInvoke({ rsid, payload: readInvoke(invocationId) });
+      await nextRawMessage(socket);
+
+      handle.core.faults.enqueueFrame({
+        direction: "bridge_to_gateway",
+        binding: "wss",
+        action: "hold",
+        messageType: "result",
+      });
+      socket.send(JSON.stringify(resultEnvelope(rsid, invocationId, 2, 1, 223)));
+      await waitFor(() => handle.core.snapshot().runtime.heldInboundFrames === 1);
+      const fault = nextRawMessage(socket);
+      const closed = nextClose(socket);
+      const flushed = await postControl(handle, { action: "flush_held", connection_id: connectionId });
+      expect(flushed.status).toBe(200);
+      expect(await flushed.json()).toEqual({ selected: 1, flushed: 0, cancelled: 0, failed: 1 });
+      expect(await within(fault, "deferred WSS connection fault")).toMatchObject({
+        type: "error",
+        payload: {
+          fault_class: "protocol",
+          message: "forward sequence gap: expected 1, received 2",
+        },
+      });
+      expect((await within(closed, "deferred WSS close")).code).toBe(4400);
+      await waitFor(() => handle.core.snapshot().runtime.openConnections === 0);
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
+  });
+
+  it("destroys HTTP acceptance and its SSE connection on a generic durable-processing failure", async () => {
+    const handle = await start("generic-http-processing-failure");
+    const peer = await ssePeer(handle);
+    const receive = vi.spyOn(handle.core, "receiveFrame")
+      .mockRejectedValueOnce(new Error("synthetic durable I/O failure"));
+    try {
+      await expect(peer.send(controlEnvelope("heartbeat", { sessions: [] }, 224))).rejects.toThrow();
+      await waitFor(() => handle.core.snapshot().runtime.openConnections === 0);
+    } finally {
+      receive.mockRestore();
+      await peer.close();
+    }
+  });
+
+  it("retains a swallowed HTTP acceptance-cleanup rejection for shared handle close", async () => {
+    const handle = await start("observed-http-acceptance-close-failure");
+    const peer = await ssePeer(handle);
+    const connectionId = peer.helloAck.payload.connection_id;
+    if (typeof connectionId !== "string") throw new Error("fallback hello_ack omitted connection_id");
+    const failure = new Error("synthetic HTTP acceptance cleanup failure");
+    const disconnect = vi.spyOn(handle.core, "disconnectConnection").mockRejectedValueOnce(failure);
+
+    const response = await fetch(
+      `${handle.httpConnectionUrl}/${encodeURIComponent(connectionId)}/messages`,
+      {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "text/plain",
+        },
+        body: "{}",
+      },
+    );
+    expect(response.status).toBe(415);
+    await waitFor(() => disconnect.mock.calls.length >= 1);
+    disconnect.mockRestore();
+
+    await expect(handle.close()).rejects.toThrow("synthetic HTTP acceptance cleanup failure");
+    await expect(fetch(handle.controlUrl)).rejects.toThrow();
+    handles.splice(handles.indexOf(handle), 1);
+  });
+
+  it("closes the paired SSE stream for every authenticated local uplink validation failure", async () => {
+    for (const [name, contentType, body, expectedStatus, emitsConnectionFault] of [
+      ["media-type", "application/json-evil", "{}", 415, false],
+      ["malformed-frame", "application/json", "{", 400, true],
+    ] as const) {
+      const handle = await start(`local-http-${name}`);
+      const peer = await ssePeer(handle);
+      const connectionId = peer.helloAck.payload.connection_id;
+      if (typeof connectionId !== "string") throw new Error("fallback hello_ack omitted connection_id");
+      try {
+        const response = await fetch(
+          `${handle.httpConnectionUrl}/${encodeURIComponent(connectionId)}/messages`,
+          {
+            method: "POST",
+            headers: {
+              authorization: `Bearer ${TOKEN}`,
+              "content-type": contentType,
+            },
+            body,
+          },
+        );
+        expect(response.status, name).toBe(expectedStatus);
+        await waitFor(() => handle.core.snapshot().runtime.openConnections === 0);
+        if (emitsConnectionFault) {
+          expect(await within(peer.next(), `${name} connection fault`)).toMatchObject({
+            type: "error",
+            payload: { fault_class: "protocol" },
+          });
+        }
+        await expect(within(peer.next(), `${name} SSE close`)).rejects.toThrow(/SSE stream ended/u);
+      } finally {
+        await peer.close();
+      }
+    }
+  });
+
+  it("rejects non-exact and invalid test-control fault commands with 400", async () => {
+    const handle = await start("invalid-control-faults");
+    const invalidCommands = [
+      { action: "unknown_action" },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", action: "dropp", messageType: "result" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "sideways", action: "drop", messageType: "result" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", binding: "http", action: "drop", messageType: "result" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", action: "drop", messageType: "not_an_rbp_message" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", action: "drop", messageType: "partial" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "gateway_to_bridge", action: "drop", messageType: "session_register" },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", action: "hold", messageType: "result", delayMs: 1 },
+      },
+      {
+        action: "enqueue_frame_fault",
+        rule: { direction: "bridge_to_gateway", action: "drop", messageType: "result", unexpected: true },
+      },
+      {
+        action: "enqueue_opening_fault",
+        rule: { binding: "other", status: 503 },
+      },
+      {
+        action: "enqueue_opening_fault",
+        rule: { binding: "http_sse", status: 503, retryAfter: "\r\nX-Injected: yes" },
+      },
+      {
+        action: "enqueue_opening_fault",
+        rule: { binding: "http_sse", status: 503, retryAfter: "tomorrow" },
+      },
+      { action: "dispatch_invoke", request: {} },
+      { action: "dispatch_batch", request: {} },
+      { action: "dispatch_cancel", request: {} },
+      { action: "dispatch_payload_recovery", request: {} },
+      { action: "record_verification_evidence", request: {} },
+      { action: "record_late_terminal_evidence", request: {} },
+      {
+        action: "install_hold",
+        rsid: "rs_ghost",
+        mutation_scope: { kind: "session" },
+        origin_invocation_ids: [],
+      },
+    ];
+    for (const command of invalidCommands) {
+      const response = await postControl(handle, command);
+      expect(response.status, JSON.stringify(command)).toBe(400);
+    }
+    const ghostBuffering = await postControl(handle, {
+      action: "set_sse_buffering",
+      connection_id: "ghost-connection",
+      enabled: true,
+    });
+    expect(ghostBuffering.status).toBe(404);
+    const ghostDisconnect = await postControl(handle, {
+      action: "disconnect",
+      connection_id: "ghost-connection",
+    });
+    expect(ghostDisconnect.status).toBe(404);
+    const ghostFlush = await postControl(handle, {
+      action: "flush_held",
+      connection_id: "ghost-connection",
+    });
+    expect(ghostFlush.status).toBe(404);
+    const unknownAuth = await postControl(handle, {
+      action: "set_auth_status",
+      token: "ghost-token",
+      status: "revoked",
+    });
+    expect(unknownAuth.status).toBe(404);
+    expect(handle.core.snapshot().runtime).toMatchObject({
+      heldInboundFrames: 0,
+      heldOutboundFrames: 0,
+      activeTimers: 0,
+      bufferedSseConnections: [],
+    });
+    expect(Object.keys(handle.core.snapshot().sessions)).toEqual([]);
+  });
+
   it("refuses bad static credentials, incompatible versions, and non-loopback listeners", async () => {
     const handle = await start("opening-refusals");
     const baseHeaders = {
@@ -556,13 +1122,13 @@ describe("opening and proxy fault controls", () => {
     })).rejects.toThrow(/loopback/);
   });
 
-  it("serves RBP/1 inside a [2,1] deployment window and fails v2-only wire closed with exact pointers", async () => {
-    const handle = await start("n-minus-one-window", { supportedProtocols: [2, 1] });
+  it("keeps the RBP/1 bootstrap exception honest and fails v2-only wire closed with exact pointers", async () => {
+    const handle = await start("rbp1-bootstrap-window");
     const headers = {
       accept: "application/json",
       authorization: `Bearer ${TOKEN}`,
       "content-type": "application/json",
-      "x-rbp-versions": "2,1",
+      "x-rbp-versions": "1",
     };
 
     const v1 = await fetch(handle.httpConnectionUrl, {
@@ -581,25 +1147,25 @@ describe("opening and proxy fault controls", () => {
     v2Hello.payload.max_protocol = 2;
     const v2Http = await fetch(handle.httpConnectionUrl, {
       method: "POST",
-      headers,
+      headers: { ...headers, "x-rbp-versions": "2" },
       body: JSON.stringify(v2Hello),
     });
     expect(v2Http.status).toBe(426);
     expect(await v2Http.json()).toEqual({
-      error: "RBP/2 wire adapter is not implemented by the O1-T5 v1 stub",
+      error: "no mutually supported RBP version",
       min_protocol: 1,
-      max_protocol: 2,
+      max_protocol: 1,
       manifest_url: "/bridge/update/manifest",
     });
 
-    const v2Socket = await openRawWebSocket(handle, "2,1");
+    const v2Socket = await openRawWebSocket(handle, "1");
     const v2Close = nextClose(v2Socket);
     v2Socket.send(JSON.stringify(v2Hello));
     expect(await v2Close).toEqual({
       code: 4426,
       reason: JSON.stringify({
         min_protocol: 1,
-        max_protocol: 2,
+        max_protocol: 1,
         manifest_url: "/bridge/update/manifest",
       }),
     });
@@ -610,9 +1176,14 @@ describe("opening and proxy fault controls", () => {
     expect(upgrade.body).toEqual({
       error: "no mutually supported RBP version",
       min_protocol: 1,
-      max_protocol: 2,
+      max_protocol: 1,
       manifest_url: "/bridge/update/manifest",
     });
+    await expect(startGatewayStub({
+      statePath: await statePath("fake-rbp2-adapter"),
+      tokenTable,
+      supportedProtocols: [2, 1],
+    })).rejects.toThrow(/only RBP\/1/u);
   });
 
   it("requires the exact JSON media type on fallback request bodies", async () => {

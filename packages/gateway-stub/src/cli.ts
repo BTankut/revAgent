@@ -89,6 +89,9 @@ function parseArguments(arguments_: string[]): CliOptions {
   if (supportedProtocols?.some((entry) => !Number.isSafeInteger(entry) || entry < 1)) {
     throw new Error("--supported-protocols values must be positive safe integers");
   }
+  if (supportedProtocols !== undefined && (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1)) {
+    throw new Error("--supported-protocols must be exactly 1 until an RBP/2 adapter exists");
+  }
   const clockText = values.get("--clock-start-ms");
   const clockStartMs = clockText === undefined ? undefined : Number(clockText);
   if (clockStartMs !== undefined && (!Number.isSafeInteger(clockStartMs) || clockStartMs < 0)) {
@@ -143,6 +146,13 @@ const tokenTable: StaticTokenTable = {
   },
 };
 
+function fatalRecord(error: unknown): string {
+  return `${JSON.stringify({
+    event: "fatal",
+    error: error instanceof Error ? error.message : String(error),
+  })}\n`;
+}
+
 async function main(): Promise<void> {
   const options = parseArguments(process.argv.slice(2));
   const tls = options.tlsCertPath === undefined
@@ -165,16 +175,54 @@ async function main(): Promise<void> {
     clock,
   });
 
-  let closing = false;
-  const close = async (): Promise<void> => {
-    if (closing) {
+  let closePromise: Promise<void> | undefined;
+  let shutdownPromise: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    closePromise ??= handle.close();
+    return closePromise;
+  };
+  const detachSignalHandlers = (): void => {
+    process.off("SIGINT", signalHandler);
+    process.off("SIGTERM", signalHandler);
+    process.off("message", testSignalHandler);
+  };
+  const shutdown = (): Promise<void> => {
+    shutdownPromise ??= close().then(
+      () => {
+        detachSignalHandlers();
+        process.exit(0);
+      },
+      (error: unknown) => {
+        detachSignalHandlers();
+        process.exitCode = 1;
+        process.stderr.write(fatalRecord(error), () => process.exit(1));
+      },
+    );
+    return shutdownPromise;
+  };
+  const signalHandler = (): void => {
+    void shutdown();
+  };
+  const testSignalHandler = (message: unknown): void => {
+    if (
+      process.env.NODE_ENV !== "test" ||
+      typeof message !== "object" ||
+      message === null ||
+      (message as { action?: unknown }).action !== "emit_test_signal" ||
+      (
+        (message as { signal?: unknown }).signal !== "SIGINT" &&
+        (message as { signal?: unknown }).signal !== "SIGTERM"
+      )
+    ) {
       return;
     }
-    closing = true;
-    await handle.close();
+    process.emit((message as { signal: "SIGINT" | "SIGTERM" }).signal);
   };
-  process.once("SIGINT", () => void close().then(() => process.exit(0)));
-  process.once("SIGTERM", () => void close().then(() => process.exit(0)));
+  process.on("SIGINT", signalHandler);
+  process.on("SIGTERM", signalHandler);
+  if (process.send !== undefined) {
+    process.on("message", testSignalHandler);
+  }
   process.stdout.write(`${JSON.stringify({
     event: "ready",
     component: "@revagent/gateway-stub",
@@ -193,9 +241,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  process.stderr.write(`${JSON.stringify({
-    event: "fatal",
-    error: error instanceof Error ? error.message : String(error),
-  })}\n`);
+  process.stderr.write(fatalRecord(error));
   process.exitCode = 1;
 });

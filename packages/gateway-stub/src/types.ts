@@ -249,6 +249,7 @@ export interface GatewayStubSnapshot {
     openConnections: number;
     connectionPhases: Record<string, ConnectionPhase>;
     activeTimers: number;
+    activeDeliveries: number;
     bufferedSseConnections: string[];
     heldInboundFrames: number;
     heldOutboundFrames: number;

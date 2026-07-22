@@ -58,7 +58,7 @@ import {
   finalizeInvocationCarrier,
   recordPartial,
 } from "./artifactSink.js";
-import { FaultController, type FrameDeliveryOutcome } from "./faults.js";
+import { FaultController, type FrameDeliveryResult } from "./faults.js";
 import {
   allocateUuidV7,
   opaqueId,
@@ -226,7 +226,11 @@ export class GatewayStubCore {
   private constructor(options: GatewayStubCoreOptions, store: DurableGatewayStateStore) {
     this.store = store;
     this.clock = options.clock ?? new SystemClock();
-    this.supportedProtocols = normalizeSupportedProtocols(options.supportedProtocols ?? [1]);
+    const supportedProtocols = normalizeSupportedProtocols(options.supportedProtocols ?? [1]);
+    if (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1) {
+      throw new TypeError("the O1-T5 bootstrap stub implements and advertises only RBP/1 until an RBP/2 adapter exists");
+    }
+    this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
       "chunked_results",
@@ -383,7 +387,7 @@ export class GatewayStubCore {
     runtime.transport.active = true;
   }
 
-  async receiveFrame(connectionId: string, frame: Uint8Array): Promise<FrameDeliveryOutcome> {
+  async receiveFrame(connectionId: string, frame: Uint8Array): Promise<FrameDeliveryResult> {
     const runtime = this.requireActiveConnection(connectionId);
     let envelope: RbpEnvelope;
     try {
@@ -486,7 +490,7 @@ export class GatewayStubCore {
   async dispatchCancel(request: DispatchCancelRequest): Promise<RbpEnvelope> {
     const session = this.requireSession(request.rsid);
     if (session.inFlight === null || session.inFlight.kind !== "invoke" || session.inFlight.correlationId !== request.invocationId) {
-      throw new Error("cancel target is not the active invocation");
+      throw new GatewayStubFault("cancel target is not the active invocation", "protocol", 4400);
     }
     const envelope = await this.store.update((draft) => {
       const target = draft.sessions[request.rsid]!;
@@ -495,7 +499,7 @@ export class GatewayStubCore {
         target.inFlight.kind !== "invoke" ||
         target.inFlight.correlationId !== request.invocationId
       ) {
-        throw new Error("cancel target is no longer the active invocation");
+        throw new GatewayStubFault("cancel target is no longer the active invocation", "protocol", 4400);
       }
       target.inFlight.cancelRequested = true;
       return this.appendDataEnvelope(draft, target, "cancel", {
@@ -668,7 +672,7 @@ export class GatewayStubCore {
     if (runtime === undefined) {
       return;
     }
-    this.faults.clearConnection(connectionId);
+    this.faults.cancelConnection(connectionId);
     runtime.transport.active = false;
     if (runtime.lifecycle.phase !== "shutdown") {
       const transition = transitionConnection(runtime.lifecycle, {
@@ -748,6 +752,7 @@ export class GatewayStubCore {
           ]),
         ),
         activeTimers: faultSnapshot.activeTimers,
+        activeDeliveries: faultSnapshot.activeDeliveries,
         bufferedSseConnections: faultSnapshot.bufferedSseConnections,
         heldInboundFrames: faultSnapshot.heldInboundFrames,
         heldOutboundFrames: faultSnapshot.heldOutboundFrames,
@@ -756,15 +761,35 @@ export class GatewayStubCore {
   }
 
   async close(): Promise<void> {
-    this.faults.clear();
+    const deliveriesClosed = this.faults.clear();
+    const errors: unknown[] = [];
     const connections = [...this.connections.values()];
     for (const runtime of connections) {
-      await runtime.transport.close(1001, "stub_shutdown");
+      try {
+        await runtime.transport.close(1001, "stub_shutdown");
+      } catch (error) {
+        errors.push(error);
+      }
+    }
+    try {
+      await deliveriesClosed;
+    } catch (error) {
+      errors.push(error);
     }
     for (const connectionId of [...this.connections.keys()]) {
-      await this.disconnectConnection(connectionId, "stub_shutdown");
+      try {
+        await this.disconnectConnection(connectionId, "stub_shutdown");
+      } catch (error) {
+        errors.push(error);
+      }
     }
-    await this.store.flush();
+    try {
+      await this.store.flush();
+    } catch (error) {
+      errors.push(error);
+    }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length > 1) throw new AggregateError(errors, "Gateway stub close failed");
   }
 
   private async dispatchData(
@@ -1023,7 +1048,6 @@ export class GatewayStubCore {
         return;
       case "goodbye":
         await this.requireActiveConnection(connectionId).transport.close(1000, envelope.payload.reason);
-        await this.disconnectConnection(connectionId, envelope.payload.reason);
         return;
       case "result":
       case "partial":

@@ -5,6 +5,43 @@ import { basename, dirname, resolve } from "node:path";
 import type { PersistedGatewayState } from "./types.js";
 import { createMutationHoldLedger } from "@revagent/protocol";
 
+const WINDOWS_ATOMIC_RENAME_DELAYS_MS = [0, 10, 20, 40, 80, 160] as const;
+
+interface AtomicRenameOptions {
+  platform?: NodeJS.Platform;
+  renameFile?: (source: string, destination: string) => Promise<void>;
+  wait?: (delayMs: number) => Promise<void>;
+}
+
+function isTransientWindowsRenameError(error: unknown, platform: NodeJS.Platform): boolean {
+  return platform === "win32" &&
+    ["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "");
+}
+
+export async function renameAtomicallyWithRetry(
+  source: string,
+  destination: string,
+  options: AtomicRenameOptions = {},
+): Promise<void> {
+  const platform = options.platform ?? process.platform;
+  const renameFile = options.renameFile ?? rename;
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolveWait) => {
+    setTimeout(resolveWait, delayMs);
+  }));
+  let lastError: unknown;
+  for (const delayMs of WINDOWS_ATOMIC_RENAME_DELAYS_MS) {
+    if (delayMs > 0) await wait(delayMs);
+    try {
+      await renameFile(source, destination);
+      return;
+    } catch (error) {
+      if (!isTransientWindowsRenameError(error, platform)) throw error;
+      lastError = error;
+    }
+  }
+  throw lastError;
+}
+
 function initialState(): PersistedGatewayState {
   return {
     schemaVersion: 1,
@@ -112,7 +149,7 @@ export class DurableGatewayStateStore {
       await file.close();
     }
     try {
-      await rename(temporaryPath, this.path);
+      await renameAtomicallyWithRetry(temporaryPath, this.path);
       renamed = true;
       const directory = await open(dirname(this.path), "r");
       try {

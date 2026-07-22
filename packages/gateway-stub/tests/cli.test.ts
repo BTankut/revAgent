@@ -1,16 +1,21 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { readFile } from "node:fs/promises";
+import { createServer } from "node:net";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { RbpEnvelope } from "@revagent/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 
+import { GatewayStubCore } from "../src/core.js";
 import {
   controlEnvelope,
   hello,
   sessionRegister,
   statePath,
+  tokenTable,
 } from "./helpers.js";
 
 interface ReadyRecord {
@@ -46,7 +51,11 @@ async function startCli(name: string, arguments_: string[] = []): Promise<{
   const child = spawn(
     process.execPath,
     [cliPath, "--state", await statePath(name), ...arguments_],
-    { stdio: "pipe", windowsHide: true },
+    {
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
+      windowsHide: true,
+      env: { ...process.env, NODE_ENV: "test" },
+    },
   );
   let stdout = "";
   let stderr = "";
@@ -140,8 +149,38 @@ async function stopCli(child: ChildProcessWithoutNullStreams): Promise<{
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolveExit) => {
     child.once("exit", (code, signal) => resolveExit({ code, signal }));
   });
-  expect(child.kill("SIGTERM")).toBe(true);
+  if (process.platform === "win32") {
+    expect(child.send({ action: "emit_test_signal", signal: "SIGTERM" })).toBe(true);
+  } else {
+    expect(child.kill("SIGTERM")).toBe(true);
+  }
   return exited;
+}
+
+async function assertListenerPortReleased(ready: ReadyRecord): Promise<void> {
+  const endpoint = new URL(ready.control_url);
+  const probe = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    const onError = (error: Error): void => reject(error);
+    probe.once("error", onError);
+    probe.listen(Number(endpoint.port), endpoint.hostname, () => {
+      probe.off("error", onError);
+      resolveListen();
+    });
+  });
+  await new Promise<void>((resolveClose, reject) => {
+    probe.close((error) => error === undefined ? resolveClose() : reject(error));
+  });
+}
+
+async function persistedState(ready: ReadyRecord): Promise<{
+  schemaVersion: number;
+  sessions: Record<string, { liveness: string }>;
+}> {
+  return JSON.parse(await readFile(ready.state_path, "utf8")) as {
+    schemaVersion: number;
+    sessions: Record<string, { liveness: string }>;
+  };
 }
 
 describe("Gateway stub CLI", () => {
@@ -178,6 +217,8 @@ describe("Gateway stub CLI", () => {
 
     await stopCli(child);
     await expect(fetch(ready.control_url)).rejects.toThrow();
+    await assertListenerPortReleased(ready);
+    expect(await persistedState(ready)).toMatchObject({ schemaVersion: 1 });
   }, 10_000);
 
   it("rejects unknown command-line options before opening a listener", async () => {
@@ -201,16 +242,37 @@ describe("Gateway stub CLI", () => {
     });
   });
 
+  it("rejects a fake RBP/2 adapter window before readiness", async () => {
+    const child = spawn(
+      process.execPath,
+      [cliPath, "--state", await statePath("fake-rbp2-window"), "--supported-protocols", "2,1"],
+      { stdio: "pipe", windowsHide: true },
+    );
+    children.push(child);
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+    const [code, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
+    expect(code).toBe(1);
+    expect(signal).toBeNull();
+    expect(Buffer.concat(stdout).toString("utf8")).toBe("");
+    expect(JSON.parse(Buffer.concat(stderr).toString("utf8"))).toEqual({
+      event: "fatal",
+      error: "--supported-protocols must be exactly 1 until an RBP/2 adapter exists",
+    });
+  });
+
   it("applies startup protocol/capability overrides and drives liveness from process control time", async () => {
     const { child, ready } = await startCli("deterministic-control", [
-      "--supported-protocols", "2,1",
+      "--supported-protocols", "1",
       "--connection-capabilities", "journal_v1,transport_streamable_http",
       "--session-capabilities", "doc_context_cached_v1",
       "--clock-start-ms", "0",
     ]);
     children.push(child);
     expect(ready).toMatchObject({
-      protocol_versions: [2, 1],
+      protocol_versions: [1],
       deterministic_clock: true,
     });
 
@@ -282,18 +344,137 @@ describe("Gateway stub CLI", () => {
       exits.push(await stopCli(started.child));
     }
 
-    for (const exit of exits) {
-      if (process.platform === "win32") {
-        expect(
-          (exit.code === 0 && exit.signal === null) ||
-          (exit.code === null && exit.signal === "SIGTERM"),
-        ).toBe(true);
-      } else {
-        expect(exit).toEqual({ code: 0, signal: null });
-      }
-    }
+    for (const exit of exits) expect(exit).toEqual({ code: 0, signal: null });
     await Promise.all(readiness.map(async (ready) => {
       await expect(fetch(ready.control_url)).rejects.toThrow();
+      expect(await persistedState(ready)).toMatchObject({ schemaVersion: 1 });
     }));
+    for (const ready of new Map(readiness.map((entry) => [new URL(entry.control_url).port, entry])).values()) {
+      await assertListenerPortReleased(ready);
+    }
   }, 60_000);
+
+  it("shares one cleanup across sequential signals with active WSS and SSE transports", async () => {
+    const { child, ready } = await startCli("active-signal-cleanup");
+    children.push(child);
+    const socket = new WebSocket(ready.ws_url, {
+      headers: {
+        authorization: `Bearer ${cliToken}`,
+        "x-rbp-versions": "1",
+      },
+    });
+    await new Promise<void>((resolveOpen, reject) => {
+      socket.once("open", resolveOpen);
+      socket.once("error", reject);
+    });
+    socket.on("error", () => undefined);
+    const helloAck = new Promise<RbpEnvelope>((resolveMessage) => {
+      socket.once("message", (data) => resolveMessage(JSON.parse(data.toString()) as RbpEnvelope));
+    });
+    socket.send(JSON.stringify(hello(400)));
+    expect(await helloAck).toMatchObject({ type: "hello_ack", payload: { protocol: 1 } });
+
+    const created = await fetch(ready.http_connection_url, {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        authorization: `Bearer ${cliToken}`,
+        "content-type": "application/json",
+        "x-rbp-versions": "1",
+      },
+      body: JSON.stringify(hello(401)),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("rbp-connection-id");
+    expect(connectionId).not.toBeNull();
+    const sse = await openSse(ready, connectionId!);
+
+    try {
+      const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+      if (process.platform === "win32") {
+        expect(child.send({ action: "emit_test_signal", signal: "SIGINT" })).toBe(true);
+        expect(child.send({ action: "emit_test_signal", signal: "SIGTERM" })).toBe(true);
+      } else {
+        expect(child.kill("SIGINT")).toBe(true);
+        expect(child.kill("SIGTERM")).toBe(true);
+      }
+      const [code, signal] = await exited;
+      expect({ code, signal }).toEqual({ code: 0, signal: null });
+      await expect(fetch(ready.control_url)).rejects.toThrow();
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      await sse.close();
+    }
+  }, 15_000);
+
+  it("keeps the idempotent shutdown handler installed across same-signal bursts", async () => {
+    for (const signal of ["SIGTERM", "SIGINT"] as const) {
+      const { child, ready } = await startCli(`same-signal-${signal.toLowerCase()}`);
+      children.push(child);
+      const created = await fetch(ready.http_connection_url, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          authorization: `Bearer ${cliToken}`,
+          "content-type": "application/json",
+          "x-rbp-versions": "1",
+        },
+        body: JSON.stringify(hello(signal === "SIGTERM" ? 500 : 510)),
+      });
+      expect(created.status).toBe(201);
+      const connectionId = created.headers.get("rbp-connection-id");
+      expect(connectionId).not.toBeNull();
+      const sse = await openSse(ready, connectionId!);
+      const registration = sessionRegister();
+      registration.machine.fingerprint = `sha256:${"0".repeat(64)}`;
+      const registrationAccepted = await fetch(
+        `${ready.http_connection_url}/${encodeURIComponent(connectionId!)}/messages`,
+        {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${cliToken}`,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify(controlEnvelope(
+            "session_register",
+            registration,
+            signal === "SIGTERM" ? 501 : 511,
+          )),
+        },
+      );
+      expect(registrationAccepted.status).toBe(202);
+      const registered = await sse.next() as Extract<RbpEnvelope, { type: "session_registered" }>;
+      try {
+        const exited = once(child, "exit") as Promise<[number | null, NodeJS.Signals | null]>;
+        if (process.platform === "win32") {
+          expect(child.send({ action: "emit_test_signal", signal })).toBe(true);
+          expect(child.send({ action: "emit_test_signal", signal })).toBe(true);
+        } else {
+          expect(child.kill(signal)).toBe(true);
+          expect(child.kill(signal)).toBe(true);
+        }
+        const [code, exitSignal] = await exited;
+        expect({ code, signal: exitSignal }).toEqual({ code: 0, signal: null });
+        await expect(fetch(ready.control_url)).rejects.toThrow();
+        await assertListenerPortReleased(ready);
+        expect(await persistedState(ready)).toMatchObject({
+          schemaVersion: 1,
+          sessions: { [registered.payload.rsid]: { liveness: "disconnected" } },
+        });
+        const reopened = await GatewayStubCore.create({
+          statePath: ready.state_path,
+          tokenTable,
+        });
+        try {
+          expect(reopened.snapshot().sessions).toMatchObject({
+            [registered.payload.rsid]: { liveness: "disconnected" },
+          });
+        } finally {
+          await reopened.close();
+        }
+      } finally {
+        await sse.close();
+      }
+    }
+  }, 15_000);
 });

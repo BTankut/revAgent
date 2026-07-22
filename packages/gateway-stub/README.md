@@ -42,11 +42,12 @@ advertised URLs to `wss://` and `https://`.
 The normative pre-negotiation `hello` and `hello_ack` omit top-level `v`; all
 later messages require the selected version. Both bindings call the corrected
 `@revagent/protocol` parser/validator at the raw frame boundary. This M1 stub
-implements the RBP/1 bootstrap wire. A test deployment may advertise an N/N-1
-window such as `[2,1]` to prove that an RBP/1 bridge still selects and receives
-RBP/1. A v2-only `hello` remains fail-closed with `4426`/HTTP `426` and the
-manifest pointer until a real RBP/2 adapter and vectors exist; the stub never
-pretends that changing only the version integer implements RBP/2.
+implements and advertises only the RBP/1 bootstrap wire. RBP/1 is the explicit
+compatibility-window exception until RBP/2 exists. A v2-only opening remains
+fail-closed with `4426`/HTTP `426` and a pointer whose supported range is
+exactly `1..1`; the stub never pretends that changing only the version integer
+implements RBP/2. `--supported-protocols` is retained for harness identity but
+accepts only `1` until a real RBP/2 adapter and vectors exist.
 
 The exact fallback endpoints are:
 
@@ -59,8 +60,20 @@ The loopback-only `POST /__rbp_test/control` surface requires
 frames, buffer/flush SSE, force disconnect/expiry, install scope holds, submit
 T2-validated verification or late-terminal journal evidence, dispatch work,
 start an explicit digest-bound `dispatch_payload_recovery`, and return a
-redacted durable snapshot. A held HTTP uplink is transport-accepted with `202`;
-its durable sequence state advances only when `flush_held` delivers the frame.
+redacted durable snapshot. A held or delayed HTTP uplink keeps its POST pending;
+it receives `202` only after `flush_held` or the delay timer actually delivers
+and durably processes the frame. Drop, shutdown, or connection cleanup before
+delivery leaves acceptance unknown and closes the request without a success.
+Connection cleanup cancels pending public completions synchronously, closes the
+transport to release pending I/O, waits for every real delivery callback on that
+connection, and only then records the durable disconnect. Concurrent close paths
+share one connection promise. Whole-stub shutdown completes every connection,
+listener, and core barrier before reporting any aggregated cleanup error.
+Control commands use exact action-specific shapes. Dispatch payloads pass the
+real RBP/1 envelope validator, evidence records pass the journal-integrity
+validator, fault message names must be reachable in their selected direction,
+and buffering rejects unknown fallback connections without retaining phantom
+state.
 When the CLI starts with `--clock-start-ms`, `set_clock` plus
 `liveness_sweep` drives the same deterministic liveness transitions without
 wall-clock sleeps. Evidence submission deliberately requires both the
@@ -79,6 +92,9 @@ control-contract version, deterministic-clock mode, control authentication
 header, endpoints, PID, and supported shutdown signals. It never contains the
 device credential or control token. Durable snapshots likewise retain token
 digests and derived identity only, never raw credentials.
+Signal handlers remain installed across repeated or mixed SIGINT/SIGTERM bursts
+until the one shared shutdown promise settles; every programmatic close caller
+receives that same completion or rejection.
 
 Run locally:
 

@@ -4,7 +4,13 @@ export {
   RecoveryHoldConflictError,
   WindowViolationError,
 } from "./core.js";
-export { FaultController } from "./faults.js";
+export { FaultController, isFrameFaultMessageType } from "./faults.js";
+export type {
+  FlushHeldResult,
+  FrameDeliveryCompletion,
+  FrameDeliveryOutcome,
+  FrameDeliveryResult,
+} from "./faults.js";
 export {
   normalizeSupportedProtocols,
   ProtocolNegotiationError,
