@@ -7,6 +7,8 @@ This package is the implementation boundary for the O1 bridge-to-Gateway contrac
 - strict AJV validation
 - raw UTF-8 parsing with duplicate-key rejection and normative byte caps
 - RFC 8785 JCS `params_digest` and reconnect-backoff helpers
+- deterministic pure state reducers for per-session sequencing, connection/session lifecycle,
+  invocation-journal redelivery, mutation-scope recovery holds, and result/artifact streams
 - bounded, language-neutral conformance vectors under `conformance/fixtures`
 
 `schemas/rbp/v1/envelope.schema.json` is the public entry point. It references
@@ -36,8 +38,11 @@ rejects malformed UTF-8, BOMs, duplicate keys, and oversize values/frames.
 
 The authoritative protocol document remains
 `docs/specs/O1-bridge-gateway-protocol.md`. This package implements the M1
-schema and pure-contract portion; it does not by itself prove the full v1.0
-freeze. Transport interoperability, journal crash recovery, Gateway/Bridge
+schema and pure-contract portion. The state modules have no transport, clock,
+database, filesystem, or Revit I/O; callers must persist accepted transitions
+at the durability boundaries required by the specification. They do not by
+themselves prove the full v1.0 freeze. Transport interoperability, durable
+journal crash recovery, spool/reparse-point enforcement, Gateway/Bridge
 simulators, and real add-in evidence remain separate conformance gates.
 
 The add-in-facing contract is versioned independently under
