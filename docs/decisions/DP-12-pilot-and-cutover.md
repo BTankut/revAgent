@@ -1,12 +1,13 @@
 # DP-12 — Pilot User, Pilot Machine, and Cutover Window
 
-**Status:** Awaiting operator confirmation
+**Status:** Partially confirmed
+**Decision date:** 2026-07-22
 **Gate:** Pilot entry
-**Recommended default:** Designer power-user; weekend/evening cutover
+**Recorded machine:** `NET01` (registered; SSH access available)
 
 ## Decision
 
-Name the pilot user and workstation, the backup operator, the five-working-day pilot window, and the fleet cutover date/window.
+`NET01` is the pilot workstation. Name the pilot user, backup operator, five-working-day pilot window, and fleet transition date/window before pilot entry.
 
 ## Selection requirements
 
@@ -15,6 +16,6 @@ Name the pilot user and workstation, the backup operator, the five-working-day p
 - The chosen WP9 client, adapted add-in, bridge, self-update, reconnect, confirm flow, and file workflows are exercised on this exact stack.
 - Cutover provides enough time for a canary pair, an early go/no-go decision, and the remaining fleet.
 
-## Confirmation prompt
+## Remaining fields
 
-Record user, device, pilot start/end, cutover start/end, decision owner, fallback operator, and communication owner in `DP-log.md`.
+Record pilot user, pilot start/end, transition start/end, decision owner, fallback operator, and communications owner in `DP-log.md`; retain the live readiness evidence from NET01.

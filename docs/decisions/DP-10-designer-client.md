@@ -1,12 +1,20 @@
 # DP-10 — Phase-1 Designer Client
 
-**Status:** Awaiting evaluation; no default is approved
+**Status:** Selection confirmed; conformance pending
+**Decision date:** 2026-07-22
 **Gate:** Pilot entry
-**Recommended process:** Complete the WP9 evaluation matrix before selecting a client
+**Recorded choice:** Existing authorized ChatGPT/Codex Desktop client
 
 ## Decision
 
-Select the daily client that designers open after the Codex-local runtime is retired. The client must be validated as part of the production stack, not treated as an interchangeable UI.
+Phase 1 retains the existing authorized ChatGPT/Codex Desktop application as the daily client while replacing its legacy local stdio/NAS MCP path with revAgent's remote MCP registration. The selection is closed; pilot readiness is not.
+
+## Responsibility boundary
+
+- Client installation, subscription, updates, and user session are the user's responsibility.
+- revAgent owns remote MCP registration instructions and end-to-end compatibility verification.
+- The Gateway does not own the Phase-1 agentic loop and does not use an LLM API key.
+- If conformance fails, pilot/cutover is blocked; another client requires a dated DP-10/R-F amendment.
 
 ## Required evidence
 
@@ -16,13 +24,13 @@ Select the daily client that designers open after the Codex-local runtime is ret
 - Streaming and understandable error handling
 - GAP-7 Excel/file ingress and exported-image access
 - Turkish-friendly, non-developer UX
-- Per-seat cost and licensing owner
-- Fleet install, login, MCP registration, update, and supportability
+- User-owned subscription/session prerequisites and revAgent-owned support boundary
+- Remote MCP registration, reconnect, update drift, and supportability
 
 ## Pilot binding
 
-The pilot designer must use the selected client for at least five real working days fully off the old Codex path before pilot exit.
+The pilot designer must use the selected client for at least five real working days fully off the legacy local stdio/NAS path before pilot exit.
 
-## Confirmation prompt
+## Open conformance gate
 
-Do not choose from reputation alone. Attach the completed WP9 matrix and conformance result, then record the selected client, license owner, supported workflows, and accepted gaps in `DP-log.md`.
+WP9 must attach hands-on Streamable HTTP, OAuth/DCR, confirmation, file/image, Turkish UX, reconnect, and live-Revit evidence before pilot/cutover. Operator selection is not evidence that those gates passed.

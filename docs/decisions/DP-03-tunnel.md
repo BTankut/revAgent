@@ -1,12 +1,19 @@
 # DP-03 — Outbound Tunnel
 
-**Status:** Awaiting operator confirmation
+**Status:** Confirmed
+**Decision date:** 2026-07-22
 **Gate:** Pilot entry
-**Recommended default:** Cloudflare Tunnel
+**Recorded choice:** Cloudflare Tunnel
 
 ## Decision
 
-Select the outbound tunnel provider for the public Gateway endpoint. No customer or office router inbound port-forward is permitted.
+The outbound tunnel provider is Cloudflare Tunnel. No customer or office router inbound port-forward is permitted.
+
+The registered tunnel object is:
+
+- Name: `revagent-gateway-prod`
+- UUID: `bb68cbcb-eedf-474e-aaee-145d160ed004`
+- Connector/origin: not yet defined
 
 ## Why this default
 
@@ -24,6 +31,6 @@ Select the outbound tunnel provider for the public Gateway endpoint. No customer
 
 A different outbound-tunnel provider is acceptable only if it preserves the owned DNS name, no inbound ports, automated reconnect, and standby/failover operation.
 
-## Confirmation prompt
+## Remaining operational gate
 
-Confirm Cloudflare account ownership and tunnel direction; record the operational owner and recovery contact in `DP-log.md`.
+Define the connector/origin, name the operational owner and recovery contact, and retain tunnel-to-origin reachability evidence before pilot entry. Credentials and tunnel tokens must not enter git.

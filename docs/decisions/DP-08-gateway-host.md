@@ -22,4 +22,10 @@ The repository records only the non-secret connection identity above. Private ke
 
 ## Remaining operational verification
 
-W1-7 still verifies host provisioning facts such as Ubuntu version, Docker/Compose readiness, storage, power recovery, UPS coverage, and resource headroom. Those checks validate the confirmed host; they do not change DP-8. LTE failover remains a Phase-1 resilience item in the risk register unless the operator records a separate commitment.
+The host choice is confirmed, but the M0 `ready/reachable` gate remains `in_progress` until command output is retained.
+
+- **Owner:** Barış / office network operations
+- **Next action:** capture live SSH reachability plus Ubuntu, Docker/Compose, storage, power-recovery, UPS, and resource-headroom evidence.
+- **LTE next action:** before M7/pilot, verify router dual-WAN/LTE capability and record the device/SIM/provider choice; if deferred, record a dated acceptance of WAN-outage risk and its next review gate.
+
+These checks validate the confirmed host; they do not reopen DP-8.

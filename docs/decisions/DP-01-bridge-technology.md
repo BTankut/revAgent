@@ -1,12 +1,13 @@
 # DP-01 — Bridge Technology
 
-**Status:** Awaiting operator confirmation
+**Status:** Confirmed
+**Decision date:** 2026-07-22
 **Gate:** M0 / build entry
-**Recommended default:** .NET 8 self-contained single-file Windows service
+**Recorded choice:** .NET 8 self-contained single-file Windows service
 
 ## Decision
 
-Confirm the production implementation stack for the thin desktop bridge. The provisional Week-1 scaffold may use the recommended default, but transport implementation must not merge before this decision and DP-2 are recorded.
+The production implementation stack for the thin desktop bridge is .NET 8 self-contained single-file Windows service. DP-2 separately fixes its Gateway transport.
 
 ## Why this default
 
@@ -25,6 +26,6 @@ Confirm the production implementation stack for the thin desktop bridge. The pro
 
 A Node SEA/packaged executable keeps TypeScript familiarity but requires an additional Windows service wrapper and complicates native SQLite/self-update behavior. Select it only with explicit replacement designs for those concerns.
 
-## Confirmation prompt
+## Change control
 
-Approve the .NET 8 default, or record the alternative plus its service-hosting, signing, journal, and self-update consequences in `DP-log.md`.
+This choice is recorded in `DP-log.md`. Replacing it requires a dated R-F amendment covering service hosting, signing, journal, and self-update consequences.

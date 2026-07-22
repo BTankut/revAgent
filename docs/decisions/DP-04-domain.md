@@ -1,12 +1,13 @@
 # DP-04 — Gateway Domain
 
-**Status:** Awaiting operator confirmation
+**Status:** Confirmed
+**Decision date:** 2026-07-22
 **Gate:** Pilot entry
-**Recommended default:** `gateway.<company-domain>`
+**Recorded choice:** `gateway.revagent.app`
 
 ## Decision
 
-Record the exact controlled DNS name used by bridges and external MCP clients. Clients must never be configured with an IP address or machine hostname.
+Bridges and external MCP clients use `gateway.revagent.app`. Clients must never be configured with an IP address or machine hostname.
 
 ## Requirements
 
@@ -19,6 +20,6 @@ Record the exact controlled DNS name used by bridges and external MCP clients. C
 - `GATEWAY_PUBLIC_URL`, OIDC audience/redirects, Caddy routing, client registration, and bridge configuration all derive from the chosen name.
 - Changing it after pilot requires a controlled compatibility window.
 
-## Confirmation prompt
+## Remaining operational gate
 
-Record the exact FQDN, DNS provider/account owner, and recovery contact in `DP-log.md`; do not commit tunnel tokens or registrar secrets.
+Bind the FQDN to the confirmed Cloudflare tunnel, record the DNS provider/account owner and recovery contact, and retain TLS/reachability evidence. Do not commit tunnel tokens or registrar secrets.

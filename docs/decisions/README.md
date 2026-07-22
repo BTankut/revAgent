@@ -9,7 +9,7 @@ Normative order:
 3. The relevant implementation-plan package
 4. These decision records
 
-The authoritative status ledger is `DP-log.md`. A recommendation in a one-pager is not an approval. A decision is closed only when the ledger records `confirmed`, a decision date, and the operator evidence.
+The authoritative status ledger is `DP-log.md`. A recommendation in a one-pager is not an approval. Decision selection and executable-gate evidence are tracked separately: `confirmed_pending_conformance` closes the choice but not the pilot gate, while `partially_confirmed` closes only the named subfields.
 
 ## Decision packets
 
@@ -31,4 +31,4 @@ The authoritative status ledger is `DP-log.md`. A recommendation in a one-pager 
 
 ## Operator checkpoint
 
-At the confirmation session, record each accepted choice directly in `DP-log.md`. DP-1, DP-2, and DP-13 are the M0 build-entry gate. DP-3, DP-4, DP-6, DP-8, DP-9, DP-10, and DP-12 must close before pilot entry. The remaining decisions must close before fleet cutover.
+The 2026-07-22 written checkpoint confirmed DP-1, DP-2, DP-3, DP-4, DP-8 host selection, DP-10 client selection, and DP-13; DP-12 names only `NET01`; DP-6 is not applicable to Phase 1. DP-1/DP-2/DP-13 satisfy the decision portion of the M0 build-entry gate. DP-3/DP-4/DP-8/DP-9/DP-10 conformance/DP-12 readiness evidence must still satisfy their executable pilot gates. The remaining decisions must close before fleet transition.

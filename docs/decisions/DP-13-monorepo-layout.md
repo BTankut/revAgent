@@ -1,12 +1,13 @@
 # DP-13 — Monorepo Layout
 
-**Status:** Awaiting operator confirmation
+**Status:** Confirmed
+**Decision date:** 2026-07-22
 **Gate:** M0 / build entry
-**Recommended default:** `packages/gateway`, `packages/bridge`, `packages/protocol`
+**Recorded choice:** `packages/gateway`, `packages/bridge`, `packages/protocol`
 
 ## Decision
 
-Confirm the additive workspace layout used for migration code.
+The migration uses the additive three-package workspace layout below.
 
 ## Guardrails
 
@@ -19,6 +20,6 @@ Confirm the additive workspace layout used for migration code.
 
 It creates the target package boundaries without moving the frozen legacy runtime or add-in, preserving emergency NAS rebuildability and CI cache behavior.
 
-## Confirmation prompt
+## Change control
 
-Approve the three-package layout, or record an alternative that preserves the frozen legacy paths, independent lockfile, and package ownership defined by the INDEX.
+An alternative requires a dated R-F amendment and must preserve the frozen legacy paths, independent lockfile, and package ownership defined by the INDEX.
