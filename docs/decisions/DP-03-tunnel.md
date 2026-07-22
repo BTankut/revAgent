@@ -13,7 +13,8 @@ The registered tunnel object is:
 
 - Name: `revagent-gateway-prod`
 - UUID: `bb68cbcb-eedf-474e-aaee-145d160ed004`
-- Connector/origin: not yet defined
+- Connector/origin: staged on `bt@192.168.90.154` as a disabled/inactive systemd service; the frozen
+  origin is `http://127.0.0.1:8081`
 
 ## Why this default
 
@@ -33,4 +34,7 @@ A different outbound-tunnel provider is acceptable only if it preserves the owne
 
 ## Remaining operational gate
 
-Define the connector/origin, name the operational owner and recovery contact, and retain tunnel-to-origin reachability evidence before pilot entry. Credentials and tunnel tokens must not enter git.
+The connector credential, config, edge-connectivity proof, and safe stopped state are retained in
+`DP-03-04-cloudflare-staging.md`. The implementation assistant is the SSH-execution owner. Before pilot
+entry, start the real Gateway/Caddy origin, enable the connector, retain public `/healthz`, restart, and
+reconnect evidence, and name the recovery contact. Credentials and tunnel tokens must not enter git.
