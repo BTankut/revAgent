@@ -11,8 +11,6 @@ services:
     environment:
       - DATABASE_URL
       - GATEWAY_PUBLIC_URL
-      - LLM_API_KEY
-      - LLM_PROVIDER_BASE_URL
       - LOG_LEVEL
       - OBJECT_STORE_DRIVER=fs
       - OBJECT_STORE_ROOT=/var/lib/revagent/objects

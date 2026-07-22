@@ -15,9 +15,17 @@ docker compose \
   config --quiet
 ```
 
-Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR digest, point the DNS name at the approved ingress, and supply real Postgres, LLM, and OIDC credentials from the root-owned host environment. Only Caddy publishes host ports; PostgreSQL remains on an internal Compose network.
+Before an actual deployment, replace `GATEWAY_IMAGE` with an immutable GHCR digest, connect the confirmed `gateway.revagent.app` DNS name and `revagent-gateway-prod` Cloudflare tunnel to the approved origin, and supply real Postgres and OIDC credentials from the root-owned host environment. The tunnel connector/origin is still an open operational input. Only Caddy publishes host ports; PostgreSQL remains on an internal Compose network.
 
 The external `DATABASE_URL` must use the Compose service name `postgres` and credentials matching `POSTGRES_USER`, `POSTGRES_PASSWORD`, and `POSTGRES_DB`. Compose receives sensitive values by environment name; the YAML contains neither secret values nor secret-scanner suppressions.
+
+## Phase-1 agent-loop boundary
+
+RES-23 keeps the Phase-1 agentic loop in the user's existing authorized ChatGPT/Codex Desktop client. The
+Gateway therefore has no `LLM_API_KEY`, provider URL, model, or region input in this Compose profile. Client
+installation, subscription, and user session are user responsibilities; revAgent owns remote MCP registration
+and end-to-end compatibility verification. A future in-house-loop profile must add its provider settings and
+secret boundary through a separately approved milestone rather than reusing this M0 skeleton silently.
 
 ## DP-5 identity gate
 
