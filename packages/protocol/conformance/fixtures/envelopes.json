@@ -555,14 +555,26 @@
         "atomic": true,
         "status": "indeterminate",
         "transaction_state": "indeterminate",
-        "failed_step_index": 1,
+        "failed_step_index": 0,
         "steps": [
           {
             "index": 0,
             "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
-            "status": "completed",
-            "result": {},
-            "replayed": true
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": false,
+              "verification_hold_id": "vh:4cf5818836b3d0e890ebc20548b0f863479f3ce996370947ad6c8067f437bad7",
+              "mutation_scope": {
+                "kind": "document",
+                "document_id": "doc-01"
+              },
+              "message": "verification required"
+            },
+            "replayed": false
           },
           {
             "index": 1,
@@ -574,7 +586,7 @@
               "outcome": "indeterminate",
               "verification_required": true,
               "replayed": false,
-              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "verification_hold_id": "vh:4cf5818836b3d0e890ebc20548b0f863479f3ce996370947ad6c8067f437bad7",
               "mutation_scope": {
                 "kind": "document",
                 "document_id": "doc-01"
@@ -586,7 +598,20 @@
           {
             "index": 2,
             "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
-            "status": "not_started",
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": false,
+              "verification_hold_id": "vh:4cf5818836b3d0e890ebc20548b0f863479f3ce996370947ad6c8067f437bad7",
+              "mutation_scope": {
+                "kind": "document",
+                "document_id": "doc-01"
+              },
+              "message": "verification required"
+            },
             "replayed": false
           }
         ],
@@ -1031,6 +1056,52 @@
       "base": "batch_indeterminate_result",
       "payload_patch": {
         "transaction_state": "committed"
+      }
+    },
+    {
+      "name": "non_atomic_batch_stops_after_first_indeterminate",
+      "base": "batch_indeterminate_result",
+      "payload_patch": {
+        "atomic": false,
+        "transaction_state": "not_applicable"
+      }
+    },
+    {
+      "name": "atomic_rollback_stops_after_first_failure",
+      "base": "batch_failed_result",
+      "payload_patch": {
+        "atomic": true,
+        "transaction_state": "rolled_back",
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "completed",
+            "result": {},
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "bounded operator-safe message"
+            },
+            "replayed": false
+          },
+          {
+            "index": 2,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000023",
+            "status": "completed",
+            "result": {},
+            "replayed": false
+          }
+        ]
       }
     },
     {

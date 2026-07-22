@@ -203,6 +203,10 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
   const errors = duplicateInvocationIdErrors(payload.steps, "/payload/steps");
   const firstNonSuccess = payload.steps.findIndex((step) => step.status !== "completed");
   const expectedFailureIndex = firstNonSuccess === -1 ? null : firstNonSuccess;
+  const allowsMultipleNonSuccessSteps =
+    payload.atomic &&
+    payload.status === "indeterminate" &&
+    payload.transaction_state === "indeterminate";
 
   for (const [position, step] of payload.steps.entries()) {
     const stepRecord = step as BatchResult["steps"][number] & {
@@ -228,7 +232,12 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
       );
     }
 
-    if (firstNonSuccess !== -1 && position > firstNonSuccess && step.status !== "not_started") {
+    if (
+      !allowsMultipleNonSuccessSteps &&
+      firstNonSuccess !== -1 &&
+      position > firstNonSuccess &&
+      step.status !== "not_started"
+    ) {
       errors.push(
         semanticError(
           `/payload/steps/${position}/status`,
