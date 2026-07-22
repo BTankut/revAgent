@@ -11,6 +11,7 @@ import {
 import type {
   InvokeBatchEnvelope,
   InvokeEnvelope,
+  MutationHold,
   SessionUnregister,
 } from "@revagent/protocol";
 
@@ -49,6 +50,10 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "poll_document_context",
   "flush_outbound",
   "invoke_local",
+  "record_verification_attempt",
+  "record_late_evidence",
+  "resolve_hold",
+  "clearance_for_hold",
   "inject_crash",
   "restart_simulator",
   "snapshot_evidence",
@@ -121,10 +126,91 @@ function boundedId(value: unknown, label: string): string {
   return boundedString(value, label, 128);
 }
 
+function uuidV7(value: unknown, label: string): string {
+  const id = boundedString(value, label, 36);
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u.test(id)) {
+    throw new Error(`${label} must be a lowercase UUIDv7`);
+  }
+  return id;
+}
+
 function sha256Digest(value: unknown, label: string): string {
   const digest = boundedString(value, label, 71);
   if (!/^sha256:[0-9a-f]{64}$/u.test(digest)) throw new Error(`${label} must be a sha256 digest`);
   return digest;
+}
+
+function verificationHoldId(value: unknown, label: string): string {
+  const holdId = boundedString(value, label, 67);
+  if (!/^vh:[0-9a-f]{64}$/u.test(holdId)) throw new Error(`${label} must be a verification hold id`);
+  return holdId;
+}
+
+function holdEvidenceConclusion(value: unknown):
+  | "non_execution_proven"
+  | "postcondition_verified"
+  | "inconclusive"
+  | "failed"
+  | "omitted"
+  | "ambiguous" {
+  if (
+    value !== "non_execution_proven" &&
+    value !== "postcondition_verified" &&
+    value !== "inconclusive" &&
+    value !== "failed" &&
+    value !== "omitted" &&
+    value !== "ambiguous"
+  ) {
+    throw new Error("conclusion must be a supported hold evidence conclusion");
+  }
+  return value;
+}
+
+function holdResolutionDecision(value: unknown): "non_execution_proven" | "postcondition_verified" {
+  if (value !== "non_execution_proven" && value !== "postcondition_verified") {
+    throw new Error("decision must be non_execution_proven or postcondition_verified");
+  }
+  return value;
+}
+
+function holdResolutionBasis(value: unknown): "verification_read" | "late_terminal" {
+  if (value !== "verification_read" && value !== "late_terminal") {
+    throw new Error("basis must be verification_read or late_terminal");
+  }
+  return value;
+}
+
+function holdControlSummary(hold: MutationHold): JsonObject {
+  return {
+    rsid: hold.rsid,
+    holdId: hold.holdId,
+    mutationScope: hold.mutationScope as unknown as FixtureJsonValue,
+    scopeKey: hold.scopeKey,
+    state: hold.state,
+    originIdempotencyKeys: [...hold.originIdempotencyKeys],
+    evidenceAttemptCount: hold.evidenceAttempts.length,
+    selectedEvidence: hold.selectedEvidence === null
+      ? null
+      : {
+          basis: hold.selectedEvidence.basis,
+          verificationInvocationId: hold.selectedEvidence.verificationInvocationId,
+          originIdempotencyKey: hold.selectedEvidence.originIdempotencyKey,
+          evidenceDigest: hold.selectedEvidence.evidenceDigest,
+          conclusion: hold.selectedEvidence.conclusion,
+        },
+    resolution: hold.resolution === null
+      ? null
+      : {
+          resolutionId: hold.resolution.resolutionId,
+          basis: hold.resolution.basis,
+          verificationInvocationId: hold.resolution.verificationInvocationId,
+          evidenceDigest: hold.resolution.evidenceDigest,
+          decision: hold.resolution.decision,
+          auditId: hold.resolution.auditId,
+          authorizedDispatchIdentity: hold.resolution.authorizedDispatchIdentity,
+        },
+    clearedBy: hold.clearedBy,
+  };
 }
 
 function safeInteger(value: unknown, label: string, minimum = 0, maximum = Number.MAX_SAFE_INTEGER): number {
@@ -136,6 +222,13 @@ function safeInteger(value: unknown, label: string, minimum = 0, maximum = Numbe
 
 function booleanValue(value: unknown, label: string): boolean {
   if (typeof value !== "boolean") throw new Error(`${label} must be boolean`);
+  return value;
+}
+
+function loopbackEndpointPolicy(value: unknown): "loopback_test_readiness" {
+  if (value !== "loopback_test_readiness") {
+    throw new Error("endpointPolicy must equal loopback_test_readiness when supplied");
+  }
   return value;
 }
 
@@ -328,6 +421,14 @@ export class BridgeDaemonRuntime {
         return { value: await this.#flush(record), shutdown: false };
       case "invoke_local":
         return { value: await this.#invoke(record), shutdown: false };
+      case "record_verification_attempt":
+        return { value: this.#recordVerificationAttempt(record), shutdown: false };
+      case "record_late_evidence":
+        return { value: this.#recordLateEvidence(record), shutdown: false };
+      case "resolve_hold":
+        return { value: this.#resolveHold(record), shutdown: false };
+      case "clearance_for_hold":
+        return { value: this.#clearanceForHold(record), shutdown: false };
       case "inject_crash":
         return { value: this.#injectCrash(record), shutdown: false };
       case "restart_simulator":
@@ -535,6 +636,7 @@ export class BridgeDaemonRuntime {
       "wssUrl",
       "fallbackUrl",
       "fallbackProvisioned",
+      "endpointPolicy",
     ]);
     if (this.#binding !== null || this.#peer !== null) throw new Error("transport is already open");
     const kind = record.kind;
@@ -542,6 +644,9 @@ export class BridgeDaemonRuntime {
       throw new Error("kind must be wss, streamable_http_sse, or primary_then_fallback");
     }
     const deviceToken = boundedString(record.deviceToken, "deviceToken", 8_192);
+    const endpointPolicy = record.endpointPolicy === undefined
+      ? undefined
+      : loopbackEndpointPolicy(record.endpointPolicy);
     const helloInput = record.hello;
     if (!isObject(helloInput)) throw new Error("hello must be an object");
     exactKeys(helloInput, ["id", "ts", "bridgeVersion", "deviceId", "hostname", "os"], ["fingerprint"]);
@@ -556,50 +661,90 @@ export class BridgeDaemonRuntime {
         ? {}
         : { fingerprint: sha256Digest(helloInput.fingerprint, "hello.fingerprint") }),
     });
-    let selected: { binding: GatewayBinding; helloAck: Awaited<ReturnType<GatewayBinding["open"]>> };
+    let wssUrl: string | null = null;
+    let fallbackUrl: string | null = null;
+    let fallbackProvisioned = false;
     if (kind === "wss") {
       if (record.fallbackUrl !== undefined || record.fallbackProvisioned !== undefined) {
         throw new Error("wss transport does not accept fallback fields");
       }
-      const binding = new WssGatewayBinding({
-        baseUrl: boundedString(record.wssUrl, "wssUrl", 2_048),
-        deviceToken,
-      });
-      try {
-        selected = { binding, helloAck: await binding.open(hello) };
-      } catch (error) {
-        await binding.close();
-        throw error;
-      }
+      wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
     } else if (kind === "streamable_http_sse") {
       if (record.wssUrl !== undefined || record.fallbackProvisioned !== undefined) {
         throw new Error("streamable_http_sse does not accept WSS selection fields");
       }
-      const binding = new HttpSseGatewayBinding({
-        baseUrl: boundedString(record.fallbackUrl, "fallbackUrl", 2_048),
-        deviceToken,
-      });
-      selected = { binding, helloAck: await binding.open(hello) };
+      fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
     } else {
-      const wss = new WssGatewayBinding({
-        baseUrl: boundedString(record.wssUrl, "wssUrl", 2_048),
-        deviceToken,
-      });
-      const fallback = new HttpSseGatewayBinding({
-        baseUrl: boundedString(record.fallbackUrl, "fallbackUrl", 2_048),
-        deviceToken,
-      });
-      selected = await openPrimaryThenFallback({
-        hello,
-        wss,
-        fallback,
-        fallbackProvisioned: booleanValue(record.fallbackProvisioned, "fallbackProvisioned"),
-        classifyWssFailure,
-      });
+      wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
+      fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
+      fallbackProvisioned = booleanValue(record.fallbackProvisioned, "fallbackProvisioned");
     }
+
+    let transportOpenAttempt = 0;
+    const openConfiguredTransport = async (): Promise<{
+      readonly binding: GatewayBinding;
+      readonly helloAck: Awaited<ReturnType<GatewayBinding["open"]>>;
+    }> => {
+      const attemptHello = transportOpenAttempt === 0
+        ? hello
+        : { ...hello, id: this.#ids.next(), ts: new Date(this.#clockMs).toISOString() };
+      transportOpenAttempt += 1;
+      const created: GatewayBinding[] = [];
+      try {
+        if (kind === "wss") {
+          if (wssUrl === null) throw new Error("validated WSS URL is missing");
+          const binding = new WssGatewayBinding({
+            baseUrl: wssUrl,
+            deviceToken,
+            ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+          });
+          created.push(binding);
+          return { binding, helloAck: await binding.open(attemptHello) };
+        }
+        if (kind === "streamable_http_sse") {
+          if (fallbackUrl === null) throw new Error("validated fallback URL is missing");
+          const binding = new HttpSseGatewayBinding({
+            baseUrl: fallbackUrl,
+            deviceToken,
+            ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+          });
+          created.push(binding);
+          return { binding, helloAck: await binding.open(attemptHello) };
+        }
+        if (wssUrl === null || fallbackUrl === null) throw new Error("validated transport URLs are missing");
+        const wss = new WssGatewayBinding({
+          baseUrl: wssUrl,
+          deviceToken,
+          ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+        });
+        const fallback = new HttpSseGatewayBinding({
+          baseUrl: fallbackUrl,
+          deviceToken,
+          ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+        });
+        created.push(wss, fallback);
+        return await openPrimaryThenFallback({
+          hello: attemptHello,
+          wss,
+          fallback,
+          fallbackProvisioned,
+          classifyWssFailure,
+        });
+      } catch (error) {
+        await Promise.allSettled(created.map(async (binding) => await binding.close()));
+        throw error;
+      }
+    };
+
+    const selected = await openConfiguredTransport();
     this.#binding = selected.binding;
     this.#peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
       nowMs: () => this.#clockMs,
+      reconnect: async () => {
+        const reconnected = await openConfiguredTransport();
+        this.#binding = reconnected.binding;
+        return reconnected;
+      },
     });
     return {
       requestedKind: kind,
@@ -705,8 +850,10 @@ export class BridgeDaemonRuntime {
           selectedCrash === null ? {} : { crashAt: selectedCrash },
         );
       } else if (record.envelope.type === "invoke_batch") {
-        if (selectedCrash !== null) throw new Error("crash injection currently requires an invoke envelope");
-        outcome = await this.#simulator.invokeBatch(record.envelope as unknown as InvokeBatchEnvelope);
+        outcome = await this.#simulator.invokeBatch(
+          record.envelope as unknown as InvokeBatchEnvelope,
+          selectedCrash === null ? {} : { crashAt: selectedCrash },
+        );
       } else {
         throw new Error("invoke_local envelope.type must be invoke or invoke_batch");
       }
@@ -716,6 +863,109 @@ export class BridgeDaemonRuntime {
       this.#crashedAt = error.point;
       return { crashed: true, point: error.point };
     }
+  }
+
+  #recordVerificationAttempt(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, [
+      "controlVersion",
+      "id",
+      "action",
+      "rsid",
+      "holdId",
+      "verificationInvocationId",
+      "evidenceDigest",
+      "conclusion",
+      "atMs",
+    ]);
+    const hold = this.#journal.recordVerificationAttempt({
+      rsid: uuidV7(record.rsid, "rsid"),
+      holdId: verificationHoldId(record.holdId, "holdId"),
+      verificationInvocationId: uuidV7(record.verificationInvocationId, "verificationInvocationId"),
+      evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
+      conclusion: holdEvidenceConclusion(record.conclusion),
+      atMs: safeInteger(record.atMs, "atMs"),
+    });
+    return { recorded: true, hold: holdControlSummary(hold) };
+  }
+
+  #recordLateEvidence(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, [
+      "controlVersion",
+      "id",
+      "action",
+      "rsid",
+      "holdId",
+      "originInvocationId",
+      "evidenceDigest",
+      "conclusion",
+      "atMs",
+    ]);
+    const hold = this.#journal.recordLateEvidence({
+      rsid: uuidV7(record.rsid, "rsid"),
+      holdId: verificationHoldId(record.holdId, "holdId"),
+      originInvocationId: uuidV7(record.originInvocationId, "originInvocationId"),
+      evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
+      conclusion: holdEvidenceConclusion(record.conclusion),
+      atMs: safeInteger(record.atMs, "atMs"),
+    });
+    return { recorded: true, hold: holdControlSummary(hold) };
+  }
+
+  #resolveHold(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, [
+      "controlVersion",
+      "id",
+      "action",
+      "rsid",
+      "holdId",
+      "basis",
+      "verificationInvocationId",
+      "evidenceDigest",
+      "decision",
+      "resolutionId",
+      "auditId",
+      "authorizedDispatchIdentity",
+      "atMs",
+    ]);
+    const basis = holdResolutionBasis(record.basis);
+    const verificationInvocationId = record.verificationInvocationId;
+    if (basis === "verification_read" && verificationInvocationId === null) {
+      throw new Error("verification_read requires verificationInvocationId");
+    }
+    if (basis === "late_terminal" && verificationInvocationId !== null) {
+      throw new Error("late_terminal requires verificationInvocationId=null");
+    }
+    const hold = this.#journal.resolveHold({
+      rsid: uuidV7(record.rsid, "rsid"),
+      holdId: verificationHoldId(record.holdId, "holdId"),
+      basis,
+      verificationInvocationId: verificationInvocationId === null
+        ? null
+        : uuidV7(verificationInvocationId, "verificationInvocationId"),
+      evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
+      decision: holdResolutionDecision(record.decision),
+      resolutionId: uuidV7(record.resolutionId, "resolutionId"),
+      auditId: uuidV7(record.auditId, "auditId"),
+      authorizedDispatchIdentity: sha256Digest(
+        record.authorizedDispatchIdentity,
+        "authorizedDispatchIdentity",
+      ),
+      atMs: safeInteger(record.atMs, "atMs"),
+    });
+    return { resolved: true, hold: holdControlSummary(hold) };
+  }
+
+  #clearanceForHold(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid", "holdId"]);
+    const clearance = this.#journal.clearanceForHold(
+      uuidV7(record.rsid, "rsid"),
+      verificationHoldId(record.holdId, "holdId"),
+    );
+    return { clearance: clearance as unknown as FixtureJsonValue };
   }
 
   #injectCrash(record: JsonObject): FixtureJsonValue {
@@ -847,11 +1097,38 @@ export class BridgeDaemonRuntime {
   }
 }
 
+interface PendingControlResponse {
+  readonly response: ControlSuccess | ControlFailure;
+  readonly shutdown: boolean;
+}
+
+const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
+  "discover_fixture",
+  "attach_fixture_session",
+  "open_transport",
+  "start_run_loop",
+  "session_register",
+  "session_resume",
+  "session_unregister",
+  "tick",
+  "inject_crash",
+  "restart_simulator",
+  "snapshot_evidence",
+  "shutdown",
+]);
+
 export class BridgeJsonlControl {
   readonly #snapshots = new Map<string, BridgeEvidenceSnapshot>();
   #buffer = Buffer.alloc(0);
   #discardingOversizeLine = false;
-  #chain = Promise.resolve();
+  #barrierTail: Promise<void> = Promise.resolve();
+  readonly #tasks = new Set<Promise<void>>();
+  readonly #responses = new Map<number, PendingControlResponse>();
+  #writeChain: Promise<void> = Promise.resolve();
+  #writeError: Error | null = null;
+  #nextRequestSequence = 0;
+  #nextResponseSequence = 0;
+  #accepting = true;
   #closed = false;
   readonly #onData = (chunk: Buffer): void => this.#consume(chunk);
 
@@ -863,21 +1140,36 @@ export class BridgeJsonlControl {
   ) {}
 
   public start(): void {
-    if (this.#closed) throw new Error("Bridge JSONL control is closed");
+    if (this.#closed || !this.#accepting) throw new Error("Bridge JSONL control is closed");
     this.input.on("data", this.#onData);
     this.input.resume();
   }
 
   public close(): void {
     if (this.#closed) return;
+    this.#accepting = false;
     this.#closed = true;
-    this.input.off("data", this.#onData);
-    this.input.pause();
+    this.#detachInput();
     this.#buffer = Buffer.alloc(0);
     this.#snapshots.clear();
   }
 
+  /** Stops accepting input, lets already accepted work cross its barriers, then closes. */
+  public async stopAndDrain(): Promise<void> {
+    this.#accepting = false;
+    this.#detachInput();
+    while (this.#tasks.size > 0) {
+      await Promise.allSettled([...this.#tasks]);
+    }
+    await this.#writeChain;
+    this.#closed = true;
+    this.#buffer = Buffer.alloc(0);
+    this.#snapshots.clear();
+    if (this.#writeError !== null) throw this.#writeError;
+  }
+
   #consume(chunk: Buffer): void {
+    if (!this.#accepting) return;
     let offset = 0;
     while (offset < chunk.byteLength) {
       const newline = chunk.indexOf(0x0a, offset);
@@ -915,26 +1207,85 @@ export class BridgeJsonlControl {
   }
 
   #enqueueFailure(response: ControlFailure): void {
-    this.#chain = this.#chain.then(async () => {
-      if (this.#closed) return;
-      await this.#write(response);
-    });
+    this.#schedule(async () => ({ response, shutdown: false }), false);
   }
 
   #enqueueLine(line: Buffer): void {
-    this.#chain = this.#chain
+    this.#schedule(
+      async () => this.#handleLine(line),
+      this.#lineRequiresBarrier(line),
+    );
+  }
+
+  #schedule(
+    operation: () => Promise<PendingControlResponse>,
+    barrier: boolean,
+  ): void {
+    const sequence = this.#nextRequestSequence;
+    this.#nextRequestSequence += 1;
+    const previousBarrier = this.#barrierTail;
+    const preceding = barrier ? [...this.#tasks] : [];
+    const ready = barrier
+      ? Promise.allSettled([previousBarrier, ...preceding]).then(() => undefined)
+      : previousBarrier;
+    const task = ready.then(async () => {
+      if (this.#closed) return;
+      let result: PendingControlResponse;
+      try {
+        result = await operation();
+      } catch (error) {
+        result = {
+          response: failure(null, "control_internal_error", String(error)),
+          shutdown: false,
+        };
+      }
+      this.#publish(sequence, result);
+      if (result.shutdown) await this.#writeChain;
+    });
+    this.#tasks.add(task);
+    void task.finally(() => this.#tasks.delete(task));
+    if (barrier) this.#barrierTail = task.catch(() => undefined);
+  }
+
+  #lineRequiresBarrier(line: Buffer): boolean {
+    try {
+      const value = parseStrictJsonBytes(line, MAX_BRIDGE_CONTROL_LINE_BYTES);
+      if (!isObject(value) || typeof value.action !== "string") return false;
+      if (!BRIDGE_CONTROL_ACTIONS.includes(value.action as typeof BRIDGE_CONTROL_ACTIONS[number])) {
+        return true;
+      }
+      return EXCLUSIVE_CONTROL_ACTIONS.has(value.action);
+    } catch {
+      return false;
+    }
+  }
+
+  #publish(sequence: number, result: PendingControlResponse): void {
+    this.#responses.set(sequence, result);
+    this.#writeChain = this.#writeChain
       .then(async () => {
-        if (this.#closed) return;
-        const result = await this.#handleLine(line);
-        await this.#write(result.response);
-        if (result.shutdown) {
-          this.close();
-          this.onShutdown();
+        while (!this.#closed) {
+          const next = this.#responses.get(this.#nextResponseSequence);
+          if (next === undefined) return;
+          this.#responses.delete(this.#nextResponseSequence);
+          this.#nextResponseSequence += 1;
+          await this.#write(next.response);
+          if (next.shutdown) {
+            this.close();
+            this.onShutdown();
+            return;
+          }
         }
       })
-      .catch(async (error: unknown) => {
-        await this.#write(failure(null, "control_internal_error", String(error)));
+      .catch((error: unknown) => {
+        this.#writeError = error instanceof Error ? error : new Error(String(error));
+        this.close();
       });
+  }
+
+  #detachInput(): void {
+    this.input.off("data", this.#onData);
+    this.input.pause();
   }
 
   async #handleLine(line: Buffer): Promise<{
@@ -970,7 +1321,7 @@ export class BridgeJsonlControl {
         result = { value: this.#snapshot(value, id), shutdown: false };
       } else if (value.action === "shutdown") {
         exactKeys(value, ["controlVersion", "id", "action"]);
-        this.close();
+        this.#snapshots.clear();
         result = { value: await this.runtime.shutdown(), shutdown: true };
       } else {
         result = await this.runtime.execute(value, id);

@@ -1,0 +1,594 @@
+import { Buffer } from "node:buffer";
+import { once } from "node:events";
+import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
+import { createServer as createNetServer, type AddressInfo } from "node:net";
+
+import {
+  FrameDecoder,
+  encodeFrame,
+  type JsonObject,
+} from "@revagent/addin-loopback-fixture";
+import {
+  type HelloAckEnvelope,
+  type HelloEnvelope,
+  type RbpEnvelope,
+} from "@revagent/protocol";
+import { describe, expect, it } from "vitest";
+import { WebSocketServer } from "ws";
+
+import { PersistentAddinClient } from "../src/loopback.js";
+import {
+  GatewayTransportError,
+  HttpSseGatewayBinding,
+  WssGatewayBinding,
+  classifyGatewayTransportFailure,
+  openPrimaryThenFallback,
+  type GatewayBinding,
+} from "../src/transport.js";
+
+let idCounter = 10_000;
+
+function uuid(): string {
+  idCounter += 1;
+  return `0197a3c2-0000-7000-8000-${idCounter.toString().padStart(12, "0")}`;
+}
+
+function hello(): HelloEnvelope {
+  return {
+    type: "hello",
+    id: uuid(),
+    ts: "2026-07-22T00:00:00.000Z",
+    payload: {
+      min_protocol: 1,
+      max_protocol: 1,
+      capabilities: ["journal_v1", "chunked_results", "transport_streamable_http"],
+      bridge_version: "bridge-test",
+      device_id: "device-01",
+      machine: { hostname: "WS01", os: "Windows 11" },
+      addin_versions: ["fixture"],
+    },
+  };
+}
+
+function helloAck(connectionId: string): HelloAckEnvelope {
+  return {
+    type: "hello_ack",
+    id: uuid(),
+    ts: "2026-07-22T00:00:01.000Z",
+    payload: {
+      protocol: 1,
+      connection_id: connectionId,
+      granted_capabilities: ["journal_v1", "chunked_results", "transport_streamable_http"],
+      heartbeat_interval_ms: 15_000,
+      limits: {
+        max_params_bytes: 4_194_304,
+        max_result_bytes: 33_554_432,
+        max_partial_bytes: 1_048_576,
+      },
+      manifest: { latest_bridge_version: "bridge-test", manifest_url: "/bridge/update/manifest" },
+    },
+  };
+}
+
+function goodbye(): RbpEnvelope {
+  return {
+    v: 1,
+    type: "goodbye",
+    id: uuid(),
+    ts: "2026-07-22T00:00:02.000Z",
+    payload: { reason: "shutdown" },
+  };
+}
+
+async function closeHttpServer(server: HttpServer): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.close((error) => error === undefined ? resolve() : reject(error));
+    server.closeAllConnections();
+  });
+}
+
+describe("strict Gateway transport boundaries", () => {
+  it("uses T5 numeric-loopback readiness URLs only under the explicit test policy", async () => {
+    let resolveSseClosed: () => void = () => undefined;
+    const sseClosed = new Promise<void>((resolve) => {
+      resolveSseClosed = resolve;
+    });
+    const server = createHttpServer((request, response) => {
+      const path = new URL(request.url ?? "/", "http://loopback.invalid").pathname;
+      if (request.method === "POST" && path === "/bridge/v1/http/connections") {
+        response.writeHead(201, {
+          "Content-Type": "application/json",
+          "RBP-Connection-Id": "http-connection",
+        });
+        response.end(JSON.stringify(helloAck("http-connection")));
+        return;
+      }
+      if (request.method === "GET" && path === "/bridge/v1/http/connections/http-connection/events") {
+        response.writeHead(200, { "Content-Type": "text/event-stream" });
+        response.once("close", resolveSseClosed);
+        response.write(`event: rbp\ndata: ${JSON.stringify(goodbye())}\n\n`);
+        return;
+      }
+      if (request.method === "POST" && path === "/bridge/v1/http/connections/http-connection/messages") {
+        response.writeHead(202);
+        response.end();
+        return;
+      }
+      response.writeHead(404);
+      response.end();
+    });
+    const websocketServer = new WebSocketServer({ noServer: true });
+    server.on("upgrade", (request, socket, head) => {
+      websocketServer.handleUpgrade(request, socket, head, (websocket) => {
+        websocketServer.emit("connection", websocket, request);
+      });
+    });
+    websocketServer.on("connection", (socket) => {
+      socket.once("message", () => {
+        socket.send(JSON.stringify(helloAck("ws-connection")));
+        socket.send(JSON.stringify(goodbye()));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const readiness = {
+      ws_url: `ws://127.0.0.1:${port}/bridge/v1`,
+      http_connection_url: `http://127.0.0.1:${port}/bridge/v1/http/connections`,
+    };
+    expect(() => new WssGatewayBinding({
+      baseUrl: readiness.ws_url,
+      deviceToken: "device-token",
+    })).toThrow(/Production Gateway wss:/u);
+    expect(() => new HttpSseGatewayBinding({
+      baseUrl: readiness.http_connection_url,
+      deviceToken: "device-token",
+    })).toThrow(/Production Gateway https:/u);
+    expect(() => new WssGatewayBinding({
+      baseUrl: `ws://gateway.example:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    })).toThrow(/numeric loopback/u);
+
+    const wss = new WssGatewayBinding({
+      baseUrl: readiness.ws_url,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    const fallback = new HttpSseGatewayBinding({
+      baseUrl: readiness.http_connection_url,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    try {
+      await expect(wss.open(hello())).resolves.toMatchObject({
+        payload: { connection_id: "ws-connection" },
+      });
+      await expect(wss.messages()[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { type: "goodbye" },
+      });
+      await expect(fallback.open(hello())).resolves.toMatchObject({
+        payload: { connection_id: "http-connection" },
+      });
+      await expect(fallback.messages()[Symbol.asyncIterator]().next()).resolves.toMatchObject({
+        value: { type: "goodbye" },
+      });
+      await fallback.send({
+        v: 1,
+        type: "heartbeat",
+        id: uuid(),
+        ts: "2026-07-22T00:00:03.000Z",
+        payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+      });
+      await fallback.close();
+      await Promise.race([
+        sseClosed,
+        new Promise<never>((_resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error("SSE cleanup was not observed")), 1_000);
+          timeout.unref();
+        }),
+      ]);
+    } finally {
+      await wss.close();
+      await fallback.close();
+      websocketServer.close();
+      await closeHttpServer(server);
+    }
+  });
+
+  it.each([
+    [4401, "device revoked", "auth"],
+    [4403, "seat denied", "auth"],
+    [4426, "unsupported version", "version"],
+  ] as const)("preserves terminal WSS close %i and never falls back", async (code, reason, faultClass) => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    server.on("connection", (socket) => socket.once("message", () => socket.close(code, reason)));
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    let fallbackOpenCount = 0;
+    const fallback = fakeBinding(async () => {
+      fallbackOpenCount += 1;
+      return helloAck("fallback");
+    });
+    try {
+      const selected = openPrimaryThenFallback({
+        hello: hello(),
+        wss: binding,
+        fallback,
+        fallbackProvisioned: true,
+        classifyWssFailure: () => "retryable_network",
+      });
+      await expect(selected).rejects.toMatchObject({
+        name: "GatewayTransportError",
+        faultClass,
+        closeCode: code,
+        closeReason: reason,
+      });
+      expect(binding.closeInfo).toEqual({ code, reason });
+      expect(fallbackOpenCount).toBe(0);
+    } finally {
+      await binding.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
+  it("preserves an HTTP 426 upgrade rejection as a terminal version fault", async () => {
+    const server = createHttpServer();
+    server.on("upgrade", (_request, socket) => {
+      socket.end("HTTP/1.1 426 Upgrade Required\r\nConnection: close\r\nContent-Length: 0\r\n\r\n");
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+    });
+    try {
+      const opening = binding.open(hello());
+      await expect(opening).rejects.toMatchObject({
+        faultClass: "version",
+        httpStatus: 426,
+      });
+      await opening.catch((error: unknown) => {
+        expect(classifyGatewayTransportFailure(error)).toBe("version");
+      });
+    } finally {
+      await binding.close();
+      await closeHttpServer(server);
+    }
+  });
+
+  it("rejects duplicate Gateway keys and oversize control frames at the raw WSS boundary", async () => {
+    const frames = [
+      JSON.stringify(helloAck("duplicate")).replace(
+        '"type":"hello_ack"',
+        '"type":"hello_ack","type":"hello_ack"',
+      ),
+      JSON.stringify({
+        ...helloAck("oversize"),
+        payload: {
+          ...helloAck("oversize").payload,
+          manifest: { latest_bridge_version: "bridge-test", manifest_url: `/${"x".repeat(70_000)}` },
+        },
+      }),
+    ];
+    for (const frame of frames) {
+      const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+      await once(server, "listening");
+      const port = (server.address() as AddressInfo).port;
+      server.on("connection", (socket) => socket.once("message", () => socket.send(frame)));
+      const binding = new WssGatewayBinding({
+        baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+        deviceToken: "device-token",
+        endpointPolicy: "loopback_test_readiness",
+      });
+      try {
+        await expect(binding.open(hello())).rejects.toMatchObject({ faultClass: "protocol" });
+      } finally {
+        await binding.close();
+        await new Promise<void>((resolve, reject) => {
+          server.close((error) => error === undefined ? resolve() : reject(error));
+        });
+      }
+    }
+  });
+
+  it("uses fatal UTF-8 decoding for the HTTP hello_ack body", async () => {
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: async () => new Response(Uint8Array.from([0xc3, 0x28]), {
+        status: 201,
+        headers: { "RBP-Connection-Id": "invalid-utf8" },
+      }),
+    });
+    await expect(binding.open(hello())).rejects.toMatchObject({ code: "invalid_utf8" });
+  });
+
+  it("bounds the WSS hello_ack wait and releases the live socket", async () => {
+    const server = new WebSocketServer({ host: "127.0.0.1", port: 0 });
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    server.on("connection", (socket) => socket.on("message", () => undefined));
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      openTimeoutMs: 25,
+    });
+    try {
+      await expect(binding.open(hello())).rejects.toMatchObject({
+        faultClass: "retryable_network",
+        message: expect.stringContaining("hello_ack timed out"),
+      });
+    } finally {
+      await binding.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+      });
+    }
+  });
+
+  it("bounds HTTP create and send waits while exposing and clearing backpressure", async () => {
+    const neverFetch: typeof fetch = async (_input, init = {}) => new Promise<Response>((_resolve, reject) => {
+      init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+    });
+    const opening = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetchTimeoutMs: 20,
+      fetch: neverFetch,
+    });
+    await expect(opening.open(hello())).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      message: expect.stringContaining("create timed out"),
+    });
+
+    let call = 0;
+    let eventReaderCancelled = false;
+    const fetchMock: typeof fetch = async (_input, init = {}) => {
+      call += 1;
+      if (call === 1) {
+        return new Response(JSON.stringify(helloAck("backpressure")), {
+          status: 201,
+          headers: { "RBP-Connection-Id": "backpressure" },
+        });
+      }
+      if (call === 2) {
+        return new Response(new ReadableStream<Uint8Array>({
+          cancel() {
+            eventReaderCancelled = true;
+          },
+        }), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(init.signal?.reason), { once: true });
+      });
+    };
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetchTimeoutMs: 20,
+      fetch: fetchMock,
+    });
+    await binding.open(hello());
+    const sending = binding.send({
+      v: 1,
+      type: "heartbeat",
+      id: uuid(),
+      ts: "2026-07-22T00:00:03.000Z",
+      payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+    });
+    expect(binding.bufferedAmount).toBeGreaterThan(0);
+    await expect(sending).rejects.toMatchObject({
+      faultClass: "retryable_network",
+      message: expect.stringContaining("message send timed out"),
+    });
+    expect(binding.bufferedAmount).toBe(0);
+    await binding.close();
+    expect(eventReaderCancelled).toBe(true);
+  });
+});
+
+function fakeBinding(open: () => Promise<HelloAckEnvelope>): GatewayBinding {
+  return {
+    kind: "streamable_http_sse",
+    connectionId: null,
+    bufferedAmount: 0,
+    open,
+    send: async () => undefined,
+    messages: () => ({
+      async *[Symbol.asyncIterator](): AsyncIterator<RbpEnvelope> {
+        return;
+      },
+    }),
+    close: async () => undefined,
+  };
+}
+
+async function withLoopbackResponse<T>(
+  response: (request: JsonObject, port: number) => Uint8Array,
+  action: (client: PersistentAddinClient) => Promise<T>,
+): Promise<T> {
+  const server = createNetServer((socket) => {
+    const decoder = new FrameDecoder(1024 * 1024);
+    let responded = false;
+    socket.on("data", (chunk) => {
+      if (responded) return;
+      const frames = decoder.push(chunk);
+      const frame = frames[0];
+      if (frame === undefined) return;
+      responded = true;
+      const request = JSON.parse(frame.toString("utf8")) as JsonObject;
+      const port = (server.address() as AddressInfo).port;
+      socket.end(encodeFrame(response(request, port)));
+    });
+  });
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
+  const client = await PersistentAddinClient.connect({ host: "127.0.0.1", port });
+  try {
+    return await action(client);
+  } finally {
+    client.close();
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => error === undefined ? resolve() : reject(error));
+    });
+  }
+}
+
+function strictStatusResponse(id: string, port: number, advertisedPort: number | string = port): JsonObject {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      resultContractVersion: 2,
+      addinLoopbackContractVersion: 1,
+      addinVersion: "fixture",
+      revit: { version: "2026", build: "test", processId: 1234 },
+      service: {
+        isRunning: true,
+        port: advertisedPort,
+        binding: "loopback_only",
+        boundAddresses: ["127.0.0.1"],
+        framing: {
+          protocol: "length_prefixed_jsonrpc_v1",
+          headerBytes: 4,
+          byteOrder: "big_endian",
+          payloadEncoding: "utf-8",
+          maxRequestPayloadBytes: 16 * 1024 * 1024,
+          maxResponsePayloadBytes: 32 * 1024 * 1024,
+        },
+      },
+      sessionCapabilities: [],
+      capabilityContracts: {},
+      activeTask: null,
+      recentTasks: [],
+      recentHistoryCount: 0,
+      recentHistoryCapacity: 100,
+      plan: { pending: [], completed: [] },
+    },
+  };
+}
+
+function strictDocumentResponse(id: string, revision: number | string = 0): JsonObject {
+  return {
+    jsonrpc: "2.0",
+    id,
+    result: {
+      resultContractVersion: 2,
+      documentContextContractVersion: 1,
+      capturedAtUtc: "2026-07-22T00:00:00.000Z",
+      revision,
+      cacheState: "ready",
+      unavailableReason: null,
+      documents: [],
+      activeDocumentId: null,
+      activeView: null,
+      disciplineHint: null,
+    },
+  };
+}
+
+describe("strict add-in loopback response boundary", () => {
+  it("rejects duplicate JSON keys and malformed UTF-8 before response projection", async () => {
+    const candidates = [
+      Buffer.from(
+        '{"jsonrpc":"2.0","id":"strict","result":{"resultContractVersion":2,"value":1,"value":2}}',
+        "utf8",
+      ),
+      Uint8Array.from([0xc3, 0x28]),
+    ];
+    const codes = ["duplicate_key", "invalid_utf8"];
+    for (const [index, candidate] of candidates.entries()) {
+      await withLoopbackResponse(
+        () => candidate as Uint8Array,
+        async (client) => {
+          await expect(client.request("strict", "get_ui_state", {})).rejects.toMatchObject({
+            code: codes[index],
+          });
+        },
+      );
+    }
+  });
+
+  it("requires resultContractVersion on every successful ordinary add-in response", async () => {
+    await withLoopbackResponse(
+      (request) => Buffer.from(JSON.stringify({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: { value: true },
+      }), "utf8"),
+      async (client) => {
+        await expect(client.request("ordinary", "get_ui_state", {})).rejects.toThrow(
+          /ordinary success violates JSON-RPC v1 shape/u,
+        );
+      },
+    );
+  });
+
+  it("validates canonical mcp_status and get_document_context shapes without coercion", async () => {
+    await withLoopbackResponse(
+      (request, port) => Buffer.from(JSON.stringify(
+        strictStatusResponse(String(request.id), port, String(port)),
+      ), "utf8"),
+      async (client) => {
+        await expect(client.request("status", "mcp_status", {})).rejects.toThrow(/must be integer/u);
+      },
+    );
+    await withLoopbackResponse(
+      (request) => Buffer.from(JSON.stringify(
+        strictDocumentResponse(String(request.id), "0"),
+      ), "utf8"),
+      async (client) => {
+        await expect(client.request("document", "get_document_context", {})).rejects.toThrow(
+          /must be integer/u,
+        );
+      },
+    );
+  });
+
+  it("accepts exact canonical status and document responses", async () => {
+    await withLoopbackResponse(
+      (request, port) => Buffer.from(JSON.stringify(strictStatusResponse(String(request.id), port)), "utf8"),
+      async (client) => {
+        await expect(client.request("status-ok", "mcp_status", {})).resolves.toMatchObject({
+          message: { result: { resultContractVersion: 2 } },
+        });
+      },
+    );
+    await withLoopbackResponse(
+      (request) => Buffer.from(JSON.stringify(strictDocumentResponse(String(request.id))), "utf8"),
+      async (client) => {
+        await expect(client.request("document-ok", "get_document_context", {})).resolves.toMatchObject({
+          message: { result: { documentContextContractVersion: 1, revision: 0 } },
+        });
+      },
+    );
+  });
+
+  it("exposes structured transport faults for caller classification", () => {
+    const error = new GatewayTransportError("seat denied", {
+      faultClass: "auth",
+      closeCode: 4403,
+      closeReason: "seat denied",
+    });
+    expect(classifyGatewayTransportFailure(error)).toBe("auth");
+  });
+});

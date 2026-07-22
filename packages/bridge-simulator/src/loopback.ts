@@ -4,8 +4,10 @@ import { isIP, Socket } from "node:net";
 import {
   DEFAULT_MAX_REQUEST_PAYLOAD_BYTES,
   FrameDecoder,
+  LoopbackContractValidator,
   MAX_RESPONSE_PAYLOAD_BYTES,
   encodeJsonFrame,
+  parseStrictJsonBytes,
   type JsonObject,
 } from "@revagent/addin-loopback-fixture";
 
@@ -75,6 +77,7 @@ export async function requestAddinSideChannel(
 
 interface PendingRequest {
   readonly id: string;
+  readonly method: string;
   readonly resolve: (response: RawAddinResponse) => void;
   readonly reject: (error: Error) => void;
   readonly timeout: ReturnType<typeof setTimeout>;
@@ -89,6 +92,16 @@ function boundedError(error: unknown): string {
 
 function isJsonObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+const validatorCache = new Map<number, LoopbackContractValidator>();
+
+function contractValidator(maxRequestPayloadBytes: number): LoopbackContractValidator {
+  const cached = validatorCache.get(maxRequestPayloadBytes);
+  if (cached !== undefined) return cached;
+  const validator = new LoopbackContractValidator(maxRequestPayloadBytes);
+  validatorCache.set(maxRequestPayloadBytes, validator);
+  return validator;
 }
 
 function requiredObject(parent: JsonObject, key: string): JsonObject {
@@ -132,6 +145,7 @@ export class PersistentAddinClient {
   readonly #target: LoopbackTarget;
   readonly #socket: Socket;
   readonly #decoder = new FrameDecoder(MAX_RESPONSE_PAYLOAD_BYTES);
+  #validator = contractValidator(DEFAULT_MAX_REQUEST_PAYLOAD_BYTES);
   #pending: PendingRequest | null = null;
   #closed = false;
   #maxRequestPayloadBytes = DEFAULT_MAX_REQUEST_PAYLOAD_BYTES;
@@ -185,6 +199,7 @@ export class PersistentAddinClient {
       throw new RangeError("invalid advertised add-in request limit");
     }
     this.#maxRequestPayloadBytes = value;
+    this.#validator = contractValidator(value);
   }
 
   public async request(
@@ -205,6 +220,7 @@ export class PersistentAddinClient {
       }, timeoutMs);
       this.#pending = {
         id,
+        method,
         resolve,
         reject,
         timeout,
@@ -253,9 +269,13 @@ export class PersistentAddinClient {
       }
       let message: unknown;
       try {
-        message = JSON.parse(payload.toString("utf8"));
-      } catch {
-        this.#fail(new Error("add-in response is not UTF-8 JSON"));
+        message = parseStrictJsonBytes(
+          new Uint8Array(payload.buffer, payload.byteOffset, payload.byteLength),
+          MAX_RESPONSE_PAYLOAD_BYTES,
+        );
+        this.#validator.validateResponse(pending.method, pending.id, message);
+      } catch (error) {
+        this.#fail(error instanceof Error ? error : new Error(String(error)));
         return;
       }
       if (!isJsonObject(message) || message.id !== pending.id) {
@@ -272,6 +292,10 @@ export class PersistentAddinClient {
 
   #fail(error: Error): void {
     this.#closed = true;
+    // Strict parse/schema/correlation failures are terminal for this framed
+    // stream.  Tear down the socket as well as rejecting the waiter so a bad
+    // peer cannot leave an otherwise unreachable connection descriptor open.
+    if (!this.#socket.destroyed) this.#socket.destroy();
     const pending = this.#pending;
     if (pending !== null) {
       clearTimeout(pending.timeout);
@@ -302,6 +326,9 @@ function parseStatus(
   if (service.binding !== "loopback_only" || service.isRunning !== true) {
     throw new Error("add-in does not attest loopback-only running service");
   }
+  if (requiredInteger(service, "port") !== target.port) {
+    throw new Error("add-in status port does not match the probed loopback target");
+  }
   const boundAddresses = service.boundAddresses;
   if (
     !Array.isArray(boundAddresses) ||
@@ -310,6 +337,13 @@ function parseStatus(
   ) {
     throw new Error("add-in reported a non-loopback bound address");
   }
+  const targetFamily = isIP(target.host);
+  const targetBound = boundAddresses.some((address) => {
+    if (typeof address !== "string") return false;
+    if (targetFamily === 6 && isIP(address) === 6) return isNumericLoopback(address);
+    return address === target.host;
+  });
+  if (!targetBound) throw new Error("add-in status does not attest the probed bound address");
   const framing = requiredObject(service, "framing");
   if (
     framing.protocol !== "length_prefixed_jsonrpc_v1" ||

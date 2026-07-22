@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 
 import { AddinLoopbackFixture } from "@revagent/addin-loopback-fixture";
 import { type InvokeEnvelope } from "@revagent/protocol";
@@ -21,6 +21,62 @@ import { discoverAddinSessions } from "./loopback.js";
 interface ExternalFixtureTarget {
   readonly host: string;
   readonly port: number;
+}
+
+interface DaemonState {
+  readonly root: string;
+  readonly preserveState: boolean;
+  readonly source: "temporary" | "argument" | "environment";
+}
+
+const STATE_ROOT_ENV = "REVAGENT_BRIDGE_STATE_ROOT";
+const MAX_STATE_ROOT_LENGTH = 4_096;
+
+function absoluteStateRoot(value: string, label: string): string {
+  if (
+    value.length < 1 ||
+    value.length > MAX_STATE_ROOT_LENGTH ||
+    value.trim() !== value ||
+    /[\u0000-\u001f\u007f]/u.test(value)
+  ) {
+    throw new Error(`${label} must be a non-empty bounded path without control characters`);
+  }
+  if (!isAbsolute(value)) throw new Error(`${label} must be absolute`);
+  const root = resolve(value);
+  if (parse(root).root === root) throw new Error(`${label} must not be a filesystem root`);
+  return root;
+}
+
+function daemonState(args: readonly string[]): DaemonState {
+  let argumentRoot: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg !== "--state-root") throw new Error(`unknown daemon option: ${String(arg)}`);
+    if (argumentRoot !== undefined) throw new Error("--state-root may be supplied only once");
+    const value = args[index + 1];
+    if (value === undefined) throw new Error("--state-root requires an absolute path");
+    argumentRoot = absoluteStateRoot(value, "--state-root");
+    index += 1;
+  }
+  const environmentValue = process.env[STATE_ROOT_ENV];
+  if (argumentRoot !== undefined && environmentValue !== undefined) {
+    throw new Error(`--state-root cannot be combined with ${STATE_ROOT_ENV}`);
+  }
+  if (argumentRoot !== undefined) {
+    return { root: argumentRoot, preserveState: true, source: "argument" };
+  }
+  if (environmentValue !== undefined) {
+    return {
+      root: absoluteStateRoot(environmentValue, STATE_ROOT_ENV),
+      preserveState: true,
+      source: "environment",
+    };
+  }
+  return {
+    root: mkdtempSync(join(tmpdir(), "revagent-bridge-daemon-")),
+    preserveState: false,
+    source: "temporary",
+  };
 }
 
 const RSID = "0197a3c2-0000-7000-8000-000000000001";
@@ -134,15 +190,49 @@ async function crashRecovery(externalFixture?: ExternalFixtureTarget): Promise<v
 }
 
 async function daemon(args: readonly string[]): Promise<void> {
-  if (args.length !== 0) throw new Error("daemon does not accept command-line options");
-  const root = mkdtempSync(join(tmpdir(), "revagent-bridge-daemon-"));
-  const runtime = new BridgeDaemonRuntime(root);
+  const state = daemonState(args);
   let cleaned = false;
   const cleanup = (): void => {
     if (cleaned) return;
     cleaned = true;
-    rmSync(root, { recursive: true, force: true });
+    if (!state.preserveState) rmSync(state.root, { recursive: true, force: false });
   };
+  let runtime: BridgeDaemonRuntime;
+  try {
+    runtime = new BridgeDaemonRuntime(state.root);
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
+  const finish = (): void => {
+    try {
+      cleanup();
+      process.exitCode = 0;
+    } catch (error) {
+      process.stderr.write(`bridge daemon cleanup failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    }
+  };
+  const control = new BridgeJsonlControl(runtime, process.stdin, process.stdout, () => {
+    finish();
+  });
+  let shuttingDown = false;
+  const shutdown = async (): Promise<void> => {
+    if (shuttingDown) return;
+    shuttingDown = true;
+    try {
+      await control.stopAndDrain();
+      await runtime.shutdown();
+      finish();
+    } catch (error) {
+      process.stderr.write(`bridge daemon shutdown failed: ${error instanceof Error ? error.message : String(error)}\n`);
+      process.exitCode = 1;
+    }
+  };
+  process.once("SIGINT", () => void shutdown());
+  process.once("SIGTERM", () => void shutdown());
+  process.stdin.once("end", () => void shutdown());
+  control.start();
   process.stdout.write(`${JSON.stringify({
     ready: true,
     component: "bridge-simulator",
@@ -152,23 +242,10 @@ async function daemon(args: readonly string[]): Promise<void> {
     maxControlLineBytes: MAX_BRIDGE_CONTROL_LINE_BYTES,
     pid: process.pid,
     actions: BRIDGE_CONTROL_ACTIONS,
+    stateRoot: state.root,
+    preserveState: state.preserveState,
+    stateRootSource: state.source,
   })}\n`);
-  const control = new BridgeJsonlControl(runtime, process.stdin, process.stdout, () => {
-    cleanup();
-    process.exitCode = 0;
-  });
-  control.start();
-  let shuttingDown = false;
-  const shutdown = async (): Promise<void> => {
-    if (shuttingDown) return;
-    shuttingDown = true;
-    control.close();
-    await runtime.shutdown();
-    cleanup();
-    process.exitCode = 0;
-  };
-  process.once("SIGINT", () => void shutdown());
-  process.once("SIGTERM", () => void shutdown());
 }
 
 async function main(): Promise<void> {
@@ -179,7 +256,8 @@ async function main(): Promise<void> {
   }
   if (command !== "crash-recovery") {
     process.stderr.write(
-      "usage: revagent-bridge-simulator daemon | crash-recovery [--fixture-host IP --fixture-port PORT]\n",
+      "usage: revagent-bridge-simulator daemon [--state-root ABSOLUTE_PATH] | " +
+      "crash-recovery [--fixture-host IP --fixture-port PORT]\n",
     );
     process.exitCode = 2;
     return;

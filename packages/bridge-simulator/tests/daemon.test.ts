@@ -1,12 +1,14 @@
 import { Buffer } from "node:buffer";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { dirname, resolve } from "node:path";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { mutationInvoke } from "./helpers.js";
+import { atomicBatch, mutationInvoke, readInvoke } from "./helpers.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureCli = resolve(packageRoot, "..", "addin-loopback-fixture", "dist", "cli.js");
@@ -74,9 +76,16 @@ class JsonLineReader {
   }
 }
 
-function child(script: string, args: readonly string[]): ChildProcessWithoutNullStreams {
+function child(
+  script: string,
+  args: readonly string[],
+  environment: NodeJS.ProcessEnv = {},
+): ChildProcessWithoutNullStreams {
+  const inheritedEnvironment = { ...process.env };
+  delete inheritedEnvironment.REVAGENT_BRIDGE_STATE_ROOT;
   return spawn(process.execPath, [script, ...args], {
     cwd: packageRoot,
+    env: { ...inheritedEnvironment, ...environment },
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
@@ -103,11 +112,15 @@ async function collectSnapshot(channel: JsonLineReader, firstId: string): Promis
 }
 
 const children: ChildProcessWithoutNullStreams[] = [];
+const stateRoots: string[] = [];
 
 afterEach(async () => {
   for (const processHandle of children.splice(0)) {
     if (processHandle.exitCode === null && processHandle.signalCode === null) processHandle.kill();
     if (processHandle.exitCode === null) await once(processHandle, "exit").catch(() => undefined);
+  }
+  for (const stateRoot of stateRoots.splice(0)) {
+    rmSync(stateRoot, { recursive: true, force: true });
   }
 });
 
@@ -119,7 +132,9 @@ describe("long-lived Bridge JSONL daemon", () => {
     const fixtureReady = await fixtureChannel.next();
     expect(fixtureReady).toMatchObject({ ready: true, contract: "addin-loopback/v1" });
 
-    const bridge = child(bridgeCli, ["daemon"]);
+    const stateRoot = mkdtempSync(join(tmpdir(), "bridge-daemon-state-"));
+    stateRoots.push(stateRoot);
+    const bridge = child(bridgeCli, ["daemon", "--state-root", stateRoot]);
     children.push(bridge);
     const bridgeChannel = new JsonLineReader(bridge);
     const ready = await bridgeChannel.next();
@@ -130,6 +145,9 @@ describe("long-lived Bridge JSONL daemon", () => {
       contract: "bridge-simulator-control/v1",
       controlVersion: 1,
       maxControlLineBytes: 65_536,
+      stateRoot,
+      preserveState: true,
+      stateRootSource: "argument",
     });
     expect(ready.actions).toEqual([
       "discover_fixture",
@@ -143,6 +161,10 @@ describe("long-lived Bridge JSONL daemon", () => {
       "poll_document_context",
       "flush_outbound",
       "invoke_local",
+      "record_verification_attempt",
+      "record_late_evidence",
+      "resolve_hold",
+      "clearance_for_hold",
       "inject_crash",
       "restart_simulator",
       "snapshot_evidence",
@@ -158,6 +180,27 @@ describe("long-lived Bridge JSONL daemon", () => {
       error: { code: "control_duplicate_key" },
     });
 
+    await expect(bridgeChannel.send(control("invalid-endpoint-policy", "open_transport", {
+      kind: "wss",
+      deviceToken: "fixture-device-token",
+      wssUrl: "wss://gateway.example.invalid/bridge/v1",
+      endpointPolicy: "production",
+      hello: {
+        id: "fixture-hello",
+        ts: "2026-07-22T00:00:00.000Z",
+        bridgeVersion: "0.0.0",
+        deviceId: "fixture-device",
+        hostname: "fixture-host",
+        os: "fixture-os",
+      },
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "invalid_control_request",
+        message: "endpointPolicy must equal loopback_test_readiness when supplied",
+      },
+    });
+
     const discovery = await bridgeChannel.send(control("discover", "discover_fixture", {
       host: fixtureReady.host,
       port: fixtureReady.port,
@@ -171,7 +214,7 @@ describe("long-lived Bridge JSONL daemon", () => {
     });
 
     const rsid = "0197a3c2-0000-7000-8000-000000000301";
-    const invocation = mutationInvoke({ rsid, seq: 1 });
+    const invocation = mutationInvoke({ rsid, seq: 2 });
     const attached = await bridgeChannel.send(control("attach", "attach_fixture_session", {
       probeIndex: 0,
       rsid,
@@ -183,6 +226,23 @@ describe("long-lived Bridge JSONL daemon", () => {
       bridgeVersion: "0.0.0",
     }));
     expect(attached).toMatchObject({ ok: true, result: { attached: true, rsid } });
+
+    const batch = atomicBatch(rsid, 1);
+    await expect(bridgeChannel.send(control("batch-crash", "invoke_local", {
+      envelope: batch,
+      crashAt: "after_received_before_dispatch",
+    }))).resolves.toMatchObject({
+      ok: true,
+      result: { crashed: true, point: "after_received_before_dispatch" },
+    });
+    await expect(bridgeChannel.send(control("batch-restart", "restart_simulator"))).resolves.toMatchObject({
+      ok: true,
+      result: {
+        restarted: true,
+        restoredSessionCount: 1,
+        previousCrashPoint: "after_received_before_dispatch",
+      },
+    });
 
     await expect(bridgeChannel.send(control("crash-plan", "inject_crash", {
       point: "after_addin_response_before_terminal",
@@ -235,7 +295,87 @@ describe("long-lived Bridge JSONL daemon", () => {
     expect(afterRestart.flatMap((page) => page.invocations as JsonObject[])).toContainEqual(
       expect.objectContaining({ state: "indeterminate", verificationHoldId: expect.any(String) }),
     );
-    expect(afterRestart.flatMap((page) => page.holds as JsonObject[])).toHaveLength(1);
+    const holds = afterRestart.flatMap((page) => page.holds as JsonObject[]);
+    expect(holds).toHaveLength(1);
+    const holdId = String(holds[0]?.holdId);
+
+    const verificationBase = readInvoke({
+      rsid,
+      seq: 3,
+      method: "fixture_counter",
+    });
+    const verification = {
+      ...verificationBase,
+      payload: {
+        ...verificationBase.payload,
+        verification: {
+          hold_id: holdId,
+          mutation_scope: invocation.payload.mutation_scope,
+          purpose: "resolve_indeterminate" as const,
+        },
+      },
+    };
+    const verificationResponse = await bridgeChannel.send(control("verification", "invoke_local", {
+      envelope: verification,
+    }));
+    expect(verificationResponse).toMatchObject({ ok: true, result: { outcome: { kind: "result" } } });
+    const verificationOutcome = (verificationResponse.result as JsonObject).outcome as JsonObject;
+    const evidenceDigest = String(verificationOutcome.resultDigest);
+    expect(evidenceDigest).toMatch(/^sha256:[0-9a-f]{64}$/u);
+
+    await expect(bridgeChannel.send(control("evidence-extra", "record_verification_attempt", {
+      rsid,
+      holdId,
+      verificationInvocationId: verification.payload.invocation_id,
+      evidenceDigest,
+      conclusion: "non_execution_proven",
+      atMs: 1_721_600_000_001,
+      unexpected: true,
+    }))).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_control_request", message: expect.stringContaining("Unknown control field") },
+    });
+    await expect(bridgeChannel.send(control("evidence", "record_verification_attempt", {
+      rsid,
+      holdId,
+      verificationInvocationId: verification.payload.invocation_id,
+      evidenceDigest,
+      conclusion: "non_execution_proven",
+      atMs: 1_721_600_000_001,
+    }))).resolves.toMatchObject({
+      ok: true,
+      result: { recorded: true, hold: { holdId, state: "evidence_recorded" } },
+    });
+    const authorizedDispatchIdentity = `sha256:${"a".repeat(64)}`;
+    await expect(bridgeChannel.send(control("resolve", "resolve_hold", {
+      rsid,
+      holdId,
+      basis: "verification_read",
+      verificationInvocationId: verification.payload.invocation_id,
+      evidenceDigest,
+      decision: "non_execution_proven",
+      resolutionId: "0197a3c2-0000-7000-8000-000000000901",
+      auditId: "0197a3c2-0000-7000-8000-000000000902",
+      authorizedDispatchIdentity,
+      atMs: 1_721_600_000_002,
+    }))).resolves.toMatchObject({
+      ok: true,
+      result: { resolved: true, hold: { holdId, state: "resolved_pending_bridge" } },
+    });
+    await expect(bridgeChannel.send(control("clearance", "clearance_for_hold", {
+      rsid,
+      holdId,
+    }))).resolves.toMatchObject({
+      ok: true,
+      result: {
+        clearance: {
+          hold_id: holdId,
+          basis: "verification_read",
+          evidence_digest: evidenceDigest,
+          decision: "non_execution_proven",
+        },
+      },
+    });
 
     const shutdown = await bridgeChannel.send(control("bridge-shutdown", "shutdown"));
     expect(shutdown).toMatchObject({
@@ -252,6 +392,27 @@ describe("long-lived Bridge JSONL daemon", () => {
     });
     await once(bridge, "exit");
     expect(bridge.exitCode).toBe(0);
+    expect(existsSync(join(stateRoot, "bridge.db"))).toBe(true);
+
+    const restartedBridge = child(bridgeCli, ["daemon", "--state-root", stateRoot]);
+    children.push(restartedBridge);
+    const restartedChannel = new JsonLineReader(restartedBridge);
+    await expect(restartedChannel.next()).resolves.toMatchObject({
+      ready: true,
+      stateRoot,
+      preserveState: true,
+    });
+    const restartedEvidence = await collectSnapshot(restartedChannel, "process-restart-evidence");
+    expect(restartedEvidence.flatMap((page) => page.invocations as JsonObject[])).toContainEqual(
+      expect.objectContaining({ invocationId: invocation.payload.invocation_id, state: "indeterminate" }),
+    );
+    await expect(restartedChannel.send(control("restarted-shutdown", "shutdown"))).resolves.toMatchObject({
+      ok: true,
+      result: { journalClosed: true },
+    });
+    await once(restartedBridge, "exit");
+    expect(restartedBridge.exitCode).toBe(0);
+    expect(existsSync(stateRoot)).toBe(true);
 
     await expect(fixtureChannel.send(control("fixture-shutdown", "shutdown"))).resolves.toMatchObject({
       ok: true,
@@ -260,4 +421,45 @@ describe("long-lived Bridge JSONL daemon", () => {
     await once(fixture, "exit");
     expect(fixture.exitCode).toBe(0);
   }, 30_000);
+
+  it("removes its private temporary state root after stdin EOF", async () => {
+    const bridge = child(bridgeCli, ["daemon"]);
+    children.push(bridge);
+    const bridgeChannel = new JsonLineReader(bridge);
+    const ready = await bridgeChannel.next();
+    expect(ready).toMatchObject({
+      ready: true,
+      preserveState: false,
+      stateRootSource: "temporary",
+    });
+    const stateRoot = String(ready.stateRoot);
+    expect(existsSync(stateRoot)).toBe(true);
+    bridge.stdin.end();
+    await once(bridge, "exit");
+    expect(bridge.exitCode).toBe(0);
+    expect(existsSync(stateRoot)).toBe(false);
+  });
+
+  it("accepts a bounded absolute persistent state root from the environment", async () => {
+    const stateRoot = mkdtempSync(join(tmpdir(), "bridge-daemon-env-state-"));
+    stateRoots.push(stateRoot);
+    const bridge = child(bridgeCli, ["daemon"], {
+      REVAGENT_BRIDGE_STATE_ROOT: stateRoot,
+    });
+    children.push(bridge);
+    const bridgeChannel = new JsonLineReader(bridge);
+    await expect(bridgeChannel.next()).resolves.toMatchObject({
+      ready: true,
+      stateRoot,
+      preserveState: true,
+      stateRootSource: "environment",
+    });
+    await expect(bridgeChannel.send(control("environment-shutdown", "shutdown"))).resolves.toMatchObject({
+      ok: true,
+      result: { journalClosed: true },
+    });
+    await once(bridge, "exit");
+    expect(bridge.exitCode).toBe(0);
+    expect(existsSync(join(stateRoot, "bridge.db"))).toBe(true);
+  });
 });

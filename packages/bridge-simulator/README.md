@@ -34,8 +34,14 @@ It never installs, deploys, enrolls, or connects to a production Gateway.
 
 ## Long-lived control daemon
 
-`node dist/cli.js daemon` starts the headless T6-facing process. Standard
-output contains only strict, correlation-preserving JSONL. The first record is
+`node dist/cli.js daemon` starts the headless T6-facing process. Pass an
+absolute, non-root `--state-root PATH` (or set `REVAGENT_BRIDGE_STATE_ROOT`)
+to retain the SQLite journal and artifact spool across process restarts. An
+explicit state root is never deleted by the daemon. Without one, the daemon
+uses a private temporary root and removes it only after the runtime and journal
+close; cleanup failure is a non-zero daemon shutdown.
+
+Standard output contains only strict, correlation-preserving JSONL. The first record is
 the readiness contract; every subsequent request has this base shape:
 
 ```json
@@ -47,7 +53,10 @@ Success is `{controlVersion,id,ok:true,result}`. Failure is
 are each bounded to 64 KiB. Duplicate JSON keys, unknown action fields,
 non-finite/unsafe numeric values, and trailing JSON are rejected. The daemon
 does not accept `run_case` and does not produce a self-declared `passed` value;
-the T6 parent runner owns all assertions.
+the T6 parent runner owns all assertions. Independent controls may execute
+concurrently. Lifecycle mutations, crash planning, clock changes, evidence
+snapshots, restart, and shutdown are barriers. Responses remain in accepted
+input order and pass through one atomic JSONL writer.
 
 Action fields, in addition to the base fields, are exact:
 
@@ -55,7 +64,7 @@ Action fields, in addition to the base fields, are exact:
 | --- | --- | --- |
 | `discover_fixture` | — | `host`, `port`, `firstPort`, `lastPort`, `probeTimeoutMs` |
 | `attach_fixture_session` | `probeIndex`, `rsid`, `resumeToken`, `resumeExpiresAt`, `userHint`, `hostname`, `fingerprint`, `bridgeVersion` | `grantedSessionCapabilities` |
-| `open_transport` | `kind`, `deviceToken`, `hello` | `wssUrl`, `fallbackUrl`, `fallbackProvisioned` as required by the selected kind |
+| `open_transport` | `kind`, `deviceToken`, `hello` | `wssUrl`, `fallbackUrl`, `fallbackProvisioned` as required by the selected kind; `endpointPolicy` |
 | `start_run_loop` | — | — |
 | `session_register` | `probeIndex`, `userHint`, `hostname`, `fingerprint`, `bridgeVersion` | — |
 | `session_resume` | `rsid` | — |
@@ -64,6 +73,10 @@ Action fields, in addition to the base fields, are exact:
 | `poll_document_context` | `rsid` | `force` |
 | `flush_outbound` | — | `rsid` |
 | `invoke_local` | `envelope` | `crashAt` |
+| `record_verification_attempt` | `rsid`, `holdId`, `verificationInvocationId`, `evidenceDigest`, `conclusion`, `atMs` | — |
+| `record_late_evidence` | `rsid`, `holdId`, `originInvocationId`, `evidenceDigest`, `conclusion`, `atMs` | — |
+| `resolve_hold` | `rsid`, `holdId`, `basis`, `verificationInvocationId`, `evidenceDigest`, `decision`, `resolutionId`, `auditId`, `authorizedDispatchIdentity`, `atMs` | — |
+| `clearance_for_hold` | `rsid`, `holdId` | — |
 | `inject_crash` | `point` | — |
 | `restart_simulator` | — | — |
 | `snapshot_evidence` | — | continuation-only `snapshotId` and `cursor` |
@@ -71,7 +84,9 @@ Action fields, in addition to the base fields, are exact:
 
 `hello` has exact fields `id`, `ts`, `bridgeVersion`, `deviceId`, `hostname`,
 and `os`, with optional `fingerprint`. `kind` is `wss`,
-`streamable_http_sse`, or `primary_then_fallback`. Evidence pages are immutable
+`streamable_http_sse`, or `primary_then_fallback`. When present,
+`endpointPolicy` must be exactly `loopback_test_readiness`; omission retains
+the fail-closed production URL policy. Evidence pages are immutable
 and expose redacted journal/hold/durability/sequence/session facts plus Bridge
 peer and transport state. Shutdown closes transports, loopback clients, the
 run loop, and SQLite, then reports the corresponding zero-leak counters.

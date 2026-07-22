@@ -1,6 +1,9 @@
+import { Buffer } from "node:buffer";
+import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
 
 import {
+  parseRbpFrame,
   rbpEnvelopeErrors,
   validateRbpEnvelope,
   type HelloAckEnvelope,
@@ -10,6 +13,42 @@ import {
 import WebSocket from "ws";
 
 export type BridgeBindingKind = "wss" | "streamable_http_sse";
+export type GatewayEndpointPolicy = "production" | "loopback_test_readiness";
+export type GatewayTransportFailureClass =
+  | "retryable_network"
+  | "auth"
+  | "version"
+  | "trust"
+  | "protocol";
+
+export interface GatewayCloseInfo {
+  readonly code: number;
+  readonly reason: string;
+}
+
+export class GatewayTransportError extends Error {
+  public readonly faultClass: GatewayTransportFailureClass;
+  public readonly closeCode: number | null;
+  public readonly closeReason: string | null;
+  public readonly httpStatus: number | null;
+
+  public constructor(
+    message: string,
+    options: {
+      readonly faultClass: GatewayTransportFailureClass;
+      readonly closeCode?: number;
+      readonly closeReason?: string;
+      readonly httpStatus?: number;
+    },
+  ) {
+    super(message);
+    this.name = "GatewayTransportError";
+    this.faultClass = options.faultClass;
+    this.closeCode = options.closeCode ?? null;
+    this.closeReason = options.closeReason ?? null;
+    this.httpStatus = options.httpStatus ?? null;
+  }
+}
 
 export interface GatewayBinding {
   readonly kind: BridgeBindingKind;
@@ -25,6 +64,11 @@ export interface BindingOptions {
   readonly baseUrl: string;
   readonly deviceToken: string;
   readonly versionsHeader?: string;
+  /** Defaults to production. The test policy accepts only numeric-loopback ws/http readiness URLs. */
+  readonly endpointPolicy?: GatewayEndpointPolicy;
+  readonly openTimeoutMs?: number;
+  readonly sendTimeoutMs?: number;
+  readonly fetchTimeoutMs?: number;
   readonly fetch?: typeof globalThis.fetch;
   /** Test-adapter seam; production callers leave this unset. */
   readonly webSocketFactory?: (
@@ -32,6 +76,11 @@ export interface BindingOptions {
     options: WebSocket.ClientOptions,
   ) => WebSocket;
 }
+
+const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
+const DEFAULT_SEND_TIMEOUT_MS = 5_000;
+const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
+const MAX_RBP_WIRE_FRAME_BYTES = 48 * 1024 * 1024;
 
 interface QueueWaiter<T> {
   readonly resolve: (value: IteratorResult<T>) => void;
@@ -78,16 +127,99 @@ class AsyncMessageQueue<T> implements AsyncIterable<T> {
   }
 }
 
-function assertGatewayUrl(value: string, requiredProtocol: "https:" | "wss:"): URL {
+function positiveTimeout(value: number | undefined, fallback: number, label: string): number {
+  const timeout = value ?? fallback;
+  if (!Number.isSafeInteger(timeout) || timeout < 1 || timeout > 120_000) {
+    throw new RangeError(`${label} must be an integer from 1 through 120000 milliseconds`);
+  }
+  return timeout;
+}
+
+function assertGatewayUrl(
+  value: string,
+  productionProtocol: "https:" | "wss:",
+  testProtocol: "http:" | "ws:",
+  endpointPolicy: GatewayEndpointPolicy,
+): URL {
   const url = new URL(value);
-  if (url.protocol !== requiredProtocol) {
-    throw new Error(`Gateway ${requiredProtocol} URL required`);
-  }
-  if (isIP(url.hostname) !== 0 || url.hostname.length === 0 || url.username || url.password) {
-    throw new Error("Gateway URL must use an authenticated DNS name without userinfo");
-  }
+  if (url.username || url.password) throw new Error("Gateway URL must omit userinfo");
   if (url.search || url.hash) throw new Error("Gateway base URL cannot contain query or fragment");
+  if (endpointPolicy === "production") {
+    if (url.protocol !== productionProtocol) {
+      throw new Error(`Production Gateway ${productionProtocol} URL required`);
+    }
+    if (isIP(url.hostname) !== 0 || !url.hostname.includes(".")) {
+      throw new Error("Production Gateway URL must use an authenticated DNS name");
+    }
+  } else {
+    if (url.protocol !== testProtocol) {
+      throw new Error(`Loopback test readiness URL must use ${testProtocol}`);
+    }
+    if (!isNumericUrlLoopback(url.hostname) || url.port.length === 0) {
+      throw new Error("Loopback test readiness URL must use numeric loopback and an explicit port");
+    }
+  }
   return url;
+}
+
+function isNumericUrlLoopback(host: string): boolean {
+  const normalizedHost = host.startsWith("[") && host.endsWith("]") ? host.slice(1, -1) : host;
+  const family = isIP(normalizedHost);
+  if (family === 4) return normalizedHost.split(".")[0] === "127";
+  if (family !== 6) return false;
+  const normalized = normalizedHost.toLowerCase();
+  return normalized === "::1" || normalized === "0:0:0:0:0:0:0:1";
+}
+
+function classForCloseCode(code: number): GatewayTransportFailureClass {
+  if (code === 4401 || code === 4403) return "auth";
+  if (code === 4426) return "version";
+  if (code === 4400 || (code >= 4000 && code <= 4999)) return "protocol";
+  return "retryable_network";
+}
+
+function classForHttpStatus(status: number): GatewayTransportFailureClass {
+  if (status === 401 || status === 403) return "auth";
+  if (status === 426) return "version";
+  if (status >= 400 && status < 500) return "protocol";
+  return "retryable_network";
+}
+
+function closeError(phase: string, code: number, reasonBytes: Buffer): GatewayTransportError {
+  const reason = reasonBytes.toString("utf8");
+  const detail = reason.length === 0 ? "no reason" : reason;
+  return new GatewayTransportError(
+    `WSS ${phase} closed with code ${code}: ${detail}`,
+    { faultClass: classForCloseCode(code), closeCode: code, closeReason: reason },
+  );
+}
+
+function httpStatusError(phase: string, status: number): GatewayTransportError {
+  return new GatewayTransportError(
+    `${phase} received HTTP ${status}`,
+    { faultClass: classForHttpStatus(status), httpStatus: status },
+  );
+}
+
+function normalizedTransportError(error: unknown, phase: string): GatewayTransportError {
+  if (error instanceof GatewayTransportError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const normalized = message.toLowerCase();
+  const statusMatch = /unexpected server response:\s*(\d{3})/u.exec(normalized);
+  if (statusMatch !== null) {
+    const status = Number(statusMatch[1]);
+    return httpStatusError(phase, status);
+  }
+  const faultClass = /certificate|tls|trust|self.signed/u.test(normalized)
+    ? "trust"
+    : /protocol|validation|invalid envelope/u.test(normalized)
+      ? "protocol"
+      : "retryable_network";
+  return new GatewayTransportError(`${phase}: ${message}`, { faultClass });
+}
+
+export function classifyGatewayTransportFailure(error: unknown): GatewayTransportFailureClass {
+  return normalizedTransportError(error, "Gateway transport failure").faultClass;
 }
 
 function assertPreNegotiationEnvelope(envelope: HelloEnvelope | HelloAckEnvelope): void {
@@ -100,12 +232,17 @@ function assertPreNegotiationEnvelope(envelope: HelloEnvelope | HelloAckEnvelope
   }
 }
 
-function parseEnvelope(text: string): RbpEnvelope {
-  const value: unknown = JSON.parse(text);
-  if (!validateRbpEnvelope(value)) {
-    throw new Error(`Gateway envelope failed validation: ${JSON.stringify(rbpEnvelopeErrors())}`);
+function rawDataBytes(data: WebSocket.RawData): Uint8Array {
+  if (Array.isArray(data)) return new Uint8Array(Buffer.concat(data));
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+}
+
+function parseEnvelope(bytes: Uint8Array): RbpEnvelope {
+  if (bytes.byteLength > MAX_RBP_WIRE_FRAME_BYTES) {
+    throw new Error(`Gateway frame exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
   }
-  return value;
+  return parseRbpFrame(bytes);
 }
 
 function helloAck(value: RbpEnvelope, expectedConnectionId?: string): HelloAckEnvelope {
@@ -162,13 +299,21 @@ export class WssGatewayBinding implements GatewayBinding {
   readonly #queue = new AsyncMessageQueue<RbpEnvelope>();
   #socket: WebSocket | null = null;
   #connectionId: string | null = null;
+  #closeInfo: GatewayCloseInfo | null = null;
 
   public constructor(options: BindingOptions) {
     this.#options = options;
-    const url = assertGatewayUrl(options.baseUrl, "wss:");
+    const url = assertGatewayUrl(
+      options.baseUrl,
+      "wss:",
+      "ws:",
+      options.endpointPolicy ?? "production",
+    );
     if (url.pathname !== "/bridge/v1" && url.pathname !== "/bridge/v1/") {
       throw new Error("WSS binding path must be /bridge/v1");
     }
+    positiveTimeout(options.openTimeoutMs, DEFAULT_OPEN_TIMEOUT_MS, "WSS open timeout");
+    positiveTimeout(options.sendTimeoutMs, DEFAULT_SEND_TIMEOUT_MS, "WSS send timeout");
   }
 
   public get kind(): "wss" {
@@ -183,63 +328,125 @@ export class WssGatewayBinding implements GatewayBinding {
     return this.#socket?.bufferedAmount ?? 0;
   }
 
+  public get closeInfo(): GatewayCloseInfo | null {
+    return this.#closeInfo === null ? null : { ...this.#closeInfo };
+  }
+
   public async open(hello: HelloEnvelope): Promise<HelloAckEnvelope> {
     if (this.#socket !== null) throw new Error("WSS binding already opened");
     assertPreNegotiationEnvelope(hello);
+    const openTimeoutMs = positiveTimeout(
+      this.#options.openTimeoutMs,
+      DEFAULT_OPEN_TIMEOUT_MS,
+      "WSS open timeout",
+    );
     const socket = (this.#options.webSocketFactory ?? ((url, options) => new WebSocket(url, options)))(
       this.#options.baseUrl,
-      { headers: authHeaders(this.#options) },
+      { headers: authHeaders(this.#options), maxPayload: MAX_RBP_WIRE_FRAME_BYTES },
     );
     this.#socket = socket;
     await new Promise<void>((resolve, reject) => {
-      const onOpen = (): void => {
+      let settled = false;
+      const finish = (error?: GatewayTransportError): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        socket.off("open", onOpen);
         socket.off("error", onError);
-        resolve();
+        socket.off("close", onClose);
+        socket.off("unexpected-response", onUnexpectedResponse);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const onOpen = (): void => {
+        finish();
       };
       const onError = (error: Error): void => {
-        socket.off("open", onOpen);
-        reject(error);
+        finish(normalizedTransportError(error, "WSS open failed"));
       };
+      const onClose = (code: number, reason: Buffer): void => {
+        this.#closeInfo = { code, reason: reason.toString("utf8") };
+        finish(closeError("open", code, reason));
+      };
+      const onUnexpectedResponse = (_request: unknown, response: IncomingMessage): void => {
+        response.resume();
+        finish(httpStatusError("WSS upgrade", response.statusCode ?? 500));
+        socket.once("error", () => undefined);
+        socket.terminate();
+      };
+      const timeout = setTimeout(() => {
+        finish(new GatewayTransportError(
+          `WSS open timed out after ${openTimeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        ));
+        socket.once("error", () => undefined);
+        socket.terminate();
+      }, openTimeoutMs);
       socket.once("open", onOpen);
       socket.once("error", onError);
+      socket.once("close", onClose);
+      socket.once("unexpected-response", onUnexpectedResponse);
     });
-    const first = new Promise<HelloAckEnvelope>((resolve, reject) => {
+    return new Promise<HelloAckEnvelope>((resolve, reject) => {
+      let ackSettled = false;
+      const timeout = setTimeout(() => {
+        failBeforeAck(new GatewayTransportError(
+          `WSS hello_ack timed out after ${openTimeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        ));
+        socket.terminate();
+      }, openTimeoutMs);
+      const settleAck = (ack: HelloAckEnvelope): void => {
+        if (ackSettled) return;
+        ackSettled = true;
+        clearTimeout(timeout);
+        this.#connectionId = ack.payload.connection_id;
+        resolve(ack);
+      };
+      const failBeforeAck = (error: GatewayTransportError): void => {
+        if (!ackSettled) {
+          ackSettled = true;
+          clearTimeout(timeout);
+          reject(error);
+        }
+        this.#queue.close(error);
+      };
       const onMessage = (data: WebSocket.RawData, binary: boolean): void => {
-        cleanup();
         try {
           if (binary) throw new Error("RBP WSS requires text frames");
-          const ack = helloAck(parseEnvelope(data.toString()));
-          this.#connectionId = ack.payload.connection_id;
-          resolve(ack);
+          const envelope = parseEnvelope(rawDataBytes(data));
+          if (!ackSettled) settleAck(helloAck(envelope));
+          else this.#queue.push(envelope);
         } catch (error) {
-          reject(error instanceof Error ? error : new Error(String(error)));
+          const failure = new GatewayTransportError(
+            `WSS protocol frame rejected: ${error instanceof Error ? error.message : String(error)}`,
+            { faultClass: "protocol" },
+          );
+          failBeforeAck(failure);
+          socket.close(4400, "protocol error");
         }
       };
-      const onClose = (): void => {
-        cleanup();
-        reject(new Error("WSS closed before hello_ack"));
+      const onClose = (code: number, reason: Buffer): void => {
+        this.#closeInfo = { code, reason: reason.toString("utf8") };
+        const error = closeError(ackSettled ? "steady transport" : "before hello_ack", code, reason);
+        if (!ackSettled) failBeforeAck(error);
+        else if (code === 1000) this.#queue.close();
+        else this.#queue.close(error);
       };
-      const cleanup = (): void => {
-        socket.off("message", onMessage);
-        socket.off("close", onClose);
+      const onError = (error: Error): void => {
+        const failure = normalizedTransportError(error, "WSS transport failed");
+        if (!ackSettled) failBeforeAck(failure);
+        else this.#queue.close(failure);
       };
-      socket.once("message", onMessage);
+      socket.on("message", onMessage);
       socket.once("close", onClose);
+      socket.once("error", onError);
+      socket.send(JSON.stringify(hello), (error) => {
+        if (error === undefined || error === null) return;
+        failBeforeAck(normalizedTransportError(error, "WSS hello send failed"));
+        socket.terminate();
+      });
     });
-    socket.send(JSON.stringify(hello));
-    const ack = await first;
-    socket.on("message", (data, binary) => {
-      try {
-        if (binary) throw new Error("RBP WSS requires text frames");
-        this.#queue.push(parseEnvelope(data.toString()));
-      } catch (error) {
-        this.#queue.close(error instanceof Error ? error : new Error(String(error)));
-        socket.close(4400, "protocol error");
-      }
-    });
-    socket.on("close", () => this.#queue.close());
-    socket.on("error", (error) => this.#queue.close(error));
-    return ack;
   }
 
   public async send(envelope: RbpEnvelope): Promise<void> {
@@ -247,8 +454,32 @@ export class WssGatewayBinding implements GatewayBinding {
       throw new Error("WSS binding is not steady");
     }
     if (!validateRbpEnvelope(envelope)) throw new Error("invalid outbound RBP envelope");
+    const socket = this.#socket;
+    const sendTimeoutMs = positiveTimeout(
+      this.#options.sendTimeoutMs,
+      DEFAULT_SEND_TIMEOUT_MS,
+      "WSS send timeout",
+    );
     await new Promise<void>((resolve, reject) => {
-      this.#socket?.send(JSON.stringify(envelope), (error) => (error ? reject(error) : resolve()));
+      let settled = false;
+      const finish = (error?: Error): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        if (error === undefined) resolve();
+        else reject(error);
+      };
+      const timeout = setTimeout(() => {
+        finish(new GatewayTransportError(
+          `WSS send timed out after ${sendTimeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        ));
+        socket.terminate();
+      }, sendTimeoutMs);
+      socket.send(JSON.stringify(envelope), (error) => {
+        if (error === undefined || error === null) finish();
+        else finish(normalizedTransportError(error, "WSS send failed"));
+      });
     });
   }
 
@@ -285,12 +516,89 @@ export class WssGatewayBinding implements GatewayBinding {
 
 function oneLineSseData(line: string): RbpEnvelope {
   if (line.includes("\r") || line.includes("\n")) throw new Error("SSE RBP data must be one line");
-  return parseEnvelope(line);
+  return parseEnvelope(Buffer.from(line, "utf8"));
+}
+
+function sseStreamError(error: unknown): GatewayTransportError {
+  if (error instanceof GatewayTransportError) return error;
+  const message = error instanceof Error ? error.message : String(error);
+  const protocolFailure = /(?:SSE|RBP|JSON|UTF-8|duplicate|envelope|frame|incomplete event)/iu.test(message);
+  return new GatewayTransportError(`HTTP/SSE events failed: ${message}`, {
+    faultClass: protocolFailure ? "protocol" : "retryable_network",
+  });
+}
+
+async function timedFetch(
+  fetcher: typeof globalThis.fetch,
+  input: URL,
+  init: RequestInit,
+  timeoutMs: number,
+  phase: string,
+): Promise<Response> {
+  const controller = new AbortController();
+  const upstream = init.signal;
+  const relayAbort = (): void => controller.abort(upstream?.reason);
+  if (upstream?.aborted === true) relayAbort();
+  else upstream?.addEventListener("abort", relayAbort, { once: true });
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`${phase} timeout`));
+  }, timeoutMs);
+  try {
+    return await fetcher(input, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw new GatewayTransportError(
+        `${phase} timed out after ${timeoutMs}ms`,
+        { faultClass: "retryable_network" },
+      );
+    }
+    throw normalizedTransportError(error, `${phase} failed`);
+  } finally {
+    clearTimeout(timeout);
+    upstream?.removeEventListener("abort", relayAbort);
+  }
+}
+
+async function readBoundedResponseBytes(response: Response, phase: string): Promise<Uint8Array> {
+  const contentLength = response.headers.get("content-length");
+  if (contentLength !== null) {
+    const advertised = Number(contentLength);
+    if (!Number.isSafeInteger(advertised) || advertised < 0) {
+      await response.body?.cancel("invalid Content-Length");
+      throw new Error(`${phase} has an invalid Content-Length`);
+    }
+    if (advertised > MAX_RBP_WIRE_FRAME_BYTES) {
+      await response.body?.cancel("response exceeds raw byte cap");
+      throw new Error(`${phase} exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+    }
+  }
+  if (response.body === null) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      total += next.value.byteLength;
+      if (total > MAX_RBP_WIRE_FRAME_BYTES) {
+        await reader.cancel("response exceeds raw byte cap");
+        throw new Error(`${phase} exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+      }
+      chunks.push(next.value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return new Uint8Array(Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), total));
 }
 
 export class HttpSseGatewayBinding implements GatewayBinding {
   readonly #options: BindingOptions;
   readonly #base: URL;
+  readonly #createUrl: URL;
   readonly #fetch: typeof globalThis.fetch;
   readonly #queue = new AsyncMessageQueue<RbpEnvelope>();
   #connectionId: string | null = null;
@@ -299,11 +607,23 @@ export class HttpSseGatewayBinding implements GatewayBinding {
 
   public constructor(options: BindingOptions) {
     this.#options = options;
-    this.#base = assertGatewayUrl(options.baseUrl, "https:");
-    if (this.#base.pathname !== "/" && this.#base.pathname !== "") {
-      throw new Error("HTTP/SSE binding base URL must not contain a path");
+    const endpointPolicy = options.endpointPolicy ?? "production";
+    const endpoint = assertGatewayUrl(options.baseUrl, "https:", "http:", endpointPolicy);
+    if (endpointPolicy === "production") {
+      if (endpoint.pathname !== "/" && endpoint.pathname !== "") {
+        throw new Error("Production HTTP/SSE binding base URL must not contain a path");
+      }
+      this.#base = endpoint;
+      this.#createUrl = new URL("/bridge/v1/http/connections", endpoint);
+    } else {
+      if (endpoint.pathname !== "/bridge/v1/http/connections") {
+        throw new Error("Loopback HTTP readiness URL must end at /bridge/v1/http/connections");
+      }
+      this.#base = new URL("/", endpoint);
+      this.#createUrl = endpoint;
     }
     this.#fetch = options.fetch ?? globalThis.fetch;
+    positiveTimeout(options.fetchTimeoutMs, DEFAULT_FETCH_TIMEOUT_MS, "HTTP/SSE fetch timeout");
   }
 
   public get kind(): "streamable_http_sse" {
@@ -322,38 +642,47 @@ export class HttpSseGatewayBinding implements GatewayBinding {
     if (this.#connectionId !== null) throw new Error("HTTP/SSE binding already opened");
     assertPreNegotiationEnvelope(hello);
     const headers = authHeaders(this.#options);
-    const createUrl = new URL("/bridge/v1/http/connections", this.#base);
-    const response = await this.#fetch(createUrl, {
+    const fetchTimeoutMs = positiveTimeout(
+      this.#options.fetchTimeoutMs,
+      DEFAULT_FETCH_TIMEOUT_MS,
+      "HTTP/SSE fetch timeout",
+    );
+    const response = await timedFetch(this.#fetch, this.#createUrl, {
       method: "POST",
       headers: { ...headers, Accept: "application/json", "Content-Type": "application/json" },
       body: JSON.stringify(hello),
       redirect: "error",
-    });
-    if (response.status !== 201) throw new Error(`fallback create expected 201, got ${response.status}`);
+    }, fetchTimeoutMs, "HTTP/SSE create");
+    if (response.status !== 201) throw httpStatusError("HTTP/SSE create", response.status);
     const connectionId = response.headers.get("RBP-Connection-Id");
     if (connectionId === null || connectionId.length === 0 || /[\r\n/]/u.test(connectionId)) {
       throw new Error("fallback create omitted a valid RBP-Connection-Id");
     }
-    const ack = helloAck(parseEnvelope(await response.text()), connectionId);
+    const ack = helloAck(
+      parseEnvelope(await readBoundedResponseBytes(response, "HTTP/SSE hello_ack")),
+      connectionId,
+    );
 
     const abort = new AbortController();
     const eventsUrl = new URL(
       `/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
       this.#base,
     );
-    const events = await this.#fetch(eventsUrl, {
+    const events = await timedFetch(this.#fetch, eventsUrl, {
       method: "GET",
       headers: { ...headers, Accept: "text/event-stream" },
       redirect: "error",
       signal: abort.signal,
-    });
+    }, fetchTimeoutMs, "HTTP/SSE events open");
     if (events.status !== 200 || !events.body) {
       abort.abort();
-      throw new Error(`fallback events expected streaming 200, got ${events.status}`);
+      await events.body?.cancel("events response rejected");
+      throw httpStatusError("HTTP/SSE events open", events.status);
     }
     const contentType = events.headers.get("content-type")?.split(";", 1)[0]?.trim().toLowerCase();
     if (contentType !== "text/event-stream") {
       abort.abort();
+      await events.body.cancel("events content type rejected");
       throw new Error("fallback events response is not text/event-stream");
     }
     this.#connectionId = connectionId;
@@ -369,7 +698,8 @@ export class HttpSseGatewayBinding implements GatewayBinding {
     const body = JSON.stringify(envelope);
     this.#unacceptedBytes += Buffer.byteLength(body, "utf8");
     try {
-      const response = await this.#fetch(
+      const response = await timedFetch(
+        this.#fetch,
         new URL(`/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, this.#base),
         {
           method: "POST",
@@ -381,9 +711,15 @@ export class HttpSseGatewayBinding implements GatewayBinding {
           body,
           redirect: "error",
         },
+        positiveTimeout(
+          this.#options.fetchTimeoutMs,
+          DEFAULT_FETCH_TIMEOUT_MS,
+          "HTTP/SSE fetch timeout",
+        ),
+        "HTTP/SSE message send",
       );
       if (response.status !== 202) {
-        throw new Error(`fallback message expected 202, got ${response.status}`);
+        throw httpStatusError("HTTP/SSE message send", response.status);
       }
     } finally {
       this.#unacceptedBytes -= Buffer.byteLength(body, "utf8");
@@ -409,8 +745,10 @@ export class HttpSseGatewayBinding implements GatewayBinding {
     signal.addEventListener("abort", cancelReader, { once: true });
     const decoder = new TextDecoder("utf-8", { fatal: true });
     let pending = "";
+    let pendingBytes = 0;
     let eventName = "";
     let data: string[] = [];
+    let eventDataBytes = 0;
     const dispatch = (): void => {
       if (eventName === "" && data.length === 0) return;
       if (eventName !== "rbp" || data.length !== 1) {
@@ -419,32 +757,64 @@ export class HttpSseGatewayBinding implements GatewayBinding {
       this.#queue.push(oneLineSseData(data[0] as string));
       eventName = "";
       data = [];
+      eventDataBytes = 0;
+    };
+    const processPendingLines = (): void => {
+      for (;;) {
+        const newline = pending.indexOf("\n");
+        if (newline < 0) break;
+        const consumed = pending.slice(0, newline + 1);
+        let line = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        pendingBytes -= Buffer.byteLength(consumed, "utf8");
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (Buffer.byteLength(line, "utf8") > MAX_RBP_WIRE_FRAME_BYTES) {
+          throw new Error(`fallback SSE line exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+        }
+        if (line === "") {
+          dispatch();
+        } else if (line.startsWith(":")) {
+          continue;
+        } else if (line.startsWith("event:")) {
+          eventName = line.slice(6).trimStart();
+        } else if (line.startsWith("data:")) {
+          const value = line.slice(5).trimStart();
+          eventDataBytes += Buffer.byteLength(value, "utf8");
+          if (eventDataBytes > MAX_RBP_WIRE_FRAME_BYTES) {
+            throw new Error(`fallback SSE data exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+          }
+          data.push(value);
+        }
+      }
+      if (pendingBytes > MAX_RBP_WIRE_FRAME_BYTES) {
+        throw new Error(`fallback SSE line exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+      }
     };
     try {
       while (!signal.aborted) {
         const next = await reader.read();
         if (next.done) break;
-        pending += decoder.decode(next.value, { stream: true });
-        for (;;) {
-          const newline = pending.indexOf("\n");
-          if (newline < 0) break;
-          let line = pending.slice(0, newline);
-          pending = pending.slice(newline + 1);
-          if (line.endsWith("\r")) line = line.slice(0, -1);
-          if (line === "") {
-            dispatch();
-          } else if (line.startsWith(":")) {
-            continue;
-          } else if (line.startsWith("event:")) {
-            eventName = line.slice(6).trimStart();
-          } else if (line.startsWith("data:")) {
-            data.push(line.slice(5).trimStart());
-          }
+        const decoded = decoder.decode(next.value, { stream: true });
+        pending += decoded;
+        pendingBytes += Buffer.byteLength(decoded, "utf8");
+        processPendingLines();
+      }
+      if (!signal.aborted) {
+        const decoded = decoder.decode();
+        pending += decoded;
+        pendingBytes += Buffer.byteLength(decoded, "utf8");
+        processPendingLines();
+        if (pending.length > 0 || eventName.length > 0 || data.length > 0) {
+          throw new Error("fallback SSE stream ended with an incomplete event");
         }
       }
-      if (!signal.aborted) this.#queue.close(new Error("fallback SSE stream ended"));
+      if (!signal.aborted) {
+        this.#queue.close(new GatewayTransportError("fallback SSE stream ended", {
+          faultClass: "retryable_network",
+        }));
+      }
     } catch (error) {
-      if (!signal.aborted) this.#queue.close(error instanceof Error ? error : new Error(String(error)));
+      if (!signal.aborted) this.#queue.close(sseStreamError(error));
     } finally {
       signal.removeEventListener("abort", cancelReader);
       reader.releaseLock();
@@ -457,12 +827,7 @@ export async function openPrimaryThenFallback(input: {
   readonly wss: GatewayBinding;
   readonly fallback?: GatewayBinding;
   readonly fallbackProvisioned: boolean;
-  readonly classifyWssFailure: (error: unknown) =>
-    | "retryable_network"
-    | "auth"
-    | "version"
-    | "trust"
-    | "protocol";
+  readonly classifyWssFailure: (error: unknown) => GatewayTransportFailureClass;
 }): Promise<{ readonly binding: GatewayBinding; readonly helloAck: HelloAckEnvelope }> {
   try {
     return { binding: input.wss, helloAck: await input.wss.open(input.hello) };
@@ -475,7 +840,9 @@ export async function openPrimaryThenFallback(input: {
         "failed WSS primary could not be closed before transport selection",
       );
     }
-    const failure = input.classifyWssFailure(error);
+    const failure = error instanceof GatewayTransportError
+      ? error.faultClass
+      : input.classifyWssFailure(error);
     if (!input.fallbackProvisioned || input.fallback === undefined || failure !== "retryable_network") {
       throw error;
     }

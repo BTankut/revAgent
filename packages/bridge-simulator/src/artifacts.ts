@@ -103,25 +103,38 @@ export class ArtifactSpool {
   public captureDeclaredPaths(
     invocationId: string,
     paths: readonly { readonly path: string; readonly contentType: string }[],
+    chunkBytes: number = RBP_MAX_DECODED_CHUNK_BYTES,
   ): ArtifactCarrier {
     const realRoot = realpathSync.native(this.#root);
     const inputs: ArtifactInput[] = [];
     for (const entry of paths) {
       const candidate = resolve(entry.path);
       assertInside(realRoot, candidate);
+      const realCandidate = realpathSync.native(candidate);
+      assertInside(realRoot, realCandidate);
       const before = lstatSync(candidate);
-      if (!before.isFile() || before.isSymbolicLink()) {
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1) {
         throw new Error("artifact source must be a regular non-reparse file");
       }
       const descriptor = openSync(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
       let bytes: Buffer;
       try {
         const opened = fstatSync(descriptor);
-        if (!opened.isFile() || opened.size !== before.size) {
+        if (
+          !opened.isFile() || opened.size !== before.size || opened.dev !== before.dev || opened.ino !== before.ino
+        ) {
           throw new Error("artifact source changed during validated open");
         }
         bytes = readFileSync(descriptor);
-        if (fstatSync(descriptor).size !== opened.size) {
+        const openedAfterRead = fstatSync(descriptor);
+        const pathAfterRead = lstatSync(candidate);
+        const realAfterRead = realpathSync.native(candidate);
+        assertInside(realRoot, realAfterRead);
+        if (
+          openedAfterRead.size !== opened.size || openedAfterRead.dev !== opened.dev || openedAfterRead.ino !== opened.ino ||
+          !pathAfterRead.isFile() || pathAfterRead.isSymbolicLink() || pathAfterRead.nlink !== 1 ||
+          pathAfterRead.dev !== opened.dev || pathAfterRead.ino !== opened.ino
+        ) {
           throw new Error("artifact source changed while reading");
         }
       } finally {
@@ -129,10 +142,17 @@ export class ArtifactSpool {
       }
       inputs.push({ filename: basename(candidate), contentType: entry.contentType, bytes });
     }
-    return this.retain(invocationId, inputs);
+    return this.retain(invocationId, inputs, chunkBytes);
   }
 
-  public retain(invocationId: string, inputs: readonly ArtifactInput[]): ArtifactCarrier {
+  public retain(
+    invocationId: string,
+    inputs: readonly ArtifactInput[],
+    chunkBytes: number = RBP_MAX_DECODED_CHUNK_BYTES,
+  ): ArtifactCarrier {
+    if (!Number.isSafeInteger(chunkBytes) || chunkBytes < 1 || chunkBytes > RBP_MAX_DECODED_CHUNK_BYTES) {
+      throw new RangeError("artifact chunk bytes exceed the RBP/1 partial limit");
+    }
     if (inputs.length < 1 || inputs.length > RBP_MAX_ARTIFACTS_PER_INVOCATION) {
       throw new RangeError("artifact count must be between 1 and 16");
     }
@@ -162,8 +182,8 @@ export class ArtifactSpool {
         writeFileSync(retained, input.bytes, { flag: "wx" });
         retainedFiles.push(retained);
         let chunkIndex = 0;
-        for (let offset = 0; offset < input.bytes.byteLength; offset += RBP_MAX_DECODED_CHUNK_BYTES) {
-          const chunk = input.bytes.slice(offset, offset + RBP_MAX_DECODED_CHUNK_BYTES);
+        for (let offset = 0; offset < input.bytes.byteLength; offset += chunkBytes) {
+          const chunk = input.bytes.slice(offset, offset + chunkBytes);
           partials.push({
             kind: "chunk",
             invocation_id: invocationId,

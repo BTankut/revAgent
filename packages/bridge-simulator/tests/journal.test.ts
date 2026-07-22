@@ -172,15 +172,27 @@ describe("DurableBridgeJournal", () => {
       bindings,
       recoveryClearances: [],
       dispatchIdentity: "batch-dispatch",
+      atomic: true,
     }).kind).toBe("accepted");
-    journal.markExecutingMany(bindings.map((entry) => ({ rsid, invocationId: entry.invocationId })));
+    journal.acceptBatchBinding({
+      batchId,
+      rsid,
+      batchDigest,
+      bindingJson: JSON.stringify({ atomic: true }),
+    });
+    journal.markAtomicBatchDispatched({
+      batchId,
+      rsid,
+      batchDigest,
+      invocationIds: bindings.map((entry) => entry.invocationId),
+    });
     journal.close();
 
     journal = new DurableBridgeJournal(path);
     const holds = journal.listHolds();
     expect(holds).toHaveLength(1);
     expect(holds[0]?.originIdempotencyKeys).toEqual(
-      bindings.map((entry) => `${rsid}/${entry.invocationId}`).sort(),
+      bindings.map((entry) => `${rsid}/${entry.invocationId}`),
     );
     expect(bindings.map((entry) => journal.getInvocation(rsid, entry.invocationId)?.state)).toEqual([
       "indeterminate",

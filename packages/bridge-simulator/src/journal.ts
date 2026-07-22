@@ -10,6 +10,7 @@ import {
   handleJournalSessionUnregister,
   installMutationHolds,
   journalRecordIsIntact,
+  makeJournalBindingDigest,
   makeIdempotencyKey,
   markJournalExecuting,
   markJournalIndeterminate,
@@ -58,7 +59,7 @@ export type AcceptInvocationResult =
 export type BatchInvocationDecision = Exclude<
   AcceptInvocationResult,
   { readonly kind: "blocked" | "protocol_fault" }
->;
+> | { readonly kind: "not_started"; readonly record: InvocationJournalRecord };
 
 export type AcceptBatchInvocationsResult =
   | { readonly kind: "accepted"; readonly decisions: readonly BatchInvocationDecision[] }
@@ -77,6 +78,14 @@ interface HoldRow {
 
 interface SequenceRow {
   readonly sequence_json: string;
+}
+
+export interface BatchCoordinationState {
+  readonly batchId: string;
+  readonly rsid: string;
+  readonly batchDigest: string;
+  readonly state: "received" | "dispatched" | "terminal" | "indeterminate";
+  readonly terminalJson: string | null;
 }
 
 function parseJson<T>(value: string, label: string): T {
@@ -110,6 +119,7 @@ export class DurableBridgeJournal {
     this.#db.pragma("fullfsync = ON");
     this.#db.pragma("checkpoint_fullfsync = ON");
     this.#migrate();
+    this.classifyInterruptedAtomicBatches(Date.now());
     this.classifyInterruptedMutations(Date.now());
   }
 
@@ -431,6 +441,84 @@ export class DurableBridgeJournal {
     );
   }
 
+  /**
+   * Recovers atomic batches whose one-frame dispatch ownership was durable but
+   * whose terminal carrier was not. Mutation holds and the coordination state
+   * are committed together, preserving batch input order for hold identity.
+   */
+  public classifyInterruptedAtomicBatches(atMs = Date.now()): readonly InvocationJournalRecord[] {
+    assertSafeTime(atMs, "atMs");
+    const batches = this.#db
+      .prepare(
+        `SELECT batch_id AS batchId,rsid,batch_digest AS batchDigest,binding_json AS bindingJson
+         FROM batch_coordination WHERE state='dispatched' ORDER BY created_at_ms,batch_id`,
+      )
+      .all() as Array<{
+        readonly batchId: string;
+        readonly rsid: string;
+        readonly batchDigest: string;
+        readonly bindingJson: string;
+      }>;
+    const recovered: InvocationJournalRecord[] = [];
+    for (const batch of batches) {
+      const binding = parseJson<{ readonly atomic?: unknown }>(batch.bindingJson, "batch binding");
+      if (binding.atomic !== true) continue;
+      recovered.push(...this.#durable("atomic_batch_interrupted", batch.batchId, atMs, () => {
+        const rows = this.#db
+          .prepare(
+            `SELECT record_json,binding_digest,state FROM invocation_journal
+             WHERE rsid=? AND batch_id=? ORDER BY batch_index`,
+          )
+          .all(batch.rsid, batch.batchId) as InvocationRow[];
+        const records = rows.map((row) => {
+          const record = parseJson<InvocationJournalRecord>(row.record_json, "atomic batch step");
+          if (!journalRecordIsIntact(record)) throw new Error("atomic batch journal integrity mismatch");
+          return record;
+        });
+        if (records.length === 0) throw new Error("dispatched atomic batch has no step rows");
+        const uncertain = records.flatMap((record) => {
+          if (!record.binding.mutating || record.state === "indeterminate") return [];
+          if (record.terminalOutcome !== null || record.lateTerminalOutcome !== null) {
+            throw new Error("dispatched atomic batch has a contradictory terminal prefix");
+          }
+          if (record.binding.mutationScope === null) throw new Error("mutation journal lost its scope");
+          return [{
+            originIdempotencyKey: makeIdempotencyKey(batch.rsid, record.binding.invocationId),
+            mutationScope: record.binding.mutationScope,
+          }];
+        });
+        let installedHolds: readonly MutationHold[] = [];
+        if (uncertain.length > 0) {
+          const installed = installMutationHolds(this.#loadLedger(), batch.rsid, uncertain);
+          if (installed.kind === "blocked") {
+            const expected = new Set(uncertain.map((entry) => entry.originIdempotencyKey));
+            const covered = new Set(installed.conflictingHolds.flatMap((hold) => hold.originIdempotencyKeys));
+            if ([...expected].some((key) => !covered.has(key))) {
+              throw new Error("another active hold conflicts with atomic recovery");
+            }
+            installedHolds = installed.conflictingHolds;
+          } else {
+            installedHolds = installed.holds;
+            this.#storeLedger(installed.ledger, atMs);
+          }
+        }
+        const updated = records.map((record) => {
+          if (!record.binding.mutating || record.state === "indeterminate") return record;
+          const key = makeIdempotencyKey(batch.rsid, record.binding.invocationId);
+          const holdId = installedHolds.find((hold) => hold.originIdempotencyKeys.includes(key))?.holdId ?? null;
+          const indeterminate = markJournalIndeterminate(record, holdId);
+          this.#saveInvocation(indeterminate, atMs, undefined, atMs);
+          return indeterminate;
+        });
+        this.#db
+          .prepare("UPDATE batch_coordination SET state='indeterminate',updated_at_ms=? WHERE batch_id=? AND state='dispatched'")
+          .run(atMs, batch.batchId);
+        return updated;
+      }));
+    }
+    return recovered;
+  }
+
   public classifyPendingExpiry(
     cutoffStartedAtMs: number,
     atMs = Date.now(),
@@ -703,6 +791,124 @@ export class DurableBridgeJournal {
     return row?.terminal_json ?? null;
   }
 
+  public getBatchCoordination(batchId: string): BatchCoordinationState | null {
+    this.#assertOpen();
+    const row = this.#db
+      .prepare(
+        `SELECT batch_id AS batchId,rsid,batch_digest AS batchDigest,state,terminal_json AS terminalJson
+         FROM batch_coordination WHERE batch_id=?`,
+      )
+      .get(batchId) as BatchCoordinationState | undefined;
+    return row ?? null;
+  }
+
+  /**
+   * Atomically claims the one-frame add-in dispatch and every ordered step.
+   * A durable `dispatched` coordination row is the restart authority; step
+   * rows alone are never used to infer a partially dispatched atomic batch.
+   */
+  public markAtomicBatchDispatched(input: {
+    readonly batchId: string;
+    readonly rsid: string;
+    readonly batchDigest: string;
+    readonly invocationIds: readonly string[];
+    readonly atMs?: number;
+  }): readonly InvocationJournalRecord[] {
+    const atMs = input.atMs ?? Date.now();
+    if (input.invocationIds.length === 0) throw new Error("atomic batch has no steps");
+    return this.#durable("atomic_batch_dispatch_owned", input.batchId, atMs, () => {
+      const batch = this.getBatchCoordination(input.batchId);
+      if (
+        batch === null ||
+        batch.rsid !== input.rsid ||
+        batch.batchDigest !== input.batchDigest ||
+        batch.state !== "received"
+      ) {
+        throw new Error("atomic batch dispatch does not match a received coordination row");
+      }
+      const records = input.invocationIds.map((invocationId, index) => {
+        const record = this.#requireInvocation(input.rsid, invocationId);
+        if (
+          record.binding.batchId !== input.batchId ||
+          record.binding.batchDigest !== input.batchDigest ||
+          record.binding.batchIndex !== index ||
+          record.state !== "received" ||
+          record.dispatchMayHaveStarted
+        ) {
+          throw new Error("atomic batch step is not dispatchable in input order");
+        }
+        const executing = markJournalExecuting(record);
+        this.#saveInvocation(executing, atMs, atMs);
+        return executing;
+      });
+      this.#db
+        .prepare("UPDATE batch_coordination SET state='dispatched',updated_at_ms=? WHERE batch_id=? AND state='received'")
+        .run(atMs, input.batchId);
+      return records;
+    });
+  }
+
+  /** Claims a successor that Section 12.2 permits only after a recovered read
+   * in the same atomic:false batch became durably completed. */
+  public claimNonAtomicBatchSuccessor(input: {
+    readonly binding: InvocationJournalBinding;
+    readonly dispatchIdentity: string;
+    readonly atMs?: number;
+  }):
+    | { readonly kind: "claimed"; readonly record: InvocationJournalRecord }
+    | { readonly kind: "blocked"; readonly holds: readonly MutationHold[] }
+    | { readonly kind: "protocol_fault"; readonly reason: string } {
+    const atMs = input.atMs ?? Date.now();
+    return this.#durable("claim_batch_successor", input.binding.invocationId, atMs, () => {
+      const record = this.#requireInvocation(input.binding.rsid, input.binding.invocationId);
+      if (
+        !journalRecordIsIntact(record) ||
+        record.bindingDigest !== makeJournalBindingDigest(input.binding) ||
+        record.binding.batchId === undefined ||
+        record.binding.batchIndex === undefined ||
+        record.state !== "received" ||
+        record.dispatchMayHaveStarted
+      ) {
+        return { kind: "protocol_fault", reason: "batch_successor_not_dispatchable" };
+      }
+      const prefix = this.#db
+        .prepare(
+          `SELECT record_json,binding_digest,state FROM invocation_journal
+           WHERE rsid=? AND batch_id=? AND batch_index<? ORDER BY batch_index`,
+        )
+        .all(input.binding.rsid, record.binding.batchId, record.binding.batchIndex) as InvocationRow[];
+      const prefixCompleted = prefix.every((row) => {
+        const candidate = parseJson<InvocationJournalRecord>(row.record_json, "batch predecessor");
+        return journalRecordIsIntact(candidate) && candidate.terminalOutcome?.status === "completed";
+      });
+      if (!prefixCompleted) return { kind: "protocol_fault", reason: "batch_predecessor_not_completed" };
+
+      let ledger = this.#loadLedger();
+      if (record.binding.mutating) {
+        if (record.binding.mutationScope === null) {
+          return { kind: "protocol_fault", reason: "missing_mutation_scope" };
+        }
+        const authorization = authorizeMutationDispatch(ledger, {
+          rsid: record.binding.rsid,
+          mutationScopes: [record.binding.mutationScope],
+          recoveryClearances: [],
+          dispatchIdentity: input.dispatchIdentity,
+        });
+        if (authorization.kind === "blocked") {
+          return { kind: "blocked", holds: authorization.conflictingHolds };
+        }
+        if (authorization.kind === "protocol_fault") {
+          return { kind: "protocol_fault", reason: authorization.reason };
+        }
+        ledger = authorization.ledger;
+        this.#storeLedger(ledger, atMs);
+      }
+      const executing = markJournalExecuting(record);
+      this.#saveInvocation(executing, atMs, atMs);
+      return { kind: "claimed", record: executing };
+    });
+  }
+
   /** Atomically commits every atomic step terminal and its carrier response. */
   public commitBatchTerminal(input: {
     readonly batchId: string;
@@ -752,6 +958,7 @@ export class DurableBridgeJournal {
     readonly bindings: readonly InvocationJournalBinding[];
     readonly recoveryClearances: readonly RecoveryClearance[];
     readonly dispatchIdentity: string;
+    readonly atomic: boolean;
     readonly atMs?: number;
   }): AcceptBatchInvocationsResult {
     const atMs = input.atMs ?? Date.now();
@@ -816,43 +1023,79 @@ export class DurableBridgeJournal {
       }
 
       const records = existing as InvocationJournalRecord[];
-      const uncertain = records.flatMap((record) => {
-        if (
-          !record.binding.mutating ||
-          record.terminalOutcome !== null ||
-          record.lateTerminalOutcome !== null ||
-          record.state === "indeterminate"
-        ) return [];
-        if (record.binding.mutationScope === null) throw new Error("mutation journal lost its scope");
-        return [{
-          originIdempotencyKey: makeIdempotencyKey(rsid, record.binding.invocationId),
-          mutationScope: record.binding.mutationScope,
-        }];
-      });
-      let promotionHolds: readonly MutationHold[] = [];
-      if (uncertain.length > 0) {
-        const installed = installMutationHolds(ledger, rsid, uncertain);
-        if (installed.kind === "blocked") {
-          return { kind: "blocked", holds: installed.conflictingHolds };
-        }
-        ledger = installed.ledger;
-        promotionHolds = installed.holds;
-        this.#storeLedger(ledger, atMs);
+      if (records.some((record, index) =>
+        !journalRecordIsIntact(record) ||
+        record.bindingDigest !== makeJournalBindingDigest(input.bindings[index] as InvocationJournalBinding)
+      )) {
+        return { kind: "protocol_fault", reason: "batch_binding_mismatch" };
       }
+
+      if (input.atomic) {
+        if (records.every((record) => record.state === "received" && !record.dispatchMayHaveStarted)) {
+          return {
+            kind: "accepted",
+            decisions: records.map((record) => ({ kind: "accepted" as const, record })),
+          };
+        }
+        return { kind: "protocol_fault", reason: "atomic_batch_not_safely_received" };
+      }
+
       const decisions: BatchInvocationDecision[] = [];
+      let stopped = false;
       for (let index = 0; index < records.length; index += 1) {
         const record = records[index] as InvocationJournalRecord;
         const binding = input.bindings[index] as InvocationJournalBinding;
-        const key = makeIdempotencyKey(rsid, record.binding.invocationId);
-        const promotionHoldId = promotionHolds.find((hold) =>
-          hold.originIdempotencyKeys.includes(key),
-        )?.holdId ?? null;
+        if (stopped) {
+          decisions.push({ kind: "not_started", record });
+          continue;
+        }
+        if (record.terminalOutcome !== null) {
+          decisions.push({ kind: "replay_terminal", record, outcome: record.terminalOutcome });
+          if (record.terminalOutcome.status !== "completed") stopped = true;
+          continue;
+        }
+        if (record.lateTerminalOutcome !== null) {
+          if (record.verificationHoldId === null) throw new Error("late batch evidence lost its hold");
+          decisions.push({
+            kind: "replay_late_terminal",
+            record,
+            outcome: record.lateTerminalOutcome,
+            verificationHoldId: record.verificationHoldId,
+          });
+          if (record.lateTerminalOutcome.status !== "completed") stopped = true;
+          continue;
+        }
+        if (record.state === "indeterminate") {
+          decisions.push({ kind: "return_indeterminate", record, verificationHoldId: record.verificationHoldId });
+          stopped = true;
+          continue;
+        }
+
+        let promotionHoldId: string | null = null;
+        if (record.binding.mutating) {
+          if (record.binding.mutationScope === null) throw new Error("mutation journal lost its scope");
+          const key = makeIdempotencyKey(rsid, record.binding.invocationId);
+          const installed = installMutationHolds(ledger, rsid, [{
+            originIdempotencyKey: key,
+            mutationScope: record.binding.mutationScope,
+          }]);
+          if (installed.kind === "blocked") {
+            const covering = installed.conflictingHolds.find((hold) => hold.originIdempotencyKeys.includes(key));
+            if (covering === undefined) return { kind: "blocked", holds: installed.conflictingHolds };
+            promotionHoldId = covering.holdId;
+          } else {
+            ledger = installed.ledger;
+            promotionHoldId = installed.holds[0]?.holdId ?? null;
+            this.#storeLedger(ledger, atMs);
+          }
+        }
         const decision = decideJournalRedelivery(record, binding, promotionHoldId);
         if (decision.kind === "protocol_fault") {
           return { kind: "protocol_fault", reason: decision.reason };
         }
         if (decision.record !== record) this.#saveInvocation(decision.record, atMs);
         decisions.push(decision);
+        stopped = true;
       }
       return { kind: "accepted", decisions };
     });

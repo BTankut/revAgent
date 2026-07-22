@@ -55,6 +55,12 @@ const INLINE_JOURNAL_PAYLOAD_BYTES = 1_048_576;
 const MAX_PARAMS_BYTES = 4 * 1024 * 1024;
 const MAX_RESULT_BYTES = 32 * 1024 * 1024;
 
+export interface BridgeNegotiatedLimits {
+  readonly maxParamsBytes: number;
+  readonly maxResultBytes: number;
+  readonly maxPartialBytes: number;
+}
+
 export type BridgeCrashPoint =
   | "after_received_before_dispatch"
   | "after_executing_before_addin_write"
@@ -94,11 +100,15 @@ export type BridgeInvocationOutcome =
       readonly kind: "error";
       readonly faultClass:
         | "protocol"
+        | "auth"
+        | "policy"
         | "unsupported"
+        | "parameter"
         | "environment"
         | "revit_busy"
         | "revit_timeout"
         | "revit_api"
+        | "addin_unreachable"
         | "journal_indeterminate"
         | "oversize"
         | "cancelled";
@@ -109,6 +119,11 @@ export type BridgeInvocationOutcome =
       readonly replayed: boolean;
       readonly addinContacted: boolean;
       readonly message: string;
+    }
+  | {
+      readonly kind: "not_started";
+      readonly replayed: boolean;
+      readonly addinContacted: false;
     };
 
 export interface BridgeBatchOutcome {
@@ -119,7 +134,7 @@ export interface BridgeBatchOutcome {
   readonly failedStepIndex?: number | null;
   readonly steps?: readonly BridgeInvocationOutcome[];
   readonly replayed?: boolean;
-  readonly faultClass?: "protocol" | "unsupported" | "journal_indeterminate";
+  readonly faultClass?: "protocol" | "unsupported" | "journal_indeterminate" | "oversize";
   readonly message?: string;
   readonly verificationHoldId?: string;
   readonly mutationScope?: MutationScope;
@@ -128,6 +143,10 @@ export interface BridgeBatchOutcome {
 interface ActiveInvocation {
   readonly rsid: string;
   readonly invocationId: string;
+}
+
+interface AddinFailureStatusEvidence {
+  readonly state: "reachable_busy" | "reachable_idle" | "unreachable";
 }
 
 function isObject(value: unknown): value is JsonObject {
@@ -171,6 +190,36 @@ function addinOutcome(response: RawAddinResponse): {
     return { status: "failed", result: result as unknown as JsonValue };
   }
   return { status: "completed", result: result as unknown as JsonValue };
+}
+
+function addinFailureClass(response: RawAddinResponse): {
+  readonly faultClass: Extract<BridgeInvocationOutcome, { kind: "error" }>['faultClass'];
+  readonly message: string;
+  readonly retryable: boolean;
+} {
+  const error = isObject(response.message.error) ? response.message.error : null;
+  const result = isObject(response.message.result) ? response.message.result : null;
+  const code = error?.code ?? (isObject(result?.error) ? result.error.code : result?.code);
+  const rawMessage = error?.message ?? (isObject(result?.error) ? result.error.message : result?.message);
+  const message = typeof rawMessage === "string" && rawMessage.length > 0
+    ? rawMessage.slice(0, 240)
+    : "add-in returned a failure outcome";
+  if (code === -32601 || code === "method_not_found" || code === "unsupported_method") {
+    return { faultClass: "unsupported", message, retryable: false };
+  }
+  if (
+    code === -32700 || code === -32600 || code === -32602 ||
+    code === "invalid_params" || code === "invalid_request" || code === "parse_error"
+  ) {
+    return { faultClass: "parameter", message, retryable: false };
+  }
+  if (code === "timeout" || code === "deadline_exceeded" || /\b(?:timed? ?out|deadline)\b/iu.test(message)) {
+    return { faultClass: "revit_timeout", message, retryable: true };
+  }
+  if (code === "busy" || code === "revit_busy" || /\bbusy\b/iu.test(message)) {
+    return { faultClass: "revit_busy", message, retryable: true };
+  }
+  return { faultClass: "revit_api", message, retryable: false };
 }
 
 function displayParams(payload: InvokeEnvelope["payload"]): JsonObject {
@@ -262,16 +311,152 @@ function summarizeBatchOutcomes(outcomes: readonly BridgeInvocationOutcome[]): {
   readonly failedStepIndex: number | null;
 } {
   const failedStepIndex = outcomes.findIndex((outcome) =>
-    outcome.kind === "error" || outcome.status !== "completed",
+    outcome.kind === "error" || (outcome.kind === "result" && outcome.status !== "completed"),
   );
   if (failedStepIndex < 0) return { status: "completed", failedStepIndex: null };
   const outcome = outcomes[failedStepIndex] as BridgeInvocationOutcome;
   if (outcome.kind === "result") return { status: "guarded", failedStepIndex };
+  if (outcome.kind === "not_started") return { status: "failed", failedStepIndex };
   if (outcome.faultClass === "journal_indeterminate") {
     return { status: "indeterminate", failedStepIndex };
   }
   if (outcome.faultClass === "cancelled") return { status: "cancelled", failedStepIndex };
   return { status: "failed", failedStepIndex };
+}
+
+interface ValidAtomicBatchResult {
+  readonly result: JsonObject;
+  readonly rows: readonly JsonObject[];
+  readonly status: "completed" | "guarded" | "failed" | "indeterminate";
+  readonly transactionState: "committed" | "rolled_back" | "indeterminate";
+  readonly failedStepIndex: number | null;
+}
+
+function owns(value: JsonObject, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
+}
+
+function validAddinStepError(value: unknown): value is JsonObject {
+  if (!isObject(value) || typeof value.code !== "string" || typeof value.message !== "string") return false;
+  if (value.code === "rollback_failure") return false;
+  if (value.code === "response_payload_limit") {
+    return value.maxResponsePayloadBytes === 33_554_432 &&
+      Number.isSafeInteger(value.tentativeResponsePayloadBytes) &&
+      Number(value.tentativeResponsePayloadBytes) >= 33_554_433;
+  }
+  return value.code === "command_failure" || value.code === "revit_api" || value.code === "invalid_result";
+}
+
+function validateAtomicBatchResult(
+  value: unknown,
+  envelope: InvokeBatchEnvelope,
+  resultContractVersion: number,
+): ValidAtomicBatchResult | null {
+  if (!isObject(value) || !Array.isArray(value.steps) || !isObject(value.rollback)) return null;
+  const status = value.status;
+  const transactionState = value.transactionState;
+  const failedStepIndex = value.failedStepIndex;
+  if (
+    value.resultContractVersion !== resultContractVersion ||
+    value.batchContractVersion !== 1 ||
+    value.batchId !== envelope.payload.batch_id ||
+    value.batchDigest !== envelope.payload.batch_digest ||
+    value.atomic !== true ||
+    value.steps.length !== envelope.payload.steps.length ||
+    !["completed", "guarded", "failed", "indeterminate"].includes(String(status))
+  ) return null;
+  if (
+    failedStepIndex !== null &&
+    (!Number.isSafeInteger(failedStepIndex) || Number(failedStepIndex) < 0 || Number(failedStepIndex) >= value.steps.length)
+  ) return null;
+
+  const rows: JsonObject[] = [];
+  for (let index = 0; index < value.steps.length; index += 1) {
+    const row = value.steps[index];
+    const step = envelope.payload.steps[index];
+    if (
+      !isObject(row) || step === undefined ||
+      row.index !== index || row.invocationId !== step.invocation_id || row.method !== step.method
+    ) return null;
+    rows.push(row);
+  }
+  const firstNonSuccess = rows.findIndex((row) => row.executionState !== "completed");
+  const rollback = value.rollback;
+  if (status === "completed") {
+    if (
+      transactionState !== "committed" || failedStepIndex !== null || firstNonSuccess !== -1 ||
+      rollback.attempted !== false || rollback.succeeded !== null ||
+      rollback.triggerStepIndex !== null || rollback.triggerState !== null || owns(rollback, "error")
+    ) return null;
+    for (let index = 0; index < rows.length; index += 1) {
+      const row = rows[index] as JsonObject;
+      const step = envelope.payload.steps[index] as InvokeBatchEnvelope["payload"]["steps"][number];
+      if (
+        row.effectState !== (step.mutating ? "committed" : "read_only") ||
+        !owns(row, "result") || owns(row, "resultSuppressed") || owns(row, "guardedReason") || owns(row, "error")
+      ) return null;
+    }
+    return { result: value, rows, status: "completed", transactionState: "committed", failedStepIndex: null };
+  }
+
+  const failureIndex = Number(failedStepIndex);
+  if (firstNonSuccess !== failureIndex) return null;
+  const trigger = rows[failureIndex];
+  if (trigger === undefined) return null;
+  const triggerState = trigger.executionState;
+  if (
+    rollback.attempted !== true || rollback.triggerStepIndex !== failureIndex || rollback.triggerState !== triggerState
+  ) return null;
+  if (status === "guarded" || status === "failed") {
+    if (
+      transactionState !== "rolled_back" || rollback.succeeded !== true || owns(rollback, "error") ||
+      triggerState !== status
+    ) return null;
+  } else if (
+    status !== "indeterminate" || transactionState !== "indeterminate" || rollback.succeeded !== false ||
+    !isObject(rollback.error) || rollback.error.code !== "rollback_failure" ||
+    typeof rollback.error.message !== "string" ||
+    !["guarded", "failed", "indeterminate"].includes(String(triggerState))
+  ) return null;
+
+  const suppression = status === "indeterminate" ? "batch_indeterminate" : "batch_rolled_back";
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index] as JsonObject;
+    const step = envelope.payload.steps[index] as InvokeBatchEnvelope["payload"]["steps"][number];
+    if (index > failureIndex) {
+      if (
+        row.executionState !== "not_started" || row.effectState !== "not_started" ||
+        owns(row, "result") || owns(row, "resultSuppressed") || owns(row, "guardedReason") || owns(row, "error")
+      ) return null;
+      continue;
+    }
+    const expectedEffect = step.mutating
+      ? status === "indeterminate" ? "indeterminate" : "rolled_back"
+      : "discarded";
+    if (row.effectState !== expectedEffect || row.resultSuppressed !== suppression || owns(row, "result")) return null;
+    if (index < failureIndex) {
+      if (row.executionState !== "completed" || owns(row, "guardedReason") || owns(row, "error")) return null;
+      continue;
+    }
+    if (row.executionState === "guarded") {
+      if (
+        typeof row.guardedReason !== "string" ||
+        !/^[a-z][a-z0-9_]{0,63}$/u.test(row.guardedReason) ||
+        owns(row, "error")
+      ) return null;
+    } else if (row.executionState === "failed" || row.executionState === "indeterminate") {
+      if (!validAddinStepError(row.error) || owns(row, "guardedReason")) return null;
+    } else {
+      return null;
+    }
+  }
+  return {
+    result: value,
+    rows,
+    status: status as ValidAtomicBatchResult["status"],
+    transactionState: transactionState as ValidAtomicBatchResult["transactionState"],
+    failedStepIndex: failureIndex,
+  };
 }
 
 export class BridgeSimulator {
@@ -280,6 +465,11 @@ export class BridgeSimulator {
   readonly #sessions = new Map<string, RegisteredBridgeSession>();
   readonly #active = new Map<string, ActiveInvocation>();
   #window: DispatchWindowLedger = createDispatchWindowLedger();
+  #limits: BridgeNegotiatedLimits = {
+    maxParamsBytes: MAX_PARAMS_BYTES,
+    maxResultBytes: MAX_RESULT_BYTES,
+    maxPartialBytes: INLINE_JOURNAL_PAYLOAD_BYTES,
+  };
 
   public constructor(journal: DurableBridgeJournal, spool: ArtifactSpool) {
     this.#journal = journal;
@@ -288,6 +478,21 @@ export class BridgeSimulator {
 
   public get journal(): DurableBridgeJournal {
     return this.#journal;
+  }
+
+  public applyNegotiatedLimits(limits: BridgeNegotiatedLimits): void {
+    const values = [limits.maxParamsBytes, limits.maxResultBytes, limits.maxPartialBytes];
+    if (values.some((value) => !Number.isSafeInteger(value) || value < 1)) {
+      throw new RangeError("negotiated Bridge limits must be positive safe integers");
+    }
+    if (
+      limits.maxParamsBytes > MAX_PARAMS_BYTES ||
+      limits.maxResultBytes > MAX_RESULT_BYTES ||
+      limits.maxPartialBytes > INLINE_JOURNAL_PAYLOAD_BYTES
+    ) {
+      throw new RangeError("negotiated Bridge limits exceed the RBP/1 implementation caps");
+    }
+    this.#limits = { ...limits };
   }
 
   public buildHello(input: {
@@ -447,7 +652,9 @@ export class BridgeSimulator {
       return knownError("protocol", "transmitted params_digest does not match RFC 8785 params bytes");
     }
     const paramsBytes = Buffer.byteLength(canonicalizeJson(envelope.payload.params as JsonValue), "utf8");
-    if (paramsBytes > MAX_PARAMS_BYTES) return knownError("oversize", "params exceed 4 MiB");
+    if (paramsBytes > this.#limits.maxParamsBytes) {
+      return knownError("oversize", `params exceed negotiated ${this.#limits.maxParamsBytes} byte limit`);
+    }
 
     const sequence = this.acceptInboundEnvelope(envelope as unknown as DataEnvelopeSnapshot);
     if (sequence.kind === "protocol_fault" || sequence.kind === "gap") {
@@ -514,6 +721,16 @@ export class BridgeSimulator {
       kind: "invoke",
     });
     if (opened.kind === "protocol_fault") {
+      if (accepted.kind === "accepted") {
+        this.#journal.recordTerminal(envelope.rsid, invocationId, {
+          status: "failed",
+          payloadRetained: true,
+          payload: {
+            fault_class: "protocol",
+            message: "per-session dispatch window is occupied",
+          },
+        });
+      }
       return knownError("protocol", "per-session dispatch window is occupied");
     }
     this.#window = opened.ledger;
@@ -552,10 +769,18 @@ export class BridgeSimulator {
             message: "add-in response was lost after mutation dispatch",
           };
         }
-        const busy = await this.#failureStatus(session, `${invocationId}-failure-status`);
+        const status = await this.#failureStatus(session, `${invocationId}-failure-status`);
+        const message = error instanceof Error ? error.message.slice(0, 240) : "add-in request failed";
+        const faultClass = status.state === "reachable_busy"
+          ? "revit_busy"
+          : status.state === "unreachable"
+            ? "addin_unreachable"
+            : /\b(?:timed? ?out|deadline)\b/iu.test(message)
+              ? "revit_timeout"
+              : "environment";
         const payload: JsonValue = {
-          fault_class: busy ? "revit_busy" : "environment",
-          message: error instanceof Error ? error.message.slice(0, 240) : "add-in request failed",
+          fault_class: faultClass,
+          message,
         };
         this.#journal.recordTerminal(envelope.rsid, invocationId, {
           status: "failed",
@@ -563,7 +788,7 @@ export class BridgeSimulator {
           payload,
           ...(envelope.payload.verification === null ? {} : { resultDigest: makeParamsDigest(payload) }),
         });
-        return knownError(busy ? "revit_busy" : "environment", String((payload as { message: string }).message), {
+        return knownError(faultClass, message, {
           retryable: true,
           addinContacted: true,
         });
@@ -571,17 +796,20 @@ export class BridgeSimulator {
       if (options.crashAt === "after_addin_response_before_terminal") {
         throw new InjectedBridgeCrash(options.crashAt);
       }
-      if (addinOutcome(response).status === "failed") {
-        await this.#failureStatus(session, `${invocationId}-failure-status`);
-      }
-      return this.#commitResponse(session, envelope, response);
+      const failureStatus = addinOutcome(response).status === "failed"
+        ? await this.#failureStatus(session, `${invocationId}-failure-status`)
+        : null;
+      return this.#commitResponse(session, envelope, response, failureStatus);
     } finally {
       this.#active.delete(envelope.rsid);
       this.#window = closeDispatchWindow(this.#window, envelope.rsid, invocationId);
     }
   }
 
-  public async invokeBatch(envelope: InvokeBatchEnvelope): Promise<BridgeBatchOutcome> {
+  public async invokeBatch(
+    envelope: InvokeBatchEnvelope,
+    options: { readonly crashAt?: BridgeCrashPoint } = {},
+  ): Promise<BridgeBatchOutcome> {
     if (!validateRbpEnvelope(envelope) || envelope.type !== "invoke_batch") {
       return { kind: "error", batchId: envelope.payload?.batch_id ?? "invalid", faultClass: "protocol", message: "invalid batch envelope" };
     }
@@ -616,6 +844,15 @@ export class BridgeSimulator {
       }
       if (!isObject(step.params)) {
         return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "protocol", message: "add-in batch params must be objects" };
+      }
+      const paramsBytes = Buffer.byteLength(canonicalizeJson(step.params as JsonValue), "utf8");
+      if (paramsBytes > this.#limits.maxParamsBytes) {
+        return {
+          kind: "error",
+          batchId: envelope.payload.batch_id,
+          faultClass: "oversize",
+          message: `batch step params exceed negotiated ${this.#limits.maxParamsBytes} byte limit`,
+        };
       }
     }
     if (envelope.payload.atomic && !session.grantedSessionCapabilities.includes("batch_atomic")) {
@@ -655,6 +892,13 @@ export class BridgeSimulator {
       const replay = JSON.parse(durableBatchTerminal) as BridgeBatchOutcome;
       return { ...replay, replayed: true };
     }
+    const coordination = this.#journal.getBatchCoordination(envelope.payload.batch_id);
+    if (envelope.payload.atomic && coordination?.state === "indeterminate") {
+      return this.#atomicBatchIndeterminate(
+        envelope,
+        "atomic add-in dispatch was interrupted before a durable terminal carrier",
+      );
+    }
     const bindings: InvocationJournalBinding[] = envelope.payload.steps.map((step, index) => ({
       rsid: envelope.rsid,
       invocationId: step.invocation_id,
@@ -673,6 +917,7 @@ export class BridgeSimulator {
       bindings,
       recoveryClearances: envelope.payload.recovery_clearances as RecoveryClearance[],
       dispatchIdentity,
+      atomic: envelope.payload.atomic,
     });
     if (accepted.kind === "blocked") {
       const hold = accepted.holds[0];
@@ -701,6 +946,9 @@ export class BridgeSimulator {
         }
         if (decision.kind === "read_recovery_already_consumed") {
           return knownError("environment", "batch read recovery already consumed", { replayed: true });
+        }
+        if (decision.kind === "not_started") {
+          return undefined;
         }
         return {
           kind: "error",
@@ -740,15 +988,48 @@ export class BridgeSimulator {
       kind: "invoke_batch",
     });
     if (opened.kind === "protocol_fault") {
+      if (accepted.decisions.every((decision) => decision.kind === "accepted")) {
+        const payload: JsonValue = {
+          fault_class: "protocol",
+          message: "per-session dispatch window is occupied",
+        };
+        this.#journal.recordTerminals(envelope.payload.steps.map((step) => ({
+          rsid: envelope.rsid,
+          invocationId: step.invocation_id,
+          outcome: { status: "failed", payloadRetained: true, payload },
+        })));
+        const rejected: BridgeBatchOutcome = {
+          kind: "error",
+          batchId: envelope.payload.batch_id,
+          faultClass: "protocol",
+          message: "per-session dispatch window is occupied",
+        };
+        this.#journal.commitBatchTerminal({
+          batchId: envelope.payload.batch_id,
+          rsid: envelope.rsid,
+          batchDigest: envelope.payload.batch_digest,
+          terminalJson: JSON.stringify(rejected),
+        });
+      }
       return { kind: "error", batchId: envelope.payload.batch_id, faultClass: "protocol", message: "per-session dispatch window is occupied" };
     }
     this.#window = opened.ledger;
     this.#active.set(envelope.rsid, { rsid: envelope.rsid, invocationId: envelope.payload.batch_id });
     try {
       if (envelope.payload.atomic) {
-        return await this.#invokeAtomicBatch(session, envelope, accepted.decisions);
+        if (options.crashAt === "after_received_before_dispatch") {
+          throw new InjectedBridgeCrash(options.crashAt);
+        }
+        return await this.#invokeAtomicBatch(session, envelope, accepted.decisions, options);
       }
-      return await this.#invokeNonAtomicBatch(session, envelope, accepted.decisions, outcomes, bindingStatus === "replayed");
+      return await this.#invokeNonAtomicBatch(
+        session,
+        envelope,
+        accepted.decisions,
+        outcomes,
+        bindingStatus === "replayed",
+        dispatchIdentity,
+      );
     } finally {
       this.#active.delete(envelope.rsid);
       this.#window = closeDispatchWindow(this.#window, envelope.rsid, envelope.payload.batch_id);
@@ -761,28 +1042,70 @@ export class BridgeSimulator {
     decisions: readonly BatchInvocationDecision[],
     initialOutcomes: Array<BridgeInvocationOutcome | undefined>,
     bindingReplayed: boolean,
+    dispatchIdentity: string,
   ): Promise<BridgeBatchOutcome> {
     const outcomes = [...initialOutcomes];
     let stop = false;
     for (const [index, step] of envelope.payload.steps.entries()) {
       const previous = outcomes[index];
       if (previous !== undefined) {
-        if (previous.kind === "error" || previous.status !== "completed") stop = true;
+        if (
+          previous.kind === "error" ||
+          previous.kind === "not_started" ||
+          (previous.kind === "result" && previous.status !== "completed")
+        ) stop = true;
         continue;
       }
       if (stop) {
-        const payload: JsonValue = { batch: "successor_not_started" };
-        this.#journal.recordTerminal(envelope.rsid, step.invocation_id, {
-          status: "cancelled",
-          payloadRetained: true,
-          payload,
-        });
-        outcomes[index] = knownError("cancelled", "batch successor not started");
+        outcomes[index] = { kind: "not_started", replayed: false, addinContacted: false };
         continue;
       }
       const decision = decisions[index] as BatchInvocationDecision;
       if (decision.kind === "accepted") {
         this.#journal.markExecuting(envelope.rsid, step.invocation_id);
+      } else if (decision.kind === "not_started") {
+        const binding: InvocationJournalBinding = {
+          rsid: envelope.rsid,
+          invocationId: step.invocation_id,
+          method: step.method,
+          mutating: step.mutating,
+          mutationScope: structuredClone(step.mutation_scope),
+          paramsDigest: step.params_digest,
+          policy: structuredClone(step.policy),
+          verification: null,
+          recoveryClearances: [],
+          batchId: envelope.payload.batch_id,
+          batchIndex: index,
+          batchDigest: envelope.payload.batch_digest,
+        };
+        const claimed = this.#journal.claimNonAtomicBatchSuccessor({ binding, dispatchIdentity });
+        if (claimed.kind === "blocked") {
+          const hold = claimed.holds[0];
+          outcomes[index] = {
+            kind: "error",
+            faultClass: "journal_indeterminate",
+            retryable: false,
+            outcome: "indeterminate",
+            verificationRequired: true,
+            verificationHoldId: hold?.holdId ?? null,
+            replayed: false,
+            addinContacted: false,
+            message: "batch successor is blocked by a mutation recovery hold",
+          };
+          stop = true;
+          continue;
+        }
+        if (claimed.kind === "protocol_fault") {
+          const payload: JsonValue = { fault_class: "protocol", message: claimed.reason };
+          this.#journal.recordTerminal(envelope.rsid, step.invocation_id, {
+            status: "failed",
+            payloadRetained: true,
+            payload,
+          });
+          outcomes[index] = knownError("protocol", claimed.reason);
+          stop = true;
+          continue;
+        }
       }
       const stepEnvelope = this.#batchStepEnvelope(envelope, index);
       try {
@@ -794,7 +1117,7 @@ export class BridgeSimulator {
         );
         const outcome = this.#commitResponse(session, stepEnvelope, response);
         outcomes[index] = outcome;
-        if (outcome.kind === "error" || outcome.status !== "completed") stop = true;
+        if (outcome.kind === "error" || (outcome.kind === "result" && outcome.status !== "completed")) stop = true;
       } catch (error) {
         if (step.mutating) {
           const record = this.#journal.markIndeterminate(envelope.rsid, step.invocation_id);
@@ -826,7 +1149,7 @@ export class BridgeSimulator {
       }
     }
     const completed = outcomes.map((outcome) =>
-      outcome ?? knownError("cancelled", "batch successor not started"),
+      outcome ?? { kind: "not_started" as const, replayed: false, addinContacted: false as const },
     );
     const summary = summarizeBatchOutcomes(completed);
     const result: BridgeBatchOutcome = {
@@ -850,15 +1173,18 @@ export class BridgeSimulator {
   async #invokeAtomicBatch(
     session: RegisteredBridgeSession,
     envelope: InvokeBatchEnvelope,
-    decisions: readonly BatchInvocationDecision[],
+    _decisions: readonly BatchInvocationDecision[],
+    options: { readonly crashAt?: BridgeCrashPoint },
   ): Promise<BridgeBatchOutcome> {
-    this.#journal.markExecutingMany(
-      decisions.flatMap((decision, index) =>
-        decision.kind === "accepted"
-          ? [{ rsid: envelope.rsid, invocationId: envelope.payload.steps[index]?.invocation_id as string }]
-          : [],
-      ),
-    );
+    this.#journal.markAtomicBatchDispatched({
+      batchId: envelope.payload.batch_id,
+      rsid: envelope.rsid,
+      batchDigest: envelope.payload.batch_digest,
+      invocationIds: envelope.payload.steps.map((step) => step.invocation_id),
+    });
+    if (options.crashAt === "after_executing_before_addin_write") {
+      throw new InjectedBridgeCrash(options.crashAt);
+    }
     const params: JsonObject = {
       batchContractVersion: 1,
       batchId: envelope.payload.batch_id,
@@ -888,59 +1214,18 @@ export class BridgeSimulator {
         error instanceof Error ? error.message : String(error),
       );
     }
-    const result = response.message.result;
-    if (!isObject(result) || !Array.isArray(result.steps)) {
-      return this.#atomicBatchIndeterminate(envelope, "execute_batch response omitted its result matrix");
+    if (options.crashAt === "after_addin_response_before_terminal") {
+      throw new InjectedBridgeCrash(options.crashAt);
     }
-    const status = result.status;
-    const transactionState = result.transactionState;
-    const failedStepIndex = result.failedStepIndex;
-    const outerValid =
-      result.batchContractVersion === 1 &&
-      result.batchId === envelope.payload.batch_id &&
-      result.batchDigest === envelope.payload.batch_digest &&
-      result.atomic === true &&
-      result.steps.length === envelope.payload.steps.length &&
-      (
-        (status === "completed" && transactionState === "committed" && failedStepIndex === null) ||
-        ((status === "guarded" || status === "failed") && transactionState === "rolled_back" && Number.isSafeInteger(failedStepIndex)) ||
-        (status === "indeterminate" && transactionState === "indeterminate" && Number.isSafeInteger(failedStepIndex))
-      );
-    const rows = result.steps as JsonValue[];
-    const rowsValid = outerValid && rows.every((candidate, index) => {
-      if (!isObject(candidate)) return false;
-      const step = envelope.payload.steps[index];
-      return step !== undefined &&
-        candidate.index === index &&
-        candidate.invocationId === step.invocation_id &&
-        candidate.method === step.method &&
-        ["completed", "guarded", "failed", "not_started", "indeterminate"].includes(String(candidate.executionState)) &&
-        ["read_only", "committed", "rolled_back", "discarded", "not_started", "indeterminate"].includes(String(candidate.effectState));
-    });
-    const failureIndex = Number.isSafeInteger(failedStepIndex) ? Number(failedStepIndex) : -1;
-    const matrixValid = rowsValid && rows.every((candidate, index) => {
-      const row = candidate as JsonObject;
-      const step = envelope.payload.steps[index];
-      if (step === undefined) return false;
-      if (status === "completed") {
-        return row.executionState === "completed" &&
-          row.effectState === (step.mutating ? "committed" : "read_only");
-      }
-      if (index > failureIndex) {
-        return row.executionState === "not_started" && row.effectState === "not_started";
-      }
-      const expectedEffect = step.mutating
-        ? status === "indeterminate" ? "indeterminate" : "rolled_back"
-        : "discarded";
-      if (row.effectState !== expectedEffect) return false;
-      if (index !== failureIndex) return row.executionState === "completed";
-      if (status === "guarded") return row.executionState === "guarded";
-      if (status === "failed") return row.executionState === "failed";
-      return row.executionState === "guarded" || row.executionState === "failed" || row.executionState === "indeterminate";
-    });
-    if (!matrixValid) {
+    const validated = validateAtomicBatchResult(
+      response.message.result,
+      envelope,
+      session.probe.resultContractVersion,
+    );
+    if (validated === null) {
       return this.#atomicBatchIndeterminate(envelope, "execute_batch response correlation failed");
     }
+    const { status, transactionState, failedStepIndex, rows } = validated;
     if (status === "indeterminate") {
       const possiblyMutating = envelope.payload.steps.flatMap((step, index) => {
         const row = rows[index];
@@ -970,16 +1255,19 @@ export class BridgeSimulator {
           };
         }
         const row = rows[index] as JsonObject;
-        const terminalStatus = row.executionState === "not_started" ? "cancelled" : "failed";
+        if (row.executionState === "not_started") {
+          knownEntries.push({
+            invocationId: step.invocation_id,
+            outcome: this.#terminalOutcome("cancelled", { batch: "not_started" }, digest(response.payload)),
+          });
+          return { kind: "not_started", replayed: false, addinContacted: false };
+        }
+        const terminalStatus = "failed" as const;
         knownEntries.push({
           invocationId: step.invocation_id,
           outcome: this.#terminalOutcome(terminalStatus, row as unknown as JsonValue, digest(response.payload)),
         });
-        return knownError(
-          terminalStatus === "cancelled" ? "cancelled" : "revit_api",
-          terminalStatus === "cancelled" ? "atomic batch step was not started" : "atomic batch result suppressed",
-          { addinContacted: true },
-        );
+        return knownError("revit_api", "atomic batch result suppressed", { addinContacted: true });
       });
       const batch: BridgeBatchOutcome = {
         kind: "batch",
@@ -1024,9 +1312,16 @@ export class BridgeSimulator {
         };
       }
       const isGuarded = row.executionState === "guarded";
+      if (row.executionState === "not_started") {
+        stepTerminals.push({
+          invocationId: step.invocation_id,
+          outcome: this.#terminalOutcome("cancelled", { batch: "not_started" }, rawDigest),
+        });
+        return { kind: "not_started", replayed: false, addinContacted: false };
+      }
       const terminalStatus = isGuarded
         ? "guarded"
-        : row.executionState === "not_started" ? "cancelled" : "failed";
+        : "failed";
       const reason = isGuarded ? guardedReason(row) : undefined;
       stepTerminals.push({
         invocationId: step.invocation_id,
@@ -1054,8 +1349,8 @@ export class BridgeSimulator {
         };
       }
       return knownError(
-        terminalStatus === "cancelled" ? "cancelled" : "revit_api",
-        terminalStatus === "cancelled" ? "atomic batch step was not started" : "atomic batch rolled back",
+        "revit_api",
+        "atomic batch rolled back",
         { addinContacted: true },
       );
     });
@@ -1082,13 +1377,24 @@ export class BridgeSimulator {
     envelope: InvokeBatchEnvelope,
     message: string,
   ): BridgeBatchOutcome {
-    const mutating = envelope.payload.steps
+    const mutatingRecords = envelope.payload.steps
       .filter((step) => step.mutating)
-      .map((step) => ({ rsid: envelope.rsid, invocationId: step.invocation_id }));
-    const held = this.#journal.markIndeterminateMany(mutating);
-    const heldByInvocation = new Map(held.map((record) => [record.binding.invocationId, record]));
+      .map((step) => this.#journal.getInvocation(envelope.rsid, step.invocation_id))
+      .filter((record): record is NonNullable<typeof record> => record !== null);
+    const promote = mutatingRecords
+      .filter((record) => record.state === "received" || record.state === "executing")
+      .map((record) => ({ rsid: envelope.rsid, invocationId: record.binding.invocationId }));
+    const held = promote.length === 0 ? [] : this.#journal.markIndeterminateMany(promote);
+    const heldByInvocation = new Map(
+      [...mutatingRecords.filter((record) => record.state === "indeterminate"), ...held]
+        .map((record) => [record.binding.invocationId, record]),
+    );
     const readTerminals = envelope.payload.steps
       .filter((step) => !step.mutating)
+      .filter((step) => {
+        const record = this.#journal.getInvocation(envelope.rsid, step.invocation_id);
+        return record !== null && record.terminalOutcome === null && record.state !== "indeterminate";
+      })
       .map((step) => ({
         rsid: envelope.rsid,
         invocationId: step.invocation_id,
@@ -1176,17 +1482,15 @@ export class BridgeSimulator {
     };
   }
 
-  public cancel(rsid: string, invocationId: string): BridgeInvocationOutcome {
+  public cancel(rsid: string, invocationId: string): BridgeInvocationOutcome | null {
     const decision = this.#journal.requestCancellation(rsid, invocationId);
     if (decision.kind === "cancelled_before_dispatch") {
       return knownError("cancelled", "invocation cancelled before dispatch");
     }
     if (decision.kind === "already_terminal") {
-      return knownError("cancelled", "invocation was already terminal", { replayed: true });
+      return null;
     }
-    return knownError("cancelled", "cancellation recorded; awaiting the real add-in outcome", {
-      addinContacted: true,
-    });
+    return null;
   }
 
   public async heartbeat(): Promise<Heartbeat> {
@@ -1291,12 +1595,19 @@ export class BridgeSimulator {
     return accepted;
   }
 
-  async #failureStatus(session: RegisteredBridgeSession, id: string): Promise<boolean> {
+  async #failureStatus(
+    session: RegisteredBridgeSession,
+    id: string,
+  ): Promise<AddinFailureStatusEvidence> {
     try {
       const response = await requestAddinSideChannel(session.probe, id, "mcp_status");
-      return isObject(response.message.result) && response.message.result.activeTask !== null;
+      return {
+        state: isObject(response.message.result) && response.message.result.activeTask !== null
+          ? "reachable_busy"
+          : "reachable_idle",
+      };
     } catch {
-      return false;
+      return { state: "unreachable" };
     }
   }
 
@@ -1306,11 +1617,13 @@ export class BridgeSimulator {
       if (record?.state !== "indeterminate" || !envelope.payload.mutating) return;
       const classified = addinOutcome(response);
       const resultDigest = digest(response.payload);
-      const retained = response.payload.byteLength <= INLINE_JOURNAL_PAYLOAD_BYTES;
       this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
         status: classified.status,
-        payloadRetained: retained,
-        ...(retained ? { payload: response.message as unknown as JsonValue } : {}),
+        payloadRetained: true,
+        payload: {
+          late_result_status: classified.status,
+          raw_result_digest: resultDigest,
+        },
         resultDigest,
         ...(classified.status === "guarded" ? { guardedReason: classified.guardedReason } : {}),
       });
@@ -1324,47 +1637,81 @@ export class BridgeSimulator {
     _session: RegisteredBridgeSession,
     envelope: InvokeEnvelope,
     response: RawAddinResponse,
+    enrichment: AddinFailureStatusEvidence | null = null,
   ): BridgeInvocationOutcome {
     const classified = addinOutcome(response);
     const resultDigest = digest(response.payload);
-    const retained = response.payload.byteLength <= INLINE_JOURNAL_PAYLOAD_BYTES;
-    const journalOutcome: TerminalJournalOutcome = {
-      status: classified.status,
-      payloadRetained: retained,
-      ...(retained ? { payload: response.message as unknown as JsonValue } : { resultDigest }),
-      ...(retained && envelope.payload.verification !== null ? { resultDigest } : {}),
-      ...(classified.status === "guarded" ? { guardedReason: classified.guardedReason } : {}),
-    };
-    const terminal = this.#journal.recordTerminal(
-      envelope.rsid,
-      envelope.payload.invocation_id,
-      journalOutcome,
-    );
-    if (terminal.abandoned) {
-      return knownError("cancelled", "late add-in outcome retained after cancellation", {
+    if (classified.status === "failed") {
+      const classifiedFailure = addinFailureClass(response);
+      const enrichableFailure = classifiedFailure.faultClass === "revit_api" ||
+        classifiedFailure.faultClass === "revit_timeout";
+      const failure = enrichment?.state === "reachable_busy" && enrichableFailure
+        ? { faultClass: "revit_busy" as const, message: classifiedFailure.message, retryable: true }
+        : enrichment?.state === "unreachable" && enrichableFailure
+          ? { faultClass: "addin_unreachable" as const, message: classifiedFailure.message, retryable: true }
+          : classifiedFailure;
+      const payload: JsonValue = {
+        fault_class: failure.faultClass,
+        message: failure.message,
+      };
+      const terminal = this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
+        status: "failed",
+        payloadRetained: true,
+        payload,
+        resultDigest,
+      });
+      if (terminal.abandoned) {
+        return knownError("cancelled", "late add-in failure retained after cancellation", {
+          addinContacted: true,
+        });
+      }
+      return knownError(failure.faultClass, failure.message, {
+        retryable: failure.retryable,
         addinContacted: true,
       });
     }
-    if (classified.status === "failed") {
-      return knownError("revit_api", "add-in returned a failure outcome", { addinContacted: true });
-    }
 
-    const fixtureArtifacts = this.#fixtureArtifacts(classified.result);
     let artifactCarrier: ArtifactCarrier | null = null;
     let result = classified.result;
     let partials: readonly Extract<RbpPartial, { kind: "chunk" }>[] = [];
-    if (fixtureArtifacts !== null) {
-      artifactCarrier = this.#spool.retain(envelope.payload.invocation_id, fixtureArtifacts);
-      result = { files: artifactCarrier.result.artifacts } as unknown as JsonValue;
-      partials = artifactCarrier.partials;
-    } else {
-      const bytes = Buffer.from(canonicalizeJson(classified.result), "utf8");
-      if (bytes.byteLength > MAX_RESULT_BYTES) {
-        return knownError("oversize", "result exceeds 32 MiB", { addinContacted: true });
-      }
-      if (bytes.byteLength > INLINE_JOURNAL_PAYLOAD_BYTES) {
+    try {
+      const fixtureArtifacts = this.#fixtureArtifacts(classified.result);
+      if (fixtureArtifacts?.kind === "inline") {
+        artifactCarrier = this.#spool.retain(
+          envelope.payload.invocation_id,
+          fixtureArtifacts.inputs,
+          this.#limits.maxPartialBytes,
+        );
+        result = {
+          ...fixtureArtifacts.source,
+          files: artifactCarrier.result.artifacts,
+        } as unknown as JsonValue;
+        this.#assertArtifactResultLimit(result, artifactCarrier);
+        partials = artifactCarrier.partials;
+      } else if (fixtureArtifacts?.kind === "paths") {
+        artifactCarrier = this.#spool.captureDeclaredPaths(
+          envelope.payload.invocation_id,
+          fixtureArtifacts.paths,
+          this.#limits.maxPartialBytes,
+        );
+        result = {
+          ...fixtureArtifacts.source,
+          files: artifactCarrier.result.artifacts,
+        } as unknown as JsonValue;
+        this.#assertArtifactResultLimit(result, artifactCarrier);
+        partials = artifactCarrier.partials;
+      } else {
+        const bytes = Buffer.from(canonicalizeJson(classified.result), "utf8");
+        if (bytes.byteLength > this.#limits.maxResultBytes) {
+          throw new RangeError(`result exceeds negotiated ${this.#limits.maxResultBytes} byte limit`);
+        }
+        if (bytes.byteLength > this.#limits.maxPartialBytes) {
         const chunks: Extract<RbpPartial, { kind: "chunk" }>[] = [];
-        for (let offset = 0, chunkIndex = 0; offset < bytes.byteLength; offset += 1_048_576, chunkIndex += 1) {
+          for (
+            let offset = 0, chunkIndex = 0;
+            offset < bytes.byteLength;
+            offset += this.#limits.maxPartialBytes, chunkIndex += 1
+          ) {
           chunks.push({
             kind: "chunk",
             invocation_id: envelope.payload.invocation_id,
@@ -1372,11 +1719,44 @@ export class BridgeSimulator {
             chunk_index: chunkIndex,
             encoding: "base64",
             content_type: "application/json",
-            data: bytes.subarray(offset, offset + 1_048_576).toString("base64"),
+              data: bytes.subarray(offset, offset + this.#limits.maxPartialBytes).toString("base64"),
           });
         }
         partials = chunks;
+        }
       }
+    } catch (error) {
+      if (artifactCarrier !== null) this.#spool.expire(artifactCarrier);
+      const message = error instanceof Error ? error.message.slice(0, 240) : "artifact/result validation failed";
+      const faultClass = error instanceof RangeError ? "oversize" : "parameter";
+      const payload: JsonValue = { fault_class: faultClass, message };
+      this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
+        status: "failed",
+        payloadRetained: true,
+        payload,
+        resultDigest,
+      });
+      return knownError(faultClass, message, { addinContacted: true });
+    }
+
+    const retainedPayload = {
+      bridge_result: result,
+      partials,
+      ...(artifactCarrier === null ? {} : { artifact_carrier: artifactCarrier }),
+    } as unknown as JsonValue;
+    const retained = Buffer.byteLength(canonicalizeJson(retainedPayload), "utf8") <= INLINE_JOURNAL_PAYLOAD_BYTES;
+    const terminal = this.#journal.recordTerminal(envelope.rsid, envelope.payload.invocation_id, {
+      status: classified.status,
+      payloadRetained: retained,
+      ...(retained ? { payload: retainedPayload } : {}),
+      resultDigest,
+      ...(classified.status === "guarded" ? { guardedReason: classified.guardedReason } : {}),
+    });
+    if (terminal.abandoned) {
+      if (artifactCarrier !== null) this.#spool.expire(artifactCarrier);
+      return knownError("cancelled", "late add-in outcome retained after cancellation", {
+        addinContacted: true,
+      });
     }
     return {
       kind: "result",
@@ -1394,23 +1774,53 @@ export class BridgeSimulator {
     };
   }
 
-  #fixtureArtifacts(result: JsonValue): readonly ArtifactInput[] | null {
+  #fixtureArtifacts(result: JsonValue):
+    | {
+        readonly kind: "inline";
+        readonly inputs: readonly ArtifactInput[];
+        readonly source: JsonObject;
+      }
+    | {
+        readonly kind: "paths";
+        readonly paths: readonly { readonly path: string; readonly contentType: string }[];
+        readonly source: JsonObject;
+      }
+    | null {
     if (!isObject(result) || !Array.isArray(result.files) || result.files.length === 0) return null;
     const inputs: ArtifactInput[] = [];
+    const paths: Array<{ readonly path: string; readonly contentType: string }> = [];
     for (const entry of result.files) {
-      if (
-        !isObject(entry) ||
-        typeof entry.fileName !== "string" ||
-        typeof entry.contentType !== "string" ||
-        typeof entry.contentBase64 !== "string"
-      ) {
-        return null;
+      if (!isObject(entry) || typeof entry.contentType !== "string") {
+        throw new Error("declared artifact member has an invalid shape");
       }
+      if (typeof entry.path === "string" && !owns(entry, "fileName") && !owns(entry, "contentBase64")) {
+        if (inputs.length > 0) throw new Error("declared artifact members cannot mix path and inline forms");
+        paths.push({ path: entry.path, contentType: entry.contentType });
+        continue;
+      }
+      if (
+        typeof entry.fileName !== "string" ||
+        typeof entry.contentBase64 !== "string" ||
+        owns(entry, "path")
+      ) throw new Error("declared artifact member has an invalid shape");
+      if (paths.length > 0) throw new Error("declared artifact members cannot mix path and inline forms");
       const bytes = Buffer.from(entry.contentBase64, "base64");
-      if (bytes.toString("base64") !== entry.contentBase64) throw new Error("fixture artifact Base64 is not canonical");
+      if (bytes.toString("base64") !== entry.contentBase64) {
+        throw new Error("fixture artifact Base64 is not canonical");
+      }
       inputs.push({ filename: entry.fileName, contentType: entry.contentType, bytes });
     }
-    return inputs;
+    const source = structuredClone(result);
+    delete source.files;
+    return paths.length > 0 ? { kind: "paths", paths, source } : { kind: "inline", inputs, source };
+  }
+
+  #assertArtifactResultLimit(result: JsonValue, carrier: ArtifactCarrier): void {
+    const structuredBytes = Buffer.byteLength(canonicalizeJson(result), "utf8");
+    const artifactBytes = carrier.descriptors.reduce((sum, descriptor) => sum + descriptor.total_size, 0);
+    if (structuredBytes + artifactBytes > this.#limits.maxResultBytes) {
+      throw new RangeError(`result exceeds negotiated ${this.#limits.maxResultBytes} byte limit`);
+    }
   }
 
   #replayOutcome(
@@ -1419,8 +1829,21 @@ export class BridgeSimulator {
     verificationHoldId: string | null,
   ): BridgeInvocationOutcome {
     if (outcome.status === "failed" || outcome.status === "cancelled") {
-      return knownError(outcome.status === "cancelled" ? "cancelled" : "revit_api", "terminal journal outcome replay", {
+      const payload = isObject(outcome.payload) ? outcome.payload : {};
+      const retainedClass = typeof payload.fault_class === "string" ? payload.fault_class : "revit_api";
+      const allowed = new Set([
+        "protocol", "auth", "policy", "unsupported", "parameter", "environment", "revit_busy",
+        "revit_timeout", "revit_api", "addin_unreachable", "journal_indeterminate", "oversize", "cancelled",
+      ]);
+      const faultClass = outcome.status === "cancelled"
+        ? "cancelled"
+        : allowed.has(retainedClass)
+          ? retainedClass as Extract<BridgeInvocationOutcome, { kind: "error" }>["faultClass"]
+          : "revit_api";
+      const message = typeof payload.message === "string" ? payload.message : "terminal journal outcome replay";
+      return knownError(faultClass, message, {
         replayed: true,
+        retryable: faultClass === "environment" || faultClass === "revit_busy" || faultClass === "revit_timeout" || faultClass === "addin_unreachable",
       });
     }
     if (!outcome.payloadRetained) {
@@ -1439,8 +1862,19 @@ export class BridgeSimulator {
       };
     }
     const payload = outcome.payload;
-    const message = isObject(payload) ? payload : {};
-    const result = isObject(message.result) ? (message.result as unknown as JsonValue) : (payload as JsonValue);
+    const retained = isObject(payload) ? payload : {};
+    const legacyMessage = isObject(retained.result) ? retained : null;
+    const result = owns(retained, "bridge_result")
+      ? retained.bridge_result as JsonValue
+      : legacyMessage !== null
+        ? legacyMessage.result as JsonValue
+        : payload as JsonValue;
+    const artifactCarrier = isObject(retained.artifact_carrier)
+      ? retained.artifact_carrier as unknown as ArtifactCarrier
+      : null;
+    const partials = Array.isArray(retained.partials)
+      ? retained.partials as unknown as readonly Extract<RbpPartial, { kind: "chunk" }>[]
+      : artifactCarrier?.partials ?? [];
     return {
       kind: "result",
       status: outcome.status,
@@ -1448,11 +1882,11 @@ export class BridgeSimulator {
       ...(outcome.status === "guarded" ? { guardedReason: outcome.guardedReason } : {}),
       replayed: true,
       payloadOmitted: false,
-      resultDigest: outcome.resultDigest ?? makeParamsDigest(result),
+      resultDigest: outcome.resultDigest as string,
       lateAfterIndeterminate,
       verificationHoldId,
-      partials: [],
-      artifactCarrier: null,
+      partials,
+      artifactCarrier,
       addinContacted: false,
     };
   }
