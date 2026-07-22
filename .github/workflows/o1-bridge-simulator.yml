@@ -1,0 +1,36 @@
+name: O1 bridge simulator
+
+on:
+  pull_request:
+    paths:
+      - "packages/bridge-simulator/**"
+      - "packages/addin-loopback-fixture/**"
+      - "packages/protocol/**"
+      - "package.json"
+      - "package-lock.json"
+      - "tsconfig.base.json"
+      - "eslint.config.js"
+      - ".github/workflows/o1-bridge-simulator.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  bridge-simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check:generated
+      - run: npm run build --workspace @revagent/protocol
+      - run: npm run build --workspace @revagent/addin-loopback-fixture
+      - run: npm run lint --workspace @revagent/bridge-simulator
+      - run: npm run typecheck --workspace @revagent/bridge-simulator
+      - run: npm run test:determinism --workspace @revagent/bridge-simulator
+      - run: npm pack --dry-run --workspace @revagent/bridge-simulator
