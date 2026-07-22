@@ -32,6 +32,11 @@ The separate-process cold proof measured 55.708 ms for connect and 24.602 ms for
 - One MCP client connection was retained while 25 sequential `tools/list` calls were timed with `performance.now()`.
 - The automated integration test also checks 35 unique names and rejects a non-loopback Host header with HTTP 403.
 
+The spike temporarily carries `better-sqlite3`, `@e965/xlsx`, and `csv-parse` because the frozen legacy
+registration graph leaves package imports external. These are M0 proof-only dependencies: M2 must remove them
+from `@revagent/gateway` and the root lockfile, or reintroduce an equivalent dependency explicitly under the
+owning spatial/file-ingress design.
+
 Reproduce after `npm run build`:
 
 ```powershell
