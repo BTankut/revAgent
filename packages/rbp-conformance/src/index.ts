@@ -87,6 +87,7 @@ export {
   executeProductionCaseBothBindings,
 } from "./productionCaseRunner.js";
 export type { ProductionBindingExecution } from "./productionCaseRunner.js";
+export { CORE_PRODUCTION_ORACLES } from "./productionCaseOraclesCore.js";
 export { executeProductionConformanceRun } from "./productionSuiteRunner.js";
 export type {
   ProductionCaseBindingEvidence,

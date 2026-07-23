@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  CORE_PRODUCTION_ORACLES,
   canonicalManifest,
   evaluateSupervisedCaseExecutions,
   executeProductionCaseBothBindings,
@@ -41,37 +42,6 @@ function payload(record: ProcessObservationRecord): Record<string, unknown> {
   return record.payload as Record<string, unknown>;
 }
 
-function control(
-  records: readonly ProcessObservationRecord[],
-  stepId: string,
-): Record<string, unknown> | undefined {
-  return records
-    .filter(({ kind }) => kind === "control_result")
-    .map(payload)
-    .find((entry) => entry.stepId === stepId);
-}
-
-function snapshots(
-  records: readonly ProcessObservationRecord[],
-  kind: ProcessObservationRecord["kind"],
-): Array<Record<string, unknown>> {
-  return records.filter((record) => record.kind === kind).map(payload);
-}
-
-function hasBidirectionalWire(records: readonly ProcessObservationRecord[]): boolean {
-  const wire = records.filter(({ kind }) => kind === "wire_event");
-  return ["gateway_stub", "bridge_simulator"].every((componentId) =>
-    wire.some((record) => {
-      if (record.componentId !== componentId) return false;
-      const frame = payload(record).frame as Record<string, unknown>;
-      if (frame.kind === "parent_tcp_capture_composite") {
-        const gateway = frame.gateway as Record<string, unknown>;
-        return Number(gateway.bytes) > 0;
-      }
-      return Number(frame.bytes) > 0;
-    }));
-}
-
 function allBindings(
   records: readonly ProcessObservationRecord[],
   predicate: (binding: Binding, rows: readonly ProcessObservationRecord[]) => boolean,
@@ -82,55 +52,14 @@ function allBindings(
 
 function evaluator(caseId: "O1-C01" | "O1-C05"): ParentOwnedCaseEvaluator {
   const assertionIds = canonicalManifest.requiredAssertions[caseId]!.map(({ id }) => id);
-  const bindingPredicate = (binding: Binding, rows: readonly ProcessObservationRecord[]): boolean => {
-    const prefix = caseId.toLowerCase();
-    const open = control(rows, `${prefix}.open`);
-    const registration = control(rows, `${prefix}.register`);
-    const gateway = snapshots(rows, "gateway_snapshot").at(-1);
-    const bridge = snapshots(rows, "bridge_snapshot").at(-1);
-    const gatewaySessions = gateway?.sessions as Record<string, unknown> | undefined;
-    const bridgeSessions = bridge?.sessions as unknown[] | undefined;
-    const openResponse = open?.response as Record<string, unknown> | undefined;
-    const openResult = openResponse?.result as Record<string, unknown> | undefined;
-    const openTlsTrust = openResult?.testTlsTrust;
-    const bridgeTransport = bridge?.transport as Record<string, unknown> | undefined;
-    const bridgeTlsTrust = bridgeTransport?.testTlsTrust;
-    const tlsBound = binding === "wss"
-      ? openTlsTrust !== null &&
-        typeof openTlsTrust === "object" &&
-        bridgeTlsTrust !== null &&
-        typeof bridgeTlsTrust === "object" &&
-        JSON.stringify(openTlsTrust) === JSON.stringify(bridgeTlsTrust)
-      : openTlsTrust === null && bridgeTlsTrust === null;
-    const base =
-      open !== undefined &&
-      registration !== undefined &&
-      gatewaySessions !== undefined &&
-      Object.keys(gatewaySessions).length === 1 &&
-      Array.isArray(bridgeSessions) &&
-      bridgeSessions.length === 1 &&
-      tlsBound &&
-      hasBidirectionalWire(rows);
-    if (!base || binding !== rows[0]?.binding) return false;
-    if (caseId === "O1-C01") {
-      const response = open.response as Record<string, unknown>;
-      const result = response.result as Record<string, unknown>;
-      const helloAck = result.helloAck as Record<string, unknown>;
-      const helloPayload = helloAck.payload as Record<string, unknown>;
-      return helloPayload.protocol === 1 &&
-        Array.isArray(helloPayload.granted_capabilities) &&
-        helloPayload.granted_capabilities.length === 4;
-    }
-    const poll = control(rows, "o1-c05.poll-context");
-    const response = poll?.response as Record<string, unknown> | undefined;
-    const result = response?.result as Record<string, unknown> | undefined;
-    const sessions = Object.values(gatewaySessions);
-    const documents = (sessions[0] as Record<string, unknown> | undefined)?.documents;
-    return result?.pushed === true &&
-      Array.isArray(documents) &&
-      documents.some((document) =>
-        (document as Record<string, unknown>).document_id === "conformance-document");
-  };
+  const bindingPredicate = (binding: Binding, rows: readonly ProcessObservationRecord[]): boolean =>
+    binding === rows[0]?.binding && assertionIds.every((assertionId) =>
+      CORE_PRODUCTION_ORACLES.get(assertionId)!({
+        caseId,
+        binding,
+        assertion: canonicalManifest.requiredAssertions[caseId]!.find(({ id }) => id === assertionId)!,
+        observations: rows,
+      }));
   return {
     caseId,
     probes(records) {
@@ -138,8 +67,16 @@ function evaluator(caseId: "O1-C01" | "O1-C05"): ParentOwnedCaseEvaluator {
       return assertionIds.map((assertionId) => ({
         assertionId,
         observationIds: ids,
-        evaluate: (selected: readonly ProcessObservationRecord[]) =>
-          allBindings(selected, bindingPredicate),
+        evaluate: (selected: readonly ProcessObservationRecord[]) => {
+          const assertion = canonicalManifest.requiredAssertions[caseId]!.find(({ id }) => id === assertionId)!;
+          const oracle = CORE_PRODUCTION_ORACLES.get(assertionId)!;
+          return allBindings(selected, (binding, rows) => oracle({
+            caseId,
+            binding,
+            assertion,
+            observations: rows,
+          }));
+        },
       }));
     },
     bindingPassed: bindingPredicate,
