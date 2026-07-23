@@ -899,6 +899,13 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         invocationId: invocationRef("O1-C17", "cancelled"),
         reason: "user_requested",
       } })),
+      harness("o1-c17.await-cancel-accepted", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/invocations/0/abandoned",
+        operator: "equals",
+        expected: true,
+        timeoutMs: 5_000,
+      })),
       withExecution(
         fixture("o1-c17.release", "release_stall", args({
           requestId: invocationRef("O1-C17", "cancelled"),

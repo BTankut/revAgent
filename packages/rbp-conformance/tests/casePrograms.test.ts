@@ -258,6 +258,19 @@ describe("exact forty-case control and observation catalog", () => {
       mode: "async_start",
       handle: "o1-c17.dispatch",
     });
+    expect(c17.steps.find(({ stepId }) =>
+      stepId === "o1-c17.await-cancel-accepted")).toMatchObject({
+        action: "await_condition",
+        arguments: {
+          common: {
+            source: "bridge.snapshot_evidence",
+            jsonPointer: "/invocations/0/abandoned",
+            operator: "equals",
+            expected: true,
+            timeoutMs: 5_000,
+          },
+        },
+      });
     expect(c17.steps.find(({ stepId }) => stepId === "o1-c17.release")?.execution).toEqual({
       mode: "async_join",
       handles: ["o1-c17.dispatch"],
