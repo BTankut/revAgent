@@ -45,6 +45,9 @@ const realClock: SoakClock = {
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
+export const ONE_HOUR_SOAK_DURATION_MS = 3_600_000 as const;
+export const ONE_HOUR_SOAK_CYCLE_INTERVAL_MS = 5_000 as const;
+
 function exactObservation(value: SoakCycleObservation): void {
   const expected = ["controlRoundTrips", "heartbeatAcks", "journalPending", "proxyChurns", "reconnects"];
   const actual = Object.keys(value).sort();
@@ -72,13 +75,39 @@ export async function runReconnectSoak(input: {
   clock?: SoakClock;
 }): Promise<{ report: SoakReport; reportPath: string }> {
   const clock = input.clock ?? realClock;
-  const requestedDurationMs = input.mode === "one_hour" ? 3_600_000 : input.requestedDurationMs ?? 60_000;
+  if (
+    input.mode === "one_hour" &&
+    (
+      input.requestedDurationMs !== undefined ||
+      input.cycleIntervalMs !== undefined ||
+      input.sampleIntervalMs !== undefined
+    )
+  ) {
+    throw new Error(
+      "one_hour soak duration and sampling cadence are canonical and cannot be overridden",
+    );
+  }
+  const requestedDurationMs = input.mode === "one_hour"
+    ? ONE_HOUR_SOAK_DURATION_MS
+    : input.requestedDurationMs ?? 60_000;
   if (input.mode === "smoke" && (requestedDurationMs < 30_000 || requestedDurationMs > 600_000)) {
     throw new Error("smoke soak duration must be from 30 seconds through 10 minutes");
   }
-  const cycleIntervalMs = input.cycleIntervalMs ?? 5_000;
-  const sampleIntervalMs = input.sampleIntervalMs ?? 1_000;
-  if (cycleIntervalMs < 100 || sampleIntervalMs < 100) throw new Error("soak intervals must be at least 100 ms");
+  const cycleIntervalMs = input.mode === "one_hour"
+    ? ONE_HOUR_SOAK_CYCLE_INTERVAL_MS
+    : input.cycleIntervalMs ?? 5_000;
+  if (
+    input.sampleIntervalMs !== undefined &&
+    input.sampleIntervalMs !== cycleIntervalMs
+  ) {
+    throw new Error(
+      "per-cycle soak sampling requires sampleIntervalMs to equal cycleIntervalMs",
+    );
+  }
+  const sampleIntervalMs = cycleIntervalMs;
+  if (cycleIntervalMs < 100) {
+    throw new Error("soak intervals must be at least 100 ms");
+  }
   const monotonicNow = (): number => clock.monotonicMs?.() ?? clock.nowMs();
   const startedWallMs = clock.nowMs();
   const startedMonotonicMs = monotonicNow();
@@ -118,9 +147,10 @@ export async function runReconnectSoak(input: {
         break;
       }
       const sample = await input.adapter.sampleResources();
+      const sampleMonotonicMs = monotonicNow();
       const resourceSample: ResourceSample = {
         index: samples.length,
-        offsetMs: elapsedMs(),
+        offsetMs: Math.floor(sampleMonotonicMs - startedMonotonicMs),
         ...sample,
       };
       samples.push(resourceSample);
@@ -130,7 +160,7 @@ export async function runReconnectSoak(input: {
         mode: input.mode,
         cycle,
         binding,
-        at: wallAt(monotonicNow()),
+        at: wallAt(sampleMonotonicMs),
         ...observation,
         resourceSample,
       });

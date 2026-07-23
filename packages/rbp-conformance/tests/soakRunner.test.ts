@@ -32,7 +32,7 @@ describe("executable reconnect/proxy-churn soak runner", () => {
         runId: "smoke-test",
         requestedDurationMs: 30_000,
         cycleIntervalMs: 4_000,
-        sampleIntervalMs: 1_000,
+        sampleIntervalMs: 4_000,
         artifactRoot: root,
         source: { repository: "revAgent", commitSha, treeSha, dirty: false },
         components: canonicalManifest.requiredComponents.map((component, index) => ({
@@ -59,6 +59,8 @@ describe("executable reconnect/proxy-churn soak runner", () => {
       });
       expect(report.status).toBe("passed");
       expect(report.actualDurationMs).toBe(30_000);
+      expect(report.resources.sampleIntervalMs).toBe(4_000);
+      expect(report.resources.samples).toHaveLength(report.cycles.length);
       expect(closed).toBe(true);
       expect(report.cycles.map(({ binding }) => binding)).toEqual(expect.arrayContaining(["wss", "streamable_http_sse"]));
       expect(evaluatePassingSoak(report, { verifyArtifactFiles: true, artifactRoot: root }).ok).toBe(true);

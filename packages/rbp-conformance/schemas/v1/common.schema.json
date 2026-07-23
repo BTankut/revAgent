@@ -111,10 +111,11 @@
               "dependencyName": { "type": "string", "minLength": 1 },
               "dependencyRange": { "type": "string", "minLength": 1 },
               "kind": { "enum": ["dependency", "optional_dependency", "peer_dependency", "optional_peer_dependency"] },
-              "status": { "enum": ["installed", "workspace", "absent_optional"] },
+              "status": { "enum": ["installed", "workspace", "node_builtin", "absent_optional"] },
               "resolutionPath": {
                 "anyOf": [
                   { "$ref": "#/definitions/relativePath" },
+                  { "type": "string", "pattern": "^node:[A-Za-z0-9_./-]+$" },
                   { "type": "null" }
                 ]
               },
@@ -130,7 +131,29 @@
                   { "type": "null" }
                 ]
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "status": { "const": "node_builtin" } } },
+                "then": {
+                  "properties": {
+                    "resolutionPath": { "type": "string", "pattern": "^node:[A-Za-z0-9_./-]+$" },
+                    "resolvedPackagePath": { "type": "null" },
+                    "resolvedVersion": { "type": "null" }
+                  }
+                }
+              },
+              {
+                "if": { "properties": { "status": { "const": "absent_optional" } } },
+                "then": {
+                  "properties": {
+                    "resolutionPath": { "type": "null" },
+                    "resolvedPackagePath": { "type": "null" },
+                    "resolvedVersion": { "type": "null" }
+                  }
+                }
+              }
+            ]
           }
         },
         "packages": {
@@ -176,10 +199,11 @@
               "dependencyName": { "type": "string", "minLength": 1 },
               "dependencyRange": { "type": "string", "minLength": 1 },
               "kind": { "enum": ["dependency", "optional_dependency", "peer_dependency", "optional_peer_dependency", "dev_dependency"] },
-              "status": { "enum": ["installed", "workspace", "absent_optional"] },
+              "status": { "enum": ["installed", "workspace", "node_builtin", "absent_optional"] },
               "resolutionPath": {
                 "anyOf": [
                   { "$ref": "#/definitions/relativePath" },
+                  { "type": "string", "pattern": "^node:[A-Za-z0-9_./-]+$" },
                   { "type": "null" }
                 ]
               },
@@ -195,7 +219,29 @@
                   { "type": "null" }
                 ]
               }
-            }
+            },
+            "allOf": [
+              {
+                "if": { "properties": { "status": { "const": "node_builtin" } } },
+                "then": {
+                  "properties": {
+                    "resolutionPath": { "type": "string", "pattern": "^node:[A-Za-z0-9_./-]+$" },
+                    "resolvedPackagePath": { "type": "null" },
+                    "resolvedVersion": { "type": "null" }
+                  }
+                }
+              },
+              {
+                "if": { "properties": { "status": { "const": "absent_optional" } } },
+                "then": {
+                  "properties": {
+                    "resolutionPath": { "type": "null" },
+                    "resolvedPackagePath": { "type": "null" },
+                    "resolvedVersion": { "type": "null" }
+                  }
+                }
+              }
+            ]
           }
         },
         "packages": {

@@ -77,11 +77,13 @@ function toolchainIdentity(
   repoRoot: string,
   runtimeNodeExecutable: string,
   npmExecutable: string,
+  gitExecutable: string,
 ): ProductionToolchainIdentity {
   return resolveProductionToolchainIdentity(repoRoot, {
     buildNodeExecutable: process.execPath,
     runtimeNodeExecutable,
     npmExecutable,
+    gitExecutable,
   });
 }
 
@@ -98,6 +100,7 @@ function assertToolchainUnchanged(
 function runBoundNodeChild(input: {
   repoRoot: string;
   npmExecutable: string;
+  gitExecutable: string;
   runtimeNodeExecutable: string;
   expectedToolchain: ProductionToolchainIdentity;
   args: readonly string[];
@@ -110,6 +113,7 @@ function runBoundNodeChild(input: {
       input.repoRoot,
       input.runtimeNodeExecutable,
       input.npmExecutable,
+      input.gitExecutable,
     ),
     `before ${input.label}`,
   );
@@ -135,6 +139,7 @@ function runBoundNodeChild(input: {
       input.repoRoot,
       input.runtimeNodeExecutable,
       input.npmExecutable,
+      input.gitExecutable,
     ),
     `after ${input.label}`,
   );
@@ -144,6 +149,7 @@ function runBoundNodeChild(input: {
 function runWorkspaceBuild(input: {
   repoRoot: string;
   npmExecutable: string;
+  gitExecutable: string;
   runtimeNodeExecutable: string;
   expectedToolchain: ProductionToolchainIdentity;
   expectedBuildGeneratorDependencies: InstalledBuildGeneratorDependencyClosure;
@@ -336,16 +342,21 @@ export function prepareProductionExecutionPlan(input: {
   runId: string;
   sequence: 1 | 2 | 3;
   nodeExecutable?: string;
+  gitExecutable: string;
 }): ExecutionPlan {
   const runtimeNodeExecutable = input.nodeExecutable ?? process.execPath;
   if (!path.isAbsolute(runtimeNodeExecutable)) {
     throw new Error("canonical production runtime Node executable must be absolute");
+  }
+  if (!path.isAbsolute(input.gitExecutable)) {
+    throw new Error("canonical production Git executable must be absolute");
   }
   const npmExecutable = npmEntrypoint();
   const expectedToolchain = toolchainIdentity(
     input.repoRoot,
     runtimeNodeExecutable,
     npmExecutable,
+    input.gitExecutable,
   );
   const expectedBuildGeneratorDependencies =
     resolveInstalledBuildGeneratorDependencyClosure(
@@ -368,6 +379,7 @@ export function prepareProductionExecutionPlan(input: {
         workspace,
         repoRoot: input.repoRoot,
         npmExecutable,
+        gitExecutable: input.gitExecutable,
         runtimeNodeExecutable,
         expectedToolchain,
         expectedBuildGeneratorDependencies,
@@ -391,6 +403,7 @@ export function prepareProductionExecutionPlan(input: {
     buildNodeExecutable: process.execPath,
     runtimeNodeExecutable,
     npmExecutable,
+    gitExecutable: input.gitExecutable,
   });
   const plan = buildProductionExecutionPlan({
     ...input,

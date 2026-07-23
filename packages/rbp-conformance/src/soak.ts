@@ -4,6 +4,7 @@ import { loadConfinedEvidenceFile } from "./evidence.js";
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
 import { resourceProfileIssues } from "./resourceMetrics.js";
 import { validateSchema } from "./schemas.js";
+import { ONE_HOUR_SOAK_CYCLE_INTERVAL_MS } from "./soakRunner.js";
 import { stableJson } from "./stableJson.js";
 import type {
   LeakCounters,
@@ -84,6 +85,42 @@ function verifyMetrics(report: SoakReport, artifactRoot: string, issues: Validat
     }
     rows.push(row as SoakMetricRecord);
   }
+  if (
+    rows.length !== report.cycles.length ||
+    rows.length !== report.resources.samples.length
+  ) {
+    issue(
+      issues,
+      "/artifacts/soak_metrics",
+      "soak.sample_cardinality",
+      "retained metrics, churn cycles, and resource samples must be one-to-one",
+    );
+  }
+  rows.forEach((row, index) => {
+    const sample = report.resources.samples[index];
+    if (
+      sample === undefined ||
+      row.cycle !== index + 1 ||
+      stableJson(row.resourceSample) !== stableJson(sample)
+    ) {
+      issue(
+        issues,
+        `/artifacts/soak_metrics/line/${index + 1}`,
+        "soak.sample_mismatch",
+        "retained metric sample must exactly match its same-index report sample",
+      );
+      return;
+    }
+    const expectedAt = Date.parse(report.startedAt) + sample.offsetMs;
+    if (Date.parse(row.at) !== expectedAt) {
+      issue(
+        issues,
+        `/artifacts/soak_metrics/line/${index + 1}/at`,
+        "soak.sample_timestamp",
+        "retained metric timestamp must equal its observed monotonic sample offset",
+      );
+    }
+  });
   report.cycles.forEach((cycle, index) => {
     const matches = rows.filter((row) => row.cycle === cycle.cycle && row.binding === cycle.binding);
     if (matches.length < 1) {
@@ -147,6 +184,47 @@ export function validateSoakReport(
     const cycleFinish = Date.parse(cycle.finishedAt);
     if (cycleStart < started || cycleFinish > finished || cycleFinish < cycleStart) {
       issue(issues, `/cycles/${index}`, "soak.cycle_time", "cycle interval must stay inside the soak interval");
+    }
+  });
+  if (report.resources.samples.length !== report.cycles.length) {
+    issue(
+      issues,
+      "/resources/samples",
+      "soak.sample_cardinality",
+      "soak sampling is per-cycle and requires exactly one sample per churn cycle",
+    );
+  }
+  if (
+    report.mode === "one_hour" &&
+    report.resources.sampleIntervalMs !== ONE_HOUR_SOAK_CYCLE_INTERVAL_MS
+  ) {
+    issue(
+      issues,
+      "/resources/sampleIntervalMs",
+      "soak.sample_interval",
+      "one_hour soak must use the canonical fixed per-cycle sample cadence",
+    );
+  }
+  report.resources.samples.forEach((sample, index) => {
+    if (sample.offsetMs < 0 || sample.offsetMs > report.actualDurationMs) {
+      issue(
+        issues,
+        `/resources/samples/${index}/offsetMs`,
+        "soak.sample_time",
+        "observed resource sample offset must stay inside the soak interval",
+      );
+    }
+    if (
+      index > 0 &&
+      sample.offsetMs - report.resources.samples[index - 1]!.offsetMs <
+        report.resources.sampleIntervalMs
+    ) {
+      issue(
+        issues,
+        `/resources/samples/${index}/offsetMs`,
+        "soak.sample_cadence",
+        "observed per-cycle samples are closer than the recorded minimum cadence",
+      );
     }
   });
   issues.push(...resourceProfileIssues(report.resources, leakSummary(report), "/resources"));

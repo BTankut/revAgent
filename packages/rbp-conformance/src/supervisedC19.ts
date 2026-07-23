@@ -13,7 +13,10 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./processHarness.js";
-import { assertProductionRuntimeLaunchCurrent } from "./productionExecutionPlan.js";
+import {
+  assertProductionRuntimeLaunchCurrent,
+  canonicalProductionComponentVersion,
+} from "./productionExecutionPlan.js";
 import { createUnexecutedRunReport } from "./scaffold.js";
 import { validateSchema } from "./schemas.js";
 import { SecureEvidenceStore } from "./secureEvidenceStore.js";
@@ -174,7 +177,11 @@ function observedIdentity(component: PlannedComponent, command: ProcessCommandDe
   if (digest !== component.expectedIdentity.executableSha256) {
     throw new Error(`${component.id} executable digest does not match the execution plan`);
   }
-  return { ...component.expectedIdentity };
+  return {
+    ...component.expectedIdentity,
+    version: canonicalProductionComponentVersion(cwd, component.id),
+    executableSha256: digest,
+  };
 }
 
 async function stopAfterLaunchFailure(

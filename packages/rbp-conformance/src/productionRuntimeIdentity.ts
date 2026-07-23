@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { builtinModules } from "node:module";
 import {
   existsSync,
   lstatSync,
@@ -78,7 +79,7 @@ export interface RuntimeDependencyResolution {
   dependencyName: string;
   dependencyRange: string;
   kind: RuntimeDependencyKind;
-  status: "installed" | "workspace" | "absent_optional";
+  status: "installed" | "workspace" | "node_builtin" | "absent_optional";
   resolutionPath: string | null;
   resolvedPackagePath: string | null;
   resolvedVersion: string | null;
@@ -524,6 +525,7 @@ interface PendingDependencyResolution {
   requesterName: string;
   requesterPath: string;
   declaration: DependencyDeclaration;
+  builtinSpecifier: `node:${string}` | undefined;
   candidate: { lexical: string; resolved: string } | undefined;
 }
 
@@ -659,6 +661,21 @@ function orderedDependencyResolutions(
     ));
 }
 
+const NODE_BUILTIN_NAMES = new Set(
+  builtinModules.map((specifier) =>
+    specifier.startsWith("node:") ? specifier.slice("node:".length) : specifier),
+);
+
+export function canonicalNodeBuiltinSpecifier(
+  dependencyName: string,
+): `node:${string}` | undefined {
+  const name = dependencyName.startsWith("node:")
+    ? dependencyName.slice("node:".length)
+    : dependencyName;
+  if (!NODE_BUILTIN_NAMES.has(name)) return undefined;
+  return `node:${name}`;
+}
+
 function resolveInstalledDependencyGraph(input: {
   repoRoot: string;
   rootPackagePaths: readonly string[];
@@ -701,18 +718,25 @@ function resolveInstalledDependencyGraph(input: {
     const declarations = input.declarationOverrides?.get(requesterRoot) ??
       declarationRows(requester.value);
     for (const declaration of declarations) {
-      const candidate = dependencyPackageRoot(
-        repoRoot,
-        requesterRoot,
+      const builtinSpecifier = canonicalNodeBuiltinSpecifier(
         declaration.dependencyName,
       );
+      const candidate = builtinSpecifier === undefined
+        ? dependencyPackageRoot(
+          repoRoot,
+          requesterRoot,
+          declaration.dependencyName,
+        )
+        : undefined;
       pending.push({
         requesterRoot,
         requesterName: requester.name,
         requesterPath,
         declaration,
+        builtinSpecifier,
         candidate,
       });
+      if (builtinSpecifier !== undefined) continue;
       if (candidate === undefined) continue;
       const resolvedRoot = candidate.resolved;
       const resolved = exactPackageManifest(resolvedRoot);
@@ -751,6 +775,42 @@ function resolveInstalledDependencyGraph(input: {
   const resolutions: BuildDependencyResolution[] = [];
   pending.forEach((entry, index) => {
     const probe = probes[index]!;
+    if (entry.builtinSpecifier !== undefined) {
+      const resolvedSpecifiers = [probe.module, probe.esm]
+        .filter(
+          (
+            value,
+          ): value is {
+            status: "resolved";
+            resolvedPath: string;
+          } => value.status === "resolved" && value.resolvedPath !== undefined,
+        )
+        .map(({ resolvedPath }) =>
+          canonicalNodeBuiltinSpecifier(resolvedPath));
+      if (
+        resolvedSpecifiers.length === 0 ||
+        resolvedSpecifiers.some(
+          (specifier) => specifier !== entry.builtinSpecifier,
+        )
+      ) {
+        throw new Error(
+          `${entry.requesterName} Node builtin resolution changed for ` +
+          entry.declaration.dependencyName,
+        );
+      }
+      resolutions.push({
+        requesterName: entry.requesterName,
+        requesterPath: entry.requesterPath,
+        dependencyName: entry.declaration.dependencyName,
+        dependencyRange: entry.declaration.dependencyRange,
+        kind: entry.declaration.kind,
+        status: "node_builtin",
+        resolutionPath: entry.builtinSpecifier,
+        resolvedPackagePath: null,
+        resolvedVersion: null,
+      });
+      return;
+    }
     const selected = probe.module.status === "resolved"
       ? probe.module.resolvedPath
       : probe.esm.status === "resolved"

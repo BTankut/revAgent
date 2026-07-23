@@ -35,6 +35,7 @@ import {
   type JsonValue,
 } from "./processHarness.js";
 import {
+  canonicalProductionComponentVersion,
   assertProductionRuntimeLaunchCurrent,
   boundProductionPowerShellExecutable,
 } from "./productionExecutionPlan.js";
@@ -352,7 +353,11 @@ function observedIdentity(
   if (executableSha256 !== component.expectedIdentity.executableSha256) {
     throw new Error(`${component.id} executable digest does not match the execution plan`);
   }
-  return { ...component.expectedIdentity };
+  return {
+    ...component.expectedIdentity,
+    version: canonicalProductionComponentVersion(cwd, component.id),
+    executableSha256,
+  };
 }
 
 async function stopAfterLaunchFailure(

@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js";
 import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
@@ -12,6 +12,8 @@ import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
 import {
+  assertProductionCliHarnessBound,
+  assertProductionCliModulePath,
   assertProductionControllerRuntimeCurrent,
   assertProductionExecutionPlanCurrent,
 } from "./productionExecutionPlan.js";
@@ -35,14 +37,50 @@ import {
   validateRunReportStructure,
 } from "./validator.js";
 
+const CLI_MODULE_FILE = fileURLToPath(import.meta.url);
+const CLI_ENTRY_FILE =
+  process.argv[1] === undefined ? undefined : path.resolve(process.argv[1]);
+const isDirectInvocation =
+  CLI_ENTRY_FILE !== undefined &&
+  (
+    pathToFileURL(CLI_ENTRY_FILE).href === import.meta.url ||
+    (() => {
+      try {
+        return path.relative(
+          realpathSync(CLI_ENTRY_FILE),
+          realpathSync(CLI_MODULE_FILE),
+        ) === "";
+      } catch {
+        return false;
+      }
+    })()
+  );
+
+function assertDirectProductionCliPath(repoRoot: string): void {
+  if (isDirectInvocation && CLI_ENTRY_FILE !== undefined) {
+    assertProductionCliModulePath(repoRoot, CLI_ENTRY_FILE);
+    assertProductionCliModulePath(repoRoot, CLI_MODULE_FILE);
+  }
+}
+
+function assertDirectProductionCliBound(
+  plan: ExecutionPlan,
+  repoRoot: string,
+): void {
+  if (isDirectInvocation) {
+    assertProductionCliHarnessBound(plan, repoRoot, CLI_MODULE_FILE);
+  }
+}
+
 function usage(): never {
   throw new Error(
     [
       "Usage:",
-      "  rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> [--repo-root <path>] [--node-executable <path>]",
+      "  rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> --git-executable <absolute path> [--repo-root <path>] [--node-executable <path>]",
       "  rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
-      "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
+      "  rbp-conformance run-soak <execution-plan.json> --mode smoke [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
+      "  rbp-conformance run-soak <execution-plan.json> --mode one_hour [--repo-root <path>] [--artifact-root <path>]",
       "  rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
@@ -74,6 +112,7 @@ export async function runPrepareProductionAsyncCli(
   let runId: string | undefined;
   let sequence: 1 | 2 | 3 | undefined;
   let nodeExecutable: string | undefined;
+  let gitExecutable: string | undefined;
   for (let index = 0; index < flags.length; index += 2) {
     const name = flags[index];
     const value = flags[index + 1];
@@ -86,19 +125,36 @@ export async function runPrepareProductionAsyncCli(
     ) {
       sequence = Number(value) as 1 | 2 | 3;
     } else if (name === "--node-executable") nodeExecutable = resolveFrom(cwd, value);
-    else usage();
+    else if (name === "--git-executable") {
+      if (gitExecutable !== undefined) {
+        throw new Error("--git-executable must be provided exactly once");
+      }
+      if (!path.isAbsolute(value)) {
+        throw new Error("--git-executable requires an absolute path");
+      }
+      gitExecutable = path.resolve(value);
+    } else usage();
   }
-  if (runId === undefined || sequence === undefined) usage();
+  if (
+    runId === undefined ||
+    sequence === undefined ||
+    gitExecutable === undefined
+  ) {
+    usage();
+  }
   const target = resolveFrom(cwd, planFile);
+  assertDirectProductionCliPath(repoRoot);
   assertCanonicalPlanTarget(repoRoot, target);
   const plan = prepareProductionExecutionPlan({
     repoRoot,
     runId,
     sequence,
+    gitExecutable,
     ...(nodeExecutable === undefined ? {} : { nodeExecutable }),
   });
   writeText(target, stableJson(plan), cwd);
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertDirectProductionCliBound(plan, repoRoot);
   process.stdout.write(`${stableJson({
     planPath: target,
     runId: plan.runId,
@@ -143,8 +199,10 @@ export async function runProductionAsyncCli(
     else if (name === "--seed") seed = value;
     else usage();
   }
+  assertDirectProductionCliPath(repoRoot);
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertDirectProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const result = await executeProductionConformanceRun({
     plan,
@@ -186,8 +244,10 @@ export async function runAsyncCli(args: string[], cwd: string = process.cwd()): 
     else if (name === "--seed") seed = value;
     else usage();
   }
+  assertDirectProductionCliPath(repoRoot);
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertDirectProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const result = await executeSupervisedC19Run({
     plan,
@@ -225,20 +285,30 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
     else usage();
   }
   if (mode === undefined) usage();
-  if (mode === "one_hour" && requestedDurationMs !== undefined) {
-    throw new Error("one_hour soak duration is fixed and does not accept --duration-ms");
+  if (
+    mode === "one_hour" &&
+    (requestedDurationMs !== undefined || cycleIntervalMs !== undefined)
+  ) {
+    throw new Error(
+      "one_hour soak duration and cycle cadence are fixed; " +
+      "--duration-ms and --cycle-interval-ms are forbidden",
+    );
   }
   if (requestedDurationMs !== undefined && !Number.isSafeInteger(requestedDurationMs)) usage();
   if (cycleIntervalMs !== undefined && !Number.isSafeInteger(cycleIntervalMs)) usage();
+  assertDirectProductionCliPath(repoRoot);
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertDirectProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const adapter = await createProductionReconnectSoakAdapter({ plan, repoRoot });
   const result = await runReconnectSoak({
     mode,
     runId: plan.runId,
     ...(requestedDurationMs === undefined ? {} : { requestedDurationMs }),
-    ...(cycleIntervalMs === undefined ? {} : { cycleIntervalMs }),
+    ...(mode === "smoke" && cycleIntervalMs !== undefined
+      ? { cycleIntervalMs }
+      : {}),
     artifactRoot,
     source: structuredClone(plan.source),
     components: plan.components.map((component) => ({
@@ -282,6 +352,34 @@ interface ProductionFinalEvidenceContext {
   aggregatePlans: [ExecutionPlan, ExecutionPlan, ExecutionPlan];
   soakPlan: ExecutionPlan;
   aggregateFile: string;
+}
+
+export function assertDistinctFinalExecutionPlanFiles(
+  planFiles: readonly [string, string, string, string],
+): void {
+  const planRealPaths = planFiles.map((planFile) => realpathSync(planFile));
+  if (
+    new Set(planRealPaths.map((planFile) => path.normalize(planFile))).size !==
+      4
+  ) {
+    throw new Error(
+      "final evidence requires four distinct execution-plan file realpaths",
+    );
+  }
+}
+
+export function assertFinalExecutionPlanIdentities(
+  aggregatePlans: readonly [ExecutionPlan, ExecutionPlan, ExecutionPlan],
+  soakPlan: ExecutionPlan,
+): void {
+  if (soakPlan.sequence !== 1) {
+    throw new Error("final one-hour soak execution plan must use sequence 1");
+  }
+  if (aggregatePlans.some(({ runId }) => runId === soakPlan.runId)) {
+    throw new Error(
+      "final one-hour soak runId must be distinct from all aggregate runIds",
+    );
+  }
 }
 
 function assertPlansShareExactCandidate(plans: readonly ExecutionPlan[]): void {
@@ -351,11 +449,13 @@ function productionValidationContext(
     index += 1;
   }
   if (repoRoot === undefined || planFiles.size !== planCount) usage();
+  assertDirectProductionCliPath(repoRoot);
   const plans = Array.from({ length: planCount }, (_, index) => {
     const planFile = planFiles.get(index + 1);
     if (planFile === undefined) usage();
     const plan = readJson(planFile, cwd) as ExecutionPlan;
     assertProductionExecutionPlanCurrent(plan, repoRoot);
+    assertDirectProductionCliBound(plan, repoRoot);
     assertProductionControllerRuntimeCurrent(plan);
     return plan;
   });
@@ -425,9 +525,18 @@ function productionFinalEvidenceContext(
   ) {
     usage();
   }
+  const planFiles = [
+    aggregatePlanFiles.get(1)!,
+    aggregatePlanFiles.get(2)!,
+    aggregatePlanFiles.get(3)!,
+    soakPlanFile,
+  ] as [string, string, string, string];
+  assertDistinctFinalExecutionPlanFiles(planFiles);
+  assertDirectProductionCliPath(repoRoot);
   const gatePlan = (planFile: string): ExecutionPlan => {
     const plan = readJson(planFile, cwd) as ExecutionPlan;
     assertProductionExecutionPlanCurrent(plan, repoRoot);
+    assertDirectProductionCliBound(plan, repoRoot);
     assertProductionControllerRuntimeCurrent(plan);
     return plan;
   };
@@ -440,6 +549,7 @@ function productionFinalEvidenceContext(
   const soakPlan = gatePlan(soakPlanFile);
   assertPlansShareExactCandidate(aggregatePlans);
   assertPlansShareExactCandidate([...aggregatePlans, soakPlan]);
+  assertFinalExecutionPlanIdentities(aggregatePlans, soakPlan);
   const source = aggregatePlans[0].source;
   if (
     options.expectedCommitSha !== undefined &&
@@ -496,6 +606,16 @@ function assertSoakMatchesPlan(
     stableJson(report.components) !== stableJson(expectedComponents)
   ) {
     throw new Error("soak report does not match its exact gated execution plan");
+  }
+}
+
+export function assertFinalSoakReportMode(
+  report: Pick<SoakReport, "mode">,
+): void {
+  if (report.mode !== "one_hour") {
+    throw new Error(
+      "final soak validation requires a canonical one_hour soak report",
+    );
   }
 }
 
@@ -591,6 +711,7 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     const report = readJson(file, cwd);
     context.options.soakReportFile = resolveFrom(cwd, file);
     assertPassingSoakReport(report, context.options);
+    assertFinalSoakReportMode(report as SoakReport);
     assertSoakMatchesPlan(
       report as SoakReport,
       context.soakPlan,
@@ -646,8 +767,6 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   }
   usage();
 }
-
-const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 
 if (isDirectInvocation) {
   const main = async (): Promise<void> => {

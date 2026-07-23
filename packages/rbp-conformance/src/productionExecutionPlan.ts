@@ -1,15 +1,19 @@
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 
 import {
   buildExecutionPlan,
   resolveSourceIdentity,
+  sha256File,
   type ComponentLaunchConfig,
 } from "./executionPlan.js";
 import {
+  productionHarnessRuntimeArtifacts,
   verifyProductionBuildProvenance,
   verifyProductionRuntimeBuildProvenance,
   type ProductionProvenanceVerificationOptions,
 } from "./productionBuildProvenance.js";
+import { canonicalManifest } from "./manifest.js";
 import {
   assertProductionControllerEnvironmentSafe,
   normalizeExecutablePath,
@@ -28,6 +32,71 @@ import type {
   SourceIdentity,
 } from "./types.js";
 import { validateExecutionPlanStructure } from "./validator.js";
+
+export const PRODUCTION_CLI_RELATIVE_PATH =
+  "packages/rbp-conformance/dist/src/cli.js" as const;
+
+const PRODUCTION_COMPONENT_SPECS = [
+  {
+    id: "gateway_stub",
+    packageName: "@revagent/gateway-stub",
+    packageFile: "packages/gateway-stub/package.json",
+    entrypointPath: "packages/gateway-stub/dist/cli.js",
+  },
+  {
+    id: "bridge_simulator",
+    packageName: "@revagent/bridge-simulator",
+    packageFile: "packages/bridge-simulator/package.json",
+    entrypointPath: "packages/bridge-simulator/dist/cli.js",
+  },
+  {
+    id: "addin_loopback_fixture",
+    packageName: "@revagent/addin-loopback-fixture",
+    packageFile: "packages/addin-loopback-fixture/package.json",
+    entrypointPath: "packages/addin-loopback-fixture/dist/cli.js",
+  },
+] as const;
+
+function confinedRealFile(repoRootValue: string, relativePath: string): string {
+  const repoRoot = realpathSync(repoRootValue);
+  const lexical = path.resolve(repoRoot, relativePath);
+  if (lstatSync(lexical).isSymbolicLink()) {
+    throw new Error(`canonical production metadata cannot be linked: ${relativePath}`);
+  }
+  const real = realpathSync(lexical);
+  const relative = path.relative(repoRoot, real);
+  if (
+    relative.startsWith("..") ||
+    path.isAbsolute(relative) ||
+    !statSync(real).isFile()
+  ) {
+    throw new Error(`canonical production metadata escapes the repository: ${relativePath}`);
+  }
+  return real;
+}
+
+export function canonicalProductionComponentVersion(
+  repoRoot: string,
+  componentId: ComponentId,
+): string {
+  const spec = PRODUCTION_COMPONENT_SPECS.find(({ id }) => id === componentId);
+  if (spec === undefined) {
+    throw new Error(`unknown canonical production component: ${componentId}`);
+  }
+  const packageFile = confinedRealFile(repoRoot, spec.packageFile);
+  const value = JSON.parse(readFileSync(packageFile, "utf8")) as {
+    name?: unknown;
+    version?: unknown;
+  };
+  if (
+    value.name !== spec.packageName ||
+    typeof value.version !== "string" ||
+    value.version.length === 0
+  ) {
+    throw new Error(`${componentId} package metadata lacks its canonical name/version`);
+  }
+  return value.version;
+}
 
 function command(
   nodeExecutable: string,
@@ -59,9 +128,9 @@ export function productionComponentLaunchConfigs(
   const configs: ComponentLaunchConfig[] = [
     {
       id: "gateway_stub",
-      version: "0.0.0",
-      entrypointPath: "packages/gateway-stub/dist/cli.js",
-      command: command(canonicalNodeExecutable, "packages/gateway-stub/dist/cli.js", [
+      version: canonicalProductionComponentVersion(repoRoot, "gateway_stub"),
+      entrypointPath: PRODUCTION_COMPONENT_SPECS[0].entrypointPath,
+      command: command(canonicalNodeExecutable, PRODUCTION_COMPONENT_SPECS[0].entrypointPath, [
         "--state",
         "{{instance_root}}/state/gateway.json",
         "--host",
@@ -74,9 +143,9 @@ export function productionComponentLaunchConfigs(
     },
     {
       id: "bridge_simulator",
-      version: "0.0.0",
-      entrypointPath: "packages/bridge-simulator/dist/cli.js",
-      command: command(canonicalNodeExecutable, "packages/bridge-simulator/dist/cli.js", [
+      version: canonicalProductionComponentVersion(repoRoot, "bridge_simulator"),
+      entrypointPath: PRODUCTION_COMPONENT_SPECS[1].entrypointPath,
+      command: command(canonicalNodeExecutable, PRODUCTION_COMPONENT_SPECS[1].entrypointPath, [
         "daemon",
         "--state-root",
         "{{instance_root}}/state/bridge",
@@ -84,9 +153,9 @@ export function productionComponentLaunchConfigs(
     },
     {
       id: "addin_loopback_fixture",
-      version: "0.0.0",
-      entrypointPath: "packages/addin-loopback-fixture/dist/cli.js",
-      command: command(canonicalNodeExecutable, "packages/addin-loopback-fixture/dist/cli.js", [
+      version: canonicalProductionComponentVersion(repoRoot, "addin_loopback_fixture"),
+      entrypointPath: PRODUCTION_COMPONENT_SPECS[2].entrypointPath,
+      command: command(canonicalNodeExecutable, PRODUCTION_COMPONENT_SPECS[2].entrypointPath, [
         "--host",
         "127.0.0.1",
         "--port",
@@ -203,16 +272,77 @@ function assertCanonicalProductionCommands(
   }
   const canonical = new Map(
     productionComponentLaunchConfigs(repoRoot, runtimeNodeExecutable)
-      .map((config) => [config.id, config.command]),
+      .map((config) => [config.id, config]),
   );
   for (const component of plan.components) {
-    if (stableJson(component.command) !== stableJson(canonical.get(component.id))) {
+    const expected = canonical.get(component.id);
+    if (
+      expected === undefined ||
+      component.interfaceVersion !== canonicalManifest.requiredComponents.find(
+        ({ id }) => id === component.id,
+      )?.interfaceVersion ||
+      component.expectedIdentity.version !== expected.version ||
+      stableJson(component.command) !== stableJson(expected.command)
+    ) {
       throw new Error(
-        `${component.id} command does not match the canonical production descriptor`,
+        `${component.id} version, interface, or command does not match the canonical production descriptor`,
       );
     }
   }
   return runtimeNodeExecutable;
+}
+
+export function assertProductionCliModulePath(
+  repoRootValue: string,
+  cliModuleFile: string,
+): string {
+  if (!path.isAbsolute(cliModuleFile)) {
+    throw new Error("production CLI module path must be absolute");
+  }
+  const repoRoot = realpathSync(repoRootValue);
+  const expected = confinedRealFile(repoRoot, PRODUCTION_CLI_RELATIVE_PATH);
+  const lexicalCurrent = path.resolve(cliModuleFile);
+  if (lstatSync(lexicalCurrent).isSymbolicLink()) {
+    throw new Error("production CLI module cannot be a symbolic link");
+  }
+  const current = realpathSync(lexicalCurrent);
+  if (path.relative(expected, current) !== "") {
+    throw new Error(
+      `production CLI module is not the canonical ${PRODUCTION_CLI_RELATIVE_PATH}`,
+    );
+  }
+  return current;
+}
+
+export function assertProductionCliHarnessBound(
+  plan: ExecutionPlan,
+  repoRoot: string,
+  cliModuleFile: string,
+): void {
+  const currentCli = assertProductionCliModulePath(repoRoot, cliModuleFile);
+  const plannedDigests = new Set(
+    plan.components.map(
+      ({ expectedIdentity }) =>
+        expectedIdentity.buildProvenance?.harnessArtifactsSha256,
+    ),
+  );
+  if (plannedDigests.has(undefined) || plannedDigests.size !== 1) {
+    throw new Error("production plan does not bind one exact conformance harness");
+  }
+  const currentHarness = productionHarnessRuntimeArtifacts(repoRoot);
+  if (currentHarness.digestSha256 !== [...plannedDigests][0]) {
+    throw new Error("currently executing production CLI harness does not match the plan");
+  }
+  const cliRecord = currentHarness.files.find(
+    ({ path: filePath }) => filePath === PRODUCTION_CLI_RELATIVE_PATH,
+  );
+  if (
+    cliRecord === undefined ||
+    cliRecord.bytes !== statSync(currentCli).size ||
+    cliRecord.sha256 !== sha256File(currentCli)
+  ) {
+    throw new Error("currently executing production CLI bytes are absent from the bound harness");
+  }
 }
 
 function plannedGitIdentity(plan: ExecutionPlan): ProductionGitIdentity {

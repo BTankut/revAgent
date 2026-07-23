@@ -1,3 +1,6 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -11,6 +14,12 @@ import type {
   ComponentId,
 } from "../src/types.js";
 import { createPlan } from "./helpers.js";
+
+const packageRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const repoRoot = path.resolve(packageRoot, "../..");
 
 function provenance(seed: number): ComponentBuildProvenanceIdentity {
   const hash = seed.toString(16).padStart(64, "0");
@@ -71,12 +80,14 @@ function provenance(seed: number): ComponentBuildProvenanceIdentity {
 }
 
 function canonicalizeCommands(plan: ReturnType<typeof createPlan>): void {
-  const commands = new Map(
-    productionComponentLaunchConfigs("C:/repo", "C:/node.exe")
-      .map(({ id, command }) => [id, command]),
+  const configs = new Map(
+    productionComponentLaunchConfigs(repoRoot, "C:/node.exe")
+      .map((config) => [config.id, config]),
   );
   for (const component of plan.components) {
-    component.command = structuredClone(commands.get(component.id)!);
+    const config = configs.get(component.id)!;
+    component.command = structuredClone(config.command);
+    component.expectedIdentity.version = config.version;
   }
 }
 
@@ -93,14 +104,14 @@ describe("production execution plan source gate", () => {
     const resolver = vi.fn(() => structuredClone(plan.source));
     const verifier = vi.fn(() => verified);
     expect(() =>
-      assertProductionExecutionPlanCurrent(plan, "C:/repo", resolver, verifier),
+      assertProductionExecutionPlanCurrent(plan, repoRoot, resolver, verifier),
     ).not.toThrow();
     expect(resolver).toHaveBeenCalledWith(
-      "C:/repo",
+      repoRoot,
       plan.components[0]!.expectedIdentity.buildProvenance!.toolchain.git,
     );
     expect(verifier).toHaveBeenCalledWith(
-      "C:/repo",
+      repoRoot,
       plan.source,
       {
         expectedRuntimeNodeExecutable: "C:/node.exe",
@@ -109,7 +120,7 @@ describe("production execution plan source gate", () => {
     );
 
     expect(() =>
-      assertProductionExecutionPlanCurrent(plan, "C:/repo", () => ({
+      assertProductionExecutionPlanCurrent(plan, repoRoot, () => ({
         ...structuredClone(plan.source),
         treeSha: "b".repeat(40),
       }), verifier),
@@ -129,7 +140,7 @@ describe("production execution plan source gate", () => {
     expect(() =>
       assertProductionExecutionPlanCurrent(
         plan,
-        "C:/repo",
+        repoRoot,
         () => structuredClone(plan.source),
         () => verified,
       ),
@@ -140,7 +151,7 @@ describe("production execution plan source gate", () => {
     expect(() =>
       assertProductionExecutionPlanCurrent(
         plan,
-        "C:/repo",
+        repoRoot,
         () => structuredClone(plan.source),
         () => verified,
       ),

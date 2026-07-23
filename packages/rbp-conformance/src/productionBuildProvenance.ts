@@ -51,6 +51,11 @@ const HARNESS_RUNTIME_ROOTS = [
   "packages/rbp-conformance/dist",
   "packages/protocol/dist",
 ] as const;
+const HARNESS_RUNTIME_FILES = [
+  "packages/rbp-conformance/scripts/bootstrap-identity.mjs",
+  "packages/rbp-conformance/scripts/invoke-production.ps1",
+  "packages/rbp-conformance/scripts/prepare-production.mjs",
+] as const;
 const HARNESS_RUNTIME_PACKAGE_ROOTS = ["packages/rbp-conformance"] as const;
 
 export interface ProductionHarnessIdentity {
@@ -308,7 +313,16 @@ function runtimeArtifactFileSet(
 }
 
 export function productionHarnessRuntimeArtifacts(repoRoot: string): ProvenanceFileSet {
-  return runtimeArtifactFileSet(repoRoot, HARNESS_RUNTIME_ROOTS, "conformance harness");
+  const built = runtimeArtifactFileSet(
+    repoRoot,
+    HARNESS_RUNTIME_ROOTS,
+    "conformance harness",
+  );
+  return provenanceFileSet([
+    ...built.files,
+    ...HARNESS_RUNTIME_FILES.map((relativePath) =>
+      fileRecord(repoRoot, relativePath)),
+  ]);
 }
 
 export function productionComponentOutputArtifacts(
