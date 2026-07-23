@@ -34,6 +34,8 @@ import {
   WssGatewayBinding,
   openPrimaryThenFallback,
   type GatewayBinding,
+  type LoopbackTestTlsTrust,
+  type LoopbackTestTlsTrustEvidence,
 } from "./transport.js";
 
 export const BRIDGE_CONTROL_VERSION = 1;
@@ -225,11 +227,33 @@ function booleanValue(value: unknown, label: string): boolean {
   return value;
 }
 
-function loopbackEndpointPolicy(value: unknown): "loopback_test_readiness" {
-  if (value !== "loopback_test_readiness") {
-    throw new Error("endpointPolicy must equal loopback_test_readiness when supplied");
+function loopbackEndpointPolicy(value: unknown): "loopback_test_readiness" | "loopback_test_tls" {
+  if (value !== "loopback_test_readiness" && value !== "loopback_test_tls") {
+    throw new Error(
+      "endpointPolicy must equal loopback_test_readiness or loopback_test_tls when supplied",
+    );
   }
   return value;
+}
+
+function loopbackTestTlsTrust(value: unknown): LoopbackTestTlsTrust {
+  if (!isObject(value)) throw new Error("tlsTrust must be an object");
+  exactKeys(value, [
+    "caCertificatePath",
+    "caCertificateSha256",
+    "serverCertificateSha256",
+  ]);
+  return {
+    caCertificatePath: boundedString(value.caCertificatePath, "tlsTrust.caCertificatePath", 4_096),
+    caCertificateSha256: sha256Digest(
+      value.caCertificateSha256,
+      "tlsTrust.caCertificateSha256",
+    ),
+    serverCertificateSha256: sha256Digest(
+      value.serverCertificateSha256,
+      "tlsTrust.serverCertificateSha256",
+    ),
+  };
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -386,6 +410,7 @@ export class BridgeDaemonRuntime {
   #nextCrashPoint: BridgeCrashPoint | null = null;
   #crashedAt: BridgeCrashPoint | null = null;
   #journalClosed = false;
+  #transportTrustEvidence: LoopbackTestTlsTrustEvidence | null = null;
 
   public constructor(stateRoot: string) {
     this.#journalPath = join(stateRoot, "bridge.db");
@@ -520,6 +545,9 @@ export class BridgeDaemonRuntime {
         open: this.#binding?.connectionId !== null && this.#binding !== null,
         connectionId: this.#binding?.connectionId ?? null,
         runLoopActive: peerSnapshot?.runLoopActive ?? false,
+        testTlsTrust: this.#transportTrustEvidence === null
+          ? null
+          : { ...this.#transportTrustEvidence },
       },
       openLoopbackClientCount: this.#probes.filter((probe) => !probe.client.closed).length,
       journalClosed: this.#journalClosed,
@@ -638,6 +666,7 @@ export class BridgeDaemonRuntime {
       "fallbackUrl",
       "fallbackProvisioned",
       "endpointPolicy",
+      "tlsTrust",
     ]);
     if (this.#binding !== null || this.#peer !== null) throw new Error("transport is already open");
     const kind = record.kind;
@@ -648,6 +677,9 @@ export class BridgeDaemonRuntime {
     const endpointPolicy = record.endpointPolicy === undefined
       ? undefined
       : loopbackEndpointPolicy(record.endpointPolicy);
+    const tlsTrust = record.tlsTrust === undefined
+      ? undefined
+      : loopbackTestTlsTrust(record.tlsTrust);
     const helloInput = record.hello;
     if (!isObject(helloInput)) throw new Error("hello must be an object");
     exactKeys(helloInput, ["id", "ts", "bridgeVersion", "deviceId", "hostname", "os"], ["fingerprint"]);
@@ -671,7 +703,11 @@ export class BridgeDaemonRuntime {
       }
       wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
     } else if (kind === "streamable_http_sse") {
-      if (record.wssUrl !== undefined || record.fallbackProvisioned !== undefined) {
+      if (
+        record.wssUrl !== undefined ||
+        record.fallbackProvisioned !== undefined ||
+        record.tlsTrust !== undefined
+      ) {
         throw new Error("streamable_http_sse does not accept WSS selection fields");
       }
       fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
@@ -679,6 +715,12 @@ export class BridgeDaemonRuntime {
       wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
       fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
       fallbackProvisioned = booleanValue(record.fallbackProvisioned, "fallbackProvisioned");
+    }
+    if (endpointPolicy === "loopback_test_tls" && (kind !== "wss" || tlsTrust === undefined)) {
+      throw new Error("loopback_test_tls requires kind=wss and explicit tlsTrust");
+    }
+    if (tlsTrust !== undefined && (kind !== "wss" || endpointPolicy !== "loopback_test_tls")) {
+      throw new Error("tlsTrust is accepted only by kind=wss with endpointPolicy=loopback_test_tls");
     }
 
     let transportOpenAttempt = 0;
@@ -698,6 +740,7 @@ export class BridgeDaemonRuntime {
             baseUrl: wssUrl,
             deviceToken,
             ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+            ...(tlsTrust === undefined ? {} : { testTlsTrust: tlsTrust }),
           });
           created.push(binding);
           return { binding, helloAck: await binding.open(attemptHello) };
@@ -759,11 +802,17 @@ export class BridgeDaemonRuntime {
     }
     this.#binding = selected.binding;
     this.#peer = peer;
+    this.#transportTrustEvidence = selected.binding instanceof WssGatewayBinding
+      ? selected.binding.testTlsTrustEvidence
+      : null;
     return {
       requestedKind: kind,
       selectedKind: selected.binding.kind,
       connectionId: selected.helloAck.payload.connection_id,
       helloAck: selected.helloAck as unknown as FixtureJsonValue,
+      testTlsTrust: this.#transportTrustEvidence === null
+        ? null
+        : { ...this.#transportTrustEvidence },
     };
   }
 
@@ -1093,6 +1142,7 @@ export class BridgeDaemonRuntime {
     }
     this.#peer = null;
     this.#binding = null;
+    this.#transportTrustEvidence = null;
   }
 
   #sanitizeDiscovery(evidence: DiscoveryEvidence): JsonObject {

@@ -64,7 +64,7 @@ Action fields, in addition to the base fields, are exact:
 | --- | --- | --- |
 | `discover_fixture` | — | `host`, `port`, `firstPort`, `lastPort`, `probeTimeoutMs` |
 | `attach_fixture_session` | `probeIndex`, `rsid`, `resumeToken`, `resumeExpiresAt`, `userHint`, `hostname`, `fingerprint`, `bridgeVersion` | `grantedSessionCapabilities` |
-| `open_transport` | `kind`, `deviceToken`, `hello` | `wssUrl`, `fallbackUrl`, `fallbackProvisioned` as required by the selected kind; `endpointPolicy` |
+| `open_transport` | `kind`, `deviceToken`, `hello` | `wssUrl`, `fallbackUrl`, `fallbackProvisioned` as required by the selected kind; `endpointPolicy`; `tlsTrust` |
 | `start_run_loop` | — | — |
 | `session_register` | `probeIndex`, `userHint`, `hostname`, `fingerprint`, `bridgeVersion` | — |
 | `session_resume` | `rsid` | — |
@@ -85,8 +85,18 @@ Action fields, in addition to the base fields, are exact:
 `hello` has exact fields `id`, `ts`, `bridgeVersion`, `deviceId`, `hostname`,
 and `os`, with optional `fingerprint`. `kind` is `wss`,
 `streamable_http_sse`, or `primary_then_fallback`. When present,
-`endpointPolicy` must be exactly `loopback_test_readiness`; omission retains
-the fail-closed production URL policy. Evidence pages are immutable
+`endpointPolicy` is `loopback_test_readiness` for the cleartext numeric-
+loopback T5 readiness surface or `loopback_test_tls` for the real WSS
+conformance surface; omission retains the fail-closed production URL policy.
+The TLS policy is accepted only with `kind=wss`, a numeric-loopback URL with
+an explicit port, and exact `tlsTrust` fields `caCertificatePath`,
+`caCertificateSha256`, and `serverCertificateSha256`. The Bridge reads the
+absolute public-certificate path, verifies the exact file-byte digest, keeps
+normal TLS authorization enabled, performs the IP SAN check, and pins the
+Gateway leaf DER digest. The trust object is rejected by production,
+cleartext-readiness, HTTP/SSE, fallback, and custom-WebSocket-factory paths.
+Evidence records the resolved certificate path and both digests, never private
+key material. Evidence pages are immutable
 and expose redacted journal/hold/durability/sequence/session facts plus Bridge
 peer and transport state. Shutdown closes transports, loopback clients, the
 run loop, and SQLite, then reports the corresponding zero-leak counters.

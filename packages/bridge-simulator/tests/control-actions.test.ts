@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
+import { createHash, X509Certificate } from "node:crypto";
 import { once } from "node:events";
+import { writeFileSync } from "node:fs";
+import { createServer as createHttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
@@ -14,8 +17,107 @@ import { WebSocketServer } from "ws";
 import { BridgeDaemonRuntime } from "../src/control.js";
 import { DurableBridgeJournal } from "../src/journal.js";
 import { readInvoke, simulatorForFixture, temporaryRoot, uuid } from "./helpers.js";
+import { createTestTlsIdentity } from "./tlsFixture.js";
+
+function sha256(value: string | Uint8Array): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
 
 describe("Bridge daemon journal controls", () => {
+  it("opens numeric-loopback WSS through the exact JSONL TLS trust contract and retains evidence", async () => {
+    const root = temporaryRoot();
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const caCertificatePath = join(root.path, "gateway-current-stack.pem");
+    writeFileSync(caCertificatePath, identity.certificate, { encoding: "utf8", flag: "wx" });
+    const tlsTrust = {
+      caCertificatePath,
+      caCertificateSha256: sha256(identity.certificate),
+      serverCertificateSha256: sha256(new X509Certificate(identity.certificate).raw),
+    };
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    websocketServer.on("connection", (socket) => {
+      socket.once("message", () => {
+        socket.send(JSON.stringify({
+          type: "hello_ack",
+          id: uuid(),
+          ts: "2026-07-22T00:00:00.000Z",
+          payload: {
+            protocol: 1,
+            connection_id: "control-loopback-tls",
+            granted_capabilities: ["journal_v1", "chunked_results", "artifact_result_v1"],
+            heartbeat_interval_ms: 15_000,
+            limits: {
+              max_params_bytes: 4_194_304,
+              max_result_bytes: 33_554_432,
+              max_partial_bytes: 1_048_576,
+            },
+            manifest: { latest_bridge_version: "bridge-test", manifest_url: "/bridge/update/manifest" },
+          },
+        }));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const runtime = new BridgeDaemonRuntime(root.path);
+    const request = {
+      controlVersion: 1,
+      id: "tls-control",
+      action: "open_transport",
+      kind: "wss",
+      deviceToken: "fixture-device-token",
+      wssUrl: `wss://127.0.0.1:${port}/bridge/v1`,
+      endpointPolicy: "loopback_test_tls",
+      tlsTrust,
+      hello: {
+        id: uuid(),
+        ts: "2026-07-22T00:00:00.000Z",
+        bridgeVersion: "0.0.0",
+        deviceId: "fixture-device",
+        hostname: "fixture-host",
+        os: "fixture-os",
+      },
+    };
+    try {
+      await expect(runtime.execute({
+        ...request,
+        id: "invalid-tls-control",
+        endpointPolicy: "loopback_test_readiness",
+      }, "invalid-tls-control")).rejects.toThrow(
+        /tlsTrust is accepted only by kind=wss with endpointPolicy=loopback_test_tls/u,
+      );
+      await expect(runtime.execute({
+        ...request,
+        id: "invalid-tls-schema",
+        tlsTrust: { ...tlsTrust, allowUntrusted: true },
+      }, "invalid-tls-schema")).rejects.toThrow(/Unknown control field: allowUntrusted/u);
+      await expect(runtime.execute(request, "tls-control")).resolves.toMatchObject({
+        value: {
+          selectedKind: "wss",
+          connectionId: "control-loopback-tls",
+          testTlsTrust: tlsTrust,
+        },
+      });
+      expect(runtime.snapshotEvidence().transport).toMatchObject({
+        kind: "wss",
+        open: true,
+        testTlsTrust: tlsTrust,
+      });
+    } finally {
+      await runtime.shutdown();
+      websocketServer.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+        server.closeAllConnections();
+      });
+      root.cleanup();
+    }
+  }, 15_000);
+
   it("closes a selected binding when cold-start peer recovery fails and permits a clean retry", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();

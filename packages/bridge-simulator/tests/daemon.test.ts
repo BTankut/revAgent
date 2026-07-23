@@ -174,6 +174,13 @@ describe("long-lived Bridge JSONL daemon", () => {
       stateRoot,
       preserveState: true,
       stateRootSource: "argument",
+      transportTrust: {
+        loopbackTestTlsPolicy: "loopback_test_tls",
+        caIdentity: "absolute_path_and_exact_byte_sha256",
+        serverIdentity: "leaf_der_sha256",
+        numericLoopbackOnly: true,
+        rejectUnauthorized: true,
+      },
     });
     expect(ready.actions).toEqual([
       "discover_fixture",
@@ -223,7 +230,7 @@ describe("long-lived Bridge JSONL daemon", () => {
       ok: false,
       error: {
         code: "invalid_control_request",
-        message: "endpointPolicy must equal loopback_test_readiness when supplied",
+        message: "endpointPolicy must equal loopback_test_readiness or loopback_test_tls when supplied",
       },
     });
 

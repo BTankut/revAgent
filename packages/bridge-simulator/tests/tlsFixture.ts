@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { generateKeyPairSync, sign } from "node:crypto";
+import { isIP } from "node:net";
 
 function lengthBytes(length: number): Buffer {
   if (length < 0x80) return Buffer.from([length]);
@@ -48,6 +49,17 @@ function extension(identifier: string, critical: boolean, value: Uint8Array): Bu
   );
 }
 
+function subjectAlternativeName(hostname: string): Buffer {
+  const family = isIP(hostname);
+  if (family === 4) {
+    return sequence(der(0x87, Buffer.from(hostname.split(".").map(Number))));
+  }
+  if (family === 6) {
+    throw new Error("the ephemeral test identity currently supports DNS names and IPv4 literals");
+  }
+  return sequence(der(0x82, Buffer.from(hostname, "ascii")));
+}
+
 /** Generates an ephemeral self-signed CA/leaf identity without a committed private key. */
 export function createTestTlsIdentity(hostname: string): {
   readonly certificate: string;
@@ -60,7 +72,7 @@ export function createTestTlsIdentity(hostname: string): {
     extension("2.5.29.19", true, sequence(der(0x01, Buffer.from([0xff])))),
     extension("2.5.29.15", true, der(0x03, Buffer.from([0x02, 0x84]))),
     extension("2.5.29.37", false, sequence(oid("1.3.6.1.5.5.7.3.1"))),
-    extension("2.5.29.17", false, sequence(der(0x82, Buffer.from(hostname, "ascii")))),
+    extension("2.5.29.17", false, subjectAlternativeName(hostname)),
   );
   const tbs = sequence(
     der(0xa0, der(0x02, Buffer.from([0x02]))),

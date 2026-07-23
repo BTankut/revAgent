@@ -1,6 +1,10 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
+import { readFileSync, realpathSync, statSync } from "node:fs";
 import type { IncomingMessage } from "node:http";
 import { isIP } from "node:net";
+import { isAbsolute, parse, resolve } from "node:path";
+import { checkServerIdentity, type PeerCertificate } from "node:tls";
 
 import {
   parseRbpFrame,
@@ -13,7 +17,10 @@ import {
 import WebSocket from "ws";
 
 export type BridgeBindingKind = "wss" | "streamable_http_sse";
-export type GatewayEndpointPolicy = "production" | "loopback_test_readiness";
+export type GatewayEndpointPolicy =
+  | "production"
+  | "loopback_test_readiness"
+  | "loopback_test_tls";
 export type GatewayTransportFailureClass =
   | "retryable_network"
   | "auth"
@@ -76,17 +83,40 @@ export interface BindingOptions {
   readonly baseUrl: string;
   readonly deviceToken: string;
   readonly versionsHeader?: string;
-  /** Defaults to production. The test policy accepts only numeric-loopback ws/http readiness URLs. */
+  /**
+   * Defaults to production. Test policies accept only explicit-port numeric
+   * loopback: cleartext T5 readiness or pinned-certificate WSS conformance.
+   */
   readonly endpointPolicy?: GatewayEndpointPolicy;
   readonly openTimeoutMs?: number;
   readonly sendTimeoutMs?: number;
   readonly fetchTimeoutMs?: number;
   readonly fetch?: typeof globalThis.fetch;
+  /**
+   * A narrow conformance-only trust root and leaf pin. This is accepted only
+   * for numeric-loopback WSS under `loopback_test_tls`.
+   */
+  readonly testTlsTrust?: LoopbackTestTlsTrust;
   /** Test-adapter seam; production callers leave this unset. */
   readonly webSocketFactory?: (
     url: string,
     options: WebSocket.ClientOptions,
   ) => WebSocket;
+}
+
+export interface LoopbackTestTlsTrust {
+  /** Absolute path to the public CA/certificate bytes supplied to the current test stack. */
+  readonly caCertificatePath: string;
+  /** SHA-256 of the exact file bytes at `caCertificatePath`. */
+  readonly caCertificateSha256: string;
+  /** SHA-256 of the DER leaf certificate presented by the current Gateway process. */
+  readonly serverCertificateSha256: string;
+}
+
+export interface LoopbackTestTlsTrustEvidence {
+  readonly caCertificatePath: string;
+  readonly caCertificateSha256: string;
+  readonly serverCertificateSha256: string;
 }
 
 const DEFAULT_OPEN_TIMEOUT_MS = 5_000;
@@ -95,6 +125,7 @@ const DEFAULT_FETCH_TIMEOUT_MS = 5_000;
 const MAX_RBP_WIRE_FRAME_BYTES = 48 * 1024 * 1024;
 const MAX_HTTP_ERROR_BODY_BYTES = 64 * 1024;
 const MAX_RETRY_AFTER_MS = 15 * 60 * 1_000;
+const MAX_TEST_CA_BYTES = 64 * 1024;
 
 interface QueueWaiter<T> {
   readonly resolve: (value: IteratorResult<T>) => void;
@@ -165,12 +196,19 @@ function assertGatewayUrl(
     if (isIP(url.hostname) !== 0 || !url.hostname.includes(".")) {
       throw new Error("Production Gateway URL must use an authenticated DNS name");
     }
-  } else {
+  } else if (endpointPolicy === "loopback_test_readiness") {
     if (url.protocol !== testProtocol) {
       throw new Error(`Loopback test readiness URL must use ${testProtocol}`);
     }
     if (!isNumericUrlLoopback(url.hostname) || url.port.length === 0) {
       throw new Error("Loopback test readiness URL must use numeric loopback and an explicit port");
+    }
+  } else {
+    if (url.protocol !== productionProtocol) {
+      throw new Error(`Loopback test TLS URL must use ${productionProtocol}`);
+    }
+    if (!isNumericUrlLoopback(url.hostname) || url.port.length === 0) {
+      throw new Error("Loopback test TLS URL must use numeric loopback and an explicit port");
     }
   }
   return url;
@@ -183,6 +221,68 @@ function isNumericUrlLoopback(host: string): boolean {
   if (family !== 6) return false;
   const normalized = normalizedHost.toLowerCase();
   return normalized === "::1" || normalized === "0:0:0:0:0:0:0:1";
+}
+
+function sha256(bytes: Uint8Array): string {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function assertedSha256(value: string, label: string): string {
+  if (!/^sha256:[0-9a-f]{64}$/u.test(value)) {
+    throw new Error(`${label} must be a lowercase sha256 digest`);
+  }
+  return value;
+}
+
+function loadLoopbackTestTlsTrust(input: LoopbackTestTlsTrust): {
+  readonly ca: Buffer;
+  readonly evidence: LoopbackTestTlsTrustEvidence;
+} {
+  if (
+    typeof input.caCertificatePath !== "string" ||
+    input.caCertificatePath.length < 1 ||
+    input.caCertificatePath.length > 4_096 ||
+    input.caCertificatePath.trim() !== input.caCertificatePath ||
+    /[\u0000-\u001f\u007f]/u.test(input.caCertificatePath) ||
+    !isAbsolute(input.caCertificatePath)
+  ) {
+    throw new Error("test TLS CA certificate path must be a bounded absolute path");
+  }
+  const candidate = resolve(input.caCertificatePath);
+  if (parse(candidate).root === candidate) {
+    throw new Error("test TLS CA certificate path must not be a filesystem root");
+  }
+  const path = realpathSync(candidate);
+  const metadata = statSync(path);
+  if (!metadata.isFile() || metadata.size < 1 || metadata.size > MAX_TEST_CA_BYTES) {
+    throw new Error(`test TLS CA certificate must be a regular file of at most ${MAX_TEST_CA_BYTES} bytes`);
+  }
+  const ca = readFileSync(path);
+  if (
+    !ca.includes(Buffer.from("-----BEGIN CERTIFICATE-----", "ascii")) ||
+    ca.includes(Buffer.from("PRIVATE KEY", "ascii"))
+  ) {
+    throw new Error("test TLS CA file must contain public certificate PEM only");
+  }
+  const caCertificateSha256 = assertedSha256(
+    input.caCertificateSha256,
+    "test TLS CA certificate digest",
+  );
+  if (sha256(ca) !== caCertificateSha256) {
+    throw new Error("test TLS CA certificate digest does not match the exact file bytes");
+  }
+  const serverCertificateSha256 = assertedSha256(
+    input.serverCertificateSha256,
+    "test TLS server certificate digest",
+  );
+  return {
+    ca,
+    evidence: {
+      caCertificatePath: path,
+      caCertificateSha256,
+      serverCertificateSha256,
+    },
+  };
 }
 
 function classForCloseCode(code: number): GatewayTransportFailureClass {
@@ -439,6 +539,10 @@ export function selectHighestCompatibleProtocol(input: {
 
 export class WssGatewayBinding implements GatewayBinding {
   readonly #options: BindingOptions;
+  readonly #testTlsTrust: {
+    readonly ca: Buffer;
+    readonly evidence: LoopbackTestTlsTrustEvidence;
+  } | null;
   readonly #queue = new AsyncMessageQueue<RbpEnvelope>();
   #socket: WebSocket | null = null;
   #connectionId: string | null = null;
@@ -446,14 +550,29 @@ export class WssGatewayBinding implements GatewayBinding {
 
   public constructor(options: BindingOptions) {
     this.#options = options;
+    const endpointPolicy = options.endpointPolicy ?? "production";
     const url = assertGatewayUrl(
       options.baseUrl,
       "wss:",
       "ws:",
-      options.endpointPolicy ?? "production",
+      endpointPolicy,
     );
     if (url.pathname !== "/bridge/v1" && url.pathname !== "/bridge/v1/") {
       throw new Error("WSS binding path must be /bridge/v1");
+    }
+    if (endpointPolicy === "loopback_test_tls") {
+      if (options.testTlsTrust === undefined) {
+        throw new Error("loopback_test_tls requires explicit testTlsTrust");
+      }
+      if (options.webSocketFactory !== undefined) {
+        throw new Error("loopback_test_tls cannot be combined with a WebSocket factory");
+      }
+      this.#testTlsTrust = loadLoopbackTestTlsTrust(options.testTlsTrust);
+    } else {
+      if (options.testTlsTrust !== undefined) {
+        throw new Error("testTlsTrust is accepted only by loopback_test_tls WSS");
+      }
+      this.#testTlsTrust = null;
     }
     positiveTimeout(options.openTimeoutMs, DEFAULT_OPEN_TIMEOUT_MS, "WSS open timeout");
     positiveTimeout(options.sendTimeoutMs, DEFAULT_SEND_TIMEOUT_MS, "WSS send timeout");
@@ -475,6 +594,10 @@ export class WssGatewayBinding implements GatewayBinding {
     return this.#closeInfo === null ? null : { ...this.#closeInfo };
   }
 
+  public get testTlsTrustEvidence(): LoopbackTestTlsTrustEvidence | null {
+    return this.#testTlsTrust === null ? null : { ...this.#testTlsTrust.evidence };
+  }
+
   public async open(hello: HelloEnvelope): Promise<HelloAckEnvelope> {
     if (this.#socket !== null) throw new Error("WSS binding already opened");
     assertPreNegotiationEnvelope(hello);
@@ -483,9 +606,38 @@ export class WssGatewayBinding implements GatewayBinding {
       DEFAULT_OPEN_TIMEOUT_MS,
       "WSS open timeout",
     );
+    const testTlsTrust = this.#testTlsTrust;
+    const verifyPinnedTestServer = (host: string, certificate: PeerCertificate): Error | undefined => {
+      const identityError = checkServerIdentity(host, certificate);
+      if (identityError !== undefined) return identityError;
+      const actual = sha256(certificate.raw);
+      if (actual === testTlsTrust?.evidence.serverCertificateSha256) return undefined;
+      const error = new Error(
+        "Gateway test TLS server certificate does not match the pinned current-stack digest",
+      ) as Error & { code?: string };
+      error.code = "ERR_REVAGENT_TEST_CERTIFICATE_MISMATCH";
+      return error;
+    };
+    const socketOptions: WebSocket.ClientOptions = {
+      headers: authHeaders(this.#options),
+      maxPayload: MAX_RBP_WIRE_FRAME_BYTES,
+      ...(testTlsTrust === null
+        ? {}
+        : {
+            ca: testTlsTrust.ca,
+            rejectUnauthorized: true,
+            // @types/ws currently overrides Node's TLS callback with a server-
+            // side CertMeta/boolean signature. At runtime ws forwards this
+            // option directly to tls.connect, whose contract is
+            // PeerCertificate -> Error | undefined.
+            checkServerIdentity: verifyPinnedTestServer as unknown as NonNullable<
+              WebSocket.ClientOptions["checkServerIdentity"]
+            >,
+          }),
+    };
     const socket = (this.#options.webSocketFactory ?? ((url, options) => new WebSocket(url, options)))(
       this.#options.baseUrl,
-      { headers: authHeaders(this.#options), maxPayload: MAX_RBP_WIRE_FRAME_BYTES },
+      socketOptions,
     );
     this.#socket = socket;
     await new Promise<void>((resolve, reject) => {
@@ -856,6 +1008,9 @@ export class HttpSseGatewayBinding implements GatewayBinding {
   public constructor(options: BindingOptions) {
     this.#options = options;
     const endpointPolicy = options.endpointPolicy ?? "production";
+    if (endpointPolicy === "loopback_test_tls" || options.testTlsTrust !== undefined) {
+      throw new Error("test TLS trust is restricted to the numeric-loopback WSS binding");
+    }
     const endpoint = assertGatewayUrl(options.baseUrl, "https:", "http:", endpointPolicy);
     if (endpointPolicy === "production") {
       if (endpoint.pathname !== "/" && endpoint.pathname !== "") {

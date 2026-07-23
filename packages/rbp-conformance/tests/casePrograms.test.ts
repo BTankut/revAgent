@@ -37,7 +37,7 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   },
   "bridge_jsonl_control:open_transport": {
     required: ["kind", "deviceToken", "hello"],
-    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned", "endpointPolicy"],
+    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned", "endpointPolicy", "tlsTrust"],
   },
   "bridge_jsonl_control:start_run_loop": { required: [] },
   "bridge_jsonl_control:session_register": { required: ["probeIndex", "userHint", "hostname", "fingerprint", "bridgeVersion"] },
@@ -47,6 +47,27 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   "bridge_jsonl_control:poll_document_context": { required: ["rsid"], optional: ["force"] },
   "bridge_jsonl_control:flush_outbound": { required: [], optional: ["rsid"] },
   "bridge_jsonl_control:invoke_local": { required: ["envelope"], optional: ["crashAt"] },
+  "bridge_jsonl_control:record_verification_attempt": {
+    required: ["rsid", "holdId", "verificationInvocationId", "evidenceDigest", "conclusion", "atMs"],
+  },
+  "bridge_jsonl_control:record_late_evidence": {
+    required: ["rsid", "holdId", "originInvocationId", "evidenceDigest", "conclusion", "atMs"],
+  },
+  "bridge_jsonl_control:resolve_hold": {
+    required: [
+      "rsid",
+      "holdId",
+      "basis",
+      "verificationInvocationId",
+      "evidenceDigest",
+      "decision",
+      "resolutionId",
+      "auditId",
+      "authorizedDispatchIdentity",
+      "atMs",
+    ],
+  },
+  "bridge_jsonl_control:clearance_for_hold": { required: ["rsid", "holdId"] },
   "bridge_jsonl_control:inject_crash": { required: ["point"] },
   "bridge_jsonl_control:restart_simulator": { required: [] },
   "bridge_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor"] },

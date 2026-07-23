@@ -63,4 +63,7 @@ export {
   type BindingOptions,
   type BridgeBindingKind,
   type GatewayBinding,
+  type GatewayEndpointPolicy,
+  type LoopbackTestTlsTrust,
+  type LoopbackTestTlsTrustEvidence,
 } from "./transport.js";
