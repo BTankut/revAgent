@@ -87,6 +87,13 @@ export {
   executeProductionCaseBothBindings,
 } from "./productionCaseRunner.js";
 export type { ProductionBindingExecution } from "./productionCaseRunner.js";
+export { executeProductionConformanceRun } from "./productionSuiteRunner.js";
+export type {
+  ProductionCaseBindingEvidence,
+  ProductionCaseExecutor,
+  ProductionSuiteRunInput,
+  ProductionSuiteRunResult,
+} from "./productionSuiteRunner.js";
 export {
   buildProductionExecutionPlan,
   productionComponentLaunchConfigs,
