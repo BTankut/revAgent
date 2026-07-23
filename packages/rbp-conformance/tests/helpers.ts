@@ -89,6 +89,32 @@ export function createCurrentProductionPlan(
   return plan;
 }
 
+export function attachCurrentProductionToolchainProvenance(
+  plan: ExecutionPlan,
+): ExecutionPlan {
+  const planFile = process.env.RBP_TEST_PRODUCTION_PLAN;
+  if (planFile === undefined) {
+    throw new Error(
+      "canonical production test plan was not prepared by Vitest global setup",
+    );
+  }
+  const current = JSON.parse(readFileSync(planFile, "utf8")) as ExecutionPlan;
+  const currentById = new Map(
+    current.components.map((component) => [component.id, component] as const),
+  );
+  for (const component of plan.components) {
+    const provenance =
+      currentById.get(component.id)?.expectedIdentity.buildProvenance;
+    if (provenance === undefined) {
+      throw new Error(
+        `${component.id} current production toolchain provenance is unavailable`,
+      );
+    }
+    component.expectedIdentity.buildProvenance = structuredClone(provenance);
+  }
+  return plan;
+}
+
 export function artifact(kind: ArtifactEvidence["kind"], path: string, hashSeed: number): ArtifactEvidence {
   const mediaTypes: Partial<Record<ArtifactEvidence["kind"], string>> = {
     wire_trace: "application/x-ndjson",
