@@ -167,11 +167,19 @@ Do not assemble a production plan from an existing ignored `dist` tree. Every
 PASS-capable prepare, run, aggregate, and validation command begins in the
 tracked external launcher under the exact SystemRoot Windows PowerShell. That
 launcher removes Node and `ws` resolution overrides before the exact reviewed
-Node executable can load any production JavaScript. It then issues one
-current-user-only, one-shot named-pipe receipt bound to the child PID, parent
-PID, exact argv, launcher/Node/entrypoint paths, and their SHA-256 identities.
-The tracked CLI bootstrap validates that receipt before importing the freshly
-built controller. Do not enter the canonical path
+Node executable can load any production JavaScript. Before any production
+controller import, the child uses a separate exact SystemRoot Windows
+PowerShell probe and `GetNamedPipeServerProcessId` to prove that its
+current-user-only authentication pipe is owned by its OS parent. The probe
+returns the parent's OS executable and `Win32_Process.CommandLine`; the child
+requires the exact `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+<canonical invoke-production.ps1>` argument vector. The launcher independently
+uses `GetNamedPipeClientProcessId` on both the authentication connection and
+the second one-shot receipt connection, and requires the receipt client to be
+the Node PID it started. The receipt binds that OS handoff to the exact argv,
+launcher/Node/entrypoint paths, and their SHA-256 identities. The tracked CLI
+bootstrap validates the receipt before importing the freshly built controller.
+Do not enter the canonical path
 through `npm run`, an npm lifecycle, a shell bin shim, the `rbp-conformance`
 bin, or a direct Node-to-CLI invocation:
 
@@ -380,6 +388,29 @@ marker. The in-process controller environment guard remains defense in depth,
 but it cannot replace this pre-production-JavaScript boundary: a direct
 Node invocation with `NODE_OPTIONS`, `NODE_PATH`, compile-cache,
 preserve-symlink, or `WS_NO_*` overrides is not canonical evidence.
+
+This boundary prevents a direct Node process or preload from becoming
+PASS-capable merely by naming or hosting a forged pipe: the OS-reported server
+PID must be the Node parent, that parent must be the exact SystemRoot Windows
+PowerShell, its OS command line must be the canonical launcher invocation, and
+the launcher checks the actual receipt-pipe client PID rather than a PID in a
+request. Security-critical launcher setup uses .NET APIs and a fixed binary
+line protocol, not profile-shadowable `Get-Process`, `Get-Item`,
+`Get-FileHash`, `ForEach-Object`, or JSON cmdlet pipelines. The launcher also
+rejects a nested/profile/proxy host before it starts Node.
+An inherited anonymous Windows handle is not used because the supported Node
+JavaScript surface cannot authenticate that handle's peer process without a
+new native add-on; the two private pipe connections keep peer-PID checks on
+documented Windows APIs at both ends without adding an untracked binary.
+
+This is an application provenance anchor, not Windows code integrity. An
+attacker able to inject native code into, debug, or replace state inside the
+already-running canonical PowerShell/Node processes, hook the OS process/pipe
+APIs, or act with kernel-equivalent authority is outside the boundary. Those
+capabilities can falsify any JavaScript/.NET in-process check and require a
+separate signed native or OS policy anchor. Same-user pipe-name guessing alone,
+ordinary direct invocation, and an untrusted parent process are inside the
+tested fail-closed boundary.
 
 `prepare-production` verifies those sidecars before writing the plan. The plan
 retains each sidecar hash and its compile/runtime/dependency/controller/tool

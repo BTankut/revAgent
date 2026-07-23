@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
@@ -281,6 +282,175 @@ describe("canonical production bootstrap and external launcher", () => {
           "",
         ],
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a direct Node preload backed by a fake parent-owned pipe server", () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-launcher-fake-server-"));
+    try {
+      const marker = path.join(root, "preload-loaded.txt");
+      const preload = path.join(root, "preload.cjs");
+      const attackerParent = path.join(root, "attacker-parent.mjs");
+      const output = path.join(root, "must-not-exist.json");
+      writeFileSync(
+        preload,
+        [
+          "const fs = require('node:fs');",
+          `fs.writeFileSync(${JSON.stringify(marker)}, 'loaded');`,
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      writeFileSync(
+        attackerParent,
+        [
+          'import { spawn } from "node:child_process";',
+          'import net from "node:net";',
+          "const [node, bootstrap, preload, output, suffix] = process.argv.slice(2);",
+          "const authName = `rbp-production-auth-${suffix}`;",
+          "const receiptName = `rbp-production-receipt-${suffix}`;",
+          "const token = 'a'.repeat(64);",
+          "const auth = net.createServer((socket) => {",
+          "  let request = '';",
+          "  socket.setEncoding('utf8');",
+          "  socket.on('data', (chunk) => {",
+          "    request += chunk;",
+          "    if (request.includes('\\n')) socket.end(`OK\\t${token}\\n`);",
+          "  });",
+          "});",
+          "const receipt = net.createServer((socket) => {",
+          "  socket.end('ERROR\\tZmFrZSBzZXJ2ZXI=\\n');",
+          "});",
+          "await Promise.all([",
+          "  new Promise((resolve, reject) => {",
+          "    auth.once('error', reject);",
+          "    auth.listen(`\\\\\\\\.\\\\pipe\\\\${authName}`, resolve);",
+          "  }),",
+          "  new Promise((resolve, reject) => {",
+          "    receipt.once('error', reject);",
+          "    receipt.listen(`\\\\\\\\.\\\\pipe\\\\${receiptName}`, resolve);",
+          "  }),",
+          "]);",
+          "const child = spawn(",
+          "  node,",
+          "  [bootstrap, '__launcher-attestation-probe', output, '0'],",
+          "  {",
+          "    env: {",
+          "      ...process.env,",
+          "      NODE_OPTIONS: `--require=${preload.replaceAll('\\\\\\\\', '/')}`,",
+          "      RBP_PRODUCTION_LAUNCH_PIPES: `${authName}|${receiptName}`,",
+          "    },",
+          "    shell: false,",
+          "    stdio: ['ignore', 'inherit', 'inherit'],",
+          "    windowsHide: true,",
+          "  },",
+          ");",
+          "child.on('close', (status) => {",
+          "  auth.close();",
+          "  receipt.close();",
+          "  process.exitCode = status ?? 99;",
+          "});",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+      const suffix = randomBytes(16).toString("hex");
+      const result = spawnSync(
+        process.execPath,
+        [
+          attackerParent,
+          process.execPath,
+          cliBootstrap,
+          preload,
+          output,
+          suffix,
+        ],
+        {
+          encoding: "utf8",
+          shell: false,
+          timeout: 45_000,
+          windowsHide: true,
+        },
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).not.toBe(0);
+      expect(existsSync(marker)).toBe(true);
+      expect(existsSync(output)).toBe(false);
+      expect(String(result.stderr)).toMatch(
+        /server is not exact SystemRoot Windows PowerShell/u,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 50_000);
+
+  it("rejects a profile-style cmdlet proxy host before starting Node", () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-launcher-proxy-host-"));
+    try {
+      const proxyHost = path.join(root, "proxy-host.ps1");
+      const output = path.join(root, "must-not-exist.json");
+      const quotePowerShell = (value: string): string =>
+        `'${value.replaceAll("'", "''")}'`;
+      writeFileSync(
+        proxyHost,
+        [
+          "$ErrorActionPreference = 'Stop'",
+          "function global:Get-Process { throw 'proxy Get-Process executed' }",
+          "function global:Get-Item { throw 'proxy Get-Item executed' }",
+          "function global:Get-FileHash { throw 'proxy Get-FileHash executed' }",
+          "function global:ForEach-Object { throw 'proxy ForEach-Object executed' }",
+          "function global:ConvertFrom-Json { throw 'proxy ConvertFrom-Json executed' }",
+          "function global:ConvertTo-Json { throw 'proxy ConvertTo-Json executed' }",
+          [
+            "&",
+            quotePowerShell(launcher),
+            "-NodeExecutable",
+            quotePowerShell(process.execPath),
+            "-Entrypoint",
+            quotePowerShell(cliBootstrap),
+            "__launcher-attestation-probe",
+            quotePowerShell(output),
+            "0",
+          ].join(" "),
+          "",
+        ].join("\r\n"),
+        "utf8",
+      );
+      const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+      expect(windowsRoot).toBeTruthy();
+      const powershell = path.join(
+        windowsRoot!,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const result = spawnSync(
+        powershell,
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          proxyHost,
+        ],
+        {
+          encoding: "utf8",
+          shell: false,
+          windowsHide: true,
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(String(result.stderr)).toMatch(
+        /host arguments must be exactly/u,
+      );
+      expect(String(result.stderr)).not.toMatch(/proxy .* executed/u);
+      expect(existsSync(output)).toBe(false);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
