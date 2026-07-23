@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   assertCompleteCanonicalAssertionOracleRegistry,
   buildCanonicalParentEvaluatorRegistry,
+  composeCanonicalAssertionOracleRegistry,
   type CanonicalAssertionOracle,
 } from "../src/canonicalEvaluators.js";
 import { canonicalManifest } from "../src/manifest.js";
@@ -48,6 +49,18 @@ describe("canonical parent evaluators", () => {
     const oracles = completeOracles();
     oracles.set("O1-C99-INVENTED", () => true);
     expect(() => buildCanonicalParentEvaluatorRegistry(oracles)).toThrow(/unknown:/u);
+  });
+
+  it("composes independent slices without silent assertion replacement", () => {
+    const entries = [...completeOracles()];
+    const first = new Map(entries.slice(0, 80));
+    const second = new Map(entries.slice(80));
+    expect(composeCanonicalAssertionOracleRegistry(first, second).size).toBe(167);
+
+    second.set(entries[0]![0], () => true);
+    expect(() => composeCanonicalAssertionOracleRegistry(first, second)).toThrow(
+      /duplicate canonical assertion oracle/u,
+    );
   });
 
   it("builds exactly forty parent evaluators and invokes each oracle per binding", () => {

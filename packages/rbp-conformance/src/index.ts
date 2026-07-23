@@ -30,6 +30,7 @@ export type {
 export {
   assertCompleteCanonicalAssertionOracleRegistry,
   buildCanonicalParentEvaluatorRegistry,
+  composeCanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 export type {
   CanonicalAssertionOracle,

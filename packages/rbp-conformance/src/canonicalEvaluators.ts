@@ -69,6 +69,26 @@ export function assertCompleteCanonicalAssertionOracleRegistry(
   }
 }
 
+/**
+ * Composes independently owned case slices without allowing one slice to
+ * overwrite another. The returned registry is complete by construction.
+ */
+export function composeCanonicalAssertionOracleRegistry(
+  ...registries: readonly CanonicalAssertionOracleRegistry[]
+): CanonicalAssertionOracleRegistry {
+  const composed = new Map<string, CanonicalAssertionOracle>();
+  for (const registry of registries) {
+    for (const [assertionId, oracle] of registry) {
+      if (composed.has(assertionId)) {
+        throw new Error(`duplicate canonical assertion oracle: ${assertionId}`);
+      }
+      composed.set(assertionId, oracle);
+    }
+  }
+  assertCompleteCanonicalAssertionOracleRegistry(composed);
+  return composed;
+}
+
 function observationsForBinding(
   observations: readonly ProcessObservationRecord[],
   binding: Binding,
