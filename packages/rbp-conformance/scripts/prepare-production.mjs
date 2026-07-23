@@ -10,6 +10,14 @@ import {
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import {
+  assertProductionBootstrapIdentityCurrent,
+  canonicalWindowsWhereExecutable,
+  captureProductionBootstrapIdentity,
+  innerPrepareArguments,
+  parsePrepareBootstrapArguments,
+} from "./bootstrap-identity.mjs";
+
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
 const resolutionEnvironmentKeys = new Set([
   "NODE_OPTIONS",
@@ -20,6 +28,14 @@ const resolutionEnvironmentKeys = new Set([
   "WS_NO_BUFFER_UTIL",
   "WS_NO_UTF_8_VALIDATE",
 ]);
+
+const inheritedResolutionOverride = Object.keys(process.env).find((key) =>
+  resolutionEnvironmentKeys.has(key.toUpperCase()));
+if (inheritedResolutionOverride !== undefined) {
+  throw new Error(
+    `canonical production preparation environment cannot set ${inheritedResolutionOverride}`,
+  );
+}
 
 function childEnvironment() {
   const result = {};
@@ -117,24 +133,10 @@ if (
     "canonical production preparation must be invoked directly with the bound Node executable",
   );
 }
-const forwardedArgs = [];
-let npmEntrypoint;
-for (let index = 2; index < process.argv.length; index += 1) {
-  const value = process.argv[index];
-  if (value === "--npm-executable") {
-    const candidate = process.argv[index + 1];
-    if (candidate === undefined || npmEntrypoint !== undefined) {
-      throw new Error("--npm-executable requires exactly one absolute path");
-    }
-    npmEntrypoint = candidate;
-    index += 1;
-  } else {
-    forwardedArgs.push(value);
-  }
-}
-if (npmEntrypoint === undefined) {
-  throw new Error("canonical production preparation requires --npm-executable");
-}
+const {
+  forwardedArgs,
+  npmExecutable: npmEntrypoint,
+} = parsePrepareBootstrapArguments(process.argv.slice(2));
 const npmIdentity = exactRegularFile(npmEntrypoint, "npm launcher");
 const nodeIdentity = exactRegularFile(process.execPath, "build Node executable");
 
@@ -153,11 +155,7 @@ function gitVersion(identity) {
 function resolveGitIdentity() {
   const locator = process.platform === "win32"
     ? run(
-      path.join(
-        process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows",
-        "System32",
-        "where.exe",
-      ),
+      canonicalWindowsWhereExecutable(),
       ["git.exe"],
       { env: { ...childEnvironment(), PATH: process.env.PATH ?? "" } },
     )
@@ -306,18 +304,25 @@ function assertBootstrapSourceClean() {
   }
 }
 assertBootstrapSourceClean();
+const bootstrapBuildDependencies = captureProductionBootstrapIdentity(repoRoot);
 
 function runBoundNode(args, label, options = {}) {
   assertSameFile(npmIdentity, "npm launcher");
   assertSameFile(nodeIdentity, "build Node executable");
-  const result = run(nodeIdentity.real, args, options);
+  assertProductionBootstrapIdentityCurrent(repoRoot, bootstrapBuildDependencies);
+  let result;
+  try {
+    result = run(nodeIdentity.real, args, options);
+  } finally {
+    assertProductionBootstrapIdentityCurrent(repoRoot, bootstrapBuildDependencies);
+    assertSameFile(npmIdentity, "npm launcher");
+    assertSameFile(nodeIdentity, "build Node executable");
+  }
   if (result.status !== 0) {
     throw new Error(
       `${label} failed (exit ${String(result.status)}): ${String(result.stderr).trim()}`,
     );
   }
-  assertSameFile(npmIdentity, "npm launcher");
-  assertSameFile(nodeIdentity, "build Node executable");
   return result;
 }
 
@@ -364,9 +369,10 @@ runBoundNode(
 );
 
 const cli = path.join(repoRoot, "packages/rbp-conformance/dist/src/cli.js");
+assertProductionBootstrapIdentityCurrent(repoRoot, bootstrapBuildDependencies);
 const prepare = run(
   nodeIdentity.real,
-  [cli, "prepare-production", ...forwardedArgs],
+  [cli, ...innerPrepareArguments(forwardedArgs, gitIdentity.path)],
   {
     stdio: ["ignore", "inherit", "inherit"],
     env: {

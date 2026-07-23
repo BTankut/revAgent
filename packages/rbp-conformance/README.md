@@ -149,7 +149,7 @@ creation, file fsync, atomic rename, and directory fsync on Linux.
 After `npm run build`, the package exposes:
 
 ```text
-rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> [--repo-root <path>] [--node-executable <path>]
+rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> --git-executable <absolute-path> [--repo-root <path>] [--node-executable <path>]
 rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
@@ -163,17 +163,24 @@ rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-r
 
 ### Canonical production prepare runbook
 
-Do not assemble a production plan from an existing ignored `dist` tree. From
-the repository root, invoke the wrapper directly with the exact reviewed Node
-executable. Do not enter the canonical path through `npm run`, an npm
-lifecycle, a shell bin shim, or the `rbp-conformance` bin:
+Do not assemble a production plan from an existing ignored `dist` tree. Every
+PASS-capable prepare, run, aggregate, and validation command begins in the
+tracked external launcher under the exact SystemRoot Windows PowerShell. That
+launcher removes Node and `ws` resolution overrides before the exact reviewed
+Node executable can load any JavaScript. Do not enter the canonical path
+through `npm run`, an npm lifecycle, a shell bin shim, the `rbp-conformance`
+bin, or a direct `$BoundNode $Cli` invocation:
 
 ```powershell
 $RepoRoot = (Resolve-Path -LiteralPath '.').Path
 $BoundNode = 'C:\Program Files\nodejs\node.exe'
 $NpmCli = 'C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js'
+$PowerShell = Join-Path `
+  ([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) `
+  'System32\WindowsPowerShell\v1.0\powershell.exe'
 $EvidenceRoot = 'C:\Users\BT\Projects\revAgent-freeze-evidence\rbp-v1.0-<sha12>-s01'
 $PlanRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\plans\rbp-v1.0-<sha12>-s01'
+$Launcher = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\invoke-production.ps1'
 $Wrapper = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\prepare-production.mjs'
 $Cli = Join-Path $RepoRoot 'packages\rbp-conformance\dist\src\cli.js'
 
@@ -182,18 +189,30 @@ $PlanR2 = Join-Path $PlanRoot 'run-2.execution-plan.json'
 $PlanR3 = Join-Path $PlanRoot 'run-3.execution-plan.json'
 $PlanSoak = Join-Path $PlanRoot 'soak-one-hour.execution-plan.json'
 
-& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR1 `
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
+  --npm-executable $NpmCli $PlanR1 `
   --run-id 'rbp-v1.0-<sha12>-s01-r1' --sequence 1 `
   --repo-root $RepoRoot --node-executable $BoundNode
-& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR2 `
+if ($LASTEXITCODE -ne 0) { throw 'r1 prepare failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
+  --npm-executable $NpmCli $PlanR2 `
   --run-id 'rbp-v1.0-<sha12>-s01-r2' --sequence 2 `
   --repo-root $RepoRoot --node-executable $BoundNode
-& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR3 `
+if ($LASTEXITCODE -ne 0) { throw 'r2 prepare failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
+  --npm-executable $NpmCli $PlanR3 `
   --run-id 'rbp-v1.0-<sha12>-s01-r3' --sequence 3 `
   --repo-root $RepoRoot --node-executable $BoundNode
-& $BoundNode $Wrapper --npm-executable $NpmCli $PlanSoak `
+if ($LASTEXITCODE -ne 0) { throw 'r3 prepare failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
+  --npm-executable $NpmCli $PlanSoak `
   --run-id 'rbp-v1.0-<sha12>-s01-soak-1h' --sequence 1 `
   --repo-root $RepoRoot --node-executable $BoundNode
+if ($LASTEXITCODE -ne 0) { throw 'soak prepare failed' }
 ```
 
 The four paths are intentionally distinct and outside the source worktree.
@@ -204,16 +223,31 @@ though its plan sequence is `1`. Replace `<sha12>` only after locking the clean
 candidate. Create a fresh evidence-set directory instead of reusing a failed
 set.
 
-The wrapper refuses npm lifecycle invocation and a dirty Git tree, removes
-Node/module-resolution injection variables from children, deletes only the
-ignored `rbp-conformance/dist` controller output, and directly runs the bound
-Node for protocol generation/cleaning and TypeScript compilation. It builds
-protocol and the conformance controller from source, then starts that freshly
-built CLI with the same bound build/controller Node. There is no outer native
-smoke under an incidental Node. The inner CLI resolves the selected runtime
-Node (`--node-executable`, or the current controller Node when omitted) and
-opens, queries, and closes the Bridge simulator's exact installed
-`better-sqlite3` module under that runtime before and after the component DAG.
+The wrapper refuses npm lifecycle invocation, caller-supplied
+`--git-executable`, hostile in-process resolution overrides, and a dirty Git
+tree. It resolves Git once through the absolute SystemRoot `where.exe`,
+validates the selected file/version, and passes that exact absolute path to
+the freshly built inner CLI; the CLI never resolves Git from `PATH`.
+
+Before protocol generation or controller compilation, the wrapper captures
+the complete physical TypeScript package and the actual installed
+`json-schema-to-typescript` transitive package closure selected from the
+protocol package. It rehashes that bootstrap identity immediately before and
+after each generator, clean, and TypeScript child, and once more before
+starting the inner CLI. A changed compiler shim/implementation, formatter,
+schema parser, transitive dependency, physical resolution, or optional
+dependency state fails closed. This bootstrap check does not depend on a
+not-yet-built controller.
+
+The wrapper deletes only the ignored `rbp-conformance/dist` controller output
+and directly runs the bound Node for protocol generation/cleaning and
+TypeScript compilation. It builds protocol and the conformance controller
+from source, then starts that freshly built CLI with the same bound
+build/controller Node. There is no outer native smoke under an incidental
+Node. The inner CLI resolves the selected runtime Node (`--node-executable`,
+or the current controller Node when omitted) and opens, queries, and closes
+the Bridge simulator's exact installed `better-sqlite3` module under that
+runtime before and after the component DAG.
 
 The CLI validates and hashes the toolchain before cleaning component output.
 Protocol, add-in loopback fixture, Gateway stub, and Bridge simulator are then
@@ -249,13 +283,95 @@ not substituted for the copy Node actually loads.
 The selected runtime Node may differ from the build/controller Node only when
 its complete recorded identity is used consistently by every canonical
 component command, native smoke, production run, and validator invocation.
-For the M1 runbook above they are deliberately the same `$BoundNode`. Run
-`run-production`, `run-soak`, `aggregate`, and all `validate-*` commands by
-calling `$BoundNode $Cli ...`; a different current controller Node fails
-closed against the plan.
+For the M1 runbook above they are deliberately the same `$BoundNode`. A
+different current controller Node fails closed against the plan.
 No timestamp or filesystem mtime participates. Windows system DLLs and
 kernel-level filesystem races are outside the application provenance
 boundary; every repo/npm-controlled executable byte is inside it.
+
+After all four plans are prepared, use the same external boundary for every
+run and gate. The following is the canonical command shape; `<sha>`, `<tree>`,
+and `<sha12>` are the locked candidate identities:
+
+```powershell
+$RunRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\runs'
+$ReportR1 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r1\run-report.json'
+$ReportR2 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r2\run-report.json'
+$ReportR3 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r3\run-report.json'
+$Aggregate = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\aggregate\three-run-report.json'
+$SoakReport = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\soak\one_hour\rbp-v1.0-<sha12>-s01-soak-1h\soak-report.json'
+$ExpectedCommit = '<sha>'
+$ExpectedTree = '<tree>'
+
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  run-production $PlanR1 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r1'
+if ($LASTEXITCODE -ne 0) { throw 'r1 run failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  validate-run $ReportR1 --plan $PlanR1 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
+  --expected-tree $ExpectedTree
+if ($LASTEXITCODE -ne 0) { throw 'r1 validation failed' }
+
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  run-production $PlanR2 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r2'
+if ($LASTEXITCODE -ne 0) { throw 'r2 run failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  validate-run $ReportR2 --plan $PlanR2 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
+  --expected-tree $ExpectedTree
+if ($LASTEXITCODE -ne 0) { throw 'r2 validation failed' }
+
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  run-production $PlanR3 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r3'
+if ($LASTEXITCODE -ne 0) { throw 'r3 run failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  validate-run $ReportR3 --plan $PlanR3 --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
+  --expected-tree $ExpectedTree
+if ($LASTEXITCODE -ne 0) { throw 'r3 validation failed' }
+
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  aggregate $ReportR1 $ReportR2 $ReportR3 `
+  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
+  --repo-root $RepoRoot --artifact-root $EvidenceRoot
+if ($LASTEXITCODE -ne 0) { throw 'aggregate failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  validate-aggregate $Aggregate `
+  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
+  --repo-root $RepoRoot --artifact-root $EvidenceRoot `
+  --expected-commit $ExpectedCommit --expected-tree $ExpectedTree
+if ($LASTEXITCODE -ne 0) { throw 'aggregate validation failed' }
+
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  run-soak $PlanSoak --mode one_hour --repo-root $RepoRoot `
+  --artifact-root $EvidenceRoot
+if ($LASTEXITCODE -ne 0) { throw 'one-hour soak failed' }
+& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  validate-soak $SoakReport --plan $PlanSoak --aggregate $Aggregate `
+  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
+  --repo-root $RepoRoot --artifact-root $EvidenceRoot `
+  --expected-commit $ExpectedCommit --expected-tree $ExpectedTree
+if ($LASTEXITCODE -ne 0) { throw 'soak validation failed' }
+```
+
+The launcher's source and PowerShell identity are themselves protected
+harness/toolchain bytes. The in-process controller environment guard remains
+defense in depth, but it cannot replace this pre-JavaScript boundary: a direct
+Node invocation with `NODE_OPTIONS`, `NODE_PATH`, compile-cache,
+preserve-symlink, or `WS_NO_*` overrides is not canonical evidence.
 
 `prepare-production` verifies those sidecars before writing the plan. The plan
 retains each sidecar hash and its compile/runtime/dependency/controller/tool

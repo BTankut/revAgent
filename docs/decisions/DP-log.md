@@ -137,6 +137,42 @@ satisfy O1-T6/O1-T8. M1 still requires a clean protected candidate, fresh
 canonical preparation, three consecutive complete runs, the full one-hour
 soak, validators, tree-identity proof, and the separately governed tag.
 
+### 2026-07-23 — R-F: canonical evidence launch begins before Node loads JavaScript
+
+The M1 closing audit found two remaining bootstrap gaps in the v3 provenance
+path. An in-process environment guard runs only after Node has already applied
+`NODE_OPTIONS`; it therefore cannot prove that injected preload code did not
+execute. The outer protocol/controller bootstrap also used the installed
+TypeScript and `json-schema-to-typescript` generator stack before the freshly
+built controller could capture or verify those bytes. Finally, the outer
+wrapper selected Git but did not pass that exact resolved executable to the
+inner preparation command.
+
+Canonical Windows evidence now begins with the tracked
+`packages/rbp-conformance/scripts/invoke-production.ps1` under the exact
+SystemRoot Windows PowerShell with `-NoProfile` and `-NonInteractive`. The
+launcher removes the exact Node and `ws` resolution-control variables from the
+process environment before starting the bound Node, preserves the argument
+vector and exit code, and is required for every prepare, production run,
+aggregate, and validator invocation. The existing in-process environment
+guards remain defense in depth; direct Node invocation is not canonical
+evidence.
+
+Before any protocol generator, clean, or TypeScript child runs, the outer
+preparation wrapper captures the complete physical TypeScript package and the
+actual installed transitive package closure rooted at the protocol package's
+`json-schema-to-typescript` dependency. It rehashes that identity immediately
+before and after every generator/clean/compiler child and before entering the
+inner CLI. The wrapper rejects caller-provided `--git-executable`, resolves and
+validates Git once through the absolute SystemRoot locator, then appends that
+exact absolute Git path to the inner CLI exactly once. A changed bootstrap
+dependency, compiler implementation, resolution path, injected preloader, or
+Git substitution fails closed.
+
+This amendment closes the launch/bootstrap contract gap only. No canonical
+three-run or soak evidence was produced by this change, and it does not declare
+O1 v1.0 frozen, M1 passed, the freeze PR ready, or a tag authorized.
+
 ### 2026-07-23 — Operator checkpoint: M1 draft-only stop and assistant lane assignment
 
 Source: operator instruction from Barış Tankut, 2026-07-23. When the M1
