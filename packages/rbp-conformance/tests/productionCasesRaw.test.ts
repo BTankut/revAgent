@@ -182,6 +182,17 @@ describe("raw production C25-C40 seed catalog", () => {
           },
         };
       }
+      if (request.action === "restart_component") {
+        return {
+          kind: "success",
+          result: {
+            readiness: {
+              ws_url: "ws://127.0.0.1:48291/bridge/v1",
+              http_connection_url: "http://127.0.0.1:48291/bridge/v1/http/connections",
+            },
+          },
+        };
+      }
       if (request.action === "open_transport") {
         return {
           kind: "success",
@@ -196,12 +207,56 @@ describe("raw production C25-C40 seed catalog", () => {
           },
         };
       }
-      if (request.action === "await_condition") {
+      if (
+        request.caseId === "O1-C37" &&
+        request.action === "spawn_fixture_bind_probe"
+      ) {
         return {
           kind: "success",
           result: {
+            firstPort: 48_298,
+            lastPort: 48_301,
+            primaryProbeIndex: 0,
+            auxiliaryProbeIndexes: [1, 2, 3],
+          },
+        };
+      }
+      if (
+        request.caseId === "O1-C37" &&
+        request.stepId.endsWith(".resume")
+      ) {
+        return {
+          kind: "control_error",
+          code: "bridge_control_invalid_control_request",
+          message: "session is not resumable",
+        };
+      }
+      if (
+        request.caseId === "O1-C37" &&
+        request.stepId.endsWith(".new-dispatch")
+      ) {
+        return {
+          kind: "control_error",
+          code: "gateway_control_http_403",
+          message: "unknown or revoked rsid",
+        };
+      }
+      if (request.action === "await_condition") {
+        const c37Rsids = [
+          "rs_raw_primary",
+          "rs_raw_bridge_shutdown",
+          "rs_raw_session_replaced",
+          "rs_raw_operator_requested",
+        ];
+        return {
+          kind: "success",
+          result: {
+            snapshot: {
+              sessions: c37Rsids.map((rsid) => ({ rsid })),
+            },
             dynamic: {
               rsid: "rs_raw_primary",
+              rsids: c37Rsids,
               nextSeq: 1,
               lastAck: 0,
               grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],

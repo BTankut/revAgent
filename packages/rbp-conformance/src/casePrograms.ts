@@ -393,10 +393,17 @@ function hello(caseId: string, suffix = "initial"): Record<string, unknown> {
   };
 }
 
-function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): CaseControlStep[] {
+function sessionSetup(
+  caseId: string,
+  grantedSessionCapabilities?: string[],
+  options: {
+    discovery?: Readonly<Record<string, unknown>>;
+    probeIndex?: unknown;
+  } = {},
+): CaseControlStep[] {
   const prefix = caseId.toLowerCase();
   return [
-    bridge(`${prefix}.discover`, "discover_fixture", args({
+    bridge(`${prefix}.discover`, "discover_fixture", args(options.discovery ?? {
       host: "{{fixture.ready.host}}",
       port: "{{fixture.ready.port}}",
       probeTimeoutMs: 1_000,
@@ -439,7 +446,7 @@ function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): Ca
     ),
     bridge(`${prefix}.run-loop`, "start_run_loop", args(), "setup"),
     bridge(`${prefix}.register`, "session_register", args({
-      probeIndex: 0,
+      probeIndex: options.probeIndex ?? 0,
       userHint: "conformance-user",
       hostname: "conformance-host",
       fingerprint: FINGERPRINT,
@@ -1366,69 +1373,234 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C36",
     controls: [
+      gateway("o1-c36.opening-fault", "enqueue_opening_fault", byBinding(
+        { rule: { binding: "wss", status: 503, retryAfter: "1", remaining: 1 } },
+        { rule: { binding: "http_sse", status: 503, retryAfter: "1", remaining: 1 } },
+      ), "setup"),
+      harness("o1-c36.capture-opening-fault", "send_binding_frame", args({
+        frame: "{{vectors.raw_opening_hello}}",
+      }), "setup"),
       ...sessionSetup("O1-C36"),
-      gateway("o1-c36.opening-wss", "enqueue_opening_fault", args({
-        rule: { binding: "wss", status: 503, retryAfter: "1", remaining: 1 },
-      })),
-      gateway("o1-c36.opening-sse", "enqueue_opening_fault", args({
-        rule: { binding: "http_sse", status: 503, retryAfter: "1", remaining: 1 },
-      })),
-      harness("o1-c36.restart-bridge-for-other-binding", "restart_component", args({
-        componentId: "bridge_simulator",
-        preserveState: true,
-      })),
-      bridge("o1-c36.open-other-binding", "open_transport", byBinding(
-        { kind: "streamable_http_sse", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", fallbackUrl: "{{gateway.ready.http_connection_url}}", hello: hello("O1-C36", "other-binding") },
-        { kind: "wss", endpointPolicy: "loopback_test_readiness", deviceToken: "{{case.device_token}}", wssUrl: "{{gateway.ready.ws_url}}", hello: hello("O1-C36", "other-binding") },
-      )),
+      bridge("o1-c36.restart-for-other-binding", "restart_simulator"),
+      withCaptures(
+        harness("o1-c36.restart-gateway-cleartext", "restart_component", args({
+          componentId: "gateway_stub",
+          preserveState: true,
+          transportSecurity: "cleartext_loopback",
+        })),
+        [
+          {
+            name: "case.c36.cleartext_ws_url",
+            source: "result",
+            jsonPointer: "/readiness/ws_url",
+          },
+          {
+            name: "case.c36.cleartext_http_connection_url",
+            source: "result",
+            jsonPointer: "/readiness/http_connection_url",
+          },
+        ],
+      ),
+      withCaptures(
+        bridge("o1-c36.open-other-binding", "open_transport", byBinding(
+          {
+            kind: "streamable_http_sse",
+            endpointPolicy: "loopback_test_readiness",
+            deviceToken: "{{case.device_token}}",
+            fallbackUrl: "{{case.c36.cleartext_http_connection_url}}",
+            clockStartMs: 0,
+            hello: hello("O1-C36", "other-binding"),
+          },
+          {
+            kind: "wss",
+            endpointPolicy: "loopback_test_readiness",
+            deviceToken: "{{case.device_token}}",
+            wssUrl: "{{case.c36.cleartext_ws_url}}",
+            clockStartMs: 0,
+            hello: hello("O1-C36", "other-binding"),
+          },
+        )),
+        [{ name: "case.other_connection_id", source: "result", jsonPointer: "/connectionId" }],
+      ),
+      bridge("o1-c36.other-run-loop", "start_run_loop"),
+      harness("o1-c36.await-other-resume", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c36.restart-for-sse-proxy", "restart_simulator"),
+      withCaptures(
+        bridge("o1-c36.open-sse-proxy", "open_transport", args({
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{case.c36.cleartext_http_connection_url}}",
+          clockStartMs: 0,
+          hello: hello("O1-C36", "proxy-sse"),
+        })),
+        [{ name: "case.sse_connection_id", source: "result", jsonPointer: "/connectionId" }],
+      ),
+      bridge("o1-c36.sse-run-loop", "start_run_loop"),
+      harness("o1-c36.await-sse-resume", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
       gateway("o1-c36.buffer-sse", "set_sse_buffering", args({
         connection_id: "{{case.sse_connection_id}}",
         enabled: true,
       })),
+      bridge("o1-c36.buffered-heartbeat", "tick", args({ nowMs: 15_000 })),
+      harness("o1-c36.await-buffered-heartbeat", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/runtime/heldOutboundFrames",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
       gateway("o1-c36.unbuffer-sse", "set_sse_buffering", args({
         connection_id: "{{case.sse_connection_id}}",
         enabled: false,
       })),
       gateway("o1-c36.flush", "flush_held", args({ connection_id: "{{case.sse_connection_id}}" })),
+      harness("o1-c36.await-heartbeat-ack", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/lastHeartbeatAckAtMs",
+        operator: "equals",
+        expected: 15_000,
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
     ],
     requiredHarnessCapabilities: ["component_restart_with_state", "binding_parity_snapshot", "opening_error_capture", "proxy_buffering_control"],
   },
   {
     caseId: "O1-C37",
     controls: [
-      ...sessionSetup("O1-C37"),
-      ...["bridge_shutdown", "session_replaced", "operator_requested"].map((reason) => bridge(
-        `o1-c37.${reason}.register`,
-        "session_register",
-        args({
-          probeIndex: 0,
-          userHint: "conformance-user",
-          hostname: "conformance-host",
-          fingerprint: FINGERPRINT,
-          bridgeVersion: "0.0.0",
-        }),
-        "setup",
-      )),
-      harness("o1-c37.await-four-sessions", "await_condition", args({
-        source: "bridge.snapshot_evidence",
-        jsonPointer: "/sessions",
-        operator: "count_equals",
-        expected: 4,
-        timeoutMs: 5_000,
-      }), "setup"),
-      ...[
-        "revit_exited",
-        "bridge_shutdown",
-        "session_replaced",
-        "operator_requested",
-      ].flatMap((reason) => [
-        gateway(`o1-c37.${reason}.dispatch`, "dispatch_invoke", args({ request: `{{vectors.c37.${reason}.possibly_dispatched_mutation}}` })),
+      withCaptures(
+        harness("o1-c37.spawn-three-fixtures", "spawn_fixture_bind_probe", args({
+          mode: "fixture_session",
+          count: 3,
+        }), "setup"),
+        [
+          { name: "case.c37.discovery_first_port", source: "result", jsonPointer: "/firstPort" },
+          { name: "case.c37.discovery_last_port", source: "result", jsonPointer: "/lastPort" },
+          { name: "case.c37.primary_probe_index", source: "result", jsonPointer: "/primaryProbeIndex" },
+          { name: "case.c37.auxiliary_probe_0", source: "result", jsonPointer: "/auxiliaryProbeIndexes/0" },
+          { name: "case.c37.auxiliary_probe_1", source: "result", jsonPointer: "/auxiliaryProbeIndexes/1" },
+          { name: "case.c37.auxiliary_probe_2", source: "result", jsonPointer: "/auxiliaryProbeIndexes/2" },
+        ],
+      ),
+      ...sessionSetup("O1-C37", undefined, {
+        discovery: {
+          host: "127.0.0.1",
+          firstPort: "{{case.c37.discovery_first_port}}",
+          lastPort: "{{case.c37.discovery_last_port}}",
+          probeTimeoutMs: 1_000,
+        },
+        probeIndex: "{{case.c37.primary_probe_index}}",
+      }),
+      ...([
+        ["bridge_shutdown", "case.c37.auxiliary_probe_0", 2, 1],
+        ["session_replaced", "case.c37.auxiliary_probe_1", 3, 2],
+        ["operator_requested", "case.c37.auxiliary_probe_2", 4, 3],
+      ] as const).flatMap(([reason, probeIndex, expectedCount, sessionIndex]) => [
+        bridge(
+          `o1-c37.${reason}.register`,
+          "session_register",
+          args({
+            probeIndex: `{{${probeIndex}}}`,
+            userHint: `conformance-user-${sessionIndex + 1}`,
+            hostname: "conformance-host",
+            fingerprint: FINGERPRINT,
+            bridgeVersion: "0.0.0",
+          }),
+          "setup",
+        ),
+        withCaptures(
+          harness(`o1-c37.${reason}.await-register`, "await_condition", args({
+            source: "bridge.snapshot_evidence",
+            jsonPointer: "/sessions",
+            operator: "count_equals",
+            expected: expectedCount,
+            timeoutMs: 10_000,
+          }), "setup", 15_000),
+          [{
+            name: `case.c37.${reason}.rsid`,
+            source: "result",
+            jsonPointer: `/snapshot/sessions/${sessionIndex}/rsid`,
+          }],
+        ),
+      ]),
+      ...([
+        ["revit_exited", "case.rsid", 0],
+        ["bridge_shutdown", "case.c37.bridge_shutdown.rsid", 1],
+        ["session_replaced", "case.c37.session_replaced.rsid", 2],
+        ["operator_requested", "case.c37.operator_requested.rsid", 3],
+      ] as const).flatMap(([reason, rsid, fixtureIndex]) => [
+        fixture(`o1-c37.${reason}.stall`, "plan_fault", args({
+          fixtureIndex,
+          requestId: `{{vectors.c37.${reason}.possibly_dispatched_invocation_id}}`,
+          fault: { stall: true },
+        })),
+        gateway(`o1-c37.${reason}.dispatch`, "dispatch_invoke", args({
+          request: {
+            rsid: `{{${rsid}}}`,
+            payload: `{{vectors.c37.${reason}.possibly_dispatched_mutation}}`,
+          },
+        })),
+        harness(`o1-c37.${reason}.await-dispatch-start`, "await_condition", args({
+          source: `fixture.snapshot_evidence.${fixtureIndex}`,
+          jsonPointer: "/pendingStalls/0/requestId",
+          operator: "equals",
+          expected: `{{vectors.c37.${reason}.possibly_dispatched_invocation_id}}`,
+          timeoutMs: 10_000,
+        }), "observation", 15_000),
         bridge(`o1-c37.${reason}.unregister`, "session_unregister", args({
-          rsid: `{{case.c37.${reason}.rsid}}`,
+          rsid: `{{${rsid}}}`,
           reason,
         })),
-        bridge(`o1-c37.${reason}.resume`, "session_resume", args({ rsid: `{{case.c37.${reason}.rsid}}` })),
-        gateway(`o1-c37.${reason}.new-dispatch`, "dispatch_invoke", args({ request: `{{vectors.c37.${reason}.post_unregister_invoke}}` })),
+        harness(`o1-c37.${reason}.await-revocation`, "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer: `/sessions/{{${rsid}}}/lifecycle/unregisterReason`,
+          operator: "equals",
+          expected: reason,
+          timeoutMs: 10_000,
+        }), "observation", 15_000),
+        withExpectedOutcome(
+          bridge(`o1-c37.${reason}.resume`, "session_resume", args({ rsid: `{{${rsid}}}` })),
+          {
+            kind: "control_error",
+            code: "bridge_control_invalid_control_request",
+            messageIncludes: "not resumable",
+          },
+        ),
+        withExpectedOutcome(
+          gateway(`o1-c37.${reason}.new-dispatch`, "dispatch_invoke", args({
+            request: {
+              rsid: `{{${rsid}}}`,
+              payload: `{{vectors.c37.${reason}.post_unregister_invoke}}`,
+            },
+          })),
+          {
+            kind: "control_error",
+            code: "gateway_control_http_403",
+            messageIncludes: "revoked",
+          },
+        ),
+        fixture(`o1-c37.${reason}.release`, "release_stall", args({
+          fixtureIndex,
+          requestId: `{{vectors.c37.${reason}.possibly_dispatched_invocation_id}}`,
+        })),
+        fixture(
+          `o1-c37.${reason}.execution-evidence`,
+          "snapshot_evidence",
+          args({ fixtureIndex }),
+          "observation",
+        ),
       ]),
     ],
     requiredHarnessCapabilities: ["four_isolated_registered_sessions", "resume_fault_capture", "journal_snapshot"],

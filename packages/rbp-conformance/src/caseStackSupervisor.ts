@@ -677,17 +677,6 @@ async function runFixtureBindPolicyProcess(input: {
   };
 }
 
-function adjacentPorts(origin: number, maximumDistance: number): number[] {
-  const candidates: number[] = [];
-  for (let distance = 1; distance <= maximumDistance; distance += 1) {
-    if (origin + distance <= 65_535) candidates.push(origin + distance);
-  }
-  for (let distance = 1; distance <= maximumDistance; distance += 1) {
-    if (origin - distance >= 1) candidates.push(origin - distance);
-  }
-  return candidates;
-}
-
 async function loopbackPortAvailable(port: number): Promise<boolean> {
   return await new Promise<boolean>((resolve) => {
     const server = createServer();
@@ -984,6 +973,7 @@ export class CaseStackSupervisor {
       componentId: ComponentId;
       preserveState: boolean;
       startupOverrides?: GatewayStartupOverrides;
+      transportSecurity?: "preserve" | "cleartext_loopback";
     },
     stepId: string,
     action: string,
@@ -991,6 +981,13 @@ export class CaseStackSupervisor {
     const stack = this.#stack();
     if (input.componentId === "addin_loopback_fixture") {
       throw new Error("restart_component does not replace the canonical fixture process");
+    }
+    if (
+      input.componentId !== "gateway_stub" &&
+      input.transportSecurity !== undefined &&
+      input.transportSecurity !== "preserve"
+    ) {
+      throw new Error("restart_component transportSecurity applies only to gateway_stub");
     }
     const previous = this.component(input.componentId);
     const stopped = await previous.stop();
@@ -1020,11 +1017,14 @@ export class CaseStackSupervisor {
 
     if (input.componentId === "gateway_stub") {
       await stack.gatewayProxy.stop();
+      const replacementTlsIdentity = input.transportSecurity === "cleartext_loopback"
+        ? undefined
+        : stack.tlsIdentity;
       const replacement = await this.#startComponent(
         this.#componentPlan("gateway_stub"),
         stack.tokens,
         startupOverrides,
-        stack.tlsIdentity,
+        replacementTlsIdentity,
       );
       let replacementProxy: ParentTcpCaptureProxy | undefined;
       try {
@@ -1036,7 +1036,7 @@ export class CaseStackSupervisor {
         if (gatewayWs.hostname !== gatewayHttp.hostname || gatewayWs.port !== gatewayHttp.port) {
           throw new Error("restarted Gateway readiness bindings do not share one loopback listener");
         }
-        const expectedSchemes = stack.tlsIdentity === undefined
+        const expectedSchemes = replacementTlsIdentity === undefined
           ? { ws: "ws:", http: "http:" }
           : { ws: "wss:", http: "https:" };
         if (
@@ -1066,7 +1066,7 @@ export class CaseStackSupervisor {
           http_connection_url: stack.tokens.gateway_http_connection_url,
           control_url: stack.tokens.gateway_control_url,
           proxyCapture: true,
-          tlsTrust: stack.tlsIdentity === undefined
+          tlsTrust: replacementTlsIdentity === undefined
             ? {
                 enabled: false,
                 caCertificatePath: null,
@@ -1075,11 +1075,13 @@ export class CaseStackSupervisor {
               }
             : {
                 enabled: true,
-                caCertificatePath: stack.tlsIdentity.caCertificatePath,
-                caCertificateSha256: stack.tlsIdentity.caCertificateSha256,
-                serverCertificateSha256: stack.tlsIdentity.serverCertificateSha256,
+                caCertificatePath: replacementTlsIdentity.caCertificatePath,
+                caCertificateSha256: replacementTlsIdentity.caCertificateSha256,
+                serverCertificateSha256: replacementTlsIdentity.serverCertificateSha256,
               },
         };
+        if (replacementTlsIdentity === undefined) delete stack.tlsIdentity;
+        else stack.tlsIdentity = replacementTlsIdentity;
         stack.components.set(input.componentId, replacement);
       } catch (error) {
         await replacementProxy?.stop().catch(() => undefined);
@@ -1140,65 +1142,96 @@ export class CaseStackSupervisor {
   async spawnAdditionalFixture(
     stepId: string,
     action: string,
+    count = 1,
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
     const stack = this.#stack();
     if (stack.extraFixtures.length > 0) {
-      throw new Error("the supervised early-case stack permits exactly one additional fixture");
+      throw new Error("additional fixtures may be spawned only once per supervised stack");
+    }
+    if (!Number.isSafeInteger(count) || count < 1 || count > 3) {
+      throw new Error("additional fixture count must be an integer from 1 through 3");
     }
     const primaryPort = safePort(
       stack.publicReadiness.fixture.port,
       "primary fixture readiness port",
     );
     const fixturePlan = this.#componentPlan("addin_loopback_fixture");
-    let fixture: StartedStackComponent | undefined;
-    let selectedPort = 0;
-    for (const candidate of adjacentPorts(primaryPort, 5)) {
-      if (!await loopbackPortAvailable(candidate)) continue;
+    let fixtures: StartedStackComponent[] = [];
+    let selectedPorts: number[] = [];
+    for (let primaryOffset = 0; primaryOffset < 6 && fixtures.length !== count; primaryOffset += 1) {
+      const firstPort = primaryPort - primaryOffset;
+      const lastPort = firstPort + 5;
+      if (firstPort < 1 || lastPort > 65_535) continue;
+      const candidates = Array.from({ length: 6 }, (_unused, index) => firstPort + index)
+        .filter((port) => port !== primaryPort);
+      const available: number[] = [];
+      for (const candidate of candidates) {
+        if (await loopbackPortAvailable(candidate)) available.push(candidate);
+      }
+      if (available.length < count) continue;
+      const attemptFixtures: StartedStackComponent[] = [];
+      const attemptPorts: number[] = [];
       try {
-        fixture = await this.#startComponent(
-          fixturePlan,
-          stack.tokens,
-          stack.startupOverrides,
-          undefined,
-          { "--port": candidate },
-        );
-        selectedPort = safePort(fixture.readiness.port, "additional fixture readiness port");
-        if (selectedPort !== candidate) {
-          await fixture.stop();
-          fixture = undefined;
-          throw new Error("additional fixture did not bind the parent-selected port");
+        for (const candidate of available.slice(0, count)) {
+          const fixture = await this.#startComponent(
+            fixturePlan,
+            stack.tokens,
+            stack.startupOverrides,
+            undefined,
+            { "--port": candidate },
+          );
+          const selectedPort = safePort(
+            fixture.readiness.port,
+            "additional fixture readiness port",
+          );
+          if (selectedPort !== candidate) {
+            await fixture.stop();
+            throw new Error("additional fixture did not bind the parent-selected port");
+          }
+          attemptFixtures.push(fixture);
+          attemptPorts.push(selectedPort);
         }
-        break;
+        fixtures = attemptFixtures;
+        selectedPorts = attemptPorts;
       } catch {
-        fixture = undefined;
+        await Promise.allSettled(
+          [...attemptFixtures].reverse().map(async (fixture) => await fixture.stop()),
+        );
       }
     }
-    if (fixture === undefined) {
-      throw new Error("unable to start an additional fixture in the bounded adjacent port range");
+    if (fixtures.length !== count) {
+      await Promise.allSettled([...fixtures].reverse().map(async (fixture) => await fixture.stop()));
+      throw new Error(`unable to start ${count} additional fixtures in the bounded adjacent port range`);
     }
-    stack.extraFixtures.push(fixture);
+    stack.extraFixtures.push(...fixtures);
+    const orderedPorts = [primaryPort, ...selectedPorts].sort((left, right) => left - right);
+    const primaryProbeIndex = orderedPorts.indexOf(primaryPort);
+    const auxiliaryProbeIndexes = selectedPorts.map((port) => orderedPorts.indexOf(port));
     return {
       result: {
         started: true,
         fixtureIndex: 1,
-        pid: fixture.pid,
-        host: numericLoopback(fixture.readiness.host, "additional fixture host"),
-        port: selectedPort,
-        firstPort: Math.min(primaryPort, selectedPort),
-        lastPort: Math.max(primaryPort, selectedPort),
-        expectedSessionCount: 2,
-        primaryProbeIndex: primaryPort < selectedPort ? 0 : 1,
-        auxiliaryProbeIndex: primaryPort < selectedPort ? 1 : 0,
+        fixtureIndexes: fixtures.map((_fixture, index) => index + 1),
+        pid: fixtures[0]!.pid,
+        pids: fixtures.map(({ pid }) => pid),
+        host: numericLoopback(fixtures[0]!.readiness.host, "additional fixture host"),
+        port: selectedPorts[0]!,
+        ports: selectedPorts,
+        firstPort: orderedPorts[0]!,
+        lastPort: orderedPorts.at(-1)!,
+        expectedSessionCount: count + 1,
+        primaryProbeIndex,
+        auxiliaryProbeIndex: auxiliaryProbeIndexes[0]!,
+        auxiliaryProbeIndexes,
         tempRegistryPath: null,
       },
-      observations: [
+      observations: fixtures.map((fixture) =>
         this.#lifecycleObservation(fixture, stepId, action, "started", {
           orphanProcessCount: 0,
           survivingPids: [],
           killEscalated: false,
           stopOrder: [],
-        }),
-      ],
+        })),
     };
   }
 
@@ -1779,13 +1812,38 @@ export class CaseStackSupervisor {
     argumentsValue: JsonObject,
     timeoutMs = 30_000,
   ): Promise<JsonValue> {
+    if (componentId === "addin_loopback_fixture") {
+      return await this.fixtureJsonlControl(0, action, argumentsValue, timeoutMs);
+    }
     const control = this.component(componentId).jsonl;
     if (control === undefined) throw new Error(`${componentId} lacks JSONL control`);
     return await control.request(action, argumentsValue, timeoutMs);
   }
 
+  async fixtureJsonlControl(
+    fixtureIndex: number,
+    action: string,
+    argumentsValue: JsonObject,
+    timeoutMs = 30_000,
+  ): Promise<JsonValue> {
+    if (!Number.isSafeInteger(fixtureIndex) || fixtureIndex < 0) {
+      throw new Error("fixture control index must be a non-negative safe integer");
+    }
+    const stack = this.#stack();
+    const component = fixtureIndex === 0
+      ? stack.components.get("addin_loopback_fixture")
+      : stack.extraFixtures[fixtureIndex - 1];
+    if (component === undefined || component.componentId !== "addin_loopback_fixture") {
+      throw new Error(`active stack lacks fixture control index ${fixtureIndex}`);
+    }
+    const control = component.jsonl;
+    if (control === undefined) throw new Error(`fixture control index ${fixtureIndex} lacks JSONL control`);
+    return await control.request(action, argumentsValue, timeoutMs);
+  }
+
   async aggregateSnapshot(
     componentId: "bridge_simulator" | "addin_loopback_fixture",
+    fixtureIndex = 0,
   ): Promise<JsonObject> {
     const arrayFields = componentId === "bridge_simulator"
       ? ["invocations", "holds", "durabilityEvents", "sessions", "sequences"]
@@ -1793,7 +1851,9 @@ export class CaseStackSupervisor {
     let fields: Readonly<Record<string, JsonValue>> = {};
     let aggregate: JsonObject | undefined;
     for (let pageIndex = 0; pageIndex < MAX_SNAPSHOT_PAGES; pageIndex += 1) {
-      const page = await this.jsonlControl(componentId, "snapshot_evidence", fields);
+      const page = componentId === "addin_loopback_fixture"
+        ? await this.fixtureJsonlControl(fixtureIndex, "snapshot_evidence", fields)
+        : await this.jsonlControl(componentId, "snapshot_evidence", fields);
       if (!isObject(page)) throw new Error(`${componentId} snapshot page is not an object`);
       if (aggregate === undefined) {
         aggregate = structuredClone(page);
@@ -2069,12 +2129,17 @@ export class CaseStackSupervisor {
   }
 
   async #conditionSource(source: string): Promise<JsonObject> {
+    const fixtureMatch = /^fixture\.snapshot_evidence(?:\.([0-9]+))?$/u.exec(source);
+    if (fixtureMatch !== null) {
+      return await this.aggregateSnapshot(
+        "addin_loopback_fixture",
+        fixtureMatch[1] === undefined ? 0 : Number(fixtureMatch[1]),
+      );
+    }
     switch (source) {
       case "bridge.snapshot_evidence":
       case "bridge_reconnect_schedule":
         return await this.aggregateSnapshot("bridge_simulator");
-      case "fixture.snapshot_evidence":
-        return await this.aggregateSnapshot("addin_loopback_fixture");
       case "gateway.snapshot":
         return await this.gatewayControl("snapshot", {}) as JsonObject;
       case "gateway.compact_snapshot":

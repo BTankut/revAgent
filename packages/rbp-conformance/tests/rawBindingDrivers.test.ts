@@ -317,6 +317,11 @@ describe("parent-owned raw WSS binding driver", () => {
           parsed: { error: "device credential rejected" },
         },
       },
+      openingError: {
+        status: 401,
+        retryAfter: null,
+        retryable: false,
+      },
     });
   });
 
@@ -427,6 +432,11 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
           parseState: "parsed",
           parsed: { error: "device credential rejected" },
         },
+      },
+      openingError: {
+        status: 401,
+        retryAfter: null,
+        retryable: false,
       },
       connectionIdPresent: false,
       sse: null,

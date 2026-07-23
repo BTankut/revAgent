@@ -535,6 +535,18 @@ function selectedHeaders(headers: IncomingHttpHeaders): JsonObject {
   return selected;
 }
 
+function openingErrorEvidence(status: number, headers: JsonObject): JsonObject | null {
+  if (status < 400 || status > 599) return null;
+  const retryAfter = typeof headers["retry-after"] === "string"
+    ? headers["retry-after"]
+    : null;
+  return {
+    status,
+    retryAfter,
+    retryable: [408, 429, 502, 503, 504].includes(status),
+  };
+}
+
 function capturedFrame(
   bytes: Buffer,
   binary: boolean,
@@ -693,24 +705,38 @@ export function createRawWssBindingDriver(options: RawWssBindingDriverOptions): 
           socket.once("error", () => undefined);
           socket.terminate();
         };
-        const result = (): JsonObject => ({
-          kind: "wss_exchange",
-          endpoint: {
-            protocol: "wss:",
-            host: endpoint.hostname,
-            port: Number(endpoint.port),
-            path: endpoint.pathname,
-          },
-          negotiation: { versionsHeader: versionHint },
-          tlsTrust: { ...trust.evidence },
-          opened,
-          openingFrame: opening.frame.metadata,
-          openingSent,
-          targetSent,
-          receivedFrames: frames,
-          close,
-          upgradeResponse,
-        });
+        const result = (): JsonObject => {
+          const status = typeof upgradeResponse?.status === "number"
+            ? upgradeResponse.status
+            : 0;
+          const rawHeaders = upgradeResponse?.headers;
+          const headers = rawHeaders !== null &&
+            typeof rawHeaders === "object" &&
+            !Array.isArray(rawHeaders)
+            ? rawHeaders
+            : null;
+          return {
+            kind: "wss_exchange",
+            endpoint: {
+              protocol: "wss:",
+              host: endpoint.hostname,
+              port: Number(endpoint.port),
+              path: endpoint.pathname,
+            },
+            negotiation: { versionsHeader: versionHint },
+            tlsTrust: { ...trust.evidence },
+            opened,
+            openingFrame: opening.frame.metadata,
+            openingSent,
+            targetSent,
+            receivedFrames: frames,
+            close,
+            upgradeResponse,
+            openingError: headers === null
+              ? null
+              : openingErrorEvidence(status, headers),
+          };
+        };
         const finish = (): void => {
           if (finished) return;
           finished = true;
@@ -1113,6 +1139,7 @@ export function createRawHttpSseBindingDriver(options: RawHttpSseBindingDriverOp
         tlsTrust: trust === null ? null : { ...trust.evidence },
         openingFrame: opening.frame.metadata,
         createResponse: responseJson(created),
+        openingError: openingErrorEvidence(created.status, created.headers),
         connectionIdPresent: typeof connectionId === "string" && connectionId.length > 0,
         sse: null,
         messagesResponse: null,

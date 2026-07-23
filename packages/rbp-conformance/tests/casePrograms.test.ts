@@ -37,7 +37,7 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   },
   "bridge_jsonl_control:open_transport": {
     required: ["kind", "deviceToken", "hello"],
-    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned", "endpointPolicy", "tlsTrust"],
+    optional: ["wssUrl", "fallbackUrl", "fallbackProvisioned", "endpointPolicy", "tlsTrust", "clockStartMs"],
   },
   "bridge_jsonl_control:start_run_loop": { required: [] },
   "bridge_jsonl_control:session_register": { required: ["probeIndex", "userHint", "hostname", "fingerprint", "bridgeVersion"] },
@@ -78,10 +78,10 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   },
   "bridge_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor"] },
   "bridge_jsonl_control:shutdown": { required: [] },
-  "fixture_jsonl_control:plan_fault": { required: ["requestId", "fault"] },
-  "fixture_jsonl_control:release_stall": { required: ["requestId"] },
+  "fixture_jsonl_control:plan_fault": { required: ["requestId", "fault"], optional: ["fixtureIndex"] },
+  "fixture_jsonl_control:release_stall": { required: ["requestId"], optional: ["fixtureIndex"] },
   "fixture_jsonl_control:apply_document_context": { required: ["event"] },
-  "fixture_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor"] },
+  "fixture_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor", "fixtureIndex"] },
   "fixture_jsonl_control:shutdown": { required: [] },
 };
 
@@ -113,6 +113,18 @@ describe("exact forty-case control and observation catalog", () => {
             kind: "control_error",
             code: "gateway_control_http_400",
             messageIncludes: "atomic batch",
+          });
+        } else if (step.stepId.endsWith(".resume") && step.stepId.startsWith("o1-c37.")) {
+          expect(step.expectedOutcome).toEqual({
+            kind: "control_error",
+            code: "bridge_control_invalid_control_request",
+            messageIncludes: "not resumable",
+          });
+        } else if (step.stepId.endsWith(".new-dispatch") && step.stepId.startsWith("o1-c37.")) {
+          expect(step.expectedOutcome).toEqual({
+            kind: "control_error",
+            code: "gateway_control_http_403",
+            messageIncludes: "revoked",
           });
         } else {
           expect(step.expectedOutcome).toEqual({ kind: "success" });

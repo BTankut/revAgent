@@ -14,7 +14,11 @@ import type {
   ParentStepDrivers,
   RawStepOutcome,
 } from "./parentStepEngine.js";
-import type { JsonObject, JsonValue } from "./processHarness.js";
+import {
+  ControlResponseError,
+  type JsonObject,
+  type JsonValue,
+} from "./processHarness.js";
 import type {
   ComponentId,
   ProcessObservationRecord,
@@ -276,14 +280,30 @@ function createGatewayDriver(supervisor: CaseStackSupervisor): ParentStepDriver 
 
 function createBridgeDriver(supervisor: CaseStackSupervisor): ParentStepDriver {
   return async (request) => {
-    const result = request.action === "snapshot_evidence"
-      ? await supervisor.aggregateSnapshot("bridge_simulator")
-      : await supervisor.jsonlControl(
-          "bridge_simulator",
-          request.action,
-          request.arguments,
-          deadlineTimeout(request),
-        );
+    let result: JsonValue;
+    try {
+      result = request.action === "snapshot_evidence"
+        ? await supervisor.aggregateSnapshot("bridge_simulator")
+        : await supervisor.jsonlControl(
+            "bridge_simulator",
+            request.action,
+            request.arguments,
+            deadlineTimeout(request),
+          );
+    } catch (error) {
+      if (error instanceof ControlResponseError) {
+        return {
+          kind: "control_error",
+          code: `bridge_control_${error.code}`,
+          message: error.controlMessage,
+          details: {
+            componentId: error.componentId,
+            correlationId: error.correlationId,
+          },
+        };
+      }
+      throw error;
+    }
     const observations = request.action === "snapshot_evidence" && isObject(result)
       ? [observation(
           request,
@@ -299,12 +319,19 @@ function createBridgeDriver(supervisor: CaseStackSupervisor): ParentStepDriver {
 
 function createFixtureDriver(supervisor: CaseStackSupervisor): ParentStepDriver {
   return async (request) => {
+    const rawFixtureIndex = request.arguments.fixtureIndex;
+    const fixtureIndex = rawFixtureIndex === undefined ? 0 : Number(rawFixtureIndex);
+    if (!Number.isSafeInteger(fixtureIndex) || fixtureIndex < 0 || fixtureIndex > 3) {
+      throw new Error("fixtureIndex must be an integer from 0 through 3");
+    }
+    const fixtureArguments = { ...request.arguments };
+    delete fixtureArguments.fixtureIndex;
     const result = request.action === "snapshot_evidence"
-      ? await supervisor.aggregateSnapshot("addin_loopback_fixture")
-      : await supervisor.jsonlControl(
-          "addin_loopback_fixture",
+      ? await supervisor.aggregateSnapshot("addin_loopback_fixture", fixtureIndex)
+      : await supervisor.fixtureJsonlControl(
+          fixtureIndex,
           request.action,
-          request.arguments,
+          fixtureArguments,
           deadlineTimeout(request),
         );
     const observations = request.action === "snapshot_evidence" && isObject(result)

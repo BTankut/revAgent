@@ -281,6 +281,17 @@ function controlResult(
   context: Readonly<CanonicalAssertionOracleContext>,
   stepId: string,
 ): ObjectValue | null {
+  const response = controlResponse(context, stepId);
+  if (response === null) return null;
+  return Object.prototype.hasOwnProperty.call(response, "result")
+    ? objectValue(response.result)
+    : objectValue(response.details) ?? response;
+}
+
+function controlObservation(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): ObjectValue | null {
   const matches = observations(context, "control_result").filter(({ payload }) => {
     const object = objectValue(payload);
     return object?.schemaVersion === "rbp-step-control-observation/v1" &&
@@ -298,9 +309,21 @@ function controlResult(
   ) {
     return null;
   }
-  return Object.prototype.hasOwnProperty.call(response, "result")
-    ? objectValue(response.result)
-    : objectValue(response.details) ?? response;
+  return payload;
+}
+
+function controlResponse(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): ObjectValue | null {
+  return objectValue(controlObservation(context, stepId)?.response);
+}
+
+function controlArguments(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): ObjectValue | null {
+  return objectValue(pathValue(controlObservation(context, stepId), ["request", "arguments"]));
 }
 
 function semanticControl(
@@ -1521,10 +1544,13 @@ define(
 );
 define(
   "O1-C36-OPENING-ERRORS",
-  semanticEvent(["wire_event", "bridge_snapshot"], (candidate) =>
-    candidate.status === 503 &&
-    String(candidate.retryAfter ?? candidate.retry_after) === "1" &&
-    candidate.retryable === true),
+  safe((context) => {
+    const remote = rawRemote(context, "o1-c36.capture-opening-fault");
+    const openingError = objectValue(remote?.openingError);
+    return openingError?.status === 503 &&
+      openingError.retryAfter === "1" &&
+      openingError.retryable === true;
+  }),
 );
 define(
   "O1-C36-PROXY-BUFFERING",
@@ -1537,27 +1563,125 @@ define(
       candidate.kind === "streamable_http_sse" && candidate.open === true)),
 );
 
+function c37Evidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  token: string,
+): {
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly gatewaySession: ObjectValue;
+} | null {
+  const unregister = controlResult(context, `o1-c37.${token}.unregister`);
+  const dispatch = controlArguments(context, `o1-c37.${token}.dispatch`);
+  const request = objectValue(dispatch?.request);
+  const payload = objectValue(request?.payload);
+  const rsid = stringValue(unregister?.rsid);
+  const invocationId = stringValue(payload?.invocation_id);
+  if (
+    rsid === null ||
+    invocationId === null ||
+    unregister?.reason !== token ||
+    request?.rsid !== rsid
+  ) {
+    return null;
+  }
+  for (const snapshot of snapshots(context, "gateway_snapshot")) {
+    const session = objectValue(objectValue(snapshot.sessions)?.[rsid]);
+    const lifecycle = objectValue(session?.lifecycle);
+    if (
+      session?.revoked === true &&
+      lifecycle?.phase === "unregistered" &&
+      lifecycle.unregisterReason === token
+    ) {
+      return { rsid, invocationId, gatewaySession: session };
+    }
+  }
+  return null;
+}
+
+function c37RevokedSession(
+  evidence: NonNullable<ReturnType<typeof c37Evidence>>,
+  token: string,
+): boolean {
+  const lifecycle = objectValue(evidence.gatewaySession.lifecycle);
+  return evidence.gatewaySession.revoked === true &&
+    lifecycle?.phase === "unregistered" &&
+    lifecycle.unregisterReason === token;
+}
+
+function exactControlError(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+  code: string,
+  detail: RegExp,
+): boolean {
+  const response = controlResponse(context, stepId);
+  return response?.kind === "control_error" &&
+    response.code === code &&
+    detail.test(String(response.message ?? ""));
+}
+
 for (const reason of ["REVIT-EXITED", "BRIDGE-SHUTDOWN", "SESSION-REPLACED", "OPERATOR-REQUESTED"] as const) {
   const token = reason.toLowerCase().replaceAll("-", "_");
   define(
     `O1-C37-${reason}-RESUME`,
-    semanticEvent(["gateway_snapshot", "bridge_snapshot", "wire_event"], (candidate) =>
-      (candidate.reason === token || candidate.revocationReason === token) &&
-      (candidate.revoked === true || candidate.resumeAuthorized === false)),
+    safe((context) => {
+      const evidence = c37Evidence(context, token);
+      return evidence !== null &&
+        c37RevokedSession(evidence, token) &&
+        exactControlError(
+          context,
+          `o1-c37.${token}.resume`,
+          "bridge_control_invalid_control_request",
+          /not resumable/i,
+        );
+    }),
   );
   define(
     `O1-C37-${reason}-DISPATCH`,
-    semanticEvent(["gateway_snapshot", "control_result", "wire_event"], (candidate) =>
-      (candidate.reason === token || candidate.revocationReason === token) &&
-      (candidate.dispatchAuthorized === false ||
-        /revoked|not registered|unknown session/i.test(String(candidate.message ?? candidate.error ?? "")))),
+    safe((context) => {
+      const evidence = c37Evidence(context, token);
+      return evidence !== null &&
+        c37RevokedSession(evidence, token) &&
+        exactControlError(
+          context,
+          `o1-c37.${token}.new-dispatch`,
+          "gateway_control_http_403",
+          /revoked/i,
+        );
+    }),
   );
   define(
     `O1-C37-${reason}-INDETERMINATE`,
-    semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-      (candidate.reason === token || candidate.unregisterReason === token) &&
-      candidate.state === "indeterminate" &&
-      candidate.dispatchMayHaveStarted === true),
+    safe((context) => {
+      const evidence = c37Evidence(context, token);
+      if (evidence === null || !c37RevokedSession(evidence, token)) return false;
+      const terminal = objectValue(
+        objectValue(evidence.gatewaySession.terminalOutcomes)?.[evidence.invocationId],
+      );
+      const expired = objectValue(
+        objectValue(evidence.gatewaySession.expiredOrigins)?.[evidence.invocationId],
+      );
+      const bridgeIndeterminate = snapshots(context, "bridge_snapshot").some((snapshot) =>
+        arrayValue(snapshot.invocations).some((value) => {
+          const invocation = objectValue(value);
+          return invocation?.rsid === evidence.rsid &&
+            invocation.invocationId === evidence.invocationId &&
+            invocation.state === "indeterminate" &&
+            invocation.mutating === true &&
+            invocation.dispatchMayHaveStarted === true;
+        }));
+      const fixtureStarted = snapshots(context, "fixture_execution_count").some((snapshot) =>
+        arrayValue(snapshot.executionCounts).some((value) => {
+          const row = objectValue(value);
+          return row?.requestId === evidence.invocationId && row.count === 1;
+        }));
+      return terminal?.classification === "journal_indeterminate" &&
+        expired?.correlationId === evidence.invocationId &&
+        arrayValue(expired.mutationEntries).length === 1 &&
+        bridgeIndeterminate &&
+        fixtureStarted;
+    }),
   );
 }
 

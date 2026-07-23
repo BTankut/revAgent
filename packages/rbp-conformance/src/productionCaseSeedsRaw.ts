@@ -699,14 +699,10 @@ function c37Vectors(): Record<string, JsonValue> {
   return Object.fromEntries(reasons.map((reason) => [
     reason,
     {
-      possibly_dispatched_mutation: {
-        rsid: `rs_c37_${reason}`,
-        payload: invokePayload(`O1-C37:${reason}:possibly-dispatched`, { mutating: true }),
-      },
-      post_unregister_invoke: {
-        rsid: `rs_c37_${reason}`,
-        payload: invokePayload(`O1-C37:${reason}:post-unregister`),
-      },
+      possibly_dispatched_invocation_id: invocationId(`O1-C37:${reason}:possibly-dispatched`),
+      possibly_dispatched_mutation:
+        invokePayload(`O1-C37:${reason}:possibly-dispatched`, { mutating: true }),
+      post_unregister_invoke: invokePayload(`O1-C37:${reason}:post-unregister`),
     },
   ])) as Record<string, JsonValue>;
 }
@@ -847,6 +843,7 @@ function idsForPrograms(): Record<string, JsonValue> {
     const caseIds: Record<string, JsonValue> = {
       "hello-initial": { envelopeId: messageId(`${caseId}:hello-initial`) },
       "hello-other-binding": { envelopeId: messageId(`${caseId}:hello-other-binding`) },
+      "hello-proxy-sse": { envelopeId: messageId(`${caseId}:hello-proxy-sse`) },
     };
     for (const suffix of [
       "raw_path",
@@ -919,14 +916,7 @@ export function rawProductionCaseVariables(
       device_token: input.deviceToken ?? "test-device-token",
       other_device_token: input.otherDeviceToken ?? "other-device-token",
       device_id: "device-01",
-      sse_connection_id: "connection-raw-sse",
       batch_steps: commonSteps,
-      c37: {
-        revit_exited: { rsid: "rs_c37_revit_exited" },
-        bridge_shutdown: { rsid: "rs_c37_bridge_shutdown" },
-        session_replaced: { rsid: "rs_c37_session_replaced" },
-        operator_requested: { rsid: "rs_c37_operator_requested" },
-      },
     },
     ids: idsForPrograms(),
     jcs: { batch_digest: batchDigest(commonBatch as never) },
@@ -1006,6 +996,7 @@ function frameFacts(): ReadonlyMap<string, RawProductionFrameFact> {
     ),
     ...Object.entries(vectors.c35 as Record<string, JsonValue>).map(([name, value]) =>
       frameFact("O1-C35", `o1-c35.${name}`, value)),
+    frameFact("O1-C36", "o1-c36.capture-opening-fault", vectors.raw_opening_hello!),
     frameFact(
       "O1-C38",
       "o1-c38.missing-reason",

@@ -125,10 +125,21 @@ function earlyHarnessDriver(
       if (!["gateway_stub", "bridge_simulator", "addin_loopback_fixture"].includes(componentId)) {
         throw new Error("restart_component componentId is unknown");
       }
+      const transportSecurity = request.arguments.transportSecurity;
+      if (
+        transportSecurity !== undefined &&
+        transportSecurity !== "preserve" &&
+        transportSecurity !== "cleartext_loopback"
+      ) {
+        throw new Error(
+          "restart_component transportSecurity must be preserve or cleartext_loopback",
+        );
+      }
       const restarted = await supervisor.restartComponent({
         componentId: componentId as ComponentId,
         preserveState: request.arguments.preserveState === true,
         startupOverrides: startupOverrides(request.arguments.startupOverrides),
+        ...(transportSecurity === undefined ? {} : { transportSecurity }),
       }, request.stepId, request.action);
       return success(restarted.result, restarted.observations);
     }
@@ -136,7 +147,17 @@ function earlyHarnessDriver(
       request.action === "spawn_fixture_bind_probe" &&
       request.arguments.mode === "fixture_session"
     ) {
-      const spawned = await supervisor.spawnAdditionalFixture(request.stepId, request.action);
+      const count = request.arguments.count === undefined
+        ? 1
+        : Number(request.arguments.count);
+      if (!Number.isSafeInteger(count) || count < 1 || count > 3) {
+        throw new Error("spawn_fixture_bind_probe count must be an integer from 1 through 3");
+      }
+      const spawned = await supervisor.spawnAdditionalFixture(
+        request.stepId,
+        request.action,
+        count,
+      );
       return success(spawned.result, spawned.observations);
     }
     return await base(request);
