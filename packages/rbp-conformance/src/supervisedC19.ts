@@ -196,6 +196,7 @@ async function startComponent(input: {
       componentId: input.component.id,
       command,
       absoluteWorkingDirectory: cwd,
+      useTestSignalProxy: true,
       validateReadiness(value) {
         if (
           value.event !== "ready" ||

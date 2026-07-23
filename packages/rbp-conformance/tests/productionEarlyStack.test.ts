@@ -56,7 +56,12 @@ describe("early production case stack", () => {
         expect(stopped.filter(({ payload }) =>
           payload.processRole === "canonical_component")).toHaveLength(3);
         expect(stopped.every(({ payload }) =>
-          payload.orphanProcessCount === 0 && payload.killEscalated === false)).toBe(true);
+          payload.orphanProcessCount === 0 &&
+          payload.killEscalated === false &&
+          typeof payload.process === "object" &&
+          payload.process !== null &&
+          !Array.isArray(payload.process) &&
+          payload.process.exitCode === 0)).toBe(true);
         for (const assertion of canonicalManifest.requiredAssertions[caseId]!) {
           const oracle = EARLY_PRODUCTION_ORACLES.get(assertion.id);
           expect(oracle, assertion.id).toBeTypeOf("function");

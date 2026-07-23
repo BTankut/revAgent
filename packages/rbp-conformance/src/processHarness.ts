@@ -397,6 +397,12 @@ export interface ReadyProcessOptions {
   command: ProcessCommandDescriptor;
   absoluteWorkingDirectory: string;
   environment?: Readonly<Record<string, string | undefined>>;
+  /**
+   * On Windows, Node cannot deliver POSIX signals with child.kill(). The
+   * Gateway CLI exposes a test-only IPC signal proxy so the supervised
+   * process can still execute its real graceful signal handler and exit 0.
+   */
+  useTestSignalProxy?: boolean;
   validateReadiness(value: JsonObject): void;
 }
 
@@ -414,6 +420,7 @@ export class StrictReadyProcess {
     transcript: ProcessTranscriptRecord[],
     startedAt: string,
     readyAt: string,
+    private readonly useTestSignalProxy: boolean,
   ) {
     this.readiness = readiness;
     this.transcript = transcript;
@@ -436,11 +443,17 @@ export class StrictReadyProcess {
     const startedAt = new Date().toISOString();
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
-      env: { ...process.env, ...options.environment },
+      env: {
+        ...process.env,
+        ...options.environment,
+        ...(options.useTestSignalProxy === true ? { NODE_ENV: "test" } : {}),
+      },
       shell: false,
-      stdio: ["pipe", "pipe", "pipe"],
+      stdio: options.useTestSignalProxy === true
+        ? ["pipe", "pipe", "pipe", "ipc"]
+        : ["pipe", "pipe", "pipe"],
       windowsHide: true,
-    });
+    }) as ChildProcessWithoutNullStreams;
     if (child.pid === undefined) throw new Error(`${options.componentId} did not receive a process id`);
     const transcript: ProcessTranscriptRecord[] = [];
     const ready = await new Promise<{ value: JsonObject; at: string }>((resolve, reject) => {
@@ -495,7 +508,15 @@ export class StrictReadyProcess {
         if (line.length > 0) transcript.push({ stream: "stderr", at: new Date().toISOString(), line });
       });
     });
-    return new StrictReadyProcess(options.componentId, child, ready.value, transcript, startedAt, ready.at);
+    return new StrictReadyProcess(
+      options.componentId,
+      child,
+      ready.value,
+      transcript,
+      startedAt,
+      ready.at,
+      options.useTestSignalProxy === true,
+    );
   }
 
   async stop(
@@ -503,7 +524,22 @@ export class StrictReadyProcess {
     timeoutMs = 10_000,
   ): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
     let killEscalated = false;
-    if (this.process.exitCode === null) this.child.kill(signal);
+    if (this.process.exitCode === null) {
+      let signalled = false;
+      if (
+        process.platform === "win32" &&
+        this.useTestSignalProxy &&
+        this.child.connected &&
+        this.child.send !== undefined
+      ) {
+        try {
+          signalled = this.child.send({ action: "emit_test_signal", signal });
+        } catch {
+          signalled = false;
+        }
+      }
+      if (!signalled) this.child.kill(signal);
+    }
     const timer = setTimeout(() => {
       killEscalated = true;
       this.child.kill("SIGKILL");

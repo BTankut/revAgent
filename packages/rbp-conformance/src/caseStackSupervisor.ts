@@ -1948,6 +1948,7 @@ export class CaseStackSupervisor {
         command,
         absoluteWorkingDirectory: cwd,
         environment,
+        useTestSignalProxy: true,
         validateReadiness(value) {
           if (
             value.event !== "ready" ||
