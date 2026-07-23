@@ -83,6 +83,46 @@ evidenced; this work is not assigned to the pilot user.
 
 ## Amendments
 
+### 2026-07-23 — R-F: production conformance provenance must cover every application-controlled executable byte
+
+The M1 freeze-identity audit found that the v1 build sidecar bound tracked
+compile inputs and emitted component `dist` files but did not bind the selected
+runtime Node executable, the controller in `packages/rbp-conformance/dist`,
+installed runtime dependencies/native add-ons, optional-peer presence, the
+complete TypeScript compiler package behind the `tsc.js` shim, or the npm
+launcher/package that performed the build. Canonical commands were also
+trusted from the plan without re-derivation, and inherited Node/module
+resolution environment variables could change executable behavior after the
+single run-entry verification. These were provenance gaps, so no run produced
+under that contract could by itself close M1.
+
+The replacement `rbp-production-build-provenance/v2` /
+`rbp-production-typescript-build/v2` contract fails closed over the exact
+build and runtime Node files plus version/platform/architecture/modules
+ABI/N-API facts; complete npm and TypeScript package trees; the selected Git
+binary/version; the canonical Windows PowerShell sampler binary/version;
+component, protocol, and conformance-controller outputs; and
+the recursively resolved physical installed package copies for Gateway,
+Bridge, add-in fixture, and runner. Native `.node` files are byte-recorded,
+installed optional peers are included, and absent optional peers are explicit
+resolution records. Canonical prepare runs a real in-memory
+`better-sqlite3` open/query/close smoke under the bound runtime Node before
+component cleaning and again after the fixed non-recursive build DAG.
+
+Production plans must re-derive the exact canonical command descriptors,
+sanitize Node/module-resolution environment variables, and run the runtime
+launch guard immediately around supervised spawns and shutdown/cycle
+boundaries. Full compiler/npm provenance remains a prepare/run-boundary gate;
+the launch guard rechecks only bytes that can execute in the candidate run.
+Windows system DLLs and kernel-level hardlink races remain outside this
+application provenance boundary.
+
+This dated R-F entry closes the identified contract/design gap only. It does
+not declare the O1 spec frozen, does not validate a candidate run, and does not
+satisfy O1-T6/O1-T8. M1 still requires a clean protected candidate, fresh
+canonical preparation, three consecutive complete runs, the full one-hour
+soak, validators, tree-identity proof, and the separately governed tag.
+
 ### 2026-07-23 — R-F: M1 executable candidate and evidence-record identities are separate
 
 An M1 freeze-identity audit found a circular requirement: the previous wording

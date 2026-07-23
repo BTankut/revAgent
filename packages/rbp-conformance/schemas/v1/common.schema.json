@@ -13,7 +13,257 @@
     "relativePath": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9._{}\\-/]+$"
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))[A-Za-z0-9@._{}\\-/]+$"
+    },
+    "hostPath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "provenanceFileRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "bytes", "sha256"],
+      "properties": {
+        "path": { "$ref": "#/definitions/relativePath" },
+        "bytes": { "type": "integer", "minimum": 0 },
+        "sha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "provenanceFileSet": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "digestSha256", "files"],
+      "properties": {
+        "algorithm": { "type": "string", "const": "sha256-stable-json-path-file-sha256/v1" },
+        "digestSha256": { "$ref": "#/definitions/sha256" },
+        "files": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/provenanceFileRecord" }
+        }
+      }
+    },
+    "productionPackageContentIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "packagePath", "contents", "nativeFiles"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "packagePath": { "$ref": "#/definitions/hostPath" },
+        "contents": { "$ref": "#/definitions/provenanceFileSet" },
+        "nativeFiles": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/provenanceFileRecord" }
+        }
+      }
+    },
+    "productionPackageContentSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version", "packagePath", "fileCount", "filesSha256", "nativeFileCount", "nativeFilesSha256"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "packagePath": { "$ref": "#/definitions/hostPath" },
+        "fileCount": { "type": "integer", "minimum": 1 },
+        "filesSha256": { "$ref": "#/definitions/sha256" },
+        "nativeFileCount": { "type": "integer", "minimum": 0 },
+        "nativeFilesSha256": { "$ref": "#/definitions/sha256" }
+      }
+    },
+    "installedRuntimeDependencyClosure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "algorithm", "digestSha256", "roots", "resolutions", "packages"],
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "rbp-installed-runtime-closure/v1" },
+        "algorithm": { "type": "string", "const": "sha256-stable-json-resolved-installed-runtime-closure/v1" },
+        "digestSha256": { "$ref": "#/definitions/sha256" },
+        "roots": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "version", "packagePath"],
+            "properties": {
+              "name": { "type": "string", "minLength": 1 },
+              "version": { "type": "string", "minLength": 1 },
+              "packagePath": { "$ref": "#/definitions/relativePath" }
+            }
+          }
+        },
+        "resolutions": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["requesterName", "requesterPath", "dependencyName", "dependencyRange", "kind", "status", "resolutionPath", "resolvedPackagePath", "resolvedVersion"],
+            "properties": {
+              "requesterName": { "type": "string", "minLength": 1 },
+              "requesterPath": { "$ref": "#/definitions/relativePath" },
+              "dependencyName": { "type": "string", "minLength": 1 },
+              "dependencyRange": { "type": "string", "minLength": 1 },
+              "kind": { "enum": ["dependency", "optional_dependency", "peer_dependency", "optional_peer_dependency"] },
+              "status": { "enum": ["installed", "workspace", "absent_optional"] },
+              "resolutionPath": {
+                "anyOf": [
+                  { "$ref": "#/definitions/relativePath" },
+                  { "type": "null" }
+                ]
+              },
+              "resolvedPackagePath": {
+                "anyOf": [
+                  { "$ref": "#/definitions/relativePath" },
+                  { "type": "null" }
+                ]
+              },
+              "resolvedVersion": {
+                "anyOf": [
+                  { "type": "string", "minLength": 1 },
+                  { "type": "null" }
+                ]
+              }
+            }
+          }
+        },
+        "packages": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/definitions/productionPackageContentIdentity" }
+        }
+      }
+    },
+    "productionNodeIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "realPath", "sha256", "version", "platform", "arch", "modulesAbi", "napiVersion"],
+      "properties": {
+        "path": { "$ref": "#/definitions/hostPath" },
+        "realPath": { "$ref": "#/definitions/hostPath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "version": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
+        "platform": { "type": "string", "minLength": 1 },
+        "arch": { "type": "string", "minLength": 1 },
+        "modulesAbi": { "type": "string", "pattern": "^[0-9]+$" },
+        "napiVersion": {
+          "anyOf": [
+            { "type": "string", "pattern": "^[0-9]+$" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "productionPowerShellIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "realPath", "sha256", "version"],
+      "properties": {
+        "path": { "$ref": "#/definitions/hostPath" },
+        "realPath": { "$ref": "#/definitions/hostPath" },
+        "sha256": { "$ref": "#/definitions/sha256" },
+        "version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+(?:\\.[0-9]+){0,2}$" }
+      }
+    },
+    "productionToolchainIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buildNode", "runtimeNode", "npmLauncher", "typescript", "git", "powershell"],
+      "properties": {
+        "buildNode": { "$ref": "#/definitions/productionNodeIdentity" },
+        "runtimeNode": { "$ref": "#/definitions/productionNodeIdentity" },
+        "npmLauncher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "realPath", "sha256", "package"],
+          "properties": {
+            "path": { "$ref": "#/definitions/hostPath" },
+            "realPath": { "$ref": "#/definitions/hostPath" },
+            "sha256": { "$ref": "#/definitions/sha256" },
+            "package": { "$ref": "#/definitions/productionPackageContentIdentity" }
+          }
+        },
+        "typescript": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["package", "entrypointPath", "entrypointSha256"],
+          "properties": {
+            "package": { "$ref": "#/definitions/productionPackageContentIdentity" },
+            "entrypointPath": { "type": "string", "const": "node_modules/typescript/lib/tsc.js" },
+            "entrypointSha256": { "$ref": "#/definitions/sha256" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "realPath", "sha256", "version"],
+          "properties": {
+            "path": { "$ref": "#/definitions/hostPath" },
+            "realPath": { "$ref": "#/definitions/hostPath" },
+            "sha256": { "$ref": "#/definitions/sha256" },
+            "version": { "type": "string", "pattern": "^git version [0-9]+\\.[0-9]+\\.[0-9]+.*$" }
+          }
+        },
+        "powershell": {
+          "anyOf": [
+            { "$ref": "#/definitions/productionPowerShellIdentity" },
+            { "type": "null" }
+          ]
+        }
+      }
+    },
+    "productionToolchainSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["buildNode", "runtimeNode", "npmLauncher", "typescript", "git", "powershell"],
+      "properties": {
+        "buildNode": { "$ref": "#/definitions/productionNodeIdentity" },
+        "runtimeNode": { "$ref": "#/definitions/productionNodeIdentity" },
+        "npmLauncher": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "realPath", "sha256", "package"],
+          "properties": {
+            "path": { "$ref": "#/definitions/hostPath" },
+            "realPath": { "$ref": "#/definitions/hostPath" },
+            "sha256": { "$ref": "#/definitions/sha256" },
+            "package": { "$ref": "#/definitions/productionPackageContentSummary" }
+          }
+        },
+        "typescript": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["package", "entrypointPath", "entrypointSha256"],
+          "properties": {
+            "package": { "$ref": "#/definitions/productionPackageContentSummary" },
+            "entrypointPath": { "type": "string", "const": "node_modules/typescript/lib/tsc.js" },
+            "entrypointSha256": { "$ref": "#/definitions/sha256" }
+          }
+        },
+        "git": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "realPath", "sha256", "version"],
+          "properties": {
+            "path": { "$ref": "#/definitions/hostPath" },
+            "realPath": { "$ref": "#/definitions/hostPath" },
+            "sha256": { "$ref": "#/definitions/sha256" },
+            "version": { "type": "string", "pattern": "^git version [0-9]+\\.[0-9]+\\.[0-9]+.*$" }
+          }
+        },
+        "powershell": {
+          "anyOf": [
+            { "$ref": "#/definitions/productionPowerShellIdentity" },
+            { "type": "null" }
+          ]
+        }
+      }
     },
     "manifestIdentity": {
       "type": "object",
@@ -53,25 +303,18 @@
     "componentBuildProvenanceIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schemaVersion", "buildContractVersion", "sidecarPath", "sidecarSha256", "compileInputsSha256", "runtimeArtifactsSha256", "toolchain"],
+      "required": ["schemaVersion", "buildContractVersion", "sidecarPath", "sidecarSha256", "compileInputsSha256", "runtimeArtifactsSha256", "runtimeDependenciesSha256", "harnessArtifactsSha256", "harnessRuntimeDependenciesSha256", "toolchain"],
       "properties": {
-        "schemaVersion": { "type": "string", "const": "rbp-production-build-provenance/v1" },
-        "buildContractVersion": { "type": "string", "const": "rbp-production-typescript-build/v1" },
+        "schemaVersion": { "type": "string", "const": "rbp-production-build-provenance/v2" },
+        "buildContractVersion": { "type": "string", "const": "rbp-production-typescript-build/v2" },
         "sidecarPath": { "$ref": "#/definitions/relativePath" },
         "sidecarSha256": { "$ref": "#/definitions/sha256" },
         "compileInputsSha256": { "$ref": "#/definitions/sha256" },
         "runtimeArtifactsSha256": { "$ref": "#/definitions/sha256" },
-        "toolchain": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["nodeVersion", "typescriptVersion", "typescriptEntrypointPath", "typescriptEntrypointSha256"],
-          "properties": {
-            "nodeVersion": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
-            "typescriptVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
-            "typescriptEntrypointPath": { "type": "string", "const": "node_modules/typescript/lib/tsc.js" },
-            "typescriptEntrypointSha256": { "$ref": "#/definitions/sha256" }
-          }
-        }
+        "runtimeDependenciesSha256": { "$ref": "#/definitions/sha256" },
+        "harnessArtifactsSha256": { "$ref": "#/definitions/sha256" },
+        "harnessRuntimeDependenciesSha256": { "$ref": "#/definitions/sha256" },
+        "toolchain": { "$ref": "#/definitions/productionToolchainSummary" }
       }
     },
     "command": {

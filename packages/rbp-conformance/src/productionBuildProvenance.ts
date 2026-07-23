@@ -7,11 +7,30 @@ import {
   writeFileSync,
 } from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
 
 import { sha256File } from "./executionPlan.js";
+import {
+  runBoundGit,
+  verifyProductionGitIdentityCurrent,
+  type ProductionGitIdentity,
+} from "./productionGitIdentity.js";
+import {
+  normalizeExecutablePath,
+  provenanceFileSet,
+  resolveInstalledRuntimeDependencyClosure,
+  resolveNodeExecutableIdentity,
+  resolvePowerShellIdentity,
+  resolveProductionToolchainIdentity,
+  summarizeProductionToolchainIdentity,
+  verifyPowerShellIdentityCurrent,
+  type InstalledRuntimeDependencyClosure,
+  type NodeRuntimeMetadataResolver,
+  type ProductionToolchainIdentity,
+  type ProvenanceFileRecord,
+  type ProvenanceFileSet,
+} from "./productionRuntimeIdentity.js";
 import { validateSchema } from "./schemas.js";
-import { sha256Json, sha256Text, stableJson } from "./stableJson.js";
+import { sha256Text, stableJson } from "./stableJson.js";
 import type {
   ComponentBuildProvenanceIdentity,
   ComponentId,
@@ -19,30 +38,23 @@ import type {
 } from "./types.js";
 
 export const PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION =
-  "rbp-production-build-provenance/v1" as const;
+  "rbp-production-build-provenance/v2" as const;
 export const PRODUCTION_BUILD_CONTRACT_VERSION =
-  "rbp-production-typescript-build/v1" as const;
-export const PRODUCTION_FILE_SET_ALGORITHM =
-  "sha256-stable-json-path-file-sha256/v1" as const;
-export const TYPESCRIPT_ENTRYPOINT_PATH =
-  "node_modules/typescript/lib/tsc.js" as const;
+  "rbp-production-typescript-build/v2" as const;
 
-interface FileRecord {
-  path: string;
-  sha256: string;
-}
+export { PRODUCTION_FILE_SET_ALGORITHM } from "./productionRuntimeIdentity.js";
 
-interface ProvenanceFileSet {
-  algorithm: typeof PRODUCTION_FILE_SET_ALGORITHM;
-  digestSha256: string;
-  files: FileRecord[];
-}
+const HARNESS_ENTRYPOINT_PATH = "packages/rbp-conformance/dist/src/cli.js";
+const HARNESS_RUNTIME_ROOTS = [
+  "packages/rbp-conformance/dist",
+  "packages/protocol/dist",
+] as const;
+const HARNESS_RUNTIME_PACKAGE_ROOTS = ["packages/rbp-conformance"] as const;
 
-interface ProductionToolchainIdentity {
-  nodeVersion: string;
-  typescriptVersion: string;
-  typescriptEntrypointPath: typeof TYPESCRIPT_ENTRYPOINT_PATH;
-  typescriptEntrypointSha256: string;
+export interface ProductionHarnessIdentity {
+  entrypoint: ProvenanceFileRecord;
+  runtimeArtifacts: ProvenanceFileSet;
+  runtimeDependencies: InstalledRuntimeDependencyClosure;
 }
 
 export interface ProductionBuildProvenanceSidecar {
@@ -53,9 +65,11 @@ export interface ProductionBuildProvenanceSidecar {
     commitSha: string;
     treeSha: string;
   };
-  entrypoint: FileRecord;
+  entrypoint: ProvenanceFileRecord;
   compileInputs: ProvenanceFileSet;
   runtimeArtifacts: ProvenanceFileSet;
+  runtimeDependencies: InstalledRuntimeDependencyClosure;
+  harness: ProductionHarnessIdentity;
   toolchain: ProductionToolchainIdentity;
 }
 
@@ -65,6 +79,27 @@ interface ProductionProvenanceSpec {
   sidecarPath: string;
   compilePackages: readonly CompilePackage[];
   runtimeRoots: readonly string[];
+  runtimePackageRoots: readonly string[];
+}
+
+export interface ProductionProvenanceInputs {
+  buildNodeExecutable: string;
+  runtimeNodeExecutable: string;
+  npmExecutable: string;
+  gitExecutable?: string;
+  nodeMetadataResolver?: NodeRuntimeMetadataResolver;
+}
+
+export interface ProductionProvenanceVerificationOptions {
+  expectedRuntimeNodeExecutable?: string;
+  expectedGitExecutable?: string;
+  nodeMetadataResolver?: NodeRuntimeMetadataResolver;
+}
+
+export interface ProductionRuntimeVerificationOptions {
+  expectedRuntimeNodeExecutable: string;
+  plannedIdentities: ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity>;
+  nodeMetadataResolver?: NodeRuntimeMetadataResolver;
 }
 
 type CompilePackage =
@@ -91,6 +126,7 @@ const PRODUCTION_PROVENANCE_SPECS: readonly ProductionProvenanceSpec[] = [
     sidecarPath: "packages/gateway-stub/dist/rbp-build-provenance.json",
     compilePackages: ["protocol", "gateway-stub"],
     runtimeRoots: ["packages/protocol/dist", "packages/gateway-stub/dist"],
+    runtimePackageRoots: ["packages/gateway-stub"],
   },
   {
     id: "bridge_simulator",
@@ -102,6 +138,7 @@ const PRODUCTION_PROVENANCE_SPECS: readonly ProductionProvenanceSpec[] = [
       "packages/addin-loopback-fixture/dist",
       "packages/bridge-simulator/dist",
     ],
+    runtimePackageRoots: ["packages/bridge-simulator"],
   },
   {
     id: "addin_loopback_fixture",
@@ -109,6 +146,7 @@ const PRODUCTION_PROVENANCE_SPECS: readonly ProductionProvenanceSpec[] = [
     sidecarPath: "packages/addin-loopback-fixture/dist/rbp-build-provenance.json",
     compilePackages: ["protocol", "addin-loopback-fixture"],
     runtimeRoots: ["packages/protocol/dist", "packages/addin-loopback-fixture/dist"],
+    runtimePackageRoots: ["packages/addin-loopback-fixture"],
   },
 ] as const;
 
@@ -124,22 +162,13 @@ function normalizeRelativePath(value: string): string {
   return value.replaceAll("\\", "/");
 }
 
-function git(repoRoot: string, args: readonly string[]): string {
-  const result = spawnSync("git", args, {
-    cwd: repoRoot,
-    encoding: "utf8",
-    shell: false,
-    maxBuffer: 8 * 1024 * 1024,
-  });
-  if (result.status !== 0) {
-    throw new Error(`git ${args.join(" ")} failed: ${String(result.stderr).trim()}`);
-  }
-  return String(result.stdout);
-}
-
 function confinedExistingPath(repoRoot: string, relativePath: string): string {
   const root = realpathSync(repoRoot);
-  const candidate = realpathSync(path.resolve(repoRoot, relativePath));
+  const lexical = path.resolve(root, relativePath);
+  if (lstatSync(lexical).isSymbolicLink()) {
+    throw new Error(`production provenance path cannot be a symbolic link: ${relativePath}`);
+  }
+  const candidate = realpathSync(lexical);
   const relative = path.relative(root, candidate);
   if (relative.startsWith("..") || path.isAbsolute(relative)) {
     throw new Error(`production provenance path escapes the repository: ${relativePath}`);
@@ -147,32 +176,17 @@ function confinedExistingPath(repoRoot: string, relativePath: string): string {
   return candidate;
 }
 
-function fileRecord(repoRoot: string, relativePath: string): FileRecord {
+function fileRecord(repoRoot: string, relativePath: string): ProvenanceFileRecord {
   const normalized = normalizeRelativePath(relativePath);
-  const lexical = path.resolve(repoRoot, normalized);
-  if (lstatSync(lexical).isSymbolicLink()) {
-    throw new Error(`production provenance input cannot be a symbolic link: ${normalized}`);
-  }
   const absolute = confinedExistingPath(repoRoot, normalized);
-  if (!statSync(absolute).isFile()) {
+  const stat = statSync(absolute);
+  if (!stat.isFile()) {
     throw new Error(`production provenance input is not a regular file: ${normalized}`);
   }
-  return { path: normalized, sha256: sha256File(absolute) };
-}
-
-function fileSet(files: FileRecord[]): ProvenanceFileSet {
-  if (files.length === 0) {
-    throw new Error("production provenance file set cannot be empty");
-  }
-  const ordered = [...files].sort((left, right) => compareText(left.path, right.path));
-  const paths = ordered.map(({ path: filePath }) => filePath);
-  if (new Set(paths).size !== paths.length) {
-    throw new Error("production provenance file set contains duplicate paths");
-  }
   return {
-    algorithm: PRODUCTION_FILE_SET_ALGORITHM,
-    digestSha256: sha256Json(ordered),
-    files: ordered,
+    path: normalized,
+    bytes: stat.size,
+    sha256: sha256File(absolute),
   };
 }
 
@@ -199,12 +213,17 @@ function isPackageCompileInput(relativePath: string, packageName: CompilePackage
 function compileInputRecords(
   repoRoot: string,
   spec: ProductionProvenanceSpec,
-): FileRecord[] {
+  gitIdentity: ProductionGitIdentity,
+): ProvenanceFileRecord[] {
   const selectors = [
     ...ROOT_COMPILE_INPUTS,
     ...spec.compilePackages.map((packageName) => `packages/${packageName}`),
   ];
-  const tracked = git(repoRoot, ["ls-files", "-z", "--", ...selectors])
+  const tracked = runBoundGit(
+    repoRoot,
+    ["ls-files", "-z", "--", ...selectors],
+    gitIdentity,
+  ).stdout
     .split("\0")
     .filter((entry) => entry.length > 0)
     .map(normalizeRelativePath)
@@ -242,7 +261,7 @@ function compileInputRecords(
 function walkRuntimeRoot(
   repoRoot: string,
   relativeRoot: string,
-  records: FileRecord[],
+  records: ProvenanceFileRecord[],
 ): void {
   const absoluteRoot = confinedExistingPath(repoRoot, relativeRoot);
   if (!statSync(absoluteRoot).isDirectory()) {
@@ -269,33 +288,43 @@ function walkRuntimeRoot(
   visit(absoluteRoot, normalizeRelativePath(relativeRoot));
 }
 
-function runtimeArtifactRecords(
+function runtimeArtifactFileSet(
   repoRoot: string,
-  spec: ProductionProvenanceSpec,
-): FileRecord[] {
-  const records: FileRecord[] = [];
-  for (const runtimeRoot of spec.runtimeRoots) {
+  runtimeRoots: readonly string[],
+  label: string,
+): ProvenanceFileSet {
+  const records: ProvenanceFileRecord[] = [];
+  for (const runtimeRoot of runtimeRoots) {
     const before = records.length;
     walkRuntimeRoot(repoRoot, runtimeRoot, records);
     if (records.length === before) {
-      throw new Error(`${spec.id} production runtime artifact root is empty: ${runtimeRoot}`);
+      throw new Error(`${label} production runtime artifact root is empty: ${runtimeRoot}`);
     }
   }
-  return records.sort((left, right) => compareText(left.path, right.path));
+  return provenanceFileSet(records);
 }
 
-function toolchainIdentity(repoRoot: string): ProductionToolchainIdentity {
-  const packageFile = confinedExistingPath(repoRoot, "node_modules/typescript/package.json");
-  const packageJson = JSON.parse(readFileSync(packageFile, "utf8")) as { version?: unknown };
-  if (typeof packageJson.version !== "string" || packageJson.version.length === 0) {
-    throw new Error("installed TypeScript package does not expose a version");
+export function productionHarnessRuntimeArtifacts(repoRoot: string): ProvenanceFileSet {
+  return runtimeArtifactFileSet(repoRoot, HARNESS_RUNTIME_ROOTS, "conformance harness");
+}
+
+export function productionComponentOutputArtifacts(
+  repoRoot: string,
+  relativeRoot: string,
+): ProvenanceFileSet {
+  if (!productionComponentBuildOutputRoots().includes(relativeRoot)) {
+    throw new Error(`unknown production component output root: ${relativeRoot}`);
   }
+  return runtimeArtifactFileSet(repoRoot, [relativeRoot], relativeRoot);
+}
+
+function productionHarnessIdentity(repoRoot: string): ProductionHarnessIdentity {
   return {
-    nodeVersion: process.version,
-    typescriptVersion: packageJson.version,
-    typescriptEntrypointPath: TYPESCRIPT_ENTRYPOINT_PATH,
-    typescriptEntrypointSha256: sha256File(
-      confinedExistingPath(repoRoot, TYPESCRIPT_ENTRYPOINT_PATH),
+    entrypoint: fileRecord(repoRoot, HARNESS_ENTRYPOINT_PATH),
+    runtimeArtifacts: productionHarnessRuntimeArtifacts(repoRoot),
+    runtimeDependencies: resolveInstalledRuntimeDependencyClosure(
+      repoRoot,
+      HARNESS_RUNTIME_PACKAGE_ROOTS,
     ),
   };
 }
@@ -304,6 +333,8 @@ function expectedSidecar(
   repoRoot: string,
   source: SourceIdentity,
   spec: ProductionProvenanceSpec,
+  toolchain: ProductionToolchainIdentity,
+  harness: ProductionHarnessIdentity,
 ): ProductionBuildProvenanceSidecar {
   return {
     schemaVersion: PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION,
@@ -314,9 +345,16 @@ function expectedSidecar(
       treeSha: source.treeSha,
     },
     entrypoint: fileRecord(repoRoot, spec.entrypointPath),
-    compileInputs: fileSet(compileInputRecords(repoRoot, spec)),
-    runtimeArtifacts: fileSet(runtimeArtifactRecords(repoRoot, spec)),
-    toolchain: toolchainIdentity(repoRoot),
+    compileInputs: provenanceFileSet(
+      compileInputRecords(repoRoot, spec, toolchain.git),
+    ),
+    runtimeArtifacts: runtimeArtifactFileSet(repoRoot, spec.runtimeRoots, spec.id),
+    runtimeDependencies: resolveInstalledRuntimeDependencyClosure(
+      repoRoot,
+      spec.runtimePackageRoots,
+    ),
+    harness,
+    toolchain,
   };
 }
 
@@ -332,7 +370,11 @@ function sidecarIdentity(
     sidecarSha256: sha256Text(rawSidecar),
     compileInputsSha256: sidecar.compileInputs.digestSha256,
     runtimeArtifactsSha256: sidecar.runtimeArtifacts.digestSha256,
-    toolchain: { ...sidecar.toolchain },
+    runtimeDependenciesSha256: sidecar.runtimeDependencies.digestSha256,
+    harnessArtifactsSha256: sidecar.harness.runtimeArtifacts.digestSha256,
+    harnessRuntimeDependenciesSha256:
+      sidecar.harness.runtimeDependencies.digestSha256,
+    toolchain: summarizeProductionToolchainIdentity(sidecar.toolchain),
   };
 }
 
@@ -371,29 +413,14 @@ function specFor(componentId: ComponentId): ProductionProvenanceSpec {
   return spec;
 }
 
-export function createProductionBuildProvenanceSidecars(
+function readSidecars(
   repoRoot: string,
-  source: SourceIdentity,
-): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
+): Map<ComponentId, { raw: string; sidecar: ProductionBuildProvenanceSidecar }> {
+  const sidecars = new Map<
+    ComponentId,
+    { raw: string; sidecar: ProductionBuildProvenanceSidecar }
+  >();
   for (const spec of PRODUCTION_PROVENANCE_SPECS) {
-    const sidecar = expectedSidecar(repoRoot, source, spec);
-    const target = path.resolve(repoRoot, spec.sidecarPath);
-    const parent = confinedExistingPath(repoRoot, path.dirname(spec.sidecarPath));
-    if (path.dirname(target) !== parent) {
-      throw new Error(`production build provenance sidecar parent mismatch: ${spec.sidecarPath}`);
-    }
-    writeFileSync(target, stableJson(sidecar), { encoding: "utf8", flag: "w" });
-  }
-  return verifyProductionBuildProvenance(repoRoot, source);
-}
-
-export function verifyProductionBuildProvenance(
-  repoRoot: string,
-  source: SourceIdentity,
-): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
-  const identities = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
-  for (const componentId of PRODUCTION_PROVENANCE_SPECS.map(({ id }) => id)) {
-    const spec = specFor(componentId);
     let raw: string;
     try {
       const lexicalSidecar = path.resolve(repoRoot, spec.sidecarPath);
@@ -409,26 +436,218 @@ export function verifyProductionBuildProvenance(
       );
     }
     const sidecar = parseSidecar(raw, spec.sidecarPath);
-    const expected = expectedSidecar(repoRoot, source, spec);
+    if (sidecar.componentId !== spec.id) {
+      throw new Error(`${spec.id} production build provenance is cross-wired`);
+    }
+    sidecars.set(spec.id, { raw, sidecar });
+  }
+  return sidecars;
+}
+
+function inferredInputs(
+  sidecars: ReadonlyMap<
+    ComponentId,
+    { raw: string; sidecar: ProductionBuildProvenanceSidecar }
+  >,
+  options: ProductionProvenanceVerificationOptions,
+): ProductionProvenanceInputs {
+  const first = sidecars.get(PRODUCTION_PROVENANCE_SPECS[0]!.id)?.sidecar;
+  if (first === undefined) throw new Error("production build provenance set is empty");
+  return {
+    buildNodeExecutable: first.toolchain.buildNode.path,
+    runtimeNodeExecutable:
+      options.expectedRuntimeNodeExecutable ?? first.toolchain.runtimeNode.path,
+    npmExecutable: first.toolchain.npmLauncher.path,
+    ...(options.expectedGitExecutable === undefined
+      ? {}
+      : { gitExecutable: options.expectedGitExecutable }),
+    ...(options.nodeMetadataResolver === undefined
+      ? {}
+      : { nodeMetadataResolver: options.nodeMetadataResolver }),
+  };
+}
+
+export function createProductionBuildProvenanceSidecars(
+  repoRoot: string,
+  source: SourceIdentity,
+  inputs: ProductionProvenanceInputs,
+): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
+  const toolchain = resolveProductionToolchainIdentity(repoRoot, inputs);
+  const harness = productionHarnessIdentity(repoRoot);
+  for (const spec of PRODUCTION_PROVENANCE_SPECS) {
+    const sidecar = expectedSidecar(repoRoot, source, spec, toolchain, harness);
+    const target = path.resolve(repoRoot, spec.sidecarPath);
+    const parent = confinedExistingPath(repoRoot, path.dirname(spec.sidecarPath));
+    if (path.dirname(target) !== parent) {
+      throw new Error(`production build provenance sidecar parent mismatch: ${spec.sidecarPath}`);
+    }
+    writeFileSync(target, stableJson(sidecar), { encoding: "utf8", flag: "w" });
+  }
+  return verifyProductionBuildProvenance(repoRoot, source, {
+    expectedRuntimeNodeExecutable: inputs.runtimeNodeExecutable,
+    expectedGitExecutable: toolchain.git.path,
+    ...(inputs.nodeMetadataResolver === undefined
+      ? {}
+      : { nodeMetadataResolver: inputs.nodeMetadataResolver }),
+  });
+}
+
+export function verifyProductionBuildProvenance(
+  repoRoot: string,
+  source: SourceIdentity,
+  options: ProductionProvenanceVerificationOptions = {},
+): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
+  const sidecars = readSidecars(repoRoot);
+  const toolchain = resolveProductionToolchainIdentity(
+    repoRoot,
+    inferredInputs(sidecars, options),
+  );
+  const harness = productionHarnessIdentity(repoRoot);
+  const identities = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
+
+  for (const spec of PRODUCTION_PROVENANCE_SPECS) {
+    const retained = sidecars.get(spec.id)!;
+    const expected = expectedSidecar(repoRoot, source, spec, toolchain, harness);
+    const sidecar = retained.sidecar;
     if (stableJson(sidecar.source) !== stableJson(expected.source)) {
-      throw new Error(`${componentId} production build provenance source is stale`);
+      throw new Error(`${spec.id} production build provenance source is stale`);
     }
     if (stableJson(sidecar.entrypoint) !== stableJson(expected.entrypoint)) {
-      throw new Error(`${componentId} production entrypoint digest is stale or tampered`);
+      throw new Error(`${spec.id} production entrypoint digest is stale or tampered`);
     }
     if (stableJson(sidecar.compileInputs) !== stableJson(expected.compileInputs)) {
-      throw new Error(`${componentId} production compile-input provenance is stale`);
+      throw new Error(`${spec.id} production compile-input provenance is stale`);
     }
     if (stableJson(sidecar.runtimeArtifacts) !== stableJson(expected.runtimeArtifacts)) {
-      throw new Error(`${componentId} production runtime artifacts are stale or tampered`);
+      throw new Error(`${spec.id} production runtime artifacts are stale or tampered`);
+    }
+    if (
+      stableJson(sidecar.runtimeDependencies) !==
+      stableJson(expected.runtimeDependencies)
+    ) {
+      throw new Error(`${spec.id} installed runtime dependency closure is stale or tampered`);
+    }
+    if (stableJson(sidecar.harness) !== stableJson(expected.harness)) {
+      throw new Error(`${spec.id} conformance harness provenance is stale or tampered`);
     }
     if (stableJson(sidecar.toolchain) !== stableJson(expected.toolchain)) {
-      throw new Error(`${componentId} production build toolchain provenance is stale`);
+      throw new Error(`${spec.id} production build toolchain provenance is stale`);
     }
     if (stableJson(sidecar) !== stableJson(expected)) {
-      throw new Error(`${componentId} production build provenance does not match its contract`);
+      throw new Error(`${spec.id} production build provenance does not match its contract`);
     }
-    identities.set(componentId, sidecarIdentity(spec.sidecarPath, raw, sidecar));
+    identities.set(
+      spec.id,
+      sidecarIdentity(spec.sidecarPath, retained.raw, sidecar),
+    );
+  }
+  return identities;
+}
+
+/**
+ * Rechecks only bytes that can execute during a production run. Compiler/npm
+ * provenance remains a prepare/run-boundary gate, while this cheaper check is
+ * safe to call immediately before and after every component spawn.
+ */
+export function verifyProductionRuntimeBuildProvenance(
+  repoRoot: string,
+  source: SourceIdentity,
+  options: ProductionRuntimeVerificationOptions,
+): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
+  const expectedRuntimePath = normalizeExecutablePath(
+    options.expectedRuntimeNodeExecutable,
+  );
+  const runtimeNode = resolveNodeExecutableIdentity(
+    options.expectedRuntimeNodeExecutable,
+    options.nodeMetadataResolver,
+  );
+  const plannedValues = [...options.plannedIdentities.values()];
+  const plannedGitIdentities = new Set(
+    plannedValues.map(({ toolchain }) => stableJson(toolchain.git)),
+  );
+  if (plannedGitIdentities.size !== 1) {
+    throw new Error("production plan components disagree on the bound Git identity");
+  }
+  const plannedPowerShellIdentities = new Set(
+    plannedValues.map(({ toolchain }) => stableJson(toolchain.powershell)),
+  );
+  if (plannedPowerShellIdentities.size !== 1) {
+    throw new Error("production plan components disagree on the bound PowerShell identity");
+  }
+  const plannedGit = plannedValues[0]?.toolchain.git;
+  if (plannedGit === undefined) {
+    throw new Error("production plan lacks a bound Git identity");
+  }
+  const git = verifyProductionGitIdentityCurrent(plannedGit);
+  if (stableJson(git) !== stableJson(plannedGit)) {
+    throw new Error("bound Git identity changed before runtime verification");
+  }
+  const plannedPowerShell = plannedValues[0]?.toolchain.powershell;
+  if (plannedPowerShell === undefined) {
+    throw new Error("production plan lacks a bound PowerShell identity");
+  }
+  const powershell = plannedPowerShell === null
+    ? resolvePowerShellIdentity()
+    : verifyPowerShellIdentityCurrent(plannedPowerShell);
+  const sidecars = readSidecars(repoRoot);
+  const harness = productionHarnessIdentity(repoRoot);
+  const identities = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
+
+  for (const spec of PRODUCTION_PROVENANCE_SPECS) {
+    const retained = sidecars.get(spec.id)!;
+    const planned = options.plannedIdentities.get(spec.id);
+    if (planned === undefined) {
+      throw new Error(`${spec.id} production plan lacks runtime provenance`);
+    }
+    if (sha256Text(retained.raw) !== planned.sidecarSha256) {
+      throw new Error(`${spec.id} production sidecar digest changed after plan creation`);
+    }
+    const sidecar = retained.sidecar;
+    if (stableJson(sidecar.source) !== stableJson({
+      commitSha: source.commitSha,
+      treeSha: source.treeSha,
+    })) {
+      throw new Error(`${spec.id} production runtime provenance source is stale`);
+    }
+    if (
+      normalizeExecutablePath(sidecar.toolchain.runtimeNode.path) !== expectedRuntimePath ||
+      stableJson(sidecar.toolchain.runtimeNode) !== stableJson(runtimeNode)
+    ) {
+      throw new Error(`${spec.id} runtime Node identity does not match the launched executable`);
+    }
+    if (stableJson(sidecar.toolchain.powershell) !== stableJson(powershell)) {
+      throw new Error(`${spec.id} bound PowerShell identity changed before launch`);
+    }
+    if (stableJson(sidecar.toolchain.git) !== stableJson(git)) {
+      throw new Error(`${spec.id} bound Git identity changed before launch`);
+    }
+    const entrypoint = fileRecord(repoRoot, spec.entrypointPath);
+    if (stableJson(sidecar.entrypoint) !== stableJson(entrypoint)) {
+      throw new Error(`${spec.id} production entrypoint changed before launch`);
+    }
+    const runtimeArtifacts = runtimeArtifactFileSet(
+      repoRoot,
+      spec.runtimeRoots,
+      spec.id,
+    );
+    if (stableJson(sidecar.runtimeArtifacts) !== stableJson(runtimeArtifacts)) {
+      throw new Error(`${spec.id} production runtime artifacts changed before launch`);
+    }
+    const runtimeDependencies = resolveInstalledRuntimeDependencyClosure(
+      repoRoot,
+      spec.runtimePackageRoots,
+    );
+    if (stableJson(sidecar.runtimeDependencies) !== stableJson(runtimeDependencies)) {
+      throw new Error(`${spec.id} installed runtime dependencies changed before launch`);
+    }
+    if (stableJson(sidecar.harness) !== stableJson(harness)) {
+      throw new Error("conformance harness bytes or dependencies changed before launch");
+    }
+    const identity = sidecarIdentity(spec.sidecarPath, retained.raw, sidecar);
+    if (stableJson(identity) !== stableJson(planned)) {
+      throw new Error(`${spec.id} runtime provenance does not match the execution plan`);
+    }
+    identities.set(spec.id, identity);
   }
   return identities;
 }
@@ -437,11 +656,18 @@ export function productionBuildProvenanceSidecarPath(componentId: ComponentId): 
   return specFor(componentId).sidecarPath;
 }
 
-export function productionBuildOutputRoots(): readonly string[] {
+export function productionComponentBuildOutputRoots(): readonly string[] {
   return [
     "packages/protocol/dist",
     "packages/gateway-stub/dist",
     "packages/bridge-simulator/dist",
     "packages/addin-loopback-fixture/dist",
+  ];
+}
+
+export function productionBuildOutputRoots(): readonly string[] {
+  return [
+    ...productionComponentBuildOutputRoots(),
+    "packages/rbp-conformance/dist",
   ];
 }

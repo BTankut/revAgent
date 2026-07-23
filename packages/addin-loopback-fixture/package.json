@@ -19,7 +19,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
+    "build": "npm run build:self",
+    "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "lint": "eslint src tests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && vitest run"

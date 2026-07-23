@@ -150,6 +150,8 @@ export {
 export type { EarlyProductionCase } from "./productionCaseSeedsEarly.js";
 export {
   assertProductionExecutionPlanCurrent,
+  assertProductionRuntimeLaunchCurrent,
+  boundProductionPowerShellExecutable,
   buildProductionExecutionPlan,
   productionComponentLaunchConfigs,
 } from "./productionExecutionPlan.js";
@@ -163,12 +165,22 @@ export {
   PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION,
   PRODUCTION_FILE_SET_ALGORITHM,
   productionBuildProvenanceSidecarPath,
+  productionBuildOutputRoots,
+  productionComponentBuildOutputRoots,
+  productionComponentOutputArtifacts,
+  productionHarnessRuntimeArtifacts,
   verifyProductionBuildProvenance,
+  verifyProductionRuntimeBuildProvenance,
 } from "./productionBuildProvenance.js";
 export type {
   ProductionBuildProvenanceSidecar,
+  ProductionHarnessIdentity,
+  ProductionProvenanceInputs,
+  ProductionProvenanceVerificationOptions,
+  ProductionRuntimeVerificationOptions,
 } from "./productionBuildProvenance.js";
 export { prepareProductionExecutionPlan } from "./productionPreparation.js";
+export { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 export {
   productionCaseVariables,
   SUPPORTED_PRODUCTION_CASES,

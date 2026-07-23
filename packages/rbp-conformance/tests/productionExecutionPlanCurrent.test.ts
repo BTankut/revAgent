@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { assertProductionExecutionPlanCurrent } from "../src/productionExecutionPlan.js";
+import {
+  assertProductionExecutionPlanCurrent,
+  productionComponentLaunchConfigs,
+} from "../src/productionExecutionPlan.js";
 import type {
   ComponentBuildProvenanceIdentity,
   ComponentId,
@@ -9,25 +12,75 @@ import { createPlan } from "./helpers.js";
 
 function provenance(seed: number): ComponentBuildProvenanceIdentity {
   const hash = seed.toString(16).padStart(64, "0");
+  const toolchainHash = "f".repeat(64);
+  const packageIdentity = {
+    name: "package",
+    version: "1.0.0",
+    packagePath: "node_modules/package",
+    fileCount: 1,
+    filesSha256: toolchainHash,
+    nativeFileCount: 0,
+    nativeFilesSha256: toolchainHash,
+  };
+  const node = {
+    path: "C:/node.exe",
+    realPath: "C:/node.exe",
+    sha256: toolchainHash,
+    version: "v22.0.0",
+    platform: "win32",
+    arch: "x64",
+    modulesAbi: "127",
+    napiVersion: "10",
+  };
   return {
-    schemaVersion: "rbp-production-build-provenance/v1",
-    buildContractVersion: "rbp-production-typescript-build/v1",
+    schemaVersion: "rbp-production-build-provenance/v2",
+    buildContractVersion: "rbp-production-typescript-build/v2",
     sidecarPath: `packages/component-${String(seed)}/dist/rbp-build-provenance.json`,
     sidecarSha256: hash,
     compileInputsSha256: hash,
     runtimeArtifactsSha256: hash,
+    runtimeDependenciesSha256: hash,
+    harnessArtifactsSha256: hash,
+    harnessRuntimeDependenciesSha256: hash,
     toolchain: {
-      nodeVersion: "v22.0.0",
-      typescriptVersion: "5.8.2",
-      typescriptEntrypointPath: "node_modules/typescript/lib/tsc.js",
-      typescriptEntrypointSha256: hash,
+      buildNode: node,
+      runtimeNode: node,
+      npmLauncher: {
+        path: "C:/npm/npm-cli.js",
+        realPath: "C:/npm/npm-cli.js",
+        sha256: toolchainHash,
+        package: { ...packageIdentity, name: "npm" },
+      },
+      typescript: {
+        package: { ...packageIdentity, name: "typescript", version: "5.8.2" },
+        entrypointPath: "node_modules/typescript/lib/tsc.js",
+        entrypointSha256: toolchainHash,
+      },
+      git: {
+        path: "C:/git.exe",
+        realPath: "C:/git.exe",
+        sha256: toolchainHash,
+        version: "git version 2.50.0",
+      },
+      powershell: null,
     },
   };
+}
+
+function canonicalizeCommands(plan: ReturnType<typeof createPlan>): void {
+  const commands = new Map(
+    productionComponentLaunchConfigs("C:/repo", "C:/node.exe")
+      .map(({ id, command }) => [id, command]),
+  );
+  for (const component of plan.components) {
+    component.command = structuredClone(commands.get(component.id)!);
+  }
 }
 
 describe("production execution plan source gate", () => {
   it("accepts only the exact clean source identity resolved at execution time", () => {
     const plan = createPlan();
+    canonicalizeCommands(plan);
     const verified = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
     plan.components.forEach((component, index) => {
       const identity = provenance(index + 1);
@@ -39,8 +92,18 @@ describe("production execution plan source gate", () => {
     expect(() =>
       assertProductionExecutionPlanCurrent(plan, "C:/repo", resolver, verifier),
     ).not.toThrow();
-    expect(resolver).toHaveBeenCalledWith("C:/repo");
-    expect(verifier).toHaveBeenCalledWith("C:/repo", plan.source);
+    expect(resolver).toHaveBeenCalledWith(
+      "C:/repo",
+      plan.components[0]!.expectedIdentity.buildProvenance!.toolchain.git,
+    );
+    expect(verifier).toHaveBeenCalledWith(
+      "C:/repo",
+      plan.source,
+      {
+        expectedRuntimeNodeExecutable: "C:/node.exe",
+        expectedGitExecutable: "C:/git.exe",
+      },
+    );
 
     expect(() =>
       assertProductionExecutionPlanCurrent(plan, "C:/repo", () => ({
@@ -52,6 +115,7 @@ describe("production execution plan source gate", () => {
 
   it("requires every production plan identity to match verified provenance", () => {
     const plan = createPlan();
+    canonicalizeCommands(plan);
     const verified = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
     plan.components.forEach((component, index) => {
       const identity = provenance(index + 1);

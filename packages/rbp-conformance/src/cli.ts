@@ -103,6 +103,12 @@ export async function runPrepareProductionAsyncCli(
         expectedIdentity.buildProvenance?.compileInputsSha256 ?? null,
       runtimeArtifactsSha256:
         expectedIdentity.buildProvenance?.runtimeArtifactsSha256 ?? null,
+      runtimeDependenciesSha256:
+        expectedIdentity.buildProvenance?.runtimeDependenciesSha256 ?? null,
+      harnessArtifactsSha256:
+        expectedIdentity.buildProvenance?.harnessArtifactsSha256 ?? null,
+      harnessRuntimeDependenciesSha256:
+        expectedIdentity.buildProvenance?.harnessRuntimeDependenciesSha256 ?? null,
     })),
   })}\n`);
 }

@@ -170,23 +170,55 @@ the repository root, use the single preparation path:
 npm run prepare:rbp-production -- artifacts/conformance/rbp-v1/1.0/execution-plan.json --run-id <id> --sequence <1|2|3>
 ```
 
-The wrapper first refuses a dirty Git tree, bootstraps protocol from source,
-and compiles the current `rbp-conformance` CLI. The CLI then deletes only the four canonical ignored
-component output roots, builds protocol, add-in loopback fixture, Gateway stub,
-and Bridge simulator in a fixed order, and refuses any build that changes the
-tracked source identity. It writes one canonical deterministic provenance
-sidecar beside each launched component. Each sidecar binds the clean commit and
-tree, exact entrypoint SHA-256, the sorted tracked compile-input file/digest
-set, the complete runtime-output closure, Node/TypeScript tool identity, and
-the versioned build contract. No timestamp or filesystem mtime participates.
+The wrapper first refuses a dirty Git tree, forces lifecycle scripts on only in
+its child environment, removes Node/module-resolution injection variables,
+and opens, queries, and closes the Bridge simulator's exact installed
+`better-sqlite3` module under the selected runtime Node. It then deletes only
+the ignored `rbp-conformance/dist` controller output, builds protocol and the
+controller from source, and starts that freshly built CLI. The CLI validates
+and hashes the toolchain before cleaning any component output. Protocol,
+add-in loopback fixture, Gateway stub, and Bridge simulator are then compiled
+exactly once through non-recursive `build:self` targets in a fixed DAG; every
+npm child is bracketed by toolchain revalidation and later steps may not
+rewrite upstream outputs. The freshly built controller bytes must remain
+identical throughout the component build.
+
+The resulting canonical deterministic v2 sidecar beside each launched
+component binds the clean commit/tree and:
+
+- every tracked compile input and every emitted component/protocol byte;
+- the full `rbp-conformance/dist` runner/validator and protocol closure;
+- every physically resolved installed runtime-package copy for the component
+  and controller, including package files, workspace-link resolution,
+  installed optional peers, explicit optional-peer absence, and native
+  `.node` bytes;
+- the exact launched runtime Node and build Node path, real path, SHA-256,
+  version, platform, architecture, modules ABI, and N-API version;
+- the npm launcher plus its complete installed package tree, the complete
+  TypeScript package (including `lib/_tsc.js`), and the selected Git
+  executable/version; on Windows, the canonical absolute PowerShell
+  executable/version used for parent-owned resource sampling is bound too.
+
+The selected runtime Node may differ from the build Node only when its complete
+recorded identity is used consistently by every canonical component command.
+No timestamp or filesystem mtime participates. Windows system DLLs and
+kernel-level filesystem races are outside the application provenance
+boundary; every repo/npm-controlled executable byte is inside it.
 
 `prepare-production` verifies those sidecars before writing the plan. The plan
-retains each sidecar hash and its compile/runtime/tool identity. Every
-production execution entrypoint (`run-production`, `run-c19`, and `run-soak`)
-recomputes the source, sidecar, compile-input, runtime-artifact, toolchain, and
-entrypoint identities before any component child process is spawned. A missing
-sidecar, stale source, stale binary, changed dependency output, changed
-toolchain, sidecar tamper, or dirty tree fails closed.
+retains each sidecar hash and its compile/runtime/dependency/controller/tool
+identity. Every production execution entrypoint (`run-production`, `run-c19`,
+and `run-soak`) performs the full source/build-toolchain check at its boundary.
+The launch guard then re-derives the canonical command and rechecks source,
+sidecar, runtime Node, entrypoint, component/protocol/controller output, and
+installed runtime/native dependency closure immediately before and after
+component readiness and after supervised shutdown/cycle boundaries. Component
+children inherit a sanitized environment without `NODE_OPTIONS`, `NODE_PATH`,
+Node compile-cache/preserve-symlink controls, or `WS_NO_*` resolution switches.
+A missing sidecar, stale source, stale binary, changed dependency/native byte,
+unexpected optional peer, changed controller, command or Node substitution,
+changed toolchain, sidecar tamper, or dirty tree fails closed before retained
+PASS evidence can be produced.
 
 Validation commands are pass gates: a structurally valid but partially
 executed report still exits nonzero. `run-c19` also exits nonzero by design

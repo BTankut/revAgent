@@ -1,3 +1,5 @@
+import type { ProductionToolchainSummary } from "./productionRuntimeIdentity.js";
+
 export const COMPONENT_IDS = [
   "gateway_stub",
   "bridge_simulator",
@@ -44,18 +46,16 @@ export interface SourceIdentity {
 }
 
 export interface ComponentBuildProvenanceIdentity {
-  schemaVersion: "rbp-production-build-provenance/v1";
-  buildContractVersion: "rbp-production-typescript-build/v1";
+  schemaVersion: "rbp-production-build-provenance/v2";
+  buildContractVersion: "rbp-production-typescript-build/v2";
   sidecarPath: string;
   sidecarSha256: string;
   compileInputsSha256: string;
   runtimeArtifactsSha256: string;
-  toolchain: {
-    nodeVersion: string;
-    typescriptVersion: string;
-    typescriptEntrypointPath: "node_modules/typescript/lib/tsc.js";
-    typescriptEntrypointSha256: string;
-  };
+  runtimeDependenciesSha256: string;
+  harnessArtifactsSha256: string;
+  harnessRuntimeDependenciesSha256: string;
+  toolchain: ProductionToolchainSummary;
 }
 
 export interface ComponentIdentity {
