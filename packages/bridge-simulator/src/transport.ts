@@ -826,12 +826,29 @@ async function httpResponseError(
   );
 }
 
+function httpSessionOrderKey(envelope: RbpEnvelope): string | null {
+  if ("rsid" in envelope && typeof envelope.rsid === "string") return envelope.rsid;
+  if (envelope.type === "session_resume" || envelope.type === "session_unregister") {
+    return envelope.payload.rsid;
+  }
+  return null;
+}
+
+function usesHttpLifecycleFence(envelope: RbpEnvelope): boolean {
+  return envelope.type === "session_register" ||
+    envelope.type === "session_resume" ||
+    envelope.type === "session_unregister" ||
+    envelope.type === "heartbeat";
+}
+
 export class HttpSseGatewayBinding implements GatewayBinding {
   readonly #options: BindingOptions;
   readonly #base: URL;
   readonly #createUrl: URL;
   readonly #fetch: typeof globalThis.fetch;
   readonly #queue = new AsyncMessageQueue<RbpEnvelope>();
+  readonly #sessionSendChains = new Map<string, Promise<void>>();
+  #lifecycleSendChain: Promise<void> | null = null;
   #connectionId: string | null = null;
   #abort: AbortController | null = null;
   #unacceptedBytes = 0;
@@ -930,48 +947,80 @@ export class HttpSseGatewayBinding implements GatewayBinding {
     if (connectionId === null) throw new Error("HTTP/SSE binding is not steady");
     if (!validateRbpEnvelope(envelope)) throw new Error("invalid outbound RBP envelope");
     const body = JSON.stringify(envelope);
-    this.#unacceptedBytes += Buffer.byteLength(body, "utf8");
+    const bodyBytes = Buffer.byteLength(body, "utf8");
+    this.#unacceptedBytes += bodyBytes;
+    const orderKey = httpSessionOrderKey(envelope);
+    const lifecycleFenced = usesHttpLifecycleFence(envelope);
+    if (orderKey === null && !lifecycleFenced) {
+      try {
+        await this.#sendImmediately(connectionId, body);
+      } finally {
+        this.#unacceptedBytes -= bodyBytes;
+      }
+      return;
+    }
+    const sessionPrevious = orderKey === null
+      ? Promise.resolve()
+      : this.#sessionSendChains.get(orderKey) ?? Promise.resolve();
+    const lifecyclePrevious = lifecycleFenced
+      ? this.#lifecycleSendChain ?? Promise.resolve()
+      : Promise.resolve();
+    const pending = Promise.all([sessionPrevious, lifecyclePrevious])
+      .then(async () => await this.#sendImmediately(connectionId, body));
+    if (orderKey !== null) this.#sessionSendChains.set(orderKey, pending);
+    if (lifecycleFenced) this.#lifecycleSendChain = pending;
     try {
-      const response = await timedFetch(
-        this.#fetch,
-        new URL(`/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, this.#base),
-        {
-          method: "POST",
-          headers: {
-            ...authHeaders(this.#options),
-            Accept: "application/json",
-            "Content-Type": "application/json",
-          },
-          body,
-          redirect: "error",
+      await pending;
+    } finally {
+      if (orderKey !== null && this.#sessionSendChains.get(orderKey) === pending) {
+        this.#sessionSendChains.delete(orderKey);
+      }
+      if (lifecycleFenced && this.#lifecycleSendChain === pending) this.#lifecycleSendChain = null;
+      this.#unacceptedBytes -= bodyBytes;
+    }
+  }
+
+  async #sendImmediately(connectionId: string, body: string): Promise<void> {
+    if (this.#connectionId !== connectionId) {
+      throw new Error("HTTP/SSE binding changed before queued message send");
+    }
+    const response = await timedFetch(
+      this.#fetch,
+      new URL(`/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, this.#base),
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(this.#options),
+          Accept: "application/json",
+          "Content-Type": "application/json",
         },
+        body,
+        redirect: "error",
+      },
+      positiveTimeout(
+        this.#options.fetchTimeoutMs,
+        DEFAULT_FETCH_TIMEOUT_MS,
+        "HTTP/SSE fetch timeout",
+      ),
+      "HTTP/SSE message send",
+    );
+    if (response.status !== 202) {
+      const failure = await httpResponseError(
+        response,
+        "HTTP/SSE message send",
+        "message_send",
         positiveTimeout(
           this.#options.fetchTimeoutMs,
           DEFAULT_FETCH_TIMEOUT_MS,
           "HTTP/SSE fetch timeout",
         ),
-        "HTTP/SSE message send",
       );
-      if (response.status !== 202) {
-        const failure = await httpResponseError(
-          response,
-          "HTTP/SSE message send",
-          "message_send",
-          positiveTimeout(
-            this.#options.fetchTimeoutMs,
-            DEFAULT_FETCH_TIMEOUT_MS,
-            "HTTP/SSE fetch timeout",
-          ),
-        );
-        if (response.status === 404 || response.status === 410) {
-          this.#abort?.abort();
-          this.#abort = null;
-          this.#connectionId = null;
-        }
-        throw failure;
+      if (response.status === 404 || response.status === 410) {
+        this.#abort?.abort();
+        this.#abort = null;
+        this.#connectionId = null;
       }
-    } finally {
-      this.#unacceptedBytes -= Buffer.byteLength(body, "utf8");
+      throw failure;
     }
   }
 

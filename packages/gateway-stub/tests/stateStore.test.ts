@@ -4,7 +4,10 @@ import path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { renameAtomicallyWithRetry } from "../src/stateStore.js";
+import {
+  DurableGatewayStateStore,
+  renameAtomicallyWithRetry,
+} from "../src/stateStore.js";
 
 const temporaryDirectories: string[] = [];
 
@@ -30,6 +33,33 @@ function transient(code: "EPERM" | "EACCES" | "EBUSY"): NodeJS.ErrnoException {
 }
 
 describe("Windows atomic state replacement", () => {
+  it("leaves live and canonical authority unchanged on a pre-rename update failure", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "gateway-state-pre-rename-"));
+    temporaryDirectories.push(directory);
+    const canonical = path.join(directory, "state.json");
+    await writeFile(canonical, JSON.stringify({
+      schemaVersion: 1,
+      nextId: 1,
+      sessions: {},
+      mutationHolds: { holds: [] },
+    }), "utf8");
+    const store = await DurableGatewayStateStore.open(canonical, {
+      beforeCanonicalReplace: () => {
+        throw new Error("injected pre-rename failure");
+      },
+    });
+
+    await expect(store.update((draft) => {
+      draft.nextId = 2;
+    })).rejects.toMatchObject({
+      name: "GatewayStatePersistenceError",
+      canonicalReplaced: false,
+    });
+    expect(store.snapshot().nextId).toBe(1);
+    expect(JSON.parse(await readFile(canonical, "utf8"))).toMatchObject({ nextId: 1 });
+    await expect(store.flush()).resolves.toBeUndefined();
+  });
+
   it("retries only the same atomic rename after transient sharing failures", async () => {
     const { canonical, temporary } = await files();
     const waits: number[] = [];

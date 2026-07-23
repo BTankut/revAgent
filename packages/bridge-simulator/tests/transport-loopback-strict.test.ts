@@ -570,6 +570,120 @@ describe("strict Gateway transport boundaries", () => {
     expect(eventReaderCancelled).toBe(true);
   });
 
+  it("orders same-session data before unregister without globally serializing HTTP uplink", async () => {
+    const firstRsid = uuid();
+    const secondRsid = uuid();
+    const started: string[] = [];
+    let releaseFirstData!: () => void;
+    let markFirstDataStarted!: () => void;
+    const firstDataGate = new Promise<void>((resolve) => { releaseFirstData = resolve; });
+    const firstDataStarted = new Promise<void>((resolve) => { markFirstDataStarted = resolve; });
+    let call = 0;
+    const fetchMock: typeof fetch = async (_input, init = {}) => {
+      call += 1;
+      if (call === 1) {
+        return new Response(JSON.stringify(helloAck("session-ordering")), {
+          status: 201,
+          headers: { "RBP-Connection-Id": "session-ordering" },
+        });
+      }
+      if (call === 2) {
+        return new Response(new ReadableStream<Uint8Array>(), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      const envelope = JSON.parse(String(init.body)) as RbpEnvelope;
+      const rsid = "rsid" in envelope
+        ? envelope.rsid
+        : envelope.type === "session_unregister"
+          ? envelope.payload.rsid
+          : "connection";
+      started.push(`${envelope.type}:${rsid}`);
+      if (envelope.type === "doc_context_update" && envelope.rsid === firstRsid) {
+        markFirstDataStarted();
+        await firstDataGate;
+      }
+      return new Response(null, { status: 202 });
+    };
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetch: fetchMock,
+    });
+    const context = (rsid: string, seq: number): RbpEnvelope => ({
+      v: 1,
+      type: "doc_context_update",
+      id: uuid(),
+      rsid,
+      seq,
+      ack: 0,
+      ts: "2026-07-22T00:00:03.000Z",
+      payload: {
+        documents: [],
+        active_document: null,
+        active_view: null,
+      },
+    });
+
+    await binding.open(hello());
+    const firstData = binding.send(context(firstRsid, 1));
+    await firstDataStarted;
+    const unregister = binding.send({
+      v: 1,
+      type: "session_unregister",
+      id: uuid(),
+      ts: "2026-07-22T00:00:04.000Z",
+      payload: { rsid: firstRsid, reason: "operator_requested" },
+    });
+    const secondData = binding.send(context(secondRsid, 1));
+    const heartbeat = binding.send({
+      v: 1,
+      type: "heartbeat",
+      id: uuid(),
+      ts: "2026-07-22T00:00:05.000Z",
+      payload: { bridge_version: "bridge-test", acks: [], sessions: [] },
+    });
+    const register = binding.send({
+      v: 1,
+      type: "session_register",
+      id: uuid(),
+      ts: "2026-07-22T00:00:06.000Z",
+      payload: {
+        local_session_key: "port:55999:pid:42",
+        user_hint: { name: "fixture-user" },
+        machine: { hostname: "fixture-host", fingerprint: `sha256:${"0".repeat(64)}` },
+        revit: { version: "2025", build: "fixture-build", pid: 42 },
+        addin_version: "fixture-1.0.0",
+        result_contract_version: 2,
+        session_capabilities: [],
+        bridge_version: "bridge-test",
+        documents: [],
+        port: 55999,
+      },
+    });
+
+    await secondData;
+    expect(started).toContain(`doc_context_update:${secondRsid}`);
+    expect(started).not.toContain(`session_unregister:${firstRsid}`);
+    expect(started).not.toContain("heartbeat:connection");
+    expect(started).not.toContain("session_register:connection");
+
+    releaseFirstData();
+    await Promise.all([firstData, unregister, heartbeat, register]);
+    expect(started.indexOf(`session_unregister:${firstRsid}`)).toBeGreaterThan(
+      started.indexOf(`doc_context_update:${firstRsid}`),
+    );
+    expect(started.indexOf("heartbeat:connection")).toBeGreaterThan(
+      started.indexOf(`session_unregister:${firstRsid}`),
+    );
+    expect(started.indexOf("session_register:connection")).toBeGreaterThan(
+      started.indexOf("heartbeat:connection"),
+    );
+    await binding.close();
+  });
+
   it("classifies a real nested HTTP TLS failure as terminal trust", async () => {
     const identity = createTestTlsIdentity(TEST_TLS_HOSTNAME);
     const server = createHttpsServer({ cert: identity.certificate, key: identity.privateKey }, (_request, response) => {

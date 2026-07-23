@@ -2,10 +2,12 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 
 import {
+  acceptInboundData,
   authorizeMutationDispatch,
   createMutationHoldLedger,
   createReceivedJournalRecord,
   createRbpSequenceState,
+  dataEnvelopeImmutableDigest,
   decideJournalRedelivery,
   handleJournalSessionUnregister,
   installMutationHolds,
@@ -22,6 +24,8 @@ import {
   requestJournalCancellation,
   resolveMutationHold,
   type HoldEvidenceConclusion,
+  type InboundDataResult,
+  type DataEnvelopeSnapshot,
   type HoldResolutionDecision,
   type InvocationJournalBinding,
   type InvocationJournalRecord,
@@ -80,6 +84,22 @@ interface SequenceRow {
   readonly sequence_json: string;
 }
 
+export interface PendingSessionUnregister {
+  readonly rsid: string;
+  readonly reason: "revit_exited" | "bridge_shutdown" | "session_replaced" | "operator_requested";
+  readonly phase: "pending" | "confirmed";
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+interface PendingSessionUnregisterRow {
+  readonly rsid: string;
+  readonly reason: PendingSessionUnregister["reason"];
+  readonly phase: PendingSessionUnregister["phase"];
+  readonly created_at_ms: number;
+  readonly updated_at_ms: number;
+}
+
 export interface BatchCoordinationState {
   readonly batchId: string;
   readonly rsid: string;
@@ -92,6 +112,70 @@ export interface DurableDeliveryDraft {
   readonly deliveryId: string;
   readonly ordinal: number;
   readonly draftJson: string;
+}
+
+export type InboundWorkState =
+  | "journaled"
+  | "reply_ready"
+  | "delivery_ready"
+  | "no_reply";
+
+export interface InboundWorkRecord {
+  readonly rsid: string;
+  readonly seq: number;
+  readonly immutableDigest: string;
+  readonly type: string;
+  readonly correlationId: string;
+  readonly contextJson: string;
+  readonly state: InboundWorkState;
+  readonly replyJson: string | null;
+  readonly deliveryId: string | null;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+}
+
+export interface InboundWorkInspection {
+  readonly rsid: string;
+  readonly lastRxSeq: number;
+  readonly acknowledgeableRxSeq: number;
+  readonly work: readonly InboundWorkRecord[];
+}
+
+export type AcceptInboundWorkResult<TDecision> =
+  | {
+      readonly kind: "accepted";
+      readonly ack: number;
+      readonly state: RbpSequenceState;
+      readonly work: InboundWorkRecord;
+      readonly decision: TDecision;
+    }
+  | {
+      readonly kind: "duplicate";
+      readonly ack: number;
+      readonly state: RbpSequenceState;
+      readonly work: InboundWorkRecord | null;
+      readonly decision?: TDecision;
+      readonly replyJson?: string;
+    }
+  | Extract<InboundDataResult, { readonly kind: "gap" | "protocol_fault" }>;
+
+export interface AcceptInboundBatchDecision {
+  readonly binding: "accepted" | "replayed" | "protocol_fault";
+  readonly invocations?: AcceptBatchInvocationsResult;
+}
+
+interface InboundWorkRow {
+  readonly rsid: string;
+  readonly seq: number;
+  readonly immutable_digest: string;
+  readonly type: string;
+  readonly correlation_id: string;
+  readonly context_json: string;
+  readonly state: InboundWorkState;
+  readonly reply_json: string | null;
+  readonly delivery_id: string | null;
+  readonly created_at_ms: number;
+  readonly updated_at_ms: number;
 }
 
 function parseJson<T>(value: string, label: string): T {
@@ -125,6 +209,7 @@ export class DurableBridgeJournal {
   readonly #path: string;
   readonly #db: Database.Database;
   readonly #busyTimeoutMs: number;
+  #durableDepth = 0;
   #closed = false;
 
   public constructor(path: string, options: { readonly busyTimeoutMs?: number } = {}) {
@@ -139,9 +224,15 @@ export class DurableBridgeJournal {
     this.#db.pragma("synchronous = FULL");
     this.#db.pragma("fullfsync = ON");
     this.#db.pragma("checkpoint_fullfsync = ON");
-    this.#migrate();
-    this.classifyInterruptedAtomicBatches(Date.now());
-    this.classifyInterruptedMutations(Date.now());
+    try {
+      this.#migrate();
+      this.classifyInterruptedAtomicBatches(Date.now());
+      this.classifyInterruptedMutations(Date.now());
+    } catch (error) {
+      this.#db.close();
+      this.#closed = true;
+      throw error;
+    }
   }
 
   public get path(): string {
@@ -212,6 +303,276 @@ export class DurableBridgeJournal {
       .all() as DurabilityEvent[];
   }
 
+  public getPendingSessionUnregister(rsid: string): PendingSessionUnregister | null {
+    this.#assertOpen();
+    if (rsid.length === 0) throw new TypeError("rsid is required");
+    const row = this.#db.prepare(
+      `SELECT rsid,reason,phase,created_at_ms,updated_at_ms
+       FROM pending_session_unregister WHERE rsid=?`,
+    ).get(rsid) as PendingSessionUnregisterRow | undefined;
+    return row === undefined ? null : this.#pendingSessionUnregister(row);
+  }
+
+  public listPendingSessionUnregisters(): readonly PendingSessionUnregister[] {
+    this.#assertOpen();
+    const rows = this.#db.prepare(
+      `SELECT rsid,reason,phase,created_at_ms,updated_at_ms
+       FROM pending_session_unregister ORDER BY rsid`,
+    ).all() as PendingSessionUnregisterRow[];
+    return rows.map((row) => this.#pendingSessionUnregister(row));
+  }
+
+  public getInboundWork(rsid: string, seq: number): InboundWorkRecord | null {
+    this.#assertOpen();
+    if (rsid.length === 0) throw new TypeError("rsid is required");
+    if (!Number.isSafeInteger(seq) || seq < 1) throw new RangeError("seq must be a positive safe integer");
+    return this.#getInboundWorkWithinTransaction(rsid, seq);
+  }
+
+  public listInboundWork(rsid?: string): readonly InboundWorkRecord[] {
+    this.#assertOpen();
+    const rows = (rsid === undefined
+      ? this.#db.prepare(
+        `SELECT rsid,seq,immutable_digest,type,correlation_id,context_json,state,
+                reply_json,delivery_id,created_at_ms,updated_at_ms
+         FROM inbound_work ORDER BY rsid,seq`,
+      ).all()
+      : this.#db.prepare(
+        `SELECT rsid,seq,immutable_digest,type,correlation_id,context_json,state,
+                reply_json,delivery_id,created_at_ms,updated_at_ms
+         FROM inbound_work WHERE rsid=? ORDER BY seq`,
+      ).all(rsid)) as InboundWorkRow[];
+    return rows.map((row) => this.#inboundWorkRecord(row));
+  }
+
+  public inspectInboundWork(rsid: string): InboundWorkInspection {
+    const sequence = this.loadSequence(rsid);
+    return {
+      rsid,
+      lastRxSeq: sequence.lastRxSeq,
+      acknowledgeableRxSeq: this.acknowledgeableRxSeq(rsid),
+      work: this.listInboundWork(rsid),
+    };
+  }
+
+  public acknowledgeableRxSeq(rsid: string): number {
+    const sequence = this.loadSequence(rsid);
+    const blocking = this.#db.prepare(
+      `SELECT MIN(seq) AS seq FROM inbound_work
+       WHERE rsid=? AND state IN ('journaled','reply_ready')`,
+    ).get(rsid) as { readonly seq: number | null };
+    return blocking.seq === null
+      ? sequence.lastRxSeq
+      : Math.min(sequence.lastRxSeq, Math.max(0, blocking.seq - 1));
+  }
+
+  public acceptInboundInvocation(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly binding: InvocationJournalBinding;
+    readonly dispatchIdentity: string;
+    readonly contextJson: string;
+    readonly replyJsonForDecision?: (decision: AcceptInvocationResult) => string | null;
+    readonly supersedeOlderForDecision?: (decision: AcceptInvocationResult) => boolean;
+    readonly resumeJournaledDuplicate?: boolean;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<AcceptInvocationResult> {
+    if (input.envelope.type !== "invoke") throw new TypeError("inbound invocation must use type invoke");
+    if (
+      input.binding.rsid !== input.envelope.rsid ||
+      input.binding.invocationId.length === 0
+    ) {
+      throw new Error("inbound invocation binding does not match its envelope");
+    }
+    return this.#acceptInboundWork({
+      envelope: input.envelope,
+      correlationId: input.binding.invocationId,
+      contextJson: input.contextJson,
+      initialState: "journaled",
+      replyJson: null,
+      resumeJournaledDuplicate: input.resumeJournaledDuplicate ?? false,
+      atMs: input.atMs,
+      semanticAccept: () => this.acceptInvocation(input.binding, input.dispatchIdentity, input.atMs),
+      ...(input.replyJsonForDecision === undefined
+        ? {}
+        : { replyJsonForDecision: input.replyJsonForDecision }),
+      ...(input.supersedeOlderForDecision === undefined
+        ? {}
+        : { supersedeOlderForDecision: input.supersedeOlderForDecision }),
+    });
+  }
+
+  public acceptInboundBatch(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly batchId: string;
+    readonly batchDigest: string;
+    readonly bindingJson: string;
+    readonly bindings: readonly InvocationJournalBinding[];
+    readonly recoveryClearances: readonly RecoveryClearance[];
+    readonly dispatchIdentity: string;
+    readonly atomic: boolean;
+    readonly contextJson: string;
+    readonly replyJsonForDecision?: (decision: AcceptInboundBatchDecision) => string | null;
+    readonly supersedeOlderForDecision?: (decision: AcceptInboundBatchDecision) => boolean;
+    readonly resumeJournaledDuplicate?: boolean;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<AcceptInboundBatchDecision> {
+    if (input.envelope.type !== "invoke_batch") throw new TypeError("inbound batch must use type invoke_batch");
+    if (
+      input.batchId.length === 0 ||
+      input.envelope.rsid.length === 0 ||
+      input.bindings.some((binding) => binding.rsid !== input.envelope.rsid)
+    ) {
+      throw new Error("inbound batch binding does not match its envelope");
+    }
+    parseJson<unknown>(input.bindingJson, "batch binding");
+    const atMs = input.atMs ?? Date.now();
+    return this.#acceptInboundWork({
+      envelope: input.envelope,
+      correlationId: input.batchId,
+      contextJson: input.contextJson,
+      initialState: "journaled",
+      replyJson: null,
+      resumeJournaledDuplicate: input.resumeJournaledDuplicate ?? false,
+      atMs,
+      semanticAccept: () => {
+        const binding = this.acceptBatchBinding({
+          batchId: input.batchId,
+          rsid: input.envelope.rsid,
+          batchDigest: input.batchDigest,
+          bindingJson: input.bindingJson,
+          atMs,
+        });
+        if (binding === "protocol_fault") return { binding };
+        return {
+          binding,
+          invocations: this.acceptBatchInvocations({
+            bindings: input.bindings,
+            recoveryClearances: input.recoveryClearances,
+            dispatchIdentity: input.dispatchIdentity,
+            atomic: input.atomic,
+            atMs,
+          }),
+        };
+      },
+      ...(input.replyJsonForDecision === undefined
+        ? {}
+        : { replyJsonForDecision: input.replyJsonForDecision }),
+      ...(input.supersedeOlderForDecision === undefined
+        ? {}
+        : { supersedeOlderForDecision: input.supersedeOlderForDecision }),
+    });
+  }
+
+  public acceptInboundCancel(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly invocationId: string;
+    readonly contextJson: string;
+    readonly resumeJournaledDuplicate?: boolean;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<ReturnType<DurableBridgeJournal["requestCancellation"]> | null> {
+    if (input.envelope.type !== "cancel") throw new TypeError("inbound cancellation must use type cancel");
+    if (input.invocationId.length === 0) throw new TypeError("cancel invocationId is required");
+    const atMs = input.atMs ?? Date.now();
+    return this.#acceptInboundWork({
+      envelope: input.envelope,
+      correlationId: input.invocationId,
+      contextJson: input.contextJson,
+      initialState: "journaled",
+      replyJson: null,
+      resumeJournaledDuplicate: input.resumeJournaledDuplicate ?? false,
+      atMs,
+      semanticAccept: () => {
+        if (this.#getInvocationWithinTransaction(input.envelope.rsid, input.invocationId) === null) {
+          return null;
+        }
+        const decision = this.requestCancellation(input.envelope.rsid, input.invocationId, atMs);
+        if (decision.kind === "cancelled_before_dispatch") {
+          this.#db.prepare(
+            `UPDATE inbound_work
+             SET state='no_reply',updated_at_ms=?
+             WHERE rsid=? AND type='invoke' AND correlation_id=? AND state='journaled'`,
+          ).run(atMs, input.envelope.rsid, input.invocationId);
+        }
+        return decision;
+      },
+    });
+  }
+
+  public acceptInboundTerminalReply(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly correlationId: string;
+    readonly contextJson: string;
+    readonly replyJson: string;
+    readonly supersedeOlder?: boolean;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<null> {
+    parseJson<unknown>(input.replyJson, "inbound terminal reply");
+    return this.#acceptInboundWork({
+      envelope: input.envelope,
+      correlationId: input.correlationId,
+      contextJson: input.contextJson,
+      initialState: "reply_ready",
+      replyJson: input.replyJson,
+      supersedeOlderForInitialReply: input.supersedeOlder ?? true,
+      resumeJournaledDuplicate: false,
+      atMs: input.atMs,
+      semanticAccept: () => null,
+    });
+  }
+
+  /**
+   * Durably consumes one transport sequence without touching the semantic
+   * invocation/batch journal. This is used only when an identical logical
+   * delivery is already owned by the live per-session dispatch window.
+   */
+  public acceptInboundNoReply(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly correlationId: string;
+    readonly contextJson: string;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<null> {
+    return this.#acceptInboundWork({
+      envelope: input.envelope,
+      correlationId: input.correlationId,
+      contextJson: input.contextJson,
+      initialState: "no_reply",
+      replyJson: null,
+      resumeJournaledDuplicate: false,
+      atMs: input.atMs,
+      semanticAccept: () => null,
+    });
+  }
+
+  public storeInboundReply(
+    rsid: string,
+    seq: number,
+    replyJson: string,
+    atMs = Date.now(),
+    supersedeOlder = true,
+  ): InboundWorkRecord {
+    parseJson<unknown>(replyJson, "inbound reply");
+    return this.#durable("inbound_reply_ready", `${rsid}/${seq}`, atMs, () =>
+      this.#storeInboundReplyWithinTransaction(rsid, seq, replyJson, atMs, supersedeOlder));
+  }
+
+  public completeInboundNoReply(
+    rsid: string,
+    seq: number,
+    atMs = Date.now(),
+  ): InboundWorkRecord {
+    return this.#durable("inbound_no_reply", `${rsid}/${seq}`, atMs, () => {
+      const work = this.#requireInboundWorkWithinTransaction(rsid, seq);
+      if (work.state === "no_reply") return work;
+      if (work.state !== "journaled") {
+        throw new Error(`inbound work ${rsid}/${seq} cannot become no_reply from ${work.state}`);
+      }
+      this.#db.prepare(
+        "UPDATE inbound_work SET state='no_reply',updated_at_ms=? WHERE rsid=? AND seq=?",
+      ).run(atMs, rsid, seq);
+      return this.#requireInboundWorkWithinTransaction(rsid, seq);
+    });
+  }
+
   /**
    * Durably accepts an invocation. Hold authorization/consumption and the
    * received row occur in the same SQLite transaction.
@@ -226,6 +587,12 @@ export class DurableBridgeJournal {
     return this.#durable("accept_received", key, atMs, () => {
       const existing = this.#getInvocationWithinTransaction(binding.rsid, binding.invocationId);
       if (existing !== null) {
+        if (!journalRecordIsIntact(existing)) {
+          return { kind: "protocol_fault", reason: "journal_integrity_mismatch" };
+        }
+        if (existing.bindingDigest !== makeJournalBindingDigest(binding)) {
+          return { kind: "protocol_fault", reason: "binding_mismatch" };
+        }
         let promotionHoldId: string | null = null;
         if (
           existing.binding.mutating &&
@@ -396,6 +763,7 @@ export class DurableBridgeJournal {
       .join(",");
     return this.#durable("indeterminate_with_hold", subject, atMs, () => {
       const records = identities.map((entry) => this.#requireInvocation(entry.rsid, entry.invocationId));
+      if (records.every((record) => record.state === "indeterminate")) return records;
       const sessionIds = new Set(records.map((record) => record.binding.rsid));
       if (sessionIds.size !== 1) throw new Error("bulk indeterminate promotion must stay within one rsid");
       const rsid = records[0]?.binding.rsid as string;
@@ -579,10 +947,22 @@ export class DurableBridgeJournal {
    */
   public unregisterSession(
     rsid: string,
+    reason: PendingSessionUnregister["reason"],
     atMs = Date.now(),
   ): readonly UnregisterJournalDecision[] {
     if (rsid.length === 0) throw new TypeError("rsid is required");
     return this.#durable("session_unregister", rsid, atMs, () => {
+      const pending = this.#db.prepare(
+        "SELECT reason FROM pending_session_unregister WHERE rsid=?",
+      ).get(rsid) as { readonly reason: string } | undefined;
+      if (pending !== undefined && pending.reason !== reason) {
+        throw new Error(`session unregister reason changed for ${rsid}`);
+      }
+      this.#db.prepare(
+        `INSERT INTO pending_session_unregister(rsid,reason,phase,created_at_ms,updated_at_ms)
+         VALUES(?,?,'pending',?,?)
+         ON CONFLICT(rsid) DO UPDATE SET updated_at_ms=excluded.updated_at_ms`,
+      ).run(rsid, reason, atMs, atMs);
       const records = this.listInvocations().filter(
         (record) =>
           record.binding.rsid === rsid &&
@@ -629,11 +1009,46 @@ export class DurableBridgeJournal {
         this.#saveInvocation(decision.record, atMs, undefined, atMs);
         return decision;
       });
-      this.#queueSessionDeliveryExpiry(rsid, atMs);
-      this.#db.prepare("DELETE FROM artifact_outbox WHERE rsid=?").run(rsid);
-      this.#db.prepare("DELETE FROM artifact_delivery_plan WHERE rsid=?").run(rsid);
-      this.#db.prepare("DELETE FROM session_sequence WHERE rsid=?").run(rsid);
       return decisions;
+    });
+  }
+
+  /**
+   * Final cleanup is intentionally separate from unregister intent. The
+   * caller may invoke it only after a heartbeat_ack ordered behind the
+   * successful session_unregister send on the current binding.
+   */
+  public confirmSessionUnregister(
+    rsid: string,
+    atMs = Date.now(),
+  ): boolean {
+    if (rsid.length === 0) throw new TypeError("rsid is required");
+    return this.#durable("session_unregister_confirmed", rsid, atMs, () => {
+      const pending = this.#db.prepare(
+        "SELECT phase FROM pending_session_unregister WHERE rsid=?",
+      ).get(rsid) as { readonly phase: PendingSessionUnregister["phase"] } | undefined;
+      if (pending === undefined) return false;
+      if (pending.phase === "pending") {
+        this.#queueSessionDeliveryExpiry(rsid, atMs);
+        this.#db.prepare("DELETE FROM artifact_outbox WHERE rsid=?").run(rsid);
+        this.#db.prepare("DELETE FROM artifact_delivery_plan WHERE rsid=?").run(rsid);
+        this.#db.prepare("DELETE FROM inbound_work WHERE rsid=?").run(rsid);
+        this.#db.prepare("DELETE FROM session_sequence WHERE rsid=?").run(rsid);
+        this.#db.prepare(
+          "UPDATE pending_session_unregister SET phase='confirmed',updated_at_ms=? WHERE rsid=?",
+        ).run(atMs, rsid);
+      }
+      return true;
+    });
+  }
+
+  public completeSessionUnregister(rsid: string, atMs = Date.now()): boolean {
+    if (rsid.length === 0) throw new TypeError("rsid is required");
+    return this.#durable("session_unregister_completed", rsid, atMs, () => {
+      const removed = this.#db.prepare(
+        "DELETE FROM pending_session_unregister WHERE rsid=? AND phase='confirmed'",
+      ).run(rsid);
+      return removed.changes === 1;
     });
   }
 
@@ -725,22 +1140,12 @@ export class DurableBridgeJournal {
 
   public loadSequence(rsid: string): RbpSequenceState {
     this.#assertOpen();
-    const row = this.#db
-      .prepare("SELECT sequence_json FROM session_sequence WHERE rsid=?")
-      .get(rsid) as SequenceRow | undefined;
-    return row === undefined
-      ? createRbpSequenceState(rsid)
-      : parseJson<RbpSequenceState>(row.sequence_json, "sequence row");
+    return this.#loadSequenceWithinTransaction(rsid);
   }
 
   public saveSequence(state: RbpSequenceState, atMs = Date.now()): void {
     this.#durable("sequence_state", state.rsid, atMs, () => {
-      this.#db
-        .prepare(
-          `INSERT INTO session_sequence(rsid,sequence_json,updated_at_ms) VALUES(?,?,?)
-           ON CONFLICT(rsid) DO UPDATE SET sequence_json=excluded.sequence_json,updated_at_ms=excluded.updated_at_ms`,
-        )
-        .run(state.rsid, JSON.stringify(state), atMs);
+      this.#storeSequenceWithinTransaction(state, atMs);
     });
   }
 
@@ -751,12 +1156,7 @@ export class DurableBridgeJournal {
     atMs = Date.now(),
   ): void {
     this.#durable("sequence_artifact_state", `${state.rsid}/${seq}`, atMs, () => {
-      this.#db
-        .prepare(
-          `INSERT INTO session_sequence(rsid,sequence_json,updated_at_ms) VALUES(?,?,?)
-           ON CONFLICT(rsid) DO UPDATE SET sequence_json=excluded.sequence_json,updated_at_ms=excluded.updated_at_ms`,
-        )
-        .run(state.rsid, JSON.stringify(state), atMs);
+      this.#storeSequenceWithinTransaction(state, atMs);
       this.#db
         .prepare("INSERT INTO artifact_outbox(rsid,seq,carrier_json,created_at_ms) VALUES(?,?,?,?)")
         .run(state.rsid, seq, carrierJson, atMs);
@@ -774,6 +1174,7 @@ export class DurableBridgeJournal {
     readonly deliveryId: string;
     readonly draftJsons: readonly string[];
     readonly terminalOrdinal: number;
+    readonly inboundSeq?: number;
     readonly atMs?: number;
   }): "accepted" | "replayed" {
     const atMs = input.atMs ?? Date.now();
@@ -781,25 +1182,44 @@ export class DurableBridgeJournal {
     if (input.terminalOrdinal !== input.draftJsons.length - 1) {
       throw new Error("artifact delivery terminal must be the final ordered draft");
     }
+    if (
+      input.inboundSeq !== undefined &&
+      (!Number.isSafeInteger(input.inboundSeq) || input.inboundSeq < 1)
+    ) {
+      throw new RangeError("inboundSeq must be a positive safe integer");
+    }
     return this.#durable("artifact_delivery_staged", `${input.rsid}/${input.deliveryId}`, atMs, () => {
       const existing = this.#db
-        .prepare("SELECT rsid,state,terminal_ordinal FROM artifact_delivery_plan WHERE delivery_id=?")
+        .prepare("SELECT rsid,state,terminal_ordinal,inbound_seq FROM artifact_delivery_plan WHERE delivery_id=?")
         .get(input.deliveryId) as {
           readonly rsid: string;
           readonly state: string;
           readonly terminal_ordinal: number;
+          readonly inbound_seq: number | null;
         } | undefined;
       if (existing !== undefined) {
-        if (existing.rsid !== input.rsid || existing.terminal_ordinal !== input.terminalOrdinal) {
+        if (
+          existing.rsid !== input.rsid ||
+          existing.terminal_ordinal !== input.terminalOrdinal ||
+          existing.inbound_seq !== (input.inboundSeq ?? null)
+        ) {
           throw new Error("artifact delivery identity mismatch");
+        }
+        if (input.inboundSeq !== undefined) {
+          this.#bindInboundDeliveryWithinTransaction(
+            input.rsid,
+            input.inboundSeq,
+            input.deliveryId,
+            atMs,
+          );
         }
         return "replayed";
       }
       this.#db.prepare(
         `INSERT INTO artifact_delivery_plan(
-          delivery_id,rsid,state,terminal_ordinal,terminal_seq,created_at_ms,updated_at_ms
-        ) VALUES(?,?,'pending',?,NULL,?,?)`,
-      ).run(input.deliveryId, input.rsid, input.terminalOrdinal, atMs, atMs);
+          delivery_id,rsid,inbound_seq,state,terminal_ordinal,terminal_seq,created_at_ms,updated_at_ms
+        ) VALUES(?,?,?,'pending',?,NULL,?,?)`,
+      ).run(input.deliveryId, input.rsid, input.inboundSeq ?? null, input.terminalOrdinal, atMs, atMs);
       const insert = this.#db.prepare(
         "INSERT INTO artifact_delivery_draft(delivery_id,ordinal,draft_json) VALUES(?,?,?)",
       );
@@ -807,6 +1227,14 @@ export class DurableBridgeJournal {
         parseJson<unknown>(draftJson, "artifact delivery draft");
         insert.run(input.deliveryId, ordinal, draftJson);
       });
+      if (input.inboundSeq !== undefined) {
+        this.#bindInboundDeliveryWithinTransaction(
+          input.rsid,
+          input.inboundSeq,
+          input.deliveryId,
+          atMs,
+        );
+      }
       return "accepted";
     });
   }
@@ -891,11 +1319,12 @@ export class DurableBridgeJournal {
     const atMs = input.atMs ?? Date.now();
     this.#durable("artifact_delivery_sequenced", `${input.state.rsid}/${input.seq}`, atMs, () => {
       const plan = this.#db.prepare(
-        "SELECT rsid,state,terminal_ordinal FROM artifact_delivery_plan WHERE delivery_id=?",
+        "SELECT rsid,state,terminal_ordinal,inbound_seq FROM artifact_delivery_plan WHERE delivery_id=?",
       ).get(input.deliveryId) as {
         readonly rsid: string;
         readonly state: string;
         readonly terminal_ordinal: number;
+        readonly inbound_seq: number | null;
       } | undefined;
       const draft = this.#db.prepare(
         "SELECT draft_json FROM artifact_delivery_draft WHERE delivery_id=? AND ordinal=?",
@@ -910,21 +1339,20 @@ export class DurableBridgeJournal {
         throw new Error("artifact delivery draft is not the next durable member");
       }
       const isTerminal = input.ordinal === plan.terminal_ordinal;
-      if (isTerminal !== (input.terminalCarrierJson !== undefined)) {
-        throw new Error("artifact delivery terminal/carrier binding mismatch");
+      if (!isTerminal && input.terminalCarrierJson !== undefined) {
+        throw new Error("artifact carrier is permitted only on the terminal delivery draft");
       }
-      this.#db.prepare(
-        `INSERT INTO session_sequence(rsid,sequence_json,updated_at_ms) VALUES(?,?,?)
-         ON CONFLICT(rsid) DO UPDATE SET sequence_json=excluded.sequence_json,updated_at_ms=excluded.updated_at_ms`,
-      ).run(input.state.rsid, JSON.stringify(input.state), atMs);
+      this.#storeSequenceWithinTransaction(input.state, atMs);
       this.#db.prepare(
         "DELETE FROM artifact_delivery_draft WHERE delivery_id=? AND ordinal=?",
       ).run(input.deliveryId, input.ordinal);
-      if (input.terminalCarrierJson !== undefined) {
-        parseJson<unknown>(input.terminalCarrierJson, "artifact terminal carrier");
-        this.#db.prepare(
-          "INSERT INTO artifact_outbox(rsid,seq,carrier_json,created_at_ms) VALUES(?,?,?,?)",
-        ).run(input.state.rsid, input.seq, input.terminalCarrierJson, atMs);
+      if (isTerminal) {
+        if (input.terminalCarrierJson !== undefined) {
+          parseJson<unknown>(input.terminalCarrierJson, "artifact terminal carrier");
+          this.#db.prepare(
+            "INSERT INTO artifact_outbox(rsid,seq,carrier_json,created_at_ms) VALUES(?,?,?,?)",
+          ).run(input.state.rsid, input.seq, input.terminalCarrierJson, atMs);
+        }
         this.#db.prepare(
           "UPDATE artifact_delivery_plan SET state='queued',terminal_seq=?,updated_at_ms=? WHERE delivery_id=?",
         ).run(input.seq, atMs, input.deliveryId);
@@ -978,6 +1406,9 @@ export class DurableBridgeJournal {
       ).run(deliveryId, rsid, atMs);
       this.#db.prepare("DELETE FROM artifact_outbox WHERE rsid=? AND seq=?").run(rsid, seq);
       this.#db.prepare(
+        "DELETE FROM inbound_work WHERE rsid=? AND delivery_id=?",
+      ).run(rsid, deliveryId);
+      this.#db.prepare(
         "DELETE FROM artifact_delivery_plan WHERE rsid=? AND terminal_seq=?",
       ).run(rsid, seq);
     });
@@ -1027,6 +1458,20 @@ export class DurableBridgeJournal {
     const expiry = this.#db.prepare("SELECT carrier_json AS carrierJson FROM artifact_cleanup_queue")
       .all() as Array<{ readonly carrierJson: string }>;
     expiry.forEach((row) => retained.add(row.carrierJson));
+    const abandoned = new Set(
+      this.listInvocations()
+        .filter((record) => record.abandoned)
+        .map((record) => makeIdempotencyKey(record.binding.rsid, record.binding.invocationId)),
+    );
+    for (const carrierJson of [...retained]) {
+      const carrier = parseJson<unknown>(carrierJson, "retained delivery carrier");
+      if (
+        typeof carrier === "object" && carrier !== null &&
+        "rsid" in carrier && typeof carrier.rsid === "string" &&
+        "invocationId" in carrier && typeof carrier.invocationId === "string" &&
+        abandoned.has(makeIdempotencyKey(carrier.rsid, carrier.invocationId))
+      ) retained.delete(carrierJson);
+    }
     return [...retained];
   }
 
@@ -1125,9 +1570,92 @@ export class DurableBridgeJournal {
     });
   }
 
-  /** Claims a successor that Section 12.2 permits only after a recovered read
-   * in the same atomic:false batch became durably completed. */
-  public claimNonAtomicBatchSuccessor(input: {
+  /**
+   * Durably classifies a dispatched atomic batch whose carrier is not yet
+   * knowable. Mutation holds and the coordination transition are committed in
+   * one transaction, while the terminal carrier remains open for correlated
+   * late add-in evidence.
+   */
+  public markAtomicBatchIndeterminate(input: {
+    readonly batchId: string;
+    readonly rsid: string;
+    readonly batchDigest: string;
+    readonly invocationIds: readonly string[];
+    readonly atMs?: number;
+  }): readonly InvocationJournalRecord[] {
+    const atMs = input.atMs ?? Date.now();
+    if (input.invocationIds.length === 0) throw new Error("atomic batch has no steps");
+    return this.#durable("atomic_batch_indeterminate", input.batchId, atMs, () => {
+      const batch = this.getBatchCoordination(input.batchId);
+      if (
+        batch === null ||
+        batch.rsid !== input.rsid ||
+        batch.batchDigest !== input.batchDigest ||
+        (batch.state !== "dispatched" && batch.state !== "indeterminate") ||
+        batch.terminalJson !== null
+      ) {
+        throw new Error("atomic indeterminate classification does not match an open dispatched batch");
+      }
+      const records = input.invocationIds.map((invocationId, index) => {
+        const record = this.#requireInvocation(input.rsid, invocationId);
+        if (
+          !journalRecordIsIntact(record) ||
+          record.binding.batchId !== input.batchId ||
+          record.binding.batchDigest !== input.batchDigest ||
+          record.binding.batchIndex !== index
+        ) {
+          throw new Error("atomic indeterminate step binding mismatch");
+        }
+        return record;
+      });
+      const uncertain = records.flatMap((record) => {
+        if (!record.binding.mutating || record.state === "indeterminate") return [];
+        if (record.terminalOutcome !== null || record.lateTerminalOutcome !== null) return [];
+        if (record.binding.mutationScope === null) throw new Error("mutation journal lost its scope");
+        return [{
+          originIdempotencyKey: makeIdempotencyKey(input.rsid, record.binding.invocationId),
+          mutationScope: record.binding.mutationScope,
+        }];
+      });
+      let installedHolds: readonly MutationHold[] = [];
+      if (uncertain.length > 0) {
+        const installed = installMutationHolds(this.#loadLedger(), input.rsid, uncertain);
+        if (installed.kind === "blocked") {
+          const expected = new Set(uncertain.map((entry) => entry.originIdempotencyKey));
+          const covered = new Set(
+            installed.conflictingHolds.flatMap((hold) => hold.originIdempotencyKeys),
+          );
+          if ([...expected].some((key) => !covered.has(key))) {
+            throw new Error("another active hold conflicts with atomic indeterminate classification");
+          }
+          installedHolds = installed.conflictingHolds;
+        } else {
+          installedHolds = installed.holds;
+          this.#storeLedger(installed.ledger, atMs);
+        }
+      }
+      const updated = records.map((record) => {
+        if (!record.binding.mutating || record.state === "indeterminate") return record;
+        if (record.terminalOutcome !== null || record.lateTerminalOutcome !== null) return record;
+        const key = makeIdempotencyKey(input.rsid, record.binding.invocationId);
+        const holdId = installedHolds.find(
+          (hold) => hold.originIdempotencyKeys.includes(key),
+        )?.holdId ?? null;
+        const indeterminate = markJournalIndeterminate(record, holdId);
+        this.#saveInvocation(indeterminate, atMs, undefined, atMs);
+        return indeterminate;
+      });
+      this.#db.prepare(
+        "UPDATE batch_coordination SET state='indeterminate',updated_at_ms=? WHERE batch_id=? AND state IN ('dispatched','indeterminate')",
+      ).run(atMs, input.batchId);
+      return updated;
+    });
+  }
+
+  /** Revalidates and claims one atomic:false step immediately before dispatch.
+   * Prefix completion and the current hold ledger are checked in the same
+   * transaction so an earlier asynchronous add-in wait cannot stale authority. */
+  public claimNonAtomicBatchStep(input: {
     readonly binding: InvocationJournalBinding;
     readonly dispatchIdentity: string;
     readonly atMs?: number;
@@ -1156,7 +1684,10 @@ export class DurableBridgeJournal {
         .all(input.binding.rsid, record.binding.batchId, record.binding.batchIndex) as InvocationRow[];
       const prefixCompleted = prefix.every((row) => {
         const candidate = parseJson<InvocationJournalRecord>(row.record_json, "batch predecessor");
-        return journalRecordIsIntact(candidate) && candidate.terminalOutcome?.status === "completed";
+        return journalRecordIsIntact(candidate) && (
+          candidate.terminalOutcome?.status === "completed" ||
+          candidate.lateTerminalOutcome?.status === "completed"
+        );
       });
       if (!prefixCompleted) return { kind: "protocol_fault", reason: "batch_predecessor_not_completed" };
 
@@ -1224,6 +1755,76 @@ export class DurableBridgeJournal {
       this.#db
         .prepare("UPDATE batch_coordination SET state='terminal',terminal_json=?,updated_at_ms=? WHERE batch_id=?")
         .run(input.terminalJson, atMs, input.batchId);
+    });
+  }
+
+  /** Commits one correlated late atomic carrier without clearing mutation holds. */
+  public commitAtomicBatchLateTerminal(input: {
+    readonly batchId: string;
+    readonly rsid: string;
+    readonly batchDigest: string;
+    readonly terminalJson: string;
+    readonly steps: readonly {
+      readonly invocationId: string;
+      readonly outcome: TerminalJournalOutcome;
+    }[];
+    readonly atMs?: number;
+  }): void {
+    const atMs = input.atMs ?? Date.now();
+    parseJson<unknown>(input.terminalJson, "late atomic batch terminal");
+    this.#durable("atomic_batch_late_terminal", input.batchId, atMs, () => {
+      const batch = this.getBatchCoordination(input.batchId);
+      if (
+        batch === null ||
+        batch.rsid !== input.rsid ||
+        batch.batchDigest !== input.batchDigest
+      ) {
+        throw new Error("late atomic terminal does not match its durable binding");
+      }
+      if (batch.terminalJson !== null) {
+        if (batch.terminalJson !== input.terminalJson) {
+          throw new Error("conflicting late atomic terminal carrier");
+        }
+        return;
+      }
+      if (batch.state !== "indeterminate") {
+        throw new Error("late atomic terminal requires an indeterminate coordination row");
+      }
+      const rows = this.#db.prepare(
+        `SELECT record_json,binding_digest,state FROM invocation_journal
+         WHERE rsid=? AND batch_id=? ORDER BY batch_index`,
+      ).all(input.rsid, input.batchId) as InvocationRow[];
+      const records = rows.map((row, index) => {
+        const record = parseJson<InvocationJournalRecord>(row.record_json, "late atomic batch step");
+        if (
+          !journalRecordIsIntact(record) ||
+          record.binding.batchId !== input.batchId ||
+          record.binding.batchDigest !== input.batchDigest ||
+          record.binding.batchIndex !== index
+        ) {
+          throw new Error("late atomic step binding mismatch");
+        }
+        return record;
+      });
+      if (records.length === 0) throw new Error("late atomic batch has no durable steps");
+      const byInvocation = new Map(records.map((record) => [record.binding.invocationId, record]));
+      if (
+        new Set(input.steps.map((step) => step.invocationId)).size !== input.steps.length ||
+        input.steps.some((step) => !byInvocation.has(step.invocationId))
+      ) {
+        throw new Error("late atomic terminal contains an unknown or duplicate step");
+      }
+      for (const step of input.steps) {
+        const record = byInvocation.get(step.invocationId) as InvocationJournalRecord;
+        const terminal = recordJournalTerminal(record, step.outcome);
+        this.#saveInvocation(terminal, atMs, undefined, atMs);
+      }
+      const updated = this.#db.prepare(
+        `UPDATE batch_coordination
+         SET state='terminal',terminal_json=?,updated_at_ms=?
+         WHERE batch_id=? AND state='indeterminate' AND terminal_json IS NULL`,
+      ).run(input.terminalJson, atMs, input.batchId);
+      if (updated.changes !== 1) throw new Error("late atomic terminal lost coordination ownership");
     });
   }
 
@@ -1378,6 +1979,296 @@ export class DurableBridgeJournal {
     });
   }
 
+  #acceptInboundWork<TDecision>(input: {
+    readonly envelope: DataEnvelopeSnapshot;
+    readonly correlationId: string;
+    readonly contextJson: string;
+    readonly initialState: "journaled" | "reply_ready" | "no_reply";
+    readonly replyJson: string | null;
+    readonly supersedeOlderForInitialReply?: boolean;
+    readonly resumeJournaledDuplicate: boolean;
+    readonly semanticAccept: () => TDecision;
+    readonly replyJsonForDecision?: (decision: TDecision) => string | null;
+    readonly supersedeOlderForDecision?: (decision: TDecision) => boolean;
+    readonly atMs?: number;
+  }): AcceptInboundWorkResult<TDecision> {
+    if (input.correlationId.length === 0) throw new TypeError("inbound correlationId is required");
+    parseJson<unknown>(input.contextJson, "inbound work context");
+    if (input.initialState === "reply_ready" && input.replyJson === null) {
+      throw new Error("reply_ready inbound work requires replyJson");
+    }
+    if (input.initialState !== "reply_ready" && input.replyJson !== null) {
+      throw new Error(`${input.initialState} inbound work cannot carry replyJson`);
+    }
+    if (input.replyJson !== null) parseJson<unknown>(input.replyJson, "inbound work reply");
+    const atMs = input.atMs ?? Date.now();
+    return this.#durable(
+      "inbound_accept",
+      `${input.envelope.rsid}/${input.envelope.seq}`,
+      atMs,
+      () => {
+        const sequence = acceptInboundData(
+          this.#loadSequenceWithinTransaction(input.envelope.rsid),
+          input.envelope,
+        );
+        if (sequence.kind === "gap" || sequence.kind === "protocol_fault") return sequence;
+        this.#storeSequenceWithinTransaction(sequence.state, atMs);
+
+        let work = this.#getInboundWorkWithinTransaction(input.envelope.rsid, input.envelope.seq);
+        if (sequence.kind === "accepted") {
+          if (work !== null) throw new Error("new inbound sequence already has durable work");
+          this.#db.prepare(
+            `INSERT INTO inbound_work(
+              rsid,seq,immutable_digest,type,correlation_id,context_json,state,
+              reply_json,delivery_id,created_at_ms,updated_at_ms
+            ) VALUES(?,?,?,?,?,?,?,?,NULL,?,?)`,
+          ).run(
+            input.envelope.rsid,
+            input.envelope.seq,
+            dataEnvelopeImmutableDigest(input.envelope),
+            input.envelope.type,
+            input.correlationId,
+            input.contextJson,
+            input.initialState,
+            input.replyJson,
+            atMs,
+            atMs,
+          );
+          work = this.#requireInboundWorkWithinTransaction(input.envelope.rsid, input.envelope.seq);
+          if (input.initialState === "reply_ready") {
+            if (input.supersedeOlderForInitialReply ?? true) {
+              this.#supersedeOlderInboundWorkWithinTransaction(work, atMs);
+            }
+          }
+        } else {
+          if (work !== null) this.#assertInboundWorkIdentity(work, input);
+          if (work?.state === "journaled" && input.replyJson !== null) {
+            work = this.#storeInboundReplyWithinTransaction(
+              work.rsid,
+              work.seq,
+              input.replyJson,
+              atMs,
+              input.supersedeOlderForInitialReply ?? true,
+            );
+          } else if (
+            work !== null &&
+            input.replyJson !== null &&
+            work.replyJson !== input.replyJson
+          ) {
+            throw new Error("duplicate inbound reply changed its durable payload");
+          }
+        }
+
+        const shouldAcceptSemantics = sequence.kind === "accepted" || (
+          sequence.kind === "duplicate" &&
+          work?.state === "journaled" &&
+          input.resumeJournaledDuplicate
+        );
+        const decision = shouldAcceptSemantics ? input.semanticAccept() : undefined;
+        if (decision !== undefined && input.replyJsonForDecision !== undefined) {
+          const decisionReplyJson = input.replyJsonForDecision(decision);
+          if (decisionReplyJson !== null) {
+            parseJson<unknown>(decisionReplyJson, "inbound semantic decision reply");
+            work = this.#storeInboundReplyWithinTransaction(
+              input.envelope.rsid,
+              input.envelope.seq,
+              decisionReplyJson,
+              atMs,
+              input.supersedeOlderForDecision?.(decision) ?? true,
+            );
+          }
+        }
+        work = this.#getInboundWorkWithinTransaction(input.envelope.rsid, input.envelope.seq);
+        if (sequence.kind === "accepted") {
+          if (work === null) throw new Error("durable inbound work disappeared during acceptance");
+          return {
+            kind: "accepted",
+            ack: sequence.ack,
+            state: sequence.state,
+            work,
+            decision: decision as TDecision,
+          };
+        }
+        return {
+          kind: "duplicate",
+          ack: sequence.ack,
+          state: sequence.state,
+          work,
+          ...(decision === undefined ? {} : { decision }),
+          ...(work?.state === "reply_ready" && work.replyJson !== null
+            ? { replyJson: work.replyJson }
+            : {}),
+        };
+      },
+    );
+  }
+
+  #assertInboundWorkIdentity(
+    work: InboundWorkRecord,
+    expected: {
+      readonly envelope: DataEnvelopeSnapshot;
+      readonly correlationId: string;
+      readonly contextJson: string;
+    },
+  ): void {
+    if (
+      work.immutableDigest !== dataEnvelopeImmutableDigest(expected.envelope) ||
+      work.type !== expected.envelope.type ||
+      work.correlationId !== expected.correlationId ||
+      work.contextJson !== expected.contextJson
+    ) {
+      throw new Error("duplicate inbound work identity mismatch");
+    }
+  }
+
+  #pendingSessionUnregister(row: PendingSessionUnregisterRow): PendingSessionUnregister {
+    return {
+      rsid: row.rsid,
+      reason: row.reason,
+      phase: row.phase,
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    };
+  }
+
+  #inboundWorkRecord(row: InboundWorkRow): InboundWorkRecord {
+    parseJson<unknown>(row.context_json, "inbound work context");
+    if (row.reply_json !== null) parseJson<unknown>(row.reply_json, "inbound work reply");
+    return {
+      rsid: row.rsid,
+      seq: row.seq,
+      immutableDigest: row.immutable_digest,
+      type: row.type,
+      correlationId: row.correlation_id,
+      contextJson: row.context_json,
+      state: row.state,
+      replyJson: row.reply_json,
+      deliveryId: row.delivery_id,
+      createdAtMs: row.created_at_ms,
+      updatedAtMs: row.updated_at_ms,
+    };
+  }
+
+  #getInboundWorkWithinTransaction(rsid: string, seq: number): InboundWorkRecord | null {
+    const row = this.#db.prepare(
+      `SELECT rsid,seq,immutable_digest,type,correlation_id,context_json,state,
+              reply_json,delivery_id,created_at_ms,updated_at_ms
+       FROM inbound_work WHERE rsid=? AND seq=?`,
+    ).get(rsid, seq) as InboundWorkRow | undefined;
+    return row === undefined ? null : this.#inboundWorkRecord(row);
+  }
+
+  #requireInboundWorkWithinTransaction(rsid: string, seq: number): InboundWorkRecord {
+    const work = this.#getInboundWorkWithinTransaction(rsid, seq);
+    if (work === null) throw new Error(`missing inbound work ${rsid}/${seq}`);
+    return work;
+  }
+
+  #storeInboundReplyWithinTransaction(
+    rsid: string,
+    seq: number,
+    replyJson: string,
+    atMs: number,
+    supersedeOlder = true,
+  ): InboundWorkRecord {
+    const work = this.#requireInboundWorkWithinTransaction(rsid, seq);
+    if (work.state === "no_reply") return work;
+    if (work.state === "reply_ready") {
+      if (work.replyJson !== replyJson) throw new Error("inbound reply identity mismatch");
+      return work;
+    }
+    if (work.state !== "journaled") {
+      throw new Error(`inbound work ${rsid}/${seq} cannot store a reply from ${work.state}`);
+    }
+    if (supersedeOlder) this.#supersedeOlderInboundWorkWithinTransaction(work, atMs);
+    this.#db.prepare(
+      "UPDATE inbound_work SET state='reply_ready',reply_json=?,updated_at_ms=? WHERE rsid=? AND seq=?",
+    ).run(replyJson, atMs, rsid, seq);
+    return this.#requireInboundWorkWithinTransaction(rsid, seq);
+  }
+
+  #supersedeOlderInboundWorkWithinTransaction(
+    authority: InboundWorkRecord,
+    atMs: number,
+  ): void {
+    this.#db.prepare(
+      `UPDATE inbound_work
+       SET state='no_reply',reply_json=NULL,delivery_id=NULL,updated_at_ms=?
+       WHERE rsid=? AND type=? AND correlation_id=? AND seq<?
+         AND state IN ('journaled','reply_ready')`,
+    ).run(
+      atMs,
+      authority.rsid,
+      authority.type,
+      authority.correlationId,
+      authority.seq,
+    );
+  }
+
+  #bindInboundDeliveryWithinTransaction(
+    rsid: string,
+    seq: number,
+    deliveryId: string,
+    atMs: number,
+  ): InboundWorkRecord {
+    const work = this.#requireInboundWorkWithinTransaction(rsid, seq);
+    if (work.state === "delivery_ready") {
+      if (work.deliveryId !== deliveryId) throw new Error("inbound delivery identity mismatch");
+      return work;
+    }
+    if (work.state !== "reply_ready" || work.replyJson === null) {
+      throw new Error(`inbound work ${rsid}/${seq} cannot stage delivery from ${work.state}`);
+    }
+    this.#db.prepare(
+      `UPDATE inbound_work
+       SET state='delivery_ready',delivery_id=?,updated_at_ms=?
+       WHERE rsid=? AND seq=?`,
+    ).run(deliveryId, atMs, rsid, seq);
+    return this.#requireInboundWorkWithinTransaction(rsid, seq);
+  }
+
+  #loadSequenceWithinTransaction(rsid: string): RbpSequenceState {
+    const row = this.#db
+      .prepare("SELECT sequence_json FROM session_sequence WHERE rsid=?")
+      .get(rsid) as SequenceRow | undefined;
+    return row === undefined
+      ? createRbpSequenceState(rsid)
+      : parseJson<RbpSequenceState>(row.sequence_json, "sequence row");
+  }
+
+  #storeSequenceWithinTransaction(state: RbpSequenceState, atMs: number): void {
+    this.#db
+      .prepare(
+        `INSERT INTO session_sequence(rsid,sequence_json,updated_at_ms) VALUES(?,?,?)
+         ON CONFLICT(rsid) DO UPDATE SET sequence_json=excluded.sequence_json,updated_at_ms=excluded.updated_at_ms`,
+      )
+      .run(state.rsid, JSON.stringify(state), atMs);
+    this.#cleanupAckedNoCarrierPlansWithinTransaction(state.rsid, state.lastPeerAck);
+  }
+
+  #cleanupAckedNoCarrierPlansWithinTransaction(rsid: string, ack: number): void {
+    this.#db.prepare(
+      `DELETE FROM inbound_work
+       WHERE rsid=? AND delivery_id IN (
+         SELECT p.delivery_id FROM artifact_delivery_plan p
+         WHERE p.rsid=? AND p.state='queued' AND p.terminal_seq<=?
+           AND NOT EXISTS(
+             SELECT 1 FROM artifact_outbox o
+             WHERE o.rsid=p.rsid AND o.seq=p.terminal_seq
+           )
+       )`,
+    ).run(rsid, rsid, ack);
+    this.#db.prepare(
+      `DELETE FROM artifact_delivery_plan
+       WHERE rsid=? AND state='queued' AND terminal_seq<=?
+         AND NOT EXISTS(
+           SELECT 1 FROM artifact_outbox o
+           WHERE o.rsid=artifact_delivery_plan.rsid
+             AND o.seq=artifact_delivery_plan.terminal_seq
+         )`,
+    ).run(rsid, ack);
+  }
+
   #queueSessionDeliveryExpiry(rsid: string, atMs: number): void {
     const carriers = new Map<string, string>();
     const outbox = this.#db.prepare(
@@ -1438,7 +2329,59 @@ export class DurableBridgeJournal {
         schema_version INTEGER NOT NULL
       ) STRICT;
       INSERT INTO journal_meta(schema_version)
-        SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM journal_meta);
+        SELECT 3 WHERE NOT EXISTS(SELECT 1 FROM journal_meta);
+    `);
+    const metaRows = this.#db.prepare(
+      "SELECT schema_version AS schemaVersion FROM journal_meta",
+    ).all() as Array<{ readonly schemaVersion: number }>;
+    if (metaRows.length !== 1) {
+      throw new Error(`bridge journal metadata must contain exactly one row; found ${metaRows.length}`);
+    }
+    const meta = metaRows[0] as { readonly schemaVersion: number };
+    if (!Number.isSafeInteger(meta.schemaVersion) || meta.schemaVersion < 1 || meta.schemaVersion > 3) {
+      throw new Error(`unsupported bridge journal schema version: ${meta.schemaVersion}`);
+    }
+    if (meta.schemaVersion === 1) {
+      const legacySequences = this.#db.prepare(
+        "SELECT rsid,sequence_json AS sequenceJson FROM session_sequence",
+      ).all() as Array<{ readonly rsid: string; readonly sequenceJson: string }>;
+      for (const row of legacySequences) {
+        const state = parseJson<RbpSequenceState>(row.sequenceJson, "legacy sequence row");
+        if (state.rsid !== row.rsid) throw new Error("legacy sequence row rsid mismatch");
+        if (
+          !Number.isSafeInteger(state.lastRxSeq) ||
+          state.lastRxSeq < 0 ||
+          !Array.isArray(state.acceptedInbound)
+        ) {
+          throw new Error("legacy sequence receive state is invalid");
+        }
+        if (state.lastRxSeq > 0 || state.acceptedInbound.length > 0) {
+          throw new Error(
+            `bridge journal schema v1 session ${row.rsid} has an accepted inbound prefix; automatic migration is unsafe`,
+          );
+        }
+      }
+    }
+
+    this.#db.exec(`
+      CREATE TABLE IF NOT EXISTS inbound_work(
+        rsid TEXT NOT NULL,
+        seq INTEGER NOT NULL CHECK(seq >= 1 AND seq <= 9007199254740991),
+        immutable_digest TEXT NOT NULL,
+        type TEXT NOT NULL,
+        correlation_id TEXT NOT NULL,
+        context_json TEXT NOT NULL,
+        state TEXT NOT NULL CHECK(state IN ('journaled','reply_ready','delivery_ready','no_reply')),
+        reply_json TEXT,
+        delivery_id TEXT,
+        created_at_ms INTEGER NOT NULL,
+        updated_at_ms INTEGER NOT NULL,
+        PRIMARY KEY(rsid,seq),
+        CHECK((state='journaled' AND reply_json IS NULL AND delivery_id IS NULL) OR
+              (state='reply_ready' AND reply_json IS NOT NULL AND delivery_id IS NULL) OR
+              (state='delivery_ready' AND reply_json IS NOT NULL AND delivery_id IS NOT NULL) OR
+              (state='no_reply' AND reply_json IS NULL AND delivery_id IS NULL))
+      ) STRICT;
 
       CREATE TABLE IF NOT EXISTS invocation_journal(
         rsid TEXT NOT NULL,
@@ -1506,6 +2449,7 @@ export class DurableBridgeJournal {
       CREATE TABLE IF NOT EXISTS artifact_delivery_plan(
         delivery_id TEXT PRIMARY KEY,
         rsid TEXT NOT NULL,
+        inbound_seq INTEGER CHECK(inbound_seq IS NULL OR (inbound_seq >= 1 AND inbound_seq <= 9007199254740991)),
         state TEXT NOT NULL CHECK(state IN ('pending','queued')),
         terminal_ordinal INTEGER NOT NULL CHECK(terminal_ordinal >= 0),
         terminal_seq INTEGER CHECK(terminal_seq IS NULL OR (terminal_seq >= 1 AND terminal_seq <= 9007199254740991)),
@@ -1548,6 +2492,51 @@ export class DurableBridgeJournal {
     if (!batchColumns.some((column) => column.name === "terminal_json")) {
       this.#db.exec("ALTER TABLE batch_coordination ADD COLUMN terminal_json TEXT");
     }
+    const deliveryColumns = this.#db.pragma("table_info(artifact_delivery_plan)") as Array<{
+      readonly name: string;
+    }>;
+    if (!deliveryColumns.some((column) => column.name === "inbound_seq")) {
+      this.#db.exec("ALTER TABLE artifact_delivery_plan ADD COLUMN inbound_seq INTEGER");
+    }
+    this.#db.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS uq_artifact_delivery_inbound
+        ON artifact_delivery_plan(rsid,inbound_seq) WHERE inbound_seq IS NOT NULL;
+    `);
+    this.#db.exec("BEGIN IMMEDIATE");
+    try {
+      this.#db.exec(`
+        CREATE TABLE IF NOT EXISTS pending_session_unregister(
+          rsid TEXT PRIMARY KEY,
+          reason TEXT NOT NULL CHECK(reason IN (
+            'revit_exited','bridge_shutdown','session_replaced','operator_requested'
+          )),
+          phase TEXT NOT NULL CHECK(phase IN ('pending','confirmed')),
+          created_at_ms INTEGER NOT NULL,
+          updated_at_ms INTEGER NOT NULL
+        ) STRICT;
+      `);
+      const unregisterColumns = this.#db.pragma(
+        "table_info(pending_session_unregister)",
+      ) as Array<{ readonly name: string }>;
+      if (!unregisterColumns.some((column) => column.name === "phase")) {
+        this.#db.exec(
+          "ALTER TABLE pending_session_unregister ADD COLUMN " +
+          "phase TEXT NOT NULL DEFAULT 'pending' CHECK(phase IN ('pending','confirmed'))",
+        );
+      }
+      if (meta.schemaVersion === 1 || meta.schemaVersion === 2) {
+        const upgraded = this.#db.prepare(
+          "UPDATE journal_meta SET schema_version=3 WHERE schema_version=?",
+        ).run(meta.schemaVersion);
+        if (upgraded.changes !== 1) {
+          throw new Error("bridge journal metadata changed during schema migration");
+        }
+      }
+      this.#db.exec("COMMIT");
+    } catch (error) {
+      this.#db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   #assertOpen(): void {
@@ -1557,7 +2546,15 @@ export class DurableBridgeJournal {
   #durable<T>(action: string, subject: string, atMs: number, work: () => T): T {
     this.#assertOpen();
     assertSafeTime(atMs, "atMs");
+    if (this.#durableDepth > 0) {
+      const result = work();
+      this.#db
+        .prepare("INSERT INTO durability_events(action,subject,at_ms) VALUES(?,?,?)")
+        .run(action, subject, atMs);
+      return result;
+    }
     this.#db.exec("BEGIN IMMEDIATE");
+    this.#durableDepth = 1;
     let committed = false;
     try {
       const result = work();
@@ -1571,6 +2568,8 @@ export class DurableBridgeJournal {
     } catch (error) {
       if (!committed) this.#db.exec("ROLLBACK");
       throw error;
+    } finally {
+      this.#durableDepth = 0;
     }
   }
 

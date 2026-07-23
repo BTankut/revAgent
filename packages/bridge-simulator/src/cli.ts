@@ -114,12 +114,13 @@ function daemonState(args: readonly string[]): DaemonState {
 const RSID = "0197a3c2-0000-7000-8000-000000000001";
 const INVOCATION_ID = "0197a3c2-0000-7000-8000-000000000002";
 const FRESH_INVOCATION_ID = "0197a3c2-0000-7000-8000-000000000003";
+const REDELIVERY_ENVELOPE_ID = "0197a3c2-0000-7000-8000-000000000004";
 
-function invoke(invocationId: string, seq: number): InvokeEnvelope {
+function invoke(invocationId: string, seq: number, envelopeId = invocationId): InvokeEnvelope {
   return {
     v: 1,
     type: "invoke",
-    id: invocationId,
+    id: envelopeId,
     rsid: RSID,
     seq,
     ts: "2026-07-22T00:00:00.000Z",
@@ -194,8 +195,8 @@ async function crashRecovery(externalFixture?: ExternalFixtureTarget): Promise<v
     ids = new DeterministicUuid7Source();
     simulator = new BridgeSimulator(journal, new ArtifactSpool(join(root, "spool-b"), () => ids.next()));
     await attach(simulator, address.port);
-    const redelivery = await simulator.invoke(invoke(INVOCATION_ID, 1));
-    const fresh = await simulator.invoke(invoke(FRESH_INVOCATION_ID, 2));
+    const redelivery = await simulator.invoke(invoke(INVOCATION_ID, 2, REDELIVERY_ENVELOPE_ID));
+    const fresh = await simulator.invoke(invoke(FRESH_INVOCATION_ID, 3));
     const evidence = {
       scenario: "crash-recovery",
       externalFixture: externalFixture !== undefined,
@@ -203,6 +204,7 @@ async function crashRecovery(externalFixture?: ExternalFixtureTarget): Promise<v
       addinExecutionCount: fixture?.getExecutionCount(INVOCATION_ID) ?? null,
       redelivery: {
         kind: redelivery.kind,
+        faultClass: redelivery.kind === "error" ? redelivery.faultClass : null,
         outcome: redelivery.kind === "error" ? redelivery.outcome : "known",
         verificationRequired: redelivery.kind === "error" && redelivery.verificationRequired,
         addinContacted: redelivery.addinContacted,

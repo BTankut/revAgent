@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { AddinLoopbackFixture } from "@revagent/addin-loopback-fixture";
 import {
   type HelloAckEnvelope,
+  type InvokeEnvelope,
   type InvokeBatchEnvelope,
   type JsonValue,
   type RbpEnvelope,
@@ -22,7 +23,8 @@ import { DurableBridgeJournal } from "../src/journal.js";
 import { discoverAddinSessions } from "../src/loopback.js";
 import {
   BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
-  BridgeGatewayPeer,
+  BridgeGatewayPeer as RuntimeBridgeGatewayPeer,
+  type BridgeGatewayPeerOptions,
 } from "../src/peer.js";
 import { GatewayTransportError, type GatewayBinding } from "../src/transport.js";
 import {
@@ -67,6 +69,21 @@ class RecordingBinding implements GatewayBinding {
 
   public async close(): Promise<void> {
     this.closeCount += 1;
+  }
+}
+
+/** Existing unit cases model a binding whose registration handshake already completed. */
+class BridgeGatewayPeer extends RuntimeBridgeGatewayPeer {
+  public constructor(
+    simulator: BridgeSimulator,
+    binding: GatewayBinding,
+    ack: HelloAckEnvelope,
+    options: BridgeGatewayPeerOptions = {},
+  ) {
+    super(simulator, binding, ack, {
+      ...options,
+      unsafeAssumeCurrentBindingForTests: true,
+    });
   }
 }
 
@@ -215,7 +232,116 @@ function asNonAtomicBatch(
   };
 }
 
+function logicalRedelivery<T extends InvokeEnvelope | InvokeBatchEnvelope>(
+  envelope: T,
+  seq: number,
+): T {
+  return {
+    ...structuredClone(envelope),
+    id: uuid(),
+    seq,
+    ts: "2026-07-22T00:00:30.000Z",
+  } as T;
+}
+
 describe("BridgeGatewayPeer executable lifecycle", () => {
+  it("requires resume_ack before a preattached durable session can heartbeat or dispatch on a fresh binding", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "fresh-binding-authority");
+    let now = 0;
+    const peer = new RuntimeBridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("fresh-binding-authority"),
+      {
+        idFactory: uuid,
+        nowMs: () => now,
+      },
+    );
+
+    expect(peer.snapshot().sessions).toContainEqual(expect.objectContaining({
+      rsid,
+      phase: "disconnected",
+      dispatchAllowed: false,
+    }));
+    await peer.sendHeartbeat();
+    expect(binding.sent).toEqual([]);
+    const preResumeInvoke = readInvoke({ rsid, seq: 1 });
+    await expect(peer.handleInbound(preResumeInvoke)).rejects.toThrow(`dispatch is revoked for ${rsid}`);
+    expect(fixture.getExecutionCount(preResumeInvoke.payload.invocation_id)).toBe(0);
+    expect(journal.loadSequence(rsid).lastRxSeq).toBe(0);
+
+    await peer.resumeAll();
+    expect(binding.sent).toHaveLength(1);
+    expect(binding.sent[0]).toMatchObject({ type: "session_resume", payload: { rsid } });
+    await peer.sendHeartbeat();
+    expect(binding.sent).toHaveLength(1);
+
+    await peer.handleInbound(resumeAck(rsid));
+    expect(peer.snapshot().sessions).toContainEqual(expect.objectContaining({
+      rsid,
+      phase: "registered",
+      dispatchAllowed: true,
+    }));
+    now = 10_000;
+    await expect(peer.tick(now)).resolves.toBe("steady");
+    expect(binding.closeCount).toBe(0);
+    const postResumeInvoke = readInvoke({ rsid, seq: 1 });
+    await peer.handleInbound(postResumeInvoke);
+    expect(fixture.getExecutionCount(postResumeInvoke.payload.invocation_id)).toBe(1);
+    await peer.sendHeartbeat();
+    expect(binding.sent.at(-1)).toMatchObject({
+      type: "heartbeat",
+      payload: { sessions: [expect.objectContaining({ rsid })] },
+    });
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("clears the resume sync deadline before a slow post-resume context poll yields", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const resumeControlId = uuid();
+    const slowContextId = uuid();
+    fixture.planFault(slowContextId, { stall: true });
+    const ids = [resumeControlId, slowContextId];
+    let now = 0;
+    const binding = new RecordingBinding("wss", "slow-resume-context");
+    const peer = new RuntimeBridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("slow-resume-context"),
+      {
+        idFactory: () => ids.shift() ?? uuid(),
+        nowMs: () => now,
+      },
+    );
+
+    await peer.resumeAll();
+    const resuming = peer.handleInbound(resumeAck(rsid));
+    await vi.waitFor(() => {
+      expect(fixture.getPendingStallCount(slowContextId)).toBe(1);
+    });
+    now = 10_000;
+    await expect(peer.tick(now)).resolves.toBe("steady");
+    expect(binding.closeCount).toBe(0);
+
+    expect(fixture.releaseStall(slowContextId)).toBe(true);
+    await resuming;
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("correlates session registration and immediately pushes cached document context", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -279,6 +405,76 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     root.cleanup();
   });
 
+  it("fences heartbeat until an in-flight session registration is correlated", async () => {
+    const root = temporaryRoot();
+    const registeredFixture = new AddinLoopbackFixture();
+    const pendingFixture = new AddinLoopbackFixture();
+    const registeredRsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({
+      fixture: registeredFixture,
+      root: root.path,
+      rsid: registeredRsid,
+    });
+    const pendingAddress = await pendingFixture.start();
+    const pendingProbe = (await discoverAddinSessions({ explicitTarget: pendingAddress })).sessions[0];
+    if (pendingProbe === undefined) throw new Error("pending fixture discovery failed");
+    const pendingRegistration = await simulator.registrationForProbe({
+      probe: pendingProbe,
+      requestId: uuid(),
+      userHint: "pending-user",
+      hostname: "pending-host",
+      fingerprint: `sha256:${"1".repeat(64)}`,
+      bridgeVersion: "0.0.0",
+    });
+    registeredFixture.planFault(`heartbeat-${registeredRsid}`, { stall: true });
+    const binding = new RecordingBinding("wss");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
+
+    const heartbeat = peer.sendHeartbeat();
+    await vi.waitFor(() => {
+      expect(registeredFixture.getPendingStallCount(`heartbeat-${registeredRsid}`)).toBe(1);
+    });
+    const registrationId = await peer.registerSession({
+      probe: pendingProbe,
+      registration: pendingRegistration,
+    });
+    expect(registeredFixture.releaseStall(`heartbeat-${registeredRsid}`)).toBe(true);
+    await heartbeat;
+    expect(binding.sent.map((envelope) => envelope.type)).toEqual(["session_register"]);
+
+    const pendingRsid = uuid();
+    await peer.handleInbound({
+      v: 1,
+      type: "session_registered",
+      id: registrationId,
+      ts: "2026-07-22T00:00:01.000Z",
+      payload: {
+        rsid: pendingRsid,
+        resume_token: "pending-resume-token",
+        resume_expires_at: "2026-07-23T00:00:00.000Z",
+        principal: { tenant_id: uuid(), user_id: uuid() },
+        seat: { granted: true, seat_id: uuid() },
+        granted_session_capabilities: [...pendingProbe.sessionCapabilities],
+      },
+    });
+    await peer.sendHeartbeat();
+    expect(binding.sent.at(-1)).toMatchObject({
+      type: "heartbeat",
+      payload: {
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ rsid: registeredRsid }),
+          expect.objectContaining({ rsid: pendingRsid }),
+        ]),
+      },
+    });
+
+    await peer.close();
+    journal.close();
+    await registeredFixture.stop();
+    await pendingFixture.stop();
+    root.cleanup();
+  });
+
   it("resends a pending session registration after reconnect with a fresh sender id", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -307,8 +503,8 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       reconnect: async () => ({ binding: replacement, helloAck: helloAck("connection-1") }),
     });
 
-    const originalId = await peer.registerSession({ probe, registration });
     await peer.sendHeartbeat();
+    const originalId = await peer.registerSession({ probe, registration });
     now = 10_000;
     await peer.tick(now);
     expect(replacement.sent[0]).toMatchObject({ type: "session_register", payload: registration });
@@ -456,7 +652,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     root.cleanup();
   });
 
-  it("does not extend the first pending heartbeat ACK deadline with later heartbeats", async () => {
+  it("keeps heartbeat globally single-flight until the pending ACK deadline", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
     const rsid = uuid();
@@ -475,7 +671,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBe(15_000);
     now = 10_000;
     await peer.tick(now);
-    expect(binding.sent.filter((entry) => entry.type === "heartbeat")).toHaveLength(2);
+    expect(binding.sent.filter((entry) => entry.type === "heartbeat")).toHaveLength(1);
     expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBe(15_000);
     now = 15_000;
     await expect(peer.tick(now)).resolves.toBe("disconnected");
@@ -483,6 +679,468 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
 
     await peer.close();
     journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not overwrite a heartbeat flight when two status probes complete concurrently", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    fixture.planFault(`heartbeat-${rsid}`, { stall: true });
+    fixture.planFault(`heartbeat-${rsid}`, { stall: true });
+    const binding = new RecordingBinding("wss", "concurrent-heartbeat-flight");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("concurrent-heartbeat-flight"),
+      { idFactory: uuid },
+    );
+
+    const first = peer.sendHeartbeat();
+    const second = peer.sendHeartbeat();
+    await vi.waitFor(() => {
+      expect(fixture.getPendingStallCount(`heartbeat-${rsid}`)).toBe(2);
+    });
+    expect(fixture.releaseStall(`heartbeat-${rsid}`)).toBe(true);
+    expect(fixture.releaseStall(`heartbeat-${rsid}`)).toBe(true);
+    await Promise.all([first, second]);
+
+    expect(binding.sent.filter((entry) => entry.type === "heartbeat")).toHaveLength(1);
+    expect(peer.snapshot().heartbeatAckDeadlineAtMs).not.toBeNull();
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 0 }]));
+    expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("installs an unregister heartbeat fence before a re-entrant transport ACK", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new ControllableBinding(
+      "wss",
+      "reentrant-heartbeat-ack",
+      async (envelope) => {
+        if (envelope.type === "heartbeat") {
+          await peer.handleInbound(heartbeatAck([]));
+        }
+      },
+    );
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("reentrant-heartbeat-ack"),
+      { idFactory: uuid },
+    );
+
+    await peer.unregisterSession(rsid, "operator_requested");
+
+    expect(binding.sent.map((entry) => entry.type)).toEqual(["session_unregister", "heartbeat"]);
+    expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+    expect(simulator.getSession(rsid)).toBeNull();
+    expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not let an old binding ACK consume the current connection heartbeat flight", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    let now = 0;
+    const initial = new RecordingBinding("wss", "flight-binding-0");
+    const replacement = new RecordingBinding("wss", "flight-binding-1");
+    const peer = new BridgeGatewayPeer(simulator, initial, helloAck("flight-binding-0"), {
+      idFactory: uuid,
+      nowMs: () => now,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => ({
+        binding: replacement,
+        helloAck: helloAck("flight-binding-1"),
+      }),
+    });
+
+    await peer.sendHeartbeat();
+    now = 10_000;
+    await peer.tick(now);
+    await peer.handleInbound(resumeAck(rsid));
+    await peer.sendHeartbeat();
+    const currentDeadline = peer.snapshot().heartbeatAckDeadlineAtMs;
+    expect(currentDeadline).not.toBeNull();
+
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 0 }]), initial);
+    expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBe(currentDeadline);
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 0 }]), replacement);
+    expect(peer.snapshot().heartbeatAckDeadlineAtMs).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not let an unsolicited heartbeat_ack finalize a durable unregister tombstone", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    simulator.unregisterSession(rsid, "operator_requested");
+    const binding = new RecordingBinding("wss", "unsolicited-unregister-ack");
+    const peer = new RuntimeBridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("unsolicited-unregister-ack"),
+      { idFactory: uuid },
+    );
+
+    await peer.handleInbound(heartbeatAck([]));
+
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      phase: "pending",
+      reason: "operator_requested",
+    });
+    expect(simulator.getSession(rsid)).not.toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not mutate local lifecycle when unregister durability fails before a tombstone exists", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "unregister-no-commit");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("unregister-no-commit"),
+      { idFactory: uuid },
+    );
+    const durability = vi.spyOn(journal, "unregisterSession").mockImplementation(() => {
+      throw new Error("injected pre-commit durability failure");
+    });
+
+    await expect(peer.unregisterSession(rsid, "operator_requested")).rejects.toThrow(
+      "injected pre-commit durability failure",
+    );
+    expect(peer.snapshot().sessions).toContainEqual(expect.objectContaining({
+      rsid,
+      phase: "registered",
+      dispatchAllowed: true,
+    }));
+    expect(binding.sent).toEqual([]);
+    expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+    durability.mockRestore();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("revokes local authority when unregister COMMIT is observable despite a post-commit error", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "unregister-post-commit-error");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("unregister-post-commit-error"),
+      { idFactory: uuid },
+    );
+    const durableUnregister = journal.unregisterSession.bind(journal);
+    const durability = vi.spyOn(journal, "unregisterSession").mockImplementation(
+      (targetRsid, reason, atMs) => {
+        durableUnregister(targetRsid, reason, atMs);
+        throw new Error("injected post-commit fsync failure");
+      },
+    );
+
+    await expect(peer.unregisterSession(rsid, "operator_requested")).rejects.toThrow(
+      "injected post-commit fsync failure",
+    );
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      phase: "pending",
+      reason: "operator_requested",
+    });
+    expect(peer.snapshot().sessions).toContainEqual(expect.objectContaining({
+      rsid,
+      phase: "unregistered",
+      dispatchAllowed: false,
+    }));
+    expect(binding.sent).toEqual([]);
+    durability.mockRestore();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not let an older heartbeat ACK finalize an unregister created while its data flush yields", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const firstRsid = uuid();
+    const secondRsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid: firstRsid,
+    });
+    const firstSession = simulator.getSession(firstRsid);
+    if (firstSession === null) throw new Error("first ACK-race session is missing");
+    simulator.attachSession({
+      ...firstSession,
+      rsid: secondRsid,
+      resumeToken: "ack-race-second-token",
+    });
+    let releaseSecondData!: () => void;
+    let markSecondDataEntered!: () => void;
+    const secondDataGate = new Promise<void>((resolve) => { releaseSecondData = resolve; });
+    const secondDataEntered = new Promise<void>((resolve) => { markSecondDataEntered = resolve; });
+    const binding = new ControllableBinding(
+      "wss",
+      "heartbeat-ack-flush-race",
+      async (envelope) => {
+        if (
+          envelope.type === "doc_context_update" &&
+          envelope.rsid === firstRsid &&
+          envelope.seq === 2
+        ) {
+          markSecondDataEntered();
+          await secondDataGate;
+        }
+      },
+    );
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("heartbeat-ack-flush-race"),
+      { idFactory: uuid },
+    );
+
+    await peer.pollDocumentContext(firstRsid, true);
+    await peer.pollDocumentContext(firstRsid, true);
+    await peer.sendHeartbeat();
+    const firstAck = peer.handleInbound(heartbeatAck([
+      { rsid: firstRsid, seq: 1 },
+      { rsid: secondRsid, seq: 0 },
+    ]));
+    await secondDataEntered;
+
+    await peer.unregisterSession(secondRsid, "operator_requested");
+    expect(journal.getPendingSessionUnregister(secondRsid)).not.toBeNull();
+    expect(binding.sent.filter((entry) => entry.type === "heartbeat")).toHaveLength(1);
+
+    releaseSecondData();
+    await firstAck;
+    expect(journal.getPendingSessionUnregister(secondRsid)).not.toBeNull();
+    expect(simulator.getSession(secondRsid)).not.toBeNull();
+    const heartbeats = binding.sent.filter((entry) => entry.type === "heartbeat");
+    expect(heartbeats).toHaveLength(2);
+    expect(heartbeats[1]).toMatchObject({
+      payload: {
+        acks: [expect.objectContaining({ rsid: firstRsid })],
+        sessions: [expect.objectContaining({ rsid: firstRsid })],
+      },
+    });
+
+    await peer.handleInbound(heartbeatAck([{ rsid: firstRsid, seq: 2 }]));
+    expect(journal.getPendingSessionUnregister(secondRsid)).toBeNull();
+    expect(simulator.getSession(secondRsid)).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("replays unregister directly after failed same-session data and finalizes only after the reconnect fence", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const initial = new ControllableBinding(
+      "wss",
+      "unregister-retry-0",
+      async (envelope) => {
+        if (envelope.type === "doc_context_update" || envelope.type === "session_unregister") {
+          throw new GatewayTransportError("injected connection loss", {
+            faultClass: "retryable_network",
+          });
+        }
+      },
+    );
+    const replacement = new RecordingBinding("wss", "unregister-retry-1");
+    const peer = new BridgeGatewayPeer(simulator, initial, helloAck("unregister-retry-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => ({
+        binding: replacement,
+        helloAck: helloAck("unregister-retry-1"),
+      }),
+    });
+
+    await expect(peer.pollDocumentContext(rsid, true)).rejects.toMatchObject({
+      faultClass: "retryable_network",
+    });
+    expect(journal.loadSequence(rsid).outbox).toHaveLength(1);
+    await peer.unregisterSession(rsid, "operator_requested");
+
+    expect(replacement.sent.map((entry) => entry.type)).toEqual([
+      "session_unregister",
+      "heartbeat",
+    ]);
+    expect(replacement.sent.some((entry) => entry.type === "session_resume")).toBe(false);
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+    expect(simulator.getSession(rsid)).not.toBeNull();
+
+    await peer.handleInbound(heartbeatAck([]));
+    expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+    expect(journal.loadSequence(rsid).outbox).toEqual([]);
+    expect(simulator.getSession(rsid)).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("replays an orphaned unregister tombstone after journal reopen without resuming", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const journalPath = join(root.path, "reopen-unregister.db");
+    const first = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid,
+      journalPath,
+    });
+    first.simulator.unregisterSession(rsid, "bridge_shutdown");
+    first.simulator.close();
+    first.journal.close();
+
+    const journal = new DurableBridgeJournal(journalPath);
+    const simulator = new BridgeSimulator(
+      journal,
+      new ArtifactSpool(join(root.path, "reopen-spool"), () => uuid()),
+    );
+    const binding = new RecordingBinding("wss", "reopen-unregister");
+    const peer = new RuntimeBridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("reopen-unregister"),
+      { idFactory: uuid },
+    );
+
+    await peer.resumeAll();
+    expect(binding.sent.map((entry) => entry.type)).toEqual(["session_unregister", "heartbeat"]);
+    expect(binding.sent.some((entry) => entry.type === "session_resume")).toBe(false);
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+    await peer.handleInbound(heartbeatAck([]));
+    expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("keeps a confirmed tombstone across cleanup failure and completes it after reopen", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    fixture.registerHandler("fixture_unregister_cleanup", "read_only", () => ({
+      files: [{
+        fileName: "cleanup.bin",
+        contentType: "application/octet-stream",
+        contentBase64: Buffer.alloc(2 * 1_048_576, 0x71).toString("base64"),
+      }],
+    }));
+    const rsid = uuid();
+    const journalPath = join(root.path, "confirmed-unregister.db");
+    const { simulator, journal } = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid,
+      journalPath,
+      spoolName: "confirmed-spool",
+    });
+    const invocation = readInvoke({ rsid, seq: 1, method: "fixture_unregister_cleanup" });
+    const binding = new RecordingBinding("wss", "confirmed-cleanup-0");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("confirmed-cleanup-0"),
+      { idFactory: uuid },
+    );
+    await peer.handleInbound(invocation);
+    await peer.unregisterSession(rsid, "operator_requested");
+    const cleanup = vi.spyOn(ArtifactSpool.prototype, "expire").mockImplementationOnce(() => {
+      throw new Error("injected spool cleanup failure");
+    });
+
+    await expect(peer.handleInbound(heartbeatAck([]))).rejects.toThrow(
+      "injected spool cleanup failure",
+    );
+    cleanup.mockRestore();
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      phase: "confirmed",
+      reason: "operator_requested",
+    });
+    expect(simulator.getSession(rsid)).toBeNull();
+    expect(journal.loadSequence(rsid)).toMatchObject({
+      nextTxSeq: 1,
+      highestTxSeq: 0,
+      outbox: [],
+    });
+
+    await peer.close();
+    journal.close();
+    const reopenedJournal = new DurableBridgeJournal(journalPath);
+    const reopenedSimulator = new BridgeSimulator(
+      reopenedJournal,
+      new ArtifactSpool(join(root.path, "confirmed-spool"), () => uuid()),
+    );
+    const reopenedBinding = new RecordingBinding("wss", "confirmed-cleanup-1");
+    const reopenedPeer = new RuntimeBridgeGatewayPeer(
+      reopenedSimulator,
+      reopenedBinding,
+      helloAck("confirmed-cleanup-1"),
+      { idFactory: uuid },
+    );
+    await reopenedPeer.resumeAll();
+
+    expect(reopenedBinding.sent).toEqual([]);
+    expect(reopenedJournal.getPendingSessionUnregister(rsid)).toBeNull();
+    expect(existsSync(join(
+      root.path,
+      "confirmed-spool",
+      rsid,
+      invocation.payload.invocation_id,
+    ))).toBe(false);
+    await expect(reopenedPeer.tick(Date.now() + 10_001)).resolves.not.toBe("disconnected");
+    expect(reopenedBinding.closeCount).toBe(0);
+
+    await reopenedPeer.close();
+    reopenedJournal.close();
     await fixture.stop();
     root.cleanup();
   });
@@ -565,8 +1223,74 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       ts: "2026-07-22T00:02:20.000Z",
       payload: { rsid, last_rx_seq: 0, resume_expires_at: "2026-07-23T00:00:00.000Z" },
     });
+    await peer.sendHeartbeat();
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
     await peer.tick(now);
     expect(peer.snapshot().reconnectAttemptIndex).toBe(0);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("fences reconnect heartbeat until every durable session has a resume acknowledgement", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsidA = uuid();
+    const rsidB = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid: rsidA });
+    const sessionA = simulator.getSession(rsidA);
+    if (sessionA === null) throw new Error("first reconnect session is missing");
+    simulator.attachSession({
+      ...sessionA,
+      rsid: rsidB,
+      resumeToken: "resume-token-b",
+    });
+    let now = 0;
+    const initial = new RecordingBinding("streamable_http_sse", "resume-heartbeat-0");
+    const replacement = new RecordingBinding("streamable_http_sse", "resume-heartbeat-1");
+    const peer = new BridgeGatewayPeer(simulator, initial, helloAck("resume-heartbeat-0"), {
+      idFactory: uuid,
+      nowMs: () => now,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => ({
+        binding: replacement,
+        helloAck: helloAck("resume-heartbeat-1"),
+      }),
+    });
+
+    await peer.sendHeartbeat();
+    now = 10_000;
+    await expect(peer.tick(now)).resolves.toBe("steady");
+    expect(replacement.sent.filter((envelope) => envelope.type === "session_resume")).toHaveLength(2);
+    expect(peer.snapshot().pendingResumeCount).toBe(2);
+
+    await peer.sendHeartbeat();
+    expect(replacement.sent).not.toContainEqual(expect.objectContaining({ type: "heartbeat" }));
+
+    await peer.handleInbound(resumeAck(rsidA));
+    expect(peer.snapshot().pendingResumeCount).toBe(1);
+    await peer.sendHeartbeat();
+    expect(replacement.sent).not.toContainEqual(expect.objectContaining({ type: "heartbeat" }));
+
+    await peer.handleInbound(resumeAck(rsidB));
+    expect(peer.snapshot().pendingResumeCount).toBe(0);
+    await peer.sendHeartbeat();
+    expect(replacement.sent.at(-1)).toMatchObject({
+      type: "heartbeat",
+      payload: {
+        acks: expect.arrayContaining([
+          expect.objectContaining({ rsid: rsidA }),
+          expect.objectContaining({ rsid: rsidB }),
+        ]),
+        sessions: expect.arrayContaining([
+          expect.objectContaining({ rsid: rsidA }),
+          expect.objectContaining({ rsid: rsidB }),
+        ]),
+      },
+    });
 
     await peer.close();
     journal.close();
@@ -936,12 +1660,27 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     if (hold === undefined) throw new Error("test hold was not installed");
     const binding = new RecordingBinding("wss");
     const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
-    const batch = atomicBatch(rsid, 2);
-    await peer.handleInbound(batch);
+    await peer.flushOutbound(rsid);
     expect(binding.sent[0]).toMatchObject({
       type: "error",
       rsid,
       seq: 1,
+      payload: {
+        invocation_id: mutation.payload.invocation_id,
+        fault_class: "journal_indeterminate",
+        outcome: "indeterminate",
+        verification_required: true,
+        verification_hold_id: hold.holdId,
+        replayed: true,
+      },
+    });
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+    const batch = atomicBatch(rsid, 2);
+    await peer.handleInbound(batch);
+    expect(binding.sent[1]).toMatchObject({
+      type: "error",
+      rsid,
+      seq: 2,
       payload: {
         batch_id: batch.payload.batch_id,
         fault_class: "journal_indeterminate",
@@ -951,11 +1690,11 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
         mutation_scope: hold.mutationScope,
       },
     });
-    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
-    await peer.handleInbound(batch);
-    expect(binding.sent[1]).toMatchObject({
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 2 }]));
+    await peer.handleInbound(logicalRedelivery(batch, 3));
+    expect(binding.sent[2]).toMatchObject({
       type: "error",
-      seq: 2,
+      seq: 3,
       payload: {
         batch_id: batch.payload.batch_id,
         fault_class: "journal_indeterminate",
@@ -1003,10 +1742,13 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
         unregisterReason: reason,
       });
       await expect(peer.resumeSession(rsid)).rejects.toThrow("not resumable");
-      await expect(simulator.invoke(mutationInvoke({ rsid, seq: 2 }))).resolves.toMatchObject({
-        kind: "error",
-        faultClass: "protocol",
-      });
+      const rejectedAfterUnregister = mutationInvoke({ rsid, seq: 2 });
+      await expect(peer.handleInbound(rejectedAfterUnregister)).resolves.toBeUndefined();
+      expect(fixture.getExecutionCount(rejectedAfterUnregister.payload.invocation_id)).toBe(0);
+      expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({ rsid, reason });
+      await peer.handleInbound(heartbeatAck([]));
+      expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+      expect(simulator.getSession(rsid)).toBeNull();
       await peer.close();
       journal.close();
       await fixture.stop();
@@ -1158,6 +1900,639 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     root.cleanup();
   });
 
+  it("does not resurrect an unregistered session after an in-flight data send or treat its late ACK as connection-fatal", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    let releaseSend!: () => void;
+    let markSendEntered!: () => void;
+    const sendGate = new Promise<void>((resolve) => { releaseSend = resolve; });
+    const sendEntered = new Promise<void>((resolve) => { markSendEntered = resolve; });
+    const binding = new ControllableBinding(
+      "wss",
+      "unregister-pump-race",
+      async (envelope) => {
+        if (envelope.type === "doc_context_update" && envelope.rsid === rsid) {
+          markSendEntered();
+          await sendGate;
+        }
+      },
+    );
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("unregister-pump-race"),
+      { idFactory: uuid },
+    );
+
+    // Keep an older active-session heartbeat in flight. Its late ACK must
+    // release the global heartbeat slot, not finalize a later unregister.
+    await peer.sendHeartbeat();
+    const pumping = peer.pollDocumentContext(rsid, true);
+    await sendEntered;
+    expect(binding.sent[1]).toMatchObject({ type: "doc_context_update", rsid, seq: 1 });
+
+    await peer.unregisterSession(rsid, "operator_requested");
+    expect(binding.sent[2]).toMatchObject({
+      type: "session_unregister",
+      payload: { rsid, reason: "operator_requested" },
+    });
+    expect(journal.loadSequence(rsid)).toMatchObject({
+      lastRxSeq: 0,
+      nextTxSeq: 2,
+      highestTxSeq: 1,
+    });
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+
+    releaseSend();
+    await pumping;
+    await expect(peer.handleInbound(heartbeatAck([{ rsid, seq: 0 }]))).resolves.toBeUndefined();
+    expect(binding.closeCount).toBe(0);
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+    expect(binding.sent.at(-1)).toMatchObject({
+      type: "heartbeat",
+      payload: { acks: [], sessions: [] },
+    });
+
+    await expect(peer.handleInbound(heartbeatAck([]))).resolves.toBeUndefined();
+    expect(journal.getPendingSessionUnregister(rsid)).toBeNull();
+    expect(simulator.getSession(rsid)).toBeNull();
+    expect(journal.loadSequence(rsid)).toMatchObject({ nextTxSeq: 1, highestTxSeq: 0, outbox: [] });
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not leak an unregistered rsid into a heartbeat that was awaiting add-in status", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    fixture.planFault(`heartbeat-${rsid}`, { stall: true });
+    const binding = new RecordingBinding("wss", "unregister-heartbeat-race");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("unregister-heartbeat-race"),
+      { idFactory: uuid },
+    );
+
+    const heartbeat = peer.sendHeartbeat();
+    await vi.waitFor(() => {
+      expect(fixture.getPendingStallCount(`heartbeat-${rsid}`)).toBe(1);
+    });
+    await peer.unregisterSession(rsid, "operator_requested");
+    await heartbeat;
+
+    expect(binding.sent).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        type: "session_unregister",
+        payload: { rsid, reason: "operator_requested" },
+      }),
+      expect.objectContaining({
+        type: "heartbeat",
+        payload: expect.objectContaining({ acks: [], sessions: [] }),
+      }),
+    ]));
+    const staleHeartbeat = binding.sent.find((envelope) =>
+      envelope.type === "heartbeat" && JSON.stringify(envelope.payload).includes(rsid)
+    );
+    expect(staleHeartbeat).toBeUndefined();
+    expect(binding.closeCount).toBe(0);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("accepts adjacent same-rsid sequences concurrently without a false sequence gap", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const first = readInvoke({ rsid, seq: 1 });
+    const second = readInvoke({ rsid, seq: 2 });
+    fixture.planFault(first.payload.invocation_id, { delayMs: 100 });
+    const binding = new RecordingBinding("wss", "same-rsid-adjacent-sequences");
+    binding.inbound.push(first, second);
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("same-rsid-adjacent-sequences"),
+      { idFactory: uuid },
+    );
+
+    await expect(peer.run()).resolves.toBeUndefined();
+
+    expect(journal.loadSequence(rsid).lastRxSeq).toBe(2);
+    expect(journal.getInvocation(rsid, first.payload.invocation_id)).toMatchObject({
+      state: "completed",
+      terminalOutcome: { status: "completed" },
+    });
+    expect(journal.getInvocation(rsid, second.payload.invocation_id)).toMatchObject({
+      state: "failed",
+      terminalOutcome: {
+        status: "failed",
+        payload: {
+          fault_class: "protocol",
+          message: "per-session dispatch window is occupied",
+        },
+      },
+    });
+    expect(binding.sent).toHaveLength(1);
+    expect(binding.sent[0]).toMatchObject({
+      type: "error",
+      // seq=1 is still executing and has no durable delivery plan yet.
+      ack: 0,
+      payload: {
+        invocation_id: second.payload.invocation_id,
+        fault_class: "protocol",
+        message: "per-session dispatch window is occupied",
+      },
+    });
+    expect(JSON.stringify(binding.sent)).not.toContain("sequence rejected");
+    expect(fixture.getExecutionCount(first.payload.invocation_id)).toBe(1);
+    expect(fixture.getExecutionCount(second.payload.invocation_id)).toBe(0);
+
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+    expect(binding.sent[1]).toMatchObject({
+      type: "result",
+      ack: 2,
+      payload: { invocation_id: first.payload.invocation_id },
+    });
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("ACKs an identical invoke retransmission without entering journal redelivery", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const invocation = mutationInvoke({ rsid, seq: 1 });
+    fixture.planFault(invocation.payload.invocation_id, { stall: true });
+    const binding = new RecordingBinding("wss");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
+
+    const executing = peer.handleInbound(invocation);
+    await vi.waitFor(() => {
+      expect(fixture.getPendingStallCount(invocation.payload.invocation_id)).toBe(1);
+    });
+
+    await expect(peer.handleInbound(structuredClone(invocation))).resolves.toBeUndefined();
+    expect(binding.sent).toEqual([]);
+    expect(journal.getInvocation(rsid, invocation.payload.invocation_id)).toMatchObject({
+      state: "executing",
+      verificationHoldId: null,
+      lateTerminalOutcome: null,
+    });
+
+    expect(fixture.releaseStall(invocation.payload.invocation_id)).toBe(true);
+    await executing;
+    expect(binding.sent).toHaveLength(1);
+    expect(binding.sent[0]).toMatchObject({
+      type: "result",
+      ack: 1,
+      payload: { invocation_id: invocation.payload.invocation_id, replayed: false },
+    });
+    expect(journal.getInvocation(rsid, invocation.payload.invocation_id)).toMatchObject({
+      state: "completed",
+      verificationHoldId: null,
+      lateTerminalOutcome: null,
+    });
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await expect(peer.handleInbound(structuredClone(invocation))).resolves.toBeUndefined();
+    expect(binding.sent).toHaveLength(1);
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("rejects same-sequence invoke identity reuse as a protocol fault", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const invocation = readInvoke({ rsid, seq: 1 });
+    const binding = new RecordingBinding("wss");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
+
+    await peer.handleInbound(invocation);
+    expect(binding.sent).toHaveLength(1);
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await expect(peer.handleInbound({
+      ...structuredClone(invocation),
+      id: uuid(),
+    })).rejects.toThrow("invoke sequence rejected: protocol_fault");
+    expect(binding.sent).toHaveLength(1);
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  for (const atomic of [false, true] as const) {
+    it(`does not redispatch an identical ${atomic ? "atomic" : "non-atomic"} batch retransmission`, async () => {
+      const root = temporaryRoot();
+      const fixture = new AddinLoopbackFixture();
+      const rsid = uuid();
+      const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+      const canonical = atomicBatch(rsid, 1);
+      const batch = atomic ? canonical : asNonAtomicBatch(canonical);
+      const firstStep = batch.payload.steps[0];
+      if (firstStep === undefined) throw new Error("test batch is empty");
+      const stallId = atomic ? batch.payload.batch_id : firstStep.invocation_id;
+      fixture.planFault(stallId, { stall: true });
+      const binding = new RecordingBinding("wss");
+      const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
+
+      const executing = peer.handleInbound(batch);
+      await vi.waitFor(() => {
+        expect(fixture.getPendingStallCount(stallId)).toBe(1);
+      });
+
+      await expect(peer.handleInbound(structuredClone(batch))).resolves.toBeUndefined();
+      expect(binding.sent).toEqual([]);
+      for (const step of batch.payload.steps) {
+        expect(journal.getInvocation(rsid, step.invocation_id)).not.toMatchObject({
+          state: "indeterminate",
+        });
+        expect(journal.getInvocation(rsid, step.invocation_id)?.verificationHoldId ?? null).toBeNull();
+      }
+
+      expect(fixture.releaseStall(stallId)).toBe(true);
+      await executing;
+      expect(binding.sent).toHaveLength(1);
+      expect(binding.sent[0]).toMatchObject({
+        type: "result",
+        ack: 1,
+        payload: { kind: "batch", batch_id: batch.payload.batch_id, replayed: false },
+      });
+
+      await expect(peer.handleInbound(structuredClone(batch))).resolves.toBeUndefined();
+      expect(binding.sent).toHaveLength(1);
+      if (atomic) {
+        expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(1);
+      } else {
+        for (const step of batch.payload.steps) {
+          expect(fixture.getExecutionCount(step.invocation_id)).toBe(1);
+        }
+      }
+
+      await peer.close();
+      journal.close();
+      await fixture.stop();
+      root.cleanup();
+    });
+  }
+
+  it("recovers only the cancel obligation after an accepted pre-dispatch invoke is cancelled", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const journalPath = join(root.path, "cancel-before-dispatch.db");
+    const invocation = readInvoke({ rsid, seq: 1 });
+
+    const first = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+    await expect(first.simulator.invoke(invocation, {
+      crashAt: "after_received_before_dispatch",
+    })).rejects.toBeInstanceOf(InjectedBridgeCrash);
+    expect(first.journal.getInboundWork(rsid, 1)).toMatchObject({
+      type: "invoke",
+      state: "journaled",
+    });
+    expect(first.journal.getInvocation(rsid, invocation.payload.invocation_id)).toMatchObject({
+      state: "received",
+      terminalOutcome: null,
+    });
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(0);
+    first.simulator.close();
+    first.journal.close();
+
+    const second = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+    const secondBinding = new RecordingBinding("wss", "cancel-before-dispatch");
+    const secondPeer = new BridgeGatewayPeer(
+      second.simulator,
+      secondBinding,
+      helloAck("cancel-before-dispatch"),
+      { idFactory: uuid },
+    );
+    expect(secondPeer.snapshot().queuedDataCount).toBe(0);
+
+    await secondPeer.handleInbound({
+      v: 1,
+      type: "cancel",
+      id: uuid(),
+      rsid,
+      seq: 2,
+      ts: "2026-07-22T00:00:01.000Z",
+      payload: { invocation_id: invocation.payload.invocation_id, reason: "user_requested" },
+    });
+    expect(secondBinding.sent).toHaveLength(1);
+    expect(secondBinding.sent[0]).toMatchObject({
+      type: "error",
+      ack: 2,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        fault_class: "cancelled",
+        outcome: "known",
+        replayed: false,
+      },
+    });
+    expect(second.journal.getInboundWork(rsid, 1)).toMatchObject({ state: "no_reply" });
+    expect(second.journal.getInboundWork(rsid, 2)).toMatchObject({
+      type: "cancel",
+      state: "delivery_ready",
+    });
+    expect(second.journal.listInboundWork(rsid)).toHaveLength(2);
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(0);
+
+    await secondPeer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+    expect(second.journal.pendingDurableDeliveryDraftCount(rsid)).toBe(0);
+    await secondPeer.close();
+    second.journal.close();
+
+    const third = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+    const thirdBinding = new RecordingBinding("wss", "cancel-before-dispatch-restart");
+    const thirdPeer = new BridgeGatewayPeer(
+      third.simulator,
+      thirdBinding,
+      helloAck("cancel-before-dispatch-restart"),
+      { idFactory: uuid },
+    );
+    expect(thirdPeer.snapshot().queuedDataCount).toBe(0);
+    await thirdPeer.flushOutbound(rsid);
+    expect(thirdBinding.sent).toEqual([]);
+    expect(third.journal.getInboundWork(rsid, 1)).toMatchObject({ state: "no_reply" });
+    expect(third.journal.getInboundWork(rsid, 2)).toBeNull();
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(0);
+
+    await thirdPeer.close();
+    third.journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it.each([
+    { name: "read", mutating: false },
+    { name: "mutation", mutating: true },
+  ] as const)(
+    "resumes a journaled exact $name retransmit without a window=1 ACK deadlock",
+    async ({ name, mutating }) => {
+      const root = temporaryRoot();
+      const fixture = new AddinLoopbackFixture();
+      const rsid = uuid();
+      const journalPath = join(root.path, `journaled-exact-${name}.db`);
+      const invocation = mutating
+        ? mutationInvoke({ rsid, seq: 1 })
+        : readInvoke({ rsid, seq: 1 });
+
+      const first = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+      await expect(first.simulator.invoke(invocation, {
+        crashAt: "after_received_before_dispatch",
+      })).rejects.toBeInstanceOf(InjectedBridgeCrash);
+      expect(first.journal.inspectInboundWork(rsid)).toMatchObject({
+        lastRxSeq: 1,
+        acknowledgeableRxSeq: 0,
+        work: [{ seq: 1, state: "journaled" }],
+      });
+      expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(0);
+      first.simulator.close();
+      first.journal.close();
+
+      const second = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+      const binding = new RecordingBinding("wss", `journaled-exact-${name}`);
+      const peer = new BridgeGatewayPeer(
+        second.simulator,
+        binding,
+        helloAck(`journaled-exact-${name}`),
+        { idFactory: uuid },
+      );
+      await peer.resumeSession(rsid);
+      expect(binding.sent[0]).toMatchObject({
+        type: "session_resume",
+        payload: { rsid, last_rx_seq: 0 },
+      });
+      await peer.handleInbound({
+        v: 1,
+        type: "resume_ack",
+        id: uuid(),
+        ts: "2026-07-22T00:00:01.000Z",
+        payload: {
+          rsid,
+          last_rx_seq: 0,
+          resume_expires_at: "2026-07-23T00:00:00.000Z",
+        },
+      });
+      expect(binding.sent[1]).toMatchObject({
+        type: "doc_context_update",
+        rsid,
+        seq: 1,
+        ack: 0,
+      });
+      expect(second.simulator.retransmit(rsid, "2026-07-22T00:00:02.000Z")[0]).toMatchObject({
+        seq: 1,
+        ack: 0,
+      });
+      await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+
+      await peer.handleInbound(structuredClone(invocation));
+      const terminal = binding.sent[2];
+      expect(terminal).toBeDefined();
+      expect(validateRbpEnvelope(terminal as RbpEnvelope)).toBe(true);
+      expect(terminal).toMatchObject({
+        rsid,
+        seq: 2,
+        ack: 1,
+        payload: { invocation_id: invocation.payload.invocation_id },
+      });
+      if (mutating) {
+        expect(terminal).toMatchObject({
+          type: "error",
+          payload: {
+            fault_class: "journal_indeterminate",
+            outcome: "indeterminate",
+            verification_hold_id: expect.stringMatching(/^vh:/u),
+          },
+        });
+        expect(second.journal.listHolds()).toMatchObject([{ state: "active" }]);
+        expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(0);
+      } else {
+        expect(terminal).toMatchObject({
+          type: "result",
+          payload: { status: "completed", replayed: false },
+        });
+        expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+      }
+      expect(second.journal.acknowledgeableRxSeq(rsid)).toBe(1);
+
+      await peer.close();
+      second.journal.close();
+      await fixture.stop();
+      root.cleanup();
+    },
+  );
+
+  it.each([
+    { name: "atomic", atomic: true },
+    { name: "non-atomic", atomic: false },
+  ] as const)(
+    "resumes a journaled exact $name batch retransmit after restart",
+    async ({ name, atomic }) => {
+      const root = temporaryRoot();
+      const fixture = new AddinLoopbackFixture();
+      const rsid = uuid();
+      const journalPath = join(root.path, `journaled-exact-${name}-batch.db`);
+      const template = atomicBatch(rsid, 1);
+      const batch = atomic ? template : asNonAtomicBatch(template);
+
+      const first = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+      await expect(first.simulator.invokeBatch(batch, {
+        crashAt: "after_received_before_dispatch",
+      })).rejects.toBeInstanceOf(InjectedBridgeCrash);
+      expect(first.journal.inspectInboundWork(rsid)).toMatchObject({
+        lastRxSeq: 1,
+        acknowledgeableRxSeq: 0,
+        work: [{ seq: 1, state: "journaled", correlationId: batch.payload.batch_id }],
+      });
+      expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(0);
+      for (const step of batch.payload.steps) {
+        expect(fixture.getExecutionCount(step.invocation_id)).toBe(0);
+      }
+      first.simulator.close();
+      first.journal.close();
+
+      const second = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath });
+      await expect(second.simulator.heartbeat()).resolves.toMatchObject({
+        acks: [{ rsid, seq: 0 }],
+      });
+      const binding = new RecordingBinding("wss", `journaled-exact-${name}-batch`);
+      const peer = new BridgeGatewayPeer(
+        second.simulator,
+        binding,
+        helloAck(`journaled-exact-${name}-batch`),
+        { idFactory: uuid },
+      );
+      await peer.resumeSession(rsid);
+      expect(binding.sent[0]).toMatchObject({
+        type: "session_resume",
+        payload: { rsid, last_rx_seq: 0 },
+      });
+      await peer.handleInbound(resumeAck(rsid));
+      expect(binding.sent[1]).toMatchObject({
+        type: "doc_context_update",
+        rsid,
+        seq: 1,
+        ack: 0,
+      });
+      await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+
+      await peer.handleInbound(structuredClone(batch));
+      const terminal = binding.sent[2];
+      expect(terminal).toBeDefined();
+      expect(validateRbpEnvelope(terminal as RbpEnvelope)).toBe(true);
+      expect(terminal).toMatchObject({
+        type: "result",
+        rsid,
+        seq: 2,
+        ack: 1,
+        payload: {
+          kind: "batch",
+          batch_id: batch.payload.batch_id,
+          status: "completed",
+          replayed: false,
+        },
+      });
+      if (atomic) expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(1);
+      else {
+        expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(0);
+        for (const step of batch.payload.steps) {
+          expect(fixture.getExecutionCount(step.invocation_id)).toBe(1);
+        }
+      }
+      expect(second.journal.acknowledgeableRxSeq(rsid)).toBe(1);
+
+      await peer.close();
+      second.journal.close();
+      await fixture.stop();
+      root.cleanup();
+    },
+  );
+
+  it("treats duplicate cancel as a no-op while applying its refreshed piggyback ACK", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const invocation = readInvoke({ rsid, seq: 1 });
+    const binding = new RecordingBinding("wss");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck(), { idFactory: uuid });
+    await peer.handleInbound(invocation);
+    expect(binding.sent[0]).toMatchObject({
+      type: "result",
+      seq: 1,
+      payload: { invocation_id: invocation.payload.invocation_id },
+    });
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+    const context = await simulator.documentContext(rsid, uuid());
+    simulator.queueOutbound(rsid, {
+      type: "doc_context_update",
+      id: uuid(),
+      ts: "2026-07-22T00:00:01.000Z",
+      payload: context as unknown as JsonValue,
+    });
+    await peer.flushOutbound(rsid);
+    expect(binding.sent).toHaveLength(2);
+    expect(journal.loadSequence(rsid)).toMatchObject({ lastRxSeq: 1, lastPeerAck: 1 });
+    expect(journal.loadSequence(rsid).outbox).toHaveLength(1);
+
+    const cancel = {
+      v: 1 as const,
+      type: "cancel" as const,
+      id: uuid(),
+      rsid,
+      seq: 2,
+      ts: "2026-07-22T00:00:02.000Z",
+      payload: { invocation_id: invocation.payload.invocation_id, reason: "user_requested" as const },
+    };
+    await peer.handleInbound(cancel);
+    await peer.handleInbound({
+      ...structuredClone(cancel),
+      ack: 2,
+      ts: "2026-07-22T00:00:03.000Z",
+    });
+
+    expect(binding.sent).toHaveLength(2);
+    expect(journal.loadSequence(rsid)).toMatchObject({
+      lastRxSeq: 2,
+      lastPeerAck: 2,
+      outbox: [],
+    });
+    expect(journal.getInvocation(rsid, invocation.payload.invocation_id)).toMatchObject({
+      state: "completed",
+      abandoned: false,
+    });
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("does not emit a premature terminal when cancel races an executing invocation", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -1247,7 +2622,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     expect(fixture.modelState.has("view:42")).toBe(false);
     await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
 
-    await peer.handleInbound(batch);
+    await peer.handleInbound(logicalRedelivery(batch, 2));
     const replay = binding.sent[1];
     expect(replay).toBeDefined();
     expect(validateRbpEnvelope(replay as RbpEnvelope)).toBe(true);
@@ -1309,7 +2684,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       { idFactory: uuid },
     );
 
-    await peer.handleInbound(batch);
+    await peer.handleInbound(logicalRedelivery(batch, 2));
     const carrier = binding.sent[0];
     expect(carrier).toBeDefined();
     expect(validateRbpEnvelope(carrier as RbpEnvelope)).toBe(true);
@@ -1368,6 +2743,95 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
 
     await peer.close();
     restarted.journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("emits a schema-valid provisional carrier when an all-read atomic batch loses its response", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const template = atomicBatch(rsid, 1);
+    const firstRead = template.payload.steps[0];
+    if (firstRead === undefined) throw new Error("all-read atomic test requires a read template");
+    const steps: InvokeBatchEnvelope["payload"]["steps"] = [
+      firstRead,
+      { ...firstRead, invocation_id: uuid() },
+    ];
+    const timeoutMs = 25;
+    const batch: InvokeBatchEnvelope = {
+      ...template,
+      payload: {
+        ...template.payload,
+        timeout_ms: timeoutMs,
+        steps,
+        batch_digest: makeBatchDigest({
+          atomic: true,
+          batch_id: template.payload.batch_id,
+          timeout_ms: timeoutMs,
+          recovery_clearances: [],
+          steps: steps.map((step) => ({
+            invocation_id: step.invocation_id,
+            method: step.method,
+            mutating: step.mutating,
+            mutation_scope: step.mutation_scope as unknown as JsonValue,
+            params_digest: step.params_digest,
+            policy: step.policy,
+          })),
+        }),
+      },
+    };
+    fixture.planFault(batch.payload.batch_id, { delayMs: 100 });
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "all-read-atomic-timeout");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("all-read-atomic-timeout"),
+      { idFactory: uuid },
+    );
+
+    await peer.handleInbound(batch);
+    const provisional = binding.sent[0];
+    expect(provisional).toBeDefined();
+    expect(validateRbpEnvelope(provisional as RbpEnvelope)).toBe(true);
+    expect(provisional).toMatchObject({
+      type: "result",
+      rsid,
+      ack: 1,
+      payload: {
+        kind: "batch",
+        atomic: true,
+        status: "failed",
+        transaction_state: "rolled_back",
+        failed_step_index: 0,
+        steps: [
+          { index: 0, status: "failed", error: { fault_class: "environment" } },
+          { index: 1, status: "failed", error: { fault_class: "environment" } },
+        ],
+      },
+    });
+    expect(journal.getBatchCoordination(batch.payload.batch_id)).toMatchObject({
+      state: "indeterminate",
+      terminalJson: null,
+    });
+    for (const step of steps) {
+      expect(journal.getInvocation(rsid, step.invocation_id)).toMatchObject({
+        state: "executing",
+        terminalOutcome: null,
+      });
+    }
+
+    await vi.waitFor(() => {
+      expect(journal.getBatchCoordination(batch.payload.batch_id)).toMatchObject({
+        state: "terminal",
+        terminalJson: expect.any(String),
+      });
+    }, { timeout: 2_000 });
+    expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(1);
+
+    await peer.close();
+    journal.close();
     await fixture.stop();
     root.cleanup();
   });
@@ -1772,7 +3236,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       helloAck("batch-inline-crash-replay"),
       { idFactory: uuid },
     );
-    await peer.handleInbound(batch);
+    await peer.handleInbound(logicalRedelivery(batch, 2));
     const carrier = binding.sent[0];
     expect(carrier).toBeDefined();
     expect(validateRbpEnvelope(carrier as RbpEnvelope)).toBe(true);
@@ -1848,7 +3312,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     });
     await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
 
-    await peer.handleInbound(invocation);
+    await peer.handleInbound(logicalRedelivery(invocation, 2));
     const late = binding.sent[1];
     expect(late).toBeDefined();
     expect(validateRbpEnvelope(late as RbpEnvelope)).toBe(true);
@@ -1869,6 +3333,224 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       },
     });
     expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("does not recover or expose an abandoned late artifact carrier after restart", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const artifactBytes = Buffer.alloc(2 * 1_048_576, 0x71);
+    fixture.registerHandler("fixture_abandoned_late_artifact", "read_only", () => ({
+      report: "must-remain-hidden",
+      files: [{
+        fileName: "abandoned-late.bin",
+        contentType: "application/octet-stream",
+        contentBase64: artifactBytes.toString("base64"),
+      }],
+    }));
+    const rsid = uuid();
+    const journalPath = join(root.path, "abandoned-late-artifact.db");
+    const spoolName = "abandoned-late-artifact-spool";
+    const invocation = readInvoke({
+      rsid,
+      seq: 1,
+      method: "fixture_abandoned_late_artifact",
+    });
+
+    const first = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid,
+      journalPath,
+      spoolName,
+    });
+    fixture.planFault(invocation.payload.invocation_id, { stall: true });
+    const executing = first.simulator.invoke(invocation);
+    await vi.waitFor(() => {
+      expect(fixture.getPendingStallCount(invocation.payload.invocation_id)).toBe(1);
+    });
+    expect(first.simulator.cancelEnvelope({
+      v: 1,
+      type: "cancel",
+      id: uuid(),
+      rsid,
+      seq: 2,
+      ts: "2026-07-22T00:00:01.000Z",
+      payload: { invocation_id: invocation.payload.invocation_id, reason: "user_requested" },
+    })).toBeNull();
+    expect(fixture.releaseStall(invocation.payload.invocation_id)).toBe(true);
+    await expect(executing).resolves.toMatchObject({
+      kind: "error",
+      faultClass: "cancelled",
+      replayed: false,
+      addinContacted: true,
+    });
+    expect(first.journal.getInvocation(rsid, invocation.payload.invocation_id)).toMatchObject({
+      state: "completed",
+      abandoned: true,
+      terminalOutcome: {
+        status: "completed",
+        payload: { artifact_carrier: expect.any(Object) },
+      },
+    });
+    expect(first.journal.getInboundWork(rsid, 1)).toMatchObject({ state: "reply_ready" });
+    expect(first.journal.getInboundWork(rsid, 2)).toMatchObject({ state: "no_reply" });
+    expect(first.journal.hasDurableDelivery(rsid, invocation.payload.invocation_id)).toBe(false);
+    expect(existsSync(join(root.path, spoolName, rsid, invocation.payload.invocation_id))).toBe(false);
+    first.simulator.close();
+    first.journal.close();
+
+    const second = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid,
+      journalPath,
+      spoolName,
+    });
+    const binding = new RecordingBinding("wss", "abandoned-late-artifact-restart");
+    const peer = new BridgeGatewayPeer(
+      second.simulator,
+      binding,
+      helloAck("abandoned-late-artifact-restart"),
+      { idFactory: uuid },
+    );
+
+    expect(second.simulator.recoverableDurableDeliveries()).toEqual([]);
+    expect(second.journal.hasDurableDelivery(rsid, invocation.payload.invocation_id)).toBe(false);
+    expect(second.journal.deliveryCarriersNeedingCleanup()).toEqual([]);
+    expect(second.journal.pendingDurableDeliveryDraftCount(rsid)).toBe(1);
+    await peer.flushOutbound(rsid);
+    expect(binding.sent).toHaveLength(1);
+    expect(binding.sent[0]).toMatchObject({
+      type: "error",
+      rsid,
+      seq: 1,
+      ack: 2,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        fault_class: "cancelled",
+        outcome: "known",
+        replayed: true,
+      },
+    });
+    expect(JSON.stringify(binding.sent[0])).not.toContain("artifact");
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+
+    await peer.close();
+    second.journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("keeps the original artifact carrier deliverable while logical redelivery returns only its digest", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const artifactBytes = Buffer.alloc(2 * 1_048_576, 0x62);
+    fixture.registerHandler("fixture_active_artifact_redelivery", "read_only", () => ({
+      report: "active-carrier",
+      files: [{
+        fileName: "active-carrier.bin",
+        contentType: "application/octet-stream",
+        contentBase64: artifactBytes.toString("base64"),
+      }],
+    }));
+    const rsid = uuid();
+    const spoolName = "active-redelivery-spool";
+    const invocation = readInvoke({
+      rsid,
+      seq: 1,
+      method: "fixture_active_artifact_redelivery",
+    });
+    const { simulator, journal } = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid,
+      spoolName,
+    });
+    const binding = new RecordingBinding("wss", "active-artifact-redelivery");
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("active-artifact-redelivery"),
+      { idFactory: uuid },
+    );
+
+    await peer.handleInbound(invocation);
+    expect(binding.sent[0]).toMatchObject({
+      type: "partial",
+      rsid,
+      seq: 1,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        kind: "chunk",
+        chunk_index: 0,
+        artifact_index: 0,
+      },
+    });
+    expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBe("active");
+    expect(existsSync(join(root.path, spoolName, rsid, invocation.payload.invocation_id))).toBe(true);
+
+    await expect(peer.handleInbound(logicalRedelivery(invocation, 2))).resolves.toBeUndefined();
+    expect(binding.sent).toHaveLength(1);
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+    expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBe("active");
+    expect(journal.pendingDurableDeliveryDraftCount(rsid)).toBe(3);
+
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 1 }]));
+    expect(binding.sent[1]).toMatchObject({
+      type: "partial",
+      rsid,
+      seq: 2,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        kind: "chunk",
+        chunk_index: 1,
+        artifact_index: 0,
+      },
+    });
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 2 }]));
+    const originalTerminal = binding.sent[2];
+    expect(originalTerminal).toMatchObject({
+      type: "result",
+      rsid,
+      seq: 3,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        replayed: false,
+        result: {
+          report: "active-carrier",
+          files: [{ artifact_id: expect.any(String), artifact_index: 0 }],
+        },
+        artifacts: [{
+          filename: "active-carrier.bin",
+          total_chunks: 2,
+          total_size: artifactBytes.byteLength,
+        }],
+        result_digest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      },
+    });
+    expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBe("active");
+
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: 3 }]));
+    const redeliveryTerminal = binding.sent[3];
+    expect(redeliveryTerminal).toMatchObject({
+      type: "result",
+      rsid,
+      seq: 4,
+      payload: {
+        invocation_id: invocation.payload.invocation_id,
+        replayed: true,
+        payload_omitted: true,
+        result_digest: (originalTerminal as Extract<RbpEnvelope, { type: "result" }>).payload.result_digest,
+      },
+    });
+    expect(JSON.stringify(redeliveryTerminal)).not.toContain("artifacts");
+    expect(fixture.getExecutionCount(invocation.payload.invocation_id)).toBe(1);
+    expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBe("acked");
 
     await peer.close();
     journal.close();
@@ -1985,7 +3667,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     // ACK the context update queued by resume, then prove a later origin
     // redelivery cannot claim deleted artifact bytes.
     await secondPeer.handleInbound(heartbeatAck([{ rsid, seq: 4 }]));
-    await secondPeer.handleInbound(invocation);
+    await secondPeer.handleInbound(logicalRedelivery(invocation, 2));
     expect(secondBinding.sent[5]).toMatchObject({
       type: "result",
       rsid,
@@ -2145,6 +3827,8 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     expect(existsSync(join(root.path, spoolName, rsid, invocation.payload.invocation_id))).toBe(true);
 
     simulator.unregisterSession(rsid, "operator_requested");
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+    simulator.finalizeSessionUnregister(rsid);
     expect(existsSync(join(root.path, spoolName, rsid, invocation.payload.invocation_id))).toBe(false);
     expect(journal.deliveryCarriersNeedingExpiry()).toEqual([]);
     expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBe("expired");
@@ -2446,6 +4130,8 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     });
     expect(secondBinding.sent).toHaveLength(1);
     await secondPeer.unregisterSession(rsid, "operator_requested");
+    expect(journal.getPendingSessionUnregister(rsid)).not.toBeNull();
+    await secondPeer.handleInbound(heartbeatAck([]));
     expect(journal.pendingDurableDeliveryDraftCount(rsid)).toBe(0);
     expect(existsSync(join(root.path, "spool", rsid, invocation.payload.invocation_id))).toBe(false);
     expect(journal.deliveryCarriersNeedingExpiry()).toEqual([]);
@@ -2503,11 +4189,14 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     expect(existsSync(join(root.path, "spool", secondRsid, invocationId))).toBe(true);
 
     await peer.unregisterSession(firstRsid, "operator_requested");
+    expect(journal.getPendingSessionUnregister(firstRsid)).not.toBeNull();
+    await peer.handleInbound(heartbeatAck([{ rsid: secondRsid, seq: 0 }]));
     expect(journal.hasDurableDelivery(firstRsid, invocationId)).toBe(false);
     expect(journal.hasDurableDelivery(secondRsid, invocationId)).toBe(true);
     expect(existsSync(join(root.path, "spool", firstRsid, invocationId))).toBe(false);
     expect(existsSync(join(root.path, "spool", secondRsid, invocationId))).toBe(true);
     await peer.unregisterSession(secondRsid, "operator_requested");
+    await peer.handleInbound(heartbeatAck([]));
     expect(journal.hasDurableDelivery(secondRsid, invocationId)).toBe(false);
     expect(existsSync(join(root.path, "spool", secondRsid, invocationId))).toBe(false);
 

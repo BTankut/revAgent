@@ -71,7 +71,9 @@ export interface FaultPlan {
   readonly afterResponseBytes?: number;
   readonly crash?: CrashPhase;
   readonly rollbackFailure?: boolean;
-  readonly finalBatchResponseFault?: "omit_batch_digest";
+  readonly finalBatchResponseFault?: "omit_batch_digest" | "wire_omit_batch_digest";
+  /** Test-only leading JSON whitespace inserted after semantic validation. */
+  readonly responseWhitespaceBytes?: number;
   readonly injectedOutcome?: GuardedHandlerOutcome | FailedHandlerOutcome;
   readonly jsonRpcError?: StandardJsonRpcErrorPlan;
 }

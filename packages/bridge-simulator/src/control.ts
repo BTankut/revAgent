@@ -748,6 +748,7 @@ export class BridgeDaemonRuntime {
           return reconnected;
         },
       });
+      await peer.resumeAll();
     } catch (error) {
       try {
         await selected.binding.close();

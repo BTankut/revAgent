@@ -137,6 +137,13 @@ describe("three-process Bridge crash evidence", () => {
       externalFixture: true,
       crashPoint: "after_addin_response_before_terminal",
       addinExecutionCount: null,
+      redelivery: {
+        kind: "error",
+        faultClass: "journal_indeterminate",
+        outcome: "indeterminate",
+        verificationRequired: true,
+        addinContacted: false,
+      },
       freshInvocationBlocked: true,
       unclearedHoldCount: 1,
       tempRegistryReads: 0,
@@ -167,7 +174,9 @@ describe("three-process Bridge crash evidence", () => {
       pageNumber += 1;
     }
     const requestCounts = pages.flatMap((entry) => entry.executionCounts as JsonObject[]);
-    expect(requestCounts).toContainEqual({ requestId: INVOCATION_ID, count: 1 });
+    expect(requestCounts.filter((entry) => entry.requestId === INVOCATION_ID)).toEqual([
+      { requestId: INVOCATION_ID, count: 1 },
+    ]);
     expect(pages[0]).toMatchObject({
       evidenceVersion: 1,
       fixtureContract: "addin-loopback/v1",

@@ -1710,21 +1710,42 @@
             "required": [
               "error"
             ],
-            "properties": {
-              "status": {
-                "const": "failed"
-              },
-              "error": {
-                "required": [
-                  "fault_class"
-                ],
+            "oneOf": [
+              {
                 "properties": {
-                  "fault_class": {
-                    "const": "protocol"
+                  "status": {
+                    "const": "failed"
+                  },
+                  "error": {
+                    "required": [
+                      "fault_class"
+                    ],
+                    "properties": {
+                      "fault_class": {
+                        "const": "protocol"
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "status": {
+                    "const": "cancelled"
+                  },
+                  "error": {
+                    "required": [
+                      "fault_class"
+                    ],
+                    "properties": {
+                      "fault_class": {
+                        "const": "cancelled"
+                      }
+                    }
                   }
                 }
               }
-            }
+            ]
           }
         },
         {
@@ -1867,8 +1888,7 @@
               "status": {
                 "enum": [
                   "guarded",
-                  "failed",
-                  "cancelled"
+                  "failed"
                 ]
               }
             }
@@ -1877,6 +1897,32 @@
             "properties": {
               "transaction_state": {
                 "const": "rolled_back"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "required": [
+              "atomic",
+              "status"
+            ],
+            "properties": {
+              "atomic": {
+                "const": true
+              },
+              "status": {
+                "const": "cancelled"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "transaction_state": {
+                "enum": [
+                  "committed",
+                  "rolled_back"
+                ]
               }
             }
           }

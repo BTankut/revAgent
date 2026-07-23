@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { atomicBatch, mutationInvoke, readInvoke } from "./helpers.js";
+import { atomicBatch, mutationInvoke, readInvoke, uuid } from "./helpers.js";
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const fixtureCli = resolve(packageRoot, "..", "addin-loopback-fixture", "dist", "cli.js");
@@ -302,8 +302,9 @@ describe("long-lived Bridge JSONL daemon", () => {
         transportOpen: false,
       },
     });
+    const invocationRedelivery = { ...invocation, id: uuid(), seq: 3 };
     await expect(bridgeChannel.send(control("redelivery", "invoke_local", {
-      envelope: invocation,
+      envelope: invocationRedelivery,
     }))).resolves.toMatchObject({
       ok: true,
       result: {
@@ -327,7 +328,7 @@ describe("long-lived Bridge JSONL daemon", () => {
 
     const verificationBase = readInvoke({
       rsid,
-      seq: 3,
+      seq: 4,
       method: "fixture_counter",
     });
     const verification = {

@@ -339,6 +339,11 @@ export interface GatewayStubCoreOptions {
   connectionCapabilities?: readonly string[];
   sessionCapabilities?: readonly string[];
   clock?: GatewayClock;
+  /** Test-only durable state fault points. */
+  stateStoreTestHooks?: {
+    beforeCanonicalReplace?: () => void | Promise<void>;
+    afterCanonicalReplace?: () => void | Promise<void>;
+  };
 }
 
 export interface TlsServerOptions {

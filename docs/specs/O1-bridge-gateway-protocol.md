@@ -210,6 +210,10 @@ delay reconnect as specified in Section 6.3.
 ## 5. Envelope
 
 One RBP message is one JSON object. Under WSS, one object occupies one text frame.
+The Gateway serializes accepted WSS frames in receive order. A malformed or oversized frame and the
+WebSocket implementation's corresponding `error` event are contained to that connection, which is closed
+and durably disconnected without terminating the Gateway process; repeated close/error notifications are
+idempotent.
 
 ```json
 {
@@ -366,6 +370,29 @@ dispatch. Pending invocations end with `addin_unreachable` only when non-executi
 dispatched mutation follows the indeterminate rules below; unregistration never fabricates a known failure or
 clears a recovery hold.
 
+The Gateway persists the revoked session record, including its authenticated device, tenant, user, seat, and
+`reason`. A `session_unregister` from a later active connection owned by that same authenticated
+device/tenant/user/seat revokes a still-active session even when it remains bound to the prior connection; an
+exact replay is an idempotent no-op even though the `rsid` is no longer bound and its resume token is revoked.
+Unknown sessions, cross-owner replays, and a replay whose `reason` differs from the persisted revocation fail
+with `4403`. A bridge with a durable pending-unregister tombstone MUST replay
+`session_unregister` directly on each fresh binding; it MUST NOT resume the revoked session first.
+
+The bridge revokes local dispatch as soon as it durably records unregister intent. It MUST NOT mutate local
+lifecycle or outbound-queue authority before that journal transaction commits. If a post-commit durability
+operation reports an error, the bridge re-reads the exact tombstone: an observed matching intent revokes local
+authority fail-closed without sending, while an absent or conflicting intent leaves local state unchanged and
+the original error is returned. It retains the tombstone across send failure, reconnect, and restart. The
+tombstoned `rsid` is excluded from a connection heartbeat only after its `session_unregister` send has
+completed on that connection.
+
+The durable tombstone has `pending` and `confirmed` phases. A `heartbeat_ack` for a subsequent heartbeat
+processed in receive order atomically changes it to `confirmed`, queues artifact expiry, and removes retained
+session sequence/outbox state; successful transport send alone is not processing evidence. The live add-in
+session is then removed before fallible spool cleanup. The confirmed tombstone remains until cleanup succeeds,
+so a crash or cleanup exception cannot make the revoked session resumable. Restart retries confirmed cleanup
+idempotently and deletes the tombstone only as the final completion step.
+
 ### 6.2 Resume
 
 On reconnect, the bridge sends one control message per resumable session:
@@ -400,7 +427,17 @@ retransmit unacknowledged data messages in ascending sequence order under Sectio
 - Pending Gateway invocations are held for 10 minutes after disconnect.
 - An `rsid` remains resumable for 24 hours unless explicitly unregistered or revoked.
 - Resume state is durable Gateway state; a Gateway process restart MUST NOT erase it.
+- If atomic replacement of Gateway state reaches canonical rename but subsequent directory durability
+  confirmation fails, the renamed draft becomes live fail-closed authority and the store is poisoned: the
+  original error is returned and later dispatch/state updates are rejected until restart/recovery. A failure
+  before canonical replacement MUST leave both live and canonical authority unchanged.
 - Redelivered invokes always pass through the bridge journal rules in Section 12.
+
+A fresh `hello`/`hello_ack` binding does not inherit dispatch or heartbeat authority for a durable bridge
+session. The bridge keeps each such session non-dispatchable and omits connection heartbeats until its
+`resume_ack` is received. Test fixtures MAY opt into an explicit assume-bound mode, but production defaults
+MUST fail closed. Pending-unregister tombstones use the direct idempotent replay rule in Section 6.1 instead of
+resume.
 
 After the 10-minute pending window, outcome handling depends on mutation risk:
 
@@ -673,6 +710,24 @@ This acknowledgement participates in Section 5.2 but does not acknowledge the re
 bridge receives no `heartbeat_ack` for 10 seconds after a heartbeat, it closes and reconnects using Section
 4.3.
 
+Gateway processing of connection envelopes is receive-order serialized. Consequently, a `heartbeat_ack`
+proves processing of lifecycle controls ordered before that heartbeat on the same binding. Because the ack
+does not echo a heartbeat id, a bridge finalizing unregister tombstones MUST use one current-connection fence
+snapshot at a time: a stale or unsolicited `heartbeat_ack` cannot finalize it, the returned `acks` set must
+exactly match the non-tombstoned sessions in the fenced heartbeat, and all data acknowledgements must validate
+before tombstone deletion.
+
+The bridge MUST keep heartbeats globally single-flight: while one heartbeat awaits `heartbeat_ack`, it MUST
+NOT emit another heartbeat. It installs the acknowledgement deadline, exact active-session set, and any
+unregister-confirmation tombstones before handing the heartbeat to the transport. A synchronous or re-entrant
+`heartbeat_ack` delivered while transport send is still completing consumes that flight; send completion MUST
+NOT re-arm it. The flight is bound to the current transport object and connection generation; an ACK observed
+from an older binding cannot consume a newer flight. ACK handling synchronously captures and consumes one
+immutable flight snapshot before any outbound flush may yield, and only that snapshot's tombstones may be
+confirmed. While that ACK handler is active, no new heartbeat flight may start. An unsolicited current-binding
+ACK may retain backward-compatible cumulative-data/liveness behavior but has no flight confirmations and can
+never finalize a tombstone. A failed send rolls back only the still-current flight before reconnect/retry.
+
 The bridge MAY poll local `mcp_status` to populate the heartbeat snapshot. It MUST NOT issue `mcp_status` before every invocation. After a failed or timed-out invocation, it MAY consult `mcp_status` to distinguish an active Revit task from an unreachable add-in and enrich the resulting structured fault.
 
 ## 10. Invocation and authoritative serialization
@@ -932,6 +987,11 @@ unrecoverable read-only step result is `failed` with retryable `environment`, `o
 step remains `journal_indeterminate`. The aggregate batch and transaction stay `indeterminate` whenever such
 a mutating step exists, while `failed_step_index` identifies the earliest unavailable read or indeterminate
 mutation. No other earlier failure class may be hidden behind aggregate `status:"indeterminate"`.
+If the same missing carrier belongs to an all-read atomic batch, every unavailable read is returned as that
+known `environment` failure; the aggregate uses `status:"failed"`, `transaction_state:"rolled_back"`, and
+`failed_step_index:0`. This is the only `failed|rolled_back` atomic carrier that may contain more than one
+non-success step instead of a `not_started` suffix, because fabricating a result or non-execution claim for
+any possibly executed read is forbidden.
 
 If an attested inline-only command nevertheless returns artifact-shaped data or exceeds the negotiated inline
 result limit after dispatch, the bridge MUST NOT create an unreachable spool carrier. The affected step stops
@@ -942,7 +1002,12 @@ so a crash cannot run later batch successors. The delivery fault never discards 
 raw artifact/path payload is neither journaled nor placed on the wire.
 
 For `atomic:true`, success requires `transaction_state:"committed"`. A clean `TransactionGroup` rollback
-uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. If the add-in or bridge dies
+uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. Cancellation observed after
+the one-frame atomic dispatch cannot rewrite the add-in's known transaction result: the user-visible batch and
+abandoned step use `status:"cancelled"`, while `transaction_state` remains `committed` or `rolled_back` exactly
+as reported by the add-in. That cancelled step carries `effect_state:"committed"|"not_committed"` for a
+mutation, or `effect_state:"read_only"` for a read, so cancellation never hides a known model effect. If the
+add-in or bridge dies
 after atomic dispatch without a durable terminal batch outcome, the whole batch uses
 `status:"indeterminate"`, `transaction_state:"indeterminate"`, and every possibly executed mutating step is
 indeterminate. `replayed:true` at batch level means that this delivery executed no add-in step.

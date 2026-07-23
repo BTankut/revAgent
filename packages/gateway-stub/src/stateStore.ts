@@ -13,6 +13,24 @@ interface AtomicRenameOptions {
   wait?: (delayMs: number) => Promise<void>;
 }
 
+export interface GatewayStateStoreTestHooks {
+  /** Test-only fault point after the temp file is durable but before rename. */
+  beforeCanonicalReplace?: () => void | Promise<void>;
+  /** Test-only fault point after rename replaced canonical state. */
+  afterCanonicalReplace?: () => void | Promise<void>;
+}
+
+export class GatewayStatePersistenceError extends Error {
+  constructor(
+    message: string,
+    readonly canonicalReplaced: boolean,
+    options: { readonly cause: unknown },
+  ) {
+    super(message, options);
+    this.name = "GatewayStatePersistenceError";
+  }
+}
+
 function isTransientWindowsRenameError(error: unknown, platform: NodeJS.Platform): boolean {
   return platform === "win32" &&
     ["EPERM", "EACCES", "EBUSY"].includes((error as NodeJS.ErrnoException).code ?? "");
@@ -71,13 +89,23 @@ export class DurableGatewayStateStore {
   readonly path: string;
   private current: PersistedGatewayState;
   private tail: Promise<void> = Promise.resolve();
+  private poisoned: GatewayStatePersistenceError | null = null;
+  private readonly testHooks: GatewayStateStoreTestHooks;
 
-  private constructor(path: string, state: PersistedGatewayState) {
+  private constructor(
+    path: string,
+    state: PersistedGatewayState,
+    testHooks: GatewayStateStoreTestHooks,
+  ) {
     this.path = path;
     this.current = state;
+    this.testHooks = testHooks;
   }
 
-  static async open(path: string): Promise<DurableGatewayStateStore> {
+  static async open(
+    path: string,
+    testHooks: GatewayStateStoreTestHooks = {},
+  ): Promise<DurableGatewayStateStore> {
     const absolutePath = resolve(path);
     const parentDirectory = dirname(absolutePath);
     await mkdir(parentDirectory, { recursive: true });
@@ -100,7 +128,7 @@ export class DurableGatewayStateStore {
       state = initialState();
     }
 
-    const store = new DurableGatewayStateStore(absolutePath, state);
+    const store = new DurableGatewayStateStore(absolutePath, state, testHooks);
     if ((await access(absolutePath, constants.F_OK).then(() => true, () => false)) === false) {
       await store.persist(state);
     }
@@ -120,6 +148,10 @@ export class DurableGatewayStateStore {
     });
 
     this.tail = this.tail.then(async () => {
+      if (this.poisoned !== null) {
+        rejectResult(this.poisoned);
+        return;
+      }
       const draft = structuredClone(this.current);
       try {
         const output = mutator(draft);
@@ -127,6 +159,12 @@ export class DurableGatewayStateStore {
         this.current = draft;
         resolveResult(output);
       } catch (error) {
+        if (error instanceof GatewayStatePersistenceError && error.canonicalReplaced) {
+          // Rename made the draft canonical. Keep live authority aligned with
+          // disk, then fail-stop because directory durability is uncertain.
+          this.current = draft;
+          this.poisoned = error;
+        }
         rejectResult(error);
       }
     });
@@ -136,6 +174,7 @@ export class DurableGatewayStateStore {
 
   async flush(): Promise<void> {
     await this.tail;
+    if (this.poisoned !== null) throw this.poisoned;
   }
 
   private async persist(state: PersistedGatewayState): Promise<void> {
@@ -149,18 +188,30 @@ export class DurableGatewayStateStore {
       await file.close();
     }
     try {
-      await renameAtomicallyWithRetry(temporaryPath, this.path);
-      renamed = true;
-      const directory = await open(dirname(this.path), "r");
       try {
-        await directory.sync();
-      } catch (error) {
-        if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") {
-          throw error;
+        await this.testHooks.beforeCanonicalReplace?.();
+        await renameAtomicallyWithRetry(temporaryPath, this.path);
+        renamed = true;
+        await this.testHooks.afterCanonicalReplace?.();
+        const directory = await open(dirname(this.path), "r");
+        try {
+          await directory.sync();
+        } catch (error) {
+          if (process.platform !== "win32" || (error as NodeJS.ErrnoException).code !== "EPERM") {
+            throw error;
+          }
+          // NTFS FlushFileBuffers on a directory is not exposed by Node; the file itself was fsynced above.
+        } finally {
+          await directory.close();
         }
-        // NTFS FlushFileBuffers on a directory is not exposed by Node; the file itself was fsynced above.
-      } finally {
-        await directory.close();
+      } catch (error) {
+        throw new GatewayStatePersistenceError(
+          renamed
+            ? "gateway state canonical replacement committed but durability confirmation failed"
+            : "gateway state persistence failed before canonical replacement",
+          renamed,
+          { cause: error },
+        );
       }
     } finally {
       if (!renamed) {

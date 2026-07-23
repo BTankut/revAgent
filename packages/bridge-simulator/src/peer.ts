@@ -4,6 +4,7 @@ import { createHash, randomBytes } from "node:crypto";
 import {
   RBP_HEARTBEAT_DEGRADED_AFTER_MS,
   RBP_HEARTBEAT_DISCONNECTED_AFTER_MS,
+  acceptInboundData,
   canonicalizeJson,
   createSessionLifecycle,
   rbpEnvelopeErrors,
@@ -53,6 +54,17 @@ interface QueuedDataDraft {
   readonly deliveryCarrier: DurableResultCarrier | null;
 }
 
+interface InvocationReplyContext {
+  readonly invocationId: string;
+  readonly mutationScope: InvokeEnvelope["payload"]["mutation_scope"];
+}
+
+interface BatchReplyContext {
+  readonly batchId: string;
+  readonly atomic: boolean;
+  readonly steps: readonly InvocationReplyContext[];
+}
+
 export interface BridgeGatewayPeerOptions {
   readonly heartbeatIntervalMs?: number;
   readonly nowMs?: () => number;
@@ -63,6 +75,8 @@ export interface BridgeGatewayPeerOptions {
   }) => Promise<{ readonly binding: GatewayBinding; readonly helloAck: HelloAckEnvelope }>;
   readonly reconnectJitter?: () => number;
   readonly sleep?: (delayMs: number) => Promise<void>;
+  /** Unit-fixture escape hatch only. Production bindings must prove authority with resume_ack. */
+  readonly unsafeAssumeCurrentBindingForTests?: boolean;
 }
 
 export interface BridgeGatewayPeerSnapshot {
@@ -77,6 +91,7 @@ export interface BridgeGatewayPeerSnapshot {
   readonly sessions: readonly SessionLifecycleState[];
   readonly pendingRegistrationCount: number;
   readonly pendingResumeCount: number;
+  readonly pendingUnregisterCount: number;
   readonly queuedDataCount: number;
   readonly sentSeqs: readonly { readonly rsid: string; readonly seq: number }[];
   readonly reconnectAttemptIndex: number;
@@ -199,10 +214,7 @@ function resultPayload(
 }
 
 function invocationDrafts(
-  invocation: {
-    readonly invocationId: string;
-    readonly mutationScope: InvokeEnvelope["payload"]["mutation_scope"];
-  },
+  invocation: InvocationReplyContext,
   outcome: BridgeInvocationOutcome,
   id: () => string,
   ts: () => string,
@@ -229,7 +241,7 @@ function invocationDrafts(
     });
     return drafts;
   }
-  if (outcome.kind === "not_started") return drafts;
+  if (outcome.kind === "not_started" || outcome.kind === "transport_duplicate") return drafts;
   drafts.push({
     type: "error",
     id: id(),
@@ -246,9 +258,9 @@ function invocationDrafts(
 function batchStep(
   outcome: BridgeInvocationOutcome,
   index: number,
-  envelope: InvokeBatchEnvelope,
+  context: BatchReplyContext,
 ): BatchStepResult {
-  const invocationId = envelope.payload.steps[index]?.invocation_id ?? `missing-${index}`;
+  const invocationId = context.steps[index]?.invocationId ?? `missing-${index}`;
   if (outcome.kind === "not_started") {
     return {
       index,
@@ -256,6 +268,9 @@ function batchStep(
       status: "not_started",
       replayed: outcome.replayed,
     } as BatchStepResult;
+  }
+  if (outcome.kind === "transport_duplicate") {
+    throw new Error("transport duplicate cannot be a batch step result");
   }
   if (outcome.kind === "result") {
     return {
@@ -288,7 +303,7 @@ function batchStep(
     ...(outcome.effectState === undefined ? {} : { effect_state: outcome.effectState }),
     error: errorDetail(
       outcome,
-      envelope.payload.steps[index]?.mutation_scope ?? null,
+      context.steps[index]?.mutationScope ?? null,
     ),
     ...(outcome.lateAfterIndeterminate
       ? {
@@ -301,11 +316,14 @@ function batchStep(
 }
 
 function batchDraft(
-  envelope: InvokeBatchEnvelope,
+  context: BatchReplyContext,
   outcome: BridgeBatchOutcome,
   id: string,
   ts: string,
 ): QueuedDataDraft {
+  if (outcome.kind === "transport_duplicate") {
+    throw new Error("transport duplicate must not produce an RBP batch result");
+  }
   if (outcome.kind === "error") {
     return {
       type: "error",
@@ -329,7 +347,7 @@ function batchDraft(
       deliveryCarrier: null,
     };
   }
-  const steps = (outcome.steps ?? []).map((step, index) => batchStep(step, index, envelope));
+  const steps = (outcome.steps ?? []).map((step, index) => batchStep(step, index, context));
   return {
     type: "result",
     id,
@@ -337,7 +355,7 @@ function batchDraft(
     payload: {
       kind: "batch",
       batch_id: outcome.batchId,
-      atomic: envelope.payload.atomic,
+      atomic: context.atomic,
       status: outcome.status as string,
       transaction_state: outcome.transactionState as string,
       failed_step_index: outcome.failedStepIndex ?? null,
@@ -346,6 +364,60 @@ function batchDraft(
     },
     deliveryCarrier: null,
   };
+}
+
+function batchReplyContext(envelope: InvokeBatchEnvelope): BatchReplyContext {
+  return {
+    batchId: envelope.payload.batch_id,
+    atomic: envelope.payload.atomic,
+    steps: envelope.payload.steps.map((step) => ({
+      invocationId: step.invocation_id,
+      mutationScope: step.mutation_scope,
+    })),
+  };
+}
+
+function parseInvocationReplyContext(value: string): InvocationReplyContext {
+  const parsed = JSON.parse(value) as Partial<{
+    readonly invocation_id: string;
+    readonly mutation_scope: InvokeEnvelope["payload"]["mutation_scope"];
+  }>;
+  if (typeof parsed.invocation_id !== "string" || !("mutation_scope" in parsed)) {
+    throw new Error("durable invocation reply context is invalid");
+  }
+  return {
+    invocationId: parsed.invocation_id,
+    mutationScope: parsed.mutation_scope ?? null,
+  };
+}
+
+function parseBatchReplyContext(value: string): BatchReplyContext {
+  const parsed = JSON.parse(value) as {
+    readonly batch_id?: unknown;
+    readonly atomic?: unknown;
+    readonly steps?: unknown;
+  };
+  if (
+    typeof parsed.batch_id !== "string" ||
+    typeof parsed.atomic !== "boolean" ||
+    !Array.isArray(parsed.steps)
+  ) {
+    throw new Error("durable batch reply context is invalid");
+  }
+  const steps = parsed.steps.map((step): InvocationReplyContext => {
+    if (
+      typeof step !== "object" || step === null ||
+      !("invocation_id" in step) || typeof step.invocation_id !== "string" ||
+      !("mutation_scope" in step)
+    ) {
+      throw new Error("durable batch reply step context is invalid");
+    }
+    return {
+      invocationId: step.invocation_id,
+      mutationScope: step.mutation_scope as InvokeEnvelope["payload"]["mutation_scope"],
+    };
+  });
+  return { batchId: parsed.batch_id, atomic: parsed.atomic, steps };
 }
 
 export class BridgeGatewayPeer {
@@ -360,6 +432,9 @@ export class BridgeGatewayPeer {
   readonly #sessions = new Map<string, SessionLifecycleState>();
   readonly #pendingRegistrations = new Map<string, PendingRegistration>();
   readonly #pendingResumes = new Set<string>();
+  readonly #unregisterSentOnBinding = new Set<string>();
+  readonly #unregisterHeartbeatConfirmations = new Set<string>();
+  #unregisterHeartbeatExpectedAckRsids: Set<string> | null = null;
   readonly #lastContext = new Map<string, string>();
   readonly #lastContextPollAt = new Map<string, number>();
   readonly #queuedData = new Map<string, QueuedDataDraft[]>();
@@ -370,6 +445,13 @@ export class BridgeGatewayPeer {
   #lastHeartbeatSentAtMs: number;
   #lastHeartbeatAckAtMs: number;
   #heartbeatAckDeadlineAtMs: number | null = null;
+  #nextHeartbeatFlightToken = 0;
+  #activeHeartbeatFlightToken: number | null = null;
+  #activeHeartbeatFlightBinding: GatewayBinding | null = null;
+  #activeHeartbeatFlightGeneration: number | null = null;
+  #heartbeatAckProcessing = false;
+  #bindingGeneration = 0;
+  #sessionSyncDeadlineAtMs: number | null = null;
   #heartbeatTimedOut = false;
   #connectedAtMs: number;
   #reconnectAttemptIndex = 0;
@@ -406,9 +488,34 @@ export class BridgeGatewayPeer {
     this.#lastHeartbeatSentAtMs = now;
     this.#lastHeartbeatAckAtMs = now;
     this.#applyHelloAckLimits(helloAck);
+    const assumeCurrentBinding = options.unsafeAssumeCurrentBindingForTests === true;
     for (const session of simulator.registeredSessions()) {
-      this.#sessions.set(session.rsid, registeredLifecycle(session.probe.localSessionKey, session.rsid));
+      const registered = registeredLifecycle(session.probe.localSessionKey, session.rsid);
+      const pendingUnregister = simulator.journal.getPendingSessionUnregister(session.rsid);
+      if (pendingUnregister !== null) {
+        this.#sessions.set(
+          session.rsid,
+          transitionOrThrow(registered, {
+            type: "unregister",
+            reason: pendingUnregister.reason,
+          }),
+        );
+      } else if (assumeCurrentBinding) {
+        this.#sessions.set(session.rsid, registered);
+      } else {
+        this.#sessions.set(
+          session.rsid,
+          transitionOrThrow(registered, { type: "connection_lost" }),
+        );
+      }
     }
+    if (!assumeCurrentBinding && (
+      simulator.registeredSessions().length > 0 ||
+      simulator.journal.listPendingSessionUnregisters().length > 0
+    )) {
+      this.#armSessionSyncDeadline();
+    }
+    this.#recoverInboundReplies();
     this.#recoverDurableDeliveries();
   }
 
@@ -425,6 +532,7 @@ export class BridgeGatewayPeer {
       sessions: [...this.#sessions.values()].map((state) => structuredClone(state)),
       pendingRegistrationCount: this.#pendingRegistrations.size,
       pendingResumeCount: this.#pendingResumes.size,
+      pendingUnregisterCount: this.#simulator.journal.listPendingSessionUnregisters().length,
       queuedDataCount: [...this.#queuedData.values()].reduce((sum, queue) => sum + queue.length, 0) +
         this.#simulator.journal.pendingDurableDeliveryDraftCount(),
       sentSeqs: [...this.#sentSeq].map(([rsid, seq]) => ({ rsid, seq })),
@@ -455,9 +563,9 @@ export class BridgeGatewayPeer {
           for await (const envelope of observedBinding.messages()) {
             if (this.#shouldStop(signal) || observedBinding !== this.#binding) break;
             if (envelope.type === "invoke" || envelope.type === "invoke_batch" || envelope.type === "cancel") {
-              this.#trackInbound(this.handleInbound(envelope), observedBinding);
+              this.#trackInbound(this.handleInbound(envelope, observedBinding), observedBinding);
             } else {
-              await this.handleInbound(envelope);
+              await this.handleInbound(envelope, observedBinding);
             }
             if (this.#inboundError !== null) break;
           }
@@ -505,6 +613,7 @@ export class BridgeGatewayPeer {
     lifecycle = transitionOrThrow(lifecycle, { type: "register_requested" });
     this.#pendingRegistrations.set(id, input);
     this.#sessions.set(input.probe.localSessionKey, lifecycle);
+    this.#armSessionSyncDeadline();
     await this.#sendControl({
       v: 1,
       type: "session_register",
@@ -516,7 +625,22 @@ export class BridgeGatewayPeer {
   }
 
   public async resumeAll(): Promise<void> {
-    for (const session of this.#simulator.registeredSessions()) await this.resumeSession(session.rsid);
+    for (const pending of this.#simulator.journal.listPendingSessionUnregisters()) {
+      if (pending.phase === "confirmed") {
+        this.#simulator.finalizeSessionUnregister(pending.rsid);
+        this.#forgetFinalizedSession(pending.rsid);
+        continue;
+      }
+      await this.#sendPendingUnregister(pending.rsid);
+    }
+    for (const session of this.#simulator.registeredSessions()) {
+      if (this.#simulator.journal.getPendingSessionUnregister(session.rsid) !== null) continue;
+      await this.resumeSession(session.rsid);
+    }
+    // A cold start can contain only confirmed unregister tombstones. Their
+    // cleanup completes locally and sends no resume/registration frame, so no
+    // later ACK exists to clear the constructor's synchronization deadline.
+    this.#clearSessionSyncDeadlineIfCorrelated();
   }
 
   public async resumeSession(rsid: string): Promise<void> {
@@ -533,7 +657,7 @@ export class BridgeGatewayPeer {
     const resuming = transitionOrThrow(disconnected, { type: "resume_requested" });
     this.#sessions.set(rsid, resuming);
     this.#pendingResumes.add(rsid);
-    const sequence = this.#simulator.journal.loadSequence(rsid);
+    this.#armSessionSyncDeadline();
     await this.#sendControl({
       v: 1,
       type: "session_resume",
@@ -542,7 +666,7 @@ export class BridgeGatewayPeer {
       payload: {
         rsid,
         resume_token: session.resumeToken,
-        last_rx_seq: sequence.lastRxSeq,
+        last_rx_seq: this.#simulator.journal.acknowledgeableRxSeq(rsid),
       },
     });
   }
@@ -553,19 +677,52 @@ export class BridgeGatewayPeer {
   ): Promise<ReturnType<BridgeSimulator["unregisterSession"]>> {
     const state = this.#sessions.get(rsid);
     if (state === undefined) throw new Error(`unknown rsid: ${rsid}`);
-    this.#sessions.set(rsid, transitionOrThrow(state, { type: "unregister", reason }));
-    this.#pendingResumes.delete(rsid);
-    this.#queuedData.delete(rsid);
-    this.#sentSeq.delete(rsid);
-    this.#resumeRetransmit.delete(rsid);
-    const decisions = this.#simulator.unregisterSession(rsid, reason);
-    await this.#sendControl({
-      v: 1,
-      type: "session_unregister",
-      id: this.#id(),
-      ts: this.#nowIso(),
-      payload: { rsid, reason },
-    });
+    if (state.phase === "unregistered" && state.unregisterReason !== reason) {
+      throw new Error(`session unregister reason changed for ${rsid}`);
+    }
+    const revokeLocal = (): void => {
+      const current = this.#sessions.get(rsid);
+      if (current !== undefined && current.phase !== "unregistered") {
+        this.#sessions.set(rsid, transitionOrThrow(current, { type: "unregister", reason }));
+      }
+      this.#pendingResumes.delete(rsid);
+      this.#armSessionSyncDeadline();
+      this.#queuedData.delete(rsid);
+      this.#sentSeq.delete(rsid);
+      this.#resumeRetransmit.delete(rsid);
+    };
+    let decisions: ReturnType<BridgeSimulator["unregisterSession"]>;
+    try {
+      decisions = this.#simulator.unregisterSession(rsid, reason);
+    } catch (error) {
+      // COMMIT may have succeeded even when the subsequent fsync surfaced an
+      // error. Re-read the tombstone: observed exact intent must revoke local
+      // authority fail-closed, while an absent/different intent leaves the
+      // pre-call lifecycle untouched.
+      try {
+        const pending = this.#simulator.journal.getPendingSessionUnregister(rsid);
+        if (pending?.reason === reason) revokeLocal();
+      } catch {
+        // The original durability failure remains authoritative.
+      }
+      throw error;
+    }
+    revokeLocal();
+    try {
+      await this.#sendPendingUnregister(rsid);
+    } catch (error) {
+      if (!(error instanceof GatewayTransportError) || error.faultClass !== "retryable_network") {
+        throw error;
+      }
+      this.#heartbeatTimedOut = true;
+      try {
+        await this.#binding.close();
+      } catch {
+        // Preserve the retryable send failure as the reconnect cause.
+      }
+      const reconnected = await this.#attemptReconnect();
+      if (!reconnected && this.#reconnect === undefined) throw error;
+    }
     return decisions;
   }
 
@@ -590,29 +747,158 @@ export class BridgeGatewayPeer {
 
   public async sendHeartbeat(): Promise<void> {
     this.#assertOpen();
+    // heartbeat_ack does not echo a heartbeat id. Keep exactly one heartbeat
+    // in flight so the next acknowledgement has one unambiguous fence.
+    if (this.#heartbeatAckDeadlineAtMs !== null || this.#heartbeatAckProcessing) return;
+    const exactRsids = this.#heartbeatExactSet();
+    if (exactRsids === null) return;
+    const payload = await this.#simulator.heartbeat(exactRsids);
+    // Registration, resume, unregister, and reconnect state can change while
+    // add-in status is collected. Recheck the complete exact-set authority
+    // immediately before handing the payload to the ordered transport.
+    const currentExactRsids = this.#heartbeatExactSet();
+    if (
+      currentExactRsids === null ||
+      JSON.stringify([...currentExactRsids].sort()) !== JSON.stringify([...exactRsids].sort())
+    ) return;
+    // Another concurrent caller may have installed a flight while this caller
+    // awaited local status. Recheck in the same synchronous section that
+    // installs the token so a later caller can never overwrite that flight.
+    if (this.#heartbeatAckDeadlineAtMs !== null || this.#heartbeatAckProcessing) return;
+    // Lifecycle state may also have changed while status was collected. Take
+    // the unregister fence immediately before the send and install the whole
+    // flight atomically before the first transport await. A binding is allowed
+    // to deliver heartbeat_ack from inside send(), before send() resolves.
+    const pendingConfirmation = this.#pendingUnregistersSentOnCurrentBinding();
     const envelope: HeartbeatEnvelope = {
       v: 1,
       type: "heartbeat",
       id: this.#id(),
       ts: this.#nowIso(),
-      payload: await this.#simulator.heartbeat(),
+      payload,
     };
-    await this.#sendControl(envelope);
-    this.#lastHeartbeatSentAtMs = this.#nowMs();
-    // A later heartbeat must not extend the deadline of an earlier
-    // unacknowledged heartbeat.  This matters when a Gateway negotiates an
-    // interval shorter than the fixed ten-second acknowledgement window.
-    if (this.#heartbeatAckDeadlineAtMs === null) {
-      this.#heartbeatAckDeadlineAtMs = this.#lastHeartbeatSentAtMs + 10_000;
+    const previousLastHeartbeatSentAtMs = this.#lastHeartbeatSentAtMs;
+    const sentAtMs = this.#nowMs();
+    const flightToken = ++this.#nextHeartbeatFlightToken;
+    this.#activeHeartbeatFlightToken = flightToken;
+    this.#activeHeartbeatFlightBinding = this.#binding;
+    this.#activeHeartbeatFlightGeneration = this.#bindingGeneration;
+    this.#lastHeartbeatSentAtMs = sentAtMs;
+    this.#heartbeatAckDeadlineAtMs = sentAtMs + 10_000;
+    for (const rsid of pendingConfirmation) {
+      this.#unregisterHeartbeatConfirmations.add(rsid);
     }
+    if (pendingConfirmation.length > 0) {
+      this.#unregisterHeartbeatExpectedAckRsids = new Set(exactRsids);
+    }
+    try {
+      await this.#sendControl(envelope);
+    } catch (error) {
+      // Roll back only this still-current flight. If an acknowledgement was
+      // delivered during send(), it already consumed the token and is the
+      // authoritative processing evidence; never re-arm stale state here.
+      if (this.#activeHeartbeatFlightToken === flightToken) {
+        this.#activeHeartbeatFlightToken = null;
+        this.#activeHeartbeatFlightBinding = null;
+        this.#activeHeartbeatFlightGeneration = null;
+        this.#lastHeartbeatSentAtMs = previousLastHeartbeatSentAtMs;
+        this.#heartbeatAckDeadlineAtMs = null;
+        this.#unregisterHeartbeatConfirmations.clear();
+        this.#unregisterHeartbeatExpectedAckRsids = null;
+      }
+      throw error;
+    }
+  }
+
+  #heartbeatExactSet(): Set<string> | null {
+    if (
+      this.#pendingRegistrations.size > 0 ||
+      this.#pendingResumes.size > 0 ||
+      (this.#reconnectTask !== null && this.#sessionSyncOutstanding())
+    ) return null;
+    const durableSessions = this.#simulator.registeredSessions();
+    const pendingUnregisters = this.#simulator.journal.listPendingSessionUnregisters();
+    if (pendingUnregisters.some((pending) => pending.phase === "confirmed")) return null;
+    if (pendingUnregisters.some((pending) => !this.#unregisterSentOnBinding.has(pending.rsid))) {
+      return null;
+    }
+    const currentBindingRsids = new Set<string>();
+    for (const session of durableSessions) {
+      const pending = this.#simulator.journal.getPendingSessionUnregister(session.rsid);
+      if (pending !== null) {
+        if (!this.#unregisterSentOnBinding.has(session.rsid)) return null;
+        continue;
+      }
+      const state = this.#sessions.get(session.rsid);
+      if (state?.phase !== "registered" || !state.dispatchAllowed) return null;
+      currentBindingRsids.add(session.rsid);
+    }
+    return currentBindingRsids;
+  }
+
+  #armSessionSyncDeadline(): void {
+    this.#sessionSyncDeadlineAtMs ??= this.#nowMs() + 10_000;
+  }
+
+  #clearSessionSyncDeadlineIfCorrelated(): void {
+    if (!this.#sessionSyncOutstanding()) {
+      this.#sessionSyncDeadlineAtMs = null;
+    }
+  }
+
+  #sessionSyncOutstanding(): boolean {
+    if (this.#pendingRegistrations.size > 0 || this.#pendingResumes.size > 0) return true;
+    const durableSessions = this.#simulator.registeredSessions();
+    if (this.#simulator.journal.listPendingSessionUnregisters().some(
+      (pending) => pending.phase === "confirmed" || !this.#unregisterSentOnBinding.has(pending.rsid),
+    )) return true;
+    return durableSessions.some((session) => {
+      if (this.#simulator.journal.getPendingSessionUnregister(session.rsid) !== null) {
+        return !this.#unregisterSentOnBinding.has(session.rsid);
+      }
+      const state = this.#sessions.get(session.rsid);
+      return state?.phase !== "registered" || !state.dispatchAllowed;
+    });
+  }
+
+  #pendingUnregistersSentOnCurrentBinding(): string[] {
+    return this.#simulator.journal.listPendingSessionUnregisters()
+      .filter((pending) => pending.phase === "pending")
+      .map((pending) => pending.rsid)
+      .filter((rsid) => this.#unregisterSentOnBinding.has(rsid))
+      .filter((rsid) => !this.#unregisterHeartbeatConfirmations.has(rsid))
+      .sort();
+  }
+
+  async #sendPendingUnregister(rsid: string): Promise<void> {
+    const pending = this.#simulator.journal.getPendingSessionUnregister(rsid);
+    if (pending === null) throw new Error(`session ${rsid} has no pending unregister intent`);
+    if (pending.phase !== "pending") {
+      throw new Error(`session ${rsid} unregister is already confirmed`);
+    }
+    if (this.#unregisterSentOnBinding.has(rsid)) return;
+    await this.#sendControl({
+      v: 1,
+      type: "session_unregister",
+      id: this.#id(),
+      ts: this.#nowIso(),
+      payload: { rsid, reason: pending.reason },
+    });
+    this.#unregisterSentOnBinding.add(rsid);
+    this.#clearSessionSyncDeadlineIfCorrelated();
+    await this.sendHeartbeat();
   }
 
   public async tick(nowMs = this.#nowMs()): Promise<BridgePeerLiveness> {
     this.#assertOpen();
-    if (
-      this.#heartbeatAckDeadlineAtMs !== null &&
-      nowMs >= this.#heartbeatAckDeadlineAtMs
-    ) {
+    const earliestConnectionDeadlineAtMs = [
+      this.#heartbeatAckDeadlineAtMs,
+      this.#sessionSyncDeadlineAtMs,
+    ].reduce<number | null>((earliest, deadline) => {
+      if (deadline === null) return earliest;
+      return earliest === null ? deadline : Math.min(earliest, deadline);
+    }, null);
+    if (earliestConnectionDeadlineAtMs !== null && nowMs >= earliestConnectionDeadlineAtMs) {
       this.#heartbeatTimedOut = true;
       await this.#binding.close();
       const reconnected = await this.#attemptReconnect();
@@ -640,7 +926,10 @@ export class BridgeGatewayPeer {
     return liveness;
   }
 
-  public async handleInbound(envelope: RbpEnvelope): Promise<void> {
+  public async handleInbound(
+    envelope: RbpEnvelope,
+    originBinding: GatewayBinding = this.#binding,
+  ): Promise<void> {
     this.#assertOpen();
     if (!validateRbpEnvelope(envelope)) throw new Error("invalid inbound Gateway envelope");
     switch (envelope.type) {
@@ -651,7 +940,7 @@ export class BridgeGatewayPeer {
         await this.#handleResumeAck(envelope);
         return;
       case "heartbeat_ack":
-        await this.#handleHeartbeatAck(envelope);
+        await this.#handleHeartbeatAck(envelope, originBinding);
         return;
       case "invoke":
         await this.#handleInvoke(envelope);
@@ -660,15 +949,26 @@ export class BridgeGatewayPeer {
         await this.#handleBatch(envelope);
         return;
       case "cancel": {
-        const accepted = this.#simulator.acceptInboundEnvelope(
-          envelope as unknown as DataEnvelopeSnapshot,
-        );
-        if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
-          throw new Error(`cancel sequence rejected: ${accepted.kind}`);
+        if (this.#sessions.get(envelope.rsid)?.phase === "unregistered") return;
+        if (this.#sessions.get(envelope.rsid)?.dispatchAllowed !== true) {
+          throw new Error(`dispatch is revoked for ${envelope.rsid}`);
         }
-        const outcome = this.#simulator.cancel(envelope.rsid, envelope.payload.invocation_id);
-        if (outcome === null) return;
-        this.#enqueueMany(envelope.rsid, invocationDrafts({
+        if (this.#preflightInboundTransport(envelope, "cancel") === "duplicate") {
+          await this.flushOutbound(envelope.rsid);
+          return;
+        }
+        const outcome = this.#simulator.cancelEnvelope(envelope);
+        if (outcome?.kind === "transport_duplicate") {
+          this.#applyInboundAck(envelope);
+          await this.flushOutbound(envelope.rsid);
+          return;
+        }
+        this.#applyInboundAck(envelope);
+        if (outcome === null) {
+          await this.flushOutbound(envelope.rsid);
+          return;
+        }
+        this.#stageInboundDrafts(envelope, invocationDrafts({
           invocationId: envelope.payload.invocation_id,
           mutationScope: null,
         }, outcome, this.#id, () => this.#nowIso()));
@@ -758,11 +1058,20 @@ export class BridgeGatewayPeer {
       session.rsid,
       transitionOrThrow(previous, { type: "registered", rsid: session.rsid }),
     );
+    this.#clearSessionSyncDeadlineIfCorrelated();
     await this.pollDocumentContext(session.rsid, true);
   }
 
   async #handleResumeAck(envelope: ResumeAckEnvelope): Promise<void> {
     const rsid = envelope.payload.rsid;
+    if (
+      this.#sessions.get(rsid)?.phase === "unregistered" ||
+      this.#simulator.getSession(rsid) === null
+    ) {
+      this.#pendingResumes.delete(rsid);
+      this.#clearSessionSyncDeadlineIfCorrelated();
+      return;
+    }
     if (!this.#pendingResumes.delete(rsid)) throw new Error("uncorrelated resume_ack");
     const state = this.#sessions.get(rsid);
     if (state === undefined) throw new Error("resume lifecycle is missing");
@@ -771,34 +1080,103 @@ export class BridgeGatewayPeer {
     this.#simulator.updateResumeExpiry(rsid, envelope.payload.resume_expires_at);
     this.#sessions.set(rsid, transitionOrThrow(state, { type: "resumed" }));
     this.#resumeRetransmit.add(rsid);
+    this.#clearSessionSyncDeadlineIfCorrelated();
     await this.flushOutbound(rsid);
     await this.pollDocumentContext(rsid, true);
   }
 
-  async #handleHeartbeatAck(envelope: HeartbeatAckEnvelope): Promise<void> {
-    this.#lastHeartbeatAckAtMs = this.#nowMs();
-    this.#heartbeatAckDeadlineAtMs = null;
-    this.#heartbeatTimedOut = false;
-    for (const entry of envelope.payload.acks) {
-      const acknowledged = this.#simulator.acknowledgeOutbound(entry.rsid, entry.seq);
-      if (acknowledged.includes(this.#sentSeq.get(entry.rsid) ?? -1)) {
-        this.#sentSeq.delete(entry.rsid);
+  async #handleHeartbeatAck(
+    envelope: HeartbeatAckEnvelope,
+    originBinding: GatewayBinding,
+  ): Promise<void> {
+    if (originBinding !== this.#binding) return;
+    if (this.#heartbeatAckProcessing) {
+      throw new Error("heartbeat_ack processing is already in progress");
+    }
+    // Consume one immutable flight snapshot synchronously before any flush can
+    // yield. A later unregister may install another heartbeat only after this
+    // handler finishes, and this ACK can finalize only its captured tombstones.
+    const ownsCurrentFlight =
+      this.#activeHeartbeatFlightToken !== null &&
+      this.#heartbeatAckDeadlineAtMs !== null &&
+      this.#activeHeartbeatFlightBinding === originBinding &&
+      this.#activeHeartbeatFlightGeneration === this.#bindingGeneration;
+    const capturedConfirmations = ownsCurrentFlight
+      ? [...this.#unregisterHeartbeatConfirmations].sort()
+      : [];
+    const capturedExpectedAckRsids = ownsCurrentFlight
+      ? new Set(this.#unregisterHeartbeatExpectedAckRsids ?? [])
+      : new Set<string>();
+    if (ownsCurrentFlight) {
+      this.#activeHeartbeatFlightToken = null;
+      this.#activeHeartbeatFlightBinding = null;
+      this.#activeHeartbeatFlightGeneration = null;
+      this.#heartbeatAckDeadlineAtMs = null;
+      this.#unregisterHeartbeatConfirmations.clear();
+      this.#unregisterHeartbeatExpectedAckRsids = null;
+    }
+    this.#heartbeatAckProcessing = true;
+    try {
+      if (capturedConfirmations.length > 0) {
+        const expected = [...capturedExpectedAckRsids].sort();
+        const actual = envelope.payload.acks.map((entry) => entry.rsid).sort();
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          throw new Error("unregister fence heartbeat_ack does not match the active-session exact set");
+        }
       }
-      await this.flushOutbound(entry.rsid);
+      this.#lastHeartbeatAckAtMs = this.#nowMs();
+      this.#heartbeatTimedOut = false;
+      for (const entry of envelope.payload.acks) {
+        if (
+          this.#sessions.get(entry.rsid)?.phase === "unregistered" ||
+          this.#simulator.getSession(entry.rsid) === null
+        ) continue;
+        const acknowledged = this.#simulator.acknowledgeOutbound(entry.rsid, entry.seq);
+        if (acknowledged.includes(this.#sentSeq.get(entry.rsid) ?? -1)) {
+          this.#sentSeq.delete(entry.rsid);
+        }
+        await this.flushOutbound(entry.rsid);
+      }
+      for (const rsid of capturedConfirmations) {
+        if (!this.#unregisterSentOnBinding.has(rsid)) continue;
+        this.#simulator.finalizeSessionUnregister(rsid);
+        this.#unregisterSentOnBinding.delete(rsid);
+        this.#forgetFinalizedSession(rsid);
+      }
+      this.#clearSessionSyncDeadlineIfCorrelated();
+    } finally {
+      this.#heartbeatAckProcessing = false;
+    }
+    if (this.#pendingUnregistersSentOnCurrentBinding().length > 0) {
+      await this.sendHeartbeat();
     }
   }
 
   async #handleInvoke(envelope: InvokeEnvelope): Promise<void> {
+    if (this.#sessions.get(envelope.rsid)?.phase === "unregistered") return;
     if (this.#sessions.get(envelope.rsid)?.dispatchAllowed !== true) {
       throw new Error(`dispatch is revoked for ${envelope.rsid}`);
     }
-    const outcome = await this.#simulator.invoke(envelope);
-    if (envelope.ack !== undefined) {
-      this.#simulator.acknowledgeOutbound(envelope.rsid, envelope.ack);
-      this.#sentSeq.delete(envelope.rsid);
+    if (this.#preflightInboundTransport(envelope, "invoke") === "duplicate") {
+      const work = this.#simulator.journal.getInboundWork(envelope.rsid, envelope.seq);
+      if (work?.state !== "journaled") {
+        await this.flushOutbound(envelope.rsid);
+        return;
+      }
     }
-    this.#enqueueMany(
-      envelope.rsid,
+    const outcome = await this.#simulator.invoke(envelope);
+    if (
+      this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
+      this.#simulator.getSession(envelope.rsid) === null
+    ) return;
+    if (outcome.kind === "transport_duplicate") {
+      this.#applyInboundAck(envelope);
+      await this.flushOutbound(envelope.rsid);
+      return;
+    }
+    this.#applyInboundAck(envelope);
+    this.#stageInboundDrafts(
+      envelope,
       invocationDrafts({
         invocationId: envelope.payload.invocation_id,
         mutationScope: envelope.payload.mutation_scope,
@@ -807,20 +1185,95 @@ export class BridgeGatewayPeer {
     await this.flushOutbound(envelope.rsid);
   }
 
+  #forgetFinalizedSession(rsid: string): void {
+    this.#sessions.delete(rsid);
+    this.#queuedData.delete(rsid);
+    this.#sentSeq.delete(rsid);
+    this.#resumeRetransmit.delete(rsid);
+    this.#lastContext.delete(rsid);
+    this.#lastContextPollAt.delete(rsid);
+  }
+
   async #handleBatch(envelope: InvokeBatchEnvelope): Promise<void> {
+    if (this.#sessions.get(envelope.rsid)?.phase === "unregistered") return;
     if (this.#sessions.get(envelope.rsid)?.dispatchAllowed !== true) {
       throw new Error(`dispatch is revoked for ${envelope.rsid}`);
     }
-    const outcome = await this.#simulator.invokeBatch(envelope);
-    if (envelope.ack !== undefined) {
-      this.#simulator.acknowledgeOutbound(envelope.rsid, envelope.ack);
-      this.#sentSeq.delete(envelope.rsid);
+    if (this.#preflightInboundTransport(envelope, "invoke_batch") === "duplicate") {
+      const work = this.#simulator.journal.getInboundWork(envelope.rsid, envelope.seq);
+      if (work?.state !== "journaled") {
+        await this.flushOutbound(envelope.rsid);
+        return;
+      }
     }
-    this.#enqueueData(
-      envelope.rsid,
-      batchDraft(envelope, outcome, this.#id(), this.#nowIso()),
-    );
+    const outcome = await this.#simulator.invokeBatch(envelope);
+    if (
+      this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
+      this.#simulator.getSession(envelope.rsid) === null
+    ) return;
+    if (outcome.kind === "transport_duplicate") {
+      this.#applyInboundAck(envelope);
+      await this.flushOutbound(envelope.rsid);
+      return;
+    }
+    this.#applyInboundAck(envelope);
+    this.#stageInboundDrafts(envelope, [
+      batchDraft(batchReplyContext(envelope), outcome, this.#id(), this.#nowIso()),
+    ]);
     await this.flushOutbound(envelope.rsid);
+  }
+
+  #preflightInboundTransport(
+    envelope: Extract<RbpEnvelope, { readonly type: "invoke" | "invoke_batch" | "cancel" }>,
+    label: "invoke" | "invoke_batch" | "cancel",
+  ): "accepted" | "duplicate" {
+    const accepted = acceptInboundData(
+      this.#simulator.journal.loadSequence(envelope.rsid),
+      envelope as unknown as DataEnvelopeSnapshot,
+    );
+    if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+      throw new Error(`${label} sequence rejected: ${accepted.kind}`);
+    }
+    if (accepted.kind === "duplicate") {
+      this.#simulator.persistInboundDuplicate(
+        envelope as unknown as DataEnvelopeSnapshot,
+      );
+      this.#applyInboundAck(envelope);
+    }
+    return accepted.kind;
+  }
+
+  #applyInboundAck(envelope: { readonly rsid: string; readonly ack?: number }): void {
+    if (envelope.ack === undefined) return;
+    this.#simulator.acknowledgeOutbound(envelope.rsid, envelope.ack);
+    this.#sentSeq.delete(envelope.rsid);
+  }
+
+  #stageInboundDrafts(
+    envelope: { readonly rsid: string; readonly seq: number },
+    drafts: readonly QueuedDataDraft[],
+  ): void {
+    const work = this.#simulator.journal.getInboundWork(envelope.rsid, envelope.seq);
+    if (work?.state === "no_reply") return;
+    if (drafts.length === 0) {
+      this.#simulator.journal.completeInboundNoReply(envelope.rsid, envelope.seq);
+      return;
+    }
+    this.#assertDraftCapabilities(drafts);
+    const terminal = drafts.at(-1) as QueuedDataDraft;
+    if (drafts.slice(0, -1).some((draft) => draft.deliveryCarrier !== null)) {
+      throw new Error("durable carrier metadata is permitted only on the terminal draft");
+    }
+    const deliveryId = terminal.deliveryCarrier === null
+      ? `${envelope.rsid}/inbound/${envelope.seq}`
+      : `${envelope.rsid}/${terminal.deliveryCarrier.invocationId}`;
+    this.#simulator.journal.stageDurableDelivery({
+      rsid: envelope.rsid,
+      deliveryId,
+      draftJsons: drafts.map((draft) => JSON.stringify(draft)),
+      terminalOrdinal: drafts.length - 1,
+      inboundSeq: envelope.seq,
+    });
   }
 
   #enqueueMany(rsid: string, drafts: readonly QueuedDataDraft[]): void {
@@ -859,6 +1312,32 @@ export class BridgeGatewayPeer {
     }
   }
 
+  #recoverInboundReplies(): void {
+    for (const recovery of this.#simulator.recoverableInboundReplies()) {
+      if (recovery.type === "invoke" || recovery.type === "cancel") {
+        this.#stageInboundDrafts(
+          { rsid: recovery.rsid, seq: recovery.seq },
+          invocationDrafts(
+            parseInvocationReplyContext(recovery.contextJson),
+            recovery.outcome as BridgeInvocationOutcome,
+            this.#id,
+            () => this.#nowIso(),
+          ),
+        );
+        continue;
+      }
+      this.#stageInboundDrafts(
+        { rsid: recovery.rsid, seq: recovery.seq },
+        [batchDraft(
+          parseBatchReplyContext(recovery.contextJson),
+          recovery.outcome as BridgeBatchOutcome,
+          this.#id(),
+          this.#nowIso(),
+        )],
+      );
+    }
+  }
+
   async #pumpSession(rsid: string): Promise<void> {
     const lifecycle = this.#sessions.get(rsid);
     const binding = this.#binding;
@@ -875,7 +1354,11 @@ export class BridgeGatewayPeer {
         : retained.envelope;
       this.#assertOutboundEnvelopeCapabilities(envelope);
       await this.#sendData(binding, envelope as unknown as RbpEnvelope);
-      if (binding !== this.#binding) return;
+      if (
+        binding !== this.#binding ||
+        this.#sessions.get(rsid)?.phase === "unregistered" ||
+        this.#simulator.getSession(rsid) === null
+      ) return;
       this.#sentSeq.set(rsid, envelope.seq);
       return;
     }
@@ -907,7 +1390,11 @@ export class BridgeGatewayPeer {
     }
     this.#assertOutboundEnvelopeCapabilities(envelope);
     await this.#sendData(binding, envelope as unknown as RbpEnvelope);
-    if (binding !== this.#binding) return;
+    if (
+      binding !== this.#binding ||
+      this.#sessions.get(rsid)?.phase === "unregistered" ||
+      this.#simulator.getSession(rsid) === null
+    ) return;
     this.#sentSeq.set(rsid, envelope.seq);
   }
 
@@ -1051,13 +1538,19 @@ export class BridgeGatewayPeer {
         }
         this.#applyHelloAckLimits(next.helloAck, next.binding.kind);
         this.#binding = next.binding;
+        this.#bindingGeneration += 1;
+        this.#recoverInboundReplies();
         this.#recoverDurableDeliveries();
         this.#heartbeatIntervalMs = next.helloAck.payload.heartbeat_interval_ms;
         const now = this.#nowMs();
         this.#connectedAtMs = now;
         this.#lastHeartbeatSentAtMs = now;
         this.#lastHeartbeatAckAtMs = now;
+        this.#activeHeartbeatFlightToken = null;
+        this.#activeHeartbeatFlightBinding = null;
+        this.#activeHeartbeatFlightGeneration = null;
         this.#heartbeatAckDeadlineAtMs = null;
+        this.#sessionSyncDeadlineAtMs = null;
         this.#heartbeatTimedOut = false;
         this.#retrySuppressedFault = null;
         this.#sentSeq.clear();
@@ -1097,6 +1590,12 @@ export class BridgeGatewayPeer {
 
   #prepareSessionsForReconnect(): void {
     this.#pendingResumes.clear();
+    this.#activeHeartbeatFlightToken = null;
+    this.#activeHeartbeatFlightBinding = null;
+    this.#activeHeartbeatFlightGeneration = null;
+    this.#unregisterSentOnBinding.clear();
+    this.#unregisterHeartbeatConfirmations.clear();
+    this.#unregisterHeartbeatExpectedAckRsids = null;
     for (const [rsid, state] of this.#sessions) {
       if (state.phase === "registered") {
         this.#sessions.set(rsid, transitionOrThrow(state, { type: "connection_lost" }));
@@ -1108,6 +1607,12 @@ export class BridgeGatewayPeer {
         });
       }
     }
+    if (
+      this.#simulator.registeredSessions().length > 0 ||
+      this.#simulator.journal.listPendingSessionUnregisters().length > 0
+    ) {
+      this.#armSessionSyncDeadline();
+    }
   }
 
   async #resendPendingRegistrations(): Promise<void> {
@@ -1116,6 +1621,7 @@ export class BridgeGatewayPeer {
     this.#pendingRegistrations.clear();
     const resends = pending.map((entry) => ({ id: this.#id(), entry }));
     for (const resend of resends) this.#pendingRegistrations.set(resend.id, resend.entry);
+    this.#armSessionSyncDeadline();
     for (const resend of resends) {
       await this.#sendControl({
         v: 1,

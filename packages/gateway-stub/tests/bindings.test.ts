@@ -906,6 +906,82 @@ describe("opening and proxy fault controls", () => {
     }
   });
 
+  it("serializes back-to-back WSS unregister and heartbeat processing in receive order", async () => {
+    const handle = await start("ordered-wss-unregister-heartbeat");
+    const socket = await openRawWebSocket(handle);
+    let releaseUnregister!: () => void;
+    let markUnregisterEntered!: () => void;
+    const unregisterGate = new Promise<void>((resolve) => { releaseUnregister = resolve; });
+    const unregisterEntered = new Promise<void>((resolve) => { markUnregisterEntered = resolve; });
+    const originalReceive = handle.core.receiveFrame.bind(handle.core);
+    const receive = vi.spyOn(handle.core, "receiveFrame").mockImplementation(
+      async (connectionId, frame) => {
+        const envelope = JSON.parse(Buffer.from(frame).toString("utf8")) as RbpEnvelope;
+        if (envelope.type === "session_unregister") {
+          markUnregisterEntered();
+          await unregisterGate;
+        }
+        return await originalReceive(connectionId, frame);
+      },
+    );
+    try {
+      socket.send(JSON.stringify(hello(225)));
+      await nextRawMessage(socket);
+      socket.send(JSON.stringify(controlEnvelope("session_register", sessionRegister(), 226)));
+      const registered = await nextRawMessage(socket) as Extract<RbpEnvelope, { type: "session_registered" }>;
+      const rsid = registered.payload.rsid;
+
+      socket.send(JSON.stringify(controlEnvelope("session_unregister", {
+        rsid,
+        reason: "operator_requested",
+      }, 227)));
+      socket.send(JSON.stringify(controlEnvelope("heartbeat", {
+        bridge_version: "0.1.0-test",
+        acks: [],
+        sessions: [],
+      }, 228)));
+      await unregisterEntered;
+      const heartbeatAck = nextRawMessage(socket);
+      releaseUnregister();
+
+      expect(await heartbeatAck).toMatchObject({
+        type: "heartbeat_ack",
+        payload: { acks: [] },
+      });
+      expect(handle.core.snapshot().sessions[rsid]).toMatchObject({
+        revoked: true,
+        lifecycle: { phase: "unregistered", unregisterReason: "operator_requested" },
+      });
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    } finally {
+      receive.mockRestore();
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
+  });
+
+  it("contains an oversized WSS frame to one connection without crashing the Gateway", async () => {
+    const handle = await start("oversized-wss-frame");
+    const socket = await openRawWebSocket(handle);
+    try {
+      socket.send(JSON.stringify(hello(229)));
+      await nextRawMessage(socket);
+      const closed = nextCloseCode(socket);
+      socket.send("x".repeat(48 * 1024 * 1024 + 1));
+      expect([1009, 4400]).toContain(await within(closed, "oversized WSS close", 5_000));
+      await waitFor(() => handle.core.snapshot().runtime.openConnections === 0, 5_000);
+
+      const survivor = await openRawWebSocket(handle);
+      try {
+        survivor.send(JSON.stringify(hello(230)));
+        expect(await nextRawMessage(survivor)).toMatchObject({ type: "hello_ack" });
+      } finally {
+        survivor.terminate();
+      }
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
+  }, 15_000);
+
   it("destroys HTTP acceptance and its SSE connection on a generic durable-processing failure", async () => {
     const handle = await start("generic-http-processing-failure");
     const peer = await ssePeer(handle);

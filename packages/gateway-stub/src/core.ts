@@ -247,7 +247,10 @@ export class GatewayStubCore {
   }
 
   static async create(options: GatewayStubCoreOptions): Promise<GatewayStubCore> {
-    const store = await DurableGatewayStateStore.open(options.statePath);
+    const store = await DurableGatewayStateStore.open(
+      options.statePath,
+      options.stateStoreTestHooks,
+    );
     const core = new GatewayStubCore(options, store);
     await core.recoverAfterRestart();
     return core;
@@ -1230,10 +1233,36 @@ export class GatewayStubCore {
 
   private async handleSessionUnregister(connectionId: string, payload: SessionUnregister): Promise<void> {
     const { rsid } = payload;
-    this.assertBoundSession(connectionId, rsid);
+    const runtime = this.requireActiveConnection(connectionId);
     const now = this.clock.nowMs();
     await this.store.update((draft) => {
-      const session = draft.sessions[rsid]!;
+      const session = draft.sessions[rsid];
+      if (
+        session === undefined ||
+        session.deviceId !== runtime.transport.device.deviceId ||
+        session.tenantId !== runtime.transport.device.tenantId ||
+        session.userId !== runtime.transport.device.userId ||
+        session.seatId !== runtime.transport.device.seatId
+      ) {
+        throw new GatewayStubFault(
+          "unknown or cross-owner session unregister",
+          "auth",
+          4403,
+        );
+      }
+      if (session.revoked) {
+        if (
+          session.lifecycle.phase !== "unregistered" ||
+          session.lifecycle.unregisterReason !== payload.reason
+        ) {
+          throw new GatewayStubFault(
+            "session unregister replay does not match the persisted revocation",
+            "auth",
+            4403,
+          );
+        }
+        return;
+      }
       session.revoked = true;
       session.liveness = "disconnected";
       session.disconnectedAtMs = now;

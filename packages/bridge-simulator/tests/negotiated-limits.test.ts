@@ -56,14 +56,15 @@ describe("negotiated Bridge limits", () => {
       faultClass: "oversize",
       addinContacted: true,
     });
-    await expect(simulator.invoke(structured)).resolves.toMatchObject({
+    const structuredRedelivery = { ...structured, id: uuid(), seq: 3 };
+    await expect(simulator.invoke(structuredRedelivery)).resolves.toMatchObject({
       kind: "error",
       faultClass: "oversize",
       replayed: true,
       addinContacted: false,
     });
 
-    const artifact = readInvoke({ rsid, seq: 3, method: "fixture_artifact_limit" });
+    const artifact = readInvoke({ rsid, seq: 4, method: "fixture_artifact_limit" });
     await expect(simulator.invoke(artifact)).resolves.toMatchObject({
       kind: "error",
       faultClass: "oversize",
@@ -73,7 +74,7 @@ describe("negotiated Bridge limits", () => {
     expect(existsSync(join(spool, artifact.payload.invocation_id))).toBe(false);
 
     simulator.applyNegotiatedLimits({ maxParamsBytes: 16, maxResultBytes: 128, maxPartialBytes: 8 });
-    const chunked = readInvoke({ rsid, seq: 4, method: "fixture_chunk_limit" });
+    const chunked = readInvoke({ rsid, seq: 5, method: "fixture_chunk_limit" });
     const outcome = await simulator.invoke(chunked);
     expect(outcome).toMatchObject({ kind: "result", status: "completed" });
     if (outcome.kind !== "result") throw new Error("chunk test did not complete");
@@ -81,7 +82,7 @@ describe("negotiated Bridge limits", () => {
     expect(outcome.partials.every((partial) => Buffer.from(partial.data, "base64").byteLength <= 8)).toBe(true);
     expect(readdirSync(spool).every((name) => name !== artifact.payload.invocation_id)).toBe(true);
 
-    const originalBatch = atomicBatch(rsid, 5);
+    const originalBatch = atomicBatch(rsid, 6);
     const oversizedStepParams = { blob: "x".repeat(20) };
     const firstStep = originalBatch.payload.steps[0];
     const steps: InvokeBatchEnvelope["payload"]["steps"] = [{

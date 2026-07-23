@@ -99,13 +99,16 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     const first = await simulator.invoke(envelope);
     expect(first).toMatchObject({ kind: "result", status: "completed", replayed: false, addinContacted: true });
     expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
-    const replay = await simulator.invoke(envelope);
+    const replayEnvelope = { ...envelope, id: uuid(), seq: 2 };
+    const replay = await simulator.invoke(replayEnvelope);
     expect(replay).toMatchObject({ kind: "result", status: "completed", replayed: true, addinContacted: false });
     expect(fixture.getExecutionCount(envelope.payload.invocation_id)).toBe(1);
     expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
     const heartbeat = await simulator.heartbeat();
     expect(heartbeat).toMatchObject({
       bridge_version: "bridge-simulator-0.0.0",
+      // Direct simulator use has not yet bound seq=2's reply to a durable
+      // delivery plan, so the reverse cumulative ACK stops at seq=1.
       acks: [{ rsid, seq: 1 }],
       sessions: [{ rsid, revit_status: { addin_reachable: true, active_task: null } }],
     });
@@ -186,7 +189,8 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
       expect(fixture.getExecutionCount(step.invocation_id)).toBe(1);
       expect(journal.getInvocation(rsid, step.invocation_id)?.state).toBe("completed");
     }
-    const replay = await simulator.invokeBatch(envelope);
+    const replayEnvelope = { ...envelope, id: uuid(), seq: 2 };
+    const replay = await simulator.invokeBatch(replayEnvelope);
     expect(replay).toMatchObject({ kind: "batch", status: "completed", replayed: true });
     expect(fixture.getMethodExecutionCount("execute_batch")).toBe(1);
     simulator.close();
@@ -236,7 +240,8 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     first.journal.close();
 
     const second = await simulatorForFixture({ fixture, root: root.path, rsid, journalPath, spoolName: "spool-b" });
-    const redelivery = await second.simulator.invoke(envelope);
+    const redeliveryEnvelope = { ...envelope, id: uuid(), seq: 2 };
+    const redelivery = await second.simulator.invoke(redeliveryEnvelope);
     expect(redelivery).toMatchObject({
       kind: "error",
       faultClass: "journal_indeterminate",
@@ -244,7 +249,7 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
       verificationRequired: true,
       addinContacted: false,
     });
-    const fresh = await second.simulator.invoke(mutationInvoke({ rsid, seq: 2, documentId: "doc-01" }));
+    const fresh = await second.simulator.invoke(mutationInvoke({ rsid, seq: 3, documentId: "doc-01" }));
     expect(fresh).toMatchObject({
       kind: "error",
       faultClass: "journal_indeterminate",
@@ -348,7 +353,8 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     });
     expect(JSON.stringify(record)).not.toContain(secretPath);
 
-    const replay = await simulator.invoke(envelope);
+    const replayEnvelope = { ...envelope, id: uuid(), seq: 2 };
+    const replay = await simulator.invoke(replayEnvelope);
     expect(replay).toMatchObject({
       kind: "result",
       status: "completed",
