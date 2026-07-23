@@ -1244,17 +1244,193 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C29",
     controls: [
       ...sessionSetup("O1-C29", ["batch_atomic"]),
-      bridge("o1-c29.non-atomic", "invoke_local", args({ envelope: "{{vectors.c29.mixed_non_atomic}}" })),
-      bridge("o1-c29.atomic-terminal", "invoke_local", args({ envelope: "{{vectors.c29.atomic_terminal}}" })),
-      bridge("o1-c29.atomic-replay", "invoke_local", args({ envelope: "{{vectors.c29.atomic_terminal}}" })),
-      harness("o1-c29.crash-during-atomic", "restart_component", args({
-        componentId: "bridge_simulator",
-        preserveState: true,
-        crashWindow: "after_dispatch_before_terminal",
+      fixture("o1-c29.mixed-fault", "plan_fault", args({
+        requestId: "{{vectors.c29.mixed_write_invocation_id}}",
+        fault: {
+          injectedOutcome: {
+            state: "failed",
+            error: {
+              code: "revit_api",
+              message: "C29 known non-atomic mutation failure",
+            },
+          },
+        },
       })),
-      bridge("o1-c29.atomic-recover", "invoke_local", args({ envelope: "{{vectors.c29.atomic_indeterminate}}" })),
+      bridge("o1-c29.mixed-crash-plan", "inject_crash", args({
+        point: "after_non_atomic_step_terminal_before_batch_terminal",
+      })),
+      gateway("o1-c29.mixed-initial", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.mixed_non_atomic.payload}}",
+        },
+      }), "stimulus", 60_000),
+      harness("o1-c29.await-mixed-crash", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/crash/crashed",
+        operator: "equals",
+        expected: true,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c29.mixed-crash-evidence", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c29.mixed-restart", "restart_simulator"),
+      bridge("o1-c29.mixed-reopen", "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: "{{gateway.ready.ws_url}}",
+          tlsTrust: {
+            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
+            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
+            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          },
+          hello: hello("O1-C29", "mixed-restart"),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{gateway.ready.http_connection_url}}",
+          hello: hello("O1-C29", "mixed-restart"),
+        },
+      )),
+      bridge("o1-c29.mixed-run-loop", "start_run_loop"),
+      harness("o1-c29.await-mixed-resume", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      harness("o1-c29.await-mixed-terminal", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c29.mixed_non_atomic.payload.batch_id}}",
+        operator: "exists",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      gateway("o1-c29.mixed-redelivery", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.mixed_non_atomic.payload}}",
+        },
+      })),
+      harness("o1-c29.await-mixed-redelivery", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/inFlight",
+        operator: "equals",
+        expected: null,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c29.mixed-redelivery-evidence", "snapshot_evidence", args(), "observation"),
+      fixture("o1-c29.mixed-execution-evidence", "snapshot_evidence", args(), "observation"),
+      gateway("o1-c29.atomic-terminal", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.atomic_terminal.payload}}",
+        },
+      })),
+      harness("o1-c29.await-atomic-terminal", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/inFlight",
+        operator: "equals",
+        expected: null,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      gateway("o1-c29.atomic-replay", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.atomic_terminal.payload}}",
+        },
+      })),
+      harness("o1-c29.await-atomic-replay", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/inFlight",
+        operator: "equals",
+        expected: null,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      fixture("o1-c29.atomic-replay-execution-evidence", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c29.atomic-crash-plan", "inject_crash", args({
+        point: "after_executing_before_addin_write",
+      })),
+      gateway("o1-c29.atomic-indeterminate-initial", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.atomic_indeterminate.payload}}",
+        },
+      }), "stimulus", 60_000),
+      harness("o1-c29.await-atomic-crash", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/crash/crashed",
+        operator: "equals",
+        expected: true,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c29.atomic-crash-evidence", "snapshot_evidence", args(), "observation"),
+      fixture("o1-c29.atomic-pre-restart-execution-evidence", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c29.atomic-restart", "restart_simulator"),
+      bridge("o1-c29.atomic-reopen", "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: "{{gateway.ready.ws_url}}",
+          tlsTrust: {
+            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
+            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
+            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          },
+          hello: hello("O1-C29", "atomic-restart"),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{gateway.ready.http_connection_url}}",
+          hello: hello("O1-C29", "atomic-restart"),
+        },
+      )),
+      bridge("o1-c29.atomic-run-loop", "start_run_loop"),
+      harness("o1-c29.await-atomic-resume", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      harness("o1-c29.await-atomic-indeterminate", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c29.atomic_indeterminate.payload.batch_id}}",
+        operator: "exists",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      gateway("o1-c29.atomic-indeterminate-redelivery", "dispatch_batch", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c29.atomic_indeterminate.payload}}",
+        },
+      })),
+      harness("o1-c29.await-atomic-indeterminate-redelivery", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/inFlight",
+        operator: "equals",
+        expected: null,
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c29.final-bridge-evidence", "snapshot_evidence", args(), "observation"),
+      gateway("o1-c29.final-gateway-evidence", "snapshot", args(), "observation"),
+      fixture("o1-c29.final-execution-evidence", "snapshot_evidence", args(), "observation"),
     ],
-    requiredHarnessCapabilities: ["batch_crash_window", "fixture_request_execution_count", "gateway_hold_ledger"],
+    requiredHarnessCapabilities: [
+      "batch_crash_window",
+      "fixture_request_execution_count",
+      "gateway_hold_ledger",
+      "journal_snapshot",
+      "reconnect_resume",
+    ],
   },
   {
     caseId: "O1-C30",

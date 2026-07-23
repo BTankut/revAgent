@@ -1233,6 +1233,11 @@ export class BridgeDaemonRuntime {
     try {
       peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
         nowMs: () => this.#clockMs,
+        takeInboundCrashPoint: () => {
+          const point = this.#nextCrashPoint;
+          this.#nextCrashPoint = null;
+          return point;
+        },
         reconnect: async ({ attemptIndex, delayMs }) => {
           const evidence = this.#reconnectConformance === null
             ? null
@@ -1307,6 +1312,7 @@ export class BridgeDaemonRuntime {
     this.#runLoopAbort = abort;
     this.#runLoopError = null;
     this.#runLoop = peer.run(abort.signal).catch((error: unknown) => {
+      if (error instanceof InjectedBridgeCrash) this.#crashedAt = error.point;
       this.#runLoopError = error instanceof Error ? error.message.slice(0, 600) : String(error).slice(0, 600);
     });
     return { started: true, runLoopActive: peer.snapshot(this.#clockMs).runLoopActive };

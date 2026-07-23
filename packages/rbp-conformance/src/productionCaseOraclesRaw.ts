@@ -7,6 +7,7 @@ import { canonicalManifest } from "./manifest.js";
 import {
   C27_RECONNECT_JITTER_UNITS,
   RAW_PRODUCTION_CASES,
+  rawProductionCaseVariables,
   rawProductionFrameFact,
 } from "./productionCaseSeedsRaw.js";
 import type { ProcessObservationRecord } from "./types.js";
@@ -554,6 +555,701 @@ function exactSteadyObservation(
     value.reset === input.reset;
 }
 
+type C29VectorName = "mixed_non_atomic" | "atomic_terminal" | "atomic_indeterminate";
+
+interface C29DispatchPair {
+  readonly initial: ObjectValue;
+  readonly redelivery: ObjectValue;
+  readonly payload: ObjectValue;
+  readonly batchId: string;
+  readonly rsid: string;
+  readonly stepIds: readonly string[];
+}
+
+interface C29TerminalEvidence {
+  readonly gateway: ObjectValue;
+  readonly session: ObjectValue;
+  readonly terminal: ObjectValue;
+  readonly envelope: ObjectValue;
+  readonly payload: ObjectValue;
+}
+
+const C29_VARIABLES = rawProductionCaseVariables("O1-C29");
+
+function exactKeys(value: ObjectValue, expected: readonly string[]): boolean {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length &&
+    actual.every((key, index) => key === sortedExpected[index]);
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function c29ExpectedPayload(name: C29VectorName): ObjectValue | null {
+  const vectors = objectValue(C29_VARIABLES.vectors);
+  const c29 = objectValue(vectors?.c29);
+  const envelope = objectValue(c29?.[name]);
+  return objectValue(envelope?.payload);
+}
+
+function c29SnapshotAt(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  kind: Extract<
+    ObservationKind,
+    "gateway_snapshot" | "bridge_snapshot" | "fixture_snapshot" | "fixture_execution_count"
+  >,
+  stepId: string,
+): ObjectValue | null {
+  const matches = snapshots(context, kind).filter((snapshot) =>
+    snapshot.stepId === stepId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function c29DispatchPair(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  initialStepId: string,
+  redeliveryStepId: string,
+  vectorName: C29VectorName,
+): C29DispatchPair | null {
+  const initial = controlResult(context, initialStepId);
+  const redelivery = controlResult(context, redeliveryStepId);
+  const expected = c29ExpectedPayload(vectorName);
+  const initialPayload = objectValue(initial?.payload);
+  const redeliveryPayload = objectValue(redelivery?.payload);
+  const initialSeq = numberValue(initial?.seq);
+  const redeliverySeq = numberValue(redelivery?.seq);
+  const initialAck = numberValue(initial?.ack);
+  const redeliveryAck = numberValue(redelivery?.ack);
+  const initialId = stringValue(initial?.id);
+  const redeliveryId = stringValue(redelivery?.id);
+  const rsid = stringValue(initial?.rsid);
+  if (
+    initial === null ||
+    redelivery === null ||
+    expected === null ||
+    initialPayload === null ||
+    redeliveryPayload === null ||
+    initial.v !== 1 ||
+    redelivery.v !== 1 ||
+    initial.type !== "invoke_batch" ||
+    redelivery.type !== "invoke_batch" ||
+    initialSeq === null ||
+    redeliverySeq === null ||
+    initialAck === null ||
+    redeliveryAck === null ||
+    !Number.isSafeInteger(initialSeq) ||
+    !Number.isSafeInteger(redeliverySeq) ||
+    !Number.isSafeInteger(initialAck) ||
+    !Number.isSafeInteger(redeliveryAck) ||
+    redeliverySeq !== initialSeq + 1 ||
+    initialId === null ||
+    redeliveryId === null ||
+    initialId === redeliveryId ||
+    rsid === null ||
+    rsid.length < 1 ||
+    redelivery.rsid !== rsid ||
+    !sameJson(initialPayload, expected) ||
+    !sameJson(redeliveryPayload, expected)
+  ) {
+    return null;
+  }
+  const batchId = stringValue(initialPayload.batch_id);
+  const digest = stringValue(initialPayload.batch_digest);
+  const rawSteps = arrayValue(initialPayload.steps);
+  const steps = rawSteps
+    .map((step) => objectValue(step))
+    .filter((step): step is ObjectValue => step !== null);
+  const stepIds = steps
+    .map((step) => stringValue(step.invocation_id))
+    .filter((stepId): stepId is string => stepId !== null);
+  if (
+    batchId === null ||
+    digest === null ||
+    !SHA256_PATTERN.test(digest) ||
+    steps.length !== rawSteps.length ||
+    stepIds.length !== steps.length ||
+    new Set(stepIds).size !== stepIds.length
+  ) {
+    return null;
+  }
+  return {
+    initial,
+    redelivery,
+    payload: initialPayload,
+    batchId,
+    rsid,
+    stepIds,
+  };
+}
+
+function c29TerminalEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  dispatch: C29DispatchPair,
+): C29TerminalEvidence | null {
+  const gateway = c29SnapshotAt(
+    context,
+    "gateway_snapshot",
+    "o1-c29.final-gateway-evidence",
+  );
+  const sessions = objectValue(gateway?.sessions);
+  if (
+    gateway === null ||
+    sessions === null ||
+    Object.keys(sessions).length !== 1
+  ) {
+    return null;
+  }
+  const session = objectValue(sessions[dispatch.rsid]);
+  const terminals = objectValue(session?.terminalOutcomes);
+  const terminal = objectValue(terminals?.[dispatch.batchId]);
+  const envelope = objectValue(terminal?.envelope);
+  const payload = objectValue(envelope?.payload);
+  const envelopeSeq = numberValue(envelope?.seq);
+  const envelopeAck = numberValue(envelope?.ack);
+  if (
+    session === null ||
+    terminals === null ||
+    terminal === null ||
+    envelope === null ||
+    payload === null ||
+    terminal.correlationId !== dispatch.batchId ||
+    terminal.classification !== "result" ||
+    envelope.v !== 1 ||
+    envelope.type !== "result" ||
+    envelope.rsid !== dispatch.rsid ||
+    envelopeSeq === null ||
+    !Number.isSafeInteger(envelopeSeq) ||
+    envelopeAck === null ||
+    envelopeAck !== dispatch.redelivery.seq ||
+    payload.batch_id !== dispatch.batchId
+  ) {
+    return null;
+  }
+  return { gateway, session, terminal, envelope, payload };
+}
+
+function c29FixtureCount(snapshot: ObjectValue | null, requestId: string): number {
+  if (snapshot === null) return -1;
+  const rows = arrayValue(snapshot.executionCounts)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null)
+    .filter((entry) => entry.requestId === requestId);
+  if (rows.length === 0) return 0;
+  return rows.length === 1 && Number.isSafeInteger(rows[0]!.count)
+    ? Number(rows[0]!.count)
+    : -1;
+}
+
+function c29BridgeInvocation(snapshot: ObjectValue | null, invocationId: string): ObjectValue | null {
+  if (snapshot === null) return null;
+  const matches = arrayValue(snapshot.invocations)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null)
+    .filter((entry) => entry.invocationId === invocationId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function c29CrashSnapshot(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+  point:
+    | "after_non_atomic_step_terminal_before_batch_terminal"
+    | "after_executing_before_addin_write",
+): ObjectValue | null {
+  const snapshot = c29SnapshotAt(context, "bridge_snapshot", stepId);
+  const crash = objectValue(snapshot?.crash);
+  return snapshot !== null &&
+      snapshot.componentContract === "bridge-simulator-control/v1" &&
+      crash?.crashed === true &&
+      crash.point === point
+    ? snapshot
+    : null;
+}
+
+function c29BatchSteps(payload: ObjectValue): readonly ObjectValue[] | null {
+  const raw = arrayValue(payload.steps);
+  const steps = raw
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  return steps.length === raw.length ? steps : null;
+}
+
+function exactC29MixedNonAtomic(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const dispatch = c29DispatchPair(
+    context,
+    "o1-c29.mixed-initial",
+    "o1-c29.mixed-redelivery",
+    "mixed_non_atomic",
+  );
+  if (dispatch === null || dispatch.stepIds.length !== 3) return false;
+  const terminal = c29TerminalEvidence(context, dispatch);
+  const crash = c29CrashSnapshot(
+    context,
+    "o1-c29.mixed-crash-evidence",
+    "after_non_atomic_step_terminal_before_batch_terminal",
+  );
+  const counts = c29SnapshotAt(
+    context,
+    "fixture_execution_count",
+    "o1-c29.mixed-execution-evidence",
+  );
+  if (terminal === null || crash === null || counts === null) return false;
+  const steps = c29BatchSteps(terminal.payload);
+  if (
+    steps === null ||
+    steps.length !== 3 ||
+    !exactKeys(terminal.payload, [
+      "kind",
+      "batch_id",
+      "atomic",
+      "status",
+      "transaction_state",
+      "failed_step_index",
+      "steps",
+      "replayed",
+    ]) ||
+    terminal.payload.kind !== "batch" ||
+    terminal.payload.atomic !== false ||
+    terminal.payload.status !== "failed" ||
+    terminal.payload.transaction_state !== "not_applicable" ||
+    terminal.payload.failed_step_index !== 1 ||
+    terminal.payload.replayed !== true
+  ) {
+    return false;
+  }
+  const [read, failure, suffix] = steps as [ObjectValue, ObjectValue, ObjectValue];
+  const error = objectValue(failure.error);
+  const result = objectValue(read.result);
+  if (
+    !exactKeys(read, [
+      "index",
+      "invocation_id",
+      "status",
+      "replayed",
+      "result",
+      "result_digest",
+    ]) ||
+    read.index !== 0 ||
+    read.invocation_id !== dispatch.stepIds[0] ||
+    read.status !== "completed" ||
+    read.replayed !== true ||
+    result === null ||
+    !SHA256_PATTERN.test(String(read.result_digest)) ||
+    !exactKeys(failure, ["index", "invocation_id", "status", "replayed", "error"]) ||
+    failure.index !== 1 ||
+    failure.invocation_id !== dispatch.stepIds[1] ||
+    failure.status !== "failed" ||
+    failure.replayed !== true ||
+    error === null ||
+    !exactKeys(error, [
+      "retryable",
+      "fault_class",
+      "message",
+      "outcome",
+      "verification_required",
+      "replayed",
+    ]) ||
+    error.retryable !== false ||
+    error.fault_class !== "revit_api" ||
+    error.message !== "C29 known non-atomic mutation failure" ||
+    error.outcome !== "known" ||
+    error.verification_required !== false ||
+    error.replayed !== true ||
+    !exactKeys(suffix, ["index", "invocation_id", "status", "replayed"]) ||
+    suffix.index !== 2 ||
+    suffix.invocation_id !== dispatch.stepIds[2] ||
+    suffix.status !== "not_started" ||
+    suffix.replayed !== false ||
+    c29FixtureCount(counts, dispatch.stepIds[0]!) !== 1 ||
+    c29FixtureCount(counts, dispatch.stepIds[1]!) !== 1 ||
+    c29FixtureCount(counts, dispatch.stepIds[2]!) !== 0
+  ) {
+    return false;
+  }
+  const crashRead = c29BridgeInvocation(crash, dispatch.stepIds[0]!);
+  const crashFailure = c29BridgeInvocation(crash, dispatch.stepIds[1]!);
+  const crashSuffix = c29BridgeInvocation(crash, dispatch.stepIds[2]!);
+  return crashRead?.state === "completed" &&
+    crashRead.dispatchMayHaveStarted === true &&
+    SHA256_PATTERN.test(String(crashRead.terminalOutcomeDigest)) &&
+    crashFailure?.state === "failed" &&
+    crashFailure.mutating === true &&
+    crashFailure.dispatchMayHaveStarted === true &&
+    crashFailure.verificationHoldId === null &&
+    SHA256_PATTERN.test(String(crashFailure.terminalOutcomeDigest)) &&
+    crashSuffix?.state === "received" &&
+    crashSuffix.dispatchMayHaveStarted === false &&
+    crashSuffix.terminalOutcomeDigest === null &&
+    arrayValue(crash.holds).length === 0;
+}
+
+function exactC29AtomicTerminalReplay(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const dispatch = c29DispatchPair(
+    context,
+    "o1-c29.atomic-terminal",
+    "o1-c29.atomic-replay",
+    "atomic_terminal",
+  );
+  if (dispatch === null || dispatch.stepIds.length !== 2) return false;
+  const terminal = c29TerminalEvidence(context, dispatch);
+  const counts = c29SnapshotAt(
+    context,
+    "fixture_execution_count",
+    "o1-c29.atomic-replay-execution-evidence",
+  );
+  if (terminal === null || counts === null) return false;
+  const steps = c29BatchSteps(terminal.payload);
+  if (
+    steps === null ||
+    steps.length !== 2 ||
+    !exactKeys(terminal.payload, [
+      "kind",
+      "batch_id",
+      "atomic",
+      "status",
+      "transaction_state",
+      "failed_step_index",
+      "steps",
+      "replayed",
+    ]) ||
+    terminal.payload.kind !== "batch" ||
+    terminal.payload.atomic !== true ||
+    terminal.payload.status !== "completed" ||
+    terminal.payload.transaction_state !== "committed" ||
+    terminal.payload.failed_step_index !== null ||
+    terminal.payload.replayed !== true ||
+    c29FixtureCount(counts, dispatch.batchId) !== 1 ||
+    dispatch.stepIds.some((stepId) => c29FixtureCount(counts, stepId) !== 1)
+  ) {
+    return false;
+  }
+  const digests = new Set<string>();
+  for (const [index, step] of steps.entries()) {
+    if (
+      !exactKeys(step, [
+        "index",
+        "invocation_id",
+        "status",
+        "replayed",
+        "result",
+        "result_digest",
+      ]) ||
+      step.index !== index ||
+      step.invocation_id !== dispatch.stepIds[index] ||
+      step.status !== "completed" ||
+      step.replayed !== true ||
+      objectValue(step.result) === null ||
+      !SHA256_PATTERN.test(String(step.result_digest))
+    ) {
+      return false;
+    }
+    digests.add(String(step.result_digest));
+  }
+  return digests.size === 1;
+}
+
+function exactC29AtomicIndeterminateRecovery(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const dispatch = c29DispatchPair(
+    context,
+    "o1-c29.atomic-indeterminate-initial",
+    "o1-c29.atomic-indeterminate-redelivery",
+    "atomic_indeterminate",
+  );
+  if (dispatch === null || dispatch.stepIds.length !== 2) return false;
+  const terminal = c29TerminalEvidence(context, dispatch);
+  const crash = c29CrashSnapshot(
+    context,
+    "o1-c29.atomic-crash-evidence",
+    "after_executing_before_addin_write",
+  );
+  const beforeRestart = c29SnapshotAt(
+    context,
+    "fixture_execution_count",
+    "o1-c29.atomic-pre-restart-execution-evidence",
+  );
+  const afterRedelivery = c29SnapshotAt(
+    context,
+    "fixture_execution_count",
+    "o1-c29.final-execution-evidence",
+  );
+  if (
+    terminal === null ||
+    crash === null ||
+    beforeRestart === null ||
+    afterRedelivery === null
+  ) {
+    return false;
+  }
+  const steps = c29BatchSteps(terminal.payload);
+  if (
+    steps === null ||
+    steps.length !== 2 ||
+    !exactKeys(terminal.payload, [
+      "kind",
+      "batch_id",
+      "atomic",
+      "status",
+      "transaction_state",
+      "failed_step_index",
+      "steps",
+      "replayed",
+    ]) ||
+    terminal.payload.kind !== "batch" ||
+    terminal.payload.atomic !== true ||
+    terminal.payload.status !== "indeterminate" ||
+    terminal.payload.transaction_state !== "indeterminate" ||
+    terminal.payload.failed_step_index !== 0 ||
+    terminal.payload.replayed !== true
+  ) {
+    return false;
+  }
+  const [read, mutation] = steps as [ObjectValue, ObjectValue];
+  const readError = objectValue(read.error);
+  const mutationError = objectValue(mutation.error);
+  if (
+    !exactKeys(read, ["index", "invocation_id", "status", "replayed", "error"]) ||
+    read.index !== 0 ||
+    read.invocation_id !== dispatch.stepIds[0] ||
+    read.status !== "failed" ||
+    read.replayed !== true ||
+    readError === null ||
+    !exactKeys(readError, [
+      "retryable",
+      "fault_class",
+      "message",
+      "outcome",
+      "verification_required",
+      "replayed",
+    ]) ||
+    readError.retryable !== true ||
+    readError.fault_class !== "environment" ||
+    readError.message !== "atomic batch read result is unavailable after interrupted dispatch" ||
+    readError.outcome !== "known" ||
+    readError.verification_required !== false ||
+    readError.replayed !== true ||
+    !exactKeys(mutation, ["index", "invocation_id", "status", "replayed", "error"]) ||
+    mutation.index !== 1 ||
+    mutation.invocation_id !== dispatch.stepIds[1] ||
+    mutation.status !== "indeterminate" ||
+    mutation.replayed !== true ||
+    mutationError === null ||
+    !exactKeys(mutationError, [
+      "retryable",
+      "fault_class",
+      "message",
+      "outcome",
+      "verification_required",
+      "replayed",
+      "verification_hold_id",
+      "mutation_scope",
+    ]) ||
+    mutationError.retryable !== false ||
+    mutationError.fault_class !== "journal_indeterminate" ||
+    mutationError.message !== "invocation outcome is indeterminate after Bridge restart" ||
+    mutationError.outcome !== "indeterminate" ||
+    mutationError.verification_required !== true ||
+    mutationError.replayed !== true ||
+    !/^vh:[0-9a-f]{64}$/u.test(String(mutationError.verification_hold_id)) ||
+    !sameJson(mutationError.mutation_scope, { kind: "session" })
+  ) {
+    return false;
+  }
+  const crashRead = c29BridgeInvocation(crash, dispatch.stepIds[0]!);
+  const crashMutation = c29BridgeInvocation(crash, dispatch.stepIds[1]!);
+  if (
+    crashRead?.state !== "executing" ||
+    crashRead.dispatchMayHaveStarted !== true ||
+    crashRead.terminalOutcomeDigest !== null ||
+    crashMutation?.state !== "executing" ||
+    crashMutation.mutating !== true ||
+    crashMutation.dispatchMayHaveStarted !== true ||
+    crashMutation.terminalOutcomeDigest !== null ||
+    arrayValue(crash.holds).length !== 0
+  ) {
+    return false;
+  }
+  // This is the frozen no-step-retry proof: the one-frame atomic request and
+  // both nested step ids are absent before restart and remain absent after the
+  // fresh-sequence recovery delivery.
+  return [dispatch.batchId, ...dispatch.stepIds].every((requestId) =>
+    c29FixtureCount(beforeRestart, requestId) === 0 &&
+    c29FixtureCount(afterRedelivery, requestId) === 0);
+}
+
+function c29TerminalPayloads(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): readonly ObjectValue[] | null {
+  const specs = [
+    [
+      "o1-c29.mixed-initial",
+      "o1-c29.mixed-redelivery",
+      "mixed_non_atomic",
+    ],
+    [
+      "o1-c29.atomic-terminal",
+      "o1-c29.atomic-replay",
+      "atomic_terminal",
+    ],
+    [
+      "o1-c29.atomic-indeterminate-initial",
+      "o1-c29.atomic-indeterminate-redelivery",
+      "atomic_indeterminate",
+    ],
+  ] as const;
+  const payloads: ObjectValue[] = [];
+  for (const [initial, redelivery, vector] of specs) {
+    const dispatch = c29DispatchPair(context, initial, redelivery, vector);
+    if (dispatch === null) return null;
+    const terminal = c29TerminalEvidence(context, dispatch);
+    if (terminal === null) return null;
+    payloads.push(terminal.payload);
+  }
+  return payloads;
+}
+
+function c29NestedErrors(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): readonly ObjectValue[] | null {
+  const payloads = c29TerminalPayloads(context);
+  if (payloads === null) return null;
+  const errors: ObjectValue[] = [];
+  for (const payload of payloads) {
+    const steps = c29BatchSteps(payload);
+    if (steps === null) return null;
+    for (const step of steps) {
+      if (!Object.prototype.hasOwnProperty.call(step, "error")) continue;
+      const error = objectValue(step.error);
+      if (error === null) return null;
+      errors.push(error);
+    }
+  }
+  return errors;
+}
+
+function exactC29NestedOutcomeFields(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const errors = c29NestedErrors(context);
+  if (errors === null || errors.length !== 3) return false;
+  return errors.every((error) => {
+    const indeterminate = error.outcome === "indeterminate";
+    return exactKeys(error, indeterminate
+      ? [
+          "retryable",
+          "fault_class",
+          "message",
+          "outcome",
+          "verification_required",
+          "replayed",
+          "verification_hold_id",
+          "mutation_scope",
+        ]
+      : [
+          "retryable",
+          "fault_class",
+          "message",
+          "outcome",
+          "verification_required",
+          "replayed",
+        ]) &&
+      typeof error.retryable === "boolean" &&
+      typeof error.fault_class === "string" &&
+      (error.outcome === "known" || indeterminate) &&
+      typeof error.message === "string" &&
+      error.message.length >= 1 &&
+      error.message.length <= 240 &&
+      error.replayed === true;
+  });
+}
+
+function exactC29NestedVerificationFields(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const errors = c29NestedErrors(context);
+  if (errors === null || errors.length !== 3) return false;
+  const indeterminate = errors.filter((error) => error.outcome === "indeterminate");
+  const known = errors.filter((error) => error.outcome === "known");
+  return known.length === 2 &&
+    known.every((error) =>
+      error.verification_required === false &&
+      !Object.prototype.hasOwnProperty.call(error, "verification_hold_id") &&
+      !Object.prototype.hasOwnProperty.call(error, "mutation_scope")) &&
+    indeterminate.length === 1 &&
+    indeterminate[0]!.verification_required === true &&
+    /^vh:[0-9a-f]{64}$/u.test(String(indeterminate[0]!.verification_hold_id)) &&
+    sameJson(indeterminate[0]!.mutation_scope, { kind: "session" });
+}
+
+function exactC29AffectedScopeHolds(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const dispatch = c29DispatchPair(
+    context,
+    "o1-c29.atomic-indeterminate-initial",
+    "o1-c29.atomic-indeterminate-redelivery",
+    "atomic_indeterminate",
+  );
+  if (dispatch === null || dispatch.stepIds.length !== 2) return false;
+  const terminal = c29TerminalEvidence(context, dispatch);
+  const bridge = c29SnapshotAt(
+    context,
+    "bridge_snapshot",
+    "o1-c29.final-bridge-evidence",
+  );
+  if (terminal === null || bridge === null) return false;
+  const terminalSteps = c29BatchSteps(terminal.payload);
+  const mutationError = objectValue(terminalSteps?.[1]?.error);
+  const holdId = stringValue(mutationError?.verification_hold_id);
+  const origin = `${dispatch.rsid}/${dispatch.stepIds[1]}`;
+  const gatewayHoldsRoot = objectValue(terminal.gateway.mutationHolds);
+  const gatewayHolds = arrayValue(gatewayHoldsRoot?.holds)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  const bridgeHolds = arrayValue(bridge.holds)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  if (
+    terminalSteps === null ||
+    mutationError === null ||
+    holdId === null ||
+    gatewayHolds.length !== 1 ||
+    bridgeHolds.length !== 1
+  ) {
+    return false;
+  }
+  const gatewayHold = gatewayHolds[0]!;
+  const bridgeHold = bridgeHolds[0]!;
+  const bridgeInvocation = c29BridgeInvocation(bridge, dispatch.stepIds[1]!);
+  return gatewayHold.rsid === dispatch.rsid &&
+    gatewayHold.holdId === holdId &&
+    gatewayHold.scopeKey === "{\"kind\":\"session\"}" &&
+    sameJson(gatewayHold.mutationScope, { kind: "session" }) &&
+    sameJson(gatewayHold.originIdempotencyKeys, [origin]) &&
+    gatewayHold.state === "active" &&
+    gatewayHold.selectedEvidence === null &&
+    gatewayHold.resolution === null &&
+    gatewayHold.clearedBy === null &&
+    bridgeHold.rsid === dispatch.rsid &&
+    bridgeHold.holdId === holdId &&
+    bridgeHold.scopeKey === "{\"kind\":\"session\"}" &&
+    sameJson(bridgeHold.originIdempotencyKeys, [origin]) &&
+    bridgeHold.state === "active" &&
+    sameJson(bridgeHold.evidenceDigests, []) &&
+    bridgeHold.clearedBy === null &&
+    bridgeInvocation?.state === "indeterminate" &&
+    bridgeInvocation.mutating === true &&
+    bridgeInvocation.verificationHoldId === holdId &&
+    sameJson(mutationError.mutation_scope, { kind: "session" });
+}
+
 const entries: Array<readonly [string, CanonicalAssertionOracle]> = [];
 
 function define(assertionId: string, oracle: CanonicalAssertionOracle): void {
@@ -738,50 +1434,27 @@ define(
 
 define(
   "O1-C29-MIXED-NONATOMIC-REDELIVERY",
-  semanticEvent(["bridge_snapshot", "wire_event"], (candidate) =>
-    candidate.atomic === false &&
-    candidate.transaction_state === "not_applicable" &&
-    arrayValue(candidate.steps).some((step) => objectValue(step)?.replayed === true) &&
-    arrayValue(candidate.steps).some((step) =>
-      ["pending", "not_started", "indeterminate"].includes(String(objectValue(step)?.status)))),
+  exactC29MixedNonAtomic,
 );
 define(
   "O1-C29-ATOMIC-TERMINAL-REPLAY",
-  safe((context) =>
-    semanticControl(context, "o1-c29.atomic-replay", (result) =>
-      result.atomic === true && result.replayed === true && result.transaction_state === "committed") &&
-    snapshotHas(context, "fixture_execution_count", (candidate) =>
-      Object.entries(candidate).some(([key, value]) => /atomic-terminal/i.test(key) && value === 1))),
+  exactC29AtomicTerminalReplay,
 );
 define(
   "O1-C29-ATOMIC-INDETERMINATE-RECOVERY",
-  semanticEvent(["bridge_snapshot", "gateway_snapshot", "wire_event"], (candidate) =>
-    candidate.atomic === true &&
-    candidate.status === "indeterminate" &&
-    candidate.transaction_state === "indeterminate" &&
-    arrayValue(candidate.steps).every((step) => objectValue(step)?.status === "indeterminate")),
+  exactC29AtomicIndeterminateRecovery,
 );
 define(
   "O1-C29-NESTED-OUTCOME-FIELDS",
-  semanticEvent(["bridge_snapshot", "wire_event"], (candidate) =>
-    typeof candidate.fault_class === "string" &&
-    (candidate.outcome === "known" || candidate.outcome === "indeterminate") &&
-    typeof candidate.retryable === "boolean"),
+  exactC29NestedOutcomeFields,
 );
 define(
   "O1-C29-NESTED-VERIFICATION-FIELDS",
-  semanticEvent(["bridge_snapshot", "wire_event"], (candidate) =>
-    candidate.outcome === "indeterminate" &&
-    candidate.verification_required === true &&
-    typeof candidate.verification_hold_id === "string" &&
-    objectValue(candidate.mutation_scope) !== null),
+  exactC29NestedVerificationFields,
 );
 define(
   "O1-C29-AFFECTED-SCOPE-HOLDS",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    typeof (candidate.holdId ?? candidate.hold_id) === "string" &&
-    arrayValue(candidate.originIdempotencyKeys ?? candidate.origin_invocation_ids).length > 0 &&
-    typeof (candidate.scopeKey ?? objectValue(candidate.mutationScope)?.kind) === "string"),
+  exactC29AffectedScopeHolds,
 );
 
 for (const [suffix, assertion] of [

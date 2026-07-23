@@ -422,19 +422,49 @@ function c28Vectors(): Record<string, JsonValue> {
 }
 
 function c29Vectors(): Record<string, JsonValue> {
+  const c29ReadStep = (key: string): BatchStepSeed => {
+    const params = { vector: key };
+    return {
+      invocation_id: invocationId(key),
+      method: "get_ui_state",
+      params,
+      params_digest: sha256Json(params),
+      mutating: false,
+      mutation_scope: null,
+      policy: policy("read"),
+    };
+  };
+  const c29MutationStep = (key: string, viewId: number): BatchStepSeed => {
+    const params = {
+      viewId,
+      mode: "commit",
+      confirmDelete: true,
+      viewType: "ThreeD",
+    };
+    return {
+      invocation_id: invocationId(key),
+      method: "delete_review_view",
+      params,
+      params_digest: sha256Json(params),
+      mutating: true,
+      mutation_scope: { kind: "session" },
+      policy: policy("write"),
+    };
+  };
   return {
+    mixed_write_invocation_id: invocationId("O1-C29:mixed:write-1"),
     mixed_non_atomic: batchEnvelope("O1-C29:mixed-non-atomic", false, [
-      batchStep("O1-C29:mixed:read-0"),
-      batchStep("O1-C29:mixed:write-1", { vector: "write-1" }, true),
-      batchStep("O1-C29:mixed:read-2"),
+      c29ReadStep("O1-C29:mixed:read-0"),
+      c29MutationStep("O1-C29:mixed:write-1", 29_001),
+      c29ReadStep("O1-C29:mixed:read-2"),
     ]),
     atomic_terminal: batchEnvelope("O1-C29:atomic-terminal", true, [
-      batchStep("O1-C29:atomic-terminal:read"),
-      batchStep("O1-C29:atomic-terminal:write", { vector: "terminal-write" }, true),
+      c29ReadStep("O1-C29:atomic-terminal:read"),
+      c29MutationStep("O1-C29:atomic-terminal:write", 29_002),
     ]),
     atomic_indeterminate: batchEnvelope("O1-C29:atomic-indeterminate", true, [
-      batchStep("O1-C29:atomic-indeterminate:read"),
-      batchStep("O1-C29:atomic-indeterminate:write", { vector: "indeterminate-write" }, true),
+      c29ReadStep("O1-C29:atomic-indeterminate:read"),
+      c29MutationStep("O1-C29:atomic-indeterminate:write", 29_003),
     ]),
   };
 }
@@ -845,6 +875,14 @@ function idsForPrograms(): Record<string, JsonValue> {
       "hello-other-binding": { envelopeId: messageId(`${caseId}:hello-other-binding`) },
       "hello-proxy-sse": { envelopeId: messageId(`${caseId}:hello-proxy-sse`) },
     };
+    if (caseId === "O1-C29") {
+      caseIds["hello-mixed-restart"] = {
+        envelopeId: messageId(`${caseId}:hello-mixed-restart`),
+      };
+      caseIds["hello-atomic-restart"] = {
+        envelopeId: messageId(`${caseId}:hello-atomic-restart`),
+      };
+    }
     for (const suffix of [
       "raw_path",
       "local_path",

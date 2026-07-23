@@ -2240,8 +2240,10 @@ export class BridgeSimulator {
         }
         crashAfterDurableStep =
           options.crashAt === "after_non_atomic_step_terminal_before_batch_terminal" &&
-          outcome.kind === "error" &&
-          outcome.effectState !== undefined;
+          (
+            outcome.kind === "error" ||
+            (outcome.kind === "result" && outcome.status !== "completed")
+          );
         if (outcome.kind === "error" || (outcome.kind === "result" && outcome.status !== "completed")) stop = true;
       } catch (error) {
         const currentAfterError = this.#journal.getInvocation(envelope.rsid, step.invocation_id);

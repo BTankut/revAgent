@@ -31,6 +31,7 @@ import type { DurableResultCarrier } from "./artifacts.js";
 import type {
   BridgeSimulator,
   BridgeBatchOutcome,
+  BridgeCrashPoint,
   BridgeInvocationOutcome,
 } from "./bridgeSimulator.js";
 import type { ProbedAddinSession } from "./loopback.js";
@@ -87,6 +88,11 @@ export interface BridgeGatewayPeerOptions {
   }) => Promise<{ readonly binding: GatewayBinding; readonly helloAck: HelloAckEnvelope }>;
   readonly reconnectJitter?: () => number;
   readonly sleep?: (delayMs: number) => Promise<void>;
+  /**
+   * Conformance-only one-shot crash selector. Production callers omit it; the
+   * daemon control surface uses it to exercise the real inbound Gateway path.
+   */
+  readonly takeInboundCrashPoint?: () => BridgeCrashPoint | null;
   /** Unit-fixture escape hatch only. Production bindings must prove authority with resume_ack. */
   readonly unsafeAssumeCurrentBindingForTests?: boolean;
 }
@@ -497,6 +503,7 @@ export class BridgeGatewayPeer {
   readonly #reconnect: BridgeGatewayPeerOptions["reconnect"];
   readonly #reconnectJitter: () => number;
   readonly #sleep: (delayMs: number) => Promise<void>;
+  readonly #takeInboundCrashPoint: BridgeGatewayPeerOptions["takeInboundCrashPoint"];
   readonly #sessions = new Map<string, SessionLifecycleState>();
   readonly #pendingRegistrations = new Map<string, PendingRegistration>();
   readonly #pendingResumes = new Set<string>();
@@ -558,6 +565,7 @@ export class BridgeGatewayPeer {
     this.#sleep = options.sleep ?? (async (delayMs) => await new Promise<void>((resolve) => {
       setTimeout(resolve, delayMs);
     }));
+    this.#takeInboundCrashPoint = options.takeInboundCrashPoint;
     const now = this.#nowMs();
     this.#connectedAtMs = now;
     this.#lastHeartbeatSentAtMs = now;
@@ -1258,7 +1266,11 @@ export class BridgeGatewayPeer {
         return;
       }
     }
-    const outcome = await this.#simulator.invoke(envelope);
+    const crashAt = this.#takeInboundCrashPoint?.() ?? null;
+    const outcome = await this.#simulator.invoke(
+      envelope,
+      crashAt === null ? {} : { crashAt },
+    );
     if (
       this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
       this.#simulator.getSession(envelope.rsid) === null
@@ -1300,7 +1312,11 @@ export class BridgeGatewayPeer {
         return;
       }
     }
-    const outcome = await this.#simulator.invokeBatch(envelope);
+    const crashAt = this.#takeInboundCrashPoint?.() ?? null;
+    const outcome = await this.#simulator.invokeBatch(
+      envelope,
+      crashAt === null ? {} : { crashAt },
+    );
     if (
       this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
       this.#simulator.getSession(envelope.rsid) === null

@@ -249,6 +249,43 @@ function logicalRedelivery<T extends InvokeEnvelope | InvokeBatchEnvelope>(
 }
 
 describe("BridgeGatewayPeer executable lifecycle", () => {
+  it("consumes a queued crash only on the real inbound batch dispatch path", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "inbound-crash");
+    const batch = atomicBatch(rsid, 1);
+    let crashSelections = 0;
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("inbound-crash"),
+      {
+        idFactory: uuid,
+        takeInboundCrashPoint: () => {
+          crashSelections += 1;
+          return "after_executing_before_addin_write";
+        },
+      },
+    );
+
+    await expect(peer.handleInbound(batch)).rejects.toMatchObject({
+      point: "after_executing_before_addin_write",
+    });
+    expect(crashSelections).toBe(1);
+    expect(journal.getBatchCoordination(batch.payload.batch_id)).toMatchObject({
+      state: "dispatched",
+    });
+    expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(0);
+    expect(binding.sent).toEqual([]);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("requires resume_ack before a preattached durable session can heartbeat or dispatch on a fresh binding", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
