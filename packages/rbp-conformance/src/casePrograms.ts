@@ -68,6 +68,7 @@ export const HARNESS_ACTIONS = [
   "send_coalesced_fixture_frames",
   "restart_component",
   "spawn_fixture_bind_probe",
+  "execute_product_artifact_scenario",
   "capture_resource_sample",
 ] as const;
 
@@ -1218,11 +1219,19 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         "valid_multifile",
         "retransmission",
         "invalid_member",
-      ].map((vector) => bridge(`o1-c40.${vector}`, "invoke_local", args({
-        envelope: envelope("O1-C40", vector, {
-          method: "fixture_multi_file_output",
-          params: `{{vectors.c40.${vector}.params}}`,
-        }),
+      ].map((vector) => harness(`o1-c40.${vector}`, "execute_product_artifact_scenario", args({
+        scenario: vector,
+        envelope: envelope(
+          "O1-C40",
+          vector,
+          {
+            ...(vector === "retransmission"
+              ? { invocation_id: invocationRef("O1-C40", "valid_multifile") }
+              : {}),
+            method: "fixture_multi_file_output",
+            params: `{{vectors.c40.${vector}.params}}`,
+          },
+        ),
       }))),
     ],
     requiredHarnessCapabilities: ["artifact_spool_inspection", "chunk_wire_capture", "reparse_point_fixture", "fixture_request_execution_count"],

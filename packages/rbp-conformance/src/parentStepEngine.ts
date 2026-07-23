@@ -315,6 +315,11 @@ const HARNESS_OBSERVATION_PROVENANCE: Readonly<Record<
       ["addin_loopback_fixture", "process_lifecycle"],
     ],
   },
+  execute_product_artifact_scenario: {
+    pairs: [
+      ["bridge_simulator", "bridge_snapshot"],
+    ],
+  },
   capture_resource_sample: {
     pairs: COMPONENT_IDS.map((component) => [component, "resource_sample"] as const),
   },

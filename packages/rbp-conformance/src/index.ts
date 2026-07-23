@@ -84,8 +84,10 @@ export { createEphemeralLoopbackTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type { EphemeralTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type {
   CaseStackSupervisorOptions,
+  FixtureBindPolicyProbeInput,
   GatewayStartupOverrides,
   ParentCaptureSummary,
+  ProductArtifactScenario,
   RestartCaseStackOptions,
   StartedStackComponent,
 } from "./caseStackSupervisor.js";
@@ -93,6 +95,9 @@ export {
   createProductionCaseDrivers,
   gatewayControlErrorOutcome,
 } from "./productionDrivers.js";
+export {
+  createExternalEvidenceProductionDrivers,
+} from "./productionDriversExternalEvidence.js";
 export {
   executeProductionCaseBinding,
   executeProductionCaseBothBindings,

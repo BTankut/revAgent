@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
@@ -20,6 +21,7 @@ import {
   BridgeSimulator,
   InjectedBridgeCrash,
   type BridgeCrashPoint,
+  type BridgeInvocationOutcome,
   type RegisteredBridgeSession,
 } from "./bridgeSimulator.js";
 import { DurableBridgeJournal, type JournalDurabilityProfile } from "./journal.js";
@@ -306,6 +308,126 @@ function failure(id: string | null, code: string, message: string): ControlFailu
     id,
     ok: false,
     error: { code, message: message.replace(/[\r\n]+/gu, " ").slice(0, 600) },
+  };
+}
+
+function sha256Bytes(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sanitizedResultExposureCounts(value: FixtureJsonValue): {
+  rawPathFieldCount: number;
+  localPathStringCount: number;
+} {
+  let rawPathFieldCount = 0;
+  let localPathStringCount = 0;
+  const visit = (candidate: FixtureJsonValue): void => {
+    if (typeof candidate === "string") {
+      if (
+        /^[A-Za-z]:[\\/]/u.test(candidate) ||
+        candidate.startsWith("/") ||
+        candidate.includes("../") ||
+        candidate.includes("..\\")
+      ) {
+        localPathStringCount += 1;
+      }
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (candidate === null || typeof candidate !== "object") return;
+    for (const [key, entry] of Object.entries(candidate)) {
+      if (/(?:^|_)(?:raw_)?path(?:$|_)/iu.test(key)) rawPathFieldCount += 1;
+      visit(entry);
+    }
+  };
+  visit(value);
+  return { rawPathFieldCount, localPathStringCount };
+}
+
+function artifactInvocationEvidence(outcome: BridgeInvocationOutcome): FixtureJsonValue {
+  const common = {
+    schemaVersion: "bridge-artifact-invocation-evidence/v1",
+    outcomeKind: outcome.kind,
+    replayed: outcome.replayed,
+    addinContacted: outcome.addinContacted,
+  };
+  if (outcome.kind !== "result") {
+    return outcome.kind === "error"
+      ? {
+          ...common,
+          faultClass: outcome.faultClass,
+          retryable: outcome.retryable,
+          outcome: outcome.outcome,
+          verificationRequired: outcome.verificationRequired,
+          messageBytes: Buffer.byteLength(outcome.message, "utf8"),
+          messageSha256: sha256Bytes(Buffer.from(outcome.message, "utf8")),
+          message: outcome.message.slice(0, 240),
+          resultDigest: outcome.resultDigest,
+        }
+      : {
+          ...common,
+          ack: outcome.kind === "transport_duplicate" ? outcome.ack : null,
+        };
+  }
+
+  const carrier = outcome.artifactCarrier;
+  const partials = carrier?.partials ?? outcome.partials;
+  const partialEvidence = partials.map((partial) => {
+    const bytes = Buffer.from(partial.data, "base64");
+    if (bytes.toString("base64") !== partial.data) {
+      throw new Error("artifact evidence encountered non-canonical Base64");
+    }
+    return {
+      invocationId: partial.invocation_id,
+      streamId: partial.stream_id,
+      artifactId: partial.artifact_id ?? null,
+      artifactIndex: partial.artifact_index ?? null,
+      chunkIndex: partial.chunk_index,
+      encoding: partial.encoding,
+      contentType: partial.content_type,
+      decodedBytes: bytes.byteLength,
+      decodedSha256: sha256Bytes(bytes),
+    };
+  });
+  const descriptors = carrier?.descriptors.map((descriptor) => ({
+    artifactId: descriptor.artifact_id,
+    artifactIndex: descriptor.artifact_index,
+    streamId: descriptor.stream_id,
+    filename: descriptor.filename,
+    contentType: descriptor.content_type,
+    totalChunks: descriptor.total_chunks,
+    totalSize: descriptor.total_size,
+    sha256: descriptor.sha256,
+  })) ?? [];
+  const references = carrier?.result.artifacts.map((reference) => ({
+    artifactId: reference.artifact_id,
+    artifactIndex: reference.artifact_index,
+  })) ?? [];
+  const sanitizedResult = { files: references };
+  const exposure = sanitizedResultExposureCounts(sanitizedResult);
+  return {
+    ...common,
+    status: outcome.status,
+    payloadOmitted: outcome.payloadOmitted,
+    resultDigest: outcome.resultDigest,
+    carrier: carrier === null
+      ? null
+      : {
+          kind: carrier.kind,
+          rsid: carrier.rsid,
+          invocationId: carrier.invocationId,
+          chunkBytes: carrier.chunkBytes,
+          retainedFileCount: carrier.retainedFiles.length,
+          references,
+          descriptors,
+          partials: partialEvidence,
+          descriptorDigest: sha256Bytes(Buffer.from(JSON.stringify(descriptors), "utf8")),
+          partialDigest: sha256Bytes(Buffer.from(JSON.stringify(partialEvidence), "utf8")),
+        },
+    sanitizedResult: { ...sanitizedResult, ...exposure },
   };
 }
 
@@ -930,8 +1052,14 @@ export class BridgeDaemonRuntime {
 
   async #invoke(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
-    exactKeys(record, ["controlVersion", "id", "action", "envelope"], ["crashAt"]);
+    exactKeys(record, ["controlVersion", "id", "action", "envelope"], ["crashAt", "responseMode"]);
     if (!isObject(record.envelope)) throw new Error("envelope must be an object");
+    if (
+      record.responseMode !== undefined &&
+      record.responseMode !== "artifact_evidence"
+    ) {
+      throw new Error("invoke_local responseMode is not supported");
+    }
     const inlineCrash = record.crashAt === undefined ? null : crashPoint(record.crashAt);
     if (inlineCrash !== null && this.#nextCrashPoint !== null) {
       throw new Error("crashAt cannot be combined with a queued inject_crash point");
@@ -952,6 +1080,15 @@ export class BridgeDaemonRuntime {
         );
       } else {
         throw new Error("invoke_local envelope.type must be invoke or invoke_batch");
+      }
+      if (record.responseMode === "artifact_evidence") {
+        if ("batchId" in outcome) {
+          throw new Error("artifact_evidence response mode requires one invoke envelope");
+        }
+        return {
+          crashed: false,
+          outcome: artifactInvocationEvidence(outcome),
+        };
       }
       return { crashed: false, outcome: outcome as unknown as FixtureJsonValue };
     } catch (error) {

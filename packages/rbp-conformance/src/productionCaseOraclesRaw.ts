@@ -693,10 +693,498 @@ export const RAW_PRODUCTION_EXTERNAL_DEPENDENCIES: ReadonlyMap<string, string> =
   ["O1-C40-NO-NORTH-CLAIM", "supervisor.product-artifact-evidence/v1"],
 ]);
 
-const failClosedDependency: CanonicalAssertionOracle = () => false;
-for (const assertionId of RAW_PRODUCTION_EXTERNAL_DEPENDENCIES.keys()) {
-  define(assertionId, failClosedDependency);
+function exactSupervisorEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  schemaVersion: string,
+  stepId: string,
+): ObjectValue | null {
+  const matches = observations(context).filter(({ payload }) => {
+    const candidate = objectValue(payload);
+    return candidate?.schemaVersion === schemaVersion && candidate.stepId === stepId;
+  });
+  return matches.length === 1 ? objectValue(matches[0]!.payload) : null;
 }
+
+function exactArray(value: unknown, length: number): readonly unknown[] | null {
+  return Array.isArray(value) && value.length === length ? value : null;
+}
+
+function targetIs(value: unknown, host: string, port?: number): boolean {
+  const target = objectValue(value);
+  return target !== null &&
+    target.host === host &&
+    (port === undefined || target.port === port);
+}
+
+function rejectedBeforeProbe(
+  attempt: ObjectValue | null,
+  host: string,
+): boolean {
+  if (
+    attempt === null ||
+    attempt.sessionCount !== 0 ||
+    exactArray(attempt.acceptedTargets, 0) === null ||
+    attempt.tempRegistryReads !== 0 ||
+    attempt.filesystemLocksCreated !== 0
+  ) {
+    return false;
+  }
+  const probed = exactArray(attempt.probedTargets, 1);
+  const rejected = exactArray(attempt.rejectedTargets, 1);
+  const rejection = rejected === null ? null : objectValue(rejected[0]);
+  return probed !== null &&
+    targetIs(probed[0], host) &&
+    rejection !== null &&
+    targetIs(rejection.target, host) &&
+    typeof rejection.reason === "string" &&
+    /numeric IP loopback required before probe/u.test(rejection.reason);
+}
+
+function fixtureBindRejected(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+  host: string,
+  allowUnsafeBind: boolean,
+  failureClass: string,
+): boolean {
+  const evidence = exactSupervisorEvidence(
+    context,
+    "supervisor.loopback-probe/v1",
+    stepId,
+  );
+  return evidence !== null &&
+    evidence.probeKind === "fixture_bind_process" &&
+    evidence.processSpawned === true &&
+    evidence.requestedHost === host &&
+    evidence.allowUnsafeBind === allowUnsafeBind &&
+    evidence.exitCode === 1 &&
+    evidence.timedOut === false &&
+    evidence.outputExceeded === false &&
+    evidence.readyObserved === false &&
+    evidence.survivingProcess === false &&
+    evidence.failureClass === failureClass &&
+    numberValue(evidence.stderrBytes) !== null &&
+    Number(evidence.stderrBytes) > 0 &&
+    typeof evidence.stdoutSha256 === "string" &&
+    SHA256_PATTERN.test(evidence.stdoutSha256) &&
+    typeof evidence.stderrSha256 === "string" &&
+    SHA256_PATTERN.test(evidence.stderrSha256) &&
+    typeof evidence.executableSha256 === "string" &&
+    /^[0-9a-f]{64}$/u.test(evidence.executableSha256);
+}
+
+define(
+  "O1-C33-LOOPBACK-ACCEPTED",
+  safe((context) => {
+    const evidence = exactSupervisorEvidence(
+      context,
+      "supervisor.loopback-probe/v1",
+      "o1-c33.loopback",
+    );
+    const attempt = objectValue(evidence?.attempt);
+    const probed = exactArray(attempt?.probedTargets, 1);
+    const accepted = exactArray(attempt?.acceptedTargets, 1);
+    return evidence !== null &&
+      evidence.probeKind === "product_discovery" &&
+      evidence.targetClass === "numeric_loopback" &&
+      targetIs(evidence.requestedTarget, "127.0.0.1") &&
+      attempt !== null &&
+      attempt.sessionCount === 1 &&
+      attempt.tempRegistryReads === 0 &&
+      attempt.filesystemLocksCreated === 0 &&
+      probed !== null &&
+      accepted !== null &&
+      exactArray(attempt.rejectedTargets, 0) !== null &&
+      targetIs(probed[0], "127.0.0.1") &&
+      targetIs(accepted[0], "127.0.0.1");
+  }),
+);
+define(
+  "O1-C33-WILDCARD-REJECTED",
+  safe((context) =>
+    fixtureBindRejected(
+      context,
+      "o1-c33.wildcard",
+      "0.0.0.0",
+      false,
+      "numeric_loopback_required",
+    )),
+);
+define(
+  "O1-C33-LAN-REJECTED",
+  safe((context) => {
+    const evidence = exactSupervisorEvidence(
+      context,
+      "supervisor.loopback-probe/v1",
+      "o1-c33.lan",
+    );
+    return evidence !== null &&
+      evidence.probeKind === "product_discovery" &&
+      evidence.targetClass === "non_loopback_lan" &&
+      targetIs(evidence.requestedTarget, "192.0.2.10", 48_298) &&
+      rejectedBeforeProbe(objectValue(evidence.attempt), "192.0.2.10");
+  }),
+);
+define(
+  "O1-C33-HOSTNAME-REMOTE-REJECTED",
+  safe((context) => {
+    const evidence = exactSupervisorEvidence(
+      context,
+      "supervisor.loopback-probe/v1",
+      "o1-c33.hostname",
+    );
+    const controlled = objectValue(evidence?.controlledResolution);
+    const addresses = exactArray(controlled?.addresses, 1);
+    return evidence !== null &&
+      evidence.probeKind === "hostname_resolved_remote" &&
+      evidence.targetClass === "hostname" &&
+      evidence.requestedHostname === "raw-nonloopback.invalid" &&
+      controlled?.source === "parent_static_test_net" &&
+      addresses?.[0] === "192.0.2.10" &&
+      rejectedBeforeProbe(
+        objectValue(evidence.hostnameAttempt),
+        "raw-nonloopback.invalid",
+      ) &&
+      rejectedBeforeProbe(
+        objectValue(evidence.resolvedAddressAttempt),
+        "192.0.2.10",
+      );
+  }),
+);
+define(
+  "O1-C33-OVERRIDE-REJECTED",
+  safe((context) =>
+    fixtureBindRejected(
+      context,
+      "o1-c33.override",
+      "127.0.0.1",
+      true,
+      "unsafe_override_forbidden",
+    )),
+);
+
+function productEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  scenario: string,
+): ObjectValue | null {
+  const evidence = exactSupervisorEvidence(
+    context,
+    "supervisor.product-artifact-evidence/v1",
+    `o1-c40.${scenario}`,
+  );
+  return evidence?.scenario === scenario ? evidence : null;
+}
+
+function zeroFilesystemDelta(evidence: ObjectValue): boolean {
+  const delta = objectValue(evidence.filesystemDelta);
+  return delta?.fileCount === 0 && delta.totalBytes === 0;
+}
+
+function rejectedArtifactSurface(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  scenario: "raw_path" | "traversal_path" | "reparse_path",
+  surfaceKind: string,
+  reparsePointObserved: boolean,
+): boolean {
+  const evidence = productEvidence(context, scenario);
+  const surface = objectValue(evidence?.surface);
+  const outcome = objectValue(evidence?.bridgeOutcome);
+  const spool = objectValue(evidence?.bridgeSpool);
+  return evidence !== null &&
+    surface?.kind === surfaceKind &&
+    surface.created === true &&
+    surface.resolvedInsideSpool === false &&
+    surface.reparsePointObserved === reparsePointObserved &&
+    typeof surface.sourcePathSha256 === "string" &&
+    SHA256_PATTERN.test(surface.sourcePathSha256) &&
+    outcome?.schemaVersion === "bridge-artifact-invocation-evidence/v1" &&
+    outcome.outcomeKind === "error" &&
+    outcome.faultClass === "parameter" &&
+    outcome.addinContacted === true &&
+    outcome.replayed === false &&
+    spool?.rootPathRedacted === true &&
+    spool.rawPathExposed === false &&
+    spool.carrierCountForInvocation === 0 &&
+    exactArray(spool.carriers, 0) !== null &&
+    zeroFilesystemDelta(evidence);
+}
+
+function carrierEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  scenario = "valid_multifile",
+): {
+  evidence: ObjectValue;
+  outcome: ObjectValue;
+  carrier: ObjectValue;
+  references: readonly unknown[];
+  descriptors: readonly unknown[];
+  partials: readonly unknown[];
+  spoolCarrier: ObjectValue;
+  filesystemFiles: readonly unknown[];
+} | null {
+  const evidence = productEvidence(context, scenario);
+  const outcome = objectValue(evidence?.bridgeOutcome);
+  const carrier = objectValue(outcome?.carrier);
+  const references = exactArray(carrier?.references, 2);
+  const descriptors = exactArray(carrier?.descriptors, 2);
+  const partials = exactArray(carrier?.partials, 4);
+  const spool = objectValue(evidence?.bridgeSpool);
+  const spoolCarriers = exactArray(spool?.carriers, 1);
+  const spoolCarrier = spoolCarriers === null ? null : objectValue(spoolCarriers[0]);
+  const filesystem = objectValue(evidence?.filesystemAfter);
+  const filesystemFiles = arrayValue(filesystem?.files);
+  if (
+    evidence === null ||
+    outcome === null ||
+    carrier === null ||
+    references === null ||
+    descriptors === null ||
+    partials === null ||
+    spoolCarrier === null ||
+    spool?.rootPathRedacted !== true ||
+    spool.rawPathExposed !== false ||
+    spool.carrierCountForInvocation !== 1 ||
+    filesystem?.schemaVersion !== "supervisor.product-artifact-filesystem/v1" ||
+    filesystem.rootPathRedacted !== true
+  ) {
+    return null;
+  }
+  return {
+    evidence,
+    outcome,
+    carrier,
+    references,
+    descriptors,
+    partials,
+    spoolCarrier,
+    filesystemFiles,
+  };
+}
+
+function descriptorRows(facts: NonNullable<ReturnType<typeof carrierEvidence>>): ObjectValue[] | null {
+  const rows = facts.descriptors.map(objectValue);
+  return rows.every((entry): entry is ObjectValue => entry !== null) ? rows : null;
+}
+
+function partialRows(facts: NonNullable<ReturnType<typeof carrierEvidence>>): ObjectValue[] | null {
+  const rows = facts.partials.map(objectValue);
+  return rows.every((entry): entry is ObjectValue => entry !== null) ? rows : null;
+}
+
+define(
+  "O1-C40-RAW-PATH-REJECTED",
+  safe((context) =>
+    rejectedArtifactSurface(
+      context,
+      "raw_path",
+      "outside_regular_file",
+      false,
+    )),
+);
+define(
+  "O1-C40-LOCAL-PATH-REJECTED",
+  safe((context) => {
+    const evidence = productEvidence(context, "local_path");
+    const surface = objectValue(evidence?.surface);
+    const outcome = objectValue(evidence?.bridgeOutcome);
+    const result = objectValue(outcome?.sanitizedResult);
+    const files = exactArray(result?.files, 1);
+    const reference = files === null ? null : objectValue(files[0]);
+    const spool = objectValue(evidence?.bridgeSpool);
+    return evidence !== null &&
+      surface?.kind === "managed_regular_file" &&
+      surface.created === true &&
+      surface.lexicalInsideSpool === true &&
+      surface.resolvedInsideSpool === true &&
+      surface.reparsePointObserved === false &&
+      outcome?.schemaVersion === "bridge-artifact-invocation-evidence/v1" &&
+      outcome.outcomeKind === "result" &&
+      outcome.status === "completed" &&
+      result?.rawPathFieldCount === 0 &&
+      result.localPathStringCount === 0 &&
+      reference !== null &&
+      typeof reference.artifactId === "string" &&
+      reference.artifactIndex === 0 &&
+      spool?.rootPathRedacted === true &&
+      spool.rawPathExposed === false &&
+      spool.carrierCountForInvocation === 1;
+  }),
+);
+define(
+  "O1-C40-TRAVERSAL-REJECTED",
+  safe((context) =>
+    rejectedArtifactSurface(
+      context,
+      "traversal_path",
+      "traversal_regular_file",
+      false,
+    )),
+);
+define(
+  "O1-C40-REPARSE-REJECTED",
+  safe((context) =>
+    rejectedArtifactSurface(
+      context,
+      "reparse_path",
+      "managed_reparse_file",
+      true,
+    )),
+);
+define(
+  "O1-C40-ARTIFACT-ID-MAPPING",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    if (facts === null || descriptors === null) return false;
+    const references = facts.references.map(objectValue);
+    const ids = descriptors.map(({ artifactId }) => artifactId);
+    return references.every((entry): entry is ObjectValue => entry !== null) &&
+      ids.every((id) => typeof id === "string" && /^[0-9a-f-]{36}$/u.test(id)) &&
+      new Set(ids).size === 2 &&
+      references.every((reference, index) =>
+        reference.artifactId === ids[index] &&
+        reference.artifactIndex === index);
+  }),
+);
+define(
+  "O1-C40-ARTIFACT-INDEX-MAPPING",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    return descriptors !== null &&
+      descriptors.every((descriptor, index) => descriptor.artifactIndex === index);
+  }),
+);
+define(
+  "O1-C40-INDEPENDENT-STREAMS",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    const partials = facts === null ? null : partialRows(facts);
+    if (descriptors === null || partials === null) return false;
+    const streamIds = descriptors.map(({ streamId }) => streamId);
+    if (new Set(streamIds).size !== 2) return false;
+    return descriptors.every((descriptor) => {
+      const stream = partials.filter(({ streamId }) => streamId === descriptor.streamId);
+      return stream.length === 2 &&
+        stream.map(({ chunkIndex }) => chunkIndex).join(",") === "0,1" &&
+        stream.every((partial) =>
+          partial.artifactId === descriptor.artifactId &&
+          partial.artifactIndex === descriptor.artifactIndex &&
+          partial.invocationId === facts!.carrier.invocationId);
+    });
+  }),
+);
+define(
+  "O1-C40-DESCRIPTOR-VERIFIED",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    const streams = facts === null ? null : exactArray(facts.spoolCarrier.streams, 2);
+    if (descriptors === null || streams === null) return false;
+    return descriptors.every((descriptor, index) => {
+      const stream = objectValue(streams[index]);
+      return stream !== null &&
+        stream.artifactId === descriptor.artifactId &&
+        stream.artifactIndex === descriptor.artifactIndex &&
+        stream.streamId === descriptor.streamId &&
+        stream.filename === descriptor.filename &&
+        stream.contentType === descriptor.contentType &&
+        stream.totalChunks === descriptor.totalChunks &&
+        stream.totalSize === descriptor.totalSize &&
+        stream.sha256 === descriptor.sha256;
+    });
+  }),
+);
+define(
+  "O1-C40-DIGEST-VERIFIED",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    if (descriptors === null) return false;
+    return descriptors.every((descriptor) =>
+      typeof descriptor.sha256 === "string" &&
+      SHA256_PATTERN.test(descriptor.sha256) &&
+      facts!.filesystemFiles.filter((file) => {
+        const row = objectValue(file);
+        return row !== null &&
+          row.sha256 === descriptor.sha256 &&
+          row.bytes === descriptor.totalSize &&
+          row.regularFile === true &&
+          row.reparsePoint === false;
+      }).length === 1);
+  }),
+);
+define(
+  "O1-C40-SIZE-VERIFIED",
+  safe((context) => {
+    const facts = carrierEvidence(context);
+    const descriptors = facts === null ? null : descriptorRows(facts);
+    const partials = facts === null ? null : partialRows(facts);
+    if (facts === null || descriptors === null || partials === null) return false;
+    const combined = descriptors.reduce((sum, descriptor) =>
+      sum + Number(descriptor.totalSize), 0);
+    return combined === 2_097_154 &&
+      descriptors.every((descriptor) =>
+        Number(descriptor.totalSize) === partials
+          .filter(({ streamId }) => streamId === descriptor.streamId)
+          .reduce((sum, partial) => sum + Number(partial.decodedBytes), 0)) &&
+      objectValue(facts.evidence.filesystemDelta)?.totalBytes === combined;
+  }),
+);
+define(
+  "O1-C40-RETRANSMISSION-IDENTITY",
+  safe((context) => {
+    const first = carrierEvidence(context);
+    const replay = carrierEvidence(context, "retransmission");
+    if (first === null || replay === null) return false;
+    const replayDelta = objectValue(replay.evidence.filesystemDelta);
+    return first.outcome.replayed === false &&
+      first.outcome.addinContacted === true &&
+      replay.outcome.replayed === true &&
+      replay.outcome.addinContacted === false &&
+      first.carrier.invocationId === replay.carrier.invocationId &&
+      JSON.stringify(first.carrier) === JSON.stringify(replay.carrier) &&
+      JSON.stringify(first.spoolCarrier) === JSON.stringify(replay.spoolCarrier) &&
+      replayDelta?.fileCount === 0 &&
+      replayDelta.totalBytes === 0;
+  }),
+);
+define(
+  "O1-C40-ALL-OR-NOTHING",
+  safe((context) => {
+    const evidence = productEvidence(context, "invalid_member");
+    const outcome = objectValue(evidence?.bridgeOutcome);
+    const spool = objectValue(evidence?.bridgeSpool);
+    return evidence !== null &&
+      outcome?.schemaVersion === "bridge-artifact-invocation-evidence/v1" &&
+      outcome.outcomeKind === "error" &&
+      outcome.faultClass === "parameter" &&
+      !Object.prototype.hasOwnProperty.call(outcome, "carrier") &&
+      spool?.carrierCountForInvocation === 0 &&
+      exactArray(spool.carriers, 0) !== null &&
+      zeroFilesystemDelta(evidence);
+  }),
+);
+define(
+  "O1-C40-NO-NORTH-CLAIM",
+  safe((context) =>
+    [
+      "raw_path",
+      "local_path",
+      "traversal_path",
+      "reparse_path",
+      "valid_multifile",
+      "retransmission",
+      "invalid_member",
+    ].every((scenario) => {
+      const evidence = productEvidence(context, scenario);
+      return evidence !== null &&
+        evidence.evidenceScope === "rbp_only" &&
+        evidence.northClientObservationCount === 0 &&
+        exactArray(evidence.northClientSurfaces, 0) !== null;
+    })),
+);
 
 define(
   "O1-C34-DOCUMENT-SCHEMA",

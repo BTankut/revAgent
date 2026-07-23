@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import {
   chmodSync,
   existsSync,
@@ -6,8 +7,11 @@ import {
   mkdtempSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   realpathSync,
   rmSync,
+  symlinkSync,
+  writeFileSync,
 } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import { createServer, Socket, type Server } from "node:net";
@@ -44,6 +48,10 @@ const MAX_AGGREGATED_SNAPSHOT_BYTES = 4 * 1024 * 1024;
 const MAX_INTERNAL_GATEWAY_SNAPSHOT_BYTES = 16 * 1024 * 1024;
 const MAX_COMPACT_GATEWAY_SNAPSHOT_BYTES = 60 * 1024;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1"]);
+const MAX_EXTERNAL_EVIDENCE_BYTES = 48 * 1024;
+const MAX_ARTIFACT_EVIDENCE_FILES = 64;
+const MAX_ARTIFACT_EVIDENCE_BYTES = 40 * 1024 * 1024;
+const MAX_BIND_PROBE_OUTPUT_BYTES = 8 * 1024;
 
 export interface GatewayStartupOverrides {
   sessionCapabilities?: readonly string[];
@@ -469,6 +477,198 @@ async function waitForNoSurvivors(pids: readonly number[], timeoutMs = 2_000): P
   return survivors;
 }
 
+function sha256Bytes(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sha256Text(value: string): `sha256:${string}` {
+  return sha256Bytes(Buffer.from(value, "utf8"));
+}
+
+function pathInside(root: string, candidate: string, allowRoot = false): boolean {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return (allowRoot && relative.length === 0) ||
+    (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function artifactFilesystemInventory(spoolRoot: string): ArtifactFilesystemInventory {
+  const root = path.resolve(spoolRoot);
+  const rootStat = lstatSync(root);
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error("Bridge artifact spool root is not a plain directory");
+  }
+  const realRoot = realpathSync.native(root);
+  const files: ArtifactFilesystemRow[] = [];
+  let directoryCount = 1;
+  let totalBytes = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      const stat = lstatSync(candidate);
+      if (stat.isSymbolicLink()) {
+        throw new Error("Bridge artifact spool inventory encountered a reparse point");
+      }
+      const realCandidate = realpathSync.native(candidate);
+      if (!pathInside(realRoot, realCandidate)) {
+        throw new Error("Bridge artifact spool inventory escaped the real spool root");
+      }
+      if (stat.isDirectory()) {
+        directoryCount += 1;
+        if (directoryCount > MAX_ARTIFACT_EVIDENCE_FILES * 4) {
+          throw new Error("Bridge artifact spool directory evidence exceeds the parent bound");
+        }
+        pending.push(candidate);
+        continue;
+      }
+      if (!stat.isFile()) {
+        throw new Error("Bridge artifact spool inventory encountered a non-file member");
+      }
+      if (files.length >= MAX_ARTIFACT_EVIDENCE_FILES) {
+        throw new Error(`Bridge artifact spool evidence exceeds ${MAX_ARTIFACT_EVIDENCE_FILES} files`);
+      }
+      totalBytes += stat.size;
+      if (totalBytes > MAX_ARTIFACT_EVIDENCE_BYTES) {
+        throw new Error("Bridge artifact spool evidence exceeds the 40 MiB parent bound");
+      }
+      const bytes = readFileSync(candidate);
+      if (bytes.byteLength !== stat.size) {
+        throw new Error("Bridge artifact spool member changed during parent inspection");
+      }
+      const relative = path.relative(root, candidate).replaceAll("\\", "/");
+      files.push({
+        relativePathSha256: sha256Text(relative),
+        depth: relative.split("/").length,
+        bytes: bytes.byteLength,
+        sha256: sha256Bytes(bytes),
+        linkCount: stat.nlink,
+        regularFile: true,
+        reparsePoint: false,
+      });
+    }
+  }
+  files.sort((left, right) =>
+    left.relativePathSha256.localeCompare(right.relativePathSha256));
+  return {
+    schemaVersion: "supervisor.product-artifact-filesystem/v1",
+    rootPathRedacted: true,
+    directoryCount,
+    fileCount: files.length,
+    totalBytes,
+    files,
+  };
+}
+
+function replaceFixtureCliArguments(
+  command: ProcessCommandDescriptor,
+  input: FixtureBindPolicyProbeInput,
+): ProcessCommandDescriptor {
+  let args = setCliScalarArgument(command.args, "--host", input.host);
+  args = setCliScalarArgument(args, "--port", 0);
+  args = args.filter((entry) => entry !== "--allow-unsafe-bind");
+  if (input.allowUnsafeBind) args.push("--allow-unsafe-bind");
+  return { ...command, args };
+}
+
+async function runFixtureBindPolicyProcess(input: {
+  command: ProcessCommandDescriptor;
+  cwd: string;
+  environment: Readonly<Record<string, string | undefined>>;
+  probe: FixtureBindPolicyProbeInput;
+}): Promise<JsonObject> {
+  const child = spawn(input.command.executable, input.command.args, {
+    cwd: input.cwd,
+    env: { ...process.env, ...input.environment },
+    shell: false,
+    windowsHide: true,
+  });
+  const pid = child.pid;
+  if (pid === undefined) throw new Error("fixture bind policy probe did not receive a child PID");
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputExceeded = false;
+  const append = (target: Buffer[], chunk: Buffer, stream: "stdout" | "stderr"): void => {
+    if (stream === "stdout") stdoutBytes += chunk.byteLength;
+    else stderrBytes += chunk.byteLength;
+    if (stdoutBytes + stderrBytes > MAX_BIND_PROBE_OUTPUT_BYTES) {
+      outputExceeded = true;
+      child.kill("SIGTERM");
+      return;
+    }
+    target.push(Buffer.from(chunk));
+  };
+  child.stdout.on("data", (chunk: Buffer) => append(stdout, chunk, "stdout"));
+  child.stderr.on("data", (chunk: Buffer) => append(stderr, chunk, "stderr"));
+  const closed = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
+    child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
+  });
+  const waitForClose = async (
+    timeoutMs: number,
+  ): Promise<{ exitCode: number | null; signal: string | null } | null> =>
+    await new Promise((resolve) => {
+      let settled = false;
+      const finish = (
+        value: { exitCode: number | null; signal: string | null } | null,
+      ): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolve(value);
+      };
+      const timeout = setTimeout(() => finish(null), timeoutMs);
+      void closed.then(finish);
+    });
+  let timedOut = false;
+  let terminal = await waitForClose(3_000);
+  if (terminal === null) {
+    timedOut = true;
+    child.kill("SIGTERM");
+    terminal = await waitForClose(1_000);
+  }
+  if (terminal === null || processAlive(pid)) {
+    child.kill("SIGKILL");
+    terminal = await waitForClose(2_000);
+  }
+  terminal ??= { exitCode: null, signal: "survived_cleanup" };
+  const stdoutBuffer = Buffer.concat(stdout);
+  const stderrBuffer = Buffer.concat(stderr);
+  const stderrText = stderrBuffer.toString("utf8");
+  const readyObserved = stdoutBuffer.toString("utf8")
+    .split(/\r?\n/u)
+    .some((line) => {
+      try {
+        const parsed = JSON.parse(line) as unknown;
+        return isObject(parsed) && parsed.ready === true;
+      } catch {
+        return false;
+      }
+    });
+  const failureClass = /Unsafe bind override is forbidden/u.test(stderrText)
+    ? "unsafe_override_forbidden"
+    : /numeric IP loopback address/u.test(stderrText)
+      ? "numeric_loopback_required"
+      : "other";
+  return {
+    processSpawned: true,
+    requestedHost: input.probe.host,
+    allowUnsafeBind: input.probe.allowUnsafeBind,
+    exitCode: terminal.exitCode,
+    signal: terminal.signal,
+    timedOut,
+    outputExceeded,
+    readyObserved,
+    survivingProcess: processAlive(pid),
+    failureClass,
+    stdoutBytes,
+    stdoutSha256: sha256Bytes(stdoutBuffer),
+    stderrBytes,
+    stderrSha256: sha256Bytes(stderrBuffer),
+  };
+}
+
 function adjacentPorts(origin: number, maximumDistance: number): number[] {
   const candidates: number[] = [];
   for (let distance = 1; distance <= maximumDistance; distance += 1) {
@@ -667,6 +867,39 @@ export interface CaseStackSupervisorOptions {
   plan: ExecutionPlan;
   repoRoot: string;
   environment?: Readonly<Record<string, string | undefined>>;
+}
+
+export interface FixtureBindPolicyProbeInput {
+  host: "0.0.0.0" | "127.0.0.1";
+  allowUnsafeBind: boolean;
+}
+
+export type ProductArtifactScenario =
+  | "raw_path"
+  | "local_path"
+  | "traversal_path"
+  | "reparse_path"
+  | "valid_multifile"
+  | "retransmission"
+  | "invalid_member";
+
+interface ArtifactFilesystemRow {
+  relativePathSha256: `sha256:${string}`;
+  depth: number;
+  bytes: number;
+  sha256: `sha256:${string}`;
+  linkCount: number;
+  regularFile: true;
+  reparsePoint: false;
+}
+
+interface ArtifactFilesystemInventory {
+  schemaVersion: "supervisor.product-artifact-filesystem/v1";
+  rootPathRedacted: true;
+  directoryCount: number;
+  fileCount: number;
+  totalBytes: number;
+  files: ArtifactFilesystemRow[];
 }
 
 export class CaseStackSupervisor {
@@ -959,6 +1192,269 @@ export class CaseStackSupervisor {
         }),
       ],
     };
+  }
+
+  async probeFixtureBindPolicy(input: FixtureBindPolicyProbeInput): Promise<JsonObject> {
+    if (
+      (input.host !== "0.0.0.0" && input.host !== "127.0.0.1") ||
+      typeof input.allowUnsafeBind !== "boolean"
+    ) {
+      throw new Error("fixture bind policy probe is outside the exact C33 vector set");
+    }
+    const stack = this.#stack();
+    const component = this.#componentPlan("addin_loopback_fixture");
+    const command = replaceFixtureCliArguments(
+      expandedCommand(component.command, stack.tokens),
+      input,
+    );
+    const cwd = confinedWorkingDirectory(this.#repoRoot, command);
+    const environment: Record<string, string | undefined> = {};
+    for (const key of command.environmentKeys) environment[key] = this.#environment[key];
+    const processEvidence = await runFixtureBindPolicyProcess({
+      command,
+      cwd,
+      environment,
+      probe: input,
+    });
+    return {
+      schemaVersion: "supervisor.loopback-probe/v1",
+      probeKind: "fixture_bind_process",
+      executableSha256: component.expectedIdentity.executableSha256,
+      ...processEvidence,
+    };
+  }
+
+  async executeProductArtifactScenario(input: {
+    scenario: ProductArtifactScenario;
+    envelope: JsonObject;
+    stepId: string;
+  }): Promise<JsonObject> {
+    const allowed = new Set<ProductArtifactScenario>([
+      "raw_path",
+      "local_path",
+      "traversal_path",
+      "reparse_path",
+      "valid_multifile",
+      "retransmission",
+      "invalid_member",
+    ]);
+    if (!allowed.has(input.scenario) || !/^[a-z0-9._-]{1,128}$/u.test(input.stepId)) {
+      throw new Error("product artifact scenario identity is invalid");
+    }
+    const stack = this.#stack();
+    if (stack.caseId !== "O1-C40") {
+      throw new Error("product artifact evidence is available only to O1-C40");
+    }
+    const envelope = structuredClone(input.envelope);
+    const sequenceByScenario: Readonly<Record<ProductArtifactScenario, number>> = {
+      raw_path: 1,
+      local_path: 2,
+      traversal_path: 3,
+      reparse_path: 4,
+      valid_multifile: 5,
+      retransmission: 6,
+      invalid_member: 7,
+    };
+    envelope.seq = sequenceByScenario[input.scenario];
+    const payload = envelope.payload;
+    if (!isObject(payload) || payload.method !== "fixture_multi_file_output") {
+      throw new Error("product artifact scenario requires fixture_multi_file_output");
+    }
+    const params = payload.params;
+    if (!isObject(params)) throw new Error("product artifact scenario params must be an object");
+    const expectedFixtureScenario = input.scenario === "retransmission"
+      ? "valid_multifile"
+      : input.scenario;
+    if (params.scenario !== expectedFixtureScenario) {
+      throw new Error("product artifact scenario does not match its fixture params");
+    }
+    if (
+      expectedFixtureScenario === "valid_multifile" &&
+      (params.fileCount !== 2 || params.bytesPerFile !== 1_048_577)
+    ) {
+      throw new Error("valid multi-file evidence requires the exact two-file, two-chunk vector");
+    }
+    const invocationId = payload.invocation_id;
+    if (typeof invocationId !== "string") {
+      throw new Error("product artifact scenario lacks invocation_id");
+    }
+
+    const spoolRoot = path.join(stack.instanceRoot, "state", "bridge", "spool");
+    if (!pathInside(stack.instanceRoot, spoolRoot) || !existsSync(spoolRoot)) {
+      throw new Error("Bridge artifact spool is missing from the active private stack");
+    }
+    const before = artifactFilesystemInventory(spoolRoot);
+    const setupKey = sha256Text(`${stack.instanceRootId}:${input.stepId}`).slice(-16);
+    const setupRoot = path.join(stack.instanceRoot, "evidence", `artifact-${setupKey}`);
+    if (!pathInside(stack.instanceRoot, setupRoot)) {
+      throw new Error("product artifact setup root escaped the private stack");
+    }
+    mkdirSync(setupRoot, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+    const cleanupTargets: string[] = [setupRoot];
+    let surface: JsonObject = {
+      kind: "inline_fixture_bytes",
+      created: false,
+      lexicalInsideSpool: false,
+      resolvedInsideSpool: false,
+      reparsePointObserved: false,
+      sourceBytes: 0,
+      sourceSha256: sha256Bytes(Buffer.alloc(0)),
+      sourcePathSha256: null,
+    };
+
+    const createRegularSurface = (
+      lexicalPath: string,
+      bytes: Buffer,
+      kind: string,
+    ): void => {
+      const target = path.resolve(lexicalPath);
+      if (!pathInside(stack.instanceRoot, target)) {
+        throw new Error("product artifact source escaped the private stack");
+      }
+      mkdirSync(path.dirname(target), { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+      writeFileSync(target, bytes, { flag: "wx" });
+      const stat = lstatSync(target);
+      if (!stat.isFile() || stat.isSymbolicLink() || stat.nlink !== 1) {
+        throw new Error("product artifact source is not a regular non-reparse file");
+      }
+      cleanupTargets.unshift(target);
+      const realTarget = realpathSync.native(target);
+      surface = {
+        kind,
+        created: true,
+        lexicalInsideSpool: pathInside(spoolRoot, lexicalPath),
+        resolvedInsideSpool: pathInside(realpathSync.native(spoolRoot), realTarget),
+        reparsePointObserved: false,
+        sourceBytes: bytes.byteLength,
+        sourceSha256: sha256Bytes(bytes),
+        sourcePathSha256: sha256Text(lexicalPath),
+      };
+      params.path = lexicalPath;
+    };
+
+    try {
+      const sourceBytes = Buffer.from(`revAgent C40 ${input.scenario} source\n`, "utf8");
+      if (input.scenario === "raw_path") {
+        createRegularSurface(
+          path.join(setupRoot, "raw-output.bin"),
+          sourceBytes,
+          "outside_regular_file",
+        );
+      } else if (input.scenario === "local_path") {
+        createRegularSurface(
+          path.join(spoolRoot, `conformance-local-${setupKey}.bin`),
+          sourceBytes,
+          "managed_regular_file",
+        );
+      } else if (input.scenario === "traversal_path") {
+        const target = path.resolve(spoolRoot, "..", `traversal-${setupKey}.bin`);
+        const lexical = `${spoolRoot}${path.sep}..${path.sep}${path.basename(target)}`;
+        createRegularSurface(lexical, sourceBytes, "traversal_regular_file");
+      } else if (input.scenario === "reparse_path") {
+        const targetDirectory = path.join(setupRoot, "reparse-target");
+        mkdirSync(targetDirectory, { recursive: true, mode: PRIVATE_DIRECTORY_MODE });
+        const target = path.join(targetDirectory, "reparse-output.bin");
+        writeFileSync(target, sourceBytes, { flag: "wx" });
+        const link = path.join(spoolRoot, `conformance-reparse-${setupKey}`);
+        symlinkSync(
+          targetDirectory,
+          link,
+          process.platform === "win32" ? "junction" : "dir",
+        );
+        cleanupTargets.unshift(link);
+        const linkStat = lstatSync(link);
+        const lexical = path.join(link, "reparse-output.bin");
+        const realTarget = realpathSync.native(lexical);
+        if (!linkStat.isSymbolicLink() || pathInside(realpathSync.native(spoolRoot), realTarget)) {
+          throw new Error("product artifact reparse fixture did not resolve outside the spool");
+        }
+        surface = {
+          kind: "managed_reparse_file",
+          created: true,
+          lexicalInsideSpool: true,
+          resolvedInsideSpool: false,
+          reparsePointObserved: true,
+          sourceBytes: sourceBytes.byteLength,
+          sourceSha256: sha256Bytes(sourceBytes),
+          sourcePathSha256: sha256Text(lexical),
+        };
+        params.path = lexical;
+      }
+
+      const response = await this.jsonlControl(
+        "bridge_simulator",
+        "invoke_local",
+        {
+          envelope,
+          responseMode: "artifact_evidence",
+        },
+        30_000,
+      );
+      if (!isObject(response) || response.crashed !== false || !isObject(response.outcome)) {
+        throw new Error("Bridge artifact evidence response is malformed");
+      }
+
+      for (const target of cleanupTargets) {
+        if (!existsSync(target)) continue;
+        if (!pathInside(stack.instanceRoot, target)) {
+          throw new Error("product artifact cleanup target escaped the private stack");
+        }
+        rmSync(target, {
+          recursive: lstatSync(target).isDirectory() || lstatSync(target).isSymbolicLink(),
+          force: true,
+        });
+      }
+      const after = artifactFilesystemInventory(spoolRoot);
+      const snapshot = await this.aggregateSnapshot("bridge_simulator");
+      const artifactSpool = snapshot.artifactSpool;
+      if (!isObject(artifactSpool) || !Array.isArray(artifactSpool.carriers)) {
+        throw new Error("Bridge snapshot lacks sanitized artifact spool evidence");
+      }
+      const carriers = artifactSpool.carriers.filter((carrier) =>
+        isObject(carrier) && carrier.invocationId === invocationId);
+      const evidence: JsonObject = {
+        schemaVersion: "supervisor.product-artifact-evidence/v1",
+        stepId: input.stepId,
+        scenario: input.scenario,
+        fixtureScenario: expectedFixtureScenario,
+        invocationId,
+        surface,
+        bridgeOutcome: structuredClone(response.outcome),
+        bridgeSpool: {
+          evidenceVersion: artifactSpool.evidenceVersion ?? null,
+          rootPathRedacted: artifactSpool.rootPathRedacted ?? null,
+          rawPathExposed: artifactSpool.rawPathExposed ?? null,
+          carrierCountForInvocation: carriers.length,
+          carriers: structuredClone(carriers) as JsonValue,
+        },
+        filesystemBefore: before as unknown as JsonObject,
+        filesystemAfter: after as unknown as JsonObject,
+        filesystemDelta: {
+          fileCount: after.fileCount - before.fileCount,
+          totalBytes: after.totalBytes - before.totalBytes,
+        },
+        evidenceScope: "rbp_only",
+        northClientObservationCount: 0,
+        northClientSurfaces: [],
+      };
+      const serialized = JSON.stringify(evidence);
+      if (
+        serialized.includes(stack.instanceRoot) ||
+        serialized.includes(spoolRoot) ||
+        Buffer.byteLength(serialized, "utf8") > MAX_EXTERNAL_EVIDENCE_BYTES
+      ) {
+        throw new Error("product artifact evidence is unbounded or exposes a private path");
+      }
+      return evidence;
+    } finally {
+      for (const target of cleanupTargets) {
+        if (!existsSync(target) || !pathInside(stack.instanceRoot, target)) continue;
+        rmSync(target, {
+          recursive: lstatSync(target).isDirectory() || lstatSync(target).isSymbolicLink(),
+          force: true,
+        });
+      }
+    }
   }
 
   async restartCaseStack(
@@ -1293,11 +1789,33 @@ export class CaseStackSupervisor {
       if (aggregate === undefined) {
         aggregate = structuredClone(page);
         for (const field of arrayFields) aggregate[field] = [];
+        if (componentId === "bridge_simulator") {
+          const artifactSpool = aggregate.artifactSpool;
+          if (!isObject(artifactSpool) || !Array.isArray(artifactSpool.carriers)) {
+            throw new Error("bridge_simulator snapshot page lacks artifactSpool.carriers");
+          }
+          artifactSpool.carriers = [];
+        }
       }
       for (const field of arrayFields) {
         const values = page[field];
         if (!Array.isArray(values)) throw new Error(`${componentId} snapshot page lacks ${field}`);
         (aggregate[field] as JsonValue[]).push(...structuredClone(values));
+      }
+      if (componentId === "bridge_simulator") {
+        const pageSpool = page.artifactSpool;
+        const aggregateSpool = aggregate.artifactSpool;
+        if (
+          !isObject(pageSpool) ||
+          !Array.isArray(pageSpool.carriers) ||
+          !isObject(aggregateSpool) ||
+          !Array.isArray(aggregateSpool.carriers)
+        ) {
+          throw new Error("bridge_simulator artifact spool pagination is malformed");
+        }
+        aggregateSpool.carriers.push(...structuredClone(pageSpool.carriers));
+        aggregateSpool.carrierOffset = 0;
+        aggregateSpool.carrierPageCount = aggregateSpool.carriers.length;
       }
       if (Buffer.byteLength(JSON.stringify(aggregate), "utf8") > MAX_AGGREGATED_SNAPSHOT_BYTES) {
         throw new Error(`${componentId} aggregated snapshot exceeds 4 MiB`);
