@@ -1,0 +1,74 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+import { sha256File } from "../src/executionPlan.js";
+import {
+  executeEarlyProductionCaseBothBindings,
+} from "../src/productionCaseRunnerEarly.js";
+import { EARLY_PRODUCTION_ORACLES } from "../src/productionCaseOraclesEarly.js";
+import {
+  EARLY_PRODUCTION_CASES,
+} from "../src/productionCaseSeedsEarly.js";
+import { canonicalManifest } from "../src/manifest.js";
+import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
+import type { ExecutionPlan } from "../src/types.js";
+import { createPlan } from "./helpers.js";
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(packageRoot, "..", "..");
+
+function productionPlan(caseId: string): ExecutionPlan {
+  const plan = createPlan();
+  plan.runId = `early-production-${caseId.toLowerCase()}`;
+  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
+  for (const component of plan.components) {
+    const selected = launchConfigs.find(({ id }) => id === component.id);
+    if (selected === undefined) throw new Error(`missing production launch config for ${component.id}`);
+    component.expectedIdentity.executableSha256 = sha256File(
+      path.join(repoRoot, selected.entrypointPath),
+    );
+    component.command = structuredClone(selected.command);
+  }
+  return plan;
+}
+
+describe("early production case stack", () => {
+  it.each(EARLY_PRODUCTION_CASES)(
+    "runs %s through both real bindings without unresolved tokens or orphan processes",
+    async (caseId) => {
+      const executions = await executeEarlyProductionCaseBothBindings({
+        plan: productionPlan(caseId),
+        repoRoot,
+        caseId,
+      });
+      expect(executions.map(({ binding }) => binding)).toEqual([
+        "wss",
+        "streamable_http_sse",
+      ]);
+      for (const execution of executions) {
+        expect(execution.evidence.completedStepIds.at(-1)).toBe(`${caseId.toLowerCase()}.stack-stop`);
+        const stopped = execution.evidence.observations.filter(({ kind, payload }) =>
+          kind === "process_lifecycle" &&
+          payload.phase === "stopped" &&
+          payload.action === "stop_case_stack");
+        expect(stopped.filter(({ payload }) =>
+          payload.processRole === "canonical_component")).toHaveLength(3);
+        expect(stopped.every(({ payload }) =>
+          payload.orphanProcessCount === 0 && payload.killEscalated === false)).toBe(true);
+        for (const assertion of canonicalManifest.requiredAssertions[caseId]!) {
+          const oracle = EARLY_PRODUCTION_ORACLES.get(assertion.id);
+          expect(oracle, assertion.id).toBeTypeOf("function");
+          expect(oracle!({
+            caseId,
+            binding: execution.binding,
+            assertion,
+            observations: execution.evidence.observations,
+          }), assertion.id).toBe(true);
+        }
+      }
+    },
+    180_000,
+  );
+});

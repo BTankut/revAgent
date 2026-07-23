@@ -352,7 +352,10 @@ function conditionObservation(
       ),
     ];
   }
-  if (request.arguments.source === "gateway.snapshot") {
+  if (
+    request.arguments.source === "gateway.snapshot" ||
+    request.arguments.source === "gateway.compact_snapshot"
+  ) {
     return [observation(request, "gateway_stub", "gateway_snapshot", "await", payload)];
   }
   return [];

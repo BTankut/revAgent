@@ -107,6 +107,19 @@ export type {
   ProductionSuiteRunResult,
 } from "./productionSuiteRunner.js";
 export {
+  executeEarlyProductionCaseBinding,
+  executeEarlyProductionCaseBothBindings,
+} from "./productionCaseRunnerEarly.js";
+export type { EarlyProductionBindingExecution } from "./productionCaseRunnerEarly.js";
+export { EARLY_PRODUCTION_ORACLES } from "./productionCaseOraclesEarly.js";
+export { earlyProductionCaseProgram } from "./productionCaseProgramsEarly.js";
+export {
+  assertEarlyProductionCaseVariablesComplete,
+  EARLY_PRODUCTION_CASES,
+  earlyProductionCaseVariables,
+} from "./productionCaseSeedsEarly.js";
+export type { EarlyProductionCase } from "./productionCaseSeedsEarly.js";
+export {
   buildProductionExecutionPlan,
   productionComponentLaunchConfigs,
 } from "./productionExecutionPlan.js";

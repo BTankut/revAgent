@@ -473,6 +473,8 @@ function adjacentPorts(origin: number, maximumDistance: number): number[] {
   const candidates: number[] = [];
   for (let distance = 1; distance <= maximumDistance; distance += 1) {
     if (origin + distance <= 65_535) candidates.push(origin + distance);
+  }
+  for (let distance = 1; distance <= maximumDistance; distance += 1) {
     if (origin - distance >= 1) candidates.push(origin - distance);
   }
   return candidates;
@@ -765,6 +767,7 @@ export class CaseStackSupervisor {
         survivingPids: [],
         killEscalated: stopped.killEscalated,
         stopOrder: [input.componentId],
+        preserveState: input.preserveState,
       },
     );
     if (!input.preserveState) this.#removeComponentState(stack, input.componentId);
@@ -858,6 +861,7 @@ export class CaseStackSupervisor {
             survivingPids: [],
             killEscalated: false,
             stopOrder: [],
+            preserveState: input.preserveState,
           }),
         ],
       };
@@ -886,6 +890,7 @@ export class CaseStackSupervisor {
           survivingPids: [],
           killEscalated: false,
           stopOrder: [],
+          preserveState: input.preserveState,
         }),
       ],
     };
@@ -906,7 +911,7 @@ export class CaseStackSupervisor {
     const fixturePlan = this.#componentPlan("addin_loopback_fixture");
     let fixture: StartedStackComponent | undefined;
     let selectedPort = 0;
-    for (const candidate of adjacentPorts(primaryPort, 64)) {
+    for (const candidate of adjacentPorts(primaryPort, 5)) {
       if (!await loopbackPortAvailable(candidate)) continue;
       try {
         fixture = await this.#startComponent(
@@ -941,6 +946,8 @@ export class CaseStackSupervisor {
         firstPort: Math.min(primaryPort, selectedPort),
         lastPort: Math.max(primaryPort, selectedPort),
         expectedSessionCount: 2,
+        primaryProbeIndex: primaryPort < selectedPort ? 0 : 1,
+        auxiliaryProbeIndex: primaryPort < selectedPort ? 1 : 0,
         tempRegistryPath: null,
       },
       observations: [
@@ -1497,6 +1504,7 @@ export class CaseStackSupervisor {
       survivingPids: readonly number[];
       killEscalated: boolean;
       stopOrder: readonly ComponentId[];
+      preserveState?: boolean;
     },
   ): ProcessObservationRecord {
     const stack = this.#stack();
@@ -1527,6 +1535,7 @@ export class CaseStackSupervisor {
         survivingPids: [...cleanup.survivingPids],
         killEscalated: cleanup.killEscalated,
         stopOrder: [...cleanup.stopOrder],
+        preserveState: cleanup.preserveState ?? null,
       },
     };
   }
