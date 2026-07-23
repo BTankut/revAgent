@@ -17,6 +17,8 @@ import {
   createRawWssBindingDriver,
   type RawBindingTlsTrust,
 } from "../src/rawBindingDrivers.js";
+import { createRawProductionBindingStepHooks } from "../src/productionDriversRaw.js";
+import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
 import type {
   ParentStepDriverRequest,
   RawStepOutcome,
@@ -55,6 +57,23 @@ const tokenTable: StaticTokenTable = {
     seatId: "seat-02",
     machineFingerprint: `sha256:${"3".repeat(64)}`,
     provisionedCapabilities: ["journal_v1"],
+  },
+};
+
+const productionTokenTable: StaticTokenTable = {
+  "test-device-token": {
+    status: "active",
+    deviceId: "device-01",
+    tenantId: "tenant-01",
+    userId: "user-01",
+    seatId: "seat-01",
+    machineFingerprint: `sha256:${"0".repeat(64)}`,
+    provisionedCapabilities: [
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ],
   },
 };
 
@@ -170,7 +189,10 @@ function sha256(value: string | Uint8Array): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
-async function startSecureGateway(name: string): Promise<{
+async function startSecureGateway(
+  name: string,
+  tokens: StaticTokenTable = tokenTable,
+): Promise<{
   handle: GatewayStubHandle;
   trust: RawBindingTlsTrust;
 }> {
@@ -181,7 +203,7 @@ async function startSecureGateway(name: string): Promise<{
   await writeFile(certificatePath, tls.cert, { encoding: "utf8", flag: "wx" });
   const handle = await startGatewayStub({
     statePath: join(root, "gateway-state.json"),
-    tokenTable,
+    tokenTable: tokens,
     host: "127.0.0.1",
     port: 0,
     livenessSweepMs: 0,
@@ -512,5 +534,55 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       openingSent: true,
       targetSent: true,
     });
+  });
+
+  it("runs a catalog C31 frame through both production raw hook formats", async () => {
+    const variables = rawProductionCaseVariables("O1-C31");
+    const vectors = object(variables.vectors, "production vectors");
+    const c31 = object(vectors.c31, "production C31 vectors");
+    const frame = c31.session_register_positive;
+    if (frame === undefined) throw new Error("production C31 registration frame is absent");
+
+    for (const binding of ["wss", "streamable_http_sse"] as const) {
+      const { handle, trust } = await startSecureGateway(
+        `production-hook-${binding}`,
+        productionTokenTable,
+      );
+      const hooks = createRawProductionBindingStepHooks(binding === "wss"
+        ? {
+            wss: {
+              url: handle.wsUrl,
+              deviceToken: "test-device-token",
+              tlsTrust: trust,
+              limits: { settleMs: 40 },
+              now: () => NOW,
+            },
+          }
+        : {
+            streamableHttpSse: {
+              connectionUrl: handle.httpConnectionUrl,
+              deviceToken: "test-device-token",
+              tlsTrust: trust,
+              limits: { settleMs: 40 },
+              now: () => NOW,
+            },
+          });
+      const outcome = await hooks[binding]!(request(binding, { frame }, {
+        caseId: "O1-C31",
+        stepId: "o1-c31.session_register_positive",
+      }));
+      const remote = object(successResult(outcome).remoteOutcome, "production remoteOutcome");
+      if (binding === "streamable_http_sse") {
+        expect(remote, JSON.stringify(remote)).toMatchObject({
+          createResponse: { status: 201 },
+          connectionIdPresent: true,
+          sse: { status: 200 },
+        });
+      }
+      const frames = binding === "wss"
+        ? array(remote.receivedFrames, "production WSS receivedFrames")
+        : array(object(remote.sse, "production SSE").receivedFrames, "production SSE receivedFrames");
+      expect(parsedTypes(frames)).toContain("session_registered");
+    }
   });
 });

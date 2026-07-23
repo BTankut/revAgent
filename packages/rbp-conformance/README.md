@@ -100,6 +100,34 @@ binding, direction, target byte count/SHA-256, frame source/type, credential
 source, and monotonic capture time. They never emit `actual`, `passed`, or a
 conformance verdict; only the parent evaluator may do that.
 
+## Production C25-C40 catalog
+
+`RAW_PRODUCTION_CASES` and `rawProductionCaseVariables` own the deterministic
+C25-C40 seed range. The returned seed is a fresh clone for each binding and
+contains exact UUIDv7 identities, RFC 8785 digests, schema-positive and
+schema-negative frames, complete batch envelopes, bounded endpoint defaults,
+and the raw artifact/chunk boundary vectors. Runtime callers may replace only
+the ready endpoints and opaque credentials. `RAW_PRODUCTION_FRAME_FACTS`
+binds every `send_binding_frame` step to its exact source, type, UTF-8 byte
+count, and SHA-256; the parent oracle rejects any retained wire observation
+that does not match those bytes.
+
+`createRawProductionBindingStepHooks` combines that catalog with the real
+pinned WSS and HTTPS/SSE drivers. It injects a valid opening `hello` before
+every non-hello target and selects the other enrolled device hello only for
+the C25 cross-device probe. The harmless C30 reserialization vector is sent as
+`serializedFrame`, so its deliberately different property/escape spelling is
+not JSON-string encoded a second time.
+
+`RAW_PRODUCTION_ORACLES` contains exactly the 110 canonical assertions from
+C25 through C40. Each predicate consumes concrete wire metadata,
+`remoteOutcome`, control-domain fields, or Gateway/Bridge/fixture snapshots;
+a generic successful control response and child-owned `actual`, `passed`, or
+`verdict` fields cannot source PASS. C33 loopback process probes and C40
+product artifact evidence remain named, fail-closed supervisor dependencies
+in `RAW_PRODUCTION_EXTERNAL_DEPENDENCIES`. They must be replaced by retained
+supervisor evidence before the composed forty-case registry can pass.
+
 Retained evidence belongs below
 `artifacts/conformance/rbp-v1/1.0-rc.1/`. The manifest defines the exact run,
 JUnit, aggregate, log, trace, journal, and metric path templates. Nothing below

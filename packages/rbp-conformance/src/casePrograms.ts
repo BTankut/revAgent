@@ -977,15 +977,15 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C29",
     controls: [
       ...sessionSetup("O1-C29", ["batch_atomic"]),
-      bridge("o1-c29.non-atomic", "invoke_local", args({ envelope: batchEnvelope("O1-C29", "mixed-non-atomic", false) })),
-      bridge("o1-c29.atomic-terminal", "invoke_local", args({ envelope: batchEnvelope("O1-C29", "atomic-terminal", true) })),
-      bridge("o1-c29.atomic-replay", "invoke_local", args({ envelope: batchEnvelope("O1-C29", "atomic-terminal", true) })),
+      bridge("o1-c29.non-atomic", "invoke_local", args({ envelope: "{{vectors.c29.mixed_non_atomic}}" })),
+      bridge("o1-c29.atomic-terminal", "invoke_local", args({ envelope: "{{vectors.c29.atomic_terminal}}" })),
+      bridge("o1-c29.atomic-replay", "invoke_local", args({ envelope: "{{vectors.c29.atomic_terminal}}" })),
       harness("o1-c29.crash-during-atomic", "restart_component", args({
         componentId: "bridge_simulator",
         preserveState: true,
         crashWindow: "after_dispatch_before_terminal",
       })),
-      bridge("o1-c29.atomic-recover", "invoke_local", args({ envelope: batchEnvelope("O1-C29", "atomic-indeterminate", true) })),
+      bridge("o1-c29.atomic-recover", "invoke_local", args({ envelope: "{{vectors.c29.atomic_indeterminate}}" })),
     ],
     requiredHarnessCapabilities: ["batch_crash_window", "fixture_request_execution_count", "gateway_hold_ledger"],
   },
@@ -1006,9 +1006,11 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         "changed-scope",
         "changed-clearance",
         "harmless-reserialization",
-      ].map((vector) => harness(`o1-c30.${vector}`, "send_binding_frame", args({
-        frame: `{{vectors.c30.${vector}}}`,
-      }))),
+      ].map((vector) => harness(`o1-c30.${vector}`, "send_binding_frame", args(
+        vector === "harmless-reserialization"
+          ? { serializedFrame: `{{vectors.c30.${vector}}}` }
+          : { frame: `{{vectors.c30.${vector}}}` },
+      ))),
     ],
     requiredHarnessCapabilities: ["rfc8785_vector_generation", "raw_binding_frame", "pre_dispatch_count_capture"],
   },
@@ -1181,10 +1183,10 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     controls: [
       ...sessionSetup("O1-C38"),
       fixture("o1-c38.valid-guarded", "plan_fault", args({
-        requestId: "{{vectors.c38.guarded.steps.0.id}}",
+        requestId: "{{vectors.c38.guarded_first_invocation_id}}",
         fault: { injectedOutcome: { state: "guarded", guardedReason: "operator_confirmation_required" } },
       })),
-      bridge("o1-c38.first-delivery", "invoke_local", args({ envelope: batchEnvelope("O1-C38", "guarded", false) })),
+      bridge("o1-c38.first-delivery", "invoke_local", args({ envelope: "{{vectors.c38.guarded}}" })),
       harness("o1-c38.missing-reason", "send_binding_frame", args({ frame: "{{vectors.c38.guarded_without_reason}}" })),
     ],
     requiredHarnessCapabilities: ["fixture_request_execution_count", "raw_binding_frame", "batch_terminal_capture"],

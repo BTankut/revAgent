@@ -139,6 +139,28 @@ export type {
   RawWssBindingDriverOptions,
 } from "./rawBindingDrivers.js";
 export {
+  RAW_PRODUCTION_CASES,
+  RAW_PRODUCTION_FRAME_FACTS,
+  rawProductionCaseVariables,
+  rawProductionFrameFact,
+  rawProductionOpeningHello,
+} from "./productionCaseSeedsRaw.js";
+export type {
+  RawProductionCaseId,
+  RawProductionFrameFact,
+  RawProductionRuntimeSeed,
+} from "./productionCaseSeedsRaw.js";
+export {
+  createRawProductionBindingStepHooks,
+} from "./productionDriversRaw.js";
+export type {
+  RawProductionBindingDriverOptions,
+} from "./productionDriversRaw.js";
+export {
+  RAW_PRODUCTION_EXTERNAL_DEPENDENCIES,
+  RAW_PRODUCTION_ORACLES,
+} from "./productionCaseOraclesRaw.js";
+export {
   BRIDGE_CONTROL_ACTIONS,
   CASE_CONTROL_OBSERVATION_MAP,
   FIXTURE_CONTROL_ACTIONS,
