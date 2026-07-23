@@ -51,7 +51,6 @@ export {
   successfulControlResult,
 } from "./observationQueries.js";
 export type { ObservationObject, StepControlFact } from "./observationQueries.js";
-export { retainSupervisedCaseEvidence } from "./caseEvidenceWriter.js";
 export {
   assertCompleteObservationOnlyAdapterRegistry,
   assertObservationOnlyBatch,

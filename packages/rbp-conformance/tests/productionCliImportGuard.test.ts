@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   runAsyncCli,
   runCli,
+  runFinalEvidenceAsyncCli,
   runPrepareProductionAsyncCli,
   runProductionAsyncCli,
   runSoakAsyncCli,
@@ -141,6 +142,21 @@ describe("production CLI import guard", () => {
         "run-production",
         "missing-plan.json",
         "--repo-root",
+        repoRoot,
+      ]),
+      () => runFinalEvidenceAsyncCli([
+        "run-final-evidence",
+        "--plan-1",
+        "missing-plan-1.json",
+        "--plan-2",
+        "missing-plan-2.json",
+        "--plan-3",
+        "missing-plan-3.json",
+        "--soak-plan",
+        "missing-soak-plan.json",
+        "--repo-root",
+        repoRoot,
+        "--artifact-root",
         repoRoot,
       ]),
       () => runAsyncCli([
@@ -336,6 +352,7 @@ describe("production CLI import guard", () => {
         "const outcome = {",
         "  rootExportsWriter: 'createProductionBuildProvenanceSidecars' in packageRoot,",
         "  rootExportsPlanBuilder: 'buildProductionExecutionPlan' in packageRoot,",
+        "  rootExportsCaseEvidenceWriter: 'retainSupervisedCaseEvidence' in packageRoot,",
         "};",
         "try {",
         "  provenance.createProductionBuildProvenanceSidecars(",
@@ -383,6 +400,7 @@ describe("production CLI import guard", () => {
       const outcome = JSON.parse(String(result.stdout)) as {
         rootExportsWriter: boolean;
         rootExportsPlanBuilder: boolean;
+        rootExportsCaseEvidenceWriter: boolean;
         sidecarWriterReturned: boolean;
         sidecarWriterError: string;
         planBuilderReturned: boolean;
@@ -390,6 +408,7 @@ describe("production CLI import guard", () => {
       };
       expect(outcome.rootExportsWriter).toBe(false);
       expect(outcome.rootExportsPlanBuilder).toBe(false);
+      expect(outcome.rootExportsCaseEvidenceWriter).toBe(false);
       expect(outcome.sidecarWriterReturned).toBe(false);
       expect(outcome.sidecarWriterError).toMatch(launcherError);
       expect(outcome.planBuilderReturned).toBe(false);

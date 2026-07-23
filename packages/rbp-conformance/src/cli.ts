@@ -1,12 +1,21 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js";
 import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
+import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
@@ -76,6 +85,7 @@ function usage(): never {
       "Usage:",
       "  rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> --git-executable <absolute path> [--repo-root <path>] [--node-executable <path>]",
       "  rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
+      "  rbp-conformance run-final-evidence --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --soak-plan <plan.json> --repo-root <path> --artifact-root <path> [--expected-commit <sha>] [--expected-tree <sha>]",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-soak <execution-plan.json> --mode smoke [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
       "  rbp-conformance run-soak <execution-plan.json> --mode one_hour [--repo-root <path>] [--artifact-root <path>]",
@@ -316,6 +326,157 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
   process.exitCode = result.report.status === "passed" ? 0 : 1;
 }
 
+/**
+ * The sole authoritative final-evidence workflow. It consumes only four
+ * prebuilt plans, executes all three conformance runs and the fixed one-hour
+ * soak in this attested process, and emits the final literal only after every
+ * in-memory result and retained byte has passed closed validation.
+ */
+export async function runFinalEvidenceAsyncCli(
+  args: string[],
+  cwd: string = process.cwd(),
+): Promise<void> {
+  const context = productionFinalRunContext(args, cwd);
+  assertNoPreexistingFinalEvidence(
+    context.artifactRoot,
+    context.runPlans.map(({ runId }) => runId) as [string, string, string],
+    context.soakPlan.runId,
+  );
+
+  const runInputs: AggregateInput[] = [];
+  for (const [index, plan] of context.runPlans.entries()) {
+    assertFinalPlanSnapshotsCurrent(context);
+    const result = await executeProductionConformanceRun({
+      plan,
+      repoRoot: context.repoRoot,
+      artifactRoot: context.artifactRoot,
+      seed: `final-evidence:${plan.runId}:sequence-${String(index + 1)}`,
+    });
+    assertRunMatchesPlan(result.report, plan);
+    assertPassingRunReport(result.report, context.options);
+    const expectedReportPath = retainedTemplate(
+      canonicalManifest.retainedEvidence.runReport,
+      { run_id: plan.runId },
+    );
+    if (result.reportPath !== expectedReportPath) {
+      throw new Error(
+        `run ${String(index + 1)} returned a noncanonical report path`,
+      );
+    }
+    const retained = readExactRetainedJson(
+      context.artifactRoot,
+      result.reportPath,
+      result.report,
+      `run ${String(index + 1)} report`,
+    );
+    runInputs.push({
+      report: result.report,
+      reportPath: result.reportPath,
+      reportSha256: retained.sha256,
+    });
+  }
+
+  assertFinalPlanSnapshotsCurrent(context);
+  const aggregate = createThreeRunAggregate(runInputs);
+  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  const aggregateJunit = aggregateReportToJUnitXml(aggregate);
+  const aggregateJunitPath =
+    `${canonicalManifest.retainedEvidence.root}/${canonicalManifest.retainedEvidence.aggregateJunit}`;
+  const aggregateJunitBytes = Buffer.from(aggregateJunit, "utf8");
+  aggregate.artifacts.push({
+    kind: "aggregate_junit",
+    path: aggregateJunitPath,
+    sha256: createHash("sha256").update(aggregateJunitBytes).digest("hex"),
+    bytes: aggregateJunitBytes.length,
+    mediaType: "application/xml",
+  });
+
+  const store = new SecureEvidenceStore(context.artifactRoot);
+  const storedJunit = store.write(aggregateJunitPath, aggregateJunitBytes);
+  if (!storedJunit.bytes.equals(aggregateJunitBytes)) {
+    throw new Error("retained aggregate JUnit bytes differ from the in-memory result");
+  }
+  if (
+    createHash("sha256").update(storedJunit.bytes).digest("hex") !==
+    aggregate.artifacts[0]!.sha256
+  ) {
+    throw new Error("retained aggregate JUnit hash differs from the in-memory result");
+  }
+
+  const aggregateBytes = Buffer.from(stableJson(aggregate), "utf8");
+  const storedAggregate = store.write(aggregate.reportPath, aggregateBytes);
+  if (!storedAggregate.bytes.equals(aggregateBytes)) {
+    throw new Error("retained aggregate JSON bytes differ from the in-memory result");
+  }
+  const retainedAggregate = readExactRetainedJson(
+    context.artifactRoot,
+    aggregate.reportPath,
+    aggregate,
+    "aggregate report",
+  );
+  context.options.aggregateReportFile = retainedAggregate.absolutePath;
+  assertPassingAggregateReport(aggregate, context.options);
+  assertAggregateMatchesPlans(aggregate, context.runPlans);
+
+  assertFinalPlanSnapshotsCurrent(context);
+  const soakResult = await runReconnectSoak({
+    mode: "one_hour",
+    plan: context.soakPlan,
+    repoRoot: context.repoRoot,
+    artifactRoot: context.artifactRoot,
+  });
+  const expectedSoakReportPath = retainedTemplate(
+    canonicalManifest.retainedEvidence.soakReport,
+    { mode: "one_hour", run_id: context.soakPlan.runId },
+  );
+  if (soakResult.reportPath !== expectedSoakReportPath) {
+    throw new Error("one-hour soak returned a noncanonical report path");
+  }
+  assertFinalSoakReportMode(soakResult.report);
+  assertSoakMatchesPlan(soakResult.report, context.soakPlan);
+  const retainedSoak = readExactRetainedJson(
+    context.artifactRoot,
+    soakResult.reportPath,
+    soakResult.report,
+    "one-hour soak report",
+  );
+  context.options.soakReportFile = retainedSoak.absolutePath;
+  assertPassingSoakReport(soakResult.report, context.options);
+  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
+
+  // Reopen and revalidate the entire evidence set after the one-hour boundary.
+  // A plan or retained-output mutation during the soak invalidates the set.
+  assertFinalPlanSnapshotsCurrent(context);
+  readExactRetainedJson(
+    context.artifactRoot,
+    aggregate.reportPath,
+    aggregate,
+    "aggregate report",
+  );
+  for (const input of runInputs) {
+    readExactRetainedJson(
+      context.artifactRoot,
+      input.reportPath,
+      input.report,
+      `run ${String(input.report.run.sequence)} report`,
+    );
+  }
+  readExactRetainedJson(
+    context.artifactRoot,
+    soakResult.reportPath,
+    soakResult.report,
+    "one-hour soak report",
+  );
+  assertPassingAggregateReport(aggregate, context.options);
+  assertAggregateMatchesPlans(aggregate, context.runPlans);
+  assertPassingSoakReport(soakResult.report, context.options);
+  assertFinalSoakReportMode(soakResult.report);
+  assertSoakMatchesPlan(soakResult.report, context.soakPlan);
+  assertAggregateAndSoakShareExactCandidate(aggregate, soakResult.report);
+
+  process.stdout.write("RBP FINAL EVIDENCE: PASS\n");
+}
+
 function resolveFrom(cwd: string, file: string): string {
   return path.isAbsolute(file) ? file : path.resolve(cwd, file);
 }
@@ -343,6 +504,27 @@ interface ProductionFinalEvidenceContext {
   aggregateFile: string;
 }
 
+interface FinalPlanSnapshot {
+  file: string;
+  realPath: string;
+  bytes: Buffer;
+  plan: ExecutionPlan;
+}
+
+interface ProductionFinalRunContext {
+  options: PassingValidationOptions;
+  runPlans: [ExecutionPlan, ExecutionPlan, ExecutionPlan];
+  soakPlan: ExecutionPlan;
+  planSnapshots: [
+    FinalPlanSnapshot,
+    FinalPlanSnapshot,
+    FinalPlanSnapshot,
+    FinalPlanSnapshot,
+  ];
+  repoRoot: string;
+  artifactRoot: string;
+}
+
 export function assertDistinctFinalExecutionPlanFiles(
   planFiles: readonly [string, string, string, string],
 ): void {
@@ -368,6 +550,12 @@ export function assertFinalExecutionPlanIdentities(
     throw new Error(
       "final one-hour soak runId must be distinct from all aggregate runIds",
     );
+  }
+  if (
+    new Set([...aggregatePlans.map(({ runId }) => runId), soakPlan.runId])
+      .size !== 4
+  ) {
+    throw new Error("final evidence requires four distinct execution-plan runIds");
   }
 }
 
@@ -402,6 +590,365 @@ export function assertPlansShareExactCandidate(
     plans.map(({ sequence }) => sequence).join("|") !== "1|2|3"
   ) {
     throw new Error("three-run validation requires plans in sequence 1, 2, 3");
+  }
+}
+
+function readCanonicalFinalPlanSnapshot(
+  planFile: string,
+  repoRoot: string,
+): FinalPlanSnapshot {
+  const file = path.resolve(planFile);
+  if (!existsSync(file)) {
+    throw new Error(`final evidence execution plan does not exist: ${file}`);
+  }
+  const lexical = lstatSync(file);
+  if (!lexical.isFile() || lexical.isSymbolicLink()) {
+    throw new Error(`final evidence execution plan is not a physical file: ${file}`);
+  }
+  const realPath = realpathSync(file);
+  if (!statSync(realPath).isFile()) {
+    throw new Error(`final evidence execution plan is not a regular file: ${file}`);
+  }
+  const bytes = readFileSync(realPath);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new Error(
+      `final evidence execution plan is not JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (!Buffer.from(stableJson(parsed), "utf8").equals(bytes)) {
+    throw new Error(
+      "final evidence execution plan must retain exact canonical stableJson bytes",
+    );
+  }
+  const plan = parsed as ExecutionPlan;
+  assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertProductionCliBound(plan, repoRoot);
+  assertProductionControllerRuntimeCurrent(plan);
+  return { file, realPath, bytes, plan };
+}
+
+function assertFinalPlanSnapshotsCurrent(
+  context: ProductionFinalRunContext,
+): void {
+  for (const snapshot of context.planSnapshots) {
+    if (
+      !existsSync(snapshot.file) ||
+      lstatSync(snapshot.file).isSymbolicLink() ||
+      realpathSync(snapshot.file) !== snapshot.realPath ||
+      !readFileSync(snapshot.realPath).equals(snapshot.bytes)
+    ) {
+      throw new Error(
+        `final evidence execution plan changed during the attested run: ${snapshot.file}`,
+      );
+    }
+    assertProductionExecutionPlanCurrent(snapshot.plan, context.repoRoot);
+    assertProductionCliBound(snapshot.plan, context.repoRoot);
+    assertProductionControllerRuntimeCurrent(snapshot.plan);
+  }
+  assertPlansShareExactCandidate(context.runPlans);
+  assertPlansShareExactCandidate([
+    ...context.runPlans,
+    context.soakPlan,
+  ]);
+  assertFinalExecutionPlanIdentities(context.runPlans, context.soakPlan);
+}
+
+function productionFinalRunContext(
+  args: string[],
+  cwd: string,
+): ProductionFinalRunContext {
+  const [command, ...flags] = args;
+  if (command !== "run-final-evidence") usage();
+  const planFiles = new Map<number, string>();
+  let soakPlanFile: string | undefined;
+  let repoRoot: string | undefined;
+  let artifactRoot: string | undefined;
+  let expectedCommitSha: string | undefined;
+  let expectedTreeSha: string | undefined;
+  for (let index = 0; index < flags.length; index += 2) {
+    const name = flags[index];
+    const value = flags[index + 1];
+    if (value === undefined) usage();
+    if (
+      name === "--plan-1" ||
+      name === "--plan-2" ||
+      name === "--plan-3"
+    ) {
+      planFiles.set(Number(name.at(-1)), resolveFrom(cwd, value));
+    } else if (name === "--soak-plan") {
+      soakPlanFile = resolveFrom(cwd, value);
+    } else if (name === "--repo-root") {
+      repoRoot = resolveFrom(cwd, value);
+    } else if (name === "--artifact-root") {
+      artifactRoot = resolveFrom(cwd, value);
+    } else if (name === "--expected-commit") {
+      expectedCommitSha = value;
+    } else if (name === "--expected-tree") {
+      expectedTreeSha = value;
+    } else {
+      // There is deliberately no report, aggregate, soak-result, executor,
+      // adapter, clock, or duration input on the authoritative command.
+      usage();
+    }
+  }
+  if (
+    repoRoot === undefined ||
+    artifactRoot === undefined ||
+    soakPlanFile === undefined ||
+    planFiles.size !== 3
+  ) {
+    usage();
+  }
+
+  // Establish the process-private launcher boundary before plan, ignored
+  // output, or retained-evidence bytes are read.
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
+  const allPlanFiles = [
+    planFiles.get(1)!,
+    planFiles.get(2)!,
+    planFiles.get(3)!,
+    soakPlanFile,
+  ] as [string, string, string, string];
+  assertDistinctFinalExecutionPlanFiles(allPlanFiles);
+  const planSnapshots = allPlanFiles.map((planFile) =>
+    readCanonicalFinalPlanSnapshot(planFile, repoRoot)) as [
+      FinalPlanSnapshot,
+      FinalPlanSnapshot,
+      FinalPlanSnapshot,
+      FinalPlanSnapshot,
+    ];
+  const runPlans = planSnapshots
+    .slice(0, 3)
+    .map(({ plan }) => plan) as [
+      ExecutionPlan,
+      ExecutionPlan,
+      ExecutionPlan,
+    ];
+  const soakPlan = planSnapshots[3].plan;
+  assertPlansShareExactCandidate(runPlans);
+  assertPlansShareExactCandidate([...runPlans, soakPlan]);
+  assertFinalExecutionPlanIdentities(runPlans, soakPlan);
+  const source = runPlans[0].source;
+  if (
+    expectedCommitSha !== undefined &&
+    expectedCommitSha !== source.commitSha
+  ) {
+    throw new Error("--expected-commit does not match the gated production plans");
+  }
+  if (
+    expectedTreeSha !== undefined &&
+    expectedTreeSha !== source.treeSha
+  ) {
+    throw new Error("--expected-tree does not match the gated production plans");
+  }
+  const context: ProductionFinalRunContext = {
+    options: {
+      verifyArtifactFiles: true,
+      artifactRoot,
+      expectedCommitSha: source.commitSha,
+      expectedTreeSha: source.treeSha,
+    },
+    runPlans,
+    soakPlan,
+    planSnapshots,
+    repoRoot,
+    artifactRoot,
+  };
+  assertFinalPlanSnapshotsCurrent(context);
+  return context;
+}
+
+function lexicalPathExists(value: string): boolean {
+  try {
+    lstatSync(value);
+    return true;
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      "code" in error &&
+      error.code === "ENOENT"
+    ) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+function assertPlainExistingDirectory(value: string, label: string): void {
+  if (!lexicalPathExists(value)) return;
+  const entry = lstatSync(value);
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw new Error(`${label} is not a physical directory: ${value}`);
+  }
+}
+
+function exactRunIdSegment(runId: string): string {
+  if (
+    runId.length === 0 ||
+    runId === "." ||
+    runId === ".." ||
+    path.basename(runId) !== runId ||
+    /[\\/]/u.test(runId)
+  ) {
+    throw new Error(`final evidence runId is not a confined path segment: ${runId}`);
+  }
+  return runId;
+}
+
+function retainedTemplate(
+  template: string,
+  values: Readonly<Record<string, string>>,
+): string {
+  return `${canonicalManifest.retainedEvidence.root}/${
+    Object.entries(values).reduce(
+      (result, [name, value]) => result.replaceAll(`{${name}}`, value),
+      template,
+    )
+  }`;
+}
+
+/**
+ * A failed or partial final set is never resumed. Plan files below the
+ * canonical plans directory may already exist, but each output run directory,
+ * the aggregate directory, and the exact one-hour soak run directory must be
+ * completely absent before the first case starts.
+ */
+export function assertNoPreexistingFinalEvidence(
+  artifactRootValue: string,
+  runIdsValue: readonly [string, string, string],
+  soakRunIdValue: string,
+): void {
+  if (
+    new Set([...runIdsValue, soakRunIdValue]).size !== 4
+  ) {
+    throw new Error("final evidence requires four distinct execution-plan runIds");
+  }
+  const artifactRoot = path.resolve(artifactRootValue);
+  assertPlainExistingDirectory(artifactRoot, "final evidence artifact root");
+  const retainedRoot = path.resolve(
+    artifactRoot,
+    canonicalManifest.retainedEvidence.root,
+  );
+  assertPlainExistingDirectory(retainedRoot, "canonical retained-evidence root");
+  const runsRoot = path.join(retainedRoot, "runs");
+  assertPlainExistingDirectory(runsRoot, "canonical retained run root");
+  const soakRoot = path.join(retainedRoot, "soak");
+  assertPlainExistingDirectory(soakRoot, "canonical retained soak root");
+  const oneHourRoot = path.join(soakRoot, "one_hour");
+  assertPlainExistingDirectory(
+    oneHourRoot,
+    "canonical one-hour retained soak root",
+  );
+
+  const outputRoots = [
+    ...runIdsValue.map((runId) =>
+      path.join(runsRoot, exactRunIdSegment(runId))),
+    path.join(retainedRoot, "aggregate"),
+    path.join(oneHourRoot, exactRunIdSegment(soakRunIdValue)),
+  ];
+  for (const outputRoot of outputRoots) {
+    if (lexicalPathExists(outputRoot)) {
+      throw new Error(
+        `final evidence output already exists; use a fresh evidence set: ${outputRoot}`,
+      );
+    }
+  }
+}
+
+function confinedRetainedFile(
+  artifactRootValue: string,
+  relativePath: string,
+  label: string,
+): string {
+  const artifactRoot = path.resolve(artifactRootValue);
+  const retainedRoot = path.resolve(
+    artifactRoot,
+    canonicalManifest.retainedEvidence.root,
+  );
+  const target = path.resolve(artifactRoot, relativePath);
+  const relative = path.relative(retainedRoot, target);
+  if (
+    relative === "" ||
+    relative.startsWith("..") ||
+    path.isAbsolute(relative)
+  ) {
+    throw new Error(`${label} escapes the canonical retained-evidence root`);
+  }
+  if (!lexicalPathExists(target)) {
+    throw new Error(`${label} is missing from retained evidence: ${relativePath}`);
+  }
+  const entry = lstatSync(target);
+  if (!entry.isFile() || entry.isSymbolicLink()) {
+    throw new Error(`${label} is not a physical retained file: ${relativePath}`);
+  }
+  const artifactRootReal = realpathSync(artifactRoot);
+  const targetReal = realpathSync(target);
+  const realRelative = path.relative(artifactRootReal, targetReal);
+  if (realRelative.startsWith("..") || path.isAbsolute(realRelative)) {
+    throw new Error(`${label} resolves outside the final artifact root`);
+  }
+  return targetReal;
+}
+
+function readExactRetainedJson<T>(
+  artifactRoot: string,
+  relativePath: string,
+  expected: T,
+  label: string,
+): { absolutePath: string; bytes: Buffer; sha256: string } {
+  const absolutePath = confinedRetainedFile(
+    artifactRoot,
+    relativePath,
+    label,
+  );
+  const bytes = readFileSync(absolutePath);
+  const expectedBytes = Buffer.from(stableJson(expected), "utf8");
+  if (!bytes.equals(expectedBytes)) {
+    throw new Error(`${label} bytes differ from the returned in-memory result`);
+  }
+  let retained: unknown;
+  try {
+    retained = JSON.parse(bytes.toString("utf8")) as unknown;
+  } catch (error) {
+    throw new Error(
+      `${label} is not retained JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  if (stableJson(retained) !== stableJson(expected)) {
+    throw new Error(`${label} JSON differs from the returned in-memory result`);
+  }
+  return {
+    absolutePath,
+    bytes,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  };
+}
+
+function assertAggregateAndSoakShareExactCandidate(
+  aggregate: AggregateReport,
+  soak: SoakReport,
+): void {
+  const aggregateCandidate = stableJson({
+    manifest: aggregate.manifest,
+    source: aggregate.source,
+    components: aggregate.runs[0]?.components,
+  });
+  const soakCandidate = stableJson({
+    manifest: soak.manifest,
+    source: soak.source,
+    components: soak.components,
+  });
+  if (aggregateCandidate !== soakCandidate) {
+    throw new Error(
+      "final aggregate and one-hour soak do not share one exact candidate identity",
+    );
   }
 }
 
@@ -673,7 +1220,9 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     const report = readJson(file, cwd);
     assertPassingRunReport(report, context.options);
     assertRunMatchesPlan(report as RunReport, context.plans[0]!);
-    process.stdout.write("RBP conformance run: PASS\n");
+    process.stdout.write(
+      "RBP conformance run audit: VALID (NON-AUTHORITATIVE)\n",
+    );
     return;
   }
   if (command === "validate-aggregate") {
@@ -685,7 +1234,9 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     options.aggregateReportFile = resolveFrom(cwd, file);
     assertPassingAggregateReport(report, options);
     assertAggregateMatchesPlans(report as AggregateReport, context.plans);
-    process.stdout.write("RBP conformance three-run aggregate: PASS\n");
+    process.stdout.write(
+      "RBP conformance aggregate audit: VALID (NON-AUTHORITATIVE)\n",
+    );
     return;
   }
   if (command === "validate-soak") {
@@ -707,7 +1258,9 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
       report as SoakReport,
       context.soakPlan,
     );
-    process.stdout.write("RBP final aggregate and soak evidence set: PASS\n");
+    process.stdout.write(
+      "RBP aggregate and soak audit: VALID (NON-AUTHORITATIVE)\n",
+    );
     return;
   }
   if (command === "junit") {
@@ -763,6 +1316,8 @@ export async function runProductionCliMain(args: string[]): Promise<void> {
   try {
     if (args[0] === "prepare-production") {
       await runPrepareProductionAsyncCli(args);
+    } else if (args[0] === "run-final-evidence") {
+      await runFinalEvidenceAsyncCli(args);
     } else if (args[0] === "run-production") {
       await runProductionAsyncCli(args);
     } else if (args[0] === "run-c19") await runAsyncCli(args);

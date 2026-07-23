@@ -150,6 +150,7 @@ After `npm run build`, the package exposes:
 
 ```text
 rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> --git-executable <absolute-path> [--repo-root <path>] [--node-executable <path>]
+rbp-conformance run-final-evidence --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --soak-plan <plan.json> --repo-root <path> --artifact-root <path> [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
@@ -164,8 +165,8 @@ rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-r
 ### Canonical production prepare runbook
 
 Do not assemble a production plan from an existing ignored `dist` tree. Every
-PASS-capable prepare, run, aggregate, and validation command begins in the
-tracked external launcher under the exact SystemRoot Windows PowerShell. That
+production prepare and the sole PASS-capable final command begin in the tracked
+external launcher under the exact SystemRoot Windows PowerShell. That
 launcher removes Node and `ws` resolution overrides before the exact reviewed
 Node executable can load any production JavaScript. Before any production
 controller import, the child uses a separate exact SystemRoot Windows
@@ -301,83 +302,43 @@ No timestamp or filesystem mtime participates. Windows system DLLs and
 kernel-level filesystem races are outside the application provenance
 boundary; every repo/npm-controlled executable byte is inside it.
 
-After all four plans are prepared, use the same external boundary for every
-run and gate. The following is the canonical command shape; `<sha>`, `<tree>`,
-and `<sha12>` are the locked candidate identities:
+After all four plans are prepared, the entire three-run, aggregate/JUnit, and
+fixed one-hour-soak chain runs in one attested Node process. This is the only
+command allowed to print the literal final `PASS`; `<sha>` and `<tree>` are the
+locked candidate identities:
 
 ```powershell
-$RunRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\runs'
-$ReportR1 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r1\run-report.json'
-$ReportR2 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r2\run-report.json'
-$ReportR3 = Join-Path $RunRoot 'rbp-v1.0-<sha12>-s01-r3\run-report.json'
-$Aggregate = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\aggregate\three-run-report.json'
-$SoakReport = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\soak\one_hour\rbp-v1.0-<sha12>-s01-soak-1h\soak-report.json'
 $ExpectedCommit = '<sha>'
 $ExpectedTree = '<tree>'
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
   -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  run-production $PlanR1 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r1'
-if ($LASTEXITCODE -ne 0) { throw 'r1 run failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  validate-run $ReportR1 --plan $PlanR1 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
-  --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'r1 validation failed' }
-
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  run-production $PlanR2 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r2'
-if ($LASTEXITCODE -ne 0) { throw 'r2 run failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  validate-run $ReportR2 --plan $PlanR2 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
-  --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'r2 validation failed' }
-
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  run-production $PlanR3 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r3'
-if ($LASTEXITCODE -ne 0) { throw 'r3 run failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  validate-run $ReportR3 --plan $PlanR3 --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
-  --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'r3 validation failed' }
-
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  aggregate $ReportR1 $ReportR2 $ReportR3 `
+  run-final-evidence `
   --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
-  --repo-root $RepoRoot --artifact-root $EvidenceRoot
-if ($LASTEXITCODE -ne 0) { throw 'aggregate failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  validate-aggregate $Aggregate `
-  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
+  --soak-plan $PlanSoak `
   --repo-root $RepoRoot --artifact-root $EvidenceRoot `
   --expected-commit $ExpectedCommit --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'aggregate validation failed' }
-
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  run-soak $PlanSoak --mode one_hour --repo-root $RepoRoot `
-  --artifact-root $EvidenceRoot
-if ($LASTEXITCODE -ne 0) { throw 'one-hour soak failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  validate-soak $SoakReport --plan $PlanSoak --aggregate $Aggregate `
-  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
-  --repo-root $RepoRoot --artifact-root $EvidenceRoot `
-  --expected-commit $ExpectedCommit --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'soak validation failed' }
+if ($LASTEXITCODE -ne 0) { throw 'final evidence run failed' }
 ```
+
+The command accepts no retained report, aggregate, soak result, duration,
+clock, adapter, executor, or oracle input. Before the first case starts it
+requires four physical, byte-canonical, distinct plan files; sequence
+`1/2/3` for the three runs; sequence `1` for the unique soak plan; four unique
+run ids; and one exact candidate/toolchain/controller identity. The exact
+run-id directories, aggregate directory, and one-hour soak run-id directory
+must not already exist. Any failed or partial attempt therefore requires a new
+evidence-set directory and new run ids.
+
+The same process executes the three runs sequentially from the gated plans.
+Its decision source is each directly returned in-memory report, not caller
+JSON. It byte-compares each canonical retained report with `stableJson` of that
+returned object, performs full artifact validation, builds the aggregate and
+JUnit from those same three objects, writes and reopens their canonical bytes,
+then runs the non-overridable one-hour soak. After the hour it reopens every
+report, rechecks all four original plan bytes and current candidate/toolchain/
+CLI bindings, and fully validates the aggregate and soak before printing
+`RBP FINAL EVIDENCE: PASS`.
 
 The launcher accepts only the canonical tracked prepare wrapper or CLI
 bootstrap. Its source, the attestation client/bootstrap, and PowerShell
@@ -419,16 +380,15 @@ tested fail-closed boundary.
 `prepare-production` verifies those sidecars before writing the plan. The plan
 retains each sidecar hash and its compile/runtime/dependency/controller/tool
 identity. Every production execution entrypoint (`run-production`, `run-c19`,
-and `run-soak`) and each plan-bound validation/aggregation path performs the
-full source/build-toolchain check at its boundary and requires the current
-controller Node to equal the plan-bound runtime Node. Validators require the
-exact retained plan; the three-run paths require distinct sequence-1/2/3 plans
-with one identical candidate stack, and the report run id/sequence/manifest/
-source/component identity must match its plan. `validate-soak` is the final
-evidence-set gate: it also requires the retained three-run aggregate and all
-three run plans, then proves that the aggregate and soak share the same
-candidate, toolchain, harness, and component identity before it can print
-PASS.
+`run-soak`, and `run-final-evidence`) and each plan-bound audit/aggregation
+path performs the full source/build-toolchain check at its boundary and
+requires the current controller Node to equal the plan-bound runtime Node.
+Standalone `validate-run`, `validate-aggregate`, `validate-soak`, and
+`aggregate` consume caller-supplied retained JSON and are explicitly
+NON-AUTHORITATIVE audit/reconstruction tools. They may exit zero and print
+`VALID`, but they never print the literal `PASS` or produce a freeze verdict.
+Likewise, standalone `run-production` and `run-soak` produce diagnostic or
+partial retained evidence, not final freeze acceptance.
 
 The launch guard re-derives the canonical command and rechecks source,
 sidecar, runtime Node, entrypoint, component/protocol/controller output, and
@@ -442,14 +402,15 @@ compile-cache/preserve-symlink controls, or `WS_NO_*` resolution switches.
 A missing sidecar, stale source, stale binary, changed dependency/native byte,
 unexpected optional peer, changed controller, command or Node substitution,
 changed toolchain, sidecar tamper, or dirty tree fails closed before retained
-PASS evidence can be produced.
+final evidence can be accepted.
 
 These v3 checks define the candidate-evidence boundary; they are not themselves
 a freeze verdict. No M1 PASS, protected merge, or `rbp/v1.0.0` tag is claimed
-until the separately retained runs, one-hour soak, validators, tree-identity
-proof, and operator closing review complete.
+until the authoritative same-process workflow, tree-identity proof, and
+operator closing review complete. The independent audit commands may be rerun
+for inspection, but their results never authorize that transition.
 
-Validation commands are pass gates: a structurally valid but partially
+Audit validation remains fail-closed: a structurally valid but partially
 executed report still exits nonzero. `run-c19` also exits nonzero by design
 because its retained report leaves 39 cases `not_run`. Fixture, simulator, and
 stub commands are supplied by the versioned `ExecutionPlan`; the supervisor,
@@ -473,7 +434,7 @@ of permitting catch-up cycles or a timestamp-only PASS.
 
 ## Retained evidence rules
 
-Pass validation with `verifyArtifactFiles: true` reads every artifact beneath
+Full evidence validation with `verifyArtifactFiles: true` reads every artifact beneath
 the canonical retained root after resolving the real path. A lexical path,
 symlink, junction, or Windows reparse point that resolves outside that root is
 rejected. Required evidence is never allowed to be zero bytes.
@@ -505,7 +466,7 @@ identities, bindings, and exact timestamps in addition to the retained report
 path and SHA-256. Pass validation reopens those three reports, verifies their
 hashes and artifacts, compares every embedded field and case status, rejects
 mixed stacks, and requires strictly ordered non-overlapping intervals.
-The `aggregate` CLI command verifies all three retained source reports, writes
+The non-authoritative `aggregate` audit command verifies all three retained source reports, writes
 the canonical aggregate JUnit file, binds its path/hash/size into the aggregate,
 and subjects the result to the same full retained-evidence validation before it
 writes the aggregate JSON. It accepts no output filename: `--artifact-root`
@@ -524,10 +485,11 @@ computes status itself. `smoke` accepts a bounded 30-second through 10-minute
 duration; `one_hour` is fixed at exactly 3,600,000 requested milliseconds. Both
 bindings, reconnect, proxy churn, heartbeat acknowledgement, control traffic,
 zero pending journal state, bounded resource samples, and zero orphans are
-required. `validate-soak` reopens and hashes the retained JSONL metrics and
-requires every metric row to exactly mirror its same-index report cycle and
-resource sample. It independently enforces the one-hour 720-cycle coverage,
-alternating binding sequence, head/tail windows, and bounded interval/jitter
-policy. It also reopens the retained aggregate, gates all four exact plans, and
-rejects any aggregate/soak candidate mismatch before accepting the final
-evidence set.
+required. The authoritative `run-final-evidence` workflow reopens and hashes
+the retained JSONL metrics, requires every metric row to exactly mirror its
+same-index report cycle and resource sample, and independently enforces the
+one-hour 720-cycle coverage, alternating binding sequence, head/tail windows,
+and bounded interval/jitter policy. It also reopens the retained aggregate,
+re-gates all four exact plans, and rejects any aggregate/soak candidate
+mismatch before emitting its final literal. `validate-soak` exposes the same
+retained-data checks only as a NON-AUTHORITATIVE audit of caller-supplied JSON.

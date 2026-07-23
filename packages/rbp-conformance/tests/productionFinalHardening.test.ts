@@ -2,8 +2,10 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  mkdirSync,
   mkdtempSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -16,9 +18,13 @@ import {
   assertDistinctFinalExecutionPlanFiles,
   assertFinalExecutionPlanIdentities,
   assertFinalSoakReportMode,
+  assertNoPreexistingFinalEvidence,
+  assertPlansShareExactCandidate,
+  runFinalEvidenceAsyncCli,
   runPrepareProductionAsyncCli,
   runSoakAsyncCli,
 } from "../src/cli.js";
+import { canonicalManifest } from "../src/manifest.js";
 import {
   assertProductionExecutionPlanCurrent,
   canonicalProductionComponentVersion,
@@ -218,6 +224,124 @@ describe("final production CLI hardening", () => {
     soak.runId = aggregate[0].runId;
     expect(() => assertFinalExecutionPlanIdentities(aggregate, soak))
       .toThrow(/must be distinct/u);
+
+    soak.runId = "soak-one-hour";
+    aggregate[1].runId = aggregate[0].runId;
+    expect(() => assertFinalExecutionPlanIdentities(aggregate, soak))
+      .toThrow(/four distinct execution-plan runIds/u);
+  });
+
+  it.each([
+    "--report-1",
+    "--aggregate",
+    "--soak-report",
+    "--duration-ms",
+    "--cycle-interval-ms",
+    "--clock",
+    "--adapter",
+    "--executor",
+  ])("rejects caller-supplied or injectable %s input on the authoritative command", async (flag) => {
+    await expect(runFinalEvidenceAsyncCli([
+      "run-final-evidence",
+      flag,
+      "caller-controlled-value",
+      "--repo-root",
+      repoRoot,
+    ], repoRoot)).rejects.toThrow(/Usage:/u);
+  });
+
+  it.each([
+    [
+      "run-id directory",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "runs",
+        "final-r1",
+        "cases",
+        "O1-C01",
+      ),
+    ],
+    [
+      "aggregate directory",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "aggregate",
+      ),
+    ],
+    [
+      "one-hour soak run-id directory",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "soak",
+        "one_hour",
+        "final-soak",
+        "partial",
+      ),
+    ],
+  ])("rejects any preexisting %s while allowing prepared plans", (_label, target) => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-final-preexisting-"));
+    const runIds = ["final-r1", "final-r2", "final-r3"] as const;
+    try {
+      mkdirSync(path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "plans",
+        "candidate",
+      ), { recursive: true });
+      expect(() =>
+        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        .not.toThrow();
+
+      mkdirSync(target(root), { recursive: true });
+      expect(() =>
+        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        .toThrow(/use a fresh evidence set/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a preexisting reparse output directory", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-final-reparse-"));
+    const outside = mkdtempSync(path.join(tmpdir(), "rbp-final-reparse-target-"));
+    const runIds = ["final-r1", "final-r2", "final-r3"] as const;
+    try {
+      const runsRoot = path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "runs",
+      );
+      mkdirSync(runsRoot, { recursive: true });
+      symlinkSync(
+        outside,
+        path.join(runsRoot, runIds[0]),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      expect(() =>
+        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        .toThrow(/use a fresh evidence set/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a mixed candidate across the four final plans", () => {
+    const plans = [
+      createPlan(1),
+      createPlan(2),
+      createPlan(3),
+      createPlan(1),
+    ];
+    plans[3]!.runId = "final-soak";
+    expect(() => assertPlansShareExactCandidate(plans)).not.toThrow();
+
+    plans[3]!.source.treeSha = "f".repeat(40);
+    expect(() => assertPlansShareExactCandidate(plans))
+      .toThrow(/one exact candidate stack identity/u);
   });
 
   it("rejects a fabricated component version even when provenance echoes it", () => {

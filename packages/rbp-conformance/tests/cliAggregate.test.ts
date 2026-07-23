@@ -152,6 +152,26 @@ describe("aggregate CLI retained-evidence flow", () => {
         repoRoot,
       ];
       const inputs = materializePassingRunInputs(root, plans);
+      const runAuditResult = await invokeCurrentCli(
+        [
+          "validate-run",
+          inputs[0]!.reportPath,
+          "--plan",
+          planFiles[0],
+          "--repo-root",
+          repoRoot,
+          "--artifact-root",
+          root,
+        ],
+        root,
+      );
+      expect(runAuditResult.error).toBeUndefined();
+      expect(runAuditResult.status).toBe(0);
+      expect(String(runAuditResult.stdout)).toContain(
+        "VALID (NON-AUTHORITATIVE)",
+      );
+      expect(String(runAuditResult.stdout)).not.toContain("PASS");
+
       const output = path.join(
         root,
         canonicalManifest.retainedEvidence.root,
@@ -187,6 +207,7 @@ describe("aggregate CLI retained-evidence flow", () => {
       );
       expect(aggregateResult.error).toBeUndefined();
       expect(aggregateResult.status).toBe(0);
+      expect(String(aggregateResult.stdout)).not.toContain("PASS");
 
       const aggregate = JSON.parse(readFileSync(output, "utf8")) as AggregateReport;
       expect(aggregate.reportPath).toBe(
@@ -218,8 +239,9 @@ describe("aggregate CLI retained-evidence flow", () => {
       expect(validationResult.error).toBeUndefined();
       expect(validationResult.status).toBe(0);
       expect(String(validationResult.stdout)).toContain(
-        "RBP conformance three-run aggregate: PASS",
+        "VALID (NON-AUTHORITATIVE)",
       );
+      expect(String(validationResult.stdout)).not.toContain("PASS");
 
       const copiedOutput = path.join(root, "copied-aggregate.json");
       copyFileSync(output, copiedOutput);
