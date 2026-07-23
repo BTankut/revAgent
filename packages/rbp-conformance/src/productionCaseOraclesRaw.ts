@@ -327,10 +327,6 @@ function controlArguments(
   return objectValue(pathValue(controlObservation(context, stepId), ["request", "arguments"]));
 }
 
-function sameJson(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
-}
-
 function c30JournalBindingRejected(
   context: Readonly<CanonicalAssertionOracleContext>,
   scenario: "policy" | "scope" | "clearance",
