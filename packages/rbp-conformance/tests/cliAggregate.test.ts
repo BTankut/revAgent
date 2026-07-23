@@ -24,6 +24,10 @@ import {
   createCurrentProductionPlan,
   materializePassingRunInputs,
 } from "./helpers.js";
+import {
+  canonicalProductionCliArguments,
+  exactSystemPowerShell,
+} from "./canonicalProductionLauncher.js";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -31,47 +35,14 @@ const packageRoot = path.resolve(
 );
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const compiledCli = path.join(packageRoot, "dist", "src", "cli.js");
-const cliBootstrap = path.join(
-  packageRoot,
-  "scripts",
-  "production-cli-bootstrap.mjs",
-);
-const productionLauncher = path.join(
-  packageRoot,
-  "scripts",
-  "invoke-production.ps1",
-);
-const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
-if (windowsRoot === undefined) {
-  throw new Error("aggregate CLI tests require SystemRoot");
-}
-const systemPowerShell = path.join(
-  windowsRoot,
-  "System32",
-  "WindowsPowerShell",
-  "v1.0",
-  "powershell.exe",
-);
 
 function invokeCurrentCli(
   args: readonly string[],
   cwd: string,
 ): Promise<CliInvocationResult> {
   const child = spawn(
-    systemPowerShell,
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      productionLauncher,
-      "-NodeExecutable",
-      process.execPath,
-      "-Entrypoint",
-      cliBootstrap,
-      ...args,
-    ],
+    exactSystemPowerShell,
+    canonicalProductionCliArguments(repoRoot, args),
     {
       cwd,
       shell: false,
@@ -173,10 +144,7 @@ describe("aggregate CLI retained-evidence flow", () => {
         canonicalManifest.retainedEvidence.root,
         canonicalManifest.retainedEvidence.aggregateJunit,
       );
-      expect(existsSync(systemPowerShell)).toBe(true);
-      expect(existsSync(productionLauncher)).toBe(true);
       expect(existsSync(compiledCli)).toBe(true);
-      expect(existsSync(cliBootstrap)).toBe(true);
       const evidenceEntriesBefore = readdirSync(root, { recursive: true })
         .map(String)
         .sort();
@@ -184,7 +152,7 @@ describe("aggregate CLI retained-evidence flow", () => {
       const aggregateResult = await invokeCurrentCli(
         [
           "aggregate",
-          ...inputs.map(({ reportPath }) => reportPath),
+          ...inputs.map(({ reportPath }) => path.join(root, reportPath)),
           ...planFlags,
           "--artifact-root",
           root,
@@ -192,7 +160,7 @@ describe("aggregate CLI retained-evidence flow", () => {
         root,
       );
       expect(aggregateResult.error).toBeUndefined();
-      expect(aggregateResult.status).toBe(0);
+      expect(aggregateResult.status, aggregateResult.stderr).toBe(0);
       expect(String(aggregateResult.stdout)).toContain(
         "VALID (NON-AUTHORITATIVE)",
       );

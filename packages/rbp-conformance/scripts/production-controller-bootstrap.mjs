@@ -455,16 +455,39 @@ function packageSpecifierParts(specifier) {
   ) {
     return undefined;
   }
+  if (
+    specifier.includes("\\") ||
+    specifier.includes("%") ||
+    specifier.includes("\0")
+  ) {
+    throw new Error(`production module package specifier is invalid: ${specifier}`);
+  }
   const parts = specifier.split("/");
   const packageName = specifier.startsWith("@")
     ? parts.slice(0, 2).join("/")
     : parts[0];
   const consumed = specifier.startsWith("@") ? 2 : 1;
+  const packageNameSegments = parts.slice(0, consumed);
   if (
     packageName.length === 0 ||
-    (specifier.startsWith("@") && parts.length < 2)
+    (specifier.startsWith("@") && (
+      parts.length < 2 ||
+      parts[0].length < 2 ||
+      parts[1].length === 0
+    )) ||
+    packageNameSegments.some((segment) =>
+      segment === "." ||
+      segment === ".." ||
+      segment.toLowerCase() === "node_modules"
+    ) ||
+    parts.slice(consumed).some((segment) =>
+      segment.length === 0 ||
+      segment === "." ||
+      segment === ".." ||
+      segment.toLowerCase() === "node_modules"
+    )
   ) {
-    return undefined;
+    throw new Error(`production module package specifier is invalid: ${specifier}`);
   }
   const remainder = parts.slice(consumed).join("/");
   return {
@@ -514,6 +537,7 @@ export function classifyProductionModuleSpecifier(specifier) {
 
 function selectConditionalTarget(value, conditions) {
   if (typeof value === "string") return value;
+  if (value === null) return null;
   if (Array.isArray(value)) {
     for (const entry of value) {
       const selected = selectConditionalTarget(entry, conditions);
@@ -521,7 +545,7 @@ function selectConditionalTarget(value, conditions) {
     }
     return undefined;
   }
-  if (value === null || typeof value !== "object") return undefined;
+  if (typeof value !== "object") return undefined;
   for (const [condition, target] of Object.entries(value)) {
     if (condition === "default" || conditions.has(condition)) {
       const selected = selectConditionalTarget(target, conditions);
@@ -531,39 +555,147 @@ function selectConditionalTarget(value, conditions) {
   return undefined;
 }
 
-function capturedExportTarget(exportsValue, subpath, conditions) {
+function invalidCapturedPackagePath(value, { allowPattern = false } = {}) {
+  if (
+    typeof value !== "string" ||
+    value.includes("\\") ||
+    value.includes("%") ||
+    value.includes("\0") ||
+    value.includes("//")
+  ) {
+    return true;
+  }
+  const segments = value.split("/").slice(1);
+  return segments.some((segment) =>
+    segment === "." ||
+    segment === ".." ||
+    segment.toLowerCase() === "node_modules" ||
+    (!allowPattern && segment.includes("*"))
+  );
+}
+
+function validateCapturedExportTarget(target, { allowPattern = false } = {}) {
+  if (target === null || target === undefined) return target;
+  if (
+    typeof target !== "string" ||
+    !target.startsWith("./") ||
+    invalidCapturedPackagePath(target, { allowPattern }) ||
+    (allowPattern
+      ? target.split("*").length > 2
+      : target.includes("*"))
+  ) {
+    throw new Error("captured package export target is invalid");
+  }
+  return target;
+}
+
+function compareCapturedExportPatterns(left, right) {
+  const leftStar = left.indexOf("*");
+  const rightStar = right.indexOf("*");
+  const leftBaseLength = leftStar + 1;
+  const rightBaseLength = rightStar + 1;
+  if (leftBaseLength !== rightBaseLength) {
+    return rightBaseLength - leftBaseLength;
+  }
+  return right.length - left.length;
+}
+
+export function capturedExportTarget(exportsValue, subpath, conditions) {
+  if (
+    typeof subpath !== "string" ||
+    (subpath !== "." && (
+      !subpath.startsWith("./") ||
+      invalidCapturedPackagePath(subpath)
+    ))
+  ) {
+    throw new Error(`captured package export subpath is invalid: ${subpath}`);
+  }
   if (
     typeof exportsValue === "string" ||
     Array.isArray(exportsValue) ||
     exportsValue === null
   ) {
     return subpath === "."
-      ? selectConditionalTarget(exportsValue, conditions)
+      ? validateCapturedExportTarget(
+        selectConditionalTarget(exportsValue, conditions),
+      )
       : undefined;
   }
   if (typeof exportsValue !== "object") return undefined;
   const entries = Object.entries(exportsValue);
-  if (entries.every(([key]) => !key.startsWith("."))) {
+  const subpathKeyCount = entries.filter(([key]) => key.startsWith(".")).length;
+  if (subpathKeyCount > 0 && subpathKeyCount !== entries.length) {
+    throw new Error("captured package exports mixes conditions and subpaths");
+  }
+  if (subpathKeyCount === 0) {
     return subpath === "."
-      ? selectConditionalTarget(exportsValue, conditions)
+      ? validateCapturedExportTarget(
+        selectConditionalTarget(exportsValue, conditions),
+      )
       : undefined;
   }
+  for (const [key] of entries) {
+    if (
+      key !== "." &&
+      (
+        !key.startsWith("./") ||
+        invalidCapturedPackagePath(key, { allowPattern: true }) ||
+        key.split("*").length > 2
+      )
+    ) {
+      throw new Error(`captured package export key is invalid: ${key}`);
+    }
+  }
   if (Object.hasOwn(exportsValue, subpath)) {
-    return selectConditionalTarget(exportsValue[subpath], conditions);
+    return validateCapturedExportTarget(
+      selectConditionalTarget(exportsValue[subpath], conditions),
+    );
   }
   const patterns = entries
     .filter(([key]) => key.startsWith("./") && key.includes("*"))
-    .sort(([left], [right]) => right.length - left.length);
+    .sort(([left], [right]) => compareCapturedExportPatterns(left, right));
   for (const [pattern, target] of patterns) {
     const star = pattern.indexOf("*");
     const prefix = pattern.slice(0, star);
     const suffix = pattern.slice(star + 1);
-    if (!subpath.startsWith(prefix) || !subpath.endsWith(suffix)) continue;
+    if (
+      subpath.length < pattern.length ||
+      !subpath.startsWith(prefix) ||
+      !subpath.endsWith(suffix)
+    ) {
+      continue;
+    }
     const replacement = subpath.slice(prefix.length, subpath.length - suffix.length);
     const selected = selectConditionalTarget(target, conditions);
-    if (selected !== undefined) return selected.replaceAll("*", replacement);
+    if (selected === null) return null;
+    if (selected !== undefined) {
+      const template = validateCapturedExportTarget(
+        selected,
+        { allowPattern: true },
+      );
+      return validateCapturedExportTarget(
+        template.replaceAll("*", replacement),
+      );
+    }
   }
   return undefined;
+}
+
+export function canonicalCapturedPackageMainTarget(value, packageName = "package") {
+  if (typeof value !== "string" || value.length === 0) return undefined;
+  if (
+    value.includes("\0") ||
+    value === ".." ||
+    value.startsWith("../") ||
+    value.startsWith("..\\") ||
+    path.isAbsolute(value) ||
+    /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)
+  ) {
+    throw new Error(`captured package main target is invalid: ${packageName}`);
+  }
+  if (value.startsWith("./")) return value;
+  if (value.startsWith(".\\")) return `./${value.slice(2)}`;
+  return `./${value}`;
 }
 
 function capturedRecordAt(recordsByPath, candidate) {
@@ -605,16 +737,21 @@ function resolveCapturedPath({
           `captured package has no matching root export: ${packageValue.manifest.name}`,
         );
       }
+      if (target === null) {
+        throw new Error(
+          `captured package root export is blocked: ${packageValue.manifest.name}`,
+        );
+      }
     } else if (
       typeof packageValue.manifest.main === "string" &&
       packageValue.manifest.main.length > 0
     ) {
-      target = packageValue.manifest.main;
+      target = canonicalCapturedPackageMainTarget(
+        packageValue.manifest.main,
+        packageValue.manifest.name,
+      );
     }
     if (target !== undefined) {
-      if (!target.startsWith("./") && !target.startsWith("../")) {
-        target = `./${target}`;
-      }
       const targetPath = path.resolve(packageValue.root, target);
       if (!isInside(packageValue.root, targetPath)) {
         throw new Error(
@@ -648,7 +785,15 @@ function capturedPackageForSpecifier({
   while (true) {
     const candidate = path.join(cursor, "node_modules", ...packageSegments);
     const found = packageCatalog.packagesByRoot.get(normalizedPath(candidate));
-    if (found !== undefined) return found;
+    if (found !== undefined) {
+      if (found.manifest.name !== packageName) {
+        throw new Error(
+          `captured package name mismatch: ${packageName} resolved to ` +
+            found.manifest.name,
+        );
+      }
+      return found;
+    }
     if (cursor === root) break;
     const parent = path.dirname(cursor);
     if (parent === cursor) break;
@@ -682,7 +827,9 @@ function resolveCapturedPackage({
     packageCatalog,
   });
   if (packageValue === undefined) {
-    throw new Error(`production module package is not captured: ${packageName}`);
+    throw new Error(
+      `production module package is not captured: ${packageName} from ${parentFile}`,
+    );
   }
   let target;
   if (Object.hasOwn(packageValue.manifest, "exports")) {
@@ -696,13 +843,21 @@ function resolveCapturedPackage({
         `captured package export is unavailable: ${packageName} ${subpath}`,
       );
     }
+    if (target === null) {
+      throw new Error(
+        `captured package export is blocked: ${packageName} ${subpath}`,
+      );
+    }
   } else if (subpath !== ".") {
     target = subpath;
   } else if (
     typeof packageValue.manifest.main === "string" &&
     packageValue.manifest.main.length > 0
   ) {
-    target = packageValue.manifest.main;
+    target = canonicalCapturedPackageMainTarget(
+      packageValue.manifest.main,
+      packageName,
+    );
   } else {
     target = "./index.js";
   }

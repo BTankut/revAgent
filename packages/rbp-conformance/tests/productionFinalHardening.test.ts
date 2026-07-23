@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -113,6 +114,15 @@ beforeAll(() => {
   cpSync(path.join(packageRoot, "dist"), path.join(copiedCliRoot, "dist"), {
     recursive: true,
   });
+  cpSync(
+    path.join(packageRoot, "scripts"),
+    path.join(copiedCliRoot, "scripts"),
+    { recursive: true },
+  );
+  copyFileSync(
+    path.join(packageRoot, "package.json"),
+    path.join(copiedCliRoot, "package.json"),
+  );
 });
 
 afterAll(() => {

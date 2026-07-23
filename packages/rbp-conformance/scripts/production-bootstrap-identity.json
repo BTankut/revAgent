@@ -9,8 +9,8 @@
   },
   "controllerRuntime": {
     "schemaVersion": "rbp-production-controller-runtime-dependencies/v1",
-    "digestSha256": "4b71dfb2bd65b1c1c73bbc2c7e660b24fbb7afb3c674f5310fe68cf66255c49e",
-    "packageCount": 9
+    "digestSha256": "3b6b09fc67b5a1ea36e1288e4af6b915bea8a85aedd4d5d99118a73bdafca169",
+    "packageCount": 11
   },
   "npm": {
     "schemaVersion": "rbp-production-npm-bootstrap-dependency/v1",

@@ -113,7 +113,7 @@ export interface BridgeGatewayPeerOptions {
     readonly delayMs: number;
   }) => Promise<{ readonly binding: GatewayBinding; readonly helloAck: HelloAckEnvelope }>;
   readonly reconnectJitter?: () => number;
-  readonly sleep?: (delayMs: number) => Promise<void>;
+  readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
   /**
    * Conformance-only one-shot crash selector. Production callers omit it; the
    * daemon control surface uses it to exercise the real inbound Gateway path.
@@ -188,6 +188,22 @@ export interface BridgeGatewayPeerSnapshot {
 
 function defaultId(): string {
   return `0197a3c2-0000-7000-8000-${randomBytes(6).toString("hex")}`;
+}
+
+async function sleepUntil(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function transitionOrThrow(
@@ -542,7 +558,8 @@ export class BridgeGatewayPeer {
   readonly #id: () => string;
   readonly #reconnect: BridgeGatewayPeerOptions["reconnect"];
   readonly #reconnectJitter: () => number;
-  readonly #sleep: (delayMs: number) => Promise<void>;
+  readonly #sleep: NonNullable<BridgeGatewayPeerOptions["sleep"]>;
+  readonly #closeAbort = new AbortController();
   readonly #takeInboundCrashPoint: BridgeGatewayPeerOptions["takeInboundCrashPoint"];
   readonly #sessions = new Map<string, SessionLifecycleState>();
   readonly #pendingRegistrations = new Map<string, PendingRegistration>();
@@ -606,9 +623,7 @@ export class BridgeGatewayPeer {
     this.#id = options.idFactory ?? defaultId;
     this.#reconnect = options.reconnect;
     this.#reconnectJitter = options.reconnectJitter ?? Math.random;
-    this.#sleep = options.sleep ?? (async (delayMs) => await new Promise<void>((resolve) => {
-      setTimeout(resolve, delayMs);
-    }));
+    this.#sleep = options.sleep ?? sleepUntil;
     this.#takeInboundCrashPoint = options.takeInboundCrashPoint;
     const now = this.#nowMs();
     this.#connectedAtMs = now;
@@ -1230,11 +1245,18 @@ export class BridgeGatewayPeer {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeAbort.abort();
     await this.#binding.close();
     this.#simulator.close();
   }
 
   public async shutdown(): Promise<void> {
+    if (this.#closed) return;
+    // Shutdown is terminal before the unregister handoff starts. A retryable
+    // unregister send must leave its durable tombstone for the next process,
+    // never enter the normal reconnect/backoff path while this process exits.
+    this.#closed = true;
+    this.#closeAbort.abort();
     for (const session of [...this.#simulator.registeredSessions()]) {
       try {
         await this.unregisterSession(session.rsid, "bridge_shutdown");
@@ -1242,7 +1264,8 @@ export class BridgeGatewayPeer {
         this.#simulator.unregisterSession(session.rsid, "bridge_shutdown");
       }
     }
-    await this.close();
+    await this.#binding.close();
+    this.#simulator.close();
   }
 
   async #handleRegistered(envelope: SessionRegisteredEnvelope): Promise<void> {
@@ -1883,13 +1906,18 @@ export class BridgeGatewayPeer {
       );
       this.#reconnectDelayFloorMs = 0;
       this.#reconnectAttemptIndex += 1;
-      await this.#sleep(delayMs);
+      await this.#sleep(delayMs, this.#closeAbort.signal);
       if (this.#closed) return false;
       let nextBinding: GatewayBinding | null = null;
       try {
         const next = await this.#reconnect?.({ attemptIndex, delayMs });
         if (next === undefined) return false;
         nextBinding = next.binding;
+        if (this.#closed) {
+          await nextBinding.close();
+          nextBinding = null;
+          return false;
+        }
         if (next.binding.connectionId !== next.helloAck.payload.connection_id) {
           await next.binding.close();
           nextBinding = null;

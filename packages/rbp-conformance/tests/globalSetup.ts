@@ -3,6 +3,12 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+// Test support may construct the canonical host arguments from the exact
+// checked-out commit. Production evidence still requires an independently
+// reviewed authority vector retained outside the checkout.
+// @ts-expect-error -- the runtime bootstrap has no TypeScript declaration file.
+import { productionLaunchPowerShellArguments } from "../scripts/production-launch-bootstrap.mjs";
+
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
@@ -19,29 +25,24 @@ const planFile = path.join(
 );
 
 function npmEntrypoint(): string {
-  const candidates = [
-    process.env.npm_execpath,
-    process.env.NPM_EXECPATH,
-    path.join(
-      path.dirname(process.execPath),
-      "node_modules",
-      "npm",
-      "bin",
-      "npm-cli.js",
-    ),
-  ];
-  const selected = candidates.find(
-    (candidate): candidate is string =>
-      candidate !== undefined &&
-      path.isAbsolute(candidate) &&
-      existsSync(candidate),
+  const programFiles = process.env.ProgramFiles;
+  if (programFiles === undefined) {
+    throw new Error("production test setup could not resolve Program Files");
+  }
+  const executable = path.join(
+    programFiles,
+    "nodejs",
+    "node_modules",
+    "npm",
+    "bin",
+    "npm-cli.js",
   );
-  if (selected === undefined) {
+  if (!existsSync(executable)) {
     throw new Error(
-      "production test setup could not resolve the exact npm launcher",
+      `production test setup could not find exact Program Files npm: ${executable}`,
     );
   }
-  return selected;
+  return executable;
 }
 
 function systemPowerShell(): string {
@@ -64,7 +65,48 @@ function systemPowerShell(): string {
   return executable;
 }
 
-function directLauncherEnvironment(): NodeJS.ProcessEnv {
+function systemGit(): string {
+  const programFiles = process.env.ProgramFiles;
+  if (programFiles === undefined) {
+    throw new Error("production test setup could not resolve Program Files");
+  }
+  const executable = path.join(programFiles, "Git", "bin", "git.exe");
+  if (!existsSync(executable)) {
+    throw new Error(
+      `production test setup could not find exact Program Files Git: ${executable}`,
+    );
+  }
+  return executable;
+}
+
+function repositoryIdentity(): { commit: string; tree: string } {
+  const readRevision = (revision: string): string => {
+    const result = spawnSync(
+      systemGit(),
+      ["-C", repoRoot, "rev-parse", "--verify", revision],
+      {
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+      },
+    );
+    if (result.error !== undefined) throw result.error;
+    if (result.status !== 0) {
+      throw new Error(
+        `production test setup could not resolve ${revision}: ${String(
+          result.stderr,
+        ).trim()}`,
+      );
+    }
+    return String(result.stdout).trim();
+  };
+  return {
+    commit: readRevision("HEAD^{commit}"),
+    tree: readRevision("HEAD^{tree}"),
+  };
+}
+
+function testLauncherEnvironment(): NodeJS.ProcessEnv {
   const environment = { ...process.env };
   for (const key of Object.keys(environment)) {
     const normalized = key.toUpperCase();
@@ -80,45 +122,35 @@ function directLauncherEnvironment(): NodeJS.ProcessEnv {
 }
 
 export default function setup(): void {
-  const launcher = path.join(
-    packageRoot,
-    "scripts",
-    "invoke-production.ps1",
-  );
-  const wrapper = path.join(
-    packageRoot,
-    "scripts",
-    "prepare-production.mjs",
-  );
+  const powershell = systemPowerShell();
+  const identity = repositoryIdentity();
+  const commandArguments = [
+    "--npm-executable",
+    npmEntrypoint(),
+    planFile,
+    "--run-id",
+    "rbp-conformance-test-current-production",
+    "--sequence",
+    "1",
+    "--repo-root",
+    repoRoot,
+    "--node-executable",
+    process.execPath,
+  ];
   const result = spawnSync(
-    systemPowerShell(),
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      launcher,
-      "-NodeExecutable",
-      process.execPath,
-      "-Entrypoint",
-      wrapper,
-      "--npm-executable",
-      npmEntrypoint(),
-      planFile,
-      "--run-id",
-      "rbp-conformance-test-current-production",
-      "--sequence",
-      "1",
-      "--repo-root",
+    powershell,
+    productionLaunchPowerShellArguments({
       repoRoot,
-      "--node-executable",
-      process.execPath,
-    ],
+      role: "prepare-wrapper",
+      expectedCommit: identity.commit,
+      expectedTree: identity.tree,
+      commandArguments,
+      powershellExecutable: powershell,
+    }),
     {
       cwd: repoRoot,
       encoding: "utf8",
-      env: directLauncherEnvironment(),
+      env: testLauncherEnvironment(),
       shell: false,
       timeout: 180_000,
       windowsHide: true,

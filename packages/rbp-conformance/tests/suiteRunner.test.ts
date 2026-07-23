@@ -49,7 +49,7 @@ describe("supervised C19 runner", () => {
     try {
       const { report, reportPath } = await executeSupervisedC19Run({
         plan: supervisedPlan(),
-        repoRoot: packageRoot,
+        repoRoot,
         artifactRoot: root,
         seed: "supervised-c19-test",
         runtimeLaunchGuard() {
@@ -99,7 +99,7 @@ describe("supervised C19 runner", () => {
     try {
       const { report } = await executeSupervisedC19Run({
         plan: supervisedPlan(),
-        repoRoot: packageRoot,
+        repoRoot,
         artifactRoot: root,
         seed: "supervised-c19-cleanup-test",
         runtimeLaunchGuard() {
@@ -139,7 +139,7 @@ describe("supervised C19 runner", () => {
     try {
       const { report } = await executeSupervisedC19Run({
         plan: supervisedPlan(),
-        repoRoot: packageRoot,
+        repoRoot,
         artifactRoot: root,
         seed: "supervised-c19-shutdown-test",
         runtimeLaunchGuard() {

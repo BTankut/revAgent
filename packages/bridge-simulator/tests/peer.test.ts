@@ -1064,6 +1064,156 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     root.cleanup();
   });
 
+  it("never reconnects after terminal shutdown begins", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new ControllableBinding(
+      "wss",
+      "shutdown-terminal-0",
+      async (envelope) => {
+        if (envelope.type === "session_unregister") {
+          throw new GatewayTransportError("injected shutdown handoff loss", {
+            faultClass: "retryable_network",
+          });
+        }
+      },
+    );
+    let reconnectAttempts = 0;
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("shutdown-terminal-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => {
+        reconnectAttempts += 1;
+        const replacement = new RecordingBinding("wss", "shutdown-terminal-1");
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-terminal-1"),
+        };
+      },
+    });
+
+    await peer.shutdown();
+
+    expect(reconnectAttempts).toBe(0);
+    expect(binding.closeCount).toBeGreaterThanOrEqual(1);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("cancels an active reconnect delay when terminal shutdown begins", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "shutdown-sleep-0");
+    binding.messageError = new GatewayTransportError("injected stream loss", {
+      faultClass: "retryable_network",
+    });
+    let sleepStartedResolve!: () => void;
+    const sleepStarted = new Promise<void>((resolve) => {
+      sleepStartedResolve = resolve;
+    });
+    let reconnectAttempts = 0;
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("shutdown-sleep-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0.999,
+      sleep: async (_delayMs, signal) => {
+        sleepStartedResolve();
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+      reconnect: async () => {
+        reconnectAttempts += 1;
+        const replacement = new RecordingBinding("wss", "shutdown-sleep-1");
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-sleep-1"),
+        };
+      },
+    });
+
+    const run = peer.run();
+    await sleepStarted;
+    await peer.shutdown();
+    await run;
+
+    expect(reconnectAttempts).toBe(0);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("closes a replacement binding opened after terminal shutdown wins the race", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const initial = new RecordingBinding("wss", "shutdown-open-0");
+    initial.messageError = new GatewayTransportError("injected stream loss", {
+      faultClass: "retryable_network",
+    });
+    const replacement = new RecordingBinding("wss", "shutdown-open-1");
+    let reconnectStartedResolve!: () => void;
+    const reconnectStarted = new Promise<void>((resolve) => {
+      reconnectStartedResolve = resolve;
+    });
+    let releaseReconnect!: () => void;
+    const reconnectRelease = new Promise<void>((resolve) => {
+      releaseReconnect = resolve;
+    });
+    const peer = new BridgeGatewayPeer(simulator, initial, helloAck("shutdown-open-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => {
+        reconnectStartedResolve();
+        await reconnectRelease;
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-open-1"),
+        };
+      },
+    });
+
+    const run = peer.run();
+    await reconnectStarted;
+    await peer.shutdown();
+    releaseReconnect();
+    await run;
+
+    expect(replacement.closeCount).toBe(1);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("replays an orphaned unregister tombstone after journal reopen without resuming", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();

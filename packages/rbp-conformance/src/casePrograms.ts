@@ -681,6 +681,7 @@ const C32_VECTORS = [
 ] as const;
 
 type C32Vector = (typeof C32_VECTORS)[number];
+const C32_STACK_LIFECYCLE_TIMEOUT_MS = 90_000;
 
 function c32CaptureRoot(vector: C32Vector, initial: boolean): string {
   return initial ? "case" : `c32.${vector}.case`;
@@ -697,7 +698,7 @@ function c32RestartStack(vector: C32Vector): CaseControlStep {
       binding: "{{binding}}",
       preserveState: false,
       requireExactExecutionPlanIdentity: true,
-    }), "setup"),
+    }), "setup", C32_STACK_LIFECYCLE_TIMEOUT_MS),
     [
       {
         name: `c32.${vector}.fixture.ready.host`,
@@ -870,6 +871,7 @@ interface ProgramDefinition {
   caseId: string;
   controls: CaseControlStep[];
   requiredHarnessCapabilities: string[];
+  initialStackTimeoutMs?: number;
   startupOverrides?: {
     sessionCapabilities?: string[];
     connectionCapabilities?: string[];
@@ -1841,6 +1843,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C32",
     controls: c32Controls(),
+    initialStackTimeoutMs: C32_STACK_LIFECYCLE_TIMEOUT_MS,
     requiredHarnessCapabilities: [
       "registered_session_chunk_conformance",
       "base64_boundary_vectors",
@@ -2511,7 +2514,7 @@ function buildProgram(definition: ProgramDefinition): ConformanceCaseProgram {
         ...(definition.startupOverrides === undefined
           ? {}
           : { startupOverrides: definition.startupOverrides }),
-      }), "setup"),
+      }), "setup", definition.initialStackTimeoutMs ?? 30_000),
       [
         {
           name: "fixture.ready.host",

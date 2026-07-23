@@ -45,13 +45,37 @@ describe("early production case stack", () => {
           payload.action === "stop_case_stack");
         expect(stopped.filter(({ payload }) =>
           payload.processRole === "canonical_component")).toHaveLength(3);
-        expect(stopped.every(({ payload }) =>
-          payload.orphanProcessCount === 0 &&
-          payload.killEscalated === false &&
-          typeof payload.process === "object" &&
-          payload.process !== null &&
-          !Array.isArray(payload.process) &&
-          payload.process.exitCode === 0)).toBe(true);
+        const stopFailures = stopped
+          .filter(({ payload }) =>
+            payload.orphanProcessCount !== 0 ||
+            payload.killEscalated !== false ||
+            typeof payload.process !== "object" ||
+            payload.process === null ||
+            Array.isArray(payload.process) ||
+            payload.process.exitCode !== 0)
+          .map(({ componentId, payload }) => ({
+            componentId,
+            processRole: payload.processRole,
+            orphanProcessCount: payload.orphanProcessCount,
+            killEscalated: payload.killEscalated,
+            exitCode: typeof payload.process === "object" &&
+              payload.process !== null &&
+              !Array.isArray(payload.process)
+              ? payload.process.exitCode
+              : null,
+          }));
+        const bridgePeerBeforeStop = execution.evidence.observations
+          .filter(({ kind }) => kind === "bridge_snapshot")
+          .at(-1)?.payload.peer ?? null;
+        expect(
+          stopFailures,
+          JSON.stringify({
+            caseId,
+            binding: execution.binding,
+            stopFailures,
+            bridgePeerBeforeStop,
+          }, null, 2),
+        ).toEqual([]);
         for (const assertion of canonicalManifest.requiredAssertions[caseId]!) {
           const oracle = EARLY_PRODUCTION_ORACLES.get(assertion.id);
           expect(oracle, assertion.id).toBeTypeOf("function");

@@ -29,6 +29,8 @@ import {
 } from "../scripts/production-launch-bootstrap.mjs";
 // @ts-expect-error -- the internal production bootstrap has no declaration file.
 import {
+  canonicalCapturedPackageMainTarget,
+  capturedExportTarget,
   classifyProductionModuleSpecifier,
   isCapturedWorkspacePackageRoot,
 } from "../scripts/production-controller-bootstrap.mjs";
@@ -529,6 +531,21 @@ describe("canonical production bootstrap and external launcher", () => {
       packageName: "ws",
       subpath: ".",
     });
+    for (const unsafeSpecifier of [
+      "missing\\..\\ws",
+      "ws%2f..%2fajv",
+      "@scope/",
+      "@scope/..",
+      "@scope/node_modules",
+      "ws//index.js",
+      "ws/./index.js",
+      "ws/../index.js",
+      "ws/node_modules/index.js",
+    ]) {
+      expect(() =>
+        classifyProductionModuleSpecifier(unsafeSpecifier)
+      ).toThrow(/package specifier is invalid/u);
+    }
     if (process.platform === "win32") {
       expect(
         classifyProductionModuleSpecifier(
@@ -557,6 +574,129 @@ describe("canonical production bootstrap and external launcher", () => {
         ),
       ),
     ).toBe(false);
+    expect(canonicalCapturedPackageMainTarget("dist/ajv.js", "ajv")).toBe(
+      "./dist/ajv.js",
+    );
+    expect(canonicalCapturedPackageMainTarget("./dist/ajv.js", "ajv")).toBe(
+      "./dist/ajv.js",
+    );
+    expect(canonicalCapturedPackageMainTarget(".\\dist\\ajv.js", "ajv")).toBe(
+      "./dist\\ajv.js",
+    );
+    for (const unsafeTarget of [
+      "../outside.js",
+      "..\\outside.js",
+      "/outside.js",
+      "C:\\outside.js",
+      "C:outside.js",
+      "\\\\server\\share\\outside.js",
+      "file:///outside.js",
+      "bad\0target.js",
+    ]) {
+      expect(() =>
+        canonicalCapturedPackageMainTarget(unsafeTarget, "malicious")
+      ).toThrow(/captured package main target is invalid/u);
+    }
+  });
+
+  it("preserves blocked exports and rejects ambiguous or escaping export maps", () => {
+    const conditions = new Set(["import", "node"]);
+    expect(
+      capturedExportTarget(
+        { node: null, default: "./browser.js" },
+        ".",
+        conditions,
+      ),
+    ).toBeNull();
+    expect(
+      capturedExportTarget([null, "./fallback.js"], ".", conditions),
+    ).toBeNull();
+    expect(
+      capturedExportTarget(
+        {
+          "./features/*": "./generic/*.js",
+          "./features/special/*": "./special/*.js",
+        },
+        "./features/special/one",
+        conditions,
+      ),
+    ).toBe("./special/one.js");
+    expect(
+      capturedExportTarget(
+        { "./feature/*.js": "./dist/*.js" },
+        "./feature/.js",
+        conditions,
+      ),
+    ).toBeUndefined();
+    expect(() =>
+      capturedExportTarget(
+        { ".": "./index.js", default: "./fallback.js" },
+        ".",
+        conditions,
+      )
+    ).toThrow(/mixes conditions and subpaths/u);
+    for (const unsafeExports of [
+      "dist/index.js",
+      "../outside.js",
+      "./node_modules/attacker.js",
+      "./encoded%2fescape.js",
+      ".\\windows\\escape.js",
+      "./double//separator.js",
+    ]) {
+      expect(() =>
+        capturedExportTarget(unsafeExports, ".", conditions)
+      ).toThrow(/export target is invalid/u);
+    }
+    expect(() =>
+      capturedExportTarget(
+        { "./feature/../escape": "./index.js" },
+        "./feature/escape",
+        conditions,
+      )
+    ).toThrow(/export key is invalid/u);
+    expect(() =>
+      capturedExportTarget(
+        { "./*/*": "./*.js" },
+        "./one/two",
+        conditions,
+      )
+    ).toThrow(/export key is invalid/u);
+  });
+
+  it("captures the protocol package's physical runtime dependency copies", () => {
+    const result = runBootstrapModule(
+      [
+        "const module = await import(process.argv[1]);",
+        "const value = module.captureProductionControllerRuntimeIdentity(process.argv[2]);",
+        "process.stdout.write(JSON.stringify(value));",
+      ].join(""),
+      [repoRoot],
+    );
+    expect(result.status, String(result.stderr)).toBe(0);
+    const identity = JSON.parse(String(result.stdout)) as {
+      dependencyClosure: {
+        resolutions: Array<{
+          requesterPath: string;
+          dependencyName: string;
+          status: string;
+          resolvedPackagePath: string | null;
+        }>;
+        packages: Array<{ packagePath: string }>;
+      };
+    };
+    const packagePaths = new Set(
+      identity.dependencyClosure.packages.map((entry) => entry.packagePath),
+    );
+    for (const dependencyName of ["ajv", "ajv-formats"]) {
+      const resolution = identity.dependencyClosure.resolutions.find(
+        (entry) =>
+          entry.requesterPath === "packages/protocol" &&
+          entry.dependencyName === dependencyName,
+      );
+      expect(resolution).toMatchObject({ status: "installed" });
+      expect(typeof resolution?.resolvedPackagePath).toBe("string");
+      expect(packagePaths.has(String(resolution?.resolvedPackagePath))).toBe(true);
+    }
   });
 
   it("clears parent Node injection before loading production JS and preserves argv and exit", async () => {

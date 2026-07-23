@@ -560,53 +560,123 @@ function controllerRuntimeDependencyClosure(repoRootValue) {
     path.join(repoRoot, "packages", "rbp-conformance"),
   );
   const controller = readPackage(controllerRoot);
-  const declarations = dependencyDeclarations(controller.value)
-    .filter((entry) => entry.dependencyName !== "@revagent/protocol");
   const queue = [];
   const resolutions = [];
-  for (const declaration of declarations) {
-    const candidate = dependencyCandidate(
-      repoRoot,
-      controllerRoot,
-      declaration.dependencyName,
-    );
-    if (candidate === undefined) {
-      if (!declaration.optional) {
+  const enqueueRequesterDependencies = (
+    requester,
+    requesterRoot,
+    declarations,
+  ) => {
+    const requesterPath = normalizePath(path.relative(repoRoot, requesterRoot));
+    for (const declaration of declarations) {
+      const candidate = dependencyCandidate(
+        repoRoot,
+        requesterRoot,
+        declaration.dependencyName,
+      );
+      if (candidate === undefined) {
+        if (!declaration.optional) {
+          throw new Error(
+            `${requester.value.name} required runtime dependency is missing: ` +
+              declaration.dependencyName,
+          );
+        }
+        resolutions.push({
+          requesterName: requester.value.name,
+          requesterPath,
+          dependencyName: declaration.dependencyName,
+          dependencyRange: declaration.dependencyRange,
+          kind: declaration.kind,
+          status: "absent_optional",
+          resolvedPackagePath: null,
+          resolvedVersion: null,
+        });
+        continue;
+      }
+      verifyNodePackageResolution(
+        repoRoot,
+        requesterRoot,
+        declaration.dependencyName,
+        candidate.resolved,
+      );
+      const resolved = readPackage(candidate.resolved);
+      if (resolved.value.name !== declaration.dependencyName) {
         throw new Error(
-          `controller runtime dependency is missing: ${declaration.dependencyName}`,
+          `${requester.value.name} resolved ${declaration.dependencyName} ` +
+            `to ${resolved.value.name}`,
         );
       }
       resolutions.push({
-        requesterName: controller.value.name,
-        requesterPath: normalizePath(path.relative(repoRoot, controllerRoot)),
+        requesterName: requester.value.name,
+        requesterPath,
         dependencyName: declaration.dependencyName,
         dependencyRange: declaration.dependencyRange,
         kind: declaration.kind,
-        status: "absent_optional",
-        resolvedPackagePath: null,
-        resolvedVersion: null,
+        status: "installed",
+        resolvedPackagePath: normalizePath(
+          path.relative(repoRoot, candidate.resolved),
+        ),
+        resolvedVersion: resolved.value.version,
       });
-      continue;
+      queue.push(candidate.resolved);
     }
-    verifyNodePackageResolution(
-      repoRoot,
-      controllerRoot,
-      declaration.dependencyName,
-      candidate.resolved,
-    );
-    const resolved = readPackage(candidate.resolved);
-    resolutions.push({
-      requesterName: controller.value.name,
-      requesterPath: normalizePath(path.relative(repoRoot, controllerRoot)),
-      dependencyName: declaration.dependencyName,
-      dependencyRange: declaration.dependencyRange,
-      kind: declaration.kind,
-      status: "installed",
-      resolvedPackagePath: normalizePath(path.relative(repoRoot, candidate.resolved)),
-      resolvedVersion: resolved.value.version,
-    });
-    queue.push(candidate.resolved);
+  };
+
+  const controllerDeclarations = dependencyDeclarations(controller.value);
+  const protocolDeclaration = controllerDeclarations.find(
+    (entry) => entry.dependencyName === "@revagent/protocol",
+  );
+  if (protocolDeclaration === undefined) {
+    throw new Error("controller runtime dependency @revagent/protocol is missing");
   }
+  const protocolRoot = realpathSync(
+    path.join(repoRoot, "packages", "protocol"),
+  );
+  const protocolWorkspaceLink = path.join(
+    repoRoot,
+    "node_modules",
+    "@revagent",
+    "protocol",
+  );
+  if (
+    !existsSync(path.join(protocolWorkspaceLink, "package.json")) ||
+    realpathSync(protocolWorkspaceLink) !== protocolRoot
+  ) {
+    throw new Error(
+      "controller runtime dependency @revagent/protocol does not resolve to " +
+        "the captured workspace package",
+    );
+  }
+  const protocol = readPackage(protocolRoot);
+  if (protocol.value.name !== protocolDeclaration.dependencyName) {
+    throw new Error(
+      `controller resolved @revagent/protocol to ${protocol.value.name}`,
+    );
+  }
+  resolutions.push({
+    requesterName: controller.value.name,
+    requesterPath: normalizePath(path.relative(repoRoot, controllerRoot)),
+    dependencyName: protocolDeclaration.dependencyName,
+    dependencyRange: protocolDeclaration.dependencyRange,
+    kind: protocolDeclaration.kind,
+    status: "installed",
+    resolvedPackagePath: normalizePath(
+      path.relative(repoRoot, protocolRoot),
+    ),
+    resolvedVersion: protocol.value.version,
+  });
+  enqueueRequesterDependencies(
+    controller,
+    controllerRoot,
+    controllerDeclarations.filter(
+      (entry) => entry.dependencyName !== "@revagent/protocol",
+    ),
+  );
+  enqueueRequesterDependencies(
+    protocol,
+    protocolRoot,
+    dependencyDeclarations(protocol.value),
+  );
 
   const visited = new Set();
   const packages = new Map();

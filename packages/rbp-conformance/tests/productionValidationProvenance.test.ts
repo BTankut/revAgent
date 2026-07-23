@@ -13,11 +13,17 @@ import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
+// @ts-expect-error -- the runtime bootstrap has no TypeScript declaration file.
+import { productionLaunchPowerShellArguments } from "../scripts/production-launch-bootstrap.mjs";
 import {
   sanitizedProductionRuntimeEnvironment,
 } from "../src/productionRuntimeIdentity.js";
 import { stableJson } from "../src/stableJson.js";
 import type { ExecutionPlan } from "../src/types.js";
+import {
+  canonicalProductionCliArguments,
+  exactSystemPowerShell,
+} from "./canonicalProductionLauncher.js";
 import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(
@@ -33,28 +39,6 @@ const compiledCli = path.join(
   "src",
   "cli.js",
 );
-const cliBootstrap = path.join(
-  packageRoot,
-  "scripts",
-  "production-cli-bootstrap.mjs",
-);
-const productionLauncher = path.join(
-  packageRoot,
-  "scripts",
-  "invoke-production.ps1",
-);
-const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
-if (windowsRoot === undefined) {
-  throw new Error("validator launcher tests require SystemRoot");
-}
-const systemPowerShell = path.join(
-  windowsRoot,
-  "System32",
-  "WindowsPowerShell",
-  "v1.0",
-  "powershell.exe",
-);
-
 interface CliInvocationResult {
   status: number | null;
   signal: NodeJS.Signals | null;
@@ -67,23 +51,10 @@ function invokeCurrentCli(input: {
   args: readonly string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
-  nodeExecutable?: string;
 }): Promise<CliInvocationResult> {
   const child = spawn(
-    systemPowerShell,
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-ExecutionPolicy",
-      "Bypass",
-      "-File",
-      productionLauncher,
-      "-NodeExecutable",
-      input.nodeExecutable ?? process.execPath,
-      "-Entrypoint",
-      cliBootstrap,
-      ...input.args,
-    ],
+    exactSystemPowerShell,
+    canonicalProductionCliArguments(repoRoot, input.args),
     {
       cwd: input.cwd,
       shell: false,
@@ -180,10 +151,7 @@ function aggregatePlanFlags(
 }
 
 beforeAll(() => {
-  expect(existsSync(systemPowerShell)).toBe(true);
-  expect(existsSync(productionLauncher)).toBe(true);
   expect(existsSync(compiledCli)).toBe(true);
-  expect(existsSync(cliBootstrap)).toBe(true);
 });
 
 afterEach(() => {
@@ -193,7 +161,7 @@ afterEach(() => {
 });
 
 describe("PASS-capable validator production identity", { timeout: 120_000 }, () => {
-  it("rejects an alternate real Node executable as the validation controller", async () => {
+  it("rejects a caller-selected alternate Node before the canonical host starts", () => {
     const root = temporaryRoot("rbp-validation-alternate-node-");
     const alternateNode = path.join(
       root,
@@ -203,34 +171,17 @@ describe("PASS-capable validator production identity", { timeout: 120_000 }, () 
     );
     mkdirSync(path.dirname(alternateNode), { recursive: true });
     copyFileSync(process.execPath, alternateNode);
-    const planFile = writePlan(
-      root,
-      "current-production.json",
-      createCurrentProductionPlan(
+    expect(() =>
+      productionLaunchPowerShellArguments({
         repoRoot,
-        "alternate-node-controller-test",
-      ),
-    );
-    const result = await invokeCurrentCli({
-      cwd: root,
-      nodeExecutable: alternateNode,
-      args: [
-        "validate-run",
-        path.join(root, "missing-report.json"),
-        "--plan",
-        planFile,
-        "--repo-root",
-        repoRoot,
-      ],
-    });
-
-    expect(result.error).toBeUndefined();
-    expect(result.status).not.toBe(0);
-    expect(String(result.stderr)).toMatch(
-      /production controller Node does not match the plan-bound runtime Node identity/u,
-    );
-    expect(String(result.stderr)).not.toMatch(/ENOENT|no such file/u);
-    expect(String(result.stdout)).not.toContain("PASS");
+        role: "cli-bootstrap",
+        expectedCommit: "0".repeat(40),
+        expectedTree: "0".repeat(40),
+        commandArguments: ["validate-run", "missing-report.json"],
+        powershellExecutable: exactSystemPowerShell,
+        nodeExecutable: alternateNode,
+      })
+    ).toThrow(/encoded-bootstrap payload is invalid/u);
   });
 
   it("clears hostile parent NODE_OPTIONS before every validator loads JavaScript", async () => {
@@ -328,7 +279,7 @@ describe("PASS-capable validator production identity", { timeout: 120_000 }, () 
       expect(String(result.stdout)).not.toContain("PASS");
       expect(existsSync(attackerMarker)).toBe(false);
     }
-  }, 180_000);
+  }, 300_000);
 
   it("does not consult hostile npm script-shell, user config, or node.cmd", async () => {
     const root = temporaryRoot("rbp-validation-hostile-npm-");

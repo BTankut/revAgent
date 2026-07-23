@@ -298,6 +298,19 @@ describe("exact forty-case control and observation catalog", () => {
         vector,
         invocationId: "{{ids.O1-C32.retransmission.invocationId}}",
       })));
+    expect(c32.steps
+      .filter(({ action }) => action === "restart_case_stack")
+      .map(({ stepId, parentTimeoutMs }) => ({ stepId, parentTimeoutMs })))
+      .toEqual([
+        {
+          stepId: "o1-c32.isolated-stack",
+          parentTimeoutMs: 90_000,
+        },
+        ...vectors.slice(1).map((vector) => ({
+          stepId: `o1-c32.${vector}.restart-stack`,
+          parentTimeoutMs: 90_000,
+        })),
+      ]);
     for (const vector of vectors) {
       const actionIndex = c32.steps.findIndex(({ stepId }) => stepId === `o1-c32.${vector}`);
       const snapshotIndex = c32.steps.findIndex(
