@@ -156,7 +156,7 @@ rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --re
 rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <run-1-plan.json> --plan-2 <run-2-plan.json> --plan-3 <run-3-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance junit <run-report.json> <junit.xml>
-rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> --output <noncanonical-aggregate.json> --junit-output <noncanonical-junit.xml> [--artifact-root <path>]
+rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
 rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]
@@ -471,12 +471,12 @@ path and SHA-256. Pass validation reopens those three reports, verifies their
 hashes and artifacts, compares every embedded field and case status, rejects
 mixed stacks, and requires strictly ordered non-overlapping intervals.
 The non-authoritative `aggregate` audit command verifies all three retained
-source reports and deterministically reconstructs aggregate JSON/JUnit for
-inspection. It requires explicit `--output` and `--junit-output` files outside
-the canonical retained-evidence root. Both files are created exclusively and
-an existing destination is never truncated or replaced. The command cannot
-write either canonical final aggregate path, and its detached aggregate JSON
-fails canonical-location validation by design. Only `run-final-evidence` may
+source reports and deterministically reconstructs aggregate JSON/JUnit only in
+memory. It prints `VALID (NON-AUTHORITATIVE)` followed by a hash/count summary;
+it does not print the reconstructed JSON/JUnit bytes and does not write any
+output file. `--output` and `--junit-output` are rejected. This write-free
+boundary avoids treating drive-letter, UNC, substituted-drive, hard-link, or
+reparse aliases as separate evidence locations. Only `run-final-evidence` may
 create the retained
 `artifacts/conformance/rbp-v1/1.0/aggregate/junit.xml` and
 `artifacts/conformance/rbp-v1/1.0/aggregate/three-run-report.json` pair.

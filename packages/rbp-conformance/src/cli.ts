@@ -94,7 +94,7 @@ function usage(): never {
       "  rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance junit <run-report.json> <junit.xml>",
-      "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> --output <noncanonical-aggregate.json> --junit-output <noncanonical-junit.xml> [--artifact-root <path>]",
+      "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance summary <aggregate.json> <summary.md>",
     ].join("\n"),
   );
@@ -498,16 +498,6 @@ function writeText(file: string, contents: string, cwd: string): void {
   writeFileSync(target, contents, "utf8");
 }
 
-function writeTextExclusive(file: string, contents: string, cwd: string): void {
-  const target = resolveFrom(cwd, file);
-  mkdirSync(path.dirname(target), { recursive: true });
-  writeFileSync(target, contents, {
-    encoding: "utf8",
-    flag: "wx",
-    mode: 0o600,
-  });
-}
-
 interface ProductionValidationContext {
   options: PassingValidationOptions;
   plans: ExecutionPlan[];
@@ -828,20 +818,6 @@ function isPathInsideOrEqual(root: string, candidate: string): boolean {
       !path.isAbsolute(relative)
     )
   );
-}
-
-function prospectiveRealPath(value: string): string {
-  const missingSegments: string[] = [];
-  let cursor = path.resolve(value);
-  while (!lexicalPathExists(cursor)) {
-    const parent = path.dirname(cursor);
-    if (parent === cursor) {
-      throw new Error(`cannot resolve an existing output ancestor: ${value}`);
-    }
-    missingSegments.unshift(path.basename(cursor));
-    cursor = parent;
-  }
-  return path.resolve(realpathSync(cursor), ...missingSegments);
 }
 
 function assertPlainExistingDirectory(value: string, label: string): void {
@@ -1340,95 +1316,6 @@ function runInput(
   };
 }
 
-interface StandaloneAggregateOutputs {
-  outputFile: string;
-  junitOutputFile: string;
-  validationFlags: string[];
-}
-
-function standaloneAggregateOutputs(
-  flags: string[],
-  cwd: string,
-): StandaloneAggregateOutputs {
-  let outputFile: string | undefined;
-  let junitOutputFile: string | undefined;
-  const validationFlags: string[] = [];
-  for (let index = 0; index < flags.length; index += 2) {
-    const name = flags[index];
-    const value = flags[index + 1];
-    if (name === undefined || value === undefined) usage();
-    if (name === "--output") {
-      if (outputFile !== undefined) {
-        throw new Error("--output must be provided exactly once");
-      }
-      outputFile = resolveFrom(cwd, value);
-    } else if (name === "--junit-output") {
-      if (junitOutputFile !== undefined) {
-        throw new Error("--junit-output must be provided exactly once");
-      }
-      junitOutputFile = resolveFrom(cwd, value);
-    } else {
-      validationFlags.push(name, value);
-    }
-  }
-  if (outputFile === undefined || junitOutputFile === undefined) {
-    throw new Error(
-      "standalone aggregate requires explicit --output and --junit-output paths",
-    );
-  }
-  return { outputFile, junitOutputFile, validationFlags };
-}
-
-function assertStandaloneAggregateOutputsNoncanonical(
-  artifactRootValue: string,
-  outputFile: string,
-  junitOutputFile: string,
-): void {
-  const artifactRoot = path.resolve(artifactRootValue);
-  const retainedRoot = path.resolve(
-    artifactRoot,
-    canonicalManifest.retainedEvidence.root,
-  );
-  const realRetainedRoot = prospectiveRealPath(retainedRoot);
-  const realOutputFile = prospectiveRealPath(outputFile);
-  const realJunitOutputFile = prospectiveRealPath(junitOutputFile);
-  if (
-    isPathInsideOrEqual(retainedRoot, outputFile) ||
-    isPathInsideOrEqual(retainedRoot, junitOutputFile) ||
-    isPathInsideOrEqual(realRetainedRoot, realOutputFile) ||
-    isPathInsideOrEqual(realRetainedRoot, realJunitOutputFile)
-  ) {
-    throw new Error(
-      "standalone aggregate outputs must remain outside the canonical retained-evidence root",
-    );
-  }
-  if (
-    normalizedPathIdentity(outputFile) ===
-      normalizedPathIdentity(junitOutputFile) ||
-    normalizedPathIdentity(realOutputFile) ===
-      normalizedPathIdentity(realJunitOutputFile)
-  ) {
-    throw new Error(
-      "standalone aggregate JSON and JUnit outputs must be distinct files",
-    );
-  }
-  if (
-    isPathInsideOrEqual(outputFile, junitOutputFile) ||
-    isPathInsideOrEqual(junitOutputFile, outputFile) ||
-    isPathInsideOrEqual(realOutputFile, realJunitOutputFile) ||
-    isPathInsideOrEqual(realJunitOutputFile, realOutputFile)
-  ) {
-    throw new Error(
-      "standalone aggregate JSON and JUnit outputs cannot contain one another",
-    );
-  }
-  if (lexicalPathExists(outputFile) || lexicalPathExists(junitOutputFile)) {
-    throw new Error(
-      "standalone aggregate outputs already exist and will not be overwritten",
-    );
-  }
-}
-
 export function runCli(args: string[], cwd: string = process.cwd()): void {
   const [command, ...rest] = args;
   if (command === "validate-run") {
@@ -1493,19 +1380,13 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   }
   if (command === "aggregate") {
     if (rest.length < 3) usage();
-    const outputs = standaloneAggregateOutputs(rest.slice(3), cwd);
     const context = productionValidationContext(
-      outputs.validationFlags,
+      rest.slice(3),
       cwd,
       3,
     );
     const options = context.options;
     const artifactRoot = path.resolve(options.artifactRoot ?? cwd);
-    assertStandaloneAggregateOutputsNoncanonical(
-      artifactRoot,
-      outputs.outputFile,
-      outputs.junitOutputFile,
-    );
     const inputs = rest.slice(0, 3).map((file, index) =>
       runInput(file, cwd, artifactRoot, context.plans[index]!));
     inputs.forEach(({ report }) => assertPassingRunReport(report, { ...options, artifactRoot }));
@@ -1526,11 +1407,23 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
       verifyArtifactFiles: false,
     });
     assertAggregateMatchesPlans(aggregate, context.plans);
-    writeTextExclusive(outputs.junitOutputFile, junitXml, cwd);
-    writeTextExclusive(outputs.outputFile, stableJson(aggregate), cwd);
+    const aggregateBytes = Buffer.from(stableJson(aggregate), "utf8");
     process.stdout.write(
-      "RBP conformance aggregate reconstruction: WRITTEN (NON-AUTHORITATIVE)\n",
+      "RBP conformance aggregate reconstruction: VALID (NON-AUTHORITATIVE)\n",
     );
+    process.stdout.write(`${stableJson({
+      schemaVersion: "rbp-conformance-aggregate-audit-summary/v1",
+      aggregateBytes: aggregateBytes.length,
+      aggregateSha256: createHash("sha256").update(aggregateBytes).digest("hex"),
+      junitBytes: junitBytes.length,
+      junitSha256: createHash("sha256").update(junitBytes).digest("hex"),
+      runCount: aggregate.runs.length,
+      caseCount: aggregate.cases.length,
+      testcaseCount: aggregate.cases.reduce(
+        (count, entry) => count + entry.runStatuses.length,
+        0,
+      ),
+    })}\n`);
     return;
   }
   if (command === "summary") {

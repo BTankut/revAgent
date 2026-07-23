@@ -1,11 +1,10 @@
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   existsSync,
-  mkdirSync,
   mkdtempSync,
-  readFileSync,
+  readdirSync,
   rmSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -14,11 +13,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { canonicalManifest, evaluatePassingAggregate } from "../src/index.js";
+import { createThreeRunAggregate } from "../src/aggregate.js";
+import { canonicalManifest } from "../src/index.js";
 import {
   sanitizedProductionRuntimeEnvironment,
 } from "../src/productionRuntimeIdentity.js";
-import type { AggregateReport } from "../src/index.js";
 import { aggregateReportToJUnitXml } from "../src/junit.js";
 import { stableJson } from "../src/stableJson.js";
 import {
@@ -124,8 +123,18 @@ interface CliInvocationResult {
   error: Error | undefined;
 }
 
+function localPathAsAdminShare(value: string): string {
+  const resolved = path.win32.resolve(value);
+  const parsed = path.win32.parse(resolved);
+  const driveLetter = parsed.root.match(/^([A-Za-z]):\\$/u)?.[1];
+  if (driveLetter === undefined) {
+    throw new Error(`UNC alias regression requires a drive-letter path: ${value}`);
+  }
+  return `\\\\localhost\\${driveLetter}$\\${resolved.slice(parsed.root.length)}`;
+}
+
 describe("aggregate CLI retained-evidence flow", () => {
-  it("writes and binds aggregate JUnit, then passes its own full validator", async () => {
+  it("validates and summarizes aggregate bytes without writing any output", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-cli-aggregate-"));
     try {
       const plans = ([1, 2, 3] as const).map((sequence) =>
@@ -154,26 +163,6 @@ describe("aggregate CLI retained-evidence flow", () => {
         repoRoot,
       ];
       const inputs = materializePassingRunInputs(root, plans);
-      const runAuditResult = await invokeCurrentCli(
-        [
-          "validate-run",
-          inputs[0]!.reportPath,
-          "--plan",
-          planFiles[0],
-          "--repo-root",
-          repoRoot,
-          "--artifact-root",
-          root,
-        ],
-        root,
-      );
-      expect(runAuditResult.error).toBeUndefined();
-      expect(runAuditResult.status).toBe(0);
-      expect(String(runAuditResult.stdout)).toContain(
-        "VALID (NON-AUTHORITATIVE)",
-      );
-      expect(String(runAuditResult.stdout)).not.toContain("PASS");
-
       const canonicalOutput = path.join(
         root,
         canonicalManifest.retainedEvidence.root,
@@ -184,80 +173,13 @@ describe("aggregate CLI retained-evidence flow", () => {
         canonicalManifest.retainedEvidence.root,
         canonicalManifest.retainedEvidence.aggregateJunit,
       );
-      const output = path.join(root, "audit", "three-run-report.audit.json");
-      const junitOutput = path.join(root, "audit", "junit.audit.xml");
       expect(existsSync(systemPowerShell)).toBe(true);
       expect(existsSync(productionLauncher)).toBe(true);
       expect(existsSync(compiledCli)).toBe(true);
       expect(existsSync(cliBootstrap)).toBe(true);
-      const invalidOutput = await invokeCurrentCli(
-        [
-          "aggregate",
-          ...inputs.map(({ reportPath }) => reportPath),
-          ...planFlags,
-          "--output",
-          path.join(root, "outside.json"),
-        ],
-        root,
-      );
-      expect(invalidOutput.error).toBeUndefined();
-      expect(invalidOutput.status).not.toBe(0);
-      expect(String(invalidOutput.stdout)).not.toContain("PASS");
-
-      const canonicalOutputAttempt = await invokeCurrentCli(
-        [
-          "aggregate",
-          ...inputs.map(({ reportPath }) => reportPath),
-          ...planFlags,
-          "--artifact-root",
-          root,
-          "--output",
-          canonicalOutput,
-          "--junit-output",
-          canonicalJunit,
-        ],
-        root,
-      );
-      expect(canonicalOutputAttempt.error).toBeUndefined();
-      expect(canonicalOutputAttempt.status).not.toBe(0);
-      expect(existsSync(canonicalOutput)).toBe(false);
-      expect(existsSync(canonicalJunit)).toBe(false);
-
-      const retainedAlias = path.join(root, "retained-alias");
-      const retainedRoot = path.join(
-        root,
-        canonicalManifest.retainedEvidence.root,
-      );
-      mkdirSync(retainedRoot, { recursive: true });
-      symlinkSync(
-        retainedRoot,
-        retainedAlias,
-        process.platform === "win32" ? "junction" : "dir",
-      );
-      const aliasOutputAttempt = await invokeCurrentCli(
-        [
-          "aggregate",
-          ...inputs.map(({ reportPath }) => reportPath),
-          ...planFlags,
-          "--artifact-root",
-          root,
-          "--output",
-          path.join(
-            retainedAlias,
-            canonicalManifest.retainedEvidence.aggregateReport,
-          ),
-          "--junit-output",
-          path.join(
-            retainedAlias,
-            canonicalManifest.retainedEvidence.aggregateJunit,
-          ),
-        ],
-        root,
-      );
-      expect(aliasOutputAttempt.error).toBeUndefined();
-      expect(aliasOutputAttempt.status).not.toBe(0);
-      expect(existsSync(canonicalOutput)).toBe(false);
-      expect(existsSync(canonicalJunit)).toBe(false);
+      const evidenceEntriesBefore = readdirSync(root, { recursive: true })
+        .map(String)
+        .sort();
 
       const aggregateResult = await invokeCurrentCli(
         [
@@ -266,76 +188,91 @@ describe("aggregate CLI retained-evidence flow", () => {
           ...planFlags,
           "--artifact-root",
           root,
-          "--output",
-          output,
-          "--junit-output",
-          junitOutput,
         ],
         root,
       );
       expect(aggregateResult.error).toBeUndefined();
       expect(aggregateResult.status).toBe(0);
       expect(String(aggregateResult.stdout)).toContain(
-        "WRITTEN (NON-AUTHORITATIVE)",
+        "VALID (NON-AUTHORITATIVE)",
       );
       expect(String(aggregateResult.stdout)).not.toContain("PASS");
       expect(existsSync(canonicalOutput)).toBe(false);
       expect(existsSync(canonicalJunit)).toBe(false);
 
-      const aggregate = JSON.parse(readFileSync(output, "utf8")) as AggregateReport;
-      expect(aggregate.reportPath).toBe(
-        `${canonicalManifest.retainedEvidence.root}/${canonicalManifest.retainedEvidence.aggregateReport}`,
-      );
-      expect(aggregate.artifacts).toHaveLength(1);
-      expect(aggregate.artifacts[0]).toMatchObject({
+      const expectedAggregate = createThreeRunAggregate(inputs);
+      const expectedJunit = aggregateReportToJUnitXml(expectedAggregate);
+      const expectedJunitBytes = Buffer.from(expectedJunit, "utf8");
+      expectedAggregate.artifacts.push({
         kind: "aggregate_junit",
         path: `${canonicalManifest.retainedEvidence.root}/${canonicalManifest.retainedEvidence.aggregateJunit}`,
+        sha256: createHash("sha256").update(expectedJunitBytes).digest("hex"),
+        bytes: expectedJunitBytes.length,
         mediaType: "application/xml",
       });
+      const expectedAggregateBytes = Buffer.from(
+        stableJson(expectedAggregate),
+        "utf8",
+      );
+      expect(String(aggregateResult.stdout)).not.toContain(
+        expectedAggregateBytes.toString("utf8"),
+      );
+      expect(String(aggregateResult.stdout)).not.toContain(expectedJunit);
+      const stdout = String(aggregateResult.stdout);
+      const summaryLabel =
+        "RBP conformance aggregate reconstruction: VALID (NON-AUTHORITATIVE)";
+      const summaryLabelIndex = stdout.indexOf(summaryLabel);
+      expect(summaryLabelIndex).toBeGreaterThanOrEqual(0);
+      const summaryStart = stdout.indexOf(
+        "{",
+        summaryLabelIndex + summaryLabel.length,
+      );
+      const summaryEnd = stdout.lastIndexOf("}");
+      expect(summaryStart).toBeGreaterThan(summaryLabelIndex);
+      expect(summaryEnd).toBeGreaterThan(summaryStart);
       expect(
-        evaluatePassingAggregate(aggregate, {
-          verifyArtifactFiles: false,
-          artifactRoot: root,
-        }).ok,
-      ).toBe(true);
-      expect(readFileSync(junitOutput, "utf8")).toBe(
-        aggregateReportToJUnitXml(aggregate),
-      );
-      const validationResult = await invokeCurrentCli(
-        [
-          "validate-aggregate",
-          output,
-          ...planFlags,
-          "--artifact-root",
-          root,
-        ],
-        root,
-      );
-      expect(validationResult.error).toBeUndefined();
-      expect(validationResult.status).not.toBe(0);
-      expect(String(validationResult.stdout)).not.toContain("PASS");
+        JSON.parse(stdout.slice(summaryStart, summaryEnd + 1)),
+      ).toEqual({
+        schemaVersion: "rbp-conformance-aggregate-audit-summary/v1",
+        aggregateBytes: expectedAggregateBytes.length,
+        aggregateSha256: createHash("sha256")
+          .update(expectedAggregateBytes)
+          .digest("hex"),
+        junitBytes: expectedJunitBytes.length,
+        junitSha256: createHash("sha256")
+          .update(expectedJunitBytes)
+          .digest("hex"),
+        runCount: 3,
+        caseCount: canonicalManifest.cases.length,
+        testcaseCount: canonicalManifest.cases.length * 3,
+      });
 
-      const outputBeforeRetry = readFileSync(output);
-      const junitBeforeRetry = readFileSync(junitOutput);
-      const overwriteAttempt = await invokeCurrentCli(
-        [
-          "aggregate",
-          ...inputs.map(({ reportPath }) => reportPath),
-          ...planFlags,
-          "--artifact-root",
+      for (const [flag, target] of [
+        ["--output", localPathAsAdminShare(canonicalOutput)],
+        ["--junit-output", localPathAsAdminShare(canonicalJunit)],
+      ] as const) {
+        const rejectedWrite = await invokeCurrentCli(
+          [
+            "aggregate",
+            ...inputs.map(({ reportPath }) => reportPath),
+            ...planFlags,
+            "--artifact-root",
+            root,
+            flag,
+            target,
+          ],
           root,
-          "--output",
-          output,
-          "--junit-output",
-          junitOutput,
-        ],
-        root,
-      );
-      expect(overwriteAttempt.error).toBeUndefined();
-      expect(overwriteAttempt.status).not.toBe(0);
-      expect(readFileSync(output)).toEqual(outputBeforeRetry);
-      expect(readFileSync(junitOutput)).toEqual(junitBeforeRetry);
-      expect(String(overwriteAttempt.stdout)).not.toContain("PASS");
+        );
+        expect(rejectedWrite.error).toBeUndefined();
+        expect(rejectedWrite.status).not.toBe(0);
+        expect(String(rejectedWrite.stderr)).toContain("Usage:");
+        expect(String(rejectedWrite.stdout)).not.toContain("PASS");
+        expect(existsSync(canonicalOutput)).toBe(false);
+        expect(existsSync(canonicalJunit)).toBe(false);
+      }
+      expect(
+        readdirSync(root, { recursive: true }).map(String).sort(),
+      ).toEqual(evidenceEntriesBefore);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
