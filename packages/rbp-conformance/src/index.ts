@@ -71,6 +71,31 @@ export {
   executeParentSteps,
   observationsForRequirement,
 } from "./parentStepEngine.js";
+export { CaseStackSupervisor } from "./caseStackSupervisor.js";
+export { createEphemeralLoopbackTlsIdentity } from "./ephemeralTlsIdentity.js";
+export type { EphemeralTlsIdentity } from "./ephemeralTlsIdentity.js";
+export type {
+  CaseStackSupervisorOptions,
+  GatewayStartupOverrides,
+  ParentCaptureSummary,
+  RestartCaseStackOptions,
+  StartedStackComponent,
+} from "./caseStackSupervisor.js";
+export { createProductionCaseDrivers } from "./productionDrivers.js";
+export {
+  executeProductionCaseBinding,
+  executeProductionCaseBothBindings,
+} from "./productionCaseRunner.js";
+export type { ProductionBindingExecution } from "./productionCaseRunner.js";
+export {
+  buildProductionExecutionPlan,
+  productionComponentLaunchConfigs,
+} from "./productionExecutionPlan.js";
+export {
+  productionCaseVariables,
+  SUPPORTED_PRODUCTION_CASES,
+} from "./productionCaseSeeds.js";
+export type { SupportedProductionCase } from "./productionCaseSeeds.js";
 export type {
   ParentStepAbortContext,
   ParentStepDriver,

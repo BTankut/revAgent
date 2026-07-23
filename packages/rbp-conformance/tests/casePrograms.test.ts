@@ -99,11 +99,12 @@ describe("exact forty-case control and observation catalog", () => {
       expect(program.bindings).toEqual(["wss", "streamable_http_sse"]);
       expect(program.steps[0]).toMatchObject({ channel: "parent_harness", action: "restart_case_stack" });
       expect(program.steps[1]).toMatchObject({ channel: "parent_harness", action: "begin_wire_capture" });
-      expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
+      expect(program.steps.at(-2)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
+      expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "stop_case_stack" });
       for (const step of program.steps) {
         expect(step.expectedOutcome).toEqual({ kind: "success" });
         expect(["sequential", "async_start", "async_join", "barrier"]).toContain(step.execution.mode);
-        expect(step.captures).toEqual([]);
+        expect(new Set(step.captures.map(({ name }) => name)).size).toBe(step.captures.length);
         expect(step.parentTimeoutMs).toBeGreaterThan(0);
         expect(step.parentTimeoutMs).toBeLessThanOrEqual(300_000);
         expect(() => assertValidCaseControlStepSemantics(step)).not.toThrow();

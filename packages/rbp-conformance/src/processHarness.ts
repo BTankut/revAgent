@@ -371,15 +371,19 @@ export class StrictJsonlProcess {
     return response;
   }
 
-  async stop(): Promise<{ stoppedAt: string; exitCode: number }> {
+  async stop(): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+    let killEscalated = false;
     if (!this.#closed) {
       try { await this.request("shutdown", {}, this.process.readyAt === null ? 1_000 : 10_000); }
       catch { this.child.kill("SIGTERM"); }
     }
-    const forced = setTimeout(() => this.child.kill("SIGTERM"), 10_000);
+    const forced = setTimeout(() => {
+      killEscalated = true;
+      this.child.kill("SIGKILL");
+    }, 10_000);
     const exit = await this.#exit;
     clearTimeout(forced);
-    return { stoppedAt: exit.at, exitCode: exit.code };
+    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
   }
 }
 
@@ -494,12 +498,19 @@ export class StrictReadyProcess {
     return new StrictReadyProcess(options.componentId, child, ready.value, transcript, startedAt, ready.at);
   }
 
-  async stop(signal: NodeJS.Signals = "SIGTERM", timeoutMs = 10_000): Promise<{ stoppedAt: string; exitCode: number }> {
+  async stop(
+    signal: NodeJS.Signals = "SIGTERM",
+    timeoutMs = 10_000,
+  ): Promise<{ stoppedAt: string; exitCode: number; killEscalated: boolean }> {
+    let killEscalated = false;
     if (this.process.exitCode === null) this.child.kill(signal);
-    const timer = setTimeout(() => this.child.kill("SIGKILL"), timeoutMs);
+    const timer = setTimeout(() => {
+      killEscalated = true;
+      this.child.kill("SIGKILL");
+    }, timeoutMs);
     const exit = await this.#exit;
     clearTimeout(timer);
-    return { stoppedAt: exit.at, exitCode: exit.code };
+    return { stoppedAt: exit.at, exitCode: exit.code, killEscalated };
   }
 }
 

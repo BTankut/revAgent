@@ -265,6 +265,9 @@ const HARNESS_OBSERVATION_PROVENANCE: Readonly<Record<
   restart_case_stack: {
     pairs: COMPONENT_IDS.map((component) => [component, "process_lifecycle"] as const),
   },
+  stop_case_stack: {
+    pairs: COMPONENT_IDS.map((component) => [component, "process_lifecycle"] as const),
+  },
   begin_wire_capture: {
     pairs: COMPONENT_IDS.map((component) => [component, "wire_event"] as const),
   },

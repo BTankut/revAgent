@@ -58,6 +58,7 @@ export const FIXTURE_CONTROL_ACTIONS = [
 
 export const HARNESS_ACTIONS = [
   "restart_case_stack",
+  "stop_case_stack",
   "begin_wire_capture",
   "end_wire_capture",
   "await_condition",
@@ -269,6 +270,13 @@ function withExecution(
   return { ...step, execution };
 }
 
+function withCaptures(
+  step: CaseControlStep,
+  captures: StepCaptureMetadata[],
+): CaseControlStep {
+  return { ...step, captures };
+}
+
 const METADATA_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/u;
 
@@ -381,22 +389,42 @@ function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): Ca
       port: "{{fixture.ready.port}}",
       probeTimeoutMs: 1_000,
     }), "setup"),
-    bridge(`${prefix}.open`, "open_transport", byBinding(
-      {
-        kind: "wss",
-        endpointPolicy: "loopback_test_readiness",
-        deviceToken: "{{case.device_token}}",
-        wssUrl: "{{gateway.ready.ws_url}}",
-        hello: hello(caseId),
-      },
-      {
-        kind: "streamable_http_sse",
-        endpointPolicy: "loopback_test_readiness",
-        deviceToken: "{{case.device_token}}",
-        fallbackUrl: "{{gateway.ready.http_connection_url}}",
-        hello: hello(caseId),
-      },
-    ), "setup"),
+    withCaptures(
+      bridge(`${prefix}.open`, "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: "{{gateway.ready.ws_url}}",
+          tlsTrust: {
+            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
+            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
+            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          },
+          hello: hello(caseId),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{gateway.ready.http_connection_url}}",
+          hello: hello(caseId),
+        },
+      ), "setup"),
+      [
+        { name: "case.connection_id", source: "result", jsonPointer: "/connectionId" },
+        {
+          name: "case.connection_capabilities",
+          source: "result",
+          jsonPointer: "/helloAck/payload/granted_capabilities",
+        },
+        {
+          name: "case.negotiated_protocol",
+          source: "result",
+          jsonPointer: "/helloAck/payload/protocol",
+        },
+      ],
+    ),
     bridge(`${prefix}.run-loop`, "start_run_loop", args(), "setup"),
     bridge(`${prefix}.register`, "session_register", args({
       probeIndex: 0,
@@ -405,13 +433,27 @@ function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): Ca
       fingerprint: FINGERPRINT,
       bridgeVersion: "0.0.0",
     }), "setup"),
-    harness(`${prefix}.await-register`, "await_condition", args({
-      source: "bridge.snapshot_evidence",
-      jsonPointer: "/sessions/0/rsid",
-      operator: "exists",
-      timeoutMs: 5_000,
-      grantedSessionCapabilities: grantedSessionCapabilities ?? "{{fixture.sessionCapabilities}}",
-    }), "setup"),
+    withCaptures(
+      harness(`${prefix}.await-register`, "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/sessions/0/rsid",
+        operator: "exists",
+        timeoutMs: 5_000,
+        ...(grantedSessionCapabilities === undefined
+          ? {}
+          : { grantedSessionCapabilities }),
+      }), "setup"),
+      [
+        { name: "case.rsid", source: "result", jsonPointer: "/dynamic/rsid" },
+        { name: "case.next_seq", source: "result", jsonPointer: "/dynamic/nextSeq" },
+        { name: "case.last_ack", source: "result", jsonPointer: "/dynamic/lastAck" },
+        {
+          name: "case.session_capabilities",
+          source: "result",
+          jsonPointer: "/dynamic/grantedSessionCapabilities",
+        },
+      ],
+    ),
   ];
 }
 
@@ -524,8 +566,8 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C05",
     controls: [
-      ...sessionSetup("O1-C05"),
       fixture("o1-c05.context", "apply_document_context", args({ event: "{{vectors.document_context}}" })),
+      ...sessionSetup("O1-C05"),
       bridge("o1-c05.poll-context", "poll_document_context", args({ rsid: "{{case.rsid}}", force: true })),
       bridge("o1-c05.flush-context", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
     ],
@@ -1219,6 +1261,7 @@ function finalEvidenceSteps(caseId: string): CaseControlStep[] {
     fixture(`${prefix}.fixture-snapshot`, "snapshot_evidence", args(), "observation"),
     harness(`${prefix}.resource-sample`, "capture_resource_sample", args(), "observation"),
     harness(`${prefix}.wire-end`, "end_wire_capture", args(), "observation"),
+    harness(`${prefix}.stack-stop`, "stop_case_stack", args(), "cleanup"),
   ];
 }
 
@@ -1297,7 +1340,7 @@ function observations(caseId: string, steps: readonly CaseControlStep[]): CaseOb
       alias: `process.${componentId}`,
       componentId,
       kind: "process_lifecycle" as const,
-      sourceStepIds: [`${prefix}.isolated-stack`],
+      sourceStepIds: [`${prefix}.stack-stop`],
       requiredJsonPointers: [...OBSERVATION_POINTERS.process_lifecycle],
     })),
   ];
@@ -1373,12 +1416,56 @@ function buildProgram(definition: ProgramDefinition): ConformanceCaseProgram {
   const manifestCase = canonicalManifest.cases.find(({ id }) => id === definition.caseId);
   if (manifestCase === undefined) throw new Error(`case program references unknown case ${definition.caseId}`);
   const steps = [
-    harness(`${definition.caseId.toLowerCase()}.isolated-stack`, "restart_case_stack", args({
-      caseId: definition.caseId,
-      binding: "{{binding}}",
-      preserveState: false,
-      requireExactExecutionPlanIdentity: true,
-    }), "setup"),
+    withCaptures(
+      harness(`${definition.caseId.toLowerCase()}.isolated-stack`, "restart_case_stack", args({
+        caseId: definition.caseId,
+        binding: "{{binding}}",
+        preserveState: false,
+        requireExactExecutionPlanIdentity: true,
+      }), "setup"),
+      [
+        {
+          name: "fixture.ready.host",
+          source: "result",
+          jsonPointer: "/readiness/fixture/host",
+        },
+        {
+          name: "fixture.ready.port",
+          source: "result",
+          jsonPointer: "/readiness/fixture/port",
+        },
+        {
+          name: "gateway.ready.ws_url",
+          source: "result",
+          jsonPointer: "/readiness/gateway/ws_url",
+        },
+        {
+          name: "gateway.ready.http_connection_url",
+          source: "result",
+          jsonPointer: "/readiness/gateway/http_connection_url",
+        },
+        {
+          name: "gateway.ready.control_url",
+          source: "result",
+          jsonPointer: "/readiness/gateway/control_url",
+        },
+        {
+          name: "gateway.ready.ca_certificate_path",
+          source: "result",
+          jsonPointer: "/readiness/gateway/tlsTrust/caCertificatePath",
+        },
+        {
+          name: "gateway.ready.ca_certificate_sha256",
+          source: "result",
+          jsonPointer: "/readiness/gateway/tlsTrust/caCertificateSha256",
+        },
+        {
+          name: "gateway.ready.server_certificate_sha256",
+          source: "result",
+          jsonPointer: "/readiness/gateway/tlsTrust/serverCertificateSha256",
+        },
+      ],
+    ),
     harness(`${definition.caseId.toLowerCase()}.wire-begin`, "begin_wire_capture", args(), "setup"),
     ...definition.controls,
     ...finalEvidenceSteps(definition.caseId),
