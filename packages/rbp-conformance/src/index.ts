@@ -153,7 +153,6 @@ export {
   assertProductionExecutionPlanCurrent,
   assertProductionRuntimeLaunchCurrent,
   boundProductionPowerShellExecutable,
-  buildProductionExecutionPlan,
   productionComponentLaunchConfigs,
 } from "./productionExecutionPlan.js";
 export type {
@@ -161,7 +160,6 @@ export type {
   ProductionSourceIdentityResolver,
 } from "./productionExecutionPlan.js";
 export {
-  createProductionBuildProvenanceSidecars,
   PRODUCTION_BUILD_CONTRACT_VERSION,
   PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION,
   PRODUCTION_FILE_SET_ALGORITHM,
@@ -180,11 +178,6 @@ export type {
   ProductionProvenanceVerificationOptions,
   ProductionRuntimeVerificationOptions,
 } from "./productionBuildProvenance.js";
-export { prepareProductionExecutionPlan } from "./productionPreparation.js";
-export {
-  assertTrustedProductionLaunch,
-  type ProductionLaunchRole,
-} from "./productionLaunchAttestation.js";
 export {
   assertProductionControllerEnvironmentSafe,
   sanitizedProductionRuntimeEnvironment,

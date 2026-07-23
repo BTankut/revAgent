@@ -13,6 +13,7 @@ import {
   verifyProductionRuntimeBuildProvenance,
   type ProductionProvenanceVerificationOptions,
 } from "./productionBuildProvenance.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import { canonicalManifest } from "./manifest.js";
 import {
   assertProductionControllerEnvironmentSafe,
@@ -186,6 +187,10 @@ export function buildProductionExecutionPlan(input: {
   gitExecutable?: string;
   nodeMetadataResolver?: NodeRuntimeMetadataResolver;
 }): ExecutionPlan {
+  // A production-valid plan can only be assembled inside the process that
+  // received the canonical prepare-wrapper launch receipt. Keep this check
+  // ahead of source, sidecar, or ignored-dist reads.
+  assertTrustedProductionLaunch(input.repoRoot, "prepare-wrapper");
   const runtimeNodeExecutable = input.nodeExecutable ?? process.execPath;
   const source = resolveSourceIdentity(input.repoRoot, input.gitExecutable);
   const provenance = verifyProductionBuildProvenance(input.repoRoot, source, {

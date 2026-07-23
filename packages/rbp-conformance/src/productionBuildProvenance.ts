@@ -14,6 +14,7 @@ import {
   verifyProductionGitIdentityCurrent,
   type ProductionGitIdentity,
 } from "./productionGitIdentity.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import {
   normalizeExecutablePath,
   provenanceFileSet,
@@ -500,6 +501,10 @@ export function createProductionBuildProvenanceSidecars(
   source: SourceIdentity,
   inputs: ProductionProvenanceInputs,
 ): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
+  // Sidecars turn ignored build output into production-bound evidence. Refuse
+  // to inspect or bless any of those bytes unless this process owns the
+  // one-shot receipt issued to the canonical prepare wrapper.
+  assertTrustedProductionLaunch(repoRoot, "prepare-wrapper");
   const toolchain = resolveProductionToolchainIdentity(repoRoot, inputs);
   const harness = productionHarnessIdentity(repoRoot, toolchain.runtimeNode);
   const buildGeneratorDependencies =

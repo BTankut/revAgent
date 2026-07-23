@@ -1,5 +1,12 @@
 import { spawnSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -25,6 +32,19 @@ const compiledPreparation = path.join(
   "src",
   "productionPreparation.js",
 );
+const compiledProductionBuildProvenance = path.join(
+  packageRoot,
+  "dist",
+  "src",
+  "productionBuildProvenance.js",
+);
+const compiledProductionExecutionPlan = path.join(
+  packageRoot,
+  "dist",
+  "src",
+  "productionExecutionPlan.js",
+);
+const compiledPackageRoot = path.join(packageRoot, "dist", "src", "index.js");
 const launcherError = /require the tracked external PowerShell launcher/u;
 
 describe("production CLI import guard", () => {
@@ -264,5 +284,121 @@ describe("production CLI import guard", () => {
     expect(result.status).toBe(42);
     expect(String(result.stderr)).toMatch(launcherError);
     expect(String(result.stdout)).not.toContain("PASS");
+  });
+
+  it("rejects direct sidecar and plan writers before touching arbitrary ignored output", () => {
+    expect(existsSync(compiledProductionBuildProvenance)).toBe(true);
+    expect(existsSync(compiledProductionExecutionPlan)).toBe(true);
+    expect(existsSync(compiledPackageRoot)).toBe(true);
+    const arbitraryRoot = mkdtempSync(
+      path.join(tmpdir(), "rbp-direct-writer-bypass-"),
+    );
+    const componentRoots = [
+      "packages/gateway-stub/dist",
+      "packages/bridge-simulator/dist",
+      "packages/addin-loopback-fixture/dist",
+    ];
+    const sidecarFiles = componentRoots.map((componentRoot) =>
+      path.join(arbitraryRoot, componentRoot, "rbp-build-provenance.json")
+    );
+    const planFile = path.join(arbitraryRoot, "bypass-plan.json");
+    const resolverProbe = path.join(arbitraryRoot, "resolver-was-called");
+    try {
+      writeFileSync(
+        path.join(arbitraryRoot, ".gitignore"),
+        "**/dist/\nbypass-plan.json\nresolver-was-called\n",
+      );
+      for (const componentRoot of componentRoots) {
+        mkdirSync(path.join(arbitraryRoot, componentRoot), { recursive: true });
+        writeFileSync(
+          path.join(arbitraryRoot, componentRoot, "cli.js"),
+          "console.log('arbitrary ignored output');\n",
+        );
+      }
+      const source = [
+        `import { writeFileSync } from "node:fs";`,
+        `const provenance = await import(${
+          JSON.stringify(pathToFileURL(compiledProductionBuildProvenance).href)
+        });`,
+        `const plans = await import(${
+          JSON.stringify(pathToFileURL(compiledProductionExecutionPlan).href)
+        });`,
+        `const packageRoot = await import(${
+          JSON.stringify(pathToFileURL(compiledPackageRoot).href)
+        });`,
+        `const repoRoot = ${JSON.stringify(arbitraryRoot)};`,
+        `const planFile = ${JSON.stringify(planFile)};`,
+        `const resolverProbe = ${JSON.stringify(resolverProbe)};`,
+        "const nodeMetadataResolver = () => {",
+        "  writeFileSync(resolverProbe, 'called');",
+        "  throw new Error('resolver must not run before attestation');",
+        "};",
+        "const outcome = {",
+        "  rootExportsWriter: 'createProductionBuildProvenanceSidecars' in packageRoot,",
+        "  rootExportsPlanBuilder: 'buildProductionExecutionPlan' in packageRoot,",
+        "};",
+        "try {",
+        "  provenance.createProductionBuildProvenanceSidecars(",
+        "    repoRoot,",
+        "    { commitSha: '0'.repeat(40), treeSha: '1'.repeat(40) },",
+        "    {",
+        "      buildNodeExecutable: process.execPath,",
+        "      runtimeNodeExecutable: process.execPath,",
+        "      npmExecutable: process.execPath,",
+        "      nodeMetadataResolver,",
+        "    },",
+        "  );",
+        "  outcome.sidecarWriterReturned = true;",
+        "} catch (error) {",
+        "  outcome.sidecarWriterReturned = false;",
+        "  outcome.sidecarWriterError = String(error?.message ?? error);",
+        "}",
+        "try {",
+        "  const plan = plans.buildProductionExecutionPlan({",
+        "    repoRoot,",
+        "    runId: 'direct-plan-bypass',",
+        "    sequence: 1,",
+        "    nodeExecutable: process.execPath,",
+        "    nodeMetadataResolver,",
+        "  });",
+        "  writeFileSync(planFile, JSON.stringify(plan));",
+        "  outcome.planBuilderReturned = true;",
+        "} catch (error) {",
+        "  outcome.planBuilderReturned = false;",
+        "  outcome.planBuilderError = String(error?.message ?? error);",
+        "}",
+        "process.stdout.write(JSON.stringify(outcome));",
+      ].join("\n");
+      const result = spawnSync(
+        process.execPath,
+        ["--input-type=module", "-e", source],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          shell: false,
+          windowsHide: true,
+        },
+      );
+      expect(result.status, String(result.stderr)).toBe(0);
+      const outcome = JSON.parse(String(result.stdout)) as {
+        rootExportsWriter: boolean;
+        rootExportsPlanBuilder: boolean;
+        sidecarWriterReturned: boolean;
+        sidecarWriterError: string;
+        planBuilderReturned: boolean;
+        planBuilderError: string;
+      };
+      expect(outcome.rootExportsWriter).toBe(false);
+      expect(outcome.rootExportsPlanBuilder).toBe(false);
+      expect(outcome.sidecarWriterReturned).toBe(false);
+      expect(outcome.sidecarWriterError).toMatch(launcherError);
+      expect(outcome.planBuilderReturned).toBe(false);
+      expect(outcome.planBuilderError).toMatch(launcherError);
+      expect(sidecarFiles.some((sidecar) => existsSync(sidecar))).toBe(false);
+      expect(existsSync(planFile)).toBe(false);
+      expect(existsSync(resolverProbe)).toBe(false);
+    } finally {
+      rmSync(arbitraryRoot, { recursive: true, force: true });
+    }
   });
 });

@@ -1,7 +1,11 @@
 import { rmSync, symlinkSync } from "node:fs";
 import path from "node:path";
 
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("../src/productionLaunchAttestation.js", () => ({
+  assertTrustedProductionLaunch: vi.fn(),
+}));
 
 import {
   assertProductionRuntimeLaunchCurrent,

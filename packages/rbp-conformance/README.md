@@ -383,10 +383,14 @@ The launcher accepts only the canonical tracked prepare wrapper or CLI
 bootstrap. Its source, the attestation client/bootstrap, and PowerShell
 identity are themselves protected harness/toolchain bytes. The prepare wrapper
 keeps the attested process alive while importing the freshly compiled
-controller, so the public prepare core cannot be entered with a fabricated npm
-marker. The in-process controller environment guard remains defense in depth,
-but it cannot replace this pre-production-JavaScript boundary: a direct
-Node invocation with `NODE_OPTIONS`, `NODE_PATH`, compile-cache,
+controller. The sidecar writer and production-plan builder are internal,
+absent from the package-root export surface, and independently require that
+same process-private prepare-wrapper receipt before they inspect ignored build
+output, write sidecars, or assemble a production-valid plan. Direct module
+imports therefore fail closed even when a caller fabricates an npm marker. The
+in-process controller environment guard remains defense in depth, but it
+cannot replace this pre-production-JavaScript boundary: a direct Node
+invocation with `NODE_OPTIONS`, `NODE_PATH`, compile-cache,
 preserve-symlink, or `WS_NO_*` overrides is not canonical evidence.
 
 This boundary prevents a direct Node process or preload from becoming
