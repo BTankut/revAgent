@@ -27,10 +27,6 @@ export type RawProductionCaseId = (typeof RAW_PRODUCTION_CASES)[number];
 
 export interface RawProductionRuntimeSeed {
   readonly binding?: Binding;
-  readonly fixtureHost?: string;
-  readonly fixturePort?: number;
-  readonly gatewayWssUrl?: string;
-  readonly gatewayHttpConnectionUrl?: string;
   readonly deviceToken?: string;
   readonly otherDeviceToken?: string;
 }
@@ -775,12 +771,13 @@ function c39Vectors(): Record<string, JsonValue> {
 
 function c40Vectors(): Record<string, JsonValue> {
   return {
-    raw_path: { params: { vector: "raw_path", raw_path: "C:\\temp\\raw-output.bin" } },
-    traversal_path: { params: { vector: "traversal_path", relative_path: "..\\outside\\artifact.bin" } },
-    reparse_path: { params: { vector: "reparse_path", path_kind: "reparse_point" } },
-    valid_multifile: { params: { vector: "valid_multifile", members: ["plan.png", "schedule.csv"] } },
-    retransmission: { params: { vector: "retransmission", replay_count: 2 } },
-    invalid_member: { params: { vector: "invalid_member", members: ["valid.png", "..\\invalid.bin"] } },
+    raw_path: { params: { scenario: "raw_path", path: "C:\\temp\\raw-output.bin" } },
+    local_path: { params: { scenario: "local_path", path: "C:\\temp\\local-output.bin" } },
+    traversal_path: { params: { scenario: "traversal_path", path: "..\\outside\\artifact.bin" } },
+    reparse_path: { params: { scenario: "reparse_path", path: "C:\\temp\\reparse-output.bin" } },
+    valid_multifile: { params: { scenario: "valid_multifile", fileCount: 2, bytesPerFile: 1_048_577 } },
+    retransmission: { params: { scenario: "valid_multifile", fileCount: 2, bytesPerFile: 1_048_577 } },
+    invalid_member: { params: { scenario: "invalid_member" } },
   };
 }
 
@@ -846,6 +843,7 @@ function idsForPrograms(): Record<string, JsonValue> {
     };
     for (const suffix of [
       "raw_path",
+      "local_path",
       "traversal_path",
       "reparse_path",
       "valid_multifile",
@@ -871,16 +869,7 @@ function assertRuntimeSeed(input: RawProductionRuntimeSeed): void {
   if (input.binding !== undefined && input.binding !== "wss" && input.binding !== "streamable_http_sse") {
     throw new TypeError("raw production binding must be wss or streamable_http_sse");
   }
-  if (
-    input.fixturePort !== undefined &&
-    (!Number.isSafeInteger(input.fixturePort) || input.fixturePort < 1 || input.fixturePort > 65_535)
-  ) {
-    throw new RangeError("raw production fixturePort must be an integer from 1 through 65535");
-  }
   for (const [label, value] of [
-    ["fixtureHost", input.fixtureHost],
-    ["gatewayWssUrl", input.gatewayWssUrl],
-    ["gatewayHttpConnectionUrl", input.gatewayHttpConnectionUrl],
     ["deviceToken", input.deviceToken],
     ["otherDeviceToken", input.otherDeviceToken],
   ] as const) {
@@ -917,29 +906,13 @@ export function rawProductionCaseVariables(
     clock: { iso: CLOCK_ISO },
     protocol: { N: 2, N_minus_one: 1 },
     fixture: {
-      ready: {
-        host: input.fixtureHost ?? "127.0.0.1",
-        port: input.fixturePort ?? 48_298,
-      },
       sessionCapabilities: ["batch_atomic", "chunked_results", "doc_context_cached_v1"],
-    },
-    gateway: {
-      ready: {
-        ws_url: input.gatewayWssUrl ?? "wss://127.0.0.1:48_291/bridge/v1",
-        http_connection_url:
-          input.gatewayHttpConnectionUrl ??
-          "https://127.0.0.1:48_291/bridge/v1/http/connections",
-      },
     },
     case: {
       device_token: input.deviceToken ?? "test-device-token",
       other_device_token: input.otherDeviceToken ?? "other-device-token",
       device_id: "device-01",
-      rsid: DEFAULT_RSID,
-      connection_id: "connection-raw-wss",
       sse_connection_id: "connection-raw-sse",
-      next_seq: 1,
-      last_ack: 0,
       batch_steps: commonSteps,
       c37: {
         revit_exited: { rsid: "rs_c37_revit_exited" },

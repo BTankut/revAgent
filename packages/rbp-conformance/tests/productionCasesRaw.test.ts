@@ -162,6 +162,53 @@ describe("raw production C25-C40 seed catalog", () => {
     const driver: ParentStepDriver = async (request) => {
       expect(noUnresolvedTokens(request.arguments)).toBe(true);
       if (request.action === "send_binding_frame") rawRequests.push(request);
+      if (request.action === "restart_case_stack") {
+        return {
+          kind: "success",
+          result: {
+            readiness: {
+              fixture: { host: "127.0.0.1", port: 48_298 },
+              gateway: {
+                ws_url: "wss://127.0.0.1:48291/bridge/v1",
+                http_connection_url: "https://127.0.0.1:48291/bridge/v1/http/connections",
+                control_url: "https://127.0.0.1:48291/control/v1",
+                tlsTrust: {
+                  caCertificatePath: "C:/test/ca.pem",
+                  caCertificateSha256: `sha256:${"a".repeat(64)}`,
+                  serverCertificateSha256: `sha256:${"b".repeat(64)}`,
+                },
+              },
+            },
+          },
+        };
+      }
+      if (request.action === "open_transport") {
+        return {
+          kind: "success",
+          result: {
+            connectionId: "connection-raw",
+            helloAck: {
+              payload: {
+                protocol: 1,
+                granted_capabilities: ["journal_v1", "chunked_results"],
+              },
+            },
+          },
+        };
+      }
+      if (request.action === "await_condition") {
+        return {
+          kind: "success",
+          result: {
+            dynamic: {
+              rsid: "rs_raw_primary",
+              nextSeq: 1,
+              lastAck: 0,
+              grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+            },
+          },
+        };
+      }
       return { kind: "success", result: { retainedFact: request.action } };
     };
     const drivers: ParentStepDrivers = {
