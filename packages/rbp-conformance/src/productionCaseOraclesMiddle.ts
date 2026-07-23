@@ -464,13 +464,48 @@ const digestVerified: CanonicalAssertionOracle = (context) => {
     ? []
     : arrayValue(objectValue(dispatch.gatewaySession.artifacts)?.[dispatch.correlationId])
       .map(objectValue);
+  const parentEvidence = payload(recordAtStep(
+    context,
+    "gateway_snapshot",
+    "o1-c15.parent-artifact-bytes",
+    "gateway_stub",
+  ));
+  const parentArtifacts = arrayValue(parentEvidence?.artifacts)
+    .map(objectValue)
+    .filter((entry): entry is ObjectValue => entry !== null);
   return dispatch !== null &&
     SHA256.test(String(dispatch.terminalPayload?.result_digest)) &&
+    parentEvidence?.schemaVersion === "supervisor.gateway-artifact-byte-evidence/v1" &&
+    parentEvidence.source === "parent_runner_direct_durable_state_read" &&
+    parentEvidence.statePathRedacted === true &&
+    parentEvidence.stateSchemaVersion === 1 &&
+    Number(parentEvidence.stateFileBytes) > 0 &&
+    SHA256.test(String(parentEvidence.stateFileSha256)) &&
+    parentEvidence.rsid === dispatch.rsid &&
+    parentEvidence.invocationId === dispatch.correlationId &&
+    parentEvidence.terminalResultDigest === dispatch.terminalPayload?.result_digest &&
+    parentEvidence.artifactCount === 2 &&
+    parentEvidence.totalDecodedBytes === 8_388_608 &&
     artifacts.length === 2 &&
-    artifacts.every((artifact) =>
-      artifact?.totalSize === 4_194_304 &&
-      artifact.totalChunks === 4 &&
-      SHA256.test(String(artifact.sha256)));
+    parentArtifacts.length === artifacts.length &&
+    parentArtifacts.every((parentArtifact, index) => {
+      const artifact = artifacts[index];
+      return artifact !== null &&
+        parentArtifact.artifactId === artifact.artifactId &&
+        parentArtifact.artifactIndex === artifact.artifactIndex &&
+        parentArtifact.streamId === artifact.streamId &&
+        parentArtifact.totalChunks === artifact.totalChunks &&
+        parentArtifact.totalChunks === 4 &&
+        parentArtifact.terminalTotalChunks === parentArtifact.totalChunks &&
+        parentArtifact.reportedTotalSize === artifact.totalSize &&
+        parentArtifact.reportedTotalSize === 4_194_304 &&
+        parentArtifact.terminalTotalSize === parentArtifact.reportedTotalSize &&
+        parentArtifact.parentDecodedBytes === parentArtifact.reportedTotalSize &&
+        SHA256.test(String(parentArtifact.parentSha256)) &&
+        parentArtifact.parentSha256 === parentArtifact.reportedSha256 &&
+        parentArtifact.parentSha256 === parentArtifact.terminalDescriptorSha256 &&
+        parentArtifact.parentSha256 === artifact.sha256;
+    });
 };
 
 const progressDelivered: CanonicalAssertionOracle = (context) => {

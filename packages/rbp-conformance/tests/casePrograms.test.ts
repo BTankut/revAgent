@@ -246,6 +246,28 @@ describe("exact forty-case control and observation catalog", () => {
       });
   });
 
+  it("requires C15 parent-owned durable-byte digest evidence after terminal delivery", () => {
+    const c15 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C15")!;
+    const inspection = c15.steps.find(
+      ({ stepId }) => stepId === "o1-c15.parent-artifact-bytes",
+    );
+    expect(inspection).toMatchObject({
+      channel: "parent_harness",
+      componentId: null,
+      action: "inspect_gateway_artifact_bytes",
+      phase: "observation",
+      arguments: {
+        common: {
+          rsid: "{{case.rsid}}",
+          invocationId: "{{ids.O1-C15.chunked.invocationId}}",
+        },
+      },
+    });
+    expect(c15.steps.indexOf(inspection!)).toBeGreaterThan(
+      c15.steps.findIndex(({ stepId }) => stepId === "o1-c15.drive-12"),
+    );
+  });
+
   it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {
     const c12 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C12")!;
     expect(c12.steps.find(({ stepId }) => stepId === "o1-c12.first")?.execution).toEqual({

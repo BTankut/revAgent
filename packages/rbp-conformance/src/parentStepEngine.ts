@@ -294,6 +294,11 @@ const HARNESS_OBSERVATION_PROVENANCE: Readonly<Record<
       ["bridge_simulator", "wire_event"],
     ],
   },
+  inspect_gateway_artifact_bytes: {
+    pairs: [
+      ["gateway_stub", "gateway_snapshot"],
+    ],
+  },
   send_binding_frame: {
     pairs: [
       ["gateway_stub", "wire_event"],

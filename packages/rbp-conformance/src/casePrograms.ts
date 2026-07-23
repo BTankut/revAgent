@@ -66,6 +66,7 @@ export const HARNESS_ACTIONS = [
   "await_condition",
   "set_gateway_proxy_backpressure",
   "drive_bridge_outbound",
+  "inspect_gateway_artifact_bytes",
   "send_binding_frame",
   "send_fixture_frame",
   "send_split_fixture_frame",
@@ -853,6 +854,10 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         ),
         { mode: "async_join", handles: ["o1-c15.dispatch"] },
       ),
+      harness("o1-c15.parent-artifact-bytes", "inspect_gateway_artifact_bytes", args({
+        rsid: "{{case.rsid}}",
+        invocationId: invocationRef("O1-C15", "chunked"),
+      }), "observation", 20_000),
     ],
     requiredHarnessCapabilities: [
       "chunk_wire_capture",

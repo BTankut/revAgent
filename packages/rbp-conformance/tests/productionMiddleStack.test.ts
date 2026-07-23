@@ -184,6 +184,36 @@ describe.sequential("middle production three-process case stack", () => {
         passed === true && actual === true)).toBe(true);
 
       for (const execution of executions) {
+        if (caseId === "O1-C15") {
+          const proof = execution.evidence.observations.find((record) =>
+            record.componentId === "gateway_stub" &&
+            record.kind === "gateway_snapshot" &&
+            recordPayload(record).stepId === "o1-c15.parent-artifact-bytes");
+          expect(proof).toBeDefined();
+          const serialized = JSON.stringify(proof!.payload);
+          expect(serialized).not.toContain("bytesBase64");
+          expect(serialized).not.toContain("\\state\\gateway.json");
+          expect(serialized).not.toContain("/state/gateway.json");
+          expect(recordPayload(proof!)).toMatchObject({
+            schemaVersion: "supervisor.gateway-artifact-byte-evidence/v1",
+            source: "parent_runner_direct_durable_state_read",
+            statePathRedacted: true,
+            artifactCount: 2,
+            totalDecodedBytes: 8_388_608,
+          });
+
+          const assertion = canonicalManifest.requiredAssertions["O1-C15"]!
+            .find(({ id }) => id === "O1-C15-DIGEST-VERIFIED")!;
+          const tampered = structuredClone(execution.evidence.observations);
+          const tamperedProof = tampered.find(({ observationId }) =>
+            observationId === proof!.observationId)!;
+          const rows = recordPayload(tamperedProof).artifacts as Array<Record<string, unknown>>;
+          rows[0]!.parentSha256 = `sha256:${"0".repeat(64)}`;
+          expect(MIDDLE_PRODUCTION_ORACLES.get(assertion.id)?.(
+            oracleContext(caseId, execution.binding, assertion, tampered),
+          )).toBe(false);
+        }
+
         const captures = execution.evidence.captures;
         if (execution.binding === "wss") {
           expect(String(captures["gateway.ready.ws_url"])).toMatch(/^wss:\/\/127\.0\.0\.1:/u);

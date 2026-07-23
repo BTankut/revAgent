@@ -2,10 +2,13 @@ import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import {
   chmodSync,
+  closeSync,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdtempSync,
   mkdirSync,
+  openSync,
   readFileSync,
   readdirSync,
   realpathSync,
@@ -51,6 +54,7 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1"]);
 const MAX_EXTERNAL_EVIDENCE_BYTES = 48 * 1024;
 const MAX_ARTIFACT_EVIDENCE_FILES = 64;
 const MAX_ARTIFACT_EVIDENCE_BYTES = 40 * 1024 * 1024;
+const MAX_GATEWAY_ARTIFACT_STATE_BYTES = 48 * 1024 * 1024;
 const MAX_BIND_PROBE_OUTPUT_BYTES = 8 * 1024;
 
 export interface GatewayStartupOverrides {
@@ -499,6 +503,22 @@ function pathInside(root: string, candidate: string, allowRoot = false): boolean
     (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
+function canonicalBase64Bytes(value: unknown, label: string): Buffer {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length % 4 !== 0 ||
+    value.length > Math.ceil(MAX_ARTIFACT_EVIDENCE_BYTES / 3) * 4
+  ) {
+    throw new Error(`${label} is not canonical Base64`);
+  }
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.toString("base64") !== value) {
+    throw new Error(`${label} is not a byte-identical canonical Base64 encoding`);
+  }
+  return bytes;
+}
+
 function artifactFilesystemInventory(spoolRoot: string): ArtifactFilesystemInventory {
   const root = path.resolve(spoolRoot);
   const rootStat = lstatSync(root);
@@ -899,6 +919,33 @@ interface ArtifactFilesystemInventory {
   files: ArtifactFilesystemRow[];
 }
 
+interface GatewayArtifactByteEvidence {
+  schemaVersion: "supervisor.gateway-artifact-byte-evidence/v1";
+  source: "parent_runner_direct_durable_state_read";
+  statePathRedacted: true;
+  stateSchemaVersion: number;
+  stateFileBytes: number;
+  stateFileSha256: `sha256:${string}`;
+  rsid: string;
+  invocationId: string;
+  terminalResultDigest: string;
+  artifactCount: number;
+  totalDecodedBytes: number;
+  artifacts: Array<{
+    artifactId: string;
+    artifactIndex: number;
+    streamId: string;
+    totalChunks: number;
+    reportedTotalSize: number;
+    terminalTotalChunks: number;
+    terminalTotalSize: number;
+    parentDecodedBytes: number;
+    reportedSha256: string;
+    terminalDescriptorSha256: string;
+    parentSha256: `sha256:${string}`;
+  }>;
+}
+
 export class CaseStackSupervisor {
   readonly #plan: ExecutionPlan;
   readonly #repoRoot: string;
@@ -1262,6 +1309,171 @@ export class CaseStackSupervisor {
       probeKind: "fixture_bind_process",
       executableSha256: component.expectedIdentity.executableSha256,
       ...processEvidence,
+    };
+  }
+
+  inspectGatewayArtifactBytes(input: {
+    rsid: string;
+    invocationId: string;
+  }): GatewayArtifactByteEvidence {
+    const stack = this.#stack();
+    if (
+      stack.caseId !== "O1-C15" ||
+      typeof input.rsid !== "string" ||
+      input.rsid.length < 1 ||
+      input.rsid.length > 128 ||
+      typeof input.invocationId !== "string" ||
+      input.invocationId.length < 1 ||
+      input.invocationId.length > 128
+    ) {
+      throw new Error("Gateway artifact byte inspection is outside the exact O1-C15 vector");
+    }
+
+    const statePath = path.join(stack.instanceRoot, "state", "gateway.json");
+    if (!pathInside(stack.instanceRoot, statePath) || !existsSync(statePath)) {
+      throw new Error("Gateway durable state is unavailable inside the private case stack");
+    }
+    const lexicalStat = lstatSync(statePath);
+    if (!lexicalStat.isFile() || lexicalStat.isSymbolicLink()) {
+      throw new Error("Gateway durable state is not a plain file");
+    }
+    const realStatePath = realpathSync.native(statePath);
+    if (!pathInside(realpathSync.native(stack.instanceRoot), realStatePath)) {
+      throw new Error("Gateway durable state escaped the private case stack");
+    }
+
+    const descriptor = openSync(statePath, "r");
+    let stateBytes: Buffer;
+    let before: ReturnType<typeof fstatSync>;
+    let after: ReturnType<typeof fstatSync>;
+    try {
+      before = fstatSync(descriptor);
+      if (!before.isFile() || before.size < 1 || before.size > MAX_GATEWAY_ARTIFACT_STATE_BYTES) {
+        throw new Error("Gateway durable state exceeds the parent artifact-inspection bound");
+      }
+      stateBytes = readFileSync(descriptor);
+      after = fstatSync(descriptor);
+    } finally {
+      closeSync(descriptor);
+    }
+    if (
+      stateBytes.byteLength !== before.size ||
+      after.size !== before.size ||
+      after.mtimeMs !== before.mtimeMs ||
+      after.ino !== before.ino ||
+      after.dev !== before.dev
+    ) {
+      throw new Error("Gateway durable state changed during parent byte inspection");
+    }
+
+    const state = JSON.parse(stateBytes.toString("utf8")) as unknown;
+    if (!isObject(state) || state.schemaVersion !== 1 || !isObject(state.sessions)) {
+      throw new Error("Gateway durable state has an unsupported schema");
+    }
+    const session = state.sessions[input.rsid];
+    if (!isObject(session) || session.rsid !== input.rsid) {
+      throw new Error("Gateway durable state lacks the exact O1-C15 session");
+    }
+    const artifactsByInvocation = session.artifacts;
+    const terminalOutcomes = session.terminalOutcomes;
+    if (!isObject(artifactsByInvocation) || !isObject(terminalOutcomes)) {
+      throw new Error("Gateway durable state lacks artifact or terminal ledgers");
+    }
+    const retained = artifactsByInvocation[input.invocationId];
+    const terminal = terminalOutcomes[input.invocationId];
+    if (
+      !Array.isArray(retained) ||
+      retained.length < 1 ||
+      retained.length > MAX_ARTIFACT_EVIDENCE_FILES ||
+      !isObject(terminal) ||
+      !isObject(terminal.envelope) ||
+      terminal.envelope.type !== "result" ||
+      !isObject(terminal.envelope.payload)
+    ) {
+      throw new Error("Gateway durable state lacks the exact terminal artifact carrier");
+    }
+    const terminalPayload = terminal.envelope.payload;
+    if (
+      terminalPayload.invocation_id !== input.invocationId ||
+      terminalPayload.status !== "completed" ||
+      typeof terminalPayload.result_digest !== "string" ||
+      !/^sha256:[0-9a-f]{64}$/u.test(terminalPayload.result_digest) ||
+      !Array.isArray(terminalPayload.artifacts) ||
+      terminalPayload.artifacts.length !== retained.length
+    ) {
+      throw new Error("Gateway terminal artifact descriptor set is malformed or incomplete");
+    }
+    const terminalDescriptors = terminalPayload.artifacts
+      .map((entry) => isObject(entry) ? entry : null)
+      .filter((entry): entry is JsonObject => entry !== null);
+    if (terminalDescriptors.length !== terminalPayload.artifacts.length) {
+      throw new Error("Gateway terminal artifact descriptor is not an object");
+    }
+
+    let totalDecodedBytes = 0;
+    const artifacts = retained.map((entry, retainedIndex) => {
+      if (
+        !isObject(entry) ||
+        typeof entry.artifactId !== "string" ||
+        !Number.isSafeInteger(entry.artifactIndex) ||
+        typeof entry.streamId !== "string" ||
+        !Number.isSafeInteger(entry.totalChunks) ||
+        !Number.isSafeInteger(entry.totalSize) ||
+        typeof entry.sha256 !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/u.test(entry.sha256)
+      ) {
+        throw new Error(`Gateway retained artifact ${retainedIndex} is malformed`);
+      }
+      const terminalDescriptor = terminalDescriptors.find((candidate) =>
+        candidate?.artifact_id === entry.artifactId &&
+        candidate.artifact_index === entry.artifactIndex &&
+        candidate.stream_id === entry.streamId);
+      if (
+        terminalDescriptor === undefined ||
+        !Number.isSafeInteger(terminalDescriptor.total_chunks) ||
+        !Number.isSafeInteger(terminalDescriptor.total_size) ||
+        typeof terminalDescriptor.sha256 !== "string" ||
+        !/^sha256:[0-9a-f]{64}$/u.test(terminalDescriptor.sha256)
+      ) {
+        throw new Error(`Gateway retained artifact ${retainedIndex} lacks its terminal descriptor`);
+      }
+      const bytes = canonicalBase64Bytes(
+        entry.bytesBase64,
+        `Gateway retained artifact ${retainedIndex} bytes`,
+      );
+      totalDecodedBytes += bytes.byteLength;
+      if (totalDecodedBytes > MAX_ARTIFACT_EVIDENCE_BYTES) {
+        throw new Error("Gateway retained artifact bytes exceed the 40 MiB parent bound");
+      }
+      const parentSha256 = sha256Bytes(bytes);
+      return {
+        artifactId: entry.artifactId,
+        artifactIndex: Number(entry.artifactIndex),
+        streamId: entry.streamId,
+        totalChunks: Number(entry.totalChunks),
+        reportedTotalSize: Number(entry.totalSize),
+        terminalTotalChunks: Number(terminalDescriptor.total_chunks),
+        terminalTotalSize: Number(terminalDescriptor.total_size),
+        parentDecodedBytes: bytes.byteLength,
+        reportedSha256: entry.sha256,
+        terminalDescriptorSha256: terminalDescriptor.sha256,
+        parentSha256,
+      };
+    });
+    artifacts.sort((left, right) => left.artifactIndex - right.artifactIndex);
+    return {
+      schemaVersion: "supervisor.gateway-artifact-byte-evidence/v1",
+      source: "parent_runner_direct_durable_state_read",
+      statePathRedacted: true,
+      stateSchemaVersion: Number(state.schemaVersion),
+      stateFileBytes: stateBytes.byteLength,
+      stateFileSha256: sha256Bytes(stateBytes),
+      rsid: input.rsid,
+      invocationId: input.invocationId,
+      terminalResultDigest: terminalPayload.result_digest,
+      artifactCount: artifacts.length,
+      totalDecodedBytes,
+      artifacts,
     };
   }
 

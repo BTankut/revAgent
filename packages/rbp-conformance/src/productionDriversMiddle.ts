@@ -400,6 +400,36 @@ function backpressureObservation(
   ]);
 }
 
+function gatewayArtifactByteObservation(
+  supervisor: CaseStackSupervisor,
+  request: Readonly<ParentStepDriverRequest>,
+): RawStepOutcome {
+  if (
+    typeof request.arguments.rsid !== "string" ||
+    typeof request.arguments.invocationId !== "string"
+  ) {
+    throw new Error("inspect_gateway_artifact_bytes requires rsid and invocationId");
+  }
+  const evidence = supervisor.inspectGatewayArtifactBytes({
+    rsid: request.arguments.rsid,
+    invocationId: request.arguments.invocationId,
+  });
+  const payload: JsonObject = {
+    ...evidence,
+    stepId: request.stepId,
+    action: request.action,
+  };
+  return success(payload, [
+    observation(
+      request,
+      "gateway_stub",
+      "gateway_snapshot",
+      "parent-artifact-byte-evidence",
+      payload,
+    ),
+  ]);
+}
+
 function lastPeerClock(snapshot: JsonObject): number {
   const peer = snapshot.peer;
   if (!isObject(peer)) throw new Error("Bridge snapshot lacks peer evidence");
@@ -494,6 +524,9 @@ export function createMiddleProductionCaseDrivers(
       }
       if (request.action === "drive_bridge_outbound") {
         return await driveBridgeOutbound(request);
+      }
+      if (request.action === "inspect_gateway_artifact_bytes") {
+        return gatewayArtifactByteObservation(supervisor, request);
       }
       if (request.action === "send_binding_frame") {
         return await rawBindingOutcome(supervisor, request);
