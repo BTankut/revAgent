@@ -52,6 +52,9 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "session_register",
   "session_resume",
   "session_unregister",
+  "prime_sequence_for_conformance",
+  "send_heartbeat_for_conformance",
+  "renew_exhausted_session",
   "tick",
   "poll_document_context",
   "flush_outbound",
@@ -631,6 +634,12 @@ export class BridgeDaemonRuntime {
         return { value: await this.#resume(record), shutdown: false };
       case "session_unregister":
         return { value: await this.#unregister(record), shutdown: false };
+      case "prime_sequence_for_conformance":
+        return { value: this.#primeSequenceForConformance(record), shutdown: false };
+      case "send_heartbeat_for_conformance":
+        return { value: await this.#sendHeartbeatForConformance(record), shutdown: false };
+      case "renew_exhausted_session":
+        return { value: await this.#renewExhaustedSession(record), shutdown: false };
       case "tick":
         return { value: await this.#tick(record), shutdown: false };
       case "poll_document_context":
@@ -1353,6 +1362,47 @@ export class BridgeDaemonRuntime {
     return { sent: true, rsid, reason, journalDecisions: decisions as unknown as FixtureJsonValue };
   }
 
+  #primeSequenceForConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid", "mode"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    if (record.mode !== "outbound_near_exhaustion") {
+      throw new Error("prime_sequence_for_conformance mode is invalid");
+    }
+    const state = this.#simulator.primeSequenceForConformance(
+      rsid,
+      "outbound_near_exhaustion",
+    );
+    return {
+      rsid,
+      mode: "outbound_near_exhaustion",
+      nextTxSeq: state.nextTxSeq,
+      highestTxSeq: state.highestTxSeq,
+      lastPeerAck: state.lastPeerAck,
+      outboxCount: state.outbox.length,
+    };
+  }
+
+  async #sendHeartbeatForConformance(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action"]);
+    await this.#requirePeer().sendHeartbeat();
+    return { sent: true, kind: "heartbeat" };
+  }
+
+  async #renewExhaustedSession(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    const requestId = await this.#requirePeer().renewExhaustedSession(rsid);
+    return {
+      sent: true,
+      reason: "sequence_exhaustion",
+      oldRsid: rsid,
+      requestId,
+    };
+  }
+
   async #tick(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "nowMs"]);
@@ -1682,6 +1732,9 @@ const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
   "session_register",
   "session_resume",
   "session_unregister",
+  "prime_sequence_for_conformance",
+  "send_heartbeat_for_conformance",
+  "renew_exhausted_session",
   "tick",
   "inject_crash",
   "restart_simulator",

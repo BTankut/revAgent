@@ -54,6 +54,11 @@ export interface DurabilityEvent {
   readonly atMs: number;
 }
 
+export type SequenceBoundaryDurabilityAction =
+  | "sequence_duplicate_observed"
+  | "sequence_gap_observed"
+  | "sequence_renewal_completed";
+
 export type AcceptInvocationResult =
   | { readonly kind: "accepted"; readonly record: InvocationJournalRecord }
   | { readonly kind: "blocked"; readonly holds: readonly MutationHold[] }
@@ -310,6 +315,21 @@ export class DurableBridgeJournal {
     return this.#db
       .prepare("SELECT sequence, action, subject, at_ms AS atMs FROM durability_events ORDER BY sequence")
       .all() as DurabilityEvent[];
+  }
+
+  public recordSequenceBoundaryEvent(
+    action: SequenceBoundaryDurabilityAction,
+    subject: string,
+    atMs = Date.now(),
+  ): void {
+    if (
+      subject.length < 1 ||
+      subject.length > 512 ||
+      /[\r\n\u0000]/u.test(subject)
+    ) {
+      throw new Error("sequence boundary event subject must be bounded and single-line");
+    }
+    this.#durable(action, subject, atMs, () => undefined);
   }
 
   public getPendingSessionUnregister(rsid: string): PendingSessionUnregister | null {

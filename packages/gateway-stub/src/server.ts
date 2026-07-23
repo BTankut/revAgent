@@ -277,6 +277,11 @@ type ControlCommand =
   | { action: "dispatch_batch"; request: DispatchBatchRequest }
   | { action: "dispatch_cancel"; request: DispatchCancelRequest }
   | { action: "dispatch_payload_recovery"; request: DispatchPayloadRecoveryRequest }
+  | {
+      action: "prime_sequence_for_conformance";
+      rsid: string;
+      mode: "bridge_to_gateway_near_exhaustion" | "gateway_to_bridge_gap_after_one";
+    }
   | { action: "set_clock"; now_ms: number }
   | { action: "liveness_sweep" }
   | { action: "snapshot" };
@@ -674,6 +679,20 @@ function parseControlCommand(value: unknown): ControlCommand {
           auditId: controlString(request.auditId, "auditId"),
           payload: controlInvokePayload(request.payload, rsid, `${action} payload`),
         },
+      };
+    }
+    case "prime_sequence_for_conformance": {
+      exactControlKeys(command, ["action", "rsid", "mode"]);
+      if (
+        command.mode !== "bridge_to_gateway_near_exhaustion" &&
+        command.mode !== "gateway_to_bridge_gap_after_one"
+      ) {
+        throw new HttpRequestError(400, "prime_sequence_for_conformance mode is invalid");
+      }
+      return {
+        action,
+        rsid: controlRsid(command.rsid, "prime_sequence_for_conformance rsid"),
+        mode: command.mode,
       };
     }
     case "set_clock":
@@ -1193,6 +1212,9 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
           break;
         case "dispatch_payload_recovery":
           result = await core.dispatchPayloadRecovery(body.request);
+          break;
+        case "prime_sequence_for_conformance":
+          result = await core.primeSequenceForConformance(body.rsid, body.mode);
           break;
         case "set_clock":
           if (!isControllableClock(options.clock)) {

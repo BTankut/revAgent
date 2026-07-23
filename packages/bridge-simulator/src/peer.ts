@@ -8,6 +8,7 @@ import {
   canonicalizeJson,
   createSessionLifecycle,
   rbpEnvelopeErrors,
+  sequenceRenewalStatus,
   transitionSession,
   validateRbpEnvelope,
   type BatchStepResult,
@@ -40,12 +41,15 @@ import { GatewayTransportError, type GatewayBinding } from "./transport.js";
 export const BRIDGE_OUTBOUND_HIGH_WATER_BYTES = 8 * 1024 * 1024;
 export const BRIDGE_DOCUMENT_CONTEXT_POLL_MS = 15_000;
 const MAX_DELIVERY_PROGRESS_RECORDS = 128;
+const MAX_SEQUENCE_TRANSPORT_EVENTS = 64;
+const MAX_SEQUENCE_RENEWAL_EVENTS = 16;
 
 export type BridgePeerLiveness = "steady" | "degraded" | "disconnected";
 
 interface PendingRegistration {
   readonly probe: ProbedAddinSession;
   readonly registration: SessionRegister;
+  readonly renewalOldRsid: string | null;
 }
 
 interface QueuedDataDraft {
@@ -76,6 +80,28 @@ interface MutableDeliveryProgress {
   progressFramesSent: number;
   terminalFramesSent: number;
   lastSentSeq: number;
+}
+
+interface SequenceTransportEvent {
+  readonly ordinal: number;
+  readonly observedAtMs: number;
+  readonly rsid: string;
+  readonly kind: "duplicate" | "gap";
+  readonly receivedSeq: number;
+  readonly expectedSeq: number | null;
+  readonly accepted: false;
+}
+
+interface SequenceRenewalEvent {
+  readonly ordinal: number;
+  readonly observedAtMs: number;
+  readonly reason: "sequence_exhaustion";
+  readonly oldRsid: string;
+  readonly newRsid: string;
+  readonly oldHighestTxSeq: number;
+  readonly oldLastPeerAck: number;
+  readonly oldOutboxCount: 0;
+  readonly newInitialNextTxSeq: 1;
 }
 
 export interface BridgeGatewayPeerOptions {
@@ -143,6 +169,20 @@ export interface BridgeGatewayPeerSnapshot {
       readonly terminalFramesSent: number;
       readonly lastSentSeq: number;
     }[];
+  };
+  readonly sequenceTransportEvents: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalEventCount: number;
+    readonly droppedEventCount: number;
+    readonly records: readonly SequenceTransportEvent[];
+  };
+  readonly sequenceRenewalEvents: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalEventCount: number;
+    readonly droppedEventCount: number;
+    readonly records: readonly SequenceRenewalEvent[];
   };
 }
 
@@ -541,6 +581,10 @@ export class BridgeGatewayPeer {
   #controlFramesSentWhileBackpressured = 0;
   #deliveryProgressTotalRecordCount = 0;
   #deliveryProgressDroppedRecordCount = 0;
+  readonly #sequenceTransportEvents: SequenceTransportEvent[] = [];
+  #sequenceTransportEventCount = 0;
+  readonly #sequenceRenewalEvents: SequenceRenewalEvent[] = [];
+  #sequenceRenewalEventCount = 0;
   #inboundError: unknown = null;
   #asyncTransportFailure: GatewayTransportError | null = null;
   #runLoopActive = false;
@@ -643,6 +687,26 @@ export class BridgeGatewayPeer {
         droppedRecordCount: this.#deliveryProgressDroppedRecordCount,
         records: [...this.#deliveryProgress.values()].map((entry) => ({ ...entry })),
       },
+      sequenceTransportEvents: {
+        evidenceVersion: 1,
+        capacity: MAX_SEQUENCE_TRANSPORT_EVENTS,
+        totalEventCount: this.#sequenceTransportEventCount,
+        droppedEventCount: Math.max(
+          0,
+          this.#sequenceTransportEventCount - this.#sequenceTransportEvents.length,
+        ),
+        records: this.#sequenceTransportEvents.map((entry) => ({ ...entry })),
+      },
+      sequenceRenewalEvents: {
+        evidenceVersion: 1,
+        capacity: MAX_SEQUENCE_RENEWAL_EVENTS,
+        totalEventCount: this.#sequenceRenewalEventCount,
+        droppedEventCount: Math.max(
+          0,
+          this.#sequenceRenewalEventCount - this.#sequenceRenewalEvents.length,
+        ),
+        records: this.#sequenceRenewalEvents.map((entry) => ({ ...entry })),
+      },
     };
   }
 
@@ -709,20 +773,66 @@ export class BridgeGatewayPeer {
     readonly probe: ProbedAddinSession;
     readonly registration: SessionRegister;
   }): Promise<string> {
+    return await this.#beginRegistration(input, null);
+  }
+
+  public async renewExhaustedSession(rsid: string): Promise<string> {
     this.#assertOpen();
+    const session = this.#simulator.getSession(rsid);
+    const lifecycle = this.#sessions.get(rsid);
+    if (
+      session === null ||
+      lifecycle?.phase !== "registered" ||
+      lifecycle.dispatchAllowed !== true
+    ) {
+      throw new Error(`session ${rsid} is not eligible for sequence renewal`);
+    }
+    if (sequenceRenewalStatus(this.#simulator.journal.loadSequence(rsid)) !== "ready_for_new_rsid") {
+      throw new Error("sequence renewal requires a fully drained exhausted sender");
+    }
+    if (
+      (this.#queuedData.get(rsid)?.length ?? 0) !== 0 ||
+      this.#simulator.journal.pendingDurableDeliveryDraftCount(rsid) !== 0
+    ) {
+      throw new Error("sequence renewal requires no queued application data");
+    }
+    return await this.#beginRegistration({
+      probe: session.probe,
+      registration: session.registration,
+    }, rsid);
+  }
+
+  async #beginRegistration(
+    input: {
+      readonly probe: ProbedAddinSession;
+      readonly registration: SessionRegister;
+    },
+    renewalOldRsid: string | null,
+  ): Promise<string> {
+    this.#assertOpen();
+    if (renewalOldRsid !== null && this.#pendingRegistrations.size !== 0) {
+      throw new Error("sequence renewal requires no other pending registration");
+    }
     const id = this.#id();
     let lifecycle = createSessionLifecycle(input.probe.localSessionKey);
     lifecycle = transitionOrThrow(lifecycle, { type: "register_requested" });
-    this.#pendingRegistrations.set(id, input);
+    this.#pendingRegistrations.set(id, { ...input, renewalOldRsid });
     this.#sessions.set(input.probe.localSessionKey, lifecycle);
     this.#armSessionSyncDeadline();
-    await this.#sendControl({
-      v: 1,
-      type: "session_register",
-      id,
-      ts: this.#nowIso(),
-      payload: input.registration,
-    });
+    try {
+      await this.#sendControl({
+        v: 1,
+        type: "session_register",
+        id,
+        ts: this.#nowIso(),
+        payload: input.registration,
+      });
+    } catch (error) {
+      this.#pendingRegistrations.delete(id);
+      this.#sessions.delete(input.probe.localSessionKey);
+      this.#clearSessionSyncDeadlineIfCorrelated();
+      throw error;
+    }
     return id;
   }
 
@@ -1160,6 +1270,31 @@ export class BridgeGatewayPeer {
       session.rsid,
       transitionOrThrow(previous, { type: "registered", rsid: session.rsid }),
     );
+    if (pending.renewalOldRsid !== null) {
+      const oldRsid = pending.renewalOldRsid;
+      const oldSequence = this.#simulator.journal.loadSequence(oldRsid);
+      const newSequence = this.#simulator.journal.loadSequence(session.rsid);
+      if (
+        oldSequence.outbox.length !== 0 ||
+        newSequence.nextTxSeq !== 1 ||
+        newSequence.highestTxSeq !== 0
+      ) {
+        throw new Error("sequence renewal boundary state is not exact");
+      }
+      this.#simulator.retireSequenceRenewedSession(oldRsid, session.rsid);
+      this.#forgetFinalizedSession(oldRsid);
+      this.#recordSequenceRenewalEvent({
+        ordinal: this.#sequenceRenewalEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        reason: "sequence_exhaustion",
+        oldRsid,
+        newRsid: session.rsid,
+        oldHighestTxSeq: oldSequence.highestTxSeq,
+        oldLastPeerAck: oldSequence.lastPeerAck,
+        oldOutboxCount: 0,
+        newInitialNextTxSeq: 1,
+      });
+    }
     this.#clearSessionSyncDeadlineIfCorrelated();
     await this.pollDocumentContext(session.rsid, true);
   }
@@ -1341,16 +1476,67 @@ export class BridgeGatewayPeer {
       this.#simulator.journal.loadSequence(envelope.rsid),
       envelope as unknown as DataEnvelopeSnapshot,
     );
-    if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+    if (accepted.kind === "gap") {
+      this.#recordSequenceTransportEvent({
+        ordinal: this.#sequenceTransportEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        rsid: envelope.rsid,
+        kind: "gap",
+        receivedSeq: accepted.receivedSeq,
+        expectedSeq: accepted.expectedSeq,
+        accepted: false,
+      });
+      throw new Error(`${label} sequence rejected: ${accepted.kind}`);
+    }
+    if (accepted.kind === "protocol_fault") {
       throw new Error(`${label} sequence rejected: ${accepted.kind}`);
     }
     if (accepted.kind === "duplicate") {
+      this.#recordSequenceTransportEvent({
+        ordinal: this.#sequenceTransportEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        rsid: envelope.rsid,
+        kind: "duplicate",
+        receivedSeq: envelope.seq,
+        expectedSeq: null,
+        accepted: false,
+      });
       this.#simulator.persistInboundDuplicate(
         envelope as unknown as DataEnvelopeSnapshot,
       );
       this.#applyInboundAck(envelope);
     }
     return accepted.kind;
+  }
+
+  #recordSequenceTransportEvent(event: SequenceTransportEvent): void {
+    this.#simulator.journal.recordSequenceBoundaryEvent(
+      event.kind === "duplicate"
+        ? "sequence_duplicate_observed"
+        : "sequence_gap_observed",
+      event.kind === "duplicate"
+        ? `${event.rsid}/${event.receivedSeq}`
+        : `${event.rsid}/${event.expectedSeq ?? "none"}/${event.receivedSeq}`,
+      event.observedAtMs,
+    );
+    this.#sequenceTransportEventCount += 1;
+    this.#sequenceTransportEvents.push(event);
+    if (this.#sequenceTransportEvents.length > MAX_SEQUENCE_TRANSPORT_EVENTS) {
+      this.#sequenceTransportEvents.shift();
+    }
+  }
+
+  #recordSequenceRenewalEvent(event: SequenceRenewalEvent): void {
+    this.#simulator.journal.recordSequenceBoundaryEvent(
+      "sequence_renewal_completed",
+      `${event.oldRsid}/${event.newRsid}/${event.oldHighestTxSeq}/${event.oldLastPeerAck}`,
+      event.observedAtMs,
+    );
+    this.#sequenceRenewalEventCount += 1;
+    this.#sequenceRenewalEvents.push(event);
+    if (this.#sequenceRenewalEvents.length > MAX_SEQUENCE_RENEWAL_EVENTS) {
+      this.#sequenceRenewalEvents.shift();
+    }
   }
 
   #applyInboundAck(envelope: { readonly rsid: string; readonly ack?: number }): void {

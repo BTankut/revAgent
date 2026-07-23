@@ -28,6 +28,7 @@ export const GATEWAY_CONTROL_ACTIONS = [
   "dispatch_batch",
   "dispatch_cancel",
   "dispatch_payload_recovery",
+  "prime_sequence_for_conformance",
   "liveness_sweep",
   "set_clock",
   "snapshot",
@@ -41,6 +42,9 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "session_register",
   "session_resume",
   "session_unregister",
+  "prime_sequence_for_conformance",
+  "send_heartbeat_for_conformance",
+  "renew_exhausted_session",
   "tick",
   "poll_document_context",
   "flush_outbound",
@@ -1654,17 +1658,134 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C35",
     controls: [
       ...sessionSetup("O1-C35"),
-      ...[
-        "max_safe_seq",
-        "unsafe_two_pow_53",
-        "no_wrap_renewal",
-        "duplicate_seq",
-        "gap_seq",
-      ].map((vector) => harness(`o1-c35.${vector}`, "send_binding_frame", args({
-        frame: `{{vectors.c35.${vector}}}`,
-      }))),
+      harness("o1-c35.await-initial-context", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 10_000,
+      }), "setup"),
+      bridge("o1-c35.ack-initial-context", "send_heartbeat_for_conformance", args(), "setup"),
+      harness("o1-c35.await-initial-drain", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/sequences/0/outbox",
+        operator: "count_equals",
+        expected: 0,
+        timeoutMs: 10_000,
+      }), "setup"),
+      gateway("o1-c35.prime-gateway-near-exhaustion", "prime_sequence_for_conformance", args({
+        rsid: "{{case.rsid}}",
+        mode: "bridge_to_gateway_near_exhaustion",
+      })),
+      bridge("o1-c35.prime-bridge-near-exhaustion", "prime_sequence_for_conformance", args({
+        rsid: "{{case.rsid}}",
+        mode: "outbound_near_exhaustion",
+      })),
+      bridge("o1-c35.send-max-safe", "poll_document_context", args({
+        rsid: "{{case.rsid}}",
+        force: true,
+      })),
+      harness("o1-c35.await-max-safe", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 9_007_199_254_740_991,
+        timeoutMs: 10_000,
+      })),
+      bridge("o1-c35.ack-max-safe", "send_heartbeat_for_conformance"),
+      harness("o1-c35.await-max-drain", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/sequences/0/outbox",
+        operator: "count_equals",
+        expected: 0,
+        timeoutMs: 10_000,
+      })),
+      bridge("o1-c35.renew", "renew_exhausted_session", args({
+        rsid: "{{case.rsid}}",
+      })),
+      withCaptures(
+        harness("o1-c35.await-renewal", "await_condition", args({
+          source: "bridge.snapshot_evidence",
+          jsonPointer: "/sessions/0/rsid",
+          operator: "not_equals",
+          expected: "{{case.rsid}}",
+          timeoutMs: 10_000,
+        })),
+        [{ name: "case.renewed_rsid", source: "result", jsonPointer: "/dynamic/rsid" }],
+      ),
+      harness("o1-c35.await-renewed-context", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.renewed_rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 10_000,
+      })),
+      gateway("o1-c35.after-renewal-gateway", "snapshot", args(), "observation"),
+      bridge("o1-c35.after-renewal-bridge", "snapshot_evidence", args(), "observation"),
+      harness("o1-c35.unsafe_two_pow_53", "send_binding_frame", args({
+        frame: "{{vectors.c35.unsafe_two_pow_53}}",
+      })),
+      gateway("o1-c35.duplicate-fault", "enqueue_frame_fault", byBinding(
+        {
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "duplicate",
+            binding: "wss",
+            messageType: "invoke",
+            remaining: 1,
+          },
+        },
+        {
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "duplicate",
+            binding: "http_sse",
+            messageType: "invoke",
+            remaining: 1,
+          },
+        },
+      )),
+      gateway("o1-c35.duplicate-dispatch", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.renewed_rsid}}",
+          payload: invokePayload("O1-C35", "duplicate"),
+        },
+      })),
+      harness("o1-c35.await-duplicate-terminal", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.renewed_rsid}}/terminalOutcomes/{{ids.O1-C35.duplicate.invocationId}}",
+        operator: "exists",
+        timeoutMs: 15_000,
+      })),
+      fixture("o1-c35.after-duplicate-fixture", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c35.after-duplicate-bridge", "snapshot_evidence", args(), "observation"),
+      gateway("o1-c35.after-duplicate-gateway", "snapshot", args(), "observation"),
+      gateway("o1-c35.prime-forward-gap", "prime_sequence_for_conformance", args({
+        rsid: "{{case.renewed_rsid}}",
+        mode: "gateway_to_bridge_gap_after_one",
+      })),
+      gateway("o1-c35.gap-dispatch", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.renewed_rsid}}",
+          payload: invokePayload("O1-C35", "gap"),
+        },
+      })),
+      harness("o1-c35.await-gap", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/runLoopError",
+        operator: "exists",
+        timeoutMs: 10_000,
+      })),
+      fixture("o1-c35.after-gap-fixture", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c35.after-gap-bridge", "snapshot_evidence", args(), "observation"),
+      gateway("o1-c35.after-gap-gateway", "snapshot", args(), "observation"),
     ],
-    requiredHarnessCapabilities: ["raw_binding_frame", "sequence_snapshot", "session_renewal_capture"],
+    requiredHarnessCapabilities: [
+      "raw_binding_frame",
+      "sequence_snapshot",
+      "session_renewal_capture",
+      "fixture_request_execution_count",
+    ],
   },
   {
     caseId: "O1-C36",

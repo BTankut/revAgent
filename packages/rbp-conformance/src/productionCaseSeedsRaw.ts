@@ -891,6 +891,8 @@ function idsForPrograms(): Record<string, JsonValue> {
       "valid_multifile",
       "retransmission",
       "invalid_member",
+      "duplicate",
+      "gap",
     ]) {
       caseIds[suffix] = {
         envelopeId: messageId(`${caseId}:${suffix}`),
@@ -1032,8 +1034,11 @@ function frameFacts(): ReadonlyMap<string, RawProductionFrameFact> {
       "frame",
       "step_override",
     ),
-    ...Object.entries(vectors.c35 as Record<string, JsonValue>).map(([name, value]) =>
-      frameFact("O1-C35", `o1-c35.${name}`, value)),
+    frameFact(
+      "O1-C35",
+      "o1-c35.unsafe_two_pow_53",
+      (vectors.c35 as Record<string, JsonValue>).unsafe_two_pow_53!,
+    ),
     frameFact("O1-C36", "o1-c36.capture-opening-fault", vectors.raw_opening_hello!),
     frameFact(
       "O1-C38",

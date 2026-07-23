@@ -43,6 +43,7 @@ import {
   RBP_HEARTBEAT_DEGRADED_AFTER_MS,
   RBP_HEARTBEAT_DISCONNECTED_AFTER_MS,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
+  RBP_MAX_SAFE_SEQUENCE,
   RbpFrameError,
   recordLateTerminalEvidence,
   recordVerificationEvidence,
@@ -778,6 +779,87 @@ export class GatewayStubCore {
       }
       this.expireInFlight(draft, session, this.clock.nowMs());
     });
+  }
+
+  /**
+   * Strict conformance-only counter seam. It advances an otherwise idle,
+   * durable sequence state so the real parser and dispatch paths can exercise
+   * JSON-safe exhaustion and forward-gap behavior in bounded wall-clock time.
+   */
+  async primeSequenceForConformance(
+    rsid: string,
+    mode: "bridge_to_gateway_near_exhaustion" | "gateway_to_bridge_gap_after_one",
+  ): Promise<{
+    readonly rsid: string;
+    readonly mode: typeof mode;
+    readonly nextTxSeq: number | null;
+    readonly highestTxSeq: number;
+    readonly lastRxSeq: number;
+    readonly lastPeerAck: number;
+    readonly outboxCount: number;
+  }> {
+    this.requireSession(rsid);
+    if (!this.sessionBindings.has(rsid)) {
+      throw new GatewayStubFault("sequence conformance prime requires a connected session", "environment", 1011);
+    }
+    const state = await this.store.update((draft) => {
+      const session = draft.sessions[rsid];
+      if (
+        session === undefined ||
+        session.revoked ||
+        !session.lifecycle.dispatchAllowed
+      ) {
+        throw new GatewayStubFault("sequence conformance prime requires an active session", "auth", 4403);
+      }
+      if (
+        session.inFlight !== null ||
+        session.dispatchWindow.active.length !== 0 ||
+        session.sequence.outbox.length !== 0
+      ) {
+        throw new GatewayStubFault("sequence conformance prime requires an idle data window", "protocol", 4400);
+      }
+      if (mode === "bridge_to_gateway_near_exhaustion") {
+        if (
+          session.sequence.lastRxSeq !== 1 ||
+          session.sequence.nextTxSeq !== 1 ||
+          session.sequence.highestTxSeq !== 0 ||
+          session.sequence.lastPeerAck !== 0
+        ) {
+          throw new GatewayStubFault("near-exhaustion prime requires the exact post-registration baseline", "protocol", 4400);
+        }
+        session.sequence = {
+          ...session.sequence,
+          lastRxSeq: RBP_MAX_SAFE_SEQUENCE - 1,
+        };
+      } else if (mode === "gateway_to_bridge_gap_after_one") {
+        if (
+          session.sequence.nextTxSeq !== 2 ||
+          session.sequence.highestTxSeq !== 1 ||
+          session.sequence.lastPeerAck !== 1
+        ) {
+          throw new GatewayStubFault("forward-gap prime requires one completed outbound dispatch", "protocol", 4400);
+        }
+        session.sequence = {
+          ...session.sequence,
+          nextTxSeq: 3,
+          highestTxSeq: 2,
+          lastPeerAck: 2,
+          outbox: [],
+        };
+      } else {
+        throw new GatewayStubFault("sequence conformance mode is invalid", "protocol", 4400);
+      }
+      return structuredClone(session.sequence);
+    });
+    return {
+      rsid,
+      mode,
+      nextTxSeq: state.nextTxSeq,
+      highestTxSeq: state.highestTxSeq,
+      lastRxSeq: state.lastRxSeq,
+      lastPeerAck: state.lastPeerAck,
+      outboxCount: state.outbox.length,
+    };
   }
 
   async livenessSweep(): Promise<string[]> {

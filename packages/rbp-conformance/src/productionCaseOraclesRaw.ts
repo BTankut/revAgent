@@ -444,6 +444,44 @@ function snapshotHas(
   return snapshots(context, kind).some((snapshot) => visitObjects(snapshot, predicate));
 }
 
+function snapshotAt(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  kind: Extract<ObservationKind, "gateway_snapshot" | "bridge_snapshot" | "fixture_snapshot" | "fixture_execution_count">,
+  stepId: string,
+): ObjectValue | null {
+  const matches = snapshots(context, kind).filter((snapshot) =>
+    snapshot.stepId === stepId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function fixtureExecutionCountAt(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+  requestId: string,
+): number {
+  const snapshot = snapshotAt(context, "fixture_snapshot", stepId);
+  if (snapshot === null) return -1;
+  const matches = arrayValue(snapshot.executionCounts)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null)
+    .filter((entry) => entry.requestId === requestId);
+  if (matches.length === 0) return 0;
+  return matches.length === 1 && Number.isSafeInteger(matches[0]!.count)
+    ? Number(matches[0]!.count)
+    : -1;
+}
+
+function dispatchedInvocationId(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): string | null {
+  return stringValue(pathValue(controlArguments(context, stepId), [
+    "request",
+    "payload",
+    "invocation_id",
+  ]));
+}
+
 function safe(predicate: CanonicalAssertionOracle): CanonicalAssertionOracle {
   return (context) => {
     try {
@@ -2167,34 +2205,210 @@ define(
       candidate.auditEvent === "identity_claim_rejected" && candidate.claim === "user")),
 );
 
+function c35RenewalEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): {
+  readonly gateway: ObjectValue;
+  readonly bridge: ObjectValue;
+  readonly event: ObjectValue;
+  readonly oldRsid: string;
+  readonly newRsid: string;
+  readonly oldGatewaySession: ObjectValue;
+  readonly newGatewaySession: ObjectValue;
+  readonly newBridgeSequence: ObjectValue;
+} | null {
+  const gateway = snapshotAt(context, "gateway_snapshot", "o1-c35.after-renewal-gateway");
+  const bridge = snapshotAt(context, "bridge_snapshot", "o1-c35.after-renewal-bridge");
+  const records = arrayValue(pathValue(bridge, ["peer", "sequenceRenewalEvents", "records"]))
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  if (
+    gateway === null ||
+    bridge === null ||
+    records.length !== 1 ||
+    pathValue(bridge, ["peer", "sequenceRenewalEvents", "evidenceVersion"]) !== 1 ||
+    pathValue(bridge, ["peer", "sequenceRenewalEvents", "capacity"]) !== 16 ||
+    pathValue(bridge, ["peer", "sequenceRenewalEvents", "totalEventCount"]) !== 1 ||
+    pathValue(bridge, ["peer", "sequenceRenewalEvents", "droppedEventCount"]) !== 0
+  ) {
+    return null;
+  }
+  const event = records[0]!;
+  const oldRsid = stringValue(event.oldRsid);
+  const newRsid = stringValue(event.newRsid);
+  if (oldRsid === null || newRsid === null || oldRsid === newRsid) return null;
+  const oldGatewaySession = objectValue(pathValue(gateway, ["sessions", oldRsid]));
+  const newGatewaySession = objectValue(pathValue(gateway, ["sessions", newRsid]));
+  const bridgeSequences = arrayValue(bridge.sequences)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  const newBridgeSequences = bridgeSequences.filter((entry) => entry.rsid === newRsid);
+  const bridgeSessions = arrayValue(bridge.sessions)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  if (
+    oldGatewaySession === null ||
+    newGatewaySession === null ||
+    newBridgeSequences.length !== 1 ||
+    bridgeSessions.length !== 1 ||
+    bridgeSessions[0]?.rsid !== newRsid
+  ) {
+    return null;
+  }
+  return {
+    gateway,
+    bridge,
+    event,
+    oldRsid,
+    newRsid,
+    oldGatewaySession,
+    newGatewaySession,
+    newBridgeSequence: newBridgeSequences[0]!,
+  };
+}
+
 define(
   "O1-C35-MAX-SAFE-SEQ",
-  safe((context) =>
-    rawPostSchema(context, "o1-c35.max_safe_seq", "doc_context_update") ||
-    snapshotHas(context, "gateway_snapshot", (candidate) =>
-      candidate.lastRxSeq === 9_007_199_254_740_991)),
+  safe((context) => {
+    const evidence = c35RenewalEvidence(context);
+    const sequence = objectValue(evidence?.oldGatewaySession.sequence);
+    return evidence !== null &&
+      sequence?.lastRxSeq === 9_007_199_254_740_991 &&
+      arrayValue(sequence.acceptedInbound).some((entry) =>
+        objectValue(entry)?.seq === 9_007_199_254_740_991);
+  }),
 );
 define("O1-C35-UNSAFE-SEQ", exactSchemaRejected("o1-c35.unsafe_two_pow_53", /safe integer|sequence|maximum|invalid/i));
 define(
   "O1-C35-NO-WRAP-RENEWAL",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot", "wire_event"], (candidate) =>
-    (candidate.reason === "sequence_exhaustion" || candidate.renewalReason === "sequence_exhaustion") &&
-    (candidate.renewed === true || candidate.phase === "renewing") &&
-    candidate.wrapped !== true),
+  safe((context) => {
+    const evidence = c35RenewalEvidence(context);
+    if (evidence === null) return false;
+    const oldSequence = objectValue(evidence.oldGatewaySession.sequence);
+    const newGatewaySequence = objectValue(evidence.newGatewaySession.sequence);
+    const renewal = controlResult(context, "o1-c35.renew");
+    const durableRenewal = arrayValue(evidence.bridge.durabilityEvents)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .filter((entry) =>
+        entry.action === "sequence_renewal_completed" &&
+        entry.subject ===
+          `${evidence.oldRsid}/${evidence.newRsid}/9007199254740991/9007199254740991`);
+    return evidence.event.reason === "sequence_exhaustion" &&
+      evidence.event.oldHighestTxSeq === 9_007_199_254_740_991 &&
+      evidence.event.oldLastPeerAck === 9_007_199_254_740_991 &&
+      evidence.event.oldOutboxCount === 0 &&
+      evidence.event.newInitialNextTxSeq === 1 &&
+      evidence.oldGatewaySession.revoked === true &&
+      objectValue(evidence.oldGatewaySession.lifecycle)?.unregisterReason === "session_replaced" &&
+      oldSequence?.lastRxSeq === 9_007_199_254_740_991 &&
+      evidence.newGatewaySession.revoked === false &&
+      newGatewaySequence?.nextTxSeq === 1 &&
+      newGatewaySequence.highestTxSeq === 0 &&
+      newGatewaySequence.lastRxSeq === 1 &&
+      arrayValue(newGatewaySequence.outbox).length === 0 &&
+      evidence.newBridgeSequence.nextTxSeq === 2 &&
+      evidence.newBridgeSequence.highestTxSeq === 1 &&
+      arrayValue(evidence.newBridgeSequence.outbox).length === 1 &&
+      renewal?.sent === true &&
+      renewal.reason === "sequence_exhaustion" &&
+      renewal.oldRsid === evidence.oldRsid &&
+      durableRenewal.length === 1;
+  }),
 );
 define(
   "O1-C35-DUPLICATE",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot", "wire_event"], (candidate) =>
-    candidate.kind === "duplicate" &&
-    (candidate.executed === false || candidate.dispatchCount === 0)),
+  safe((context) => {
+    const bridge = snapshotAt(context, "bridge_snapshot", "o1-c35.after-duplicate-bridge");
+    const gateway = snapshotAt(context, "gateway_snapshot", "o1-c35.after-duplicate-gateway");
+    const invocationId = dispatchedInvocationId(context, "o1-c35.duplicate-dispatch");
+    const renewal = c35RenewalEvidence(context);
+    if (bridge === null || gateway === null || invocationId === null || renewal === null) return false;
+    const events = arrayValue(pathValue(bridge, ["peer", "sequenceTransportEvents", "records"]))
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .filter((entry) =>
+        entry.kind === "duplicate" &&
+        entry.rsid === renewal.newRsid &&
+        entry.receivedSeq === 1 &&
+        entry.accepted === false);
+    const sequences = arrayValue(bridge.sequences)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .filter((entry) => entry.rsid === renewal.newRsid);
+    const gatewaySession = objectValue(pathValue(gateway, ["sessions", renewal.newRsid]));
+    const gatewaySequence = objectValue(gatewaySession?.sequence);
+    const durableDuplicate = arrayValue(bridge.durabilityEvents)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .filter((entry) =>
+        entry.action === "sequence_duplicate_observed" &&
+        entry.subject === `${renewal.newRsid}/1`);
+    return events.length === 1 &&
+      pathValue(bridge, ["peer", "sequenceTransportEvents", "droppedEventCount"]) === 0 &&
+      sequences.length === 1 &&
+      sequences[0]?.lastRxSeq === 1 &&
+      arrayValue(sequences[0]?.acceptedInbound).filter((entry) =>
+        objectValue(entry)?.seq === 1).length === 1 &&
+      fixtureExecutionCountAt(
+        context,
+        "o1-c35.after-duplicate-fixture",
+        invocationId,
+      ) === 1 &&
+      objectValue(gatewaySession?.terminalOutcomes)?.[invocationId] !== undefined &&
+      gatewaySession?.inFlight === null &&
+      gatewaySequence?.lastPeerAck === 1 &&
+      arrayValue(gatewaySequence.outbox).length === 0 &&
+      durableDuplicate.length === 1;
+  }),
 );
 define(
   "O1-C35-GAP",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot", "wire_event"], (candidate) =>
-    (candidate.kind === "gap" || candidate.reason === "forward_sequence_gap") &&
-    numberValue(candidate.expectedSeq) !== null &&
-    numberValue(candidate.receivedSeq) !== null &&
-    candidate.accepted !== true),
+  safe((context) => {
+    const bridge = snapshotAt(context, "bridge_snapshot", "o1-c35.after-gap-bridge");
+    const gateway = snapshotAt(context, "gateway_snapshot", "o1-c35.after-gap-gateway");
+    const invocationId = dispatchedInvocationId(context, "o1-c35.gap-dispatch");
+    const renewal = c35RenewalEvidence(context);
+    if (bridge === null || gateway === null || invocationId === null || renewal === null) return false;
+    const events = arrayValue(pathValue(bridge, ["peer", "sequenceTransportEvents", "records"]))
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null);
+    const gaps = events.filter((entry) =>
+      entry.kind === "gap" &&
+      entry.rsid === renewal.newRsid &&
+      entry.expectedSeq === 2 &&
+      entry.receivedSeq === 3 &&
+      entry.accepted === false);
+    const sequence = arrayValue(bridge.sequences)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .find((entry) => entry.rsid === renewal.newRsid);
+    const gatewaySession = objectValue(pathValue(gateway, ["sessions", renewal.newRsid]));
+    const gatewaySequence = objectValue(gatewaySession?.sequence);
+    const outbox = arrayValue(gatewaySequence?.outbox)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null);
+    const durableGap = arrayValue(bridge.durabilityEvents)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null)
+      .filter((entry) =>
+        entry.action === "sequence_gap_observed" &&
+        entry.subject === `${renewal.newRsid}/2/3`);
+    return gaps.length === 1 &&
+      typeof pathValue(bridge, ["peer", "runLoopError"]) === "string" &&
+      /sequence rejected: gap/iu.test(String(pathValue(bridge, ["peer", "runLoopError"]))) &&
+      sequence?.lastRxSeq === 1 &&
+      arrayValue(sequence?.acceptedInbound).filter((entry) =>
+        objectValue(entry)?.seq === 1).length === 1 &&
+      fixtureExecutionCountAt(context, "o1-c35.after-gap-fixture", invocationId) === 0 &&
+      gatewaySession?.inFlight !== null &&
+      gatewaySequence?.highestTxSeq === 3 &&
+      gatewaySequence.lastPeerAck === 2 &&
+      outbox.length === 1 &&
+      outbox[0]?.envelope !== undefined &&
+      objectValue(outbox[0]?.envelope)?.seq === 3 &&
+      durableGap.length === 1;
+  }),
 );
 
 define(
