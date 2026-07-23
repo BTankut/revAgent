@@ -73,6 +73,7 @@ interface RetainedCaseExecution {
 interface LifecycleFact {
   readonly componentId: ComponentId;
   readonly action: string;
+  readonly processRole: "canonical_component" | "auxiliary_fixture";
   readonly identity: ComponentIdentity;
   readonly process: ProcessEvidence;
   readonly orphanProcessCount: number;
@@ -125,6 +126,7 @@ function lifecycleFact(observation: ProcessObservationRecord): LifecycleFact | u
   const process = observationObject(payload.process, `${observation.observationId} process`);
   if (
     typeof payload.action !== "string" ||
+    (payload.processRole !== "canonical_component" && payload.processRole !== "auxiliary_fixture") ||
     typeof identity.version !== "string" ||
     identity.protocolVersion !== canonicalManifest.spec.version ||
     typeof identity.commitSha !== "string" ||
@@ -144,6 +146,7 @@ function lifecycleFact(observation: ProcessObservationRecord): LifecycleFact | u
   return {
     componentId: observation.componentId,
     action: payload.action,
+    processRole: payload.processRole,
     identity: identity as unknown as ComponentIdentity,
     process: process as unknown as ProcessEvidence,
     orphanProcessCount: safeInteger(
@@ -168,8 +171,10 @@ function bindRepresentativeComponents(
     // Restart and bind-probe actions can legitimately add stopped lifecycle
     // records inside a case. Cardinality and representative process identity
     // are anchored only to the one terminal stack cleanup per binding/case.
-    const componentFacts = facts.filter(({ componentId, action }) =>
-      componentId === component.id && action === "stop_case_stack");
+    const componentFacts = facts.filter(({ componentId, action, processRole }) =>
+      componentId === component.id &&
+      action === "stop_case_stack" &&
+      processRole === "canonical_component");
     if (componentFacts.length !== canonicalManifest.cases.length * 2) {
       throw new Error(
         `${component.id} has ${componentFacts.length} stopped lifecycles; expected ${canonicalManifest.cases.length * 2}`,

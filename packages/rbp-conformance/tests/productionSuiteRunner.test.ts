@@ -61,6 +61,8 @@ function fakeExecutor(
               schemaVersion: "rbp-supervised-process-lifecycle/v2",
               stepId: "c07.restart-stack",
               action: "restart_case_stack",
+              processRole: "canonical_component",
+              auxiliaryIndex: null,
               spawnOwner: "parent_runner",
               phase: "stopped",
               instanceRootId: "sha256:test-restart",
@@ -112,6 +114,8 @@ function fakeExecutor(
               schemaVersion: "rbp-supervised-process-lifecycle/v2",
               stepId: `${caseId.toLowerCase()}.stop-stack`,
               action: "stop_case_stack",
+              processRole: "canonical_component",
+              auxiliaryIndex: null,
               spawnOwner: "parent_runner",
               phase: "stopped",
               instanceRootId: "sha256:test",
@@ -130,6 +134,35 @@ function fakeExecutor(
             },
           }),
         );
+        if (caseId === "O1-C04" && component.id === "addin_loopback_fixture") {
+          observations.push(observation({
+            ...base,
+            kind: "process_lifecycle",
+            suffix: "auxiliary-lifecycle",
+            payload: {
+              schemaVersion: "rbp-supervised-process-lifecycle/v2",
+              stepId: "c04.stop-stack",
+              action: "stop_case_stack",
+              processRole: "auxiliary_fixture",
+              auxiliaryIndex: 1,
+              spawnOwner: "parent_runner",
+              phase: "stopped",
+              instanceRootId: "sha256:test-auxiliary",
+              identity: component.expectedIdentity,
+              process: {
+                pid: ++clock.pid,
+                startedAt: at,
+                readyAt: at,
+                stoppedAt: at,
+                exitCode: 0,
+              },
+              orphanProcessCount: 0,
+              survivingPids: [],
+              killEscalated: false,
+              stopOrder: ["addin_loopback_fixture"],
+            },
+          }));
+        }
       }
       observations.push(
         observation({
