@@ -89,9 +89,6 @@ function parseArguments(arguments_: string[]): CliOptions {
   if (supportedProtocols?.some((entry) => !Number.isSafeInteger(entry) || entry < 1)) {
     throw new Error("--supported-protocols values must be positive safe integers");
   }
-  if (supportedProtocols !== undefined && (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1)) {
-    throw new Error("--supported-protocols must be exactly 1 until an RBP/2 adapter exists");
-  }
   const clockText = values.get("--clock-start-ms");
   const clockStartMs = clockText === undefined ? undefined : Number(clockText);
   if (clockStartMs !== undefined && (!Number.isSafeInteger(clockStartMs) || clockStartMs < 0)) {

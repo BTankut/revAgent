@@ -209,7 +209,11 @@ export function transitionConnection(
         ? { kind: "transitioned", state: { ...state, phase: "hello_exchange" } }
         : invalidConnection(state, event);
     case "hello_accepted": {
-      if (state.phase !== "hello_exchange" || event.selectedProtocol !== 1) {
+      if (
+        state.phase !== "hello_exchange" ||
+        !Number.isSafeInteger(event.selectedProtocol) ||
+        event.selectedProtocol < 1
+      ) {
         return invalidConnection(state, event);
       }
       const capabilities = [...new Set(event.grantedCapabilities)].sort();

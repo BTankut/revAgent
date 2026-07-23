@@ -38,7 +38,6 @@ import {
   mutationScopeKey,
   mutationScopesConflict,
   openDispatchWindow,
-  parseRbpFrame,
   queueOutboundData,
   RBP_MAX_CONTROL_FRAME_BYTES,
   RBP_HEARTBEAT_DEGRADED_AFTER_MS,
@@ -73,6 +72,11 @@ import {
 } from "./negotiation.js";
 import { serializeHelloAck } from "./preNegotiation.js";
 import { DurableGatewayStateStore } from "./stateStore.js";
+import {
+  assertImplementedProtocolWindow,
+  parseNegotiatedRbpFrame,
+  serializeNegotiatedRbpEnvelope,
+} from "./versionAdapter.js";
 import type {
   AuthStatus,
   AuthenticatedDevice,
@@ -141,6 +145,7 @@ const rejectedClaimEncoder = new TextEncoder();
 function preflightRejectedSessionIdentityClaims(
   frame: Uint8Array,
   parseError: unknown,
+  selectedProtocol: number,
 ): string[] {
   // parseRbpFrame reaches invalid_envelope only after strict UTF-8, JSON syntax,
   // duplicate-key, and frame-limit checks. Re-parse solely to identify and
@@ -189,10 +194,13 @@ function preflightRejectedSessionIdentityClaims(
   }
 
   try {
-    const sanitized = parseRbpFrame(rejectedClaimEncoder.encode(JSON.stringify({
-      ...envelope,
-      payload: sanitizedPayload,
-    })));
+    const sanitized = parseNegotiatedRbpFrame(
+      rejectedClaimEncoder.encode(JSON.stringify({
+        ...envelope,
+        payload: sanitizedPayload,
+      })),
+      selectedProtocol,
+    ).envelope;
     return sanitized.type === "session_register" ? claimedFields : [];
   } catch {
     return [];
@@ -341,9 +349,7 @@ export class GatewayStubCore {
     this.store = store;
     this.clock = options.clock ?? new SystemClock();
     const supportedProtocols = normalizeSupportedProtocols(options.supportedProtocols ?? [1]);
-    if (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1) {
-      throw new TypeError("the O1-T5 bootstrap stub implements and advertises only RBP/1 until an RBP/2 adapter exists");
-    }
+    assertImplementedProtocolWindow(supportedProtocols);
     this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
@@ -433,7 +439,8 @@ export class GatewayStubCore {
     let selected: number;
     try {
       selected = selectProtocolVersion(
-        this.supportedProtocols,
+        this.supportedProtocols.filter((version) =>
+          runtime.transport.offeredProtocols.includes(version)),
         hello.payload.min_protocol,
         hello.payload.max_protocol,
       );
@@ -443,14 +450,6 @@ export class GatewayStubCore {
       }
       throw error;
     }
-    if (selected !== 1) {
-      throw new GatewayStubFault(
-        `RBP/${selected} wire adapter is not implemented by the O1-T5 v1 stub`,
-        "unsupported",
-        4426,
-      );
-    }
-
     const provisioned = new Set(runtime.transport.device.provisionedCapabilities);
     const requested = new Set(hello.payload.capabilities);
     const granted = this.connectionCapabilities.filter(
@@ -509,10 +508,20 @@ export class GatewayStubCore {
   async receiveFrame(connectionId: string, frame: Uint8Array): Promise<FrameDeliveryResult> {
     const runtime = this.requireActiveConnection(connectionId);
     let envelope: RbpEnvelope;
+    let wireProtocol: number | null;
     try {
-      envelope = parseRbpFrame(frame);
+      const parsed = parseNegotiatedRbpFrame(
+        frame,
+        runtime.transport.selectedProtocol,
+      );
+      envelope = parsed.envelope;
+      wireProtocol = parsed.wireProtocol;
     } catch (error) {
-      const claimedFields = preflightRejectedSessionIdentityClaims(frame, error);
+      const claimedFields = preflightRejectedSessionIdentityClaims(
+        frame,
+        error,
+        runtime.transport.selectedProtocol,
+      );
       if (claimedFields.length > 0) {
         this.recordAuthorizationAudit(
           runtime,
@@ -536,7 +545,7 @@ export class GatewayStubCore {
     if (envelope.type === "hello" || envelope.type === "hello_ack") {
       throw new GatewayStubFault("pre-negotiation message received after hello exchange", "protocol", 4400);
     }
-    if (envelope.v !== runtime.transport.selectedProtocol) {
+    if (wireProtocol !== runtime.transport.selectedProtocol) {
       throw new GatewayStubFault("message version differs from selected protocol", "protocol", 4400);
     }
     try {
@@ -1165,7 +1174,10 @@ export class GatewayStubCore {
   private async sendEnvelope(connectionId: string, envelope: RbpEnvelope): Promise<void> {
     const runtime = this.requireActiveConnection(connectionId);
     assertEnvelope(envelope);
-    const serialized = JSON.stringify(envelope);
+    const serialized = serializeNegotiatedRbpEnvelope(
+      envelope,
+      runtime.transport.selectedProtocol,
+    );
     await this.faults.apply(
       connectionId,
       runtime.transport.binding,

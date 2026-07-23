@@ -173,6 +173,9 @@ function remoteFaultClass(remote: ObjectValue): string | null {
     const faultClass = stringValue(objectValue(frame.payload)?.fault_class);
     if (faultClass !== null) return faultClass;
   }
+  const close = objectValue(remote.close);
+  if (close?.remote === true && close.code === 4400) return "protocol";
+  if (close?.remote === true && close.code === 4403) return "auth";
   return null;
 }
 

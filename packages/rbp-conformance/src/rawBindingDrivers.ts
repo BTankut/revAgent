@@ -468,6 +468,42 @@ function openingFrame(
   };
 }
 
+function openingVersionsHeader(
+  configured: string | undefined,
+  opening: SerializedFrame,
+): string {
+  if (configured !== undefined) return versionsHeader(configured);
+  try {
+    const candidate = JSON.parse(opening.text) as unknown;
+    if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) {
+      return versionsHeader(undefined);
+    }
+    const payload = (candidate as Record<string, unknown>).payload;
+    if (payload === null || typeof payload !== "object" || Array.isArray(payload)) {
+      return versionsHeader(undefined);
+    }
+    const minimum = (payload as Record<string, unknown>).min_protocol;
+    const maximum = (payload as Record<string, unknown>).max_protocol;
+    if (
+      !Number.isSafeInteger(minimum) ||
+      !Number.isSafeInteger(maximum) ||
+      (minimum as number) < 1 ||
+      (maximum as number) < (minimum as number) ||
+      (maximum as number) - (minimum as number) > 16
+    ) {
+      return versionsHeader(undefined);
+    }
+    return versionsHeader(
+      Array.from(
+        { length: (maximum as number) - (minimum as number) + 1 },
+        (_value, index) => (maximum as number) - index,
+      ).join(","),
+    );
+  } catch {
+    return versionsHeader(undefined);
+  }
+}
+
 function selectedCredential(
   request: Readonly<ParentStepDriverRequest>,
   configured: string,
@@ -600,7 +636,6 @@ function assertDriverRequest(
 export function createRawWssBindingDriver(options: RawWssBindingDriverOptions): ParentStepDriver {
   const endpoint = numericLoopbackUrl(options.url, ["wss:"], "/bridge/v1", "raw WSS URL");
   const configuredToken = boundedToken(options.deviceToken, "deviceToken");
-  const versionHint = versionsHeader(options.versionsHeader);
   const trust = loadTlsTrust(options.tlsTrust);
   const limits = resolvedLimits(options.limits);
   const now = options.now ?? (() => new Date().toISOString());
@@ -613,6 +648,7 @@ export function createRawWssBindingDriver(options: RawWssBindingDriverOptions): 
       scope.throwIfAborted();
       const target = serializeFrame(request, limits);
       const opening = openingFrame(request, target, options.openingHello, limits);
+      const versionHint = openingVersionsHeader(options.versionsHeader, opening.frame);
       const credential = selectedCredential(request, configuredToken);
       const parseBudget = new ParseBudget(limits.maxParsedCaptureBytes);
       const remoteOutcome = await new Promise<JsonObject>((resolveOutcome, rejectOutcome) => {
@@ -665,6 +701,7 @@ export function createRawWssBindingDriver(options: RawWssBindingDriverOptions): 
             port: Number(endpoint.port),
             path: endpoint.pathname,
           },
+          negotiation: { versionsHeader: versionHint },
           tlsTrust: { ...trust.evidence },
           opened,
           openingFrame: opening.frame.metadata,
@@ -1022,7 +1059,6 @@ export function createRawHttpSseBindingDriver(options: RawHttpSseBindingDriverOp
     "raw HTTP/SSE connection URL",
   );
   const configuredToken = boundedToken(options.deviceToken, "deviceToken");
-  const versionHint = versionsHeader(options.versionsHeader);
   const trust = options.tlsTrust === undefined ? null : loadTlsTrust(options.tlsTrust);
   if (endpoint.protocol === "https:" && trust === null) {
     throw new Error("raw HTTPS/SSE requires explicit pinned tlsTrust");
@@ -1041,6 +1077,7 @@ export function createRawHttpSseBindingDriver(options: RawHttpSseBindingDriverOp
       scope.throwIfAborted();
       const target = serializeFrame(request, limits);
       const opening = openingFrame(request, target, options.openingHello, limits);
+      const versionHint = openingVersionsHeader(options.versionsHeader, opening.frame);
       const credential = selectedCredential(request, configuredToken);
       const parseBudget = new ParseBudget(limits.maxParsedCaptureBytes);
       const commonHeaders = {
@@ -1072,6 +1109,7 @@ export function createRawHttpSseBindingDriver(options: RawHttpSseBindingDriverOp
           port: Number(endpoint.port),
           path: endpoint.pathname,
         },
+        negotiation: { versionsHeader: versionHint },
         tlsTrust: trust === null ? null : { ...trust.evidence },
         openingFrame: opening.frame.metadata,
         createResponse: responseJson(created),

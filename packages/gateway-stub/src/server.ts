@@ -15,7 +15,7 @@ import { WebSocket, WebSocketServer } from "ws";
 
 import { GatewayStubCore, GatewayStubFault } from "./core.js";
 import { isFrameFaultMessageType } from "./faults.js";
-import { parseVersionHint, selectProtocolVersion } from "./negotiation.js";
+import { parseVersionHint } from "./negotiation.js";
 import { parseHelloFrame, serializeHelloAck } from "./preNegotiation.js";
 import type {
   AuthStatus,
@@ -60,6 +60,7 @@ class WsTransport implements ServerTransport {
     readonly connectionId: string,
     readonly device: AuthenticatedDevice,
     readonly socket: WebSocket,
+    readonly offeredProtocols: readonly number[],
   ) {
     this.tokenDigest = device.tokenDigest;
   }
@@ -105,6 +106,7 @@ class SseTransport implements ServerTransport {
   constructor(
     readonly connectionId: string,
     readonly device: AuthenticatedDevice,
+    readonly offeredProtocols: readonly number[],
   ) {
     this.tokenDigest = device.tokenDigest;
   }
@@ -233,18 +235,15 @@ function rawUpgradeResponse(socket: Duplex, status: number, body: unknown, heade
   socket.end(lines.join("\r\n"));
 }
 
-function assertVersionHint(core: GatewayStubCore, request: IncomingMessage): void {
+function assertVersionHint(core: GatewayStubCore, request: IncomingMessage): number[] {
   const versions = parseVersionHint(request.headers["x-rbp-versions"]);
   if (versions.length === 0) {
     throw new HttpRequestError(426, "missing or invalid X-RBP-Versions");
   }
-  const minimum = Math.min(...versions);
-  const maximum = Math.max(...versions);
-  try {
-    selectProtocolVersion(core.supportedProtocols, minimum, maximum);
-  } catch {
+  if (!core.supportedProtocols.some((version) => versions.includes(version))) {
     throw new HttpRequestError(426, "no mutually supported RBP version");
   }
+  return versions;
 }
 
 function authenticateRequest(core: GatewayStubCore, request: IncomingMessage): { token: string; device: AuthenticatedDevice } {
@@ -934,7 +933,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       if (!(request.headers.accept ?? "").toString().toLowerCase().split(",").map((value) => value.trim()).includes("application/json")) {
         throw new HttpRequestError(406, "fallback create requires Accept: application/json");
       }
-      assertVersionHint(core, request);
+      const offeredProtocols = assertVersionHint(core, request);
       const { device } = authenticateRequest(core, request);
       const frame = await readBody(request, 64 * 1024);
       const hello = parseHelloFrame(frame);
@@ -945,7 +944,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       if (closed) {
         throw new HttpRequestError(503, "Gateway stub is shutting down");
       }
-      const transport = new SseTransport(connectionId, device);
+      const transport = new SseTransport(connectionId, device, offeredProtocols);
       transports.set(connectionId, transport);
       core.attachConnection(transport);
       try {
@@ -1249,8 +1248,9 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         return;
       }
       let device: AuthenticatedDevice;
+      let offeredProtocols: number[];
       try {
-        assertVersionHint(core, request);
+        offeredProtocols = assertVersionHint(core, request);
         ({ device } = authenticateRequest(core, request));
       } catch (error) {
         const status = error instanceof HttpRequestError ? error.status : 500;
@@ -1270,7 +1270,12 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         return;
       }
       websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-        const transport = new WsTransport(connectionId, device, websocket);
+        const transport = new WsTransport(
+          connectionId,
+          device,
+          websocket,
+          offeredProtocols,
+        );
         transports.set(connectionId, transport);
         core.attachConnection(transport);
         if (closed) {

@@ -13,16 +13,22 @@ export class ProtocolNegotiationError extends Error {
 }
 
 export function normalizeSupportedProtocols(versions: readonly number[]): number[] {
-  const normalized = [...new Set(versions)]
-    .filter((version) => Number.isSafeInteger(version) && version >= 1)
-    .sort((left, right) => right - left);
+  if (versions.some((version) => !Number.isSafeInteger(version) || version < 1)) {
+    throw new TypeError("RBP protocol versions must be positive safe integers");
+  }
+  const normalized = [...new Set(versions)].sort((left, right) => right - left);
   if (normalized.length === 0) {
     throw new TypeError("at least one positive safe RBP protocol version is required");
   }
 
   const current = normalized[0]!;
-  if (current > 1 && !normalized.includes(current - 1)) {
-    throw new TypeError(`RBP ${current} requires the N-1 compatibility adapter for RBP ${current - 1}`);
+  if (current === 1 && normalized.length === 1) {
+    return normalized;
+  }
+  if (normalized.length !== 2 || normalized[1] !== current - 1) {
+    throw new TypeError(
+      `RBP ${current} must advertise exactly the contiguous compatibility window ${current},${current - 1}`,
+    );
   }
   return normalized;
 }
@@ -47,7 +53,9 @@ export function parseVersionHint(value: string | string[] | undefined): number[]
   if (text === undefined) {
     return [];
   }
-  return [...new Set(text.split(",").map((entry) => Number(entry.trim())))]
-    .filter((entry) => Number.isSafeInteger(entry) && entry >= 1)
-    .sort((left, right) => right - left);
+  const parsed = text.split(",").map((entry) => Number(entry.trim()));
+  if (parsed.some((entry) => !Number.isSafeInteger(entry) || entry < 1)) {
+    return [];
+  }
+  return [...new Set(parsed)].sort((left, right) => right - left);
 }

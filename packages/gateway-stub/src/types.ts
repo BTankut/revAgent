@@ -346,6 +346,7 @@ export interface TestTransportConnection {
   readonly connectionId: string;
   readonly binding: BindingKind;
   readonly device: AuthenticatedDevice;
+  readonly offeredProtocols: readonly number[];
   selectedProtocol: number;
   active: boolean;
   sendSerialized(serialized: string): Promise<void>;
