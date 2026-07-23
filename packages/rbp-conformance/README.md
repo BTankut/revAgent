@@ -153,7 +153,7 @@ rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequenc
 rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
-rbp-conformance validate-soak <soak-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
+rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <run-1-plan.json> --plan-2 <run-2-plan.json> --plan-3 <run-3-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance junit <run-report.json> <junit.xml>
 rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
@@ -265,7 +265,11 @@ full source/build-toolchain check at its boundary and requires the current
 controller Node to equal the plan-bound runtime Node. Validators require the
 exact retained plan; the three-run paths require distinct sequence-1/2/3 plans
 with one identical candidate stack, and the report run id/sequence/manifest/
-source/component identity must match its plan.
+source/component identity must match its plan. `validate-soak` is the final
+evidence-set gate: it also requires the retained three-run aggregate and all
+three run plans, then proves that the aggregate and soak share the same
+candidate, toolchain, harness, and component identity before it can print
+PASS.
 
 The launch guard re-derives the canonical command and rechecks source,
 sidecar, runtime Node, entrypoint, component/protocol/controller output, and
@@ -352,5 +356,6 @@ computes status itself. `smoke` accepts a bounded 30-second through 10-minute
 duration; `one_hour` is fixed at exactly 3,600,000 requested milliseconds. Both
 bindings, reconnect, proxy churn, heartbeat acknowledgement, control traffic,
 zero pending journal state, bounded resource samples, and zero orphans are
-required. `validate-soak` reopens and hashes the retained JSONL metrics before
-accepting a report.
+required. `validate-soak` reopens and hashes the retained JSONL metrics and
+the retained aggregate, gates all four exact plans, and rejects any
+aggregate/soak candidate mismatch before accepting the final evidence set.
