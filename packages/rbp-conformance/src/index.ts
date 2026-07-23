@@ -116,6 +116,30 @@ export {
   executeEarlyProductionCaseBothBindings,
 } from "./productionCaseRunnerEarly.js";
 export type { EarlyProductionBindingExecution } from "./productionCaseRunnerEarly.js";
+export {
+  executeRawProductionCaseBinding,
+  executeRawProductionCaseBothBindings,
+} from "./productionCaseRunnerRaw.js";
+export type { RawProductionBindingExecution } from "./productionCaseRunnerRaw.js";
+export {
+  createProductionCaseComposition,
+  PRODUCTION_CASE_COMPOSITION,
+} from "./productionCaseComposition.js";
+export type {
+  ProductionCaseComposition,
+  ProductionCaseSlice,
+} from "./productionCaseComposition.js";
+export {
+  executeMiddleProductionCaseBinding,
+  executeMiddleProductionCaseBothBindings,
+} from "./productionCaseRunnerMiddle.js";
+export type { MiddleProductionBindingExecution } from "./productionCaseRunnerMiddle.js";
+export { MIDDLE_PRODUCTION_ORACLES } from "./productionCaseOraclesMiddle.js";
+export {
+  MIDDLE_PRODUCTION_CASES,
+  middleProductionCaseVariables,
+} from "./productionCaseSeedsMiddle.js";
+export type { MiddleProductionCase } from "./productionCaseSeedsMiddle.js";
 export { EARLY_PRODUCTION_ORACLES } from "./productionCaseOraclesEarly.js";
 export { earlyProductionCaseProgram } from "./productionCaseProgramsEarly.js";
 export {
@@ -125,8 +149,12 @@ export {
 } from "./productionCaseSeedsEarly.js";
 export type { EarlyProductionCase } from "./productionCaseSeedsEarly.js";
 export {
+  assertProductionExecutionPlanCurrent,
   buildProductionExecutionPlan,
   productionComponentLaunchConfigs,
+} from "./productionExecutionPlan.js";
+export type {
+  ProductionSourceIdentityResolver,
 } from "./productionExecutionPlan.js";
 export {
   productionCaseVariables,
@@ -197,7 +225,7 @@ export type {
   StepExecutionSemantics,
   StepExpectedOutcome,
 } from "./casePrograms.js";
-export { runAsyncCli, runCli } from "./cli.js";
+export { runAsyncCli, runCli, runProductionAsyncCli } from "./cli.js";
 export {
   assertPassingAggregateReport,
   assertPassingRunReport,

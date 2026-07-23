@@ -10,6 +10,9 @@ import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
+import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
+import { assertProductionExecutionPlanCurrent } from "./productionExecutionPlan.js";
+import { executeProductionConformanceRun } from "./productionSuiteRunner.js";
 import { runReconnectSoak } from "./soakRunner.js";
 import { assertPassingSoakReport } from "./soak.js";
 import type { AggregateInput, AggregateReport, ExecutionPlan, PassingValidationOptions, RunReport } from "./types.js";
@@ -25,6 +28,7 @@ function usage(): never {
   throw new Error(
     [
       "Usage:",
+      "  rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
       "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
@@ -35,6 +39,51 @@ function usage(): never {
       "  rbp-conformance summary <aggregate.json> <summary.md>",
     ].join("\n"),
   );
+}
+
+export async function runProductionAsyncCli(
+  args: string[],
+  cwd: string = process.cwd(),
+): Promise<void> {
+  const [command, planFile, ...flags] = args;
+  if (command !== "run-production" || planFile === undefined) usage();
+  let repoRoot = cwd;
+  let artifactRoot = cwd;
+  let seed = `production:${Date.now()}`;
+  for (let index = 0; index < flags.length; index += 2) {
+    const name = flags[index];
+    const value = flags[index + 1];
+    if (value === undefined) usage();
+    if (name === "--repo-root") repoRoot = resolveFrom(cwd, value);
+    else if (name === "--artifact-root") artifactRoot = resolveFrom(cwd, value);
+    else if (name === "--seed") seed = value;
+    else usage();
+  }
+  const plan = readJson(planFile, cwd) as ExecutionPlan;
+  assertProductionExecutionPlanCurrent(plan, repoRoot);
+  const result = await executeProductionConformanceRun({
+    plan,
+    repoRoot,
+    artifactRoot,
+    seed,
+    oracles: PRODUCTION_CASE_COMPOSITION.oracles,
+    executeCase: PRODUCTION_CASE_COMPOSITION.executeCase,
+  });
+  process.stdout.write(`${stableJson({
+    reportPath: result.reportPath,
+    runStatus: result.report.run.status,
+    exitCode: result.report.run.exitCode,
+    caseCount: result.report.cases.length,
+    passedCount: result.report.cases.filter(({ status }) => status === "passed").length,
+    failedCases: result.report.cases
+      .filter(({ status }) => status !== "passed")
+      .map(({ caseId, status, failure }) => ({
+        caseId,
+        status,
+        failureCode: failure?.code ?? null,
+      })),
+  })}\n`);
+  process.exitCode = result.report.run.exitCode ?? 1;
 }
 
 export async function runAsyncCli(args: string[], cwd: string = process.cwd()): Promise<void> {
@@ -253,7 +302,9 @@ const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.r
 
 if (isDirectInvocation) {
   const main = async (): Promise<void> => {
-    if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
+    if (process.argv[2] === "run-production") {
+      await runProductionAsyncCli(process.argv.slice(2));
+    } else if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
     else if (process.argv[2] === "run-soak") await runSoakAsyncCli(process.argv.slice(2));
     else runCli(process.argv.slice(2));
   };

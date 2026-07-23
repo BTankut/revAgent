@@ -2,12 +2,16 @@ import path from "node:path";
 
 import {
   buildExecutionPlan,
+  resolveSourceIdentity,
   type ComponentLaunchConfig,
 } from "./executionPlan.js";
+import { stableJson } from "./stableJson.js";
 import type {
   ExecutionPlan,
   ProcessCommandDescriptor,
+  SourceIdentity,
 } from "./types.js";
+import { validateExecutionPlanStructure } from "./validator.js";
 
 function command(
   nodeExecutable: string,
@@ -97,4 +101,33 @@ export function buildProductionExecutionPlan(input: {
     sequence: input.sequence,
     components: productionComponentLaunchConfigs(input.repoRoot, input.nodeExecutable),
   });
+}
+
+export type ProductionSourceIdentityResolver = (repoRoot: string) => SourceIdentity;
+
+/**
+ * Refuses to consume a stale plan or a plan while the repository is dirty.
+ * resolveSourceIdentity owns the clean-tree check; exact source equality then
+ * binds execution to the commit/tree for which the plan was generated.
+ */
+export function assertProductionExecutionPlanCurrent(
+  plan: ExecutionPlan,
+  repoRoot: string,
+  resolveCurrent: ProductionSourceIdentityResolver = resolveSourceIdentity,
+): void {
+  const validation = validateExecutionPlanStructure(plan);
+  if (!validation.ok) {
+    throw new Error(
+      `production execution plan is invalid: ${validation.issues
+        .map(({ path: issuePath, message }) => `${issuePath} ${message}`)
+        .join("; ")}`,
+    );
+  }
+  const current = resolveCurrent(repoRoot);
+  if (stableJson(current) !== stableJson(plan.source)) {
+    throw new Error(
+      `production execution plan source ${plan.source.commitSha}/${plan.source.treeSha} ` +
+      `does not match clean repository source ${current.commitSha}/${current.treeSha}`,
+    );
+  }
 }
