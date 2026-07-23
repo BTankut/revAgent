@@ -54,6 +54,9 @@ function assertCaseIdentity(
 ): void {
   const manifestCase = canonicalManifest.cases.find(({ id }) => id === result.caseId);
   if (manifestCase === undefined) throw new Error(`cannot retain evidence for unknown case ${result.caseId}`);
+  if (result.status !== "passed" && result.status !== "failed" && result.status !== "error") {
+    throw new Error(`${result.caseId} must be terminal before evidence is retained`);
+  }
   if (result.startedAt === null || result.finishedAt === null || result.durationMs === null) {
     throw new Error(`${result.caseId} must have a complete interval before evidence is retained`);
   }

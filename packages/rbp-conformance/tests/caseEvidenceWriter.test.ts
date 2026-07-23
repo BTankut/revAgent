@@ -101,6 +101,13 @@ describe("supervised case evidence writer", () => {
       result.finishedAt = "2026-07-23T00:00:01.000Z";
       result.durationMs = 1_000;
       const rows = observations(report.run.runId, result.caseId);
+      expect(() => retainSupervisedCaseEvidence({
+        artifactRoot: root,
+        runId: report.run.runId,
+        result,
+        observations: rows,
+      })).toThrow(/must be terminal/u);
+      result.status = "failed";
       rows[0]!.at = "2026-07-23T00:00:02.000Z";
       expect(() => retainSupervisedCaseEvidence({
         artifactRoot: root,
