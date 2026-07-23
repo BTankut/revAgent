@@ -233,7 +233,9 @@ describe("parent-owned raw WSS binding driver", () => {
       deviceToken: TOKEN,
       tlsTrust: trust,
       openingHello: hello(),
-      limits: { settleMs: 40 },
+      // The second server frame is asynchronous; keep the bounded quiet window
+      // above the full-suite Windows scheduler jitter observed under parallel load.
+      limits: { settleMs: 250 },
       now: () => NOW,
     });
     const outcome = await driver(request("wss", { frame: sessionRegister() }));
