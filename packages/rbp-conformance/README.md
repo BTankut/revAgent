@@ -129,7 +129,7 @@ in `RAW_PRODUCTION_EXTERNAL_DEPENDENCIES`. They must be replaced by retained
 supervisor evidence before the composed forty-case registry can pass.
 
 Retained evidence belongs below
-`artifacts/conformance/rbp-v1/1.0-rc.1/`. The manifest defines the exact run,
+`artifacts/conformance/rbp-v1/1.0/`. The manifest defines the exact run,
 JUnit, aggregate, log, trace, journal, and metric path templates. Nothing below
 that path is committed by this scaffold and no case is synthesized as passed.
 The supervised writer confines every target below that root, uses 0700
@@ -159,7 +159,7 @@ Do not assemble a production plan from an existing ignored `dist` tree. From
 the repository root, use the single preparation path:
 
 ```powershell
-npm run prepare:rbp-production -- artifacts/conformance/rbp-v1/1.0-rc.1/execution-plan.json --run-id <id> --sequence <1|2|3>
+npm run prepare:rbp-production -- artifacts/conformance/rbp-v1/1.0/execution-plan.json --run-id <id> --sequence <1|2|3>
 ```
 
 The wrapper first refuses a dirty Git tree, bootstraps protocol from source,
@@ -233,8 +233,8 @@ and subjects the result to the same full retained-evidence validation before it
 writes the aggregate JSON. It accepts no output filename: `--artifact-root`
 selects the filesystem root (the current directory by default), and the command
 always derives both outputs as
-`artifacts/conformance/rbp-v1/1.0-rc.1/aggregate/junit.xml` and
-`artifacts/conformance/rbp-v1/1.0-rc.1/aggregate/three-run-report.json`. The
+`artifacts/conformance/rbp-v1/1.0/aggregate/junit.xml` and
+`artifacts/conformance/rbp-v1/1.0/aggregate/three-run-report.json`. The
 aggregate binds the latter as `reportPath`; validation rejects a copied report
 at any other location.
 

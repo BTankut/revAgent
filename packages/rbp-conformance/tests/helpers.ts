@@ -43,7 +43,7 @@ export function createPlan(sequence: 1 | 2 | 3 = 1): ExecutionPlan {
       ...component,
       expectedIdentity: {
         version: `1.0.${index}`,
-        protocolVersion: "1.0-rc.1",
+        protocolVersion: canonicalManifest.spec.version,
         commitSha: COMMIT_SHA,
         treeSha: TREE_SHA,
         executableSha256: hashFor(index + 1),

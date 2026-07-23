@@ -39,7 +39,7 @@ describe("executable reconnect/proxy-churn soak runner", () => {
           ...component,
           identity: {
             version: `1.0.${index}`,
-            protocolVersion: "1.0-rc.1",
+            protocolVersion: canonicalManifest.spec.version,
             commitSha,
             treeSha,
             executableSha256: String(index + 1).padStart(64, "0"),

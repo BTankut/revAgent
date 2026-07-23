@@ -1,4 +1,4 @@
-import manifestJson from "../manifest/v1.0-rc.1.json" with { type: "json" };
+import manifestJson from "../manifest/v1.0.json" with { type: "json" };
 import type { ConformanceManifest, ManifestIdentity, ValidationIssue } from "./types.js";
 import { sha256Json } from "./stableJson.js";
 import { validateSchema } from "./schemas.js";

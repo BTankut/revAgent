@@ -2,7 +2,7 @@
 
 **Document state:** evidence ledger in progress; not a freeze decision
 
-**Protocol candidate:** `1.0-rc.1`
+**Protocol candidate:** `1.0` (freeze verdict pending)
 
 **Milestone:** M1
 
@@ -103,7 +103,7 @@ push to `main`.
 | O1-T4 | Separate Bridge simulator process with both bindings, durable journal/holds, recovery, and artifact spool | PR #287 merged; 195/195 package tests and full local gates passed before merge; T6 process identity remains pending | `passed` |
 | O1-T5 | Separate Gateway stub process with both bindings, auth/session tables, dispatch, resume, proxy/fault controls, and artifact sink | PR #286 merged; 70/70 package tests passed before merge; T6 process identity remains pending | `passed` |
 | O1-T6 | Forty canonical cases × two bindings, three consecutive passing runs, retained JSON/JUnit, suite under ten minutes, zero fd/journal/orphan leak and bounded memory | Complete supervised suite not yet available | `in_progress` |
-| O1-T8 | Harness findings folded into the candidate; metadata `1.0 / Frozen`; protocol constant; this ledger; protected-main tag | Blocked by O1-T6 and soak | `not_started` |
+| O1-T8 | Harness findings folded into the candidate; canonical `1.0` metadata and protocol constant; this ledger; validated protected-main tag | Blocked by O1-T6 and soak | `not_started` |
 
 ## Three-run conformance aggregate
 
@@ -159,11 +159,11 @@ clock cannot satisfy it.
 
 ## Freeze decision
 
-**Current verdict: NOT FROZEN.** O1 remains `1.0-rc.1`; M1 remains
-`in_progress`; `rbp/v1.0.0` is absent. The verdict may become `passed` only
-after all retained evidence validates, the protected candidate tree equals the
-tested executable source tree, and the annotated tag resolves to that exact
-protected candidate commit. A later evidence-record-only protected PR records
-those immutable facts without becoming or modifying the tagged candidate.
-Milestone-owner promotion from `passed` to `accepted` remains a separate
-decision.
+**Current verdict: NOT FROZEN.** O1 has canonical `1.0` candidate bytes, but M1
+remains `in_progress` and `rbp/v1.0.0` is absent. The verdict may become
+`passed` only after all retained evidence validates, the protected candidate
+tree equals the tested executable source tree, and the annotated tag resolves
+to that exact protected candidate commit. A later evidence-record-only
+protected PR records those immutable facts without becoming or modifying the
+tagged candidate. Milestone-owner promotion from `passed` to `accepted`
+remains a separate decision.

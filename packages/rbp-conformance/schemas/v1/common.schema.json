@@ -23,7 +23,7 @@
         "id": { "type": "string", "const": "rbp-v1.0-freeze-section-21" },
         "version": { "type": "string", "const": "1" },
         "sha256": { "$ref": "#/definitions/sha256" },
-        "specVersion": { "type": "string", "const": "1.0-rc.1" }
+        "specVersion": { "type": "string", "const": "1.0" }
       }
     },
     "sourceIdentity": {
@@ -43,7 +43,7 @@
       "required": ["version", "protocolVersion", "commitSha", "treeSha", "executableSha256"],
       "properties": {
         "version": { "type": "string", "minLength": 1 },
-        "protocolVersion": { "type": "string", "const": "1.0-rc.1" },
+        "protocolVersion": { "type": "string", "const": "1.0" },
         "commitSha": { "$ref": "#/definitions/gitSha" },
         "treeSha": { "$ref": "#/definitions/gitSha" },
         "executableSha256": { "$ref": "#/definitions/sha256" },

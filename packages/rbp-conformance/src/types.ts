@@ -33,7 +33,7 @@ export interface ManifestIdentity {
   id: "rbp-v1.0-freeze-section-21";
   version: "1";
   sha256: string;
-  specVersion: "1.0-rc.1";
+  specVersion: "1.0";
 }
 
 export interface SourceIdentity {
@@ -60,7 +60,7 @@ export interface ComponentBuildProvenanceIdentity {
 
 export interface ComponentIdentity {
   version: string;
-  protocolVersion: "1.0-rc.1";
+  protocolVersion: "1.0";
   commitSha: string;
   treeSha: string;
   executableSha256: string;
@@ -459,7 +459,7 @@ export interface ConformanceManifest {
   manifestVersion: "1";
   spec: {
     name: string;
-    version: "1.0-rc.1";
+    version: "1.0";
     section: "21";
     sourcePath: "docs/specs/O1-bridge-gateway-protocol.md";
   };

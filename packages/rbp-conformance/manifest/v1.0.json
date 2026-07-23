@@ -5,7 +5,7 @@
   "manifestVersion": "1",
   "spec": {
     "name": "O1 Bridge-Gateway Protocol",
-    "version": "1.0-rc.1",
+    "version": "1.0",
     "section": "21",
     "sourcePath": "docs/specs/O1-bridge-gateway-protocol.md"
   },
@@ -25,7 +25,7 @@
     }
   ],
   "retainedEvidence": {
-    "root": "artifacts/conformance/rbp-v1/1.0-rc.1",
+    "root": "artifacts/conformance/rbp-v1/1.0",
     "runReport": "runs/{run_id}/run-report.json",
     "junit": "runs/{run_id}/junit.xml",
     "componentLog": "runs/{run_id}/components/{component_id}.log",

@@ -9,6 +9,7 @@ import { runAsyncCli } from "../src/cli.js";
 import { executeSupervisedC19Run } from "../src/supervisedC19.js";
 import { verifyRunEvidenceFiles } from "../src/evidence.js";
 import { sha256File } from "../src/executionPlan.js";
+import { canonicalManifest } from "../src/manifest.js";
 import { stableJson } from "../src/stableJson.js";
 import type { ExecutionPlan } from "../src/types.js";
 import { validateRunReportStructure } from "../src/validator.js";
@@ -74,7 +75,7 @@ describe("supervised C19 runner", () => {
 
       expect(readFileSync(path.join(root, reportPath), "utf8")).toBe(stableJson(report));
       if (process.platform !== "win32") {
-        const retainedRoot = path.join(root, "artifacts", "conformance", "rbp-v1", "1.0-rc.1");
+        const retainedRoot = path.join(root, canonicalManifest.retainedEvidence.root);
         expect(statSync(retainedRoot).mode & 0o777).toBe(0o700);
         expect(statSync(path.join(root, evidenceArtifact.path)).mode & 0o777).toBe(0o600);
       }

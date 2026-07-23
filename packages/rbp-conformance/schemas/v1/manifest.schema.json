@@ -16,7 +16,7 @@
       "required": ["name", "version", "section", "sourcePath"],
       "properties": {
         "name": { "type": "string", "minLength": 1 },
-        "version": { "type": "string", "const": "1.0-rc.1" },
+        "version": { "type": "string", "const": "1.0" },
         "section": { "type": "string", "const": "21" },
         "sourcePath": { "type": "string", "const": "docs/specs/O1-bridge-gateway-protocol.md" }
       }
@@ -41,7 +41,7 @@
       "additionalProperties": false,
       "required": ["root", "runReport", "junit", "componentLog", "wireTrace", "journalSnapshot", "caseEvidence", "leakMetrics", "aggregateReport", "aggregateJunit", "soakReport", "soakMetrics", "hashAlgorithm"],
       "properties": {
-        "root": { "type": "string", "const": "artifacts/conformance/rbp-v1/1.0-rc.1" },
+        "root": { "type": "string", "const": "artifacts/conformance/rbp-v1/1.0" },
         "runReport": { "type": "string", "minLength": 1 },
         "junit": { "type": "string", "minLength": 1 },
         "componentLog": { "type": "string", "minLength": 1 },

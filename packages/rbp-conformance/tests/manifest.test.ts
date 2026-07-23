@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 
+import { RBP_SPEC_VERSION } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -27,6 +28,14 @@ function specSection21Titles(): string[] {
 }
 
 describe("canonical section 21 manifest", () => {
+  it("binds the canonical v1.0 identity and retained artifact root", () => {
+    expect(canonicalManifest.spec.version).toBe(RBP_SPEC_VERSION);
+    expect(canonicalManifestIdentity.specVersion).toBe(RBP_SPEC_VERSION);
+    expect(canonicalManifest.retainedEvidence.root).toBe(
+      `artifacts/conformance/rbp-v1/${RBP_SPEC_VERSION}`,
+    );
+  });
+
   it("contains the exact forty normalized spec titles in stable order", () => {
     expect(canonicalManifest.cases).toHaveLength(40);
     expect(canonicalManifest.cases.map(({ id }) => id)).toEqual(

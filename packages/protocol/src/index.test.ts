@@ -15,6 +15,7 @@ import {
   RBP_MAX_INLINE_RESULT_BYTES,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
   RBP_PROTOCOL_VERSION,
+  RBP_SPEC_VERSION,
   RbpFrameError,
   reconnectBackoffLimitMs,
   reconnectFullJitterDelayMs,
@@ -199,6 +200,11 @@ function expectFrameError(
 }
 
 describe("RBP/1 envelope and payload schemas", () => {
+  it("publishes the canonical v1.0 specification identity", () => {
+    expect(RBP_PROTOCOL_VERSION).toBe(1);
+    expect(RBP_SPEC_VERSION).toBe("1.0");
+  });
+
   it("has a positive payload vector for every message type", () => {
     const expectedTypes = [
       "cancel",

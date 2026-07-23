@@ -3,10 +3,10 @@
 | Field | Value |
 |---|---|
 | Protocol name | RBP/1 (RevAgent Bridge Protocol, version 1) |
-| Document version | 1.0-rc.1 |
-| Status | Normative freeze candidate; not frozen until Section 22 evidence is green |
+| Document version | 1.0 |
+| Status | Normative v1.0 candidate; freeze verdict pending until Section 22 evidence and protected-tag gates close |
 | Milestone | M1 semantic closure; the v1.0 tag remains conditional on schemas, vectors, and interop evidence |
-| Updated | 2026-07-22 |
+| Updated | 2026-07-23 |
 | Owner | WP1 / O1 |
 
 RBP/1 is the internal RPC protocol between the RevAgent Gateway and the thin desktop bridge. It is not MCP. MCP exists only at the Gateway north boundary. The bridge-to-add-in hop remains the existing length-prefixed JSON-RPC TCP protocol.
@@ -1529,7 +1529,7 @@ The required pilot stack additionally runs a real-add-in smoke covering each met
 
 ## 22. v1.0 freeze gate
 
-The `1.0-rc.1` text closes the known semantic review items: primary/fallback lifecycle and opening failures,
+The `1.0` candidate text closes the known semantic review items: primary/fallback lifecycle and opening failures,
 zero-based backoff, version window, per-session capability/version fields, unregistration, guarded and omitted
 result fields, first-delivery and redelivery batch behavior, session/scope mutation recovery holds, explicit
 verification/late-evidence clearance, RFC 8785 invocation and batch digest inputs, complete nested errors, and
@@ -1552,12 +1552,12 @@ The document is nevertheless **not frozen or tagged v1.0** until all of this evi
 
 Evidence is reported in three non-interchangeable tiers:
 
-1. **Semantic/schema evidence:** this `1.0-rc.1` text, complete payload schemas, clean generated-type diff, and
+1. **Semantic/schema evidence:** this `1.0` candidate text, complete payload schemas, clean generated-type diff, and
    byte-exact golden vectors show that the proposed contract is internally expressible. They do not prove a
    running bridge, Gateway, journal, add-in fixture, or live Revit path and MUST NOT be reported as full M1.
 2. **Executable M1 evidence:** O1-T3 add-in loopback fixture, O1-T4 bridge simulator, O1-T5 Gateway stub, and
    O1-T6 complete Section 21 suite must produce retained machine-readable results. Until those artifacts are
-   linked and green, the protocol remains `1.0-rc.1` and the M1 freeze/tag gate is pending.
+   linked and green, `1.0` remains an untagged candidate and the M1 freeze/tag gate is pending.
 3. **Pilot evidence:** O1-T7 exercises the adapted add-in on real Windows/Revit after protocol freeze; WP9
    separately proves the selected client. These are pilot-entry gates and cannot be substituted by schema,
    simulator, or fixture results.
@@ -1567,9 +1567,15 @@ rule cannot be implemented as written, the owner MUST leave the affected gate re
 amendment before changing the normative contract. Weakening a vector, adding an undocumented tolerance, or
 calling a partial tier “passed” is not conformance.
 
-Only the evidence-closing change may replace the metadata version with `1.0`, set status to `Frozen`, and
-create `rbp/v1.0.0`. Any semantic finding before that change updates the release candidate and its vectors;
-any semantic change after it follows Section 7.3 versioning rules.
+The executable candidate carries the canonical `1.0` metadata and runtime
+constant before the real evidence runs. That version identity is a byte under
+test, not a freeze verdict. Only after the retained evidence and protected-tree
+identity checks pass may the exact protected candidate commit receive
+`rbp/v1.0.0`; the later evidence-record-only protected PR records those facts
+without changing the tagged candidate. Any semantic finding before the tag
+creates a new candidate and new vectors and requires the complete rebuild,
+three-run, and one-hour-soak cycle. Any semantic change after the tag follows
+Section 7.3 versioning rules.
 
 The real adapted-add-in smoke in Section 21 and WP9 hands-on DP-10 artifact/client evidence remain separate
 pilot-entry gates after protocol freeze; they are not prerequisites for the M1 semantic tag. They MUST validate

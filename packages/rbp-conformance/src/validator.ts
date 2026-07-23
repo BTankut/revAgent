@@ -42,7 +42,12 @@ function manifestIdentityIssues(value: RunReport["manifest"] | AggregateReport["
     issue(issues, "/manifest/version", "manifest.version", "manifest version does not match the canonical manifest");
   }
   if (value.specVersion !== canonicalManifestIdentity.specVersion) {
-    issue(issues, "/manifest/specVersion", "manifest.spec_version", "spec version does not match 1.0-rc.1");
+    issue(
+      issues,
+      "/manifest/specVersion",
+      "manifest.spec_version",
+      `spec version does not match ${canonicalManifestIdentity.specVersion}`,
+    );
   }
   if (value.sha256 !== canonicalManifestIdentity.sha256) {
     issue(issues, "/manifest/sha256", "manifest.digest", "manifest digest does not match the canonical manifest bytes");
