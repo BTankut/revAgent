@@ -282,6 +282,18 @@ const HARNESS_OBSERVATION_PROVENANCE: Readonly<Record<
       ["addin_loopback_fixture", "fixture_execution_count"],
     ],
   },
+  set_gateway_proxy_backpressure: {
+    pairs: [
+      ["gateway_stub", "wire_event"],
+      ["bridge_simulator", "wire_event"],
+    ],
+  },
+  drive_bridge_outbound: {
+    pairs: [
+      ["gateway_stub", "wire_event"],
+      ["bridge_simulator", "wire_event"],
+    ],
+  },
   send_binding_frame: {
     pairs: [
       ["gateway_stub", "wire_event"],

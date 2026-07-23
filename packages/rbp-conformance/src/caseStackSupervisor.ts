@@ -243,6 +243,10 @@ function compactGatewaySnapshotValue(snapshot: JsonObject): JsonObject {
         "sequence",
         "dispatchWindow",
         "inFlight",
+        "documents",
+        "activeDocument",
+        "activeView",
+        "disciplineHint",
         "lastHeartbeatAtMs",
         "disconnectedAtMs",
         "liveness",
@@ -257,6 +261,7 @@ function compactGatewaySnapshotValue(snapshot: JsonObject): JsonObject {
     sourceSchemaVersion: snapshot.schemaVersion ?? null,
     sessions: compactSessions,
     mutationHolds: structuredClone(snapshot.mutationHolds ?? null),
+    authorizationAudit: structuredClone(snapshot.authorizationAudit ?? null),
     runtime: structuredClone(snapshot.runtime ?? null),
   };
 }
@@ -423,6 +428,7 @@ async function postHttpsControl(
   controlUrl: string,
   body: Buffer,
   identity: EphemeralTlsIdentity,
+  maxResponseBytes: number,
 ): Promise<{ status: number; bytes: Buffer }> {
   return await new Promise((resolve, reject) => {
     const request = httpsRequest(controlUrl, {
@@ -447,8 +453,10 @@ async function postHttpsControl(
       let length = 0;
       response.on("data", (chunk: Buffer) => {
         length += chunk.length;
-        if (length > 64 * 1024) {
-          request.destroy(new Error("Gateway control response exceeds 64 KiB"));
+        if (length > maxResponseBytes) {
+          request.destroy(
+            new Error(`Gateway control response exceeds ${maxResponseBytes} bytes`),
+          );
           return;
         }
         chunks.push(chunk);
@@ -1725,6 +1733,7 @@ export class CaseStackSupervisor {
         controlUrl,
         body,
         stack.tlsIdentity,
+        maxResponseBytes,
       ));
     } else {
       const response = await fetch(controlUrl, {

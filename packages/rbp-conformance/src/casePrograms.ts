@@ -62,6 +62,8 @@ export const HARNESS_ACTIONS = [
   "begin_wire_capture",
   "end_wire_capture",
   "await_condition",
+  "set_gateway_proxy_backpressure",
+  "drive_bridge_outbound",
   "send_binding_frame",
   "send_fixture_frame",
   "send_split_fixture_frame",
@@ -271,6 +273,13 @@ function withExecution(
   return { ...step, execution };
 }
 
+function withExpectedOutcome(
+  step: CaseControlStep,
+  expectedOutcome: StepExpectedOutcome,
+): CaseControlStep {
+  return { ...step, expectedOutcome };
+}
+
 function withCaptures(
   step: CaseControlStep,
   captures: StepCaptureMetadata[],
@@ -458,6 +467,26 @@ function sessionSetup(caseId: string, grantedSessionCapabilities?: string[]): Ca
   ];
 }
 
+function sessionSetupDrain(caseId: string): CaseControlStep[] {
+  const prefix = caseId.toLowerCase();
+  return [
+    harness(
+      `${prefix}.drain-setup`,
+      "drive_bridge_outbound",
+      args({ advanceByMs: 15_000 }),
+      "setup",
+      20_000,
+    ),
+    harness(`${prefix}.await-setup-drain`, "await_condition", args({
+      source: "bridge.snapshot_evidence",
+      jsonPointer: "/sequences/0/outbox",
+      operator: "count_equals",
+      expected: 0,
+      timeoutMs: 10_000,
+    }), "setup", 15_000),
+  ];
+}
+
 function invocationRef(caseId: string, suffix: string): string {
   return `{{ids.${caseId}.${suffix}.invocationId}}`;
 }
@@ -486,6 +515,36 @@ function envelope(caseId: string, suffix: string, overrides: Readonly<Record<str
   };
 }
 
+function invokePayload(
+  caseId: string,
+  suffix: string,
+  overrides: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    invocation_id: invocationRef(caseId, suffix),
+    method: "fixture_echo",
+    params: { vector: suffix },
+    policy: { class: "auto", decision: "auto", confirmation_id: null },
+    mutating: false,
+    mutation_scope: null,
+    timeout_ms: 30_000,
+    verification: null,
+    recovery_clearances: [],
+    ...overrides,
+  };
+}
+
+function dispatchInvokeRequest(
+  caseId: string,
+  suffix: string,
+  overrides: Readonly<Record<string, unknown>> = {},
+): Record<string, unknown> {
+  return {
+    rsid: "{{case.rsid}}",
+    payload: invokePayload(caseId, suffix, overrides),
+  };
+}
+
 function batchEnvelope(
   caseId: string,
   suffix: string,
@@ -505,9 +564,27 @@ function batchEnvelope(
       atomic,
       timeout_ms: 30_000,
       recovery_clearances: [],
-      steps: "{{case.batch_steps}}",
-      batch_digest: "{{jcs.batch_digest}}",
+      steps: `{{batches.${caseId}.${suffix}.steps}}`,
+      batch_digest: `{{batches.${caseId}.${suffix}.batchDigest}}`,
       ...overrides,
+    },
+  };
+}
+
+function dispatchBatchRequest(
+  caseId: string,
+  suffix: string,
+  atomic: boolean,
+): Record<string, unknown> {
+  return {
+    rsid: "{{case.rsid}}",
+    payload: {
+      batch_id: `{{ids.${caseId}.${suffix}.batchId}}`,
+      atomic,
+      timeout_ms: 30_000,
+      recovery_clearances: [],
+      steps: `{{batches.${caseId}.${suffix}.steps}}`,
+      batch_digest: `{{batches.${caseId}.${suffix}.batchDigest}}`,
     },
   };
 }
@@ -516,6 +593,11 @@ interface ProgramDefinition {
   caseId: string;
   controls: CaseControlStep[];
   requiredHarnessCapabilities: string[];
+  startupOverrides?: {
+    sessionCapabilities?: string[];
+    connectionCapabilities?: string[];
+    supportedProtocols?: number[];
+  };
 }
 
 const CASE_DEFINITIONS: ProgramDefinition[] = [
@@ -737,15 +819,65 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C15",
     controls: [
       ...sessionSetup("O1-C15"),
-      gateway("o1-c15.hold-data", "enqueue_frame_fault", byBinding(
-        { rule: { direction: "bridge_to_gateway", action: "hold", binding: "wss", messageType: "chunk", remaining: 2 } },
-        { rule: { direction: "bridge_to_gateway", action: "hold", binding: "http_sse", messageType: "chunk", remaining: 2 } },
-      )),
-      bridge("o1-c15.invoke", "invoke_local", args({ envelope: envelope("O1-C15", "chunked", { method: "fixture_multi_file_output" }) })),
-      bridge("o1-c15.flush-control", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
-      gateway("o1-c15.flush-held", "flush_held"),
+      ...sessionSetupDrain("O1-C15"),
+      harness("o1-c15.backpressure-on", "set_gateway_proxy_backpressure", args({ enabled: true })),
+      withExecution(
+        gateway("o1-c15.dispatch", "dispatch_invoke", args({
+          request: dispatchInvokeRequest("O1-C15", "chunked", {
+            method: "fixture_multi_file_output",
+            params: {
+              scenario: "valid_multifile",
+              fileCount: 2,
+              bytesPerFile: 4_194_304,
+            },
+          }),
+        }), "stimulus", 120_000),
+        { mode: "async_start", handle: "o1-c15.dispatch" },
+      ),
+      harness("o1-c15.await-bounded-chunk", "await_condition", byBinding(
+        {
+          source: "bridge.snapshot_evidence",
+          jsonPointer: "/peer/deliveryProgress/records/0/chunkFramesSent",
+          operator: "equals",
+          expected: 1,
+          timeoutMs: 15_000,
+        },
+        {
+          source: "bridge.snapshot_evidence",
+          jsonPointer: "/peer/backpressure/currentBufferedAmount",
+          operator: "crosses",
+          expected: 1,
+          timeoutMs: 15_000,
+        },
+      ), "observation", 20_000),
+      gateway("o1-c15.control-serviceable", "snapshot", args(), "observation"),
+      harness("o1-c15.backpressure-off", "set_gateway_proxy_backpressure", args({ enabled: false })),
+      ...Array.from({ length: 11 }, (_, index) =>
+        harness(
+          `o1-c15.drive-${String(index + 1).padStart(2, "0")}`,
+          "drive_bridge_outbound",
+          args({ advanceByMs: 15_001, driveOutbound: true }),
+          "stimulus",
+          20_000,
+        )),
+      withExecution(
+        harness(
+          "o1-c15.drive-12",
+          "drive_bridge_outbound",
+          args({ advanceByMs: 15_001, driveOutbound: true }),
+          "stimulus",
+          20_000,
+        ),
+        { mode: "async_join", handles: ["o1-c15.dispatch"] },
+      ),
     ],
-    requiredHarnessCapabilities: ["chunk_wire_capture", "decoded_digest_verification", "buffered_amount_sampling"],
+    requiredHarnessCapabilities: [
+      "chunk_wire_capture",
+      "decoded_digest_verification",
+      "buffered_amount_sampling",
+      "parent_proxy_backpressure",
+      "direct_control_serviceability",
+    ],
   },
   {
     caseId: "O1-C16",
@@ -753,10 +885,12 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       ...sessionSetup("O1-C16"),
       harness("o1-c16.params-oversize", "send_binding_frame", args({
         frame: "{{vectors.params_over_limit_envelope}}",
+        hello: "{{vectors.raw_opening_hello_params}}",
         expectedBoundary: "params",
       })),
       harness("o1-c16.result-oversize", "send_binding_frame", args({
         frame: "{{vectors.result_over_limit_invoke}}",
+        hello: "{{vectors.raw_opening_hello_result}}",
         expectedBoundary: "result",
       })),
     ],
@@ -766,18 +900,33 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C17",
     controls: [
       ...sessionSetup("O1-C17"),
-      fixture("o1-c17.stall", "plan_fault", args({ requestId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}", fault: { stall: true } })),
+      ...sessionSetupDrain("O1-C17"),
+      fixture("o1-c17.stall", "plan_fault", args({
+        requestId: invocationRef("O1-C17", "cancelled"),
+        fault: { stall: true },
+      })),
       withExecution(
-        gateway("o1-c17.dispatch", "dispatch_invoke", args({ request: "{{vectors.c17_dispatch_invoke}}" })),
+        gateway("o1-c17.dispatch", "dispatch_invoke", args({
+          request: dispatchInvokeRequest("O1-C17", "cancelled"),
+        })),
         { mode: "async_start", handle: "o1-c17.dispatch" },
       ),
+      harness("o1-c17.await-stalled", "await_condition", args({
+        source: "fixture.snapshot_evidence",
+        jsonPointer: "/pendingStalls/0/requestId",
+        operator: "equals",
+        expected: invocationRef("O1-C17", "cancelled"),
+        timeoutMs: 5_000,
+      })),
       gateway("o1-c17.cancel", "dispatch_cancel", args({ request: {
         rsid: "{{case.rsid}}",
-        invocationId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}",
+        invocationId: invocationRef("O1-C17", "cancelled"),
         reason: "user_requested",
       } })),
       withExecution(
-        fixture("o1-c17.release", "release_stall", args({ requestId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}" })),
+        fixture("o1-c17.release", "release_stall", args({
+          requestId: invocationRef("O1-C17", "cancelled"),
+        })),
         { mode: "async_join", handles: ["o1-c17.dispatch"] },
       ),
       bridge("o1-c17.flush", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
@@ -788,24 +937,42 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C18",
     controls: [
       ...sessionSetup("O1-C18"),
+      ...sessionSetupDrain("O1-C18"),
       fixture("o1-c18.method-not-found", "plan_fault", args({ requestId: invocationRef("O1-C18", "method"), fault: {
         jsonRpcError: { code: -32601, message: "method not found" },
       } })),
-      bridge("o1-c18.invoke-method", "invoke_local", args({ envelope: envelope("O1-C18", "method") })),
+      gateway("o1-c18.invoke-method", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C18", "method"),
+      })),
       fixture("o1-c18.invalid-params", "plan_fault", args({ requestId: invocationRef("O1-C18", "params"), fault: {
         jsonRpcError: { code: -32602, message: "invalid params" },
       } })),
-      bridge("o1-c18.invoke-params", "invoke_local", args({ envelope: envelope("O1-C18", "params") })),
+      gateway("o1-c18.invoke-params", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C18", "params"),
+      })),
       fixture("o1-c18.addin-exception", "plan_fault", args({ requestId: invocationRef("O1-C18", "exception"), fault: {
         injectedOutcome: { state: "failed", error: { code: "revit_api", message: "injected add-in exception" } },
       } })),
-      bridge("o1-c18.invoke-exception", "invoke_local", args({ envelope: envelope("O1-C18", "exception") })),
+      gateway("o1-c18.invoke-exception", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C18", "exception"),
+      })),
       fixture("o1-c18.guarded", "plan_fault", args({ requestId: invocationRef("O1-C18", "guarded"), fault: {
         injectedOutcome: { state: "guarded", guardedReason: "busy" },
       } })),
-      bridge("o1-c18.invoke-guarded", "invoke_local", args({ envelope: envelope("O1-C18", "guarded") })),
-      harness("o1-c18.invoke-failure-shaped", "send_fixture_frame", args({
-        frame: "{{vectors.c18.failure_shaped_addin_result}}",
+      gateway("o1-c18.invoke-guarded", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C18", "guarded"),
+      })),
+      fixture("o1-c18.failure-shaped", "plan_fault", args({
+        requestId: invocationRef("O1-C18", "failure-shaped"),
+        fault: {
+          injectedOutcome: {
+            state: "failed",
+            error: { code: "command_failure", message: "failure-shaped add-in result" },
+          },
+        },
+      })),
+      gateway("o1-c18.invoke-failure-shaped", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C18", "failure-shaped"),
       })),
     ],
     requiredHarnessCapabilities: ["fixture_fault_control", "terminal_error_mapping_capture"],
@@ -813,15 +980,21 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C19",
     controls: [
-      harness("o1-c19.big-endian", "send_fixture_frame", args({ frame: "{{vectors.big_endian_fixture_frame}}" })),
+      harness("o1-c19.big-endian", "send_fixture_frame", args({
+        vector: "big_endian",
+        frame: "{{vectors.big_endian_fixture_frame}}",
+      })),
       harness("o1-c19.split", "send_split_fixture_frame", args({
+        vector: "split_read",
         frame: "{{vectors.split_fixture_frame}}",
         splitOffsets: [1, 3, 7],
       })),
       harness("o1-c19.coalesced", "send_coalesced_fixture_frames", args({
+        vector: "coalesced_read",
         frames: "{{vectors.coalesced_fixture_frames}}",
       })),
       harness("o1-c19.former-8192", "send_fixture_frame", args({
+        vector: "former_8192",
         frame: "{{vectors.fixture_payload_8192_bytes}}",
       })),
     ],
@@ -831,56 +1004,69 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C20",
     controls: [
       ...sessionSetup("O1-C20"),
-      bridge("o1-c20.batch", "invoke_local", args({ envelope: batchEnvelope("O1-C20", "non-atomic", false) })),
+      ...sessionSetupDrain("O1-C20"),
+      fixture("o1-c20.fail-step-1", "plan_fault", args({
+        requestId: `{{batches.O1-C20.non-atomic.stepInvocationIdsByIndex.1}}`,
+        fault: { jsonRpcError: { code: -32602, message: "injected non-atomic step failure" } },
+      })),
+      gateway("o1-c20.batch", "dispatch_batch", args({
+        request: dispatchBatchRequest("O1-C20", "non-atomic", false),
+      })),
     ],
     requiredHarnessCapabilities: ["fixture_request_execution_count", "batch_terminal_capture"],
   },
   {
     caseId: "O1-C21",
     controls: [
-      harness("o1-c21.restart-gateway-without-atomic", "restart_component", args({
-        componentId: "gateway_stub",
-        preserveState: false,
-        startupOverrides: { sessionCapabilities: [] },
-      }), "setup"),
-      ...sessionSetup("O1-C21", []),
-      bridge("o1-c21.batch", "invoke_local", args({ envelope: batchEnvelope("O1-C21", "atomic-unsupported", true) })),
+      ...sessionSetup("O1-C21", ["doc_context_cached_v1"]),
+      ...sessionSetupDrain("O1-C21"),
+      withExpectedOutcome(
+        gateway("o1-c21.batch", "dispatch_batch", args({
+          request: dispatchBatchRequest("O1-C21", "atomic-unsupported", true),
+        })),
+        { kind: "control_error", code: "gateway_control_http_400", messageIncludes: "atomic batch" },
+      ),
     ],
     requiredHarnessCapabilities: ["session_capability_override", "fixture_request_execution_count"],
+    startupOverrides: { sessionCapabilities: ["doc_context_cached_v1"] },
   },
   {
     caseId: "O1-C22",
     controls: [
-      harness("o1-c22.restart-gateway-with-atomic", "restart_component", args({
-        componentId: "gateway_stub",
-        preserveState: false,
-        startupOverrides: { sessionCapabilities: ["batch_atomic"] },
-      }), "setup"),
-      ...sessionSetup("O1-C22", ["batch_atomic"]),
-      bridge("o1-c22.commit", "invoke_local", args({ envelope: batchEnvelope("O1-C22", "atomic-commit", true) })),
+      ...sessionSetup("O1-C22", ["batch_atomic", "doc_context_cached_v1"]),
+      ...sessionSetupDrain("O1-C22"),
+      gateway("o1-c22.commit", "dispatch_batch", args({
+        request: dispatchBatchRequest("O1-C22", "atomic-commit", true),
+      })),
+      fixture("o1-c22.after-commit", "snapshot_evidence", args(), "observation"),
       fixture("o1-c22.rollback-fault", "plan_fault", args({
-        requestId: `{{ids.O1-C22.atomic-rollback.batchId}}`,
+        requestId: `{{batches.O1-C22.atomic-rollback.stepInvocationIdsByIndex.2}}`,
         fault: { rollbackFailure: false, injectedOutcome: {
           state: "failed",
           error: { code: "command_failure", message: "injected atomic step failure" },
         } },
       })),
-      bridge("o1-c22.rollback", "invoke_local", args({ envelope: batchEnvelope("O1-C22", "atomic-rollback", true) })),
+      gateway("o1-c22.rollback", "dispatch_batch", args({
+        request: dispatchBatchRequest("O1-C22", "atomic-rollback", true),
+      })),
+      fixture("o1-c22.after-rollback", "snapshot_evidence", args(), "observation"),
     ],
     requiredHarnessCapabilities: ["session_capability_override", "fixture_model_digest", "batch_terminal_capture"],
+    startupOverrides: { sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"] },
   },
   {
     caseId: "O1-C23",
     controls: [
       ...sessionSetup("O1-C23"),
+      ...sessionSetupDrain("O1-C23"),
       fixture("o1-c23.context-event", "apply_document_context", args({ event: "{{vectors.document_context_revision_2}}" })),
-      bridge("o1-c23.poll", "poll_document_context", args({ rsid: "{{case.rsid}}", force: false })),
-      bridge("o1-c23.flush", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
+      bridge("o1-c23.poll", "poll_document_context", args({ rsid: "{{case.rsid}}", force: true })),
+      harness("o1-c23.flush", "drive_bridge_outbound", args({ advanceByMs: 15_000 })),
       harness("o1-c23.await-context", "await_condition", args({
-        source: "wire_capture",
-        jsonPointer: "/frames/document_context/payload/revision",
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/documents/0/title",
         operator: "equals",
-        expected: 2,
+        expected: "Conformance Fixture Revision 2",
         timeoutMs: 15_000,
       })),
     ],
@@ -890,6 +1076,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C24",
     controls: [
       ...sessionSetup("O1-C24"),
+      ...sessionSetupDrain("O1-C24"),
       gateway("o1-c24.duplicate", "enqueue_frame_fault", byBinding(
         { rule: { direction: "gateway_to_bridge", action: "duplicate", binding: "wss", remaining: 1 } },
         { rule: { direction: "gateway_to_bridge", action: "duplicate", binding: "http_sse", remaining: 1 } },
@@ -898,11 +1085,57 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         { rule: { direction: "gateway_to_bridge", action: "hold", binding: "wss", remaining: 1 } },
         { rule: { direction: "gateway_to_bridge", action: "hold", binding: "http_sse", remaining: 1 } },
       )),
-      gateway("o1-c24.dispatch-a", "dispatch_invoke", args({ request: "{{vectors.c24_dispatch_a}}" })),
-      gateway("o1-c24.dispatch-b", "dispatch_invoke", args({ request: "{{vectors.c24_dispatch_b}}" })),
+      gateway("o1-c24.dispatch-a", "dispatch_invoke", args({
+        request: dispatchInvokeRequest("O1-C24", "duplicate"),
+      })),
+      withExecution(
+        gateway("o1-c24.dispatch-b", "dispatch_invoke", args({
+          request: dispatchInvokeRequest("O1-C24", "reordered"),
+        })),
+        { mode: "async_start", handle: "o1-c24.dispatch-b" },
+      ),
+      harness("o1-c24.await-held", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/runtime/heldOutboundFrames",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
       gateway("o1-c24.disconnect", "disconnect", args({ connection_id: "{{case.connection_id}}" })),
-      bridge("o1-c24.resume", "session_resume", args({ rsid: "{{case.rsid}}" })),
-      gateway("o1-c24.release-order", "flush_held"),
+      bridge("o1-c24.restart-bridge", "restart_simulator"),
+      bridge("o1-c24.reopen", "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: "{{gateway.ready.ws_url}}",
+          tlsTrust: {
+            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
+            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
+            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          },
+          hello: hello("O1-C24", "reconnect"),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{gateway.ready.http_connection_url}}",
+          hello: hello("O1-C24", "reconnect"),
+        },
+      )),
+      bridge("o1-c24.restart-run-loop", "start_run_loop", args()),
+      harness("o1-c24.await-resume-ack", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      withExecution(
+        harness("o1-c24.join-reordered", "drive_bridge_outbound", args({ advanceByMs: 15_001 })),
+        { mode: "async_join", handles: ["o1-c24.dispatch-b"] },
+      ),
     ],
     requiredHarnessCapabilities: ["fixture_request_execution_count", "sequence_snapshot", "reconnect_resume"],
   },
@@ -1436,6 +1669,9 @@ function buildProgram(definition: ProgramDefinition): ConformanceCaseProgram {
         binding: "{{binding}}",
         preserveState: false,
         requireExactExecutionPlanIdentity: true,
+        ...(definition.startupOverrides === undefined
+          ? {}
+          : { startupOverrides: definition.startupOverrides }),
       }), "setup"),
       [
         {

@@ -102,7 +102,15 @@ describe("exact forty-case control and observation catalog", () => {
       expect(program.steps.at(-2)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
       expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "stop_case_stack" });
       for (const step of program.steps) {
-        expect(step.expectedOutcome).toEqual({ kind: "success" });
+        if (step.stepId === "o1-c21.batch") {
+          expect(step.expectedOutcome).toEqual({
+            kind: "control_error",
+            code: "gateway_control_http_400",
+            messageIncludes: "atomic batch",
+          });
+        } else {
+          expect(step.expectedOutcome).toEqual({ kind: "success" });
+        }
         expect(["sequential", "async_start", "async_join", "barrier"]).toContain(step.execution.mode);
         expect(new Set(step.captures.map(({ name }) => name)).size).toBe(step.captures.length);
         expect(step.parentTimeoutMs).toBeGreaterThan(0);
