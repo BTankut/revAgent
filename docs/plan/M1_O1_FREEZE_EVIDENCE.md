@@ -6,42 +6,92 @@
 
 **Milestone:** M1
 
-**Tag state:** `rbp/v1.0.0` MUST NOT be created while any required row below is not `passed`
+**Tag state:** `rbp/v1.0.0` MUST NOT be created until the retained evidence
+validator and the protected-candidate identity checks below both pass
 
 This ledger closes O1-T8 only after the executable O1-T3–T6 artifacts and every
 M1 item in `docs/specs/O1-bridge-gateway-protocol.md` Section 22 are linked to
-one exact source tree. A schema result, unit-test count, draft PR, or a passing
+one exact executable candidate commit/tree and that exact tree reaches
+protected `main`. A schema result, unit-test count, draft PR, or a passing
 subset of the forty cases cannot substitute for the retained three-process
 suite. O1-T7 real-add-in and DP-10 client evidence remain separate pilot-entry
 gates after the protocol freeze.
 
 ## Freeze identity
 
-The evidence-closing change must replace every `not_yet_available` field below
-with a real value. The three conformance runs, one-hour soak, merge commit, and
-annotated tag must resolve to the same Git tree.
+The executable candidate and the evidence record have deliberately separate
+identities:
+
+1. Lock one clean executable source commit and its exact Git tree. The
+   worktree MUST be clean before the build; the final protocol constant,
+   version/freeze metadata, schemas, generated files, dependency manifests and
+   lockfiles, source, tests, fixtures, conformance harness, and build/runtime
+   configuration MUST already be present in that tree. Candidate metadata is
+   a byte under test, not by itself a freeze verdict.
+2. Build from a clean checkout. All three real conformance runs and the full
+   one-hour soak MUST report that same source commit/tree and the exact
+   component/executable hashes produced from it.
+3. Merge the executable candidate only through the protected PR path. A squash
+   merge may produce a different commit SHA, but the protected candidate
+   commit's Git tree MUST be byte-identical to the tested source tree. If it is
+   not, the merge is not the tested candidate.
+4. Independently reopen and validate every retained report, JUnit file,
+   metrics stream, manifest, and digest. Only after those validations and the
+   protected-tree equality check pass may the annotated tag be created, and it
+   MUST target the exact protected candidate commit.
+5. Record the immutable evidence and tag in a later evidence-record-only
+   protected PR. That follow-up may change this ledger and other
+   non-normative status/evidence links, but it MUST NOT change executable
+   inputs, normative protocol content, version metadata, or the tagged
+   candidate. Its commit is never the freeze-tag target.
+
+The post-tag evidence-record-only change replaces every
+`not_yet_available` field below with a real retained value. The table is an
+audit record of already validated facts; editing the table is not an input to
+the pass verdict.
 
 | Identity | Required value | Current evidence | State |
 |---|---|---|---|
-| Candidate commit | Full 40-character Git commit SHA on protected `main` | `not_yet_available` | `in_progress` |
-| Candidate tree | Full 40-character `git rev-parse <commit>^{tree}` value | `not_yet_available` | `in_progress` |
-| Aggregate-bound source | Exact commit/tree repeated by all three run reports | `not_yet_available` | `in_progress` |
-| One-hour-soak source | Exact same commit/tree as the aggregate | `not_yet_available` | `in_progress` |
-| Freeze tag | Annotated `rbp/v1.0.0`, created only after protected-main tree equality is rechecked | Not created | `not_started` |
+| Executable source commit | Full 40-character clean source SHA used to build and run the retained evidence | `not_yet_available` | `in_progress` |
+| Candidate tree | Full 40-character `git rev-parse <executable-source-commit>^{tree}` value | `not_yet_available` | `in_progress` |
+| Protected candidate commit | Full 40-character protected-`main` squash SHA whose tree exactly equals the candidate tree | `not_yet_available` | `not_started` |
+| Aggregate-bound source | Exact executable source commit/tree and component hashes repeated by all three run reports | `not_yet_available` | `in_progress` |
+| One-hour-soak source | Exact same executable source commit/tree and component hashes as the aggregate | `not_yet_available` | `in_progress` |
+| Freeze tag | Annotated `rbp/v1.0.0` resolving to the protected candidate commit, created only after all evidence and identity checks validate | Not created | `not_started` |
+| Evidence-record commit | Full 40-character docs-only protected follow-up SHA; explicitly not the candidate or tag target | `not_yet_available` | `not_started` |
 
-Tagging procedure after every row is green:
+Candidate lock, protected-tree verification, and tagging procedure:
 
 ```text
+git status --porcelain=v1 --untracked-files=all
+git rev-parse <executable-source-commit>
+git rev-parse <executable-source-commit>^{tree}
+
+# Run the fresh build, three conformance runs, and one-hour soak here.
+# Retain their reports, manifests, component hashes, and digests.
+
 git fetch origin main --tags
-git rev-parse origin/main^{tree}
-git rev-parse <evidence-closing-commit>^{tree}
-git tag -a rbp/v1.0.0 <evidence-closing-commit> -m "Freeze O1/RBP v1.0"
+git rev-parse <protected-candidate-commit>^{tree}
+git diff --exit-code <executable-source-commit> <protected-candidate-commit> --
+git merge-base --is-ancestor <protected-candidate-commit> origin/main
+
+# Only after retained-evidence validation also succeeds:
+git tag -a rbp/v1.0.0 <protected-candidate-commit> -m "Freeze O1/RBP v1.0"
+git rev-parse rbp/v1.0.0^{commit}
 git push origin rbp/v1.0.0
 ```
 
-The two tree outputs must be byte-identical before the tag command. A branch
-head, unmerged commit, dirty tree, or retargeted `main` invalidates the tag
-procedure and requires a fresh evidence run.
+The executable-source and protected-candidate tree outputs MUST be
+byte-identical, and `git diff --exit-code` MUST be clean, before the tag
+command. The first status command MUST produce no output when the source is
+locked. A dirty source, concurrent protected-branch update incorporated into
+the candidate, executable-input change, generated-file drift, rebuild with
+different component hashes, or source/protected tree mismatch invalidates the
+candidate and requires a new clean commit, fresh build, three new consecutive
+runs, and a new full one-hour soak. An evidence-record-only follow-up does not
+invalidate the candidate only when its diff is limited to evidence/status
+records and it leaves the tag target unchanged. No step authorizes a direct
+push to `main`.
 
 ## O1 work-item evidence
 
@@ -92,7 +142,7 @@ clock cannot satisfy it.
 | Bindings | WSS and Streamable HTTP/SSE represented | Not available | `not_started` |
 | Churn | Real reconnect and proxy-buffer/churn cycles with heartbeat/control round trips | Not available | `not_started` |
 | Cleanup | Zero pending journal state and orphan processes; bounded fd/memory profile | Not available | `not_started` |
-| Retained report | Canonical soak JSON plus hashed metrics JSONL on the freeze tree | Not available | `not_started` |
+| Retained report | Canonical soak JSON plus hashed metrics JSONL bound to the executable candidate commit/tree | Not available | `not_started` |
 
 ## Section 22 evidence matrix
 
@@ -110,7 +160,10 @@ clock cannot satisfy it.
 ## Freeze decision
 
 **Current verdict: NOT FROZEN.** O1 remains `1.0-rc.1`; M1 remains
-`in_progress`; `rbp/v1.0.0` is absent. The verdict may become `passed` only in
-the evidence-closing protected PR after all rows above are green and all
-retained hashes reopen successfully from the candidate tree. Milestone-owner
-promotion from `passed` to `accepted` remains a separate decision.
+`in_progress`; `rbp/v1.0.0` is absent. The verdict may become `passed` only
+after all retained evidence validates, the protected candidate tree equals the
+tested executable source tree, and the annotated tag resolves to that exact
+protected candidate commit. A later evidence-record-only protected PR records
+those immutable facts without becoming or modifying the tagged candidate.
+Milestone-owner promotion from `passed` to `accepted` remains a separate
+decision.

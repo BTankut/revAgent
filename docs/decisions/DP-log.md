@@ -83,6 +83,42 @@ evidenced; this work is not assigned to the pilot user.
 
 ## Amendments
 
+### 2026-07-23 — R-F: M1 executable candidate and evidence-record identities are separate
+
+An M1 freeze-identity audit found a circular requirement: the previous wording
+required the evidence-closing documentation, three real conformance runs,
+one-hour soak, protected squash merge, and annotated tag to resolve to one
+tree. Retained evidence cannot be written before it exists, writing it changes
+the tracked documentation tree, and a protected squash changes commit identity
+even when it preserves every candidate byte.
+
+For O1-T8, one clean executable source commit/tree now binds the fresh build,
+all three consecutive real runs, the full one-hour soak, and their exact
+component hashes. The tree already contains the intended final protocol
+constant, version/freeze metadata, schemas, generated files, dependency
+inputs, source, tests, fixtures, conformance harness, and build/runtime
+configuration. Candidate metadata is under test and does not alone declare M1
+passed.
+
+The executable PR still follows the protected ready/gates/squash path; there is
+no direct `main` push. The resulting protected candidate commit is acceptable
+only when its complete Git tree is byte-identical to the tested source tree.
+The source and protected commit SHAs may differ because of squash, but their
+tree SHAs may not. A dirty source, executable-input change, generated-file
+drift, changed component hash, or source/protected tree mismatch fails closed
+and requires a new candidate, fresh build, three new consecutive runs, and a
+new full one-hour soak.
+
+After the retained evidence independently validates, the annotated
+`rbp/v1.0.0` tag targets the exact protected candidate commit. A later
+evidence-record-only protected PR may record immutable hashes, links, states,
+and the tag in the ledger; that documentation commit is not the candidate or
+tag target and may not change executable inputs, normative protocol content,
+version metadata, or the tag target. This amendment supersedes the earlier
+single-tree/evidence-closing-commit interpretation without weakening M1
+evidence, freeze, protected-branch, or rerun requirements. The operational
+identity checks are in `docs/plan/M1_O1_FREEZE_EVIDENCE.md`.
+
 ### 2026-07-22 — R-F: Phase-1 external client path (RES-23)
 
 The operator selected the existing authorized ChatGPT/Codex Desktop client and made DP-6 inapplicable to
