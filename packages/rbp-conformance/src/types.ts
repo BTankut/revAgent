@@ -43,12 +43,28 @@ export interface SourceIdentity {
   dirty: false;
 }
 
+export interface ComponentBuildProvenanceIdentity {
+  schemaVersion: "rbp-production-build-provenance/v1";
+  buildContractVersion: "rbp-production-typescript-build/v1";
+  sidecarPath: string;
+  sidecarSha256: string;
+  compileInputsSha256: string;
+  runtimeArtifactsSha256: string;
+  toolchain: {
+    nodeVersion: string;
+    typescriptVersion: string;
+    typescriptEntrypointPath: "node_modules/typescript/lib/tsc.js";
+    typescriptEntrypointSha256: string;
+  };
+}
+
 export interface ComponentIdentity {
   version: string;
   protocolVersion: "1.0-rc.1";
   commitSha: string;
   treeSha: string;
   executableSha256: string;
+  buildProvenance?: ComponentBuildProvenanceIdentity;
 }
 
 export interface ProcessCommandDescriptor {

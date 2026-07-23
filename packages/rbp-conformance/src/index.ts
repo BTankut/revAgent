@@ -154,8 +154,21 @@ export {
   productionComponentLaunchConfigs,
 } from "./productionExecutionPlan.js";
 export type {
+  ProductionBuildProvenanceVerifier,
   ProductionSourceIdentityResolver,
 } from "./productionExecutionPlan.js";
+export {
+  createProductionBuildProvenanceSidecars,
+  PRODUCTION_BUILD_CONTRACT_VERSION,
+  PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION,
+  PRODUCTION_FILE_SET_ALGORITHM,
+  productionBuildProvenanceSidecarPath,
+  verifyProductionBuildProvenance,
+} from "./productionBuildProvenance.js";
+export type {
+  ProductionBuildProvenanceSidecar,
+} from "./productionBuildProvenance.js";
+export { prepareProductionExecutionPlan } from "./productionPreparation.js";
 export {
   productionCaseVariables,
   SUPPORTED_PRODUCTION_CASES,
@@ -225,7 +238,12 @@ export type {
   StepExecutionSemantics,
   StepExpectedOutcome,
 } from "./casePrograms.js";
-export { runAsyncCli, runCli, runProductionAsyncCli } from "./cli.js";
+export {
+  runAsyncCli,
+  runCli,
+  runPrepareProductionAsyncCli,
+  runProductionAsyncCli,
+} from "./cli.js";
 export {
   assertPassingAggregateReport,
   assertPassingRunReport,

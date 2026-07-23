@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { runAsyncCli } from "../src/cli.js";
 import { executeSupervisedC19Run } from "../src/supervisedC19.js";
@@ -83,18 +83,12 @@ describe("supervised C19 runner", () => {
     }
   }, 30_000);
 
-  it("returns a nonzero CLI result while unexecuted cases remain not_run", async () => {
+  it("refuses a fixture-only CLI plan that lacks production provenance", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-cli-"));
     const planFile = path.join(root, "execution-plan.json");
     writeFileSync(planFile, JSON.stringify(supervisedPlan()), "utf8");
-    const previousExitCode = process.exitCode;
-    let stdout = "";
-    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
-      stdout += String(chunk);
-      return true;
-    });
     try {
-      await runAsyncCli([
+      await expect(runAsyncCli([
         "run-c19",
         planFile,
         "--repo-root",
@@ -103,18 +97,11 @@ describe("supervised C19 runner", () => {
         root,
         "--seed",
         "supervised-c19-cli-test",
-      ], packageRoot);
-      expect(process.exitCode).toBe(1);
-      expect(JSON.parse(stdout)).toMatchObject({
-        runStatus: "failed",
-        exitCode: 1,
-        notRunCount: 39,
-        executedCases: [{ caseId: "O1-C19", status: "passed" }],
-      });
+      ], packageRoot)).rejects.toThrow(
+        /exactly clean source tree|does not match clean repository source|build provenance/u,
+      );
     } finally {
-      write.mockRestore();
-      process.exitCode = previousExitCode;
       rmSync(root, { recursive: true, force: true });
     }
-  }, 30_000);
+  });
 });

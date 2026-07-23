@@ -5,8 +5,11 @@ import {
   resolveSourceIdentity,
   type ComponentLaunchConfig,
 } from "./executionPlan.js";
+import { verifyProductionBuildProvenance } from "./productionBuildProvenance.js";
 import { stableJson } from "./stableJson.js";
 import type {
+  ComponentBuildProvenanceIdentity,
+  ComponentId,
   ExecutionPlan,
   ProcessCommandDescriptor,
   SourceIdentity,
@@ -95,15 +98,29 @@ export function buildProductionExecutionPlan(input: {
   sequence: 1 | 2 | 3;
   nodeExecutable?: string;
 }): ExecutionPlan {
-  return buildExecutionPlan({
+  const plan = buildExecutionPlan({
     repoRoot: input.repoRoot,
     runId: input.runId,
     sequence: input.sequence,
     components: productionComponentLaunchConfigs(input.repoRoot, input.nodeExecutable),
   });
+  const provenance = verifyProductionBuildProvenance(input.repoRoot, plan.source);
+  for (const component of plan.components) {
+    const identity = provenance.get(component.id);
+    if (identity === undefined) {
+      throw new Error(`production build provenance is missing for ${component.id}`);
+    }
+    component.expectedIdentity.buildProvenance = structuredClone(identity);
+  }
+  assertProductionExecutionPlanCurrent(plan, input.repoRoot);
+  return plan;
 }
 
 export type ProductionSourceIdentityResolver = (repoRoot: string) => SourceIdentity;
+export type ProductionBuildProvenanceVerifier = (
+  repoRoot: string,
+  source: SourceIdentity,
+) => ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity>;
 
 /**
  * Refuses to consume a stale plan or a plan while the repository is dirty.
@@ -114,6 +131,8 @@ export function assertProductionExecutionPlanCurrent(
   plan: ExecutionPlan,
   repoRoot: string,
   resolveCurrent: ProductionSourceIdentityResolver = resolveSourceIdentity,
+  verifyCurrentProvenance: ProductionBuildProvenanceVerifier =
+    verifyProductionBuildProvenance,
 ): void {
   const validation = validateExecutionPlanStructure(plan);
   if (!validation.ok) {
@@ -129,5 +148,27 @@ export function assertProductionExecutionPlanCurrent(
       `production execution plan source ${plan.source.commitSha}/${plan.source.treeSha} ` +
       `does not match clean repository source ${current.commitSha}/${current.treeSha}`,
     );
+  }
+  const currentProvenance = verifyCurrentProvenance(repoRoot, current);
+  for (const component of plan.components) {
+    const planned = component.expectedIdentity.buildProvenance;
+    if (planned === undefined) {
+      throw new Error(
+        `${component.id} production execution plan lacks required build provenance`,
+      );
+    }
+    const verified = currentProvenance.get(component.id);
+    if (verified === undefined) {
+      throw new Error(`${component.id} production build provenance is missing`);
+    }
+    if (stableJson(planned) !== stableJson(verified)) {
+      throw new Error(
+        `${component.id} production build provenance does not match the execution plan`,
+      );
+    }
+  }
+  const currentAfterVerification = resolveCurrent(repoRoot);
+  if (stableJson(currentAfterVerification) !== stableJson(current)) {
+    throw new Error("clean repository source changed during production provenance verification");
   }
 }

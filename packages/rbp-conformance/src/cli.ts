@@ -12,6 +12,7 @@ import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
 import { assertProductionExecutionPlanCurrent } from "./productionExecutionPlan.js";
+import { prepareProductionExecutionPlan } from "./productionPreparation.js";
 import { executeProductionConformanceRun } from "./productionSuiteRunner.js";
 import { runReconnectSoak } from "./soakRunner.js";
 import { assertPassingSoakReport } from "./soak.js";
@@ -28,6 +29,7 @@ function usage(): never {
   throw new Error(
     [
       "Usage:",
+      "  rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> [--repo-root <path>] [--node-executable <path>]",
       "  rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
@@ -39,6 +41,70 @@ function usage(): never {
       "  rbp-conformance summary <aggregate.json> <summary.md>",
     ].join("\n"),
   );
+}
+
+function assertCanonicalPlanTarget(repoRoot: string, target: string): void {
+  const relative = path.relative(path.resolve(repoRoot), path.resolve(target));
+  if (relative.startsWith("..") || path.isAbsolute(relative)) return;
+  const normalized = relative.replaceAll("\\", "/");
+  if (!normalized.startsWith("artifacts/conformance/")) {
+    throw new Error(
+      "an in-repository production execution plan must be below artifacts/conformance/",
+    );
+  }
+}
+
+export async function runPrepareProductionAsyncCli(
+  args: string[],
+  cwd: string = process.cwd(),
+): Promise<void> {
+  const [command, planFile, ...flags] = args;
+  if (command !== "prepare-production" || planFile === undefined) usage();
+  let repoRoot = cwd;
+  let runId: string | undefined;
+  let sequence: 1 | 2 | 3 | undefined;
+  let nodeExecutable: string | undefined;
+  for (let index = 0; index < flags.length; index += 2) {
+    const name = flags[index];
+    const value = flags[index + 1];
+    if (value === undefined) usage();
+    if (name === "--repo-root") repoRoot = resolveFrom(cwd, value);
+    else if (name === "--run-id") runId = value;
+    else if (
+      name === "--sequence" &&
+      (value === "1" || value === "2" || value === "3")
+    ) {
+      sequence = Number(value) as 1 | 2 | 3;
+    } else if (name === "--node-executable") nodeExecutable = resolveFrom(cwd, value);
+    else usage();
+  }
+  if (runId === undefined || sequence === undefined) usage();
+  const target = resolveFrom(cwd, planFile);
+  assertCanonicalPlanTarget(repoRoot, target);
+  const plan = prepareProductionExecutionPlan({
+    repoRoot,
+    runId,
+    sequence,
+    ...(nodeExecutable === undefined ? {} : { nodeExecutable }),
+  });
+  writeText(target, stableJson(plan), cwd);
+  assertProductionExecutionPlanCurrent(plan, repoRoot);
+  process.stdout.write(`${stableJson({
+    planPath: target,
+    runId: plan.runId,
+    sequence: plan.sequence,
+    commitSha: plan.source.commitSha,
+    treeSha: plan.source.treeSha,
+    components: plan.components.map(({ id, expectedIdentity }) => ({
+      id,
+      executableSha256: expectedIdentity.executableSha256,
+      sidecarSha256: expectedIdentity.buildProvenance?.sidecarSha256 ?? null,
+      compileInputsSha256:
+        expectedIdentity.buildProvenance?.compileInputsSha256 ?? null,
+      runtimeArtifactsSha256:
+        expectedIdentity.buildProvenance?.runtimeArtifactsSha256 ?? null,
+    })),
+  })}\n`);
 }
 
 export async function runProductionAsyncCli(
@@ -101,8 +167,10 @@ export async function runAsyncCli(args: string[], cwd: string = process.cwd()): 
     else if (name === "--seed") seed = value;
     else usage();
   }
+  const plan = readJson(planFile, cwd) as ExecutionPlan;
+  assertProductionExecutionPlanCurrent(plan, repoRoot);
   const result = await executeSupervisedC19Run({
-    plan: readJson(planFile, cwd) as ExecutionPlan,
+    plan,
     repoRoot,
     artifactRoot,
     seed,
@@ -143,6 +211,7 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
   if (requestedDurationMs !== undefined && !Number.isSafeInteger(requestedDurationMs)) usage();
   if (cycleIntervalMs !== undefined && !Number.isSafeInteger(cycleIntervalMs)) usage();
   const plan = readJson(planFile, cwd) as ExecutionPlan;
+  assertProductionExecutionPlanCurrent(plan, repoRoot);
   const adapter = await createProductionReconnectSoakAdapter({ plan, repoRoot });
   const result = await runReconnectSoak({
     mode,
@@ -302,7 +371,9 @@ const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.r
 
 if (isDirectInvocation) {
   const main = async (): Promise<void> => {
-    if (process.argv[2] === "run-production") {
+    if (process.argv[2] === "prepare-production") {
+      await runPrepareProductionAsyncCli(process.argv.slice(2));
+    } else if (process.argv[2] === "run-production") {
       await runProductionAsyncCli(process.argv.slice(2));
     } else if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
     else if (process.argv[2] === "run-soak") await runSoakAsyncCli(process.argv.slice(2));

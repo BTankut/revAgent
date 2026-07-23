@@ -141,6 +141,8 @@ creation, file fsync, atomic rename, and directory fsync on Linux.
 After `npm run build`, the package exposes:
 
 ```text
+rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> [--repo-root <path>] [--node-executable <path>]
+rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>]
@@ -150,6 +152,33 @@ rbp-conformance summary <aggregate.json> <summary.md>
 rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]
 ```
+
+### Canonical production prepare runbook
+
+Do not assemble a production plan from an existing ignored `dist` tree. From
+the repository root, use the single preparation path:
+
+```powershell
+npm run prepare:rbp-production -- artifacts/conformance/rbp-v1/1.0-rc.1/execution-plan.json --run-id <id> --sequence <1|2|3>
+```
+
+The wrapper first refuses a dirty Git tree, bootstraps protocol from source,
+and compiles the current `rbp-conformance` CLI. The CLI then deletes only the four canonical ignored
+component output roots, builds protocol, add-in loopback fixture, Gateway stub,
+and Bridge simulator in a fixed order, and refuses any build that changes the
+tracked source identity. It writes one canonical deterministic provenance
+sidecar beside each launched component. Each sidecar binds the clean commit and
+tree, exact entrypoint SHA-256, the sorted tracked compile-input file/digest
+set, the complete runtime-output closure, Node/TypeScript tool identity, and
+the versioned build contract. No timestamp or filesystem mtime participates.
+
+`prepare-production` verifies those sidecars before writing the plan. The plan
+retains each sidecar hash and its compile/runtime/tool identity. Every
+production execution entrypoint (`run-production`, `run-c19`, and `run-soak`)
+recomputes the source, sidecar, compile-input, runtime-artifact, toolchain, and
+entrypoint identities before any component child process is spawned. A missing
+sidecar, stale source, stale binary, changed dependency output, changed
+toolchain, sidecar tamper, or dirty tree fails closed.
 
 Validation commands are pass gates: a structurally valid but partially
 executed report still exits nonzero. `run-c19` also exits nonzero by design

@@ -10,6 +10,7 @@
     "build": "npm run build --workspaces --if-present",
     "check:generated": "npm run check:generated --workspace @revagent/protocol",
     "lint": "npm run lint --workspaces --if-present",
+    "prepare:rbp-production": "node packages/rbp-conformance/scripts/prepare-production.mjs",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "test": "npm run check:generated && npm run test --workspaces --if-present",
     "verify:native-dependencies": "node scripts/verify-migration-native-dependencies.mjs"

@@ -46,7 +46,32 @@
         "protocolVersion": { "type": "string", "const": "1.0-rc.1" },
         "commitSha": { "$ref": "#/definitions/gitSha" },
         "treeSha": { "$ref": "#/definitions/gitSha" },
-        "executableSha256": { "$ref": "#/definitions/sha256" }
+        "executableSha256": { "$ref": "#/definitions/sha256" },
+        "buildProvenance": { "$ref": "#/definitions/componentBuildProvenanceIdentity" }
+      }
+    },
+    "componentBuildProvenanceIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "buildContractVersion", "sidecarPath", "sidecarSha256", "compileInputsSha256", "runtimeArtifactsSha256", "toolchain"],
+      "properties": {
+        "schemaVersion": { "type": "string", "const": "rbp-production-build-provenance/v1" },
+        "buildContractVersion": { "type": "string", "const": "rbp-production-typescript-build/v1" },
+        "sidecarPath": { "$ref": "#/definitions/relativePath" },
+        "sidecarSha256": { "$ref": "#/definitions/sha256" },
+        "compileInputsSha256": { "$ref": "#/definitions/sha256" },
+        "runtimeArtifactsSha256": { "$ref": "#/definitions/sha256" },
+        "toolchain": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["nodeVersion", "typescriptVersion", "typescriptEntrypointPath", "typescriptEntrypointSha256"],
+          "properties": {
+            "nodeVersion": { "type": "string", "pattern": "^v[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
+            "typescriptVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:[-+][A-Za-z0-9.-]+)?$" },
+            "typescriptEntrypointPath": { "type": "string", "const": "node_modules/typescript/lib/tsc.js" },
+            "typescriptEntrypointSha256": { "$ref": "#/definitions/sha256" }
+          }
+        }
       }
     },
     "command": {

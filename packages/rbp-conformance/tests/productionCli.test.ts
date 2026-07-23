@@ -5,7 +5,12 @@ import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { runProductionAsyncCli } from "../src/cli.js";
+import {
+  runAsyncCli,
+  runProductionAsyncCli,
+  runSoakAsyncCli,
+} from "../src/cli.js";
+import { resolveSourceIdentity } from "../src/executionPlan.js";
 import { createPlan } from "./helpers.js";
 
 function git(cwd: string, args: readonly string[]): void {
@@ -59,5 +64,56 @@ describe("run-production CLI gates", () => {
       "--allow-unbound-oracles",
       "true",
     ])).rejects.toThrow(/Usage:/u);
+  });
+
+  it("rejects run-c19 and run-soak before spawn when sidecars are missing", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-production-cli-provenance-"));
+    const repo = path.join(root, "repo");
+    const artifactRoot = path.join(root, "artifacts");
+    const planFile = path.join(root, "execution-plan.json");
+    try {
+      mkdirSync(repo);
+      git(repo, ["init"]);
+      writeFileSync(path.join(repo, "source.txt"), "clean\n", "utf8");
+      git(repo, ["add", "source.txt"]);
+      git(repo, [
+        "-c",
+        "user.name=Conformance Test",
+        "-c",
+        "user.email=conformance@example.invalid",
+        "commit",
+        "-m",
+        "clean source",
+      ]);
+      const plan = createPlan();
+      plan.source = resolveSourceIdentity(repo);
+      for (const component of plan.components) {
+        component.expectedIdentity.commitSha = plan.source.commitSha;
+        component.expectedIdentity.treeSha = plan.source.treeSha;
+      }
+      writeFileSync(planFile, JSON.stringify(plan), "utf8");
+
+      await expect(runAsyncCli([
+        "run-c19",
+        planFile,
+        "--repo-root",
+        repo,
+        "--artifact-root",
+        artifactRoot,
+      ], root)).rejects.toThrow(/sidecar is missing or unreadable/u);
+
+      await expect(runSoakAsyncCli([
+        "run-soak",
+        planFile,
+        "--mode",
+        "smoke",
+        "--repo-root",
+        repo,
+        "--artifact-root",
+        artifactRoot,
+      ], root)).rejects.toThrow(/sidecar is missing or unreadable/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
