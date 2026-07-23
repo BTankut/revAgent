@@ -151,11 +151,11 @@ After `npm run build`, the package exposes:
 ```text
 rbp-conformance prepare-production <execution-plan.json> --run-id <id> --sequence <1|2|3> [--repo-root <path>] [--node-executable <path>]
 rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
-rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>]
-rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>]
-rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>]
+rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
+rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
+rbp-conformance validate-soak <soak-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance junit <run-report.json> <junit.xml>
-rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>]
+rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
 rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]
@@ -164,26 +164,66 @@ rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-r
 ### Canonical production prepare runbook
 
 Do not assemble a production plan from an existing ignored `dist` tree. From
-the repository root, use the single preparation path:
+the repository root, invoke the wrapper directly with the exact reviewed Node
+executable. Do not enter the canonical path through `npm run`, an npm
+lifecycle, a shell bin shim, or the `rbp-conformance` bin:
 
 ```powershell
-npm run prepare:rbp-production -- artifacts/conformance/rbp-v1/1.0/execution-plan.json --run-id <id> --sequence <1|2|3>
+$RepoRoot = (Resolve-Path -LiteralPath '.').Path
+$BoundNode = 'C:\Program Files\nodejs\node.exe'
+$NpmCli = 'C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js'
+$EvidenceRoot = 'C:\Users\BT\Projects\revAgent-freeze-evidence\rbp-v1.0-<sha12>-s01'
+$PlanRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\plans\rbp-v1.0-<sha12>-s01'
+$Wrapper = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\prepare-production.mjs'
+$Cli = Join-Path $RepoRoot 'packages\rbp-conformance\dist\src\cli.js'
+
+$PlanR1 = Join-Path $PlanRoot 'run-1.execution-plan.json'
+$PlanR2 = Join-Path $PlanRoot 'run-2.execution-plan.json'
+$PlanR3 = Join-Path $PlanRoot 'run-3.execution-plan.json'
+$PlanSoak = Join-Path $PlanRoot 'soak-one-hour.execution-plan.json'
+
+& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR1 `
+  --run-id 'rbp-v1.0-<sha12>-s01-r1' --sequence 1 `
+  --repo-root $RepoRoot --node-executable $BoundNode
+& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR2 `
+  --run-id 'rbp-v1.0-<sha12>-s01-r2' --sequence 2 `
+  --repo-root $RepoRoot --node-executable $BoundNode
+& $BoundNode $Wrapper --npm-executable $NpmCli $PlanR3 `
+  --run-id 'rbp-v1.0-<sha12>-s01-r3' --sequence 3 `
+  --repo-root $RepoRoot --node-executable $BoundNode
+& $BoundNode $Wrapper --npm-executable $NpmCli $PlanSoak `
+  --run-id 'rbp-v1.0-<sha12>-s01-soak-1h' --sequence 1 `
+  --repo-root $RepoRoot --node-executable $BoundNode
 ```
 
-The wrapper first refuses a dirty Git tree, forces lifecycle scripts on only in
-its child environment, removes Node/module-resolution injection variables,
-and opens, queries, and closes the Bridge simulator's exact installed
-`better-sqlite3` module under the selected runtime Node. It then deletes only
-the ignored `rbp-conformance/dist` controller output, builds protocol and the
-controller from source, and starts that freshly built CLI. The CLI validates
-and hashes the toolchain before cleaning any component output. Protocol,
-add-in loopback fixture, Gateway stub, and Bridge simulator are then compiled
-exactly once through non-recursive `build:self` targets in a fixed DAG; every
-npm child is bracketed by toolchain revalidation and later steps may not
-rewrite upstream outputs. The freshly built controller bytes must remain
-identical throughout the component build.
+The four paths are intentionally distinct and outside the source worktree.
+Never prepare r1, r2, r3, or the soak into a shared
+`execution-plan.json`; a later prepare must not overwrite the exact plan that
+gates an earlier retained report. The soak uses its own run id and plan even
+though its plan sequence is `1`. Replace `<sha12>` only after locking the clean
+candidate. Create a fresh evidence-set directory instead of reusing a failed
+set.
 
-The resulting canonical deterministic v2 sidecar beside each launched
+The wrapper refuses npm lifecycle invocation and a dirty Git tree, removes
+Node/module-resolution injection variables from children, deletes only the
+ignored `rbp-conformance/dist` controller output, and directly runs the bound
+Node for protocol generation/cleaning and TypeScript compilation. It builds
+protocol and the conformance controller from source, then starts that freshly
+built CLI with the same bound build/controller Node. There is no outer native
+smoke under an incidental Node. The inner CLI resolves the selected runtime
+Node (`--node-executable`, or the current controller Node when omitted) and
+opens, queries, and closes the Bridge simulator's exact installed
+`better-sqlite3` module under that runtime before and after the component DAG.
+
+The CLI validates and hashes the toolchain before cleaning component output.
+Protocol, add-in loopback fixture, Gateway stub, and Bridge simulator are then
+compiled exactly once by direct bound-Node generator/clean/TypeScript calls in
+a fixed non-recursive DAG. Every child is bracketed by full toolchain
+revalidation. After each step, every already-completed upstream output is
+rehashed; a later step may not rewrite it. The freshly built controller and
+protocol harness must remain byte-identical throughout the component build.
+
+The resulting canonical deterministic v3 sidecar beside each launched
 component binds the clean commit/tree and:
 
 - every tracked compile input and every emitted component/protocol byte;
@@ -199,8 +239,20 @@ component binds the clean commit/tree and:
   executable/version; on Windows, the canonical absolute PowerShell
   executable/version used for parent-owned resource sampling is bound too.
 
-The selected runtime Node may differ from the build Node only when its complete
-recorded identity is used consistently by every canonical component command.
+The installed dependency graph is resolved by the bound runtime Node through
+real CommonJS, ESM, and package-manifest probes. Each selected module must
+match the captured physical package root. Workspace targets, distinct nested
+copies, native files, installed optional peers, and explicit optional-peer
+absence are therefore separate identity facts; a convenient root package is
+not substituted for the copy Node actually loads.
+
+The selected runtime Node may differ from the build/controller Node only when
+its complete recorded identity is used consistently by every canonical
+component command, native smoke, production run, and validator invocation.
+For the M1 runbook above they are deliberately the same `$BoundNode`. Run
+`run-production`, `run-soak`, `aggregate`, and all `validate-*` commands by
+calling `$BoundNode $Cli ...`; a different current controller Node fails
+closed against the plan.
 No timestamp or filesystem mtime participates. Windows system DLLs and
 kernel-level filesystem races are outside the application provenance
 boundary; every repo/npm-controlled executable byte is inside it.
@@ -208,17 +260,31 @@ boundary; every repo/npm-controlled executable byte is inside it.
 `prepare-production` verifies those sidecars before writing the plan. The plan
 retains each sidecar hash and its compile/runtime/dependency/controller/tool
 identity. Every production execution entrypoint (`run-production`, `run-c19`,
-and `run-soak`) performs the full source/build-toolchain check at its boundary.
-The launch guard then re-derives the canonical command and rechecks source,
+and `run-soak`) and each plan-bound validation/aggregation path performs the
+full source/build-toolchain check at its boundary and requires the current
+controller Node to equal the plan-bound runtime Node. Validators require the
+exact retained plan; the three-run paths require distinct sequence-1/2/3 plans
+with one identical candidate stack, and the report run id/sequence/manifest/
+source/component identity must match its plan.
+
+The launch guard re-derives the canonical command and rechecks source,
 sidecar, runtime Node, entrypoint, component/protocol/controller output, and
-installed runtime/native dependency closure immediately before and after
-component readiness and after supervised shutdown/cycle boundaries. Component
-children inherit a sanitized environment without `NODE_OPTIONS`, `NODE_PATH`,
-Node compile-cache/preserve-symlink controls, or `WS_NO_*` resolution switches.
+installed runtime/native dependency closure immediately before each component
+spawn and after readiness. It repeats after every supervised shutdown; failed
+starts also run the boundary guard after cleanup. The soak retains two
+independent three-process stacks, applies the same guard at child boundaries,
+after every churn cycle, and during shutdown cleanup. Component children
+inherit a sanitized environment without `NODE_OPTIONS`, `NODE_PATH`, Node
+compile-cache/preserve-symlink controls, or `WS_NO_*` resolution switches.
 A missing sidecar, stale source, stale binary, changed dependency/native byte,
 unexpected optional peer, changed controller, command or Node substitution,
 changed toolchain, sidecar tamper, or dirty tree fails closed before retained
 PASS evidence can be produced.
+
+These v3 checks define the candidate-evidence boundary; they are not themselves
+a freeze verdict. No M1 PASS, protected merge, or `rbp/v1.0.0` tag is claimed
+until the separately retained runs, one-hour soak, validators, tree-identity
+proof, and operator closing review complete.
 
 Validation commands are pass gates: a structurally valid but partially
 executed report still exits nonzero. `run-c19` also exits nonzero by design

@@ -300,16 +300,6 @@ function runBoundNode(args, label, options = {}) {
   return result;
 }
 
-const nativeSmoke = run(
-  process.execPath,
-  ["packages/rbp-conformance/scripts/smoke-better-sqlite3.mjs"],
-);
-if (nativeSmoke.status !== 0) {
-  throw new Error(
-    `better-sqlite3 native smoke failed before build: ${String(nativeSmoke.stderr).trim()}`,
-  );
-}
-
 const harnessDist = path.join(repoRoot, "packages/rbp-conformance/dist");
 if (existsSync(harnessDist)) {
   if (lstatSync(harnessDist).isSymbolicLink()) {

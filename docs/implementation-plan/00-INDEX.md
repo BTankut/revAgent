@@ -273,6 +273,32 @@ cutover.
   output as evidence. Only account authorization, physical/network work, decisions, and user communications
   remain operator-owned.
 
+### 8.1 2026-07-23 operator execution checkpoint
+
+This checkpoint controls the current implementation assistant without
+rewriting the work-package architecture:
+
+1. When M1 is ready, open the freeze PR as **draft** and stop after presenting
+   the gate-demo evidence, final v0.9→v1.0 diff summary, and complete
+   conformance result. Do not ready or merge the PR and do not create
+   `rbp/v1.0.0`. No later milestone begins before explicit operator-channel
+   closing approval.
+2. After that approval, this assistant works only in WP2/M2 on
+   `codex/wp2-*` branches. It does not edit `packages/bridge/**` or
+   `src/revit-plugin/**`. Any `packages/protocol/**` change first requires the
+   dated R-F amendment procedure.
+3. WP3 remains the architectural owner of M3 bridge/add-in/installer work, but
+   M3 execution belongs to a separate assistant. The current assistant does
+   not continue, ready, or merge M3 work.
+4. Pre-checkpoint M2 planning is retained on hold in draft PR
+   [#288](https://github.com/BTankut/revAgent/pull/288). Its proposed M2
+   amendment collides with the already authoritative nested-batch `RES-26`;
+   after M1 approval WP2 must resolve that collision through a newly numbered,
+   dated R-F amendment, never by silently replacing either record.
+5. Pre-checkpoint M3 planning is retained as the frozen handoff draft PR
+   [#289](https://github.com/BTankut/revAgent/pull/289). It is evidence of
+   handoff state, not permission to advance M3.
+
 ## 9. Week 1 (starts tomorrow)
 
 Section 08(h) is the authoritative list: DP checkpoint session; monorepo scaffold (`packages/*`, existing dirs

@@ -6,7 +6,7 @@
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-07-22
+**Last updated:** 2026-07-23
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -22,6 +22,29 @@ This file is the operational milestone tracker for the migration described by `d
 | `accepted` | The decision owner accepted the gate |
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
+
+## 2026-07-23 operator lane checkpoint
+
+M1 remains the only active milestone. When its candidate is ready, the
+implementation assistant opens the freeze PR as draft, presents the gate demo,
+final v0.9→v1.0 diff summary, and complete conformance result, then stops. The
+PR is not readied or merged and `rbp/v1.0.0` is not created until the
+operator-channel closing review explicitly approves continuation.
+
+After that approval, this assistant is assigned only to WP2/M2 on
+`codex/wp2-*`. It may not edit `packages/bridge/**` or
+`src/revit-plugin/**`; any `packages/protocol/**` change requires a prior dated
+R-F amendment. This is an assistant execution assignment, not an architecture
+change: WP3 remains the M3 bridge/add-in/installer owner and a separate
+assistant receives that lane.
+
+Draft PR [#288](https://github.com/BTankut/revAgent/pull/288) retains the M2
+planning already performed and remains on hold. Its proposed M2 `RES-26`
+collides with the authoritative nested-batch `RES-26` on `main`; after M1
+approval, WP2 must use a newly numbered dated R-F amendment to reconcile the
+proposal before the draft advances. Draft PR
+[#289](https://github.com/BTankut/revAgent/pull/289) is the frozen M3 handoff
+record; this assistant will not continue, ready, or merge it.
 
 ## M0 checkpoint
 

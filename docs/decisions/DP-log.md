@@ -96,32 +96,73 @@ resolution environment variables could change executable behavior after the
 single run-entry verification. These were provenance gaps, so no run produced
 under that contract could by itself close M1.
 
-The replacement `rbp-production-build-provenance/v2` /
-`rbp-production-typescript-build/v2` contract fails closed over the exact
+The replacement `rbp-production-build-provenance/v3` /
+`rbp-production-typescript-build/v3` contract fails closed over the exact
 build and runtime Node files plus version/platform/architecture/modules
 ABI/N-API facts; complete npm and TypeScript package trees; the selected Git
 binary/version; the canonical Windows PowerShell sampler binary/version;
 component, protocol, and conformance-controller outputs; and
-the recursively resolved physical installed package copies for Gateway,
-Bridge, add-in fixture, and runner. Native `.node` files are byte-recorded,
-installed optional peers are included, and absent optional peers are explicit
-resolution records. Canonical prepare runs a real in-memory
-`better-sqlite3` open/query/close smoke under the bound runtime Node before
-component cleaning and again after the fixed non-recursive build DAG.
+the physical installed package copies actually selected for Gateway, Bridge,
+add-in fixture, runner, and protocol generation. The bound runtime Node now
+performs real CommonJS, ESM, and package-manifest resolution probes; the
+selected path must equal the captured physical package root. Workspace
+targets, distinct nested copies, native `.node` files, installed optional
+peers, and absent optional peers are explicit records instead of inferred
+from a convenient root install.
 
-Production plans must re-derive the exact canonical command descriptors,
-sanitize Node/module-resolution environment variables, and run the runtime
-launch guard immediately around supervised spawns and shutdown/cycle
-boundaries. Full compiler/npm provenance remains a prepare/run-boundary gate;
-the launch guard rechecks only bytes that can execute in the candidate run.
-Windows system DLLs and kernel-level hardlink races remain outside this
-application provenance boundary.
+Canonical preparation is a direct invocation of the reviewed Node executable,
+not `npm run`, a lifecycle shell, or a bin shim. That Node rebuilds protocol
+and the conformance controller, then the freshly built controller runs a real
+in-memory `better-sqlite3` open/query/close smoke under the selected runtime
+Node before component cleaning and again after the fixed non-recursive,
+direct-Node TypeScript DAG. Every child is bracketed by toolchain
+revalidation. After each DAG step, every previously completed upstream output
+is rehashed and the controller/protocol harness must remain unchanged.
+There is no outer native smoke under a possibly divergent incidental Node.
+
+Production plans re-derive exact canonical command descriptors and sanitize
+Node/module-resolution environment variables. Every run and plan-bound
+validator/aggregator performs the full source, toolchain, sidecar, command,
+controller, and current-Node gate. The cheaper runtime launch guard rechecks
+the executable candidate closure immediately before each spawn, after
+readiness, after supervised shutdown (including failed-start cleanup), and
+after each soak churn cycle. Full compiler/npm provenance remains a
+prepare/run/validation-boundary gate; the launch guard rechecks the bytes that
+can execute in the candidate run. Windows system DLLs and kernel-level
+hardlink races remain outside this application provenance boundary.
 
 This dated R-F entry closes the identified contract/design gap only. It does
 not declare the O1 spec frozen, does not validate a candidate run, and does not
 satisfy O1-T6/O1-T8. M1 still requires a clean protected candidate, fresh
 canonical preparation, three consecutive complete runs, the full one-hour
 soak, validators, tree-identity proof, and the separately governed tag.
+
+### 2026-07-23 — Operator checkpoint: M1 draft-only stop and assistant lane assignment
+
+Source: operator instruction from Barış Tankut, 2026-07-23. When the M1
+candidate is ready, its freeze PR is opened as **draft only**. It is not
+readied, merged, or tagged. The assistant presents the M1 gate report with the
+gate-demo evidence, final v0.9→v1.0 diff summary, and complete conformance
+suite result, then stops. No later milestone starts until the operator-channel
+closing review explicitly approves continuation.
+
+This is also a persistent execution-lane boundary for the current assistant.
+After that approval, the assistant may work only in WP2/M2 on
+`codex/wp2-*` branches. It must not edit `packages/bridge/**` or
+`src/revit-plugin/**`; a `packages/protocol/**` change requires the dated R-F
+amendment procedure before implementation. M3 is handed to a separate
+assistant. This assignment does **not** change the architecture or ownership
+map: WP3 remains the authoritative owner of M3 bridge/add-in/installer work.
+
+M2 planning that began before the checkpoint is retained in draft PR
+[#288](https://github.com/BTankut/revAgent/pull/288) and remains on hold.
+Its proposed M2 amendment reused `RES-26`, which is already the authoritative
+nested-batch amendment on `main`; that identifier/content collision is
+unresolved. It must not be repaired by silently replacing either decision.
+After M1 closing approval, WP2 must reconcile it through a newly numbered,
+dated R-F amendment before the draft can advance. M3 planning is frozen for
+handoff in draft PR [#289](https://github.com/BTankut/revAgent/pull/289);
+the current assistant will not continue, ready, or merge it.
 
 ### 2026-07-23 — R-F: M1 executable candidate and evidence-record identities are separate
 
