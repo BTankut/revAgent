@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
@@ -11,7 +12,13 @@ import {
   runSoakAsyncCli,
 } from "../src/cli.js";
 import { resolveSourceIdentity } from "../src/executionPlan.js";
-import { createPlan } from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
+
+const packageRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const currentRepoRoot = path.resolve(packageRoot, "..", "..");
 
 function git(cwd: string, args: readonly string[]): void {
   const result = spawnSync("git", args, { cwd, encoding: "utf8", shell: false });
@@ -40,7 +47,16 @@ describe("run-production CLI gates", () => {
         "-m",
         "clean source",
       ]);
-      writeFileSync(planFile, JSON.stringify(createPlan()), "utf8");
+      writeFileSync(
+        planFile,
+        JSON.stringify(
+          createCurrentProductionPlan(
+            currentRepoRoot,
+            "stale-plan-test",
+          ),
+        ),
+        "utf8",
+      );
 
       await expect(runProductionAsyncCli([
         "run-production",
@@ -85,7 +101,10 @@ describe("run-production CLI gates", () => {
         "-m",
         "clean source",
       ]);
-      const plan = createPlan();
+      const plan = createCurrentProductionPlan(
+        currentRepoRoot,
+        "missing-sidecars-test",
+      );
       plan.source = resolveSourceIdentity(repo);
       for (const component of plan.components) {
         component.expectedIdentity.commitSha = plan.source.commitSha;

@@ -4,7 +4,6 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { canonicalManifest } from "../src/manifest.js";
-import { sha256File } from "../src/executionPlan.js";
 import {
   executeParentSteps,
   type ParentStepExecutionEvidence,
@@ -13,7 +12,6 @@ import { caseProgram } from "../src/casePrograms.js";
 import { CaseStackSupervisor } from "../src/caseStackSupervisor.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
-import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
 import { createEarlyProductionCaseDrivers } from "../src/productionDriversEarly.js";
 import {
   createExternalEvidenceProductionDrivers,
@@ -25,7 +23,7 @@ import type {
   ProcessObservationRecord,
 } from "../src/types.js";
 import type { CanonicalAssertionOracleContext } from "../src/canonicalEvaluators.js";
-import { createPlan } from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -37,20 +35,10 @@ interface C27Execution {
 }
 
 function productionPlan(): ExecutionPlan {
-  const plan = createPlan();
-  plan.runId = "production-o1-c27-backoff";
-  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
-  for (const component of plan.components) {
-    const selected = launchConfigs.find(({ id }) => id === component.id);
-    if (selected === undefined) {
-      throw new Error(`missing production launch config for ${component.id}`);
-    }
-    component.expectedIdentity.executableSha256 = sha256File(
-      path.join(repoRoot, selected.entrypointPath),
-    );
-    component.command = structuredClone(selected.command);
-  }
-  return plan;
+  return createCurrentProductionPlan(
+    repoRoot,
+    "production-o1-c27-backoff",
+  );
 }
 
 async function executeBinding(

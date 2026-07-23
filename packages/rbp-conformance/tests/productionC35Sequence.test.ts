@@ -6,27 +6,17 @@ import { describe, expect, it } from "vitest";
 import { canonicalManifest } from "../src/manifest.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { executeRawProductionCaseBothBindings } from "../src/productionCaseRunnerRaw.js";
-import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
-import { sha256File } from "../src/executionPlan.js";
 import type { ExecutionPlan } from "../src/types.js";
-import { createPlan } from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(): ExecutionPlan {
-  const plan = createPlan();
-  plan.runId = "sequence-boundary-o1-c35";
-  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
-  for (const component of plan.components) {
-    const selected = launchConfigs.find(({ id }) => id === component.id);
-    if (selected === undefined) throw new Error(`missing production launch config for ${component.id}`);
-    component.expectedIdentity.executableSha256 = sha256File(
-      path.join(repoRoot, selected.entrypointPath),
-    );
-    component.command = structuredClone(selected.command);
-  }
-  return plan;
+  return createCurrentProductionPlan(
+    repoRoot,
+    "sequence-boundary-o1-c35",
+  );
 }
 
 describe("O1-C35 production sequence boundary", () => {

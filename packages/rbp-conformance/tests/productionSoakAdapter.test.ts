@@ -3,31 +3,15 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { sha256File } from "../src/executionPlan.js";
-import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
 import { createProductionReconnectSoakAdapter } from "../src/productionSoakAdapter.js";
 import type { ExecutionPlan } from "../src/types.js";
-import {
-  attachCurrentProductionToolchainProvenance,
-  createPlan,
-} from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(): ExecutionPlan {
-  const plan = attachCurrentProductionToolchainProvenance(createPlan());
-  plan.runId = "production-soak-adapter";
-  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
-  for (const component of plan.components) {
-    const selected = launchConfigs.find(({ id }) => id === component.id);
-    if (selected === undefined) throw new Error(`missing production launch config for ${component.id}`);
-    component.expectedIdentity.executableSha256 = sha256File(
-      path.join(repoRoot, selected.entrypointPath),
-    );
-    component.command = structuredClone(selected.command);
-  }
-  return plan;
+  return createCurrentProductionPlan(repoRoot, "production-soak-adapter");
 }
 
 describe("production reconnect/proxy-churn soak adapter", () => {

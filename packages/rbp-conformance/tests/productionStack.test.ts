@@ -9,8 +9,6 @@ import {
   canonicalManifest,
   evaluateSupervisedCaseExecutions,
   executeProductionCaseBothBindings,
-  productionComponentLaunchConfigs,
-  sha256File,
 } from "../src/index.js";
 import type {
   Binding,
@@ -18,24 +16,16 @@ import type {
   ParentOwnedCaseEvaluator,
   ProcessObservationRecord,
 } from "../src/index.js";
-import { createPlan } from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(caseId: string): ExecutionPlan {
-  const plan = createPlan();
-  plan.runId = `production-${caseId.toLowerCase()}`;
-  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
-  for (const component of plan.components) {
-    const selected = launchConfigs.find(({ id }) => id === component.id);
-    if (selected === undefined) throw new Error(`missing production launch config for ${component.id}`);
-    component.expectedIdentity.executableSha256 = sha256File(
-      path.join(repoRoot, selected.entrypointPath),
-    );
-    component.command = structuredClone(selected.command);
-  }
-  return plan;
+  return createCurrentProductionPlan(
+    repoRoot,
+    `production-${caseId.toLowerCase()}`,
+  );
 }
 
 function payload(record: ProcessObservationRecord): Record<string, unknown> {

@@ -5,6 +5,7 @@ import {
   mkdirSync,
 } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 
@@ -22,9 +23,13 @@ import {
 } from "./productionProvenanceFixture.js";
 
 let compiledCli = "";
+const packageRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
+const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function compileCurrentController(): string {
-  const repoRoot = process.cwd();
   const result = spawnSync(process.execPath, [
     path.join(repoRoot, "node_modules/typescript/lib/tsc.js"),
     "-p",

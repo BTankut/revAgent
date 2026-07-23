@@ -13,34 +13,21 @@ import { executeParentSteps } from "../src/parentStepEngine.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
 import { createExternalEvidenceProductionDrivers } from "../src/productionDriversExternalEvidence.js";
-import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
-import { sha256File } from "../src/executionPlan.js";
 import type {
   Binding,
   ExecutionPlan,
   ProcessObservationRecord,
 } from "../src/types.js";
-import {
-  attachCurrentProductionToolchainProvenance,
-  createPlan,
-} from "./helpers.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(caseId: "O1-C33" | "O1-C40"): ExecutionPlan {
-  const plan = attachCurrentProductionToolchainProvenance(createPlan());
-  plan.runId = `external-evidence-${caseId.toLowerCase()}`;
-  const launchConfigs = productionComponentLaunchConfigs(repoRoot);
-  for (const component of plan.components) {
-    const selected = launchConfigs.find(({ id }) => id === component.id);
-    if (selected === undefined) throw new Error(`missing production launch config for ${component.id}`);
-    component.expectedIdentity.executableSha256 = sha256File(
-      path.join(repoRoot, selected.entrypointPath),
-    );
-    component.command = structuredClone(selected.command);
-  }
-  return plan;
+  return createCurrentProductionPlan(
+    repoRoot,
+    `external-evidence-${caseId.toLowerCase()}`,
+  );
 }
 
 async function execute(
