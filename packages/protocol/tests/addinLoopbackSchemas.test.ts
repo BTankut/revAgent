@@ -205,6 +205,11 @@ function statusSemanticErrors(scenario: Scenario): string[] {
     if (new Set(methodNames).size !== methodNames.length) {
       errors.push("batchable command methods are not unique");
     }
+    if (commands.some((entry) =>
+      entry.resultDelivery !== "inline_only" || entry.maxInlineResultBytes !== 8_388_608
+    )) {
+      errors.push("batchable command does not attest inline-only result delivery");
+    }
 
     const deleteReviewView = commands.find((entry) => entry.method === "delete_review_view");
     if (!deleteReviewView) {
@@ -213,7 +218,9 @@ function statusSemanticErrors(scenario: Scenario): string[] {
       deleteReviewView.effect !== "model_transaction" ||
       deleteReviewView.transactionPolicy !== "nested_transaction_required" ||
       deleteReviewView.rollbackDisposition !== "transaction_group_rollback" ||
-      deleteReviewView.parameterProfile !== "delete_review_view_commit_v1"
+      deleteReviewView.parameterProfile !== "delete_review_view_commit_v1" ||
+      deleteReviewView.resultDelivery !== "inline_only" ||
+      deleteReviewView.maxInlineResultBytes !== 8_388_608
     ) {
       errors.push("delete_review_view descriptor does not prove transaction-group rollback support");
     }

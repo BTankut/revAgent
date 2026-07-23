@@ -1,0 +1,42 @@
+{
+  "name": "@revagent/bridge-simulator",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "revagent-bridge-simulator": "./dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && tsc -p tsconfig.json",
+    "demo:crash": "node dist/cli.js crash-recovery",
+    "lint": "eslint src tests",
+    "typecheck": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json",
+    "test": "npm run build && vitest run",
+    "test:determinism": "npm run build && vitest run --reporter=json --outputFile=.bridge-simulator-run-1.json && vitest run --reporter=json --outputFile=.bridge-simulator-run-2.json && vitest run --reporter=json --outputFile=.bridge-simulator-run-3.json && node scripts/compare-runs.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@revagent/addin-loopback-fixture": "0.0.0",
+    "@revagent/protocol": "0.0.0",
+    "better-sqlite3": "12.9.0",
+    "ws": "^8.20.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/ws": "^8.18.1"
+  }
+}

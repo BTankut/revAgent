@@ -46,7 +46,9 @@
         "effect",
         "transactionPolicy",
         "rollbackDisposition",
-        "parameterProfile"
+        "parameterProfile",
+        "resultDelivery",
+        "maxInlineResultBytes"
       ],
       "properties": {
         "method": {
@@ -89,6 +91,12 @@
             "ordinary_v1",
             "delete_review_view_commit_v1"
           ]
+        },
+        "resultDelivery": {
+          "const": "inline_only"
+        },
+        "maxInlineResultBytes": {
+          "const": 8388608
         }
       },
       "allOf": [

@@ -14,10 +14,12 @@ import {
   MAX_RESPONSE_PAYLOAD_BYTES,
   MIN_REQUEST_PAYLOAD_BYTES,
   PayloadLimitError,
+  encodeFrame,
   encodeJsonFrame,
   jsonPayloadBytes,
 } from "./framing.js";
 import {
+  BATCH_MAX_INLINE_RESULT_BYTES,
   BATCHABLE_DESCRIPTORS,
   ContractValidationError,
   LoopbackContractValidator,
@@ -123,6 +125,7 @@ const FAULT_PLAN_KEYS = new Set([
   "crash",
   "rollbackFailure",
   "finalBatchResponseFault",
+  "responseWhitespaceBytes",
   "injectedOutcome",
   "jsonRpcError",
 ]);
@@ -175,6 +178,16 @@ function invalidResult(message: unknown): HandlerOutcome {
     state: "failed",
     error: { code: "invalid_result", message: boundedMessage(message) },
   };
+}
+
+function hasDeclaredArtifactShape(value: JsonValue): boolean {
+  if (!isObject(value) || !Array.isArray(value.files) || value.files.length === 0) return false;
+  return value.files.some((entry) =>
+    isObject(entry) &&
+    (typeof entry.path === "string" ||
+      typeof entry.fileName === "string" ||
+      typeof entry.contentBase64 === "string")
+  );
 }
 
 function jsonValueError(
@@ -287,9 +300,17 @@ function validateFaultPlan(plan: FaultPlan): void {
   }
   if (
     plan.finalBatchResponseFault !== undefined &&
-    plan.finalBatchResponseFault !== "omit_batch_digest"
+    !["omit_batch_digest", "wire_omit_batch_digest"].includes(plan.finalBatchResponseFault)
   ) {
     throw new Error("finalBatchResponseFault has an invalid value");
+  }
+  if (
+    plan.responseWhitespaceBytes !== undefined &&
+    (!Number.isSafeInteger(plan.responseWhitespaceBytes) ||
+      plan.responseWhitespaceBytes < 0 ||
+      plan.responseWhitespaceBytes > MAX_RESPONSE_PAYLOAD_BYTES)
+  ) {
+    throw new RangeError("responseWhitespaceBytes must be from 0 through the max response payload bytes");
   }
   if (plan.injectedOutcome !== undefined) {
     const outcome = plan.injectedOutcome;
@@ -1021,6 +1042,7 @@ export class AddinLoopbackFixture {
     const batchId = String(params.batchId);
     const batchDigest = String(params.batchDigest);
     const steps = (params.steps as unknown[]).map((entry) => entry as BatchStep);
+    const maxAggregateResultBytes = Number(params.maxAggregateResultBytes);
     const group = new TestTransactionGroup(this.#modelState, fault.rollbackFailure === true);
     group.start();
     const executed: ExecutedStep[] = [];
@@ -1073,6 +1095,16 @@ export class AddinLoopbackFixture {
       } else {
         outcome = await this.#callHandler(registration.handler, step.params, context);
       }
+      if (outcome.state === "completed") {
+        const inlineBytes = jsonPayloadBytes(outcome.result).byteLength;
+        if (hasDeclaredArtifactShape(outcome.result)) {
+          outcome = invalidResult("batch-inline-only command returned artifact data");
+        } else if (inlineBytes > BATCH_MAX_INLINE_RESULT_BYTES) {
+          outcome = invalidResult(
+            `batch-inline-only command result exceeds ${BATCH_MAX_INLINE_RESULT_BYTES} bytes`,
+          );
+        }
+      }
       this.#recordOutcome(step.invocationId, step.method, ordinal, outcome);
       executed.push({ step, outcome });
       if (outcome.state !== "completed") {
@@ -1082,7 +1114,7 @@ export class AddinLoopbackFixture {
 
       const projection = this.#batchProjection(batchId, batchDigest, steps, executed);
       const tentativeBytes = jsonPayloadBytes({ jsonrpc: "2.0", id: requestId, result: projection }).byteLength;
-      if (tentativeBytes > MAX_RESPONSE_PAYLOAD_BYTES) {
+      if (tentativeBytes > maxAggregateResultBytes) {
         executed[executed.length - 1] = {
           step,
           outcome: {
@@ -1090,7 +1122,7 @@ export class AddinLoopbackFixture {
             error: {
               code: "response_payload_limit",
               message: "Tentative batch response exceeds aggregate cap",
-              maxResponsePayloadBytes: MAX_RESPONSE_PAYLOAD_BYTES,
+              maxResponsePayloadBytes: maxAggregateResultBytes,
               tentativeResponsePayloadBytes: tentativeBytes,
             },
           },
@@ -1453,7 +1485,22 @@ export class AddinLoopbackFixture {
         });
       }
     }
-    let payload = jsonPayloadBytes(response);
+    if (
+      method === "execute_batch" &&
+      fault.finalBatchResponseFault === "wire_omit_batch_digest" &&
+      isObject(response.result)
+    ) {
+      response = structuredClone(response);
+      delete (response.result as JsonObject).batchDigest;
+    }
+    const whitespaceBytes = Number(fault.responseWhitespaceBytes ?? 0);
+    if (!Number.isSafeInteger(whitespaceBytes) || whitespaceBytes < 0) {
+      throw new RangeError("responseWhitespaceBytes must be a non-negative safe integer");
+    }
+    const compactPayload = jsonPayloadBytes(response);
+    let payload = whitespaceBytes === 0
+      ? compactPayload
+      : Buffer.concat([Buffer.alloc(whitespaceBytes, 0x20), compactPayload]);
     if (payload.byteLength > MAX_RESPONSE_PAYLOAD_BYTES) {
       this.#observe(
         requestId,
@@ -1472,7 +1519,7 @@ export class AddinLoopbackFixture {
       payload = jsonPayloadBytes(response);
     }
     if (socket.destroyed) return;
-    const frame = encodeJsonFrame(response, MAX_RESPONSE_PAYLOAD_BYTES);
+    const frame = encodeFrame(payload, MAX_RESPONSE_PAYLOAD_BYTES);
     if (fault.disconnect === "after_response_bytes") {
       const requestedBytes = Number(fault.afterResponseBytes);
       const prefixBytes = Math.min(requestedBytes, frame.byteLength - 1);

@@ -515,6 +515,23 @@ describe("RBP/1 batch result semantics", () => {
     expect(validateRbpEnvelope(envelope)).toBe(false);
   });
 
+  it("accepts a cancelled atomic result with a known committed transaction", () => {
+    const envelope = clone(positiveByName.get("batch_cancelled_result"));
+    expect(envelope).toBeDefined();
+    if (envelope === undefined) return;
+    const payload = envelope.payload as Record<string, unknown>;
+    payload.atomic = true;
+    payload.transaction_state = "committed";
+    const step = (payload.steps as Array<Record<string, unknown>>)[0];
+    if (step === undefined) throw new Error("missing cancelled batch step");
+    (step.error as Record<string, unknown>).effect_state = "committed";
+
+    expect(validateRbpEnvelope(envelope)).toBe(true);
+
+    payload.transaction_state = "indeterminate";
+    expect(validateRbpEnvelope(envelope)).toBe(false);
+  });
+
   it("rejects duplicate invocation ids in batch requests and results", () => {
     const request = clone(positiveByName.get("invoke_batch"));
     expect(request).toBeDefined();

@@ -203,10 +203,25 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
   const errors = duplicateInvocationIdErrors(payload.steps, "/payload/steps");
   const firstNonSuccess = payload.steps.findIndex((step) => step.status !== "completed");
   const expectedFailureIndex = firstNonSuccess === -1 ? null : firstNonSuccess;
-  const allowsMultipleNonSuccessSteps =
+  const allowsAllReadMissingCarrierFailures =
     payload.atomic &&
-    payload.status === "indeterminate" &&
-    payload.transaction_state === "indeterminate";
+    payload.status === "failed" &&
+    payload.transaction_state === "rolled_back" &&
+    payload.steps.length > 0 &&
+    payload.steps.every((step) => {
+      const error = step.error;
+      return step.status === "failed" &&
+        error?.fault_class === "environment" &&
+        error.retryable === true &&
+        error.outcome === "known" &&
+        error.verification_required === false;
+    });
+  const allowsMultipleNonSuccessSteps =
+    allowsAllReadMissingCarrierFailures || (
+      payload.atomic &&
+      payload.status === "indeterminate" &&
+      payload.transaction_state === "indeterminate"
+    );
 
   for (const [position, step] of payload.steps.entries()) {
     const stepRecord = step as BatchResult["steps"][number] & {
@@ -343,8 +358,25 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
     );
   }
 
-  const expectedStatus =
-    firstNonSuccess === -1 ? "completed" : payload.steps[firstNonSuccess]?.status;
+  const firstIndeterminate = payload.steps.findIndex((step) => step.status === "indeterminate");
+  const hasExactUnknownCarrierReadPrefix =
+    payload.atomic &&
+    payload.status === "indeterminate" &&
+    payload.transaction_state === "indeterminate" &&
+    firstNonSuccess >= 0 &&
+    firstIndeterminate > firstNonSuccess &&
+    payload.steps.slice(firstNonSuccess, firstIndeterminate).every((step) =>
+      step.status === "failed" &&
+      step.error.fault_class === "environment" &&
+      step.error.retryable === true &&
+      step.error.outcome === "known" &&
+      step.error.verification_required === false
+    );
+  const expectedStatus = hasExactUnknownCarrierReadPrefix
+    ? "indeterminate"
+    : firstNonSuccess === -1
+      ? "completed"
+      : payload.steps[firstNonSuccess]?.status;
   if (payload.status !== expectedStatus) {
     errors.push(
       semanticError(
@@ -354,18 +386,20 @@ function batchResultErrors(payload: BatchResult): ErrorObject[] {
     );
   }
 
-  const expectedTransactionState = !payload.atomic
-    ? "not_applicable"
+  const expectedTransactionStates = !payload.atomic
+    ? ["not_applicable"]
     : payload.status === "completed"
-      ? "committed"
+      ? ["committed"]
       : payload.status === "indeterminate"
-        ? "indeterminate"
-        : "rolled_back";
-  if (payload.transaction_state !== expectedTransactionState) {
+        ? ["indeterminate"]
+        : payload.status === "cancelled"
+          ? ["committed", "rolled_back"]
+          : ["rolled_back"];
+  if (!expectedTransactionStates.includes(payload.transaction_state)) {
     errors.push(
       semanticError(
         "/payload/transaction_state",
-        `atomic:${String(payload.atomic)} status:${payload.status} requires transaction_state:${expectedTransactionState}`,
+        `atomic:${String(payload.atomic)} status:${payload.status} requires transaction_state:${expectedTransactionStates.join("|")}`,
       ),
     );
   }

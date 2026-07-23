@@ -52,14 +52,18 @@
               "effect": "read_only",
               "transactionPolicy": "none",
               "rollbackDisposition": "discard_result_on_batch_rollback",
-              "parameterProfile": "ordinary_v1"
+              "parameterProfile": "ordinary_v1",
+              "resultDelivery": "inline_only",
+              "maxInlineResultBytes": 8388608
             },
             {
               "method": "delete_review_view",
               "effect": "model_transaction",
               "transactionPolicy": "nested_transaction_required",
               "rollbackDisposition": "transaction_group_rollback",
-              "parameterProfile": "delete_review_view_commit_v1"
+              "parameterProfile": "delete_review_view_commit_v1",
+              "resultDelivery": "inline_only",
+              "maxInlineResultBytes": 8388608
             }
           ]
         },

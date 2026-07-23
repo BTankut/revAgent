@@ -480,6 +480,37 @@
       }
     },
     {
+      "name": "batch_inline_contract_violation_result",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "status": "failed",
+        "transaction_state": "not_applicable",
+        "failed_step_index": 0,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "effect_state": "committed",
+            "error": {
+              "retryable": false,
+              "fault_class": "protocol",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "inline-only result contract was violated after a known commit"
+            },
+            "replayed": false
+          }
+        ],
+        "replayed": false
+      }
+    },
+    {
       "name": "batch_cancelled_result",
       "scope": "data",
       "type": "result",
@@ -616,6 +647,55 @@
           }
         ],
         "replayed": false
+      }
+    },
+    {
+      "name": "atomic_indeterminate_read_result_unavailable",
+      "scope": "data",
+      "type": "result",
+      "payload": {
+        "kind": "batch",
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "status": "indeterminate",
+        "transaction_state": "indeterminate",
+        "failed_step_index": 0,
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": true,
+              "fault_class": "environment",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "message": "atomic batch read result is unavailable because the terminal carrier is unknown"
+            },
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "mutation_scope": {
+                "kind": "document",
+                "document_id": "doc-01"
+              },
+              "message": "verification required"
+            },
+            "replayed": true
+          }
+        ],
+        "replayed": true
       }
     },
     {
@@ -810,6 +890,13 @@
       "base": "hello_ack",
       "patch": {
         "v": 1
+      }
+    },
+    {
+      "name": "hello_ack_rejects_nonstandard_heartbeat_interval",
+      "base": "hello_ack",
+      "payload_patch": {
+        "heartbeat_interval_ms": 65000
       }
     },
     {
@@ -1056,6 +1143,136 @@
       "base": "batch_indeterminate_result",
       "payload_patch": {
         "transaction_state": "committed"
+      }
+    },
+    {
+      "name": "atomic_indeterminate_read_prefix_requires_environment",
+      "base": "atomic_indeterminate_read_result_unavailable",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "message": "a general failure cannot precede the aggregate indeterminate mutation"
+            },
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "indeterminate",
+            "error": {
+              "retryable": false,
+              "fault_class": "journal_indeterminate",
+              "outcome": "indeterminate",
+              "verification_required": true,
+              "replayed": true,
+              "verification_hold_id": "vh:3333333333333333333333333333333333333333333333333333333333333333",
+              "mutation_scope": {
+                "kind": "document",
+                "document_id": "doc-01"
+              },
+              "message": "verification required"
+            },
+            "replayed": true
+          }
+        ]
+      }
+    },
+    {
+      "name": "atomic_indeterminate_read_prefix_requires_unknown_mutation",
+      "base": "atomic_indeterminate_read_result_unavailable",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "error": {
+              "retryable": true,
+              "fault_class": "environment",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": true,
+              "message": "atomic batch read result is unavailable because the terminal carrier is unknown"
+            },
+            "replayed": true
+          },
+          {
+            "index": 1,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "status": "not_started",
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_effect_state_rejects_unknown_value",
+      "base": "batch_inline_contract_violation_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "effect_state": "unknown",
+            "error": {
+              "retryable": false,
+              "fault_class": "protocol",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "bad effect state"
+            },
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_effect_state_requires_protocol_fault",
+      "base": "batch_inline_contract_violation_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "effect_state": "committed",
+            "error": {
+              "retryable": false,
+              "fault_class": "revit_api",
+              "outcome": "known",
+              "verification_required": false,
+              "replayed": false,
+              "message": "wrong fault class"
+            },
+            "replayed": false
+          }
+        ]
+      }
+    },
+    {
+      "name": "batch_effect_state_requires_error",
+      "base": "batch_inline_contract_violation_result",
+      "payload_patch": {
+        "steps": [
+          {
+            "index": 0,
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "status": "failed",
+            "effect_state": "committed",
+            "replayed": false
+          }
+        ]
       }
     },
     {

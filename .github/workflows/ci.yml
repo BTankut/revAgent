@@ -70,7 +70,12 @@ jobs:
           cache-dependency-path: package-lock.json
 
       - name: Install migration workspace dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
+
+      - name: Build and verify allowlisted native migration dependency
+        run: |
+          npm rebuild better-sqlite3 --ignore-scripts=false --foreground-scripts
+          npm run verify:native-dependencies
 
       - name: Lint migration packages
         run: npm run lint

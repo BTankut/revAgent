@@ -9,6 +9,7 @@
       "batchDigest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
       "atomic": true,
       "rollbackPolicy": "rollback_on_non_success",
+      "maxAggregateResultBytes": 33554432,
       "steps": [
         {
           "index": 0,

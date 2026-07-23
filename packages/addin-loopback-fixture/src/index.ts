@@ -20,6 +20,7 @@ export { AddinLoopbackFixture } from "./fixture.js";
 export {
   BATCHABLE_DESCRIPTORS,
   BATCHABLE_METHODS,
+  BATCH_MAX_INLINE_RESULT_BYTES,
   ContractValidationError,
   LoopbackContractValidator,
 } from "./schemaValidation.js";

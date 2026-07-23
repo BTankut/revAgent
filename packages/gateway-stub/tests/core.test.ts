@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { access, writeFile } from "node:fs/promises";
+import { access, readFile, writeFile } from "node:fs/promises";
 
 import {
   createReceivedJournalRecord,
@@ -18,6 +18,7 @@ import {
   RecoveryHoldConflictError,
   WindowViolationError,
 } from "../src/core.js";
+import type { StaticTokenTable } from "../src/types.js";
 import {
   controlEnvelope,
   DIGEST,
@@ -43,6 +44,11 @@ async function connectedCore(
     connectionCapabilities?: readonly string[];
     sessionCapabilities?: readonly string[];
     registration?: SessionRegister;
+    tokenTable?: StaticTokenTable;
+    stateStoreTestHooks?: {
+      beforeCanonicalReplace?: () => void | Promise<void>;
+      afterCanonicalReplace?: () => void | Promise<void>;
+    };
   } = {},
 ): Promise<{
   core: GatewayStubCore;
@@ -54,7 +60,10 @@ async function connectedCore(
   const path = await statePath(name);
   const core = await GatewayStubCore.create({
     statePath: path,
-    tokenTable,
+    tokenTable: options.tokenTable ?? tokenTable,
+    ...(options.stateStoreTestHooks === undefined
+      ? {}
+      : { stateStoreTestHooks: options.stateStoreTestHooks }),
     clock,
     ...(options.connectionCapabilities === undefined
       ? {}
@@ -91,6 +100,132 @@ async function connectedCore(
 }
 
 describe("Gateway stub shared FSM authority", () => {
+  it("adopts post-rename revoke authority and poisons future updates when durability confirmation fails", async () => {
+    let injectPostRenameFailure = false;
+    const fixture = await connectedCore("post-rename-revoke", undefined, {
+      stateStoreTestHooks: {
+        afterCanonicalReplace: () => {
+          if (injectPostRenameFailure) throw new Error("injected directory fsync failure");
+        },
+      },
+    });
+    injectPostRenameFailure = true;
+    const unregister = controlEnvelope("session_unregister", {
+      rsid: fixture.rsid,
+      reason: "operator_requested",
+    }, 390);
+
+    await expect(fixture.core.receiveFrame(
+      fixture.transport.connectionId,
+      encoder.encode(JSON.stringify(unregister)),
+    )).rejects.toMatchObject({
+      name: "GatewayStatePersistenceError",
+      canonicalReplaced: true,
+    });
+    expect(fixture.core.snapshot().sessions[fixture.rsid]).toMatchObject({
+      revoked: true,
+      lifecycle: { phase: "unregistered", unregisterReason: "operator_requested" },
+    });
+    const canonical = JSON.parse(await readFile(fixture.statePath, "utf8")) as {
+      sessions: Record<string, { revoked: boolean }>;
+    };
+    expect(canonical.sessions[fixture.rsid]?.revoked).toBe(true);
+    await expect(fixture.core.dispatchInvoke({
+      rsid: fixture.rsid,
+      payload: readInvoke(uuid7(391)),
+    })).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+    await expect(fixture.core.receiveFrame(
+      fixture.transport.connectionId,
+      encoder.encode(JSON.stringify(controlEnvelope("manifest_check", {
+        bridge_version: "0.1.0-test",
+        addin_versions: ["0.1.0-test"],
+        channel: "test",
+        highest_accepted_release_sequence: 0,
+      }, 392))),
+    )).rejects.toMatchObject({
+      name: "GatewayStatePersistenceError",
+      canonicalReplaced: true,
+    });
+
+    await expect(fixture.core.close()).rejects.toThrow();
+  });
+
+  it("accepts direct same-owner unregister on a fresh binding and rejects unsafe replays with 4403", async () => {
+    const otherToken = "other-device-token";
+    const tokens: StaticTokenTable = {
+      ...tokenTable,
+      [otherToken]: {
+        ...tokenTable[TOKEN]!,
+        deviceId: "device-02",
+        tenantId: "tenant-02",
+        userId: "user-02",
+        seatId: "seat-02",
+        machineFingerprint: `sha256:${"9".repeat(64)}`,
+      },
+    };
+    const fixture = await connectedCore("fresh-binding-unregister", { nowMs: () => Date.parse(NOW) }, {
+      tokenTable: tokens,
+    });
+    try {
+      const sameOwner = fixture.core.authenticate(TOKEN);
+      const freshConnectionId = await fixture.core.allocateConnectionId(sameOwner);
+      const freshTransport = new MemoryTransport(freshConnectionId, "wss", sameOwner);
+      fixture.core.attachConnection(freshTransport);
+      await fixture.core.acceptHello(freshConnectionId, hello(401));
+      fixture.core.activateConnection(freshConnectionId);
+      const unregister = controlEnvelope("session_unregister", {
+        rsid: fixture.rsid,
+        reason: "operator_requested",
+      }, 402);
+
+      await expect(fixture.core.receiveFrame(
+        freshConnectionId,
+        encoder.encode(JSON.stringify(unregister)),
+      )).resolves.toMatchObject({ outcome: "delivered" });
+      expect(fixture.core.snapshot().sessions[fixture.rsid]).toMatchObject({
+        revoked: true,
+        lifecycle: { phase: "unregistered", unregisterReason: "operator_requested" },
+      });
+      await expect(fixture.core.receiveFrame(
+        freshConnectionId,
+        encoder.encode(JSON.stringify({ ...unregister, id: uuid7(403) })),
+      )).resolves.toMatchObject({ outcome: "delivered" });
+
+      await expect(fixture.core.receiveFrame(
+        freshConnectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_unregister", {
+          rsid: fixture.rsid,
+          reason: "bridge_shutdown",
+        }, 404))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+      await expect(fixture.core.receiveFrame(
+        freshConnectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_unregister", {
+          rsid: uuid7(405),
+          reason: "operator_requested",
+        }, 406))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      const otherOwner = fixture.core.authenticate(otherToken);
+      const otherConnectionId = await fixture.core.allocateConnectionId(otherOwner);
+      const otherTransport = new MemoryTransport(otherConnectionId, "wss", otherOwner);
+      fixture.core.attachConnection(otherTransport);
+      const otherHello = hello(407);
+      otherHello.payload.device_id = "device-02";
+      await fixture.core.acceptHello(otherConnectionId, otherHello);
+      fixture.core.activateConnection(otherConnectionId);
+      await expect(fixture.core.receiveFrame(
+        otherConnectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_unregister", {
+          rsid: fixture.rsid,
+          reason: "operator_requested",
+        }, 408))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+    } finally {
+      await fixture.core.close();
+    }
+  });
+
   it("projects the T2 connection heartbeat transitions into degraded and disconnected session state", async () => {
     let now = Date.parse(NOW);
     const fixture = await connectedCore("liveness", { nowMs: () => now });

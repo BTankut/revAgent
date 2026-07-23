@@ -11,7 +11,8 @@
     "check:generated": "npm run check:generated --workspace @revagent/protocol",
     "lint": "npm run lint --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
-    "test": "npm run check:generated && npm run test --workspaces --if-present"
+    "test": "npm run check:generated && npm run test --workspaces --if-present",
+    "verify:native-dependencies": "node scripts/verify-migration-native-dependencies.mjs"
   },
   "engines": {
     "node": ">=20"

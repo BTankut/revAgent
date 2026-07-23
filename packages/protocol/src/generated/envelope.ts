@@ -449,8 +449,13 @@ export type BatchResult = BatchResultBase &
     | { atomic: true; status: "completed"; transaction_state: "committed" }
     | {
         atomic: true;
-        status: "guarded" | "failed" | "cancelled";
+        status: "guarded" | "failed";
         transaction_state: "rolled_back";
+      }
+    | {
+        atomic: true;
+        status: "cancelled";
+        transaction_state: "committed" | "rolled_back";
       }
     | { atomic: true; status: "indeterminate"; transaction_state: "indeterminate" }
   );

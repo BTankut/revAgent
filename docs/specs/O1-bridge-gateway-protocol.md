@@ -210,6 +210,10 @@ delay reconnect as specified in Section 6.3.
 ## 5. Envelope
 
 One RBP message is one JSON object. Under WSS, one object occupies one text frame.
+The Gateway serializes accepted WSS frames in receive order. A malformed or oversized frame and the
+WebSocket implementation's corresponding `error` event are contained to that connection, which is closed
+and durably disconnected without terminating the Gateway process; repeated close/error notifications are
+idempotent.
 
 ```json
 {
@@ -366,6 +370,29 @@ dispatch. Pending invocations end with `addin_unreachable` only when non-executi
 dispatched mutation follows the indeterminate rules below; unregistration never fabricates a known failure or
 clears a recovery hold.
 
+The Gateway persists the revoked session record, including its authenticated device, tenant, user, seat, and
+`reason`. A `session_unregister` from a later active connection owned by that same authenticated
+device/tenant/user/seat revokes a still-active session even when it remains bound to the prior connection; an
+exact replay is an idempotent no-op even though the `rsid` is no longer bound and its resume token is revoked.
+Unknown sessions, cross-owner replays, and a replay whose `reason` differs from the persisted revocation fail
+with `4403`. A bridge with a durable pending-unregister tombstone MUST replay
+`session_unregister` directly on each fresh binding; it MUST NOT resume the revoked session first.
+
+The bridge revokes local dispatch as soon as it durably records unregister intent. It MUST NOT mutate local
+lifecycle or outbound-queue authority before that journal transaction commits. If a post-commit durability
+operation reports an error, the bridge re-reads the exact tombstone: an observed matching intent revokes local
+authority fail-closed without sending, while an absent or conflicting intent leaves local state unchanged and
+the original error is returned. It retains the tombstone across send failure, reconnect, and restart. The
+tombstoned `rsid` is excluded from a connection heartbeat only after its `session_unregister` send has
+completed on that connection.
+
+The durable tombstone has `pending` and `confirmed` phases. A `heartbeat_ack` for a subsequent heartbeat
+processed in receive order atomically changes it to `confirmed`, queues artifact expiry, and removes retained
+session sequence/outbox state; successful transport send alone is not processing evidence. The live add-in
+session is then removed before fallible spool cleanup. The confirmed tombstone remains until cleanup succeeds,
+so a crash or cleanup exception cannot make the revoked session resumable. Restart retries confirmed cleanup
+idempotently and deletes the tombstone only as the final completion step.
+
 ### 6.2 Resume
 
 On reconnect, the bridge sends one control message per resumable session:
@@ -400,7 +427,17 @@ retransmit unacknowledged data messages in ascending sequence order under Sectio
 - Pending Gateway invocations are held for 10 minutes after disconnect.
 - An `rsid` remains resumable for 24 hours unless explicitly unregistered or revoked.
 - Resume state is durable Gateway state; a Gateway process restart MUST NOT erase it.
+- If atomic replacement of Gateway state reaches canonical rename but subsequent directory durability
+  confirmation fails, the renamed draft becomes live fail-closed authority and the store is poisoned: the
+  original error is returned and later dispatch/state updates are rejected until restart/recovery. A failure
+  before canonical replacement MUST leave both live and canonical authority unchanged.
 - Redelivered invokes always pass through the bridge journal rules in Section 12.
+
+A fresh `hello`/`hello_ack` binding does not inherit dispatch or heartbeat authority for a durable bridge
+session. The bridge keeps each such session non-dispatchable and omits connection heartbeats until its
+`resume_ack` is received. Test fixtures MAY opt into an explicit assume-bound mode, but production defaults
+MUST fail closed. Pending-unregister tombstones use the direct idempotent replay rule in Section 6.1 instead of
+resume.
 
 After the 10-minute pending window, outcome handling depends on mutation risk:
 
@@ -673,6 +710,24 @@ This acknowledgement participates in Section 5.2 but does not acknowledge the re
 bridge receives no `heartbeat_ack` for 10 seconds after a heartbeat, it closes and reconnects using Section
 4.3.
 
+Gateway processing of connection envelopes is receive-order serialized. Consequently, a `heartbeat_ack`
+proves processing of lifecycle controls ordered before that heartbeat on the same binding. Because the ack
+does not echo a heartbeat id, a bridge finalizing unregister tombstones MUST use one current-connection fence
+snapshot at a time: a stale or unsolicited `heartbeat_ack` cannot finalize it, the returned `acks` set must
+exactly match the non-tombstoned sessions in the fenced heartbeat, and all data acknowledgements must validate
+before tombstone deletion.
+
+The bridge MUST keep heartbeats globally single-flight: while one heartbeat awaits `heartbeat_ack`, it MUST
+NOT emit another heartbeat. It installs the acknowledgement deadline, exact active-session set, and any
+unregister-confirmation tombstones before handing the heartbeat to the transport. A synchronous or re-entrant
+`heartbeat_ack` delivered while transport send is still completing consumes that flight; send completion MUST
+NOT re-arm it. The flight is bound to the current transport object and connection generation; an ACK observed
+from an older binding cannot consume a newer flight. ACK handling synchronously captures and consumes one
+immutable flight snapshot before any outbound flush may yield, and only that snapshot's tombstones may be
+confirmed. While that ACK handler is active, no new heartbeat flight may start. An unsolicited current-binding
+ACK may retain backward-compatible cumulative-data/liveness behavior but has no flight confirmations and can
+never finalize a tombstone. A failed send rolls back only the still-current flight before reconnect/retry.
+
 The bridge MAY poll local `mcp_status` to populate the heartbeat snapshot. It MUST NOT issue `mcp_status` before every invocation. After a failed or timed-out invocation, it MAY consult `mcp_status` to distinguish an active Revit task from an unreachable add-in and enrich the resulting structured fault.
 
 ## 10. Invocation and authoritative serialization
@@ -819,12 +874,14 @@ Rules:
 - Every step carries the same server-authored policy block required by an ordinary invocation. A batch MUST NOT combine a preview and its approved commit; all required confirmations must already bind to the exact step parameters before batching.
 - `params`, `params_digest`, and `mutation_scope` are REQUIRED on every step; `params` MUST NOT be omitted or
   replaced by its digest. The bridge recomputes Section 12.1's digest over the present functional `params` and
-  rejects any mismatch before journal or add-in dispatch. `mutation_scope` is `null` exactly for a read step.
+  rejects any mismatch after durable RBP transport-sequence acceptance/ACK advancement, but before an
+  invocation journal row or add-in dispatch. `mutation_scope` is `null` exactly for a read step.
 - Top-level `recovery_clearances` is REQUIRED and may be empty. Correlated verification reads MUST be sent as
   individual `invoke` messages and MUST NOT be hidden inside a batch. The Gateway and bridge check every step
   scope plus all supplied clearances against Section 6.2.1 before any step is dispatched.
 - `batch_digest` is REQUIRED and is computed over the unambiguous semantic representation below. The bridge
-  recomputes it and rejects a mismatch before creating any step row:
+  recomputes it after durable RBP transport-sequence acceptance/ACK advancement and rejects a mismatch before
+  creating any step journal row or contacting the add-in:
 
   ```text
   batch_digest_material = {
@@ -852,6 +909,10 @@ Rules:
   never allows the next step to run merely because it arrived in a `result` rather than an `error`.
 - An `atomic:true` step MUST be in the exact session-local Appendix A.2 descriptor set. Raw dynamic code,
   `execute_batch`, `mcp_status`, and unsupported UI-interactive commands MUST NOT be nested as atomic steps.
+- Every `invoke_batch` step, including `atomic:false` fan-out, MUST be present in the probed Appendix A.2
+  descriptor set with `resultDelivery:"inline_only"`; otherwise the bridge returns `unsupported` before
+  dispatching any step. Nested batch steps never use Section 13 chunk or artifact carriers. A conforming
+  add-in therefore keeps each batch result JSON-inline and path-free within the negotiated result limit.
 - The pilot artifact includes the adapted add-in and MUST demonstrate the `batch_atomic` path before cutover.
 
 ### 11.1 Batch result carrier
@@ -919,8 +980,34 @@ are all REQUIRED. For `journal_indeterminate`, `verification_hold_id` and `mutat
 `outcome` is `indeterminate` and `verification_required` is true. A nested error MUST NOT rely on batch status
 to supply or infer any of those fields.
 
+Batch `status` normally matches the first non-success step. There is one narrow aggregate exception for
+`atomic:true`: when dispatch may have started but the complete add-in terminal carrier is unavailable, an
+unrecoverable read-only step result is `failed` with retryable `environment`, `outcome:"known"`, and
+`verification_required:false`; it MUST NOT be fabricated as `completed`. Every possibly executed mutating
+step remains `journal_indeterminate`. The aggregate batch and transaction stay `indeterminate` whenever such
+a mutating step exists, while `failed_step_index` identifies the earliest unavailable read or indeterminate
+mutation. No other earlier failure class may be hidden behind aggregate `status:"indeterminate"`.
+If the same missing carrier belongs to an all-read atomic batch, every unavailable read is returned as that
+known `environment` failure; the aggregate uses `status:"failed"`, `transaction_state:"rolled_back"`, and
+`failed_step_index:0`. This is the only `failed|rolled_back` atomic carrier that may contain more than one
+non-success step instead of a `not_started` suffix, because fabricating a result or non-execution claim for
+any possibly executed read is forbidden.
+
+If an attested inline-only command nevertheless returns artifact-shaped data or exceeds the negotiated inline
+result limit after dispatch, the bridge MUST NOT create an unreachable spool carrier. The affected step stops
+the remaining `atomic:false` fan-out with `status:"failed"`, `fault_class:"protocol"`, and explicit
+`effect_state:"read_only"|"committed"|"not_committed"`. When the add-in reported a completed mutation, the
+terminal delivery-fault row uses `effect_state:"committed"` rather than becoming a normal replayable success,
+so a crash cannot run later batch successors. The delivery fault never discards the known model effect. The
+raw artifact/path payload is neither journaled nor placed on the wire.
+
 For `atomic:true`, success requires `transaction_state:"committed"`. A clean `TransactionGroup` rollback
-uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. If the add-in or bridge dies
+uses `transaction_state:"rolled_back"`; no step may claim a committed mutation. Cancellation observed after
+the one-frame atomic dispatch cannot rewrite the add-in's known transaction result: the user-visible batch and
+abandoned step use `status:"cancelled"`, while `transaction_state` remains `committed` or `rolled_back` exactly
+as reported by the add-in. That cancelled step carries `effect_state:"committed"|"not_committed"` for a
+mutation, or `effect_state:"read_only"` for a read, so cancellation never hides a known model effect. If the
+add-in or bridge dies
 after atomic dispatch without a durable terminal batch outcome, the whole batch uses
 `status:"indeterminate"`, `transaction_state:"indeterminate"`, and every possibly executed mutating step is
 indeterminate. `replayed:true` at batch level means that this delivery executed no add-in step.
@@ -1038,6 +1125,9 @@ all possibly mutating steps indeterminate; no individual step is retried. One Se
 per distinct conflicting mutation scope with the ordered possibly executed step keys as origins. Read-only
 verification of the intended postconditions is mandatory before another conflicting mutation, and
 inconclusive verification keeps every affected scope blocked until an operator-backed conclusive resolution.
+Any read result lost with that missing carrier is terminalized as the narrow known `environment` failure from
+Section 11.1, never as a synthetic success. On restart recovery, the resulting batch and all returned terminal
+steps use `replayed:true` because the recovery delivery executes no add-in step.
 
 ## 13. Partial results, progress, and backpressure
 
@@ -1564,8 +1654,19 @@ cache without raising an ExternalEvent.
 | `rollbackPolicy` | `rollback_on_non_success` |
 | `batchableCommands` | The exact session-local executable subset, with one unique descriptor per method. |
 
+Every command descriptor also carries `resultDelivery:"inline_only"` and
+`maxInlineResultBytes:8388608`; together they attest before dispatch that the command never requires RBP
+chunk/artifact delivery and that its canonical result stays within 8 MiB when nested in a batch. For
+`atomic:false`, the bridge reserves bounded wrapper/error/not-started overhead, accounts the actual canonical
+result bytes after each step, and lowers the next step's allowed inline bytes to the remaining negotiated
+aggregate budget. It does not sum theoretical per-step maxima into an artificial batch-length limit. A
+post-dispatch per-step or remaining-aggregate cap violation uses the delivery-fault/effect-state rule in
+Section 11.1 and stops all successors. For `atomic:true`, Appendix A.4 enforces both per-step and tentative
+aggregate limits before `TransactionGroup.Assimilate()`.
+
 Each `batchableCommands[]` descriptor is
-`{method,effect,transactionPolicy,rollbackDisposition,parameterProfile}`. The hard v1 eligible set is:
+`{method,effect,transactionPolicy,rollbackDisposition,parameterProfile,resultDelivery,maxInlineResultBytes}`
+with REQUIRED `resultDelivery:"inline_only"` and `maxInlineResultBytes:8388608`. The hard v1 eligible set is:
 
 ```text
 get_current_view_elements, get_current_view_info, get_selected_elements, list_open_views,
@@ -1629,7 +1730,9 @@ for a missing or invalid capability.
 `execute_batch` exists only for RBP `invoke_batch` with `atomic:true` and a granted `batch_atomic` capability.
 The outer JSON-RPC `id` MUST equal `params.batchId`. Params contain exactly
 `batchContractVersion:1`, `batchId`, `batchDigest`, `atomic:true`,
-`rollbackPolicy:"rollback_on_non_success"`, and ordered `steps`.
+`rollbackPolicy:"rollback_on_non_success"`, `maxAggregateResultBytes`, and ordered `steps`.
+`maxAggregateResultBytes` MUST equal the connection-negotiated RBP `max_result_bytes` and is the authoritative
+aggregate BOM-free UTF-8 JSON-RPC response cap for this dispatch.
 
 Each step contains `{index,invocationId,method,params,paramsDigest,effect}`. Indices are contiguous from zero,
 invocation ids are unique, and each method/effect pair MUST match the descriptor in the most recent successful
@@ -1644,7 +1747,7 @@ method-specific fields, but the following exact reserved-name set is rejected be
 `parentTaskName`, `parentTaskId`, `suppressTaskStatusWindow`, `display`, `invocation_id`, `batch_id`,
 `batch_digest`, `params_digest`, `mutating`, `mutation_scope`, `policy`, `verification`,
 `recovery_clearances`, `timeout_ms`, `batchContractVersion`, `batchId`, `batchDigest`, `invocationId`,
-`paramsDigest`, `effect`, `atomic`, `rollbackPolicy`. These are connection, timeout, response-mode,
+`paramsDigest`, `effect`, `atomic`, `rollbackPolicy`, `maxAggregateResultBytes`. These are connection, timeout, response-mode,
 display/audit, RBP, or add-in batch-control fields; rejecting these exact names MUST NOT close the params
 object to future functional tool parameters. The batch handler invokes the extracted command seam directly
 on the current Revit API thread; it MUST NOT raise or wait for a nested `ExternalEvent`.
@@ -1653,7 +1756,10 @@ The add-in validates the complete request before Revit execution, then raises ex
 the Revit API thread it opens one `TransactionGroup`, executes the advertised command seams directly in input
 order, and never raises/waits for a nested ExternalEvent. After each normalized step result, it constructs the
 exact tentative success envelope for that prefix plus the minimal `not_started` suffix and counts the entire
-BOM-free UTF-8 JSON-RPC payload. If the projection exceeds `maxResponsePayloadBytes`, that current step becomes
+BOM-free UTF-8 JSON-RPC payload. Before making that projection, each completed step result MUST satisfy its
+advertised `resultDelivery:"inline_only"` and `maxInlineResultBytes:8388608`; artifact-shaped or oversized
+step output becomes `invalid_result` and triggers rollback without exposing the raw result. If the projection
+exceeds `maxAggregateResultBytes`, that current step becomes
 `failed` with `error.code:"response_payload_limit"`, the measured cap and tentative byte count, and the group
 rolls back before `Assimilate()`. Only an all-success envelope at or below the cap may assimilate. The first
 guarded result, other failure-shaped result, or exception likewise stops execution and rolls the whole group
@@ -1677,8 +1783,8 @@ read result obtained inside the transient group has `effectState:"discarded"`. N
 omits `result` and carries `resultSuppressed:"batch_rolled_back"`. Successors use
 `executionState/effectState:"not_started"` and have no result, error, guard, or suppression field. A guarded
 step has a normalized `guardedReason`; a failed or indeterminate step has bounded structured `error` data.
-`response_payload_limit` additionally carries `maxResponsePayloadBytes:33554432` and
-`tentativeResponsePayloadBytes >= 33554433`; it is a clean failed-step rollback when
+`response_payload_limit` additionally carries `maxResponsePayloadBytes:<maxAggregateResultBytes>` and
+`tentativeResponsePayloadBytes > maxResponsePayloadBytes`; it is a clean failed-step rollback when
 `rollback.succeeded:true`, never a post-commit synthetic failure.
 If rollback itself fails, every possibly executed mutation uses `effectState:"indeterminate"`, every read
 uses `effectState:"discarded"`, and both use `resultSuppressed:"batch_indeterminate"`; no step may retain a

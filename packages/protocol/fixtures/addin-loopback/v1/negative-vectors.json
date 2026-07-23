@@ -163,6 +163,17 @@
     }
   },
   {
+    "name": "execute_batch rejects nested aggregate result cap",
+    "base": "batchCommit.request",
+    "schema": "execute-batch",
+    "validation": "schema",
+    "mutation": {
+      "operation": "add",
+      "path": "/params/steps/0/params/maxAggregateResultBytes",
+      "value": 1048576
+    }
+  },
+  {
     "name": "execute_batch rejects a non-ThreeD viewType with viewId",
     "base": "batchCommit.request",
     "schema": "execute-batch",

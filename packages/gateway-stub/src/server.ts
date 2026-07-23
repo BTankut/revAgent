@@ -1279,8 +1279,11 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
         }
         armConnectionDeadline(connectionId, helloTimeoutMs, "hello_timeout", 4400);
         let firstFrame = true;
+        let receiveFailed = false;
+        let receiveChain: Promise<void> = Promise.resolve();
         websocket.on("message", (data, isBinary) => {
-          observeBackgroundTask((async () => {
+          const received = receiveChain.then(async () => {
+            if (receiveFailed) return;
             if (isBinary) {
               throw new GatewayStubFault("RBP WSS accepts text frames only", "protocol", 4400);
             }
@@ -1312,7 +1315,8 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
                 }
               }
             }
-          })().catch(async (error: unknown) => {
+          }).catch(async (error: unknown) => {
+            receiveFailed = true;
             const fault = error instanceof GatewayStubFault
               ? error
               : new GatewayStubFault(error instanceof Error ? error.message : "protocol failure", "protocol", 4400);
@@ -1325,7 +1329,19 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
                 })
               : fault.message;
             await closeConnection(connectionId, closeReason, fault.closeCode);
-          }));
+          });
+          receiveChain = received;
+          observeBackgroundTask(received);
+        });
+        websocket.on("error", (error: Error & { code?: string }) => {
+          receiveFailed = true;
+          const payloadTooLarge = error.code === "WS_ERR_UNSUPPORTED_MESSAGE_LENGTH" ||
+            /payload size|message too big/iu.test(error.message);
+          observeConnectionClose(closeConnection(
+            connectionId,
+            payloadTooLarge ? "wss_payload_too_large" : "wss_transport_error",
+            payloadTooLarge ? 1009 : 4400,
+          ));
         });
         websocket.once("close", () => {
           if (!closed) observeConnectionClose(closeConnection(connectionId, "wss_closed"));
