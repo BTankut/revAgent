@@ -156,7 +156,7 @@ rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --re
 rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <run-1-plan.json> --plan-2 <run-2-plan.json> --plan-3 <run-3-plan.json> --repo-root <path> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]
 rbp-conformance junit <run-report.json> <junit.xml>
-rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]
+rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> --output <noncanonical-aggregate.json> --junit-output <noncanonical-junit.xml> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
 rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]
@@ -234,7 +234,11 @@ Never prepare r1, r2, r3, or the soak into a shared
 gates an earlier retained report. The soak uses its own run id and plan even
 though its plan sequence is `1`. Replace `<sha12>` only after locking the clean
 candidate. Create a fresh evidence-set directory instead of reusing a failed
-set.
+set. At final-run entry, an existing artifact root may contain only the four
+selected physical plan files and the directories needed to reach them. Any
+other file, directory, old plan, prior run/soak/aggregate output, symlink,
+junction, or reparse entry rejects the set. When all four plans are outside the
+artifact root, that root must be absent or empty.
 
 The wrapper refuses npm lifecycle invocation, caller-supplied
 `--git-executable`, hostile in-process resolution overrides, and a dirty Git
@@ -466,16 +470,16 @@ identities, bindings, and exact timestamps in addition to the retained report
 path and SHA-256. Pass validation reopens those three reports, verifies their
 hashes and artifacts, compares every embedded field and case status, rejects
 mixed stacks, and requires strictly ordered non-overlapping intervals.
-The non-authoritative `aggregate` audit command verifies all three retained source reports, writes
-the canonical aggregate JUnit file, binds its path/hash/size into the aggregate,
-and subjects the result to the same full retained-evidence validation before it
-writes the aggregate JSON. It accepts no output filename: `--artifact-root`
-selects the filesystem root (the current directory by default), and the command
-always derives both outputs as
+The non-authoritative `aggregate` audit command verifies all three retained
+source reports and deterministically reconstructs aggregate JSON/JUnit for
+inspection. It requires explicit `--output` and `--junit-output` files outside
+the canonical retained-evidence root. Both files are created exclusively and
+an existing destination is never truncated or replaced. The command cannot
+write either canonical final aggregate path, and its detached aggregate JSON
+fails canonical-location validation by design. Only `run-final-evidence` may
+create the retained
 `artifacts/conformance/rbp-v1/1.0/aggregate/junit.xml` and
-`artifacts/conformance/rbp-v1/1.0/aggregate/three-run-report.json`. The
-aggregate binds the latter as `reportPath`; validation rejects a copied report
-at any other location.
+`artifacts/conformance/rbp-v1/1.0/aggregate/three-run-report.json` pair.
 
 ## Reconnect and proxy-churn soak
 

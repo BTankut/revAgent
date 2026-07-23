@@ -49,6 +49,23 @@ const packageRoot = path.resolve(
 const repoRoot = path.resolve(packageRoot, "../..");
 let copiedCliRoot = "";
 
+function materializeAllowedFinalPlanFiles(
+  root: string,
+): [string, string, string, string] {
+  const planRoot = path.join(
+    root,
+    canonicalManifest.retainedEvidence.root,
+    "plans",
+    "candidate",
+  );
+  mkdirSync(planRoot, { recursive: true });
+  return ([1, 2, 3, 4] as const).map((index) => {
+    const planFile = path.join(planRoot, `plan-${String(index)}.json`);
+    writeFileSync(planFile, `{"plan":${String(index)}}\n`, "utf8");
+    return planFile;
+  }) as [string, string, string, string];
+}
+
 function compileCurrentController(): string {
   const protocolBuild = spawnSync(process.execPath, [
     path.join(repoRoot, "node_modules/typescript/lib/tsc.js"),
@@ -251,6 +268,25 @@ describe("final production CLI hardening", () => {
   });
 
   it.each([
+    "--plan-1",
+    "--plan-2",
+    "--plan-3",
+    "--soak-plan",
+    "--repo-root",
+    "--artifact-root",
+    "--expected-commit",
+    "--expected-tree",
+  ])("rejects duplicate authoritative CLI flag %s before evidence consumption", async (flag) => {
+    await expect(runFinalEvidenceAsyncCli([
+      "run-final-evidence",
+      flag,
+      "first-value",
+      flag,
+      "second-value",
+    ], repoRoot)).rejects.toThrow(/must be provided at most once/u);
+  });
+
+  it.each([
     [
       "run-id directory",
       (root: string) => path.join(
@@ -285,22 +321,132 @@ describe("final production CLI hardening", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-final-preexisting-"));
     const runIds = ["final-r1", "final-r2", "final-r3"] as const;
     try {
-      mkdirSync(path.join(
-        root,
-        canonicalManifest.retainedEvidence.root,
-        "plans",
-        "candidate",
-      ), { recursive: true });
+      const planFiles = materializeAllowedFinalPlanFiles(root);
       expect(() =>
-        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        assertNoPreexistingFinalEvidence(
+          root,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
         .not.toThrow();
 
       mkdirSync(target(root), { recursive: true });
       expect(() =>
-        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        assertNoPreexistingFinalEvidence(
+          root,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
         .toThrow(/use a fresh evidence set/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [
+      "an old run",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "runs",
+        "old-run",
+        "partial.json",
+      ),
+    ],
+    [
+      "an old soak",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "soak",
+        "one_hour",
+        "old-soak",
+        "partial.json",
+      ),
+    ],
+    [
+      "an unselected old plan",
+      (root: string) => path.join(
+        root,
+        canonicalManifest.retainedEvidence.root,
+        "plans",
+        "candidate",
+        "old-plan.json",
+      ),
+    ],
+    [
+      "an unrelated root file",
+      (root: string) => path.join(root, "unrelated.txt"),
+    ],
+  ])("rejects %s anywhere in the final artifact root", (_label, target) => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-final-unexpected-"));
+    const runIds = ["final-r1", "final-r2", "final-r3"] as const;
+    try {
+      const planFiles = materializeAllowedFinalPlanFiles(root);
+      const unexpected = target(root);
+      mkdirSync(path.dirname(unexpected), { recursive: true });
+      writeFileSync(unexpected, "stale\n", "utf8");
+      expect(() =>
+        assertNoPreexistingFinalEvidence(
+          root,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
+        .toThrow(/use a fresh evidence set/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("requires an empty or absent artifact root when all plans are outside it", () => {
+    const base = mkdtempSync(path.join(tmpdir(), "rbp-final-external-plans-"));
+    const artifactRoot = path.join(base, "evidence");
+    const externalPlanRoot = path.join(base, "plans");
+    const runIds = ["final-r1", "final-r2", "final-r3"] as const;
+    try {
+      mkdirSync(externalPlanRoot, { recursive: true });
+      const planFiles = ([1, 2, 3, 4] as const).map((index) => {
+        const planFile = path.join(
+          externalPlanRoot,
+          `plan-${String(index)}.json`,
+        );
+        writeFileSync(planFile, `{"plan":${String(index)}}\n`, "utf8");
+        return planFile;
+      }) as [string, string, string, string];
+      expect(() =>
+        assertNoPreexistingFinalEvidence(
+          artifactRoot,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
+        .not.toThrow();
+
+      mkdirSync(artifactRoot);
+      expect(() =>
+        assertNoPreexistingFinalEvidence(
+          artifactRoot,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
+        .not.toThrow();
+
+      writeFileSync(path.join(artifactRoot, "stale.txt"), "stale\n", "utf8");
+      expect(() =>
+        assertNoPreexistingFinalEvidence(
+          artifactRoot,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
+        .toThrow(/use a fresh evidence set/u);
+    } finally {
+      rmSync(base, { recursive: true, force: true });
     }
   });
 
@@ -309,6 +455,7 @@ describe("final production CLI hardening", () => {
     const outside = mkdtempSync(path.join(tmpdir(), "rbp-final-reparse-target-"));
     const runIds = ["final-r1", "final-r2", "final-r3"] as const;
     try {
+      const planFiles = materializeAllowedFinalPlanFiles(root);
       const runsRoot = path.join(
         root,
         canonicalManifest.retainedEvidence.root,
@@ -321,8 +468,54 @@ describe("final production CLI hardening", () => {
         process.platform === "win32" ? "junction" : "dir",
       );
       expect(() =>
-        assertNoPreexistingFinalEvidence(root, runIds, "final-soak"))
+        assertNoPreexistingFinalEvidence(
+          root,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
         .toThrow(/use a fresh evidence set/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a reparse ancestor even when it contains selected plans", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-final-plan-reparse-"));
+    const outside = mkdtempSync(
+      path.join(tmpdir(), "rbp-final-plan-reparse-target-"),
+    );
+    const runIds = ["final-r1", "final-r2", "final-r3"] as const;
+    try {
+      const outsidePlanRoot = path.join(outside, "candidate");
+      mkdirSync(outsidePlanRoot, { recursive: true });
+      const planFiles = ([1, 2, 3, 4] as const).map((index) => {
+        const target = path.join(
+          outsidePlanRoot,
+          `plan-${String(index)}.json`,
+        );
+        writeFileSync(target, `{"plan":${String(index)}}\n`, "utf8");
+        return path.join(
+          root,
+          "plans",
+          "candidate",
+          `plan-${String(index)}.json`,
+        );
+      }) as [string, string, string, string];
+      symlinkSync(
+        outside,
+        path.join(root, "plans"),
+        process.platform === "win32" ? "junction" : "dir",
+      );
+      expect(() =>
+        assertNoPreexistingFinalEvidence(
+          root,
+          runIds,
+          "final-soak",
+          planFiles,
+        ))
+        .toThrow(/reparse entry.*fresh evidence set/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
       rmSync(outside, { recursive: true, force: true });
