@@ -167,9 +167,13 @@ Do not assemble a production plan from an existing ignored `dist` tree. Every
 PASS-capable prepare, run, aggregate, and validation command begins in the
 tracked external launcher under the exact SystemRoot Windows PowerShell. That
 launcher removes Node and `ws` resolution overrides before the exact reviewed
-Node executable can load any JavaScript. Do not enter the canonical path
+Node executable can load any production JavaScript. It then issues one
+current-user-only, one-shot named-pipe receipt bound to the child PID, parent
+PID, exact argv, launcher/Node/entrypoint paths, and their SHA-256 identities.
+The tracked CLI bootstrap validates that receipt before importing the freshly
+built controller. Do not enter the canonical path
 through `npm run`, an npm lifecycle, a shell bin shim, the `rbp-conformance`
-bin, or a direct `$BoundNode $Cli` invocation:
+bin, or a direct Node-to-CLI invocation:
 
 ```powershell
 $RepoRoot = (Resolve-Path -LiteralPath '.').Path
@@ -182,7 +186,7 @@ $EvidenceRoot = 'C:\Users\BT\Projects\revAgent-freeze-evidence\rbp-v1.0-<sha12>-
 $PlanRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\plans\rbp-v1.0-<sha12>-s01'
 $Launcher = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\invoke-production.ps1'
 $Wrapper = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\prepare-production.mjs'
-$Cli = Join-Path $RepoRoot 'packages\rbp-conformance\dist\src\cli.js'
+$CliBootstrap = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\production-cli-bootstrap.mjs'
 
 $PlanR1 = Join-Path $PlanRoot 'run-1.execution-plan.json'
 $PlanR2 = Join-Path $PlanRoot 'run-2.execution-plan.json'
@@ -304,49 +308,49 @@ $ExpectedCommit = '<sha>'
 $ExpectedTree = '<tree>'
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   run-production $PlanR1 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r1'
 if ($LASTEXITCODE -ne 0) { throw 'r1 run failed' }
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   validate-run $ReportR1 --plan $PlanR1 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
   --expected-tree $ExpectedTree
 if ($LASTEXITCODE -ne 0) { throw 'r1 validation failed' }
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   run-production $PlanR2 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r2'
 if ($LASTEXITCODE -ne 0) { throw 'r2 run failed' }
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   validate-run $ReportR2 --plan $PlanR2 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
   --expected-tree $ExpectedTree
 if ($LASTEXITCODE -ne 0) { throw 'r2 validation failed' }
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   run-production $PlanR3 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --seed 'rbp-v1.0-<sha12>-s01-seed-r3'
 if ($LASTEXITCODE -ne 0) { throw 'r3 run failed' }
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   validate-run $ReportR3 --plan $PlanR3 --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot --expected-commit $ExpectedCommit `
   --expected-tree $ExpectedTree
 if ($LASTEXITCODE -ne 0) { throw 'r3 validation failed' }
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   aggregate $ReportR1 $ReportR2 $ReportR3 `
   --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
   --repo-root $RepoRoot --artifact-root $EvidenceRoot
 if ($LASTEXITCODE -ne 0) { throw 'aggregate failed' }
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   validate-aggregate $Aggregate `
   --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
   --repo-root $RepoRoot --artifact-root $EvidenceRoot `
@@ -354,12 +358,12 @@ if ($LASTEXITCODE -ne 0) { throw 'aggregate failed' }
 if ($LASTEXITCODE -ne 0) { throw 'aggregate validation failed' }
 
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   run-soak $PlanSoak --mode one_hour --repo-root $RepoRoot `
   --artifact-root $EvidenceRoot
 if ($LASTEXITCODE -ne 0) { throw 'one-hour soak failed' }
 & $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Cli `
+  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
   validate-soak $SoakReport --plan $PlanSoak --aggregate $Aggregate `
   --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
   --repo-root $RepoRoot --artifact-root $EvidenceRoot `
@@ -367,9 +371,13 @@ if ($LASTEXITCODE -ne 0) { throw 'one-hour soak failed' }
 if ($LASTEXITCODE -ne 0) { throw 'soak validation failed' }
 ```
 
-The launcher's source and PowerShell identity are themselves protected
-harness/toolchain bytes. The in-process controller environment guard remains
-defense in depth, but it cannot replace this pre-JavaScript boundary: a direct
+The launcher accepts only the canonical tracked prepare wrapper or CLI
+bootstrap. Its source, the attestation client/bootstrap, and PowerShell
+identity are themselves protected harness/toolchain bytes. The prepare wrapper
+keeps the attested process alive while importing the freshly compiled
+controller, so the public prepare core cannot be entered with a fabricated npm
+marker. The in-process controller environment guard remains defense in depth,
+but it cannot replace this pre-production-JavaScript boundary: a direct
 Node invocation with `NODE_OPTIONS`, `NODE_PATH`, compile-cache,
 preserve-symlink, or `WS_NO_*` overrides is not canonical evidence.
 

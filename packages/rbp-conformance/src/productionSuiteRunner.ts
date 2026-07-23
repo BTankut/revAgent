@@ -7,6 +7,7 @@ import { runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { observationObject } from "./observationQueries.js";
 import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import {
   CANONICAL_RESOURCE_POLICY,
   evaluateResourceSamples,
@@ -418,6 +419,7 @@ export async function executeProductionConformanceRun(
   input: ProductionSuiteRunInput,
 ): Promise<ProductionSuiteRunResult> {
   assertNoProductionSuiteOverrides(input);
+  assertTrustedProductionLaunch(input.repoRoot, "cli-bootstrap");
   const plan = structuredClone(input.plan);
   const repoRoot = input.repoRoot;
   const artifactRoot = input.artifactRoot;

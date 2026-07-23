@@ -9,6 +9,7 @@ import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import {
   assertProductionCliHarnessBound,
   assertProductionCliModulePath,
@@ -54,26 +55,18 @@ const isDirectInvocation =
     })()
   );
 
-function assertDirectProductionCliPath(repoRoot: string): void {
-  if (!isDirectInvocation || CLI_ENTRY_FILE === undefined) {
-    throw new Error(
-      "production evidence commands require direct invocation of the canonical CLI; " +
-      "imported CLI runners cannot produce or validate production evidence",
-    );
-  }
-  assertProductionCliModulePath(repoRoot, CLI_ENTRY_FILE);
+function assertProductionCliPath(
+  repoRoot: string,
+  role: "prepare-wrapper" | "cli-bootstrap",
+): void {
+  assertTrustedProductionLaunch(repoRoot, role);
   assertProductionCliModulePath(repoRoot, CLI_MODULE_FILE);
 }
 
-function assertDirectProductionCliBound(
+function assertProductionCliBound(
   plan: ExecutionPlan,
   repoRoot: string,
 ): void {
-  if (!isDirectInvocation) {
-    throw new Error(
-      "production evidence commands require direct invocation of the canonical CLI",
-    );
-  }
   assertProductionCliHarnessBound(plan, repoRoot, CLI_MODULE_FILE);
 }
 
@@ -148,7 +141,7 @@ export async function runPrepareProductionAsyncCli(
     usage();
   }
   const target = resolveFrom(cwd, planFile);
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "prepare-wrapper");
   assertCanonicalPlanTarget(repoRoot, target);
   const plan = prepareProductionExecutionPlan({
     repoRoot,
@@ -159,7 +152,7 @@ export async function runPrepareProductionAsyncCli(
   });
   writeText(target, stableJson(plan), cwd);
   assertProductionExecutionPlanCurrent(plan, repoRoot);
-  assertDirectProductionCliBound(plan, repoRoot);
+  assertProductionCliBound(plan, repoRoot);
   process.stdout.write(`${stableJson({
     planPath: target,
     runId: plan.runId,
@@ -204,10 +197,10 @@ export async function runProductionAsyncCli(
     else if (name === "--seed") seed = value;
     else usage();
   }
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
-  assertDirectProductionCliBound(plan, repoRoot);
+  assertProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const result = await executeProductionConformanceRun({
     plan,
@@ -247,10 +240,10 @@ export async function runAsyncCli(args: string[], cwd: string = process.cwd()): 
     else if (name === "--seed") seed = value;
     else usage();
   }
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
-  assertDirectProductionCliBound(plan, repoRoot);
+  assertProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const result = await executeSupervisedC19Run({
     plan,
@@ -299,10 +292,10 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
   }
   if (requestedDurationMs !== undefined && !Number.isSafeInteger(requestedDurationMs)) usage();
   if (cycleIntervalMs !== undefined && !Number.isSafeInteger(cycleIntervalMs)) usage();
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
-  assertDirectProductionCliBound(plan, repoRoot);
+  assertProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
   const result = await runReconnectSoak({
     mode,
@@ -447,13 +440,13 @@ function productionValidationContext(
     index += 1;
   }
   if (repoRoot === undefined || planFiles.size !== planCount) usage();
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
   const plans = Array.from({ length: planCount }, (_, index) => {
     const planFile = planFiles.get(index + 1);
     if (planFile === undefined) usage();
     const plan = readJson(planFile, cwd) as ExecutionPlan;
     assertProductionExecutionPlanCurrent(plan, repoRoot);
-    assertDirectProductionCliBound(plan, repoRoot);
+    assertProductionCliBound(plan, repoRoot);
     assertProductionControllerRuntimeCurrent(plan);
     return plan;
   });
@@ -523,7 +516,7 @@ function productionFinalEvidenceContext(
   ) {
     usage();
   }
-  assertDirectProductionCliPath(repoRoot);
+  assertProductionCliPath(repoRoot, "cli-bootstrap");
   const planFiles = [
     aggregatePlanFiles.get(1)!,
     aggregatePlanFiles.get(2)!,
@@ -534,7 +527,7 @@ function productionFinalEvidenceContext(
   const gatePlan = (planFile: string): ExecutionPlan => {
     const plan = readJson(planFile, cwd) as ExecutionPlan;
     assertProductionExecutionPlanCurrent(plan, repoRoot);
-    assertDirectProductionCliBound(plan, repoRoot);
+    assertProductionCliBound(plan, repoRoot);
     assertProductionControllerRuntimeCurrent(plan);
     return plan;
   };
@@ -766,22 +759,27 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   usage();
 }
 
-if (isDirectInvocation) {
-  const main = async (): Promise<void> => {
-    if (process.argv[2] === "prepare-production") {
-      await runPrepareProductionAsyncCli(process.argv.slice(2));
-    } else if (process.argv[2] === "run-production") {
-      await runProductionAsyncCli(process.argv.slice(2));
-    } else if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
-    else if (process.argv[2] === "run-soak") await runSoakAsyncCli(process.argv.slice(2));
-    else runCli(process.argv.slice(2));
-  };
-  main().catch((error) => {
+export async function runProductionCliMain(args: string[]): Promise<void> {
+  try {
+    if (args[0] === "prepare-production") {
+      await runPrepareProductionAsyncCli(args);
+    } else if (args[0] === "run-production") {
+      await runProductionAsyncCli(args);
+    } else if (args[0] === "run-c19") await runAsyncCli(args);
+    else if (args[0] === "run-soak") await runSoakAsyncCli(args);
+    else runCli(args);
+  } catch (error) {
     if (error instanceof ConformanceValidationError) {
       process.stderr.write(`${error.message}\n${stableJson({ issues: error.issues })}`);
     } else {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     }
     process.exitCode = 1;
-  });
+  }
+}
+
+// Direct execution is retained only to fail closed with the launcher guard.
+// The canonical path enters through the tracked pre-controller bootstrap.
+if (isDirectInvocation) {
+  void runProductionCliMain(process.argv.slice(2));
 }

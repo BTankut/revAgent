@@ -33,6 +33,11 @@ const compiledCli = path.join(
   "src",
   "cli.js",
 );
+const cliBootstrap = path.join(
+  packageRoot,
+  "scripts",
+  "production-cli-bootstrap.mjs",
+);
 const productionLauncher = path.join(
   packageRoot,
   "scripts",
@@ -76,7 +81,7 @@ function invokeCurrentCli(input: {
       "-NodeExecutable",
       input.nodeExecutable ?? process.execPath,
       "-Entrypoint",
-      compiledCli,
+      cliBootstrap,
       ...input.args,
     ],
     {
@@ -178,6 +183,7 @@ beforeAll(() => {
   expect(existsSync(systemPowerShell)).toBe(true);
   expect(existsSync(productionLauncher)).toBe(true);
   expect(existsSync(compiledCli)).toBe(true);
+  expect(existsSync(cliBootstrap)).toBe(true);
 });
 
 afterEach(() => {

@@ -182,6 +182,10 @@ export type {
 } from "./productionBuildProvenance.js";
 export { prepareProductionExecutionPlan } from "./productionPreparation.js";
 export {
+  assertTrustedProductionLaunch,
+  type ProductionLaunchRole,
+} from "./productionLaunchAttestation.js";
+export {
   assertProductionControllerEnvironmentSafe,
   sanitizedProductionRuntimeEnvironment,
 } from "./productionRuntimeIdentity.js";

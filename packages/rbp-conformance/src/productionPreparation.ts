@@ -13,6 +13,7 @@ import {
   assertProductionExecutionPlanCurrent,
   buildProductionExecutionPlan,
 } from "./productionExecutionPlan.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import {
   resolveInstalledBuildGeneratorDependencyClosure,
   resolveProductionToolchainIdentity,
@@ -344,6 +345,7 @@ export function prepareProductionExecutionPlan(input: {
   nodeExecutable?: string;
   gitExecutable: string;
 }): ExecutionPlan {
+  assertTrustedProductionLaunch(input.repoRoot, "prepare-wrapper");
   const runtimeNodeExecutable = input.nodeExecutable ?? process.execPath;
   if (!path.isAbsolute(runtimeNodeExecutable)) {
     throw new Error("canonical production runtime Node executable must be absolute");

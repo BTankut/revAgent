@@ -30,6 +30,11 @@ const packageRoot = path.resolve(
 );
 const repoRoot = path.resolve(packageRoot, "..", "..");
 const compiledCli = path.join(packageRoot, "dist", "src", "cli.js");
+const cliBootstrap = path.join(
+  packageRoot,
+  "scripts",
+  "production-cli-bootstrap.mjs",
+);
 const productionLauncher = path.join(
   packageRoot,
   "scripts",
@@ -63,7 +68,7 @@ function invokeCurrentCli(
       "-NodeExecutable",
       process.execPath,
       "-Entrypoint",
-      compiledCli,
+      cliBootstrap,
       ...args,
     ],
     {
@@ -155,6 +160,7 @@ describe("aggregate CLI retained-evidence flow", () => {
       expect(existsSync(systemPowerShell)).toBe(true);
       expect(existsSync(productionLauncher)).toBe(true);
       expect(existsSync(compiledCli)).toBe(true);
+      expect(existsSync(cliBootstrap)).toBe(true);
       const invalidOutput = await invokeCurrentCli(
         [
           "aggregate",

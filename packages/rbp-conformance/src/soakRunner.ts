@@ -3,6 +3,7 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
+import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { CANONICAL_RESOURCE_POLICY, evaluateResourceSamples } from "./resourceMetrics.js";
 import { SecureEvidenceStore } from "./secureEvidenceStore.js";
@@ -120,6 +121,7 @@ export async function runReconnectSoak(
   input: ReconnectSoakRunInput,
 ): Promise<{ report: SoakReport; reportPath: string }> {
   assertNoReconnectSoakOverrides(input);
+  assertTrustedProductionLaunch(input.repoRoot, "cli-bootstrap");
   const plan = structuredClone(input.plan);
   const mode = input.mode;
   const repoRoot = input.repoRoot;

@@ -55,6 +55,8 @@ const HARNESS_RUNTIME_FILES = [
   "packages/rbp-conformance/scripts/bootstrap-identity.mjs",
   "packages/rbp-conformance/scripts/invoke-production.ps1",
   "packages/rbp-conformance/scripts/prepare-production.mjs",
+  "packages/rbp-conformance/scripts/production-cli-bootstrap.mjs",
+  "packages/rbp-conformance/scripts/production-launch-attestation.mjs",
 ] as const;
 const HARNESS_RUNTIME_PACKAGE_ROOTS = ["packages/rbp-conformance"] as const;
 

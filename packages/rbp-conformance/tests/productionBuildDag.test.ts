@@ -1,11 +1,7 @@
 import {
   appendFileSync,
-  mkdirSync,
-  mkdtempSync,
   rmSync,
-  writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -15,23 +11,13 @@ import {
 } from "../src/productionBuildProvenance.js";
 import {
   executeCanonicalProductionBuildDag,
-  PRODUCTION_BUILD_STEPS,
 } from "../src/productionPreparation.js";
+import {
+  productionProvenanceFixture,
+} from "./productionProvenanceFixture.js";
 
 function outputFixture(): string {
-  const root = mkdtempSync(path.join(tmpdir(), "rbp-build-dag-"));
-  for (const { outputRoot, workspace } of PRODUCTION_BUILD_STEPS) {
-    const target = path.join(root, outputRoot, "index.js");
-    mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(target, `export const workspace = ${JSON.stringify(workspace)};\n`);
-  }
-  const harness = path.join(
-    root,
-    "packages/rbp-conformance/dist/src/cli.js",
-  );
-  mkdirSync(path.dirname(harness), { recursive: true });
-  writeFileSync(harness, "console.log('controller');\n", "utf8");
-  return root;
+  return productionProvenanceFixture().root;
 }
 
 describe("canonical direct production build DAG", () => {

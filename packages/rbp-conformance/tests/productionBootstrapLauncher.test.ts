@@ -1,5 +1,6 @@
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
+  copyFileSync,
   existsSync,
   mkdtempSync,
   mkdirSync,
@@ -21,6 +22,11 @@ const launcher = path.join(
   packageRoot,
   "scripts",
   "invoke-production.ps1",
+);
+const cliBootstrap = path.join(
+  packageRoot,
+  "scripts",
+  "production-cli-bootstrap.mjs",
 );
 
 function writeJson(file: string, value: unknown): void {
@@ -206,33 +212,18 @@ describe("canonical production bootstrap and external launcher", () => {
     ]);
   });
 
-  it("clears parent Node injection before loading JS and preserves argv and exit", () => {
+  it("clears parent Node injection before loading production JS and preserves argv and exit", () => {
     if (process.platform !== "win32") return;
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-launcher-"));
     try {
       const marker = path.join(root, "attacker-loaded.txt");
       const attacker = path.join(root, "attacker.cjs");
       const output = path.join(root, "probe.json");
-      const probe = path.join(root, "probe.mjs");
       writeFileSync(
         attacker,
         [
           "const fs = require('node:fs');",
           `fs.writeFileSync(${JSON.stringify(marker)}, 'loaded');`,
-          "",
-        ].join("\n"),
-        "utf8",
-      );
-      writeFileSync(
-        probe,
-        [
-          "import fs from 'node:fs';",
-          "const [output, ...args] = process.argv.slice(2);",
-          "fs.writeFileSync(output, JSON.stringify({",
-          "  nodeOptions: process.env.NODE_OPTIONS ?? null,",
-          "  args,",
-          "}));",
-          "process.exitCode = 23;",
           "",
         ].join("\n"),
         "utf8",
@@ -258,10 +249,15 @@ describe("canonical production bootstrap and external launcher", () => {
           "-NodeExecutable",
           process.execPath,
           "-Entrypoint",
-          probe,
+          cliBootstrap,
+          "__launcher-attestation-probe",
           output,
+          "23",
           "value with spaces",
           "--literal-argument",
+          "trailing slash\\",
+          "embedded\"quote",
+          "",
         ],
         {
           encoding: "utf8",
@@ -277,10 +273,258 @@ describe("canonical production bootstrap and external launcher", () => {
       expect(existsSync(marker)).toBe(false);
       expect(JSON.parse(readFileSync(output, "utf8"))).toEqual({
         nodeOptions: null,
-        args: ["value with spaces", "--literal-argument"],
+        forwarded: [
+          "value with spaces",
+          "--literal-argument",
+          "trailing slash\\",
+          "embedded\"quote",
+          "",
+        ],
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it("rejects arbitrary entrypoints before starting Node", () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-launcher-entrypoint-"));
+    try {
+      const arbitrary = path.join(root, "arbitrary.mjs");
+      const marker = path.join(root, "arbitrary-ran.txt");
+      writeFileSync(
+        arbitrary,
+        `import fs from "node:fs";fs.writeFileSync(${JSON.stringify(marker)}, "ran");\n`,
+        "utf8",
+      );
+      const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+      expect(windowsRoot).toBeTruthy();
+      const powershell = path.join(
+        windowsRoot!,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const result = spawnSync(
+        powershell,
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          launcher,
+          "-NodeExecutable",
+          process.execPath,
+          "-Entrypoint",
+          arbitrary,
+        ],
+        {
+          encoding: "utf8",
+          shell: false,
+          windowsHide: true,
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(String(result.stderr)).toMatch(
+        /accepts only the canonical tracked prepare wrapper or CLI bootstrap/u,
+      );
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a launcher copy outside its canonical tracked path", () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-launcher-copy-"));
+    try {
+      const copiedLauncher = path.join(root, "invoke-production.ps1");
+      copyFileSync(launcher, copiedLauncher);
+      const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+      expect(windowsRoot).toBeTruthy();
+      const powershell = path.join(
+        windowsRoot!,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const result = spawnSync(
+        powershell,
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-File",
+          copiedLauncher,
+          "-NodeExecutable",
+          process.execPath,
+          "-Entrypoint",
+          cliBootstrap,
+          "__launcher-attestation-probe",
+          path.join(root, "should-not-exist.json"),
+          "0",
+        ],
+        {
+          encoding: "utf8",
+          shell: false,
+          windowsHide: true,
+        },
+      );
+      expect(result.status).not.toBe(0);
+      expect(String(result.stderr)).toMatch(
+        /launcher is not the canonical tracked path/u,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("invalidates the receipt when process.argv changes after the handoff", () => {
+    if (process.platform !== "win32") return;
+    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    expect(windowsRoot).toBeTruthy();
+    const powershell = path.join(
+      windowsRoot!,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const result = spawnSync(
+      powershell,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        launcher,
+        "-NodeExecutable",
+        process.execPath,
+        "-Entrypoint",
+        cliBootstrap,
+        "__launcher-attestation-argv-spoof",
+      ],
+      {
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+      },
+    );
+    expect(result.status).not.toBe(0);
+    expect(String(result.stderr)).toMatch(
+      /receipt is not bound to this process/u,
+    );
+    expect(String(result.stdout)).not.toContain("PASS");
+  });
+
+  it("times out and terminates a child that connects without a request", () => {
+    if (process.platform !== "win32") return;
+    const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+    expect(windowsRoot).toBeTruthy();
+    const powershell = path.join(
+      windowsRoot!,
+      "System32",
+      "WindowsPowerShell",
+      "v1.0",
+      "powershell.exe",
+    );
+    const startedAt = Date.now();
+    const result = spawnSync(
+      powershell,
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        launcher,
+        "-NodeExecutable",
+        process.execPath,
+        "-Entrypoint",
+        cliBootstrap,
+        "__launcher-attestation-request-timeout-probe",
+      ],
+      {
+        encoding: "utf8",
+        shell: false,
+        windowsHide: true,
+        timeout: 45_000,
+      },
+    );
+    const elapsedMs = Date.now() - startedAt;
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(String(result.stderr)).toMatch(/attestation request timed out/u);
+    expect(elapsedMs).toBeGreaterThanOrEqual(28_000);
+    expect(elapsedMs).toBeLessThan(45_000);
+  }, 50_000);
+
+  it("isolates concurrent one-shot launcher handoffs", async () => {
+    if (process.platform !== "win32") return;
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-launcher-concurrent-"));
+    try {
+      const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+      expect(windowsRoot).toBeTruthy();
+      const powershell = path.join(
+        windowsRoot!,
+        "System32",
+        "WindowsPowerShell",
+        "v1.0",
+        "powershell.exe",
+      );
+      const launches = Array.from({ length: 4 }, (_, index) => {
+        const output = path.join(root, `probe-${String(index)}.json`);
+        const child = spawn(
+          powershell,
+          [
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            launcher,
+            "-NodeExecutable",
+            process.execPath,
+            "-Entrypoint",
+            cliBootstrap,
+            "__launcher-attestation-probe",
+            output,
+            "0",
+            `invocation-${String(index)}`,
+          ],
+          {
+            shell: false,
+            windowsHide: true,
+            stdio: ["ignore", "pipe", "pipe"],
+          },
+        );
+        return new Promise<{ output: string; status: number | null; stderr: string }>(
+          (resolve, reject) => {
+            let stderr = "";
+            child.stderr.setEncoding("utf8");
+            child.stderr.on("data", (chunk: string) => {
+              stderr += chunk;
+            });
+            child.on("error", reject);
+            child.on("close", (status) => resolve({ output, status, stderr }));
+          },
+        );
+      });
+      const results = await Promise.all(launches);
+      results.forEach((result, index) => {
+        expect(result.status, result.stderr).toBe(0);
+        expect(JSON.parse(readFileSync(result.output, "utf8"))).toEqual({
+          nodeOptions: null,
+          forwarded: [`invocation-${String(index)}`],
+        });
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 60_000);
 });

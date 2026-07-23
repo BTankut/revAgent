@@ -8,17 +8,23 @@ import {
   rmSync,
 } from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import {
+import { assertTrustedProductionLaunch } from "./production-launch-attestation.mjs";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+
+// Establish the pre-Node launcher handoff before importing any production
+// bootstrap or controller module.
+assertTrustedProductionLaunch({ repoRoot, role: "prepare-wrapper" });
+
+const {
   assertProductionBootstrapIdentityCurrent,
   canonicalWindowsWhereExecutable,
   captureProductionBootstrapIdentity,
   innerPrepareArguments,
   parsePrepareBootstrapArguments,
-} from "./bootstrap-identity.mjs";
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
+} = await import("./bootstrap-identity.mjs");
 const resolutionEnvironmentKeys = new Set([
   "NODE_OPTIONS",
   "NODE_PATH",
@@ -370,20 +376,20 @@ runBoundNode(
 
 const cli = path.join(repoRoot, "packages/rbp-conformance/dist/src/cli.js");
 assertProductionBootstrapIdentityCurrent(repoRoot, bootstrapBuildDependencies);
-const prepare = run(
-  nodeIdentity.real,
-  [cli, ...innerPrepareArguments(forwardedArgs, gitIdentity.path)],
-  {
-    stdio: ["ignore", "inherit", "inherit"],
-    env: {
-      ...childEnvironment(),
-      RBP_PRODUCTION_NPM_EXECUTABLE: npmIdentity.path,
-    },
-  },
-);
-assertSameFile(npmIdentity, "npm launcher");
-assertSameFile(nodeIdentity, "build Node executable");
-assertSameGit(gitIdentity);
-if (prepare.status !== 0) {
-  process.exitCode = prepare.status ?? 1;
+const cliModule = await import(pathToFileURL(cli).href);
+if (typeof cliModule.runPrepareProductionAsyncCli !== "function") {
+  throw new Error("freshly built canonical CLI does not expose guarded preparation");
+}
+process.env.RBP_PRODUCTION_NPM_EXECUTABLE = npmIdentity.path;
+try {
+  await cliModule.runPrepareProductionAsyncCli(
+    innerPrepareArguments(forwardedArgs, gitIdentity.path),
+    repoRoot,
+  );
+} finally {
+  delete process.env.RBP_PRODUCTION_NPM_EXECUTABLE;
+  assertProductionBootstrapIdentityCurrent(repoRoot, bootstrapBuildDependencies);
+  assertSameFile(npmIdentity, "npm launcher");
+  assertSameFile(nodeIdentity, "build Node executable");
+  assertSameGit(gitIdentity);
 }

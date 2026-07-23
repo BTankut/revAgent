@@ -99,7 +99,7 @@ afterAll(() => {
 });
 
 describe("final production CLI hardening", () => {
-  it("rejects a real compiled CLI copied outside the canonical dist realpath", () => {
+  it("rejects a copied compiled CLI without the trusted launcher handoff", () => {
     const copiedCli = path.join(copiedCliRoot, "dist/src/cli.js");
     const result = spawnSync(process.execPath, [
       copiedCli,
@@ -120,7 +120,7 @@ describe("final production CLI hardening", () => {
 
     expect(result.status).not.toBe(0);
     expect(String(result.stderr)).toMatch(
-      /production CLI module is not the canonical/u,
+      /require the tracked external PowerShell launcher/u,
     );
     expect(String(result.stdout)).not.toContain("PASS");
   });

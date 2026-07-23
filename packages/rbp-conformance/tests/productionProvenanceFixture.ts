@@ -219,6 +219,16 @@ export function productionProvenanceFixture(): ProductionProvenanceFixture {
   );
   writeFixtureFile(
     root,
+    "packages/rbp-conformance/scripts/production-cli-bootstrap.mjs",
+    "export {};\n",
+  );
+  writeFixtureFile(
+    root,
+    "packages/rbp-conformance/scripts/production-launch-attestation.mjs",
+    "export {};\n",
+  );
+  writeFixtureFile(
+    root,
     "packages/protocol/schemas/rbp/v1/envelope.schema.json",
     "{}\n",
   );
