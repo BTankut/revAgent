@@ -1,4 +1,7 @@
-import { composeCanonicalAssertionOracleRegistry } from "./canonicalEvaluators.js";
+import {
+  composeCanonicalAssertionOracleRegistry,
+  immutableReadonlyMap,
+} from "./canonicalEvaluators.js";
 import { canonicalManifest } from "./manifest.js";
 import { CORE_PRODUCTION_ORACLES } from "./productionCaseOraclesCore.js";
 import { EARLY_PRODUCTION_ORACLES } from "./productionCaseOraclesEarly.js";
@@ -121,11 +124,13 @@ export function createProductionCaseComposition(
     assertExactBindingExecutions(input.caseId, executions);
     return executions;
   };
-  return {
-    caseOwners: new Map(canonicalCases.map((caseId) => [caseId, owners.get(caseId)!.name])),
+  return Object.freeze({
+    caseOwners: immutableReadonlyMap(
+      canonicalCases.map((caseId) => [caseId, owners.get(caseId)!.name] as const),
+    ),
     oracles,
     executeCase,
-  };
+  });
 }
 
 /**

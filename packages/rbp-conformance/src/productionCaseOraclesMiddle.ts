@@ -1,7 +1,8 @@
-import type {
-  CanonicalAssertionOracle,
-  CanonicalAssertionOracleContext,
-  CanonicalAssertionOracleRegistry,
+import {
+  immutableReadonlyMap,
+  type CanonicalAssertionOracle,
+  type CanonicalAssertionOracleContext,
+  type CanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 import { canonicalManifest } from "./manifest.js";
 import { MIDDLE_PRODUCTION_CASES } from "./productionCaseSeedsMiddle.js";
@@ -1096,4 +1097,4 @@ if (
 }
 
 export const MIDDLE_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry =
-  new Map(entries);
+  immutableReadonlyMap(entries);

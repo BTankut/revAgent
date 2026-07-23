@@ -9,8 +9,6 @@ import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
-import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
-import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
 import {
   assertProductionCliHarnessBound,
   assertProductionCliModulePath,
@@ -216,8 +214,6 @@ export async function runProductionAsyncCli(
     repoRoot,
     artifactRoot,
     seed,
-    oracles: PRODUCTION_CASE_COMPOSITION.oracles,
-    executeCase: PRODUCTION_CASE_COMPOSITION.executeCase,
   });
   process.stdout.write(`${stableJson({
     reportPath: result.reportPath,
@@ -308,22 +304,15 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
   assertProductionExecutionPlanCurrent(plan, repoRoot);
   assertDirectProductionCliBound(plan, repoRoot);
   assertProductionControllerRuntimeCurrent(plan);
-  const adapter = await createProductionReconnectSoakAdapter({ plan, repoRoot });
   const result = await runReconnectSoak({
     mode,
-    runId: plan.runId,
+    plan,
+    repoRoot,
     ...(requestedDurationMs === undefined ? {} : { requestedDurationMs }),
     ...(mode === "smoke" && cycleIntervalMs !== undefined
       ? { cycleIntervalMs }
       : {}),
     artifactRoot,
-    source: structuredClone(plan.source),
-    components: plan.components.map((component) => ({
-      id: component.id,
-      interfaceVersion: component.interfaceVersion,
-      identity: structuredClone(component.expectedIdentity),
-    })),
-    adapter,
   });
   process.stdout.write(`${stableJson({
     reportPath: result.reportPath,

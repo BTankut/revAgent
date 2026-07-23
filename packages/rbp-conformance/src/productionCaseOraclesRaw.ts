@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 
-import type {
-  CanonicalAssertionOracle,
-  CanonicalAssertionOracleContext,
-  CanonicalAssertionOracleRegistry,
+import {
+  immutableReadonlyMap,
+  type CanonicalAssertionOracle,
+  type CanonicalAssertionOracleContext,
+  type CanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 import { canonicalManifest } from "./manifest.js";
 import {
@@ -3351,4 +3352,5 @@ if (
   ].join("; "));
 }
 
-export const RAW_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry = new Map(entries);
+export const RAW_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry =
+  immutableReadonlyMap(entries);

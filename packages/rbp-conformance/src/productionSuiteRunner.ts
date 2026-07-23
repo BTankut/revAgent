@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
+import { performance } from "node:perf_hooks";
 
 import { buildCanonicalParentEvaluatorRegistry } from "./canonicalEvaluators.js";
 import { retainSupervisedCaseEvidence } from "./caseEvidenceWriter.js";
 import { runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { observationObject } from "./observationQueries.js";
-import { executeProductionCaseBothBindings } from "./productionCaseRunner.js";
+import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
 import {
   CANONICAL_RESOURCE_POLICY,
   evaluateResourceSamples,
@@ -18,7 +19,6 @@ import {
   assertPassingRunReport,
   validateRunReportStructure,
 } from "./validator.js";
-import type { CanonicalAssertionOracleRegistry } from "./canonicalEvaluators.js";
 import type { ParentStepExecutionEvidence } from "./parentStepEngine.js";
 import type {
   ArtifactEvidence,
@@ -55,9 +55,6 @@ export interface ProductionSuiteRunInput {
   readonly repoRoot: string;
   readonly artifactRoot: string;
   readonly seed: string;
-  readonly oracles: CanonicalAssertionOracleRegistry;
-  readonly executeCase?: ProductionCaseExecutor;
-  readonly nowMs?: () => number;
 }
 
 export interface ProductionSuiteRunResult {
@@ -79,6 +76,55 @@ interface LifecycleFact {
   readonly orphanProcessCount: number;
   readonly survivingPids: number[];
   readonly killEscalated: boolean;
+}
+
+const PRODUCTION_SUITE_INPUT_FIELDS = new Set<PropertyKey>([
+  "plan",
+  "repoRoot",
+  "artifactRoot",
+  "seed",
+]);
+const REQUIRED_PRODUCTION_SUITE_INPUT_FIELDS = [
+  "plan",
+  "repoRoot",
+  "artifactRoot",
+  "seed",
+] as const;
+
+// Capture the canonical functions while this module initializes. The runner
+// never consults caller-owned dependency values and never exposes this
+// retained registry copy for mutation.
+const PRODUCTION_ORACLES = new Map(PRODUCTION_CASE_COMPOSITION.oracles);
+const PRODUCTION_CASE_EXECUTOR = PRODUCTION_CASE_COMPOSITION.executeCase;
+const productionWallNowMs = Date.now.bind(Date);
+const productionMonotonicNowMs = performance.now.bind(performance);
+
+function assertNoProductionSuiteOverrides(input: object): void {
+  const ownKeys = Reflect.ownKeys(input);
+  const forbidden = ownKeys
+    .filter((key) => !PRODUCTION_SUITE_INPUT_FIELDS.has(key))
+    .map(String);
+  if (forbidden.length > 0) {
+    throw new Error(
+      `production suite forbids synthetic dependency overrides: ${forbidden.join(", ")}`,
+    );
+  }
+  const missing = REQUIRED_PRODUCTION_SUITE_INPUT_FIELDS.filter(
+    (key) => !Object.hasOwn(input, key),
+  );
+  const accessors = ownKeys
+    .filter((key): key is string => typeof key === "string")
+    .filter((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      return descriptor?.get !== undefined || descriptor?.set !== undefined;
+    });
+  if (missing.length > 0 || accessors.length > 0) {
+    throw new Error(
+      "production suite requires exact own data fields; " +
+      `missing: ${missing.join(", ") || "none"}; ` +
+      `accessors: ${accessors.join(", ") || "none"}`,
+    );
+  }
 }
 
 function retained(relative: string): string {
@@ -339,14 +385,15 @@ function retainRunArtifacts(report: RunReport, artifactRoot: string): void {
 
 function markCaseError(
   result: RunReport["cases"][number],
-  startedMs: number,
-  finishedMs: number,
+  startedWallMs: number,
+  finishedWallMs: number,
+  durationMs: number,
   error: Error,
 ): void {
   result.status = "error";
-  result.startedAt = new Date(startedMs).toISOString();
-  result.finishedAt = new Date(finishedMs).toISOString();
-  result.durationMs = finishedMs - startedMs;
+  result.startedAt = new Date(startedWallMs).toISOString();
+  result.finishedAt = new Date(finishedWallMs).toISOString();
+  result.durationMs = durationMs;
   result.bindings = result.bindings.map((entry) => ({
     ...entry,
     status: "error",
@@ -370,30 +417,35 @@ function markCaseError(
 export async function executeProductionConformanceRun(
   input: ProductionSuiteRunInput,
 ): Promise<ProductionSuiteRunResult> {
-  const evaluators = buildCanonicalParentEvaluatorRegistry(input.oracles);
-  const executeCase = input.executeCase ?? executeProductionCaseBothBindings;
-  const nowMs = input.nowMs ?? (() => Date.now());
-  const report = createUnexecutedRunReport(input.plan);
-  const runStartedMs = nowMs();
+  assertNoProductionSuiteOverrides(input);
+  const plan = structuredClone(input.plan);
+  const repoRoot = input.repoRoot;
+  const artifactRoot = input.artifactRoot;
+  const seed = input.seed;
+  const evaluators = buildCanonicalParentEvaluatorRegistry(PRODUCTION_ORACLES);
+  const report = createUnexecutedRunReport(plan);
+  const runStartedWallMs = productionWallNowMs();
+  const runStartedMonotonicMs = productionMonotonicNowMs();
   report.run = {
     ...report.run,
     status: "running",
-    seed: input.seed,
-    startedAt: new Date(runStartedMs).toISOString(),
+    seed,
+    startedAt: new Date(runStartedWallMs).toISOString(),
   };
   const retainedCases: RetainedCaseExecution[] = [];
-  let firstCaseStartedMs: number | undefined;
-  let lastCaseFinishedMs: number | undefined;
+  let firstCaseStartedMonotonicMs: number | undefined;
+  let lastCaseFinishedMonotonicMs: number | undefined;
 
   for (const result of report.cases) {
-    const caseStartedMs = nowMs();
-    firstCaseStartedMs ??= caseStartedMs;
+    const caseStartedWallMs = productionWallNowMs();
+    const caseStartedMonotonicMs = productionMonotonicNowMs();
+    firstCaseStartedMonotonicMs ??= caseStartedMonotonicMs;
     result.status = "running";
-    result.startedAt = new Date(caseStartedMs).toISOString();
+    result.startedAt = new Date(caseStartedWallMs).toISOString();
     try {
-      const executions = await executeCase({
-        plan: input.plan,
-        repoRoot: input.repoRoot,
+      const executions = await PRODUCTION_CASE_EXECUTOR({
+        plan,
+        repoRoot,
         caseId: result.caseId,
         clockIso: result.startedAt,
       });
@@ -407,26 +459,36 @@ export async function executeProductionConformanceRun(
         })),
         evaluator: evaluators.get(result.caseId)!,
       });
-      const caseFinishedMs = nowMs();
-      result.finishedAt = new Date(caseFinishedMs).toISOString();
-      result.durationMs = caseFinishedMs - caseStartedMs;
+      const caseFinishedWallMs = productionWallNowMs();
+      const caseFinishedMonotonicMs = productionMonotonicNowMs();
+      result.finishedAt = new Date(caseFinishedWallMs).toISOString();
+      result.durationMs = Math.floor(
+        caseFinishedMonotonicMs - caseStartedMonotonicMs,
+      );
       result.status = evaluated.status;
       result.failure = evaluated.failure;
       result.assertions = evaluated.assertions;
       result.bindings = evaluated.bindings;
       retainSupervisedCaseEvidence({
-        artifactRoot: input.artifactRoot,
+        artifactRoot,
         runId: report.run.runId,
         result,
         observations: evaluated.observations,
       });
       retainedCases.push({ caseId: result.caseId, observations: evaluated.observations });
-      lastCaseFinishedMs = caseFinishedMs;
+      lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
     } catch (caught) {
       const error = caught instanceof Error ? caught : new Error(String(caught));
-      const caseFinishedMs = nowMs();
-      markCaseError(result, caseStartedMs, caseFinishedMs, error);
-      lastCaseFinishedMs = caseFinishedMs;
+      const caseFinishedWallMs = productionWallNowMs();
+      const caseFinishedMonotonicMs = productionMonotonicNowMs();
+      markCaseError(
+        result,
+        caseStartedWallMs,
+        caseFinishedWallMs,
+        Math.floor(caseFinishedMonotonicMs - caseStartedMonotonicMs),
+        error,
+      );
+      lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
     }
   }
 
@@ -434,7 +496,11 @@ export async function executeProductionConformanceRun(
   let infrastructureFailure: Error | undefined;
   try {
     const cleanup = bindRepresentativeComponents(report, allObservations);
-    report.resources = measuredResourceProfile(allObservations, runStartedMs, cleanup.orphanProcessCount);
+    report.resources = measuredResourceProfile(
+      allObservations,
+      runStartedWallMs,
+      cleanup.orphanProcessCount,
+    );
     const evaluation = report.resources.evaluation!;
     report.leaks = {
       openFileDescriptorDelta: evaluation.openFileDescriptorGrowth,
@@ -446,14 +512,23 @@ export async function executeProductionConformanceRun(
     infrastructureFailure = caught instanceof Error ? caught : new Error(String(caught));
   }
 
-  const runFinishedMs = nowMs();
-  const caseStart = firstCaseStartedMs ?? runStartedMs;
-  const caseFinish = lastCaseFinishedMs ?? runFinishedMs;
-  const suiteDurationMs = caseFinish - caseStart;
+  const runFinishedWallMs = productionWallNowMs();
+  const runFinishedMonotonicMs = productionMonotonicNowMs();
+  const caseStartMonotonicMs =
+    firstCaseStartedMonotonicMs ?? runStartedMonotonicMs;
+  const caseFinishMonotonicMs =
+    lastCaseFinishedMonotonicMs ?? runFinishedMonotonicMs;
+  const suiteDurationMs = Math.floor(
+    caseFinishMonotonicMs - caseStartMonotonicMs,
+  );
   report.timing = {
-    setupDurationMs: caseStart - runStartedMs,
+    setupDurationMs: Math.floor(
+      caseStartMonotonicMs - runStartedMonotonicMs,
+    ),
     suiteDurationMs,
-    teardownDurationMs: runFinishedMs - caseFinish,
+    teardownDurationMs: Math.floor(
+      runFinishedMonotonicMs - caseFinishMonotonicMs,
+    ),
   };
   const casesPassed = report.cases.every(({ status }) => status === "passed");
   const resourcesPassed = report.resources.evaluation?.passed === true;
@@ -463,13 +538,13 @@ export async function executeProductionConformanceRun(
     status: infrastructureFailure === undefined && casesPassed && resourcesPassed && durationPassed
       ? "passed"
       : infrastructureFailure === undefined ? "failed" : "error",
-    finishedAt: new Date(runFinishedMs).toISOString(),
-    durationMs: runFinishedMs - runStartedMs,
+    finishedAt: new Date(runFinishedWallMs).toISOString(),
+    durationMs: Math.floor(runFinishedMonotonicMs - runStartedMonotonicMs),
     exitCode: infrastructureFailure === undefined && casesPassed && resourcesPassed && durationPassed ? 0 : 1,
   };
 
   if (infrastructureFailure === undefined) {
-    retainRunArtifacts(report, input.artifactRoot);
+    retainRunArtifacts(report, artifactRoot);
   }
   const reportPath = applyTemplate(canonicalManifest.retainedEvidence.runReport, {
     run_id: report.run.runId,
@@ -480,13 +555,13 @@ export async function executeProductionConformanceRun(
   }
   if (report.run.status === "passed") {
     assertPassingRunReport(report, {
-      expectedCommitSha: input.plan.source.commitSha,
-      expectedTreeSha: input.plan.source.treeSha,
-      artifactRoot: input.artifactRoot,
+      expectedCommitSha: plan.source.commitSha,
+      expectedTreeSha: plan.source.treeSha,
+      artifactRoot,
       verifyArtifactFiles: true,
     });
   }
-  new SecureEvidenceStore(input.artifactRoot).write(reportPath, stableJson(report));
+  new SecureEvidenceStore(artifactRoot).write(reportPath, stableJson(report));
   if (infrastructureFailure !== undefined) {
     throw new Error(`production suite infrastructure failed: ${infrastructureFailure.message}`, {
       cause: infrastructureFailure,

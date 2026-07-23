@@ -12,7 +12,7 @@ export { classifyRunStatus } from "./runClassification.js";
 export { CANONICAL_RESOURCE_POLICY, emptyResourceProfile, evaluateResourceSamples, resourceProfileIssues } from "./resourceMetrics.js";
 export { assertPassingSoakReport, evaluatePassingSoak, validateSoakReport } from "./soak.js";
 export { runReconnectSoak } from "./soakRunner.js";
-export type { ReconnectSoakAdapter, SoakClock, SoakCycleObservation } from "./soakRunner.js";
+export type { ReconnectSoakRunInput, SoakCycleObservation } from "./soakRunner.js";
 export {
   createProductionReconnectSoakAdapter,
   ProductionReconnectSoakAdapter,

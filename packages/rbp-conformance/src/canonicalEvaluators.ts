@@ -33,6 +33,58 @@ export type CanonicalAssertionOracleRegistry = ReadonlyMap<
   CanonicalAssertionOracle
 >;
 
+class ImmutableReadonlyMap<K, V> implements ReadonlyMap<K, V> {
+  readonly #values: Map<K, V>;
+
+  constructor(entries: Iterable<readonly [K, V]>) {
+    this.#values = new Map(entries);
+  }
+
+  get size(): number {
+    return this.#values.size;
+  }
+
+  get(key: K): V | undefined {
+    return this.#values.get(key);
+  }
+
+  has(key: K): boolean {
+    return this.#values.has(key);
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this.#values.entries();
+  }
+
+  keys(): MapIterator<K> {
+    return this.#values.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this.#values.values();
+  }
+
+  forEach(
+    callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void,
+    thisArg?: unknown,
+  ): void {
+    this.#values.forEach((value, key) => {
+      callback.call(thisArg, value, key, this);
+    });
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.entries();
+  }
+}
+
+/** Snapshot a registry behind a surface that has no set/delete/clear methods. */
+export function immutableReadonlyMap<K, V>(
+  entries: Iterable<readonly [K, V]>,
+): ReadonlyMap<K, V> {
+  return Object.freeze(new ImmutableReadonlyMap(entries));
+}
+
 function canonicalAssertionEntries(): Array<{
   caseId: string;
   assertion: ManifestAssertion;
@@ -86,7 +138,7 @@ export function composeCanonicalAssertionOracleRegistry(
     }
   }
   assertCompleteCanonicalAssertionOracleRegistry(composed);
-  return composed;
+  return immutableReadonlyMap(composed);
 }
 
 function observationsForBinding(

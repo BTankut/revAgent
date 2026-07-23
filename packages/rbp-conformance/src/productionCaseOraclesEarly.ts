@@ -1,7 +1,8 @@
-import type {
-  CanonicalAssertionOracle,
-  CanonicalAssertionOracleContext,
-  CanonicalAssertionOracleRegistry,
+import {
+  immutableReadonlyMap,
+  type CanonicalAssertionOracle,
+  type CanonicalAssertionOracleContext,
+  type CanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 import { canonicalManifest } from "./manifest.js";
 import { EARLY_PRODUCTION_CASES } from "./productionCaseSeedsEarly.js";
@@ -432,4 +433,5 @@ if (missing.length > 0 || unknown.length > 0 || new Set(observedIds).size !== ob
   ].join("; "));
 }
 
-export const EARLY_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry = new Map(entries);
+export const EARLY_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry =
+  immutableReadonlyMap(entries);

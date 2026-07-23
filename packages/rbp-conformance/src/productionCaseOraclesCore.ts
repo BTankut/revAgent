@@ -1,8 +1,9 @@
 import { observationObject } from "./observationQueries.js";
-import type {
-  CanonicalAssertionOracle,
-  CanonicalAssertionOracleContext,
-  CanonicalAssertionOracleRegistry,
+import {
+  immutableReadonlyMap,
+  type CanonicalAssertionOracle,
+  type CanonicalAssertionOracleContext,
+  type CanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 import type { ProcessObservationRecord } from "./types.js";
 
@@ -172,10 +173,11 @@ const contextSnapshotAccepted: CanonicalAssertionOracle = (context) => {
     (document as Record<string, unknown>).document_id === "conformance-document");
 };
 
-export const CORE_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry = new Map([
-  ["O1-C01-AUTHENTICATED-HELLO", authenticatedHello],
-  ["O1-C01-VERSION-NEGOTIATED", versionNegotiated],
-  ["O1-C01-CAPABILITIES-NEGOTIATED", capabilitiesNegotiated],
-  ["O1-C05-REGISTRATION", registrationAccepted],
-  ["O1-C05-CONTEXT-SNAPSHOT", contextSnapshotAccepted],
-]);
+export const CORE_PRODUCTION_ORACLES: CanonicalAssertionOracleRegistry =
+  immutableReadonlyMap([
+    ["O1-C01-AUTHENTICATED-HELLO", authenticatedHello],
+    ["O1-C01-VERSION-NEGOTIATED", versionNegotiated],
+    ["O1-C01-CAPABILITIES-NEGOTIATED", capabilitiesNegotiated],
+    ["O1-C05-REGISTRATION", registrationAccepted],
+    ["O1-C05-CONTEXT-SNAPSHOT", contextSnapshotAccepted],
+  ]);

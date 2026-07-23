@@ -61,6 +61,28 @@ describe("production case composition guards", () => {
     ]);
   });
 
+  it("does not expose mutable production oracle, owner, or executor bindings", () => {
+    expect(Object.isFrozen(PRODUCTION_CASE_COMPOSITION)).toBe(true);
+    for (const registry of [
+      CORE_PRODUCTION_ORACLES,
+      EARLY_PRODUCTION_ORACLES,
+      MIDDLE_PRODUCTION_ORACLES,
+      RAW_PRODUCTION_ORACLES,
+      PRODUCTION_CASE_COMPOSITION.oracles,
+      PRODUCTION_CASE_COMPOSITION.caseOwners,
+    ]) {
+      expect((registry as unknown as { set?: unknown }).set).toBeUndefined();
+      expect((registry as unknown as { clear?: unknown }).clear).toBeUndefined();
+    }
+    expect(() => {
+      (
+        PRODUCTION_CASE_COMPOSITION as unknown as {
+          executeCase: () => Promise<never[]>;
+        }
+      ).executeCase = async () => [];
+    }).toThrow(TypeError);
+  });
+
   it("rejects the otherwise real composition while C15-C24 has no owner", () => {
     expect(() => createProductionCaseComposition([core, early, raw])).toThrow(
       /missing: O1-C15, O1-C16, O1-C17, O1-C18, O1-C19, O1-C20, O1-C21, O1-C22, O1-C23, O1-C24/u,

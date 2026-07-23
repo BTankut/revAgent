@@ -1,19 +1,19 @@
 import { createHash } from "node:crypto";
 import { performance } from "node:perf_hooks";
+import { setTimeout as sleep } from "node:timers/promises";
 
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
+import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { CANONICAL_RESOURCE_POLICY, evaluateResourceSamples } from "./resourceMetrics.js";
 import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import { stableJson } from "./stableJson.js";
 import type {
   Binding,
-  ComponentIdentity,
-  ComponentId,
+  ExecutionPlan,
   ResourceSample,
   SoakMetricRecord,
   SoakMode,
   SoakReport,
-  SourceIdentity,
 } from "./types.js";
 
 export interface SoakCycleObservation {
@@ -31,7 +31,7 @@ export interface ReconnectSoakAdapter {
   orphanProcessCount(): Promise<number>;
 }
 
-export interface SoakClock {
+interface SoakClock {
   /** Wall-clock milliseconds used only to anchor retained RFC3339 timestamps. */
   nowMs(): number;
   /** Monotonic milliseconds used for every duration and deadline decision. */
@@ -40,13 +40,67 @@ export interface SoakClock {
 }
 
 const realClock: SoakClock = {
-  nowMs: () => Date.now(),
-  monotonicMs: () => performance.now(),
-  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  nowMs: Date.now.bind(Date),
+  monotonicMs: performance.now.bind(performance),
+  sleep,
 };
 
 export const ONE_HOUR_SOAK_DURATION_MS = 3_600_000 as const;
 export const ONE_HOUR_SOAK_CYCLE_INTERVAL_MS = 5_000 as const;
+
+const RECONNECT_SOAK_INPUT_FIELDS = new Set<PropertyKey>([
+  "mode",
+  "plan",
+  "repoRoot",
+  "requestedDurationMs",
+  "cycleIntervalMs",
+  "sampleIntervalMs",
+  "artifactRoot",
+]);
+const REQUIRED_RECONNECT_SOAK_INPUT_FIELDS = [
+  "mode",
+  "plan",
+  "repoRoot",
+  "artifactRoot",
+] as const;
+
+export interface ReconnectSoakRunInput {
+  readonly mode: SoakMode;
+  readonly plan: ExecutionPlan;
+  readonly repoRoot: string;
+  readonly requestedDurationMs?: number;
+  readonly cycleIntervalMs?: number;
+  readonly sampleIntervalMs?: number;
+  readonly artifactRoot: string;
+}
+
+function assertNoReconnectSoakOverrides(input: object): void {
+  const ownKeys = Reflect.ownKeys(input);
+  const forbidden = ownKeys
+    .filter((key) => !RECONNECT_SOAK_INPUT_FIELDS.has(key))
+    .map(String);
+  if (forbidden.length > 0) {
+    throw new Error(
+      `production reconnect soak forbids synthetic dependency or identity overrides: ${forbidden.join(", ")}`,
+    );
+  }
+  const missing = REQUIRED_RECONNECT_SOAK_INPUT_FIELDS.filter(
+    (key) => !Object.hasOwn(input, key),
+  );
+  const accessors = ownKeys
+    .filter((key): key is string => typeof key === "string")
+    .filter((key) => {
+      const descriptor = Object.getOwnPropertyDescriptor(input, key);
+      return descriptor?.get !== undefined || descriptor?.set !== undefined;
+    });
+  if (missing.length > 0 || accessors.length > 0) {
+    throw new Error(
+      "production reconnect soak requires exact own data fields; " +
+      `missing: ${missing.join(", ") || "none"}; ` +
+      `accessors: ${accessors.join(", ") || "none"}`,
+    );
+  }
+}
 
 function exactObservation(value: SoakCycleObservation): void {
   const expected = ["controlRoundTrips", "heartbeatAcks", "journalPending", "proxyChurns", "reconnects"];
@@ -62,43 +116,41 @@ function template(value: string, mode: SoakMode, runId: string): string {
     .replaceAll("{run_id}", runId);
 }
 
-export async function runReconnectSoak(input: {
-  mode: SoakMode;
-  runId: string;
-  requestedDurationMs?: number;
-  cycleIntervalMs?: number;
-  sampleIntervalMs?: number;
-  artifactRoot: string;
-  source: SourceIdentity;
-  components: Array<{ id: ComponentId; interfaceVersion: string; identity: ComponentIdentity }>;
-  adapter: ReconnectSoakAdapter;
-  clock?: SoakClock;
-}): Promise<{ report: SoakReport; reportPath: string }> {
-  const clock = input.clock ?? realClock;
+export async function runReconnectSoak(
+  input: ReconnectSoakRunInput,
+): Promise<{ report: SoakReport; reportPath: string }> {
+  assertNoReconnectSoakOverrides(input);
+  const plan = structuredClone(input.plan);
+  const mode = input.mode;
+  const repoRoot = input.repoRoot;
+  const artifactRoot = input.artifactRoot;
+  const requestedDurationOverride = input.requestedDurationMs;
+  const cycleIntervalOverride = input.cycleIntervalMs;
+  const sampleIntervalOverride = input.sampleIntervalMs;
   if (
-    input.mode === "one_hour" &&
+    mode === "one_hour" &&
     (
-      input.requestedDurationMs !== undefined ||
-      input.cycleIntervalMs !== undefined ||
-      input.sampleIntervalMs !== undefined
+      requestedDurationOverride !== undefined ||
+      cycleIntervalOverride !== undefined ||
+      sampleIntervalOverride !== undefined
     )
   ) {
     throw new Error(
       "one_hour soak duration and sampling cadence are canonical and cannot be overridden",
     );
   }
-  const requestedDurationMs = input.mode === "one_hour"
+  const requestedDurationMs = mode === "one_hour"
     ? ONE_HOUR_SOAK_DURATION_MS
-    : input.requestedDurationMs ?? 60_000;
-  if (input.mode === "smoke" && (requestedDurationMs < 30_000 || requestedDurationMs > 600_000)) {
+    : requestedDurationOverride ?? 60_000;
+  if (mode === "smoke" && (requestedDurationMs < 30_000 || requestedDurationMs > 600_000)) {
     throw new Error("smoke soak duration must be from 30 seconds through 10 minutes");
   }
-  const cycleIntervalMs = input.mode === "one_hour"
+  const cycleIntervalMs = mode === "one_hour"
     ? ONE_HOUR_SOAK_CYCLE_INTERVAL_MS
-    : input.cycleIntervalMs ?? 5_000;
+    : cycleIntervalOverride ?? 5_000;
   if (
-    input.sampleIntervalMs !== undefined &&
-    input.sampleIntervalMs !== cycleIntervalMs
+    sampleIntervalOverride !== undefined &&
+    sampleIntervalOverride !== cycleIntervalMs
   ) {
     throw new Error(
       "per-cycle soak sampling requires sampleIntervalMs to equal cycleIntervalMs",
@@ -108,6 +160,11 @@ export async function runReconnectSoak(input: {
   if (cycleIntervalMs < 100) {
     throw new Error("soak intervals must be at least 100 ms");
   }
+  const adapter = await createProductionReconnectSoakAdapter({
+    plan,
+    repoRoot,
+  });
+  const clock = realClock;
   const monotonicNow = (): number => clock.monotonicMs?.() ?? clock.nowMs();
   const startedWallMs = clock.nowMs();
   const startedMonotonicMs = monotonicNow();
@@ -125,7 +182,7 @@ export async function runReconnectSoak(input: {
     const binding: Binding = cycle % 2 === 0 ? "wss" : "streamable_http_sse";
     cycle += 1;
     try {
-      const observation = await input.adapter.churn(binding, cycle);
+      const observation = await adapter.churn(binding, cycle);
       exactObservation(observation);
       const passed =
         observation.reconnects >= 1 &&
@@ -146,7 +203,7 @@ export async function runReconnectSoak(input: {
         failure = { code: "soak_cycle_failed", message: `cycle ${cycle} did not preserve reconnect/proxy/journal invariants` };
         break;
       }
-      const sample = await input.adapter.sampleResources();
+      const sample = await adapter.sampleResources();
       const sampleMonotonicMs = monotonicNow();
       const resourceSample: ResourceSample = {
         index: samples.length,
@@ -156,8 +213,8 @@ export async function runReconnectSoak(input: {
       samples.push(resourceSample);
       metrics.push({
         schemaVersion: "rbp-reconnect-soak-metric/v1",
-        runId: input.runId,
-        mode: input.mode,
+        runId: plan.runId,
+        mode,
         cycle,
         binding,
         at: wallAt(sampleMonotonicMs),
@@ -185,11 +242,11 @@ export async function runReconnectSoak(input: {
   };
   let cleanupFailure: Error | undefined;
   try {
-    await input.adapter.close();
+    await adapter.close();
   } catch (error) {
     cleanupFailure = error instanceof Error ? error : new Error(String(error));
   }
-  const orphanProcessCount = await input.adapter.orphanProcessCount();
+  const orphanProcessCount = await adapter.orphanProcessCount();
   if (cleanupFailure !== undefined && failure === null) {
     failure = { code: "soak_cleanup_error", message: cleanupFailure.message };
   }
@@ -198,19 +255,30 @@ export async function runReconnectSoak(input: {
     failure = { code: "soak_resource_bound", message: "resource growth, slope, descriptor, journal, or orphan threshold was exceeded" };
   }
 
-  const metricsPath = template(canonicalManifest.retainedEvidence.soakMetrics, input.mode, input.runId);
-  const metricsBytes = Buffer.from(metrics.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
-  const store = new SecureEvidenceStore(input.artifactRoot);
+  const metricsPath = template(
+    canonicalManifest.retainedEvidence.soakMetrics,
+    mode,
+    plan.runId,
+  );
+  const metricsBytes = Buffer.from(
+    metrics.map((row) => JSON.stringify(row)).join("\n") + "\n",
+    "utf8",
+  );
+  const store = new SecureEvidenceStore(artifactRoot);
   const storedMetrics = store.write(metricsPath, metricsBytes);
   const actualDurationMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
   const report: SoakReport = {
     schemaVersion: "rbp-reconnect-soak/v1",
     manifest: { ...canonicalManifestIdentity },
-    mode: input.mode,
-    runId: input.runId,
+    mode,
+    runId: plan.runId,
     status: failure === null && actualDurationMs >= requestedDurationMs ? "passed" : "failed",
-    source: input.source,
-    components: input.components,
+    source: structuredClone(plan.source),
+    components: plan.components.map((component) => ({
+      id: component.id,
+      interfaceVersion: component.interfaceVersion,
+      identity: structuredClone(component.expectedIdentity),
+    })),
     startedAt: new Date(startedWallMs).toISOString(),
     finishedAt: wallAt(finishedMonotonicMs),
     requestedDurationMs,
@@ -226,7 +294,11 @@ export async function runReconnectSoak(input: {
     }],
     failure,
   };
-  const reportPath = template(canonicalManifest.retainedEvidence.soakReport, input.mode, input.runId);
+  const reportPath = template(
+    canonicalManifest.retainedEvidence.soakReport,
+    mode,
+    plan.runId,
+  );
   store.write(reportPath, stableJson(report));
   return { report, reportPath };
 }
