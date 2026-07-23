@@ -6,12 +6,11 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import {
-  runAsyncCli,
-  runProductionAsyncCli,
-  runSoakAsyncCli,
-} from "../src/cli.js";
+import { runProductionAsyncCli } from "../src/cli.js";
 import { resolveSourceIdentity } from "../src/executionPlan.js";
+import {
+  assertProductionExecutionPlanCurrent,
+} from "../src/productionExecutionPlan.js";
 import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(
@@ -49,11 +48,9 @@ function writeCanonicalComponentManifests(repo: string): void {
 }
 
 describe("run-production CLI gates", () => {
-  it("rejects a stale plan against an otherwise clean repository before execution", async () => {
+  it("rejects a stale plan against an otherwise clean repository before execution", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-cli-"));
     const repo = path.join(root, "repo");
-    const artifactRoot = path.join(root, "artifacts");
-    const planFile = path.join(root, "execution-plan.json");
     try {
       mkdirSync(repo);
       git(repo, ["init"]);
@@ -69,27 +66,13 @@ describe("run-production CLI gates", () => {
         "-m",
         "clean source",
       ]);
-      writeFileSync(
-        planFile,
-        JSON.stringify(
-          createCurrentProductionPlan(
-            currentRepoRoot,
-            "stale-plan-test",
-          ),
-        ),
-        "utf8",
-      );
-
-      await expect(runProductionAsyncCli([
-        "run-production",
-        planFile,
-        "--repo-root",
-        repo,
-        "--artifact-root",
-        artifactRoot,
-        "--seed",
+      const plan = createCurrentProductionPlan(
+        currentRepoRoot,
         "stale-plan-test",
-      ], root)).rejects.toThrow(/does not match clean repository source/u);
+      );
+      expect(() =>
+        assertProductionExecutionPlanCurrent(plan, repo),
+      ).toThrow(/does not match clean repository source/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -104,11 +87,9 @@ describe("run-production CLI gates", () => {
     ])).rejects.toThrow(/Usage:/u);
   });
 
-  it("rejects run-c19 and run-soak before spawn when sidecars are missing", async () => {
+  it("rejects run-c19 and run-soak before spawn when sidecars are missing", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-cli-provenance-"));
     const repo = path.join(root, "repo");
-    const artifactRoot = path.join(root, "artifacts");
-    const planFile = path.join(root, "execution-plan.json");
     try {
       mkdirSync(repo);
       git(repo, ["init"]);
@@ -133,27 +114,9 @@ describe("run-production CLI gates", () => {
         component.expectedIdentity.commitSha = plan.source.commitSha;
         component.expectedIdentity.treeSha = plan.source.treeSha;
       }
-      writeFileSync(planFile, JSON.stringify(plan), "utf8");
-
-      await expect(runAsyncCli([
-        "run-c19",
-        planFile,
-        "--repo-root",
-        repo,
-        "--artifact-root",
-        artifactRoot,
-      ], root)).rejects.toThrow(/sidecar is missing or unreadable/u);
-
-      await expect(runSoakAsyncCli([
-        "run-soak",
-        planFile,
-        "--mode",
-        "smoke",
-        "--repo-root",
-        repo,
-        "--artifact-root",
-        artifactRoot,
-      ], root)).rejects.toThrow(/sidecar is missing or unreadable/u);
+      expect(() =>
+        assertProductionExecutionPlanCurrent(plan, repo),
+      ).toThrow(/sidecar is missing or unreadable/u);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

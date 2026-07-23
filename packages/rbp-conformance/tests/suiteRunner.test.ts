@@ -1,21 +1,24 @@
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { runAsyncCli } from "../src/cli.js";
 import { executeSupervisedC19Run } from "../src/supervisedC19.js";
 import { verifyRunEvidenceFiles } from "../src/evidence.js";
 import { sha256File } from "../src/executionPlan.js";
 import { canonicalManifest } from "../src/manifest.js";
+import {
+  assertProductionExecutionPlanCurrent,
+} from "../src/productionExecutionPlan.js";
 import { stableJson } from "../src/stableJson.js";
 import type { ExecutionPlan } from "../src/types.js";
 import { validateRunReportStructure } from "../src/validator.js";
 import { createPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(packageRoot, "..", "..");
 const componentScript = path.join(packageRoot, "tests", "fixtures", "supervised-c19-component.mjs");
 
 function supervisedPlan(): ExecutionPlan {
@@ -169,25 +172,13 @@ describe("supervised C19 runner", () => {
     }
   }, 30_000);
 
-  it("refuses a fixture-only CLI plan that lacks production provenance", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-cli-"));
-    const planFile = path.join(root, "execution-plan.json");
-    writeFileSync(planFile, JSON.stringify(supervisedPlan()), "utf8");
-    try {
-      await expect(runAsyncCli([
-        "run-c19",
-        planFile,
-        "--repo-root",
-        packageRoot,
-        "--artifact-root",
-        root,
-        "--seed",
-        "supervised-c19-cli-test",
-      ], packageRoot)).rejects.toThrow(
-        /gateway_stub command does not match the canonical production descriptor/u,
+  it("refuses a fixture-only plan that lacks production provenance", () => {
+    expect(() =>
+      assertProductionExecutionPlanCurrent(
+        supervisedPlan(),
+        repoRoot,
+      )).toThrow(
+        /gateway_stub version, interface, or command does not match the canonical production descriptor/u,
       );
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
   });
 });

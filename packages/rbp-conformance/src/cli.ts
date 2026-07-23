@@ -57,19 +57,26 @@ const isDirectInvocation =
   );
 
 function assertDirectProductionCliPath(repoRoot: string): void {
-  if (isDirectInvocation && CLI_ENTRY_FILE !== undefined) {
-    assertProductionCliModulePath(repoRoot, CLI_ENTRY_FILE);
-    assertProductionCliModulePath(repoRoot, CLI_MODULE_FILE);
+  if (!isDirectInvocation || CLI_ENTRY_FILE === undefined) {
+    throw new Error(
+      "production evidence commands require direct invocation of the canonical CLI; " +
+      "imported CLI runners cannot produce or validate production evidence",
+    );
   }
+  assertProductionCliModulePath(repoRoot, CLI_ENTRY_FILE);
+  assertProductionCliModulePath(repoRoot, CLI_MODULE_FILE);
 }
 
 function assertDirectProductionCliBound(
   plan: ExecutionPlan,
   repoRoot: string,
 ): void {
-  if (isDirectInvocation) {
-    assertProductionCliHarnessBound(plan, repoRoot, CLI_MODULE_FILE);
+  if (!isDirectInvocation) {
+    throw new Error(
+      "production evidence commands require direct invocation of the canonical CLI",
+    );
   }
+  assertProductionCliHarnessBound(plan, repoRoot, CLI_MODULE_FILE);
 }
 
 function usage(): never {
@@ -382,7 +389,9 @@ export function assertFinalExecutionPlanIdentities(
   }
 }
 
-function assertPlansShareExactCandidate(plans: readonly ExecutionPlan[]): void {
+export function assertPlansShareExactCandidate(
+  plans: readonly ExecutionPlan[],
+): void {
   if (plans.length === 0) throw new Error("at least one production plan is required");
   const candidate = stableJson({
     manifest: plans[0]!.manifest,
@@ -525,6 +534,7 @@ function productionFinalEvidenceContext(
   ) {
     usage();
   }
+  assertDirectProductionCliPath(repoRoot);
   const planFiles = [
     aggregatePlanFiles.get(1)!,
     aggregatePlanFiles.get(2)!,
@@ -532,7 +542,6 @@ function productionFinalEvidenceContext(
     soakPlanFile,
   ] as [string, string, string, string];
   assertDistinctFinalExecutionPlanFiles(planFiles);
-  assertDirectProductionCliPath(repoRoot);
   const gatePlan = (planFile: string): ExecutionPlan => {
     const plan = readJson(planFile, cwd) as ExecutionPlan;
     assertProductionExecutionPlanCurrent(plan, repoRoot);
