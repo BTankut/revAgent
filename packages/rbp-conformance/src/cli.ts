@@ -9,6 +9,8 @@ import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
+import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
+import { runReconnectSoak } from "./soakRunner.js";
 import { assertPassingSoakReport } from "./soak.js";
 import type { AggregateInput, AggregateReport, ExecutionPlan, PassingValidationOptions, RunReport } from "./types.js";
 import {
@@ -24,6 +26,7 @@ function usage(): never {
     [
       "Usage:",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
+      "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
       "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
@@ -63,6 +66,56 @@ export async function runAsyncCli(args: string[], cwd: string = process.cwd()): 
     notRunCount: result.report.cases.filter(({ status }) => status === "not_run").length,
   })}\n`);
   process.exitCode = result.report.run.exitCode ?? 1;
+}
+
+export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd()): Promise<void> {
+  const [command, planFile, ...flags] = args;
+  if (command !== "run-soak" || planFile === undefined) usage();
+  let repoRoot = cwd;
+  let artifactRoot = cwd;
+  let mode: "smoke" | "one_hour" | undefined;
+  let requestedDurationMs: number | undefined;
+  let cycleIntervalMs: number | undefined;
+  for (let index = 0; index < flags.length; index += 2) {
+    const name = flags[index];
+    const value = flags[index + 1];
+    if (value === undefined) usage();
+    if (name === "--repo-root") repoRoot = resolveFrom(cwd, value);
+    else if (name === "--artifact-root") artifactRoot = resolveFrom(cwd, value);
+    else if (name === "--mode" && (value === "smoke" || value === "one_hour")) mode = value;
+    else if (name === "--duration-ms") requestedDurationMs = Number(value);
+    else if (name === "--cycle-interval-ms") cycleIntervalMs = Number(value);
+    else usage();
+  }
+  if (mode === undefined) usage();
+  if (mode === "one_hour" && requestedDurationMs !== undefined) {
+    throw new Error("one_hour soak duration is fixed and does not accept --duration-ms");
+  }
+  if (requestedDurationMs !== undefined && !Number.isSafeInteger(requestedDurationMs)) usage();
+  if (cycleIntervalMs !== undefined && !Number.isSafeInteger(cycleIntervalMs)) usage();
+  const plan = readJson(planFile, cwd) as ExecutionPlan;
+  const adapter = await createProductionReconnectSoakAdapter({ plan, repoRoot });
+  const result = await runReconnectSoak({
+    mode,
+    runId: plan.runId,
+    ...(requestedDurationMs === undefined ? {} : { requestedDurationMs }),
+    ...(cycleIntervalMs === undefined ? {} : { cycleIntervalMs }),
+    artifactRoot,
+    source: structuredClone(plan.source),
+    components: plan.components.map((component) => ({
+      id: component.id,
+      interfaceVersion: component.interfaceVersion,
+      identity: structuredClone(component.expectedIdentity),
+    })),
+    adapter,
+  });
+  process.stdout.write(`${stableJson({
+    reportPath: result.reportPath,
+    status: result.report.status,
+    actualDurationMs: result.report.actualDurationMs,
+    cycleCount: result.report.cycles.length,
+  })}\n`);
+  process.exitCode = result.report.status === "passed" ? 0 : 1;
 }
 
 function resolveFrom(cwd: string, file: string): string {
@@ -201,6 +254,7 @@ const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.r
 if (isDirectInvocation) {
   const main = async (): Promise<void> => {
     if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
+    else if (process.argv[2] === "run-soak") await runSoakAsyncCli(process.argv.slice(2));
     else runCli(process.argv.slice(2));
   };
   main().catch((error) => {

@@ -120,6 +120,7 @@ rbp-conformance junit <run-report.json> <junit.xml>
 rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
 rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
+rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]
 ```
 
 Validation commands are pass gates: a structurally valid but partially
@@ -127,6 +128,13 @@ executed report still exits nonzero. `run-c19` also exits nonzero by design
 because its retained report leaves 39 cases `not_run`. Fixture, simulator, and
 stub commands are supplied by the versioned `ExecutionPlan`; the supervisor,
 not an adapter or child process, performs every spawn and evaluation.
+
+`run-soak` starts and retains two independent production trios, one for WSS
+and one for Streamable HTTP/SSE. Both trios stay alive for the whole run while
+the parent alternates real socket backpressure, heartbeat acknowledgement,
+Bridge restart/reconnect/resume, control-plane probes, and six-process resource
+sampling. `one_hour` is hard-coded to 3,600,000 monotonic milliseconds and
+rejects a duration override.
 
 ## Retained evidence rules
 
