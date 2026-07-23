@@ -89,6 +89,46 @@ describe("supervised C19 runner", () => {
     }
   }, 30_000);
 
+  it("preserves runtime drift when instance-root cleanup also fails", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-cleanup-"));
+    const instanceRoots: string[] = [];
+    let runtimeGuardCalls = 0;
+    try {
+      const { report } = await executeSupervisedC19Run({
+        plan: supervisedPlan(),
+        repoRoot: packageRoot,
+        artifactRoot: root,
+        seed: "supervised-c19-cleanup-test",
+        runtimeLaunchGuard() {
+          runtimeGuardCalls += 1;
+          if (runtimeGuardCalls === 2) {
+            throw new Error("planned C19 primary runtime drift");
+          }
+        },
+        instanceRootRemover(instanceRoot) {
+          instanceRoots.push(instanceRoot);
+          throw new Error("planned C19 instance-root cleanup failure");
+        },
+      });
+      const c19 = report.cases.find(({ caseId }) => caseId === "O1-C19")!;
+      expect(c19.status).toBe("error");
+      expect(c19.failure).toMatchObject({
+        code: "supervised_process_error",
+      });
+      expect(c19.failure?.message).toMatch(/planned C19 primary runtime drift/u);
+      expect(c19.failure?.message).toMatch(
+        /planned C19 instance-root cleanup failure/u,
+      );
+      expect(runtimeGuardCalls).toBe(8);
+      expect(instanceRoots).toHaveLength(2);
+    } finally {
+      for (const instanceRoot of instanceRoots) {
+        rmSync(instanceRoot, { recursive: true, force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
   it("refuses a fixture-only CLI plan that lacks production provenance", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-cli-"));
     const planFile = path.join(root, "execution-plan.json");
@@ -104,7 +144,7 @@ describe("supervised C19 runner", () => {
         "--seed",
         "supervised-c19-cli-test",
       ], packageRoot)).rejects.toThrow(
-        /exactly clean source tree|does not match clean repository source|build provenance/u,
+        /gateway_stub command does not match the canonical production descriptor/u,
       );
     } finally {
       rmSync(root, { recursive: true, force: true });

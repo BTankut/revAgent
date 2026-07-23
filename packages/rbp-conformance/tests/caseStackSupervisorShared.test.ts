@@ -1,3 +1,4 @@
+import { rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -96,7 +97,20 @@ describe("shared production case-stack controls", () => {
             filesystemLocksCreated: 0,
           },
         });
-        expect((discovered as { sessions: unknown[] }).sessions).toHaveLength(2);
+        const sessions = (discovered as {
+          sessions: Array<{ target: { host: string; port: number } }>;
+        }).sessions;
+        const discoveredPorts = sessions.map(({ target }) => target.port);
+        const firstPort = Number(extra.result.firstPort);
+        const lastPort = Number(extra.result.lastPort);
+        expect(discoveredPorts).toContain(Number(supervisor.readiness().fixture.port));
+        expect(discoveredPorts).toContain(Number(extra.result.port));
+        expect(new Set(discoveredPorts).size).toBe(discoveredPorts.length);
+        expect(sessions.every(({ target }) =>
+          target.host === "127.0.0.1" &&
+          target.port >= firstPort &&
+          target.port <= lastPort)).toBe(true);
+        expect(sessions.length).toBeLessThanOrEqual(lastPort - firstPort + 1);
 
         const oldGatewayPid = supervisor.component("gateway_stub").pid;
         const gatewayRestart = await supervisor.restartComponent({
@@ -166,5 +180,83 @@ describe("shared production case-stack controls", () => {
     );
     expect(runtimeGuardCalls).toBe(2);
     expect(supervisor.active).toBe(false);
+  }, 30_000);
+
+  it("preserves runtime drift as primary when failed-start cleanup also fails", async () => {
+    let runtimeGuardCalls = 0;
+    const instanceRoots: string[] = [];
+    const supervisor = new CaseStackSupervisor({
+      plan: productionPlan("streamable_http_sse"),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 2) {
+          throw new Error("planned primary runtime drift");
+        }
+      },
+      instanceRootRemover(instanceRoot) {
+        instanceRoots.push(instanceRoot);
+        throw new Error("planned instance-root cleanup failure");
+      },
+    });
+    let failure: unknown;
+    try {
+      try {
+        await supervisor.restartCaseStack({
+          caseId: "O1-C04",
+          binding: "streamable_http_sse",
+          preserveState: false,
+        }, "shared.aggregate-failure", "restart_case_stack");
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      const errors = (failure as AggregateError).errors as Error[];
+      expect(errors).toHaveLength(2);
+      expect(errors[0]!.message).toMatch(/planned primary runtime drift/u);
+      expect(errors[1]!.message).toBe("planned instance-root cleanup failure");
+      expect(runtimeGuardCalls).toBe(2);
+      expect(supervisor.active).toBe(false);
+    } finally {
+      for (const instanceRoot of instanceRoots) {
+        rmSync(instanceRoot, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
+  it("does not retry an additional fixture after its post-readiness guard fails", async () => {
+    let runtimeGuardCalls = 0;
+    const supervisor = new CaseStackSupervisor({
+      plan: productionPlan("streamable_http_sse"),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 8) {
+          throw new Error("planned additional-fixture post-readiness drift");
+        }
+      },
+    });
+    try {
+      await supervisor.restartCaseStack({
+        caseId: "O1-C04",
+        binding: "streamable_http_sse",
+        preserveState: false,
+      }, "shared.additional-guard-stack", "restart_case_stack");
+      expect(runtimeGuardCalls).toBe(6);
+
+      await expect(supervisor.spawnAdditionalFixture(
+        "shared.additional-guard-failure",
+        "spawn_fixture_bind_probe",
+      )).rejects.toThrow(/planned additional-fixture post-readiness drift/u);
+      expect(runtimeGuardCalls).toBe(8);
+      expect(supervisor.pids).toHaveLength(3);
+    } finally {
+      if (supervisor.active) {
+        await supervisor.stopCaseStack(
+          "shared.additional-guard-stop",
+          "abort_and_drain",
+        );
+      }
+    }
   }, 30_000);
 });

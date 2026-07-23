@@ -371,6 +371,32 @@ async function stopAfterLaunchFailure(
   throw error;
 }
 
+class ProductionRuntimeLaunchGuardError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `production runtime launch guard failed: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
+    this.name = "ProductionRuntimeLaunchGuardError";
+  }
+}
+
+function retryableFixtureBindError(error: unknown): boolean {
+  if (error instanceof AggregateError) {
+    return error.errors.some((nested) => retryableFixtureBindError(nested));
+  }
+  if (!(error instanceof Error)) return false;
+  if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") return true;
+  if (/\bEADDRINUSE\b|address already in use/iu.test(error.message)) return true;
+  return error.cause !== undefined && retryableFixtureBindError(error.cause);
+}
+
+function normalizedError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
 function setCliListArgument(
   args: readonly string[],
   flag: string,
@@ -625,7 +651,7 @@ function replaceFixtureCliArguments(
   return { ...command, args };
 }
 
-async function runFixtureBindPolicyProcess(input: {
+export async function runFixtureBindPolicyProcess(input: {
   command: ProcessCommandDescriptor;
   cwd: string;
   environment: Readonly<Record<string, string | undefined>>;
@@ -637,25 +663,10 @@ async function runFixtureBindPolicyProcess(input: {
     shell: false,
     windowsHide: true,
   });
-  const pid = child.pid;
-  if (pid === undefined) throw new Error("fixture bind policy probe did not receive a child PID");
-  const stdout: Buffer[] = [];
-  const stderr: Buffer[] = [];
-  let stdoutBytes = 0;
-  let stderrBytes = 0;
-  let outputExceeded = false;
-  const append = (target: Buffer[], chunk: Buffer, stream: "stdout" | "stderr"): void => {
-    if (stream === "stdout") stdoutBytes += chunk.byteLength;
-    else stderrBytes += chunk.byteLength;
-    if (stdoutBytes + stderrBytes > MAX_BIND_PROBE_OUTPUT_BYTES) {
-      outputExceeded = true;
-      child.kill("SIGTERM");
-      return;
-    }
-    target.push(Buffer.from(chunk));
-  };
-  child.stdout.on("data", (chunk: Buffer) => append(stdout, chunk, "stdout"));
-  child.stderr.on("data", (chunk: Buffer) => append(stderr, chunk, "stderr"));
+  let launchError: Error | undefined;
+  child.once("error", (error) => {
+    launchError = error;
+  });
   const closed = new Promise<{ exitCode: number | null; signal: string | null }>((resolve) => {
     child.once("close", (exitCode, signal) => resolve({ exitCode, signal }));
   });
@@ -675,6 +686,36 @@ async function runFixtureBindPolicyProcess(input: {
       const timeout = setTimeout(() => finish(null), timeoutMs);
       void closed.then(finish);
     });
+  const stdout: Buffer[] = [];
+  const stderr: Buffer[] = [];
+  let stdoutBytes = 0;
+  let stderrBytes = 0;
+  let outputExceeded = false;
+  const append = (target: Buffer[], chunk: Buffer, stream: "stdout" | "stderr"): void => {
+    if (stream === "stdout") stdoutBytes += chunk.byteLength;
+    else stderrBytes += chunk.byteLength;
+    if (stdoutBytes + stderrBytes > MAX_BIND_PROBE_OUTPUT_BYTES) {
+      outputExceeded = true;
+      child.kill("SIGTERM");
+      return;
+    }
+    target.push(Buffer.from(chunk));
+  };
+  child.stdout.on("data", (chunk: Buffer) => append(stdout, chunk, "stdout"));
+  child.stderr.on("data", (chunk: Buffer) => append(stderr, chunk, "stderr"));
+  const pid = child.pid;
+  if (pid === undefined) {
+    let terminal = await waitForClose(1_000);
+    if (terminal === null) {
+      child.kill("SIGKILL");
+      terminal = await waitForClose(1_000);
+    }
+    const failure =
+      launchError ?? new Error("fixture bind policy probe did not receive a child PID");
+    throw new Error(`fixture bind policy probe failed to launch: ${failure.message}`, {
+      cause: failure,
+    });
+  }
   let timedOut = false;
   let terminal = await waitForClose(3_000);
   if (terminal === null) {
@@ -687,6 +728,11 @@ async function runFixtureBindPolicyProcess(input: {
     terminal = await waitForClose(2_000);
   }
   terminal ??= { exitCode: null, signal: "survived_cleanup" };
+  if (launchError !== undefined) {
+    throw new Error(`fixture bind policy probe failed to launch: ${launchError.message}`, {
+      cause: launchError,
+    });
+  }
   const stdoutBuffer = Buffer.concat(stdout);
   const stderrBuffer = Buffer.concat(stderr);
   const stderrText = stderrBuffer.toString("utf8");
@@ -911,6 +957,7 @@ export interface CaseStackSupervisorOptions {
   repoRoot: string;
   environment?: Readonly<Record<string, string | undefined>>;
   runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
+  instanceRootRemover?: (instanceRoot: string) => void;
 }
 
 export interface FixtureBindPolicyProbeInput {
@@ -978,6 +1025,7 @@ export class CaseStackSupervisor {
   readonly #repoRoot: string;
   readonly #environment: Readonly<Record<string, string | undefined>>;
   readonly #runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
+  readonly #instanceRootRemover: (instanceRoot: string) => void;
   #active: ActiveStack | null = null;
   #observationOrdinal = 0;
 
@@ -987,10 +1035,17 @@ export class CaseStackSupervisor {
     this.#environment = { ...(options.environment ?? {}) };
     this.#runtimeLaunchGuard =
       options.runtimeLaunchGuard ?? assertProductionRuntimeLaunchCurrent;
+    this.#instanceRootRemover =
+      options.instanceRootRemover ??
+      ((instanceRoot) => rmSync(instanceRoot, { recursive: true, force: true }));
   }
 
   #assertRuntimeLaunchCurrent(): void {
-    this.#runtimeLaunchGuard(this.#plan, this.#repoRoot);
+    try {
+      this.#runtimeLaunchGuard(this.#plan, this.#repoRoot);
+    } catch (error) {
+      throw new ProductionRuntimeLaunchGuardError(error);
+    }
   }
 
   get active(): boolean {
@@ -1244,8 +1299,19 @@ export class CaseStackSupervisor {
         else stack.tlsIdentity = replacementTlsIdentity;
         stack.components.set(input.componentId, replacement);
       } catch (error) {
-        await replacementProxy?.stop().catch(() => undefined);
-        await replacement.stop().catch(() => undefined);
+        const cleanupErrors: Error[] = [];
+        await replacementProxy?.stop().catch((cleanupError: unknown) => {
+          cleanupErrors.push(normalizedError(cleanupError));
+        });
+        await replacement.stop().catch((cleanupError: unknown) => {
+          cleanupErrors.push(normalizedError(cleanupError));
+        });
+        if (cleanupErrors.length > 0) {
+          throw new AggregateError(
+            [error, ...cleanupErrors],
+            "gateway restart failed and replacement cleanup was incomplete",
+          );
+        }
         throw error;
       }
       return {
@@ -1353,10 +1419,19 @@ export class CaseStackSupervisor {
         }
         fixtures = attemptFixtures;
         selectedPorts = attemptPorts;
-      } catch {
-        await Promise.allSettled(
+      } catch (error) {
+        const cleanup = await Promise.allSettled(
           [...attemptFixtures].reverse().map(async (fixture) => await fixture.stop()),
         );
+        const cleanupErrors = cleanup.flatMap((result) =>
+          result.status === "rejected" ? [normalizedError(result.reason)] : []);
+        if (cleanupErrors.length > 0) {
+          throw new AggregateError(
+            [error, ...cleanupErrors],
+            "additional fixture start failed and cleanup was incomplete",
+          );
+        }
+        if (!retryableFixtureBindError(error)) throw error;
       }
     }
     if (fixtures.length !== count) {
@@ -2013,7 +2088,11 @@ export class CaseStackSupervisor {
         [...components.values(), ...extraFixtures].map(({ pid }) => pid),
       );
       if (survivors.length === 0) {
-        rmSync(instanceRoot, { recursive: true, force: true });
+        try {
+          this.#instanceRootRemover(instanceRoot);
+        } catch (cleanupError) {
+          cleanupErrors.push(normalizedError(cleanupError));
+        }
       } else {
         cleanupErrors.push(
           new Error(`failed stack start left orphan processes: ${survivors.join(", ")}`),
@@ -2035,7 +2114,7 @@ export class CaseStackSupervisor {
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
     const stack = this.#stack();
     const killEscalated = new Map<ComponentId, boolean>();
-    let firstError: Error | undefined;
+    const teardownErrors: Error[] = [];
     const components = [...stack.components.values(), ...stack.extraFixtures];
     for (const component of [...components].reverse()) {
       stack.stopOrder.push(component.componentId);
@@ -2044,14 +2123,14 @@ export class CaseStackSupervisor {
         killEscalated.set(component.componentId, stopped.killEscalated);
       } catch (error) {
         killEscalated.set(component.componentId, true);
-        firstError ??= error instanceof Error ? error : new Error(String(error));
+        teardownErrors.push(normalizedError(error));
       }
     }
     await stack.gatewayProxy.stop().catch((error: unknown) => {
-      firstError ??= error instanceof Error ? error : new Error(String(error));
+      teardownErrors.push(normalizedError(error));
     });
     await stack.fixtureProxy.stop().catch((error: unknown) => {
-      firstError ??= error instanceof Error ? error : new Error(String(error));
+      teardownErrors.push(normalizedError(error));
     });
     const pids = components.map(({ pid }) => pid);
     const survivors = await waitForNoSurvivors(pids);
@@ -2072,11 +2151,23 @@ export class CaseStackSupervisor {
     };
     this.#active = null;
     if (!stack.preserveState && survivors.length === 0) {
-      rmSync(stack.instanceRoot, { recursive: true, force: true });
+      try {
+        this.#instanceRootRemover(stack.instanceRoot);
+      } catch (error) {
+        teardownErrors.push(normalizedError(error));
+      }
     }
-    if (firstError !== undefined) throw firstError;
     if (survivors.length > 0) {
-      throw new Error(`case stack left orphan processes: ${survivors.join(", ")}`);
+      teardownErrors.push(
+        new Error(`case stack left orphan processes: ${survivors.join(", ")}`),
+      );
+    }
+    if (teardownErrors.length === 1) throw teardownErrors[0];
+    if (teardownErrors.length > 1) {
+      throw new AggregateError(
+        teardownErrors,
+        "case stack teardown encountered multiple failures",
+      );
     }
     return { result, observations };
   }

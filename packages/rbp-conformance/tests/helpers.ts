@@ -11,10 +11,12 @@ import {
   runReportToJUnitXml,
   stableJson,
 } from "../src/index.js";
+import { resolvePowerShellIdentity } from "../src/productionRuntimeIdentity.js";
 import type {
   AggregateReport,
   AggregateInput,
   ArtifactEvidence,
+  ComponentBuildProvenanceIdentity,
   ExecutionPlan,
   RunReport,
 } from "../src/index.js";
@@ -25,6 +27,92 @@ const TREE_SHA = "2".repeat(40);
 
 function hashFor(value: number): string {
   return value.toString(16).padStart(64, "0");
+}
+
+let productionPowerShellIdentity:
+  | ReturnType<typeof resolvePowerShellIdentity>
+  | undefined;
+let productionPowerShellIdentityResolved = false;
+
+function currentProductionPowerShellIdentity(): ReturnType<
+  typeof resolvePowerShellIdentity
+> {
+  if (!productionPowerShellIdentityResolved) {
+    productionPowerShellIdentity = resolvePowerShellIdentity();
+    productionPowerShellIdentityResolved = true;
+  }
+  return productionPowerShellIdentity ?? null;
+}
+
+function testProductionBuildProvenance(
+  seed: number,
+  powershell: ReturnType<typeof resolvePowerShellIdentity>,
+): ComponentBuildProvenanceIdentity {
+  const hash = hashFor(seed);
+  const toolchainHash = "f".repeat(64);
+  const packageIdentity = {
+    name: "package",
+    version: "1.0.0",
+    packagePath: "node_modules/package",
+    fileCount: 1,
+    filesSha256: toolchainHash,
+    nativeFileCount: 0,
+    nativeFilesSha256: toolchainHash,
+  };
+  const node = {
+    path: "C:/node.exe",
+    realPath: "C:/node.exe",
+    sha256: toolchainHash,
+    version: "v22.0.0",
+    platform: "win32",
+    arch: "x64",
+    modulesAbi: "127",
+    napiVersion: "10",
+  };
+  return {
+    schemaVersion: "rbp-production-build-provenance/v2",
+    buildContractVersion: "rbp-production-typescript-build/v2",
+    sidecarPath: `packages/component-${String(seed)}/dist/rbp-build-provenance.json`,
+    sidecarSha256: hash,
+    compileInputsSha256: hash,
+    runtimeArtifactsSha256: hash,
+    runtimeDependenciesSha256: hash,
+    harnessArtifactsSha256: hash,
+    harnessRuntimeDependenciesSha256: hash,
+    toolchain: {
+      buildNode: node,
+      runtimeNode: node,
+      npmLauncher: {
+        path: "C:/npm/npm-cli.js",
+        realPath: "C:/npm/npm-cli.js",
+        sha256: toolchainHash,
+        package: { ...packageIdentity, name: "npm" },
+      },
+      typescript: {
+        package: { ...packageIdentity, name: "typescript", version: "5.8.2" },
+        entrypointPath: "node_modules/typescript/lib/tsc.js",
+        entrypointSha256: toolchainHash,
+      },
+      git: {
+        path: "C:/git.exe",
+        realPath: "C:/git.exe",
+        sha256: toolchainHash,
+        version: "git version 2.50.0",
+      },
+      powershell,
+    },
+  };
+}
+
+export function attachCurrentProductionToolchainProvenance(
+  plan: ExecutionPlan,
+): ExecutionPlan {
+  const powershell = currentProductionPowerShellIdentity();
+  plan.components.forEach((component, index) => {
+    component.expectedIdentity.buildProvenance =
+      testProductionBuildProvenance(index + 1, powershell);
+  });
+  return plan;
 }
 
 export function createPlan(sequence: 1 | 2 | 3 = 1): ExecutionPlan {

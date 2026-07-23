@@ -153,7 +153,14 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
       }
       return adapter;
     } catch (error) {
-      await adapter.close().catch(() => undefined);
+      try {
+        await adapter.close();
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "production soak setup failed and supervised cleanup was incomplete",
+        );
+      }
       throw error;
     }
   }

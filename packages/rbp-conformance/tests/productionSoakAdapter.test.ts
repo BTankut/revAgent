@@ -7,13 +7,16 @@ import { sha256File } from "../src/executionPlan.js";
 import { productionComponentLaunchConfigs } from "../src/productionExecutionPlan.js";
 import { createProductionReconnectSoakAdapter } from "../src/productionSoakAdapter.js";
 import type { ExecutionPlan } from "../src/types.js";
-import { createPlan } from "./helpers.js";
+import {
+  attachCurrentProductionToolchainProvenance,
+  createPlan,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(): ExecutionPlan {
-  const plan = createPlan();
+  const plan = attachCurrentProductionToolchainProvenance(createPlan());
   plan.runId = "production-soak-adapter";
   const launchConfigs = productionComponentLaunchConfigs(repoRoot);
   for (const component of plan.components) {

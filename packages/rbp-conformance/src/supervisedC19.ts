@@ -77,6 +77,7 @@ export interface SupervisedC19RunInput {
   artifactRoot: string;
   seed: string;
   runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
+  instanceRootRemover?: (instanceRoot: string) => void;
 }
 
 export interface SupervisedC19RunResult {
@@ -648,12 +649,14 @@ async function runBinding(input: {
   repoRoot: string;
   binding: Binding;
   runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
+  instanceRootRemover: (instanceRoot: string) => void;
 }): Promise<BindingExecution> {
   const startedMs = Date.now();
   const instanceRoot = privateTempDirectory(input.plan.runId, input.binding);
   const started: StartedComponent[] = [];
   const observations: ProcessObservationRecord[] = [];
-  let error: Error | undefined;
+  let primaryError: Error | undefined;
+  const cleanupErrors: Error[] = [];
   try {
     const tokens: Record<string, string> = {
       run_id: input.plan.runId,
@@ -705,13 +708,13 @@ async function runBinding(input: {
       await collectFixtureCounts(fixtureControl),
     ));
   } catch (caught) {
-    error = caught instanceof Error ? caught : new Error(String(caught));
+    primaryError = caught instanceof Error ? caught : new Error(String(caught));
   } finally {
     for (const component of [...started].reverse()) {
       try {
         await component.stop();
       } catch (caught) {
-        error ??= caught instanceof Error ? caught : new Error(String(caught));
+        cleanupErrors.push(caught instanceof Error ? caught : new Error(String(caught)));
       }
     }
     observations.push(...started.map((component) => lifecycleObservation(
@@ -719,7 +722,25 @@ async function runBinding(input: {
       input.binding,
       component,
     )));
-    rmSync(instanceRoot, { recursive: true, force: true });
+    try {
+      input.instanceRootRemover(instanceRoot);
+    } catch (caught) {
+      cleanupErrors.push(caught instanceof Error ? caught : new Error(String(caught)));
+    }
+  }
+  let error: Error | undefined;
+  if (primaryError !== undefined && cleanupErrors.length > 0) {
+    error = new AggregateError(
+      [primaryError, ...cleanupErrors],
+      `supervised C19 binding failed and cleanup was incomplete: ${primaryError.message}; ` +
+      `cleanup failures: ${cleanupErrors.map(({ message }) => message).join("; ")}`,
+    );
+  } else if (primaryError !== undefined) {
+    error = primaryError;
+  } else if (cleanupErrors.length === 1) {
+    error = cleanupErrors[0];
+  } else if (cleanupErrors.length > 1) {
+    error = new AggregateError(cleanupErrors, "supervised C19 binding cleanup failed");
   }
   return { binding: input.binding, observations, durationMs: Date.now() - startedMs, ...(error === undefined ? {} : { error }) };
 }
@@ -741,12 +762,16 @@ export async function executeSupervisedC19Run(input: SupervisedC19RunInput): Pro
   const executions: BindingExecution[] = [];
   const runtimeLaunchGuard =
     input.runtimeLaunchGuard ?? assertProductionRuntimeLaunchCurrent;
+  const instanceRootRemover =
+    input.instanceRootRemover ??
+    ((instanceRoot: string) => rmSync(instanceRoot, { recursive: true, force: true }));
   for (const binding of result.bindings.map(({ binding }) => binding)) {
     executions.push(await runBinding({
       plan: input.plan,
       repoRoot: input.repoRoot,
       binding,
       runtimeLaunchGuard,
+      instanceRootRemover,
     }));
   }
 

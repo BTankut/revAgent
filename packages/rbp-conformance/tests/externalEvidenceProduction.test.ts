@@ -3,7 +3,10 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { CaseStackSupervisor } from "../src/caseStackSupervisor.js";
+import {
+  CaseStackSupervisor,
+  runFixtureBindPolicyProcess,
+} from "../src/caseStackSupervisor.js";
 import { caseProgram } from "../src/casePrograms.js";
 import { canonicalManifest } from "../src/manifest.js";
 import { executeParentSteps } from "../src/parentStepEngine.js";
@@ -17,13 +20,16 @@ import type {
   ExecutionPlan,
   ProcessObservationRecord,
 } from "../src/types.js";
-import { createPlan } from "./helpers.js";
+import {
+  attachCurrentProductionToolchainProvenance,
+  createPlan,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
 
 function productionPlan(caseId: "O1-C33" | "O1-C40"): ExecutionPlan {
-  const plan = createPlan();
+  const plan = attachCurrentProductionToolchainProvenance(createPlan());
   plan.runId = `external-evidence-${caseId.toLowerCase()}`;
   const launchConfigs = productionComponentLaunchConfigs(repoRoot);
   for (const component of plan.components) {
@@ -82,6 +88,32 @@ function containsForbiddenVerdictKey(value: unknown): boolean {
 }
 
 describe("C33/C40 external production evidence", () => {
+  it("turns a direct-probe spawn error into a deterministic launch failure", async () => {
+    await expect(runFixtureBindPolicyProcess({
+      command: {
+        executable: path.join(repoRoot, ".missing-c33-probe-executable"),
+        args: [],
+        workingDirectory: ".",
+        environmentKeys: [],
+        readiness: {
+          kind: "stdout_pattern",
+          value: "json",
+          timeoutMs: 1_000,
+        },
+        shutdown: {
+          signal: "SIGTERM",
+          timeoutMs: 1_000,
+        },
+      },
+      cwd: repoRoot,
+      environment: {},
+      probe: {
+        host: "0.0.0.0",
+        allowUnsafeBind: false,
+      },
+    })).rejects.toThrow(/fixture bind policy probe failed to launch:.*ENOENT/u);
+  });
+
   it("fails closed when the C33 direct probe post-exit guard detects drift", async () => {
     const plan = productionPlan("O1-C33");
     let runtimeGuardCalls = 0;
