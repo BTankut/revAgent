@@ -27,6 +27,7 @@ export interface SoakCycleObservation {
 export interface ReconnectSoakAdapter {
   churn(binding: Binding, cycle: number): Promise<SoakCycleObservation>;
   sampleResources(): Promise<Omit<ResourceSample, "index" | "offsetMs">>;
+  close(): Promise<void>;
   orphanProcessCount(): Promise<number>;
 }
 
@@ -152,7 +153,16 @@ export async function runReconnectSoak(input: {
     samples,
     evaluation: null,
   };
+  let cleanupFailure: Error | undefined;
+  try {
+    await input.adapter.close();
+  } catch (error) {
+    cleanupFailure = error instanceof Error ? error : new Error(String(error));
+  }
   const orphanProcessCount = await input.adapter.orphanProcessCount();
+  if (cleanupFailure !== undefined && failure === null) {
+    failure = { code: "soak_cleanup_error", message: cleanupFailure.message };
+  }
   resources.evaluation = evaluateResourceSamples(resources, orphanProcessCount);
   if (!resources.evaluation.passed && failure === null) {
     failure = { code: "soak_resource_bound", message: "resource growth, slope, descriptor, journal, or orphan threshold was exceeded" };

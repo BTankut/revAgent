@@ -23,6 +23,7 @@ describe("executable reconnect/proxy-churn soak runner", () => {
       },
     };
     let samples = 0;
+    let closed = false;
     const commitSha = "1".repeat(40);
     const treeSha = "2".repeat(40);
     try {
@@ -51,12 +52,14 @@ describe("executable reconnect/proxy-churn soak runner", () => {
             openFileDescriptorCount: 20,
             journalPendingCount: 0,
           }),
+          close: async () => { closed = true; },
           orphanProcessCount: async () => 0,
         },
         clock,
       });
       expect(report.status).toBe("passed");
       expect(report.actualDurationMs).toBe(30_000);
+      expect(closed).toBe(true);
       expect(report.cycles.map(({ binding }) => binding)).toEqual(expect.arrayContaining(["wss", "streamable_http_sse"]));
       expect(evaluatePassingSoak(report, { verifyArtifactFiles: true, artifactRoot: root }).ok).toBe(true);
     } finally {
