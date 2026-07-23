@@ -25,6 +25,11 @@ export const RAW_PRODUCTION_CASES = [
 
 export type RawProductionCaseId = (typeof RAW_PRODUCTION_CASES)[number];
 
+export const C27_RECONNECT_JITTER_UNITS = Object.freeze(
+  Array.from({ length: 9 }, () => 0.999999),
+);
+export const C27_OPENING_FAILURE_COUNT = 8 as const;
+
 export interface RawProductionRuntimeSeed {
   readonly binding?: Binding;
   readonly deviceToken?: string;
@@ -817,6 +822,8 @@ function rawVectors(): Record<string, JsonValue> {
       delete payload.addin_versions;
       return frame;
     })(),
+    c27_reconnect_jitter_units: [...C27_RECONNECT_JITTER_UNITS],
+    c27_opening_failure_count: C27_OPENING_FAILURE_COUNT,
     ...c28Vectors(),
     c29: c29Vectors(),
     c30,

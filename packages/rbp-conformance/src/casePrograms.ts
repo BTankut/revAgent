@@ -44,6 +44,8 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "clearance_for_hold",
   "inject_crash",
   "restart_simulator",
+  "configure_reconnect_conformance",
+  "advance_reconnect_conformance_clock",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -1147,24 +1149,62 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   {
     caseId: "O1-C27",
     controls: [
+      bridge("o1-c27.configure-backoff", "configure_reconnect_conformance", args({
+        mode: "deterministic_virtual_clock",
+        jitterUnits: "{{vectors.c27_reconnect_jitter_units}}",
+      }), "setup"),
       ...sessionSetup("O1-C27"),
+      gateway("o1-c27.opening-faults", "enqueue_opening_fault", byBinding(
+        {
+          rule: {
+            binding: "wss",
+            status: 503,
+            remaining: "{{vectors.c27_opening_failure_count}}",
+          },
+        },
+        {
+          rule: {
+            binding: "http_sse",
+            status: 503,
+            remaining: "{{vectors.c27_opening_failure_count}}",
+          },
+        },
+      )),
       gateway("o1-c27.disconnect", "disconnect", args({ connection_id: "{{case.connection_id}}" })),
       harness("o1-c27.await-attempts", "await_condition", args({
         source: "bridge_reconnect_schedule",
-        jsonPointer: "/attempts",
-        operator: "minimum_count",
-        expected: 8,
-        timeoutMs: 180_000,
-      }), "stimulus", 190_000),
-      harness("o1-c27.await-steady-reset", "await_condition", args({
-        source: "bridge_reconnect_schedule",
-        jsonPointer: "/steadyDurationMs",
-        operator: "crosses",
-        expected: 120_000,
-        timeoutMs: 130_000,
-      }), "stimulus", 140_000),
+        jsonPointer: "/reconnectConformance/attempts",
+        operator: "count_equals",
+        expected: 9,
+        timeoutMs: 15_000,
+      }), "stimulus", 20_000),
+      harness("o1-c27.await-resume-ack", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      bridge("o1-c27.after-attempts", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c27.advance-before-reset", "advance_reconnect_conformance_clock", args({
+        advanceByMs: 119_999,
+        heartbeatStepMs: 30_000,
+      }), "stimulus"),
+      bridge("o1-c27.before-reset", "snapshot_evidence", args(), "observation"),
+      bridge("o1-c27.advance-to-reset", "advance_reconnect_conformance_clock", args({
+        advanceByMs: 1,
+        heartbeatStepMs: 1,
+      }), "stimulus"),
+      bridge("o1-c27.after-reset", "snapshot_evidence", args(), "observation"),
     ],
-    requiredHarnessCapabilities: ["deterministic_random", "reconnect_schedule_capture", "steady_duration_control"],
+    requiredHarnessCapabilities: [
+      "deterministic_random",
+      "virtual_clock",
+      "gateway_opening_fault_injection",
+      "reconnect_schedule_capture",
+      "steady_duration_control",
+      "heartbeat_wire_capture",
+    ],
   },
   {
     caseId: "O1-C28",

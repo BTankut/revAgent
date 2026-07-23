@@ -83,6 +83,8 @@ Action fields, in addition to the base fields, are exact:
 | `clearance_for_hold` | `rsid`, `holdId` | — |
 | `inject_crash` | `point` | — |
 | `restart_simulator` | — | — |
+| `configure_reconnect_conformance` | `mode`, `jitterUnits` | — |
+| `advance_reconnect_conformance_clock` | `advanceByMs`, `heartbeatStepMs` | — |
 | `snapshot_evidence` | — | continuation-only `snapshotId` and `cursor` |
 | `shutdown` | — | — |
 
@@ -109,3 +111,15 @@ guards before being returned. Snapshot pages carry at most one retained carrier;
 descriptor content-type text is capped at 128 characters with its full digest
 and truncation flag retained. Shutdown closes transports, loopback clients, the
 run loop, and SQLite, then reports the corresponding zero-leak counters.
+
+The reconnect conformance controls are an explicit test-only clock/RNG seam.
+`configure_reconnect_conformance` is accepted exactly once and only before
+`open_transport`; its mode must be `deterministic_virtual_clock` and every
+bounded jitter sample must be in `[0,1)`. Only that configured path replaces
+the peer's normal `Math.random` and real timer with deterministic sampling and
+a virtual sleep. `advance_reconnect_conformance_clock` remains gated on a real
+successful reconnect and live run loop, advances through at most 30-second
+heartbeat steps, waits for real Gateway heartbeat acknowledgements, and refuses
+to move beyond the 120-second steady boundary. Snapshot evidence reports the
+actual zero-based reconnect callback/sleep trace and peer reset transitions;
+it never reports a verdict or a self-declared pass.

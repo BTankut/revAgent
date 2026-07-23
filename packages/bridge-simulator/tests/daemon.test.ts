@@ -200,6 +200,8 @@ describe("long-lived Bridge JSONL daemon", () => {
       "clearance_for_hold",
       "inject_crash",
       "restart_simulator",
+      "configure_reconnect_conformance",
+      "advance_reconnect_conformance_clock",
       "snapshot_evidence",
       "shutdown",
     ]);

@@ -5,6 +5,7 @@ import type {
 } from "./canonicalEvaluators.js";
 import { canonicalManifest } from "./manifest.js";
 import {
+  C27_RECONNECT_JITTER_UNITS,
   RAW_PRODUCTION_CASES,
   rawProductionFrameFact,
 } from "./productionCaseSeedsRaw.js";
@@ -34,10 +35,6 @@ function stringValue(value: unknown): string | null {
 
 function numberValue(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
-}
-
-function boolValue(value: unknown): boolean | null {
-  return typeof value === "boolean" ? value : null;
 }
 
 function pathValue(value: unknown, path: readonly string[]): unknown {
@@ -399,6 +396,141 @@ function fixtureCount(
       invocation.test(key) && value === expected));
 }
 
+interface C27SnapshotEvidence {
+  readonly payload: ObjectValue;
+  readonly reconnect: ObjectValue;
+  readonly peer: ObjectValue;
+  readonly attempts: readonly ObjectValue[];
+  readonly steady: readonly ObjectValue[];
+}
+
+function c27SnapshotAt(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): C27SnapshotEvidence | null {
+  const matches = observations(context, "bridge_snapshot").filter((record) => {
+    const payload = objectValue(record.payload);
+    return record.componentId === "bridge_simulator" &&
+      payload?.stepId === stepId &&
+      payload.action === "snapshot_evidence";
+  });
+  if (matches.length !== 1) return null;
+  const payload = objectValue(matches[0]!.payload);
+  const reconnect = objectValue(payload?.reconnectConformance);
+  const peer = objectValue(payload?.peer);
+  if (
+    payload === null ||
+    reconnect === null ||
+    peer === null ||
+    payload.componentContract !== "bridge-simulator-control/v1" ||
+    reconnect.schemaVersion !== "rbp-reconnect-conformance/v1" ||
+    reconnect.mode !== "deterministic_virtual_clock"
+  ) {
+    return null;
+  }
+  const attempts = arrayValue(reconnect.attempts)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  const steady = arrayValue(reconnect.steadyObservations)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  if (
+    attempts.length !== arrayValue(reconnect.attempts).length ||
+    steady.length !== arrayValue(reconnect.steadyObservations).length
+  ) {
+    return null;
+  }
+  return { payload, reconnect, peer, attempts, steady };
+}
+
+function c27BackoffLimit(attemptIndex: number): number {
+  return attemptIndex >= 6 ? 60_000 : 1_000 * (2 ** attemptIndex);
+}
+
+function exactC27AttemptTrace(evidence: C27SnapshotEvidence): boolean {
+  if (
+    evidence.reconnect.configuredSampleCount !== C27_RECONNECT_JITTER_UNITS.length ||
+    evidence.reconnect.consumedSampleCount !== C27_RECONNECT_JITTER_UNITS.length ||
+    evidence.reconnect.pendingSample !== null ||
+    evidence.attempts.length !== C27_RECONNECT_JITTER_UNITS.length
+  ) {
+    return false;
+  }
+  let previousClockAfter: number | null = null;
+  for (const [attemptIndex, attempt] of evidence.attempts.entries()) {
+    const jitterUnit = C27_RECONNECT_JITTER_UNITS[attemptIndex]!;
+    const limit = c27BackoffLimit(attemptIndex);
+    const expectedDelay = Math.floor(jitterUnit * (limit + 1));
+    const clockBefore = numberValue(attempt.clockBeforeSleepMs);
+    const clockAfter = numberValue(attempt.clockAfterSleepMs);
+    if (
+      attempt.attemptIndex !== attemptIndex ||
+      attempt.jitterUnit !== jitterUnit ||
+      attempt.backoffLimitMs !== limit ||
+      attempt.delayMs !== expectedDelay ||
+      clockBefore === null ||
+      clockAfter === null ||
+      !Number.isSafeInteger(clockBefore) ||
+      !Number.isSafeInteger(clockAfter) ||
+      clockAfter - clockBefore !== expectedDelay ||
+      (previousClockAfter !== null && clockBefore !== previousClockAfter)
+    ) {
+      return false;
+    }
+    previousClockAfter = clockAfter;
+    const failed = attemptIndex < C27_RECONNECT_JITTER_UNITS.length - 1;
+    if (failed) {
+      if (
+        attempt.outcome !== "opening_failed" ||
+        attempt.faultClass !== "retryable_network" ||
+        typeof attempt.errorMessage !== "string" ||
+        attempt.errorMessage.length < 1 ||
+        attempt.connectionId !== null
+      ) {
+        return false;
+      }
+    } else if (
+      attempt.outcome !== "connected" ||
+      attempt.faultClass !== null ||
+      attempt.errorMessage !== null ||
+      typeof attempt.connectionId !== "string" ||
+      attempt.connectionId.length < 1
+    ) {
+      return false;
+    }
+  }
+  const terminal = evidence.attempts.at(-1)!;
+  return evidence.reconnect.successfulReconnectAtMs === terminal.clockAfterSleepMs &&
+    evidence.peer.connectionId === terminal.connectionId &&
+    evidence.peer.retrySuppressedFault === null &&
+    evidence.peer.runLoopError === null;
+}
+
+function exactSteadyObservation(
+  value: ObjectValue,
+  input: {
+    readonly durationMs: number;
+    readonly attemptBefore: number;
+    readonly attemptAfter: number;
+    readonly reset: boolean;
+  },
+): boolean {
+  const clockMs = numberValue(value.clockMs);
+  const lastHeartbeatAckAtMs = numberValue(value.lastHeartbeatAckAtMs);
+  return clockMs !== null &&
+    lastHeartbeatAckAtMs !== null &&
+    Number.isSafeInteger(clockMs) &&
+    Number.isSafeInteger(lastHeartbeatAckAtMs) &&
+    lastHeartbeatAckAtMs <= clockMs &&
+    clockMs - lastHeartbeatAckAtMs < 35_000 &&
+    value.steadyDurationMs === input.durationMs &&
+    value.livenessBeforeTick === "steady" &&
+    value.livenessAfterTick === "steady" &&
+    value.reconnectAttemptIndexBefore === input.attemptBefore &&
+    value.reconnectAttemptIndexAfter === input.attemptAfter &&
+    value.reset === input.reset;
+}
+
 const entries: Array<readonly [string, CanonicalAssertionOracle]> = [];
 
 function define(assertionId: string, oracle: CanonicalAssertionOracle): void {
@@ -438,37 +570,88 @@ define("O1-C26-BREAKING-CHANGE-REJECTED", exactSchemaRejected(
 
 define(
   "O1-C27-FULL-JITTER-BOUNDS",
-  semanticEvent(["wire_event", "bridge_snapshot"], (candidate) => {
-    const attempt = numberValue(candidate.attemptIndex ?? candidate.attempt_index);
-    const delay = numberValue(candidate.delayMs ?? candidate.delay_ms);
-    if (attempt === null || delay === null || !Number.isSafeInteger(attempt) || attempt < 0) return false;
-    const limit = Math.min(60_000, 1_000 * (2 ** Math.min(attempt, 30)));
-    return delay >= 0 && delay <= limit;
-  }),
+  (context) => {
+    const evidence = c27SnapshotAt(context, "o1-c27.after-attempts");
+    return evidence !== null &&
+      exactC27AttemptTrace(evidence) &&
+      evidence.reconnect.clockMs === evidence.reconnect.successfulReconnectAtMs &&
+      evidence.peer.reconnectAttemptIndex === C27_RECONNECT_JITTER_UNITS.length &&
+      evidence.peer.liveness === "steady" &&
+      evidence.steady.length === 0;
+  },
 );
 define(
   "O1-C27-SIXTY-SECOND-CAP",
-  semanticEvent(["wire_event", "bridge_snapshot"], (candidate) => {
-    const attempt = numberValue(candidate.attemptIndex ?? candidate.attempt_index);
-    const limit = numberValue(candidate.limitMs ?? candidate.limit_ms ?? candidate.baseMs ?? candidate.base_ms);
-    return attempt !== null && attempt >= 6 && limit === 60_000;
-  }),
+  (context) => {
+    const evidence = c27SnapshotAt(context, "o1-c27.after-attempts");
+    if (evidence === null || !exactC27AttemptTrace(evidence)) return false;
+    const attemptFive = evidence.attempts[5];
+    const capped = evidence.attempts.slice(6);
+    return attemptFive?.backoffLimitMs === 32_000 &&
+      attemptFive.delayMs === 32_000 &&
+      capped.length === 3 &&
+      capped.every((attempt) =>
+        attempt.backoffLimitMs === 60_000 &&
+        attempt.delayMs === 60_000);
+  },
 );
 define(
   "O1-C27-NO-EARLY-RESET",
-  semanticEvent(["wire_event", "bridge_snapshot"], (candidate) => {
-    const steady = numberValue(candidate.steadyDurationMs ?? candidate.steady_ms);
-    const reset = boolValue(candidate.reset);
-    return steady !== null && steady < 120_000 && reset === false;
-  }),
+  (context) => {
+    const evidence = c27SnapshotAt(context, "o1-c27.before-reset");
+    if (
+      evidence === null ||
+      !exactC27AttemptTrace(evidence) ||
+      evidence.steady.length !== 4 ||
+      evidence.peer.reconnectAttemptIndex !== C27_RECONNECT_JITTER_UNITS.length ||
+      evidence.peer.liveness !== "steady"
+    ) {
+      return false;
+    }
+    const durations = [30_000, 60_000, 90_000, 119_999];
+    return evidence.steady.every((entry, index) =>
+      exactSteadyObservation(entry, {
+        durationMs: durations[index]!,
+        attemptBefore: C27_RECONNECT_JITTER_UNITS.length,
+        attemptAfter: C27_RECONNECT_JITTER_UNITS.length,
+        reset: false,
+      })) &&
+      evidence.reconnect.clockMs ===
+        Number(evidence.reconnect.successfulReconnectAtMs) + 119_999;
+  },
 );
 define(
   "O1-C27-RESET-AFTER-STEADY",
-  semanticEvent(["wire_event", "bridge_snapshot"], (candidate) => {
-    const steady = numberValue(candidate.steadyDurationMs ?? candidate.steady_ms);
-    const reset = boolValue(candidate.reset);
-    return steady !== null && steady >= 120_000 && reset === true;
-  }),
+  (context) => {
+    const evidence = c27SnapshotAt(context, "o1-c27.after-reset");
+    if (
+      evidence === null ||
+      !exactC27AttemptTrace(evidence) ||
+      evidence.steady.length !== 5 ||
+      evidence.peer.reconnectAttemptIndex !== 0 ||
+      evidence.peer.liveness !== "steady"
+    ) {
+      return false;
+    }
+    const priorDurations = [30_000, 60_000, 90_000, 119_999];
+    const priorSteady = evidence.steady.slice(0, 4).every((entry, index) =>
+      exactSteadyObservation(entry, {
+        durationMs: priorDurations[index]!,
+        attemptBefore: C27_RECONNECT_JITTER_UNITS.length,
+        attemptAfter: C27_RECONNECT_JITTER_UNITS.length,
+        reset: false,
+      }));
+    const reset = exactSteadyObservation(evidence.steady[4]!, {
+      durationMs: 120_000,
+      attemptBefore: C27_RECONNECT_JITTER_UNITS.length,
+      attemptAfter: 0,
+      reset: true,
+    });
+    return priorSteady &&
+      reset &&
+      evidence.reconnect.clockMs ===
+        Number(evidence.reconnect.successfulReconnectAtMs) + 120_000;
+  },
 );
 
 define(

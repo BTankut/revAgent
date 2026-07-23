@@ -70,6 +70,12 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   "bridge_jsonl_control:clearance_for_hold": { required: ["rsid", "holdId"] },
   "bridge_jsonl_control:inject_crash": { required: ["point"] },
   "bridge_jsonl_control:restart_simulator": { required: [] },
+  "bridge_jsonl_control:configure_reconnect_conformance": {
+    required: ["mode", "jitterUnits"],
+  },
+  "bridge_jsonl_control:advance_reconnect_conformance_clock": {
+    required: ["advanceByMs", "heartbeatStepMs"],
+  },
   "bridge_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor"] },
   "bridge_jsonl_control:shutdown": { required: [] },
   "fixture_jsonl_control:plan_fault": { required: ["requestId", "fault"] },
@@ -204,13 +210,28 @@ describe("exact forty-case control and observation catalog", () => {
     }
   });
 
-  it("gives C27 parent-owned deadlines enough room for the canonical long waits", () => {
+  it("runs C27 through bounded virtual time instead of wall-clock backoff waits", () => {
     const c27 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C27")!;
-    for (const stepId of ["o1-c27.await-attempts", "o1-c27.await-steady-reset"]) {
-      const step = c27.steps.find((candidate) => candidate.stepId === stepId)!;
-      const requested = Number(step.arguments.common?.timeoutMs);
-      expect(step.parentTimeoutMs).toBeGreaterThan(requested);
-    }
+    const attempts = c27.steps.find(({ stepId }) => stepId === "o1-c27.await-attempts")!;
+    expect(attempts.arguments.common).toMatchObject({
+      jsonPointer: "/reconnectConformance/attempts",
+      operator: "count_equals",
+      expected: 9,
+      timeoutMs: 15_000,
+    });
+    expect(attempts.parentTimeoutMs).toBeGreaterThan(
+      Number(attempts.arguments.common?.timeoutMs),
+    );
+    expect(c27.steps.find(({ stepId }) => stepId === "o1-c27.advance-before-reset"))
+      .toMatchObject({
+        action: "advance_reconnect_conformance_clock",
+        arguments: { common: { advanceByMs: 119_999, heartbeatStepMs: 30_000 } },
+      });
+    expect(c27.steps.find(({ stepId }) => stepId === "o1-c27.advance-to-reset"))
+      .toMatchObject({
+        action: "advance_reconnect_conformance_clock",
+        arguments: { common: { advanceByMs: 1, heartbeatStepMs: 1 } },
+      });
   });
 
   it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {

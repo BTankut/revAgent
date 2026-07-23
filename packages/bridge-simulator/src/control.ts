@@ -15,6 +15,7 @@ import type {
   MutationHold,
   SessionUnregister,
 } from "@revagent/protocol";
+import { reconnectBackoffLimitMs } from "@revagent/protocol";
 
 import { ArtifactSpool, DeterministicUuid7Source } from "./artifacts.js";
 import {
@@ -32,6 +33,7 @@ import {
 } from "./loopback.js";
 import { BridgeGatewayPeer } from "./peer.js";
 import {
+  GatewayTransportError,
   HttpSseGatewayBinding,
   WssGatewayBinding,
   openPrimaryThenFallback,
@@ -60,6 +62,8 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "clearance_for_hold",
   "inject_crash",
   "restart_simulator",
+  "configure_reconnect_conformance",
+  "advance_reconnect_conformance_clock",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -90,10 +94,51 @@ interface BridgeEvidenceSnapshot {
   readonly artifactSpool: JsonObject;
   readonly discovery: JsonObject | null;
   readonly peer: JsonObject | null;
+  readonly reconnectConformance: JsonObject | null;
   readonly crash: JsonObject;
   readonly transport: JsonObject;
   readonly openLoopbackClientCount: number;
   readonly journalClosed: boolean;
+}
+
+interface PendingReconnectSample {
+  readonly jitterUnit: number;
+  clockBeforeSleepMs: number | null;
+  clockAfterSleepMs: number | null;
+  delayMs: number | null;
+}
+
+interface ReconnectAttemptEvidence {
+  readonly attemptIndex: number;
+  readonly jitterUnit: number;
+  readonly backoffLimitMs: number;
+  readonly delayMs: number;
+  readonly clockBeforeSleepMs: number;
+  readonly clockAfterSleepMs: number;
+  readonly outcome: "opening_failed" | "connected";
+  readonly faultClass: string | null;
+  readonly errorMessage: string | null;
+  readonly connectionId: string | null;
+}
+
+interface ReconnectSteadyEvidence {
+  readonly clockMs: number;
+  readonly steadyDurationMs: number;
+  readonly livenessBeforeTick: string;
+  readonly livenessAfterTick: string;
+  readonly reconnectAttemptIndexBefore: number;
+  readonly reconnectAttemptIndexAfter: number;
+  readonly reset: boolean;
+  readonly lastHeartbeatAckAtMs: number;
+}
+
+interface ReconnectConformanceState {
+  readonly jitterUnits: readonly number[];
+  consumedSampleCount: number;
+  pendingSample: PendingReconnectSample | null;
+  readonly attempts: ReconnectAttemptEvidence[];
+  successfulReconnectAtMs: number | null;
+  readonly steadyObservations: ReconnectSteadyEvidence[];
 }
 
 interface ControlSuccess extends JsonObject {
@@ -523,6 +568,7 @@ function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, curs
     },
     discovery: snapshot.discovery,
     peer: snapshot.peer,
+    reconnectConformance: snapshot.reconnectConformance,
     crash: snapshot.crash,
     transport: snapshot.transport,
     openLoopbackClientCount: snapshot.openLoopbackClientCount,
@@ -556,6 +602,7 @@ export class BridgeDaemonRuntime {
   #crashedAt: BridgeCrashPoint | null = null;
   #journalClosed = false;
   #transportTrustEvidence: LoopbackTestTlsTrustEvidence | null = null;
+  #reconnectConformance: ReconnectConformanceState | null = null;
 
   public constructor(stateRoot: string) {
     this.#journalPath = join(stateRoot, "bridge.db");
@@ -604,6 +651,10 @@ export class BridgeDaemonRuntime {
         return { value: this.#injectCrash(record), shutdown: false };
       case "restart_simulator":
         return { value: await this.#restart(record), shutdown: false };
+      case "configure_reconnect_conformance":
+        return { value: this.#configureReconnectConformance(record), shutdown: false };
+      case "advance_reconnect_conformance_clock":
+        return { value: await this.#advanceReconnectConformanceClock(record), shutdown: false };
       case "snapshot_evidence":
         throw new Error("snapshot_evidence is handled by the JSONL controller");
       case "shutdown": {
@@ -685,6 +736,7 @@ export class BridgeDaemonRuntime {
             ...peerSnapshot,
             runLoopError: this.#runLoopError,
           } as unknown as JsonObject,
+      reconnectConformance: this.#reconnectConformanceEvidence(),
       crash: { crashed: this.#crashedAt !== null, point: this.#crashedAt },
       transport: {
         kind: this.#binding?.kind ?? null,
@@ -802,6 +854,252 @@ export class BridgeDaemonRuntime {
       localSessionKey: session.probe.localSessionKey,
       grantedSessionCapabilities: [...session.grantedSessionCapabilities],
       registration: registration as unknown as FixtureJsonValue,
+    };
+  }
+
+  #configureReconnectConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(
+      record,
+      ["controlVersion", "id", "action", "mode", "jitterUnits"],
+    );
+    if (record.mode !== "deterministic_virtual_clock") {
+      throw new Error("reconnect conformance mode must equal deterministic_virtual_clock");
+    }
+    if (this.#binding !== null || this.#peer !== null) {
+      throw new Error("reconnect conformance must be configured before transport open");
+    }
+    if (this.#reconnectConformance !== null) {
+      throw new Error("reconnect conformance is already configured");
+    }
+    if (
+      !Array.isArray(record.jitterUnits) ||
+      record.jitterUnits.length < 1 ||
+      record.jitterUnits.length > 32
+    ) {
+      throw new Error("jitterUnits must contain from 1 through 32 deterministic samples");
+    }
+    const jitterUnits = record.jitterUnits.map((value, index) => {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value >= 1) {
+        throw new Error(`jitterUnits[${index}] must be a finite number in [0, 1)`);
+      }
+      return value;
+    });
+    this.#reconnectConformance = {
+      jitterUnits,
+      consumedSampleCount: 0,
+      pendingSample: null,
+      attempts: [],
+      successfulReconnectAtMs: null,
+      steadyObservations: [],
+    };
+    return {
+      configured: true,
+      mode: "deterministic_virtual_clock",
+      configuredSampleCount: jitterUnits.length,
+      clockMs: this.#clockMs,
+    };
+  }
+
+  #nextReconnectConformanceJitter(): number {
+    const state = this.#reconnectConformance;
+    if (state === null) return Math.random();
+    if (state.pendingSample !== null) {
+      throw new Error("previous reconnect jitter sample has not reached the sleep boundary");
+    }
+    const jitterUnit = state.jitterUnits[state.consumedSampleCount];
+    if (jitterUnit === undefined) {
+      throw new Error("deterministic reconnect jitter samples are exhausted");
+    }
+    state.consumedSampleCount += 1;
+    state.pendingSample = {
+      jitterUnit,
+      clockBeforeSleepMs: null,
+      clockAfterSleepMs: null,
+      delayMs: null,
+    };
+    return jitterUnit;
+  }
+
+  async #sleepReconnectConformanceDelay(delayMs: number): Promise<void> {
+    const state = this.#reconnectConformance;
+    if (state === null) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      return;
+    }
+    if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
+      throw new Error("reconnect conformance delay is outside the canonical 0..60000 ms bound");
+    }
+    const pending = state.pendingSample;
+    if (pending === null || pending.delayMs !== null) {
+      throw new Error("reconnect conformance sleep lacks one fresh jitter sample");
+    }
+    const clockAfterSleepMs = this.#clockMs + delayMs;
+    if (!Number.isSafeInteger(clockAfterSleepMs)) {
+      throw new Error("reconnect conformance virtual clock overflow");
+    }
+    pending.clockBeforeSleepMs = this.#clockMs;
+    pending.clockAfterSleepMs = clockAfterSleepMs;
+    pending.delayMs = delayMs;
+    this.#clockMs = clockAfterSleepMs;
+    await Promise.resolve();
+  }
+
+  #takeReconnectConformanceAttempt(
+    attemptIndex: number,
+    delayMs: number,
+  ): Omit<ReconnectAttemptEvidence, "outcome" | "faultClass" | "errorMessage" | "connectionId"> {
+    const state = this.#reconnectConformance;
+    if (state === null) {
+      throw new Error("reconnect conformance attempt was requested without configuration");
+    }
+    const pending = state.pendingSample;
+    if (
+      pending === null ||
+      pending.delayMs !== delayMs ||
+      pending.clockBeforeSleepMs === null ||
+      pending.clockAfterSleepMs === null
+    ) {
+      throw new Error("reconnect conformance attempt does not match its jitter/sleep evidence");
+    }
+    if (
+      !Number.isSafeInteger(attemptIndex) ||
+      attemptIndex < 0 ||
+      attemptIndex !== state.attempts.length
+    ) {
+      throw new Error("reconnect conformance attempt index is not zero-based and contiguous");
+    }
+    state.pendingSample = null;
+    return {
+      attemptIndex,
+      jitterUnit: pending.jitterUnit,
+      backoffLimitMs: reconnectBackoffLimitMs(attemptIndex),
+      delayMs,
+      clockBeforeSleepMs: pending.clockBeforeSleepMs,
+      clockAfterSleepMs: pending.clockAfterSleepMs,
+    };
+  }
+
+  #recordReconnectConformanceAttempt(
+    attempt: ReconnectAttemptEvidence,
+  ): void {
+    const state = this.#reconnectConformance;
+    if (state === null || attempt.attemptIndex !== state.attempts.length) {
+      throw new Error("reconnect conformance attempt cannot be recorded out of order");
+    }
+    state.attempts.push(attempt);
+    if (attempt.outcome === "connected") {
+      if (state.successfulReconnectAtMs !== null) {
+        throw new Error("reconnect conformance recorded more than one successful reconnect");
+      }
+      state.successfulReconnectAtMs = this.#clockMs;
+    }
+  }
+
+  async #awaitReconnectConformanceHeartbeatAck(
+    peer: BridgeGatewayPeer,
+    expectedAckAtMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (peer.snapshot(this.#clockMs).lastHeartbeatAckAtMs < expectedAckAtMs) {
+      if (this.#runLoopError !== null) {
+        throw new Error(`Gateway run loop failed while awaiting heartbeat_ack: ${this.#runLoopError}`);
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`heartbeat_ack did not arrive for virtual clock ${expectedAckAtMs}`);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+  }
+
+  async #advanceReconnectConformanceClock(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(
+      record,
+      ["controlVersion", "id", "action", "advanceByMs", "heartbeatStepMs"],
+    );
+    const state = this.#reconnectConformance;
+    if (state === null || state.successfulReconnectAtMs === null) {
+      throw new Error("reconnect conformance clock requires one successful reconnect");
+    }
+    const advanceByMs = safeInteger(record.advanceByMs, "advanceByMs", 1, 120_000);
+    const heartbeatStepMs = safeInteger(record.heartbeatStepMs, "heartbeatStepMs", 1, 30_000);
+    const peer = this.#requirePeer();
+    if (!peer.snapshot(this.#clockMs).runLoopActive) {
+      throw new Error("reconnect conformance clock requires the live Gateway run loop");
+    }
+    const targetClockMs = this.#clockMs + advanceByMs;
+    if (
+      !Number.isSafeInteger(targetClockMs) ||
+      targetClockMs - state.successfulReconnectAtMs > 120_000
+    ) {
+      throw new Error("reconnect conformance steady clock may advance only through 120000 ms");
+    }
+    const observations: ReconnectSteadyEvidence[] = [];
+    while (this.#clockMs < targetClockMs) {
+      this.#clockMs += Math.min(heartbeatStepMs, targetClockMs - this.#clockMs);
+      const before = peer.snapshot(this.#clockMs);
+      const livenessBeforeTick = peer.livenessAt(this.#clockMs);
+      const liveness = await peer.tick(this.#clockMs);
+      let after = peer.snapshot(this.#clockMs);
+      if (
+        after.lastHeartbeatSentAtMs > before.lastHeartbeatSentAtMs &&
+        after.lastHeartbeatAckAtMs < after.lastHeartbeatSentAtMs
+      ) {
+        await this.#awaitReconnectConformanceHeartbeatAck(
+          peer,
+          after.lastHeartbeatSentAtMs,
+        );
+        after = peer.snapshot(this.#clockMs);
+      }
+      const livenessAfterTick = peer.livenessAt(this.#clockMs);
+      if (
+        livenessBeforeTick !== "steady" ||
+        liveness !== "steady" ||
+        livenessAfterTick !== "steady"
+      ) {
+        throw new Error("reconnect conformance steady clock observed non-steady liveness");
+      }
+      const evidence: ReconnectSteadyEvidence = {
+        clockMs: this.#clockMs,
+        steadyDurationMs: this.#clockMs - state.successfulReconnectAtMs,
+        livenessBeforeTick,
+        livenessAfterTick,
+        reconnectAttemptIndexBefore: before.reconnectAttemptIndex,
+        reconnectAttemptIndexAfter: after.reconnectAttemptIndex,
+        reset: before.reconnectAttemptIndex > 0 && after.reconnectAttemptIndex === 0,
+        lastHeartbeatAckAtMs: after.lastHeartbeatAckAtMs,
+      };
+      state.steadyObservations.push(evidence);
+      observations.push(evidence);
+    }
+    return {
+      advanced: true,
+      mode: "deterministic_virtual_clock",
+      advanceByMs,
+      clockMs: this.#clockMs,
+      successfulReconnectAtMs: state.successfulReconnectAtMs,
+      steadyDurationMs: this.#clockMs - state.successfulReconnectAtMs,
+      observations: observations as unknown as FixtureJsonValue,
+      peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue,
+    };
+  }
+
+  #reconnectConformanceEvidence(): JsonObject | null {
+    const state = this.#reconnectConformance;
+    if (state === null) return null;
+    return {
+      schemaVersion: "rbp-reconnect-conformance/v1",
+      mode: "deterministic_virtual_clock",
+      clockMs: this.#clockMs,
+      configuredSampleCount: state.jitterUnits.length,
+      consumedSampleCount: state.consumedSampleCount,
+      pendingSample: state.pendingSample === null ? null : { ...state.pendingSample },
+      attempts: state.attempts.map((attempt) => ({ ...attempt })) as unknown as FixtureJsonValue,
+      successfulReconnectAtMs: state.successfulReconnectAtMs,
+      steadyObservations: state.steadyObservations.map(
+        (observation) => ({ ...observation }),
+      ) as unknown as FixtureJsonValue,
     };
   }
 
@@ -935,11 +1233,45 @@ export class BridgeDaemonRuntime {
     try {
       peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
         nowMs: () => this.#clockMs,
-        reconnect: async () => {
-          const reconnected = await openConfiguredTransport();
-          this.#binding = reconnected.binding;
-          return reconnected;
+        reconnect: async ({ attemptIndex, delayMs }) => {
+          const evidence = this.#reconnectConformance === null
+            ? null
+            : this.#takeReconnectConformanceAttempt(attemptIndex, delayMs);
+          try {
+            const reconnected = await openConfiguredTransport();
+            if (evidence !== null) {
+              this.#recordReconnectConformanceAttempt({
+                ...evidence,
+                outcome: "connected",
+                faultClass: null,
+                errorMessage: null,
+                connectionId: reconnected.helloAck.payload.connection_id,
+              });
+            }
+            this.#binding = reconnected.binding;
+            return reconnected;
+          } catch (error) {
+            if (evidence !== null) {
+              this.#recordReconnectConformanceAttempt({
+                ...evidence,
+                outcome: "opening_failed",
+                faultClass: error instanceof GatewayTransportError ? error.faultClass : null,
+                errorMessage: (error instanceof Error ? error.message : String(error))
+                  .replace(/[\r\n]+/gu, " ")
+                  .slice(0, 300),
+                connectionId: null,
+              });
+            }
+            throw error;
+          }
         },
+        ...(this.#reconnectConformance === null
+          ? {}
+          : {
+              reconnectJitter: () => this.#nextReconnectConformanceJitter(),
+              sleep: async (delayMs: number) =>
+                await this.#sleepReconnectConformanceDelay(delayMs),
+            }),
       });
       await peer.resumeAll();
     } catch (error) {
@@ -1347,6 +1679,8 @@ const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
   "tick",
   "inject_crash",
   "restart_simulator",
+  "configure_reconnect_conformance",
+  "advance_reconnect_conformance_clock",
   "snapshot_evidence",
   "shutdown",
 ]);
