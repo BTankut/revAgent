@@ -28,6 +28,15 @@ export type {
   SupervisedBindingExecution,
 } from "./suiteRunner.js";
 export {
+  assertCompleteCanonicalAssertionOracleRegistry,
+  buildCanonicalParentEvaluatorRegistry,
+} from "./canonicalEvaluators.js";
+export type {
+  CanonicalAssertionOracle,
+  CanonicalAssertionOracleContext,
+  CanonicalAssertionOracleRegistry,
+} from "./canonicalEvaluators.js";
+export {
   assertCompleteObservationOnlyAdapterRegistry,
   assertObservationOnlyBatch,
   validateObservationOnlyAdapterRegistry,
