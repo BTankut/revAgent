@@ -41,12 +41,15 @@ import type {
 const PRIVATE_DIRECTORY_MODE = 0o700;
 const MAX_SNAPSHOT_PAGES = 64;
 const MAX_AGGREGATED_SNAPSHOT_BYTES = 4 * 1024 * 1024;
+const MAX_INTERNAL_GATEWAY_SNAPSHOT_BYTES = 16 * 1024 * 1024;
+const MAX_COMPACT_GATEWAY_SNAPSHOT_BYTES = 60 * 1024;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "::1"]);
 
 export interface GatewayStartupOverrides {
   sessionCapabilities?: readonly string[];
   connectionCapabilities?: readonly string[];
   supportedProtocols?: readonly number[];
+  clockStartMs?: number;
 }
 
 export interface RestartCaseStackOptions {
@@ -86,6 +89,18 @@ export interface StartedStackComponent {
   stop(): Promise<{ killEscalated: boolean }>;
 }
 
+export class GatewayControlRequestError extends Error {
+  readonly status: number;
+  readonly response: JsonObject;
+
+  constructor(action: string, status: number, response: JsonObject) {
+    super(`Gateway control ${action} returned HTTP ${status}`);
+    this.name = "GatewayControlRequestError";
+    this.status = status;
+    this.response = structuredClone(response);
+  }
+}
+
 interface CaptureCounters {
   chunks: number;
   bytes: number;
@@ -105,6 +120,137 @@ function safePort(value: unknown, label: string): number {
     throw new Error(`${label} is not a valid TCP port`);
   }
   return Number(value);
+}
+
+function selectedObjectFields(
+  value: unknown,
+  fields: readonly string[],
+): JsonObject | null {
+  if (!isObject(value)) return null;
+  return Object.fromEntries(
+    fields
+      .filter((field) => Object.prototype.hasOwnProperty.call(value, field))
+      .map((field) => [field, structuredClone(value[field]!)]),
+  );
+}
+
+function compactTerminalPayload(value: unknown): JsonObject | null {
+  return selectedObjectFields(value, [
+    "invocation_id",
+    "batch_id",
+    "status",
+    "fault_class",
+    "outcome",
+    "verification_required",
+    "replayed",
+    "late_after_indeterminate",
+    "payload_omitted",
+    "result_digest",
+    "guarded_reason",
+    "failed_step_index",
+    "error",
+    "steps",
+  ]);
+}
+
+function compactGatewaySnapshotValue(snapshot: JsonObject): JsonObject {
+  const sessions = isObject(snapshot.sessions) ? snapshot.sessions : {};
+  const compactSessions: JsonObject = {};
+  for (const [rsid, rawSession] of Object.entries(sessions)) {
+    if (!isObject(rawSession)) continue;
+    const terminalOutcomes = isObject(rawSession.terminalOutcomes)
+      ? Object.fromEntries(
+          Object.entries(rawSession.terminalOutcomes)
+            .filter(([, outcome]) => isObject(outcome))
+            .map(([correlationId, rawOutcome]) => {
+              const outcome = rawOutcome as JsonObject;
+              const envelope = isObject(outcome.envelope)
+                ? {
+                    ...(selectedObjectFields(outcome.envelope, [
+                      "v",
+                      "type",
+                      "id",
+                      "ts",
+                      "rsid",
+                      "seq",
+                      "ack",
+                    ]) ?? {}),
+                    payload: compactTerminalPayload(outcome.envelope.payload),
+                  }
+                : null;
+              return [correlationId, {
+                correlationId: outcome.correlationId ?? correlationId,
+                classification: outcome.classification ?? null,
+                acceptedAtMs: outcome.acceptedAtMs ?? null,
+                envelope,
+              }];
+            }),
+        )
+      : {};
+    const artifacts = isObject(rawSession.artifacts)
+      ? Object.fromEntries(
+          Object.entries(rawSession.artifacts).map(([invocationId, entries]) => [
+            invocationId,
+            Array.isArray(entries)
+              ? entries
+                  .filter(isObject)
+                  .map((entry) => selectedObjectFields(entry, [
+                    "artifactId",
+                    "artifactIndex",
+                    "streamId",
+                    "filename",
+                    "contentType",
+                    "totalChunks",
+                    "totalSize",
+                    "sha256",
+                  ]))
+              : [],
+          ]),
+        )
+      : {};
+    const chunkedResults = isObject(rawSession.chunkedResults)
+      ? Object.fromEntries(
+          Object.entries(rawSession.chunkedResults).map(([invocationId, entry]) => [
+            invocationId,
+            selectedObjectFields(entry, [
+              "streamId",
+              "contentType",
+              "totalChunks",
+              "totalSize",
+              "sha256",
+            ]),
+          ]),
+        )
+      : {};
+    compactSessions[rsid] = {
+      ...(selectedObjectFields(rawSession, [
+        "rsid",
+        "deviceId",
+        "tenantId",
+        "userId",
+        "seatId",
+        "localSessionKey",
+        "grantedSessionCapabilities",
+        "lifecycle",
+        "sequence",
+        "dispatchWindow",
+        "inFlight",
+        "lastHeartbeatAtMs",
+        "disconnectedAtMs",
+        "liveness",
+      ]) ?? {}),
+      terminalOutcomes,
+      artifacts,
+      chunkedResults,
+    };
+  }
+  return {
+    schemaVersion: "rbp-gateway-compact-snapshot/v1",
+    sourceSchemaVersion: snapshot.schemaVersion ?? null,
+    sessions: compactSessions,
+    mutationHolds: structuredClone(snapshot.mutationHolds ?? null),
+    runtime: structuredClone(snapshot.runtime ?? null),
+  };
 }
 
 function numericLoopback(value: unknown, label: string): string {
@@ -200,6 +346,24 @@ function setCliListArgument(
   return next;
 }
 
+function setCliScalarArgument(
+  args: readonly string[],
+  flag: string,
+  value: string | number | undefined,
+): string[] {
+  if (value === undefined) return [...args];
+  const next = [...args];
+  const index = next.indexOf(flag);
+  const serialized = String(value);
+  if (index >= 0) {
+    if (index + 1 >= next.length) throw new Error(`${flag} lacks its execution-plan value`);
+    next[index + 1] = serialized;
+  } else {
+    next.push(flag, serialized);
+  }
+  return next;
+}
+
 function withGatewayOverrides(
   command: ProcessCommandDescriptor,
   overrides: GatewayStartupOverrides | undefined,
@@ -208,6 +372,7 @@ function withGatewayOverrides(
   let args = setCliListArgument(command.args, "--session-capabilities", overrides?.sessionCapabilities);
   args = setCliListArgument(args, "--connection-capabilities", overrides?.connectionCapabilities);
   args = setCliListArgument(args, "--supported-protocols", overrides?.supportedProtocols);
+  args = setCliScalarArgument(args, "--clock-start-ms", overrides?.clockStartMs);
   if (tlsIdentity !== undefined) {
     if (args.includes("--tls-cert") || args.includes("--tls-key")) {
       throw new Error("execution plan must not pre-provision persistent Gateway TLS material");
@@ -304,12 +469,41 @@ async function waitForNoSurvivors(pids: readonly number[], timeoutMs = 2_000): P
   return survivors;
 }
 
+function adjacentPorts(origin: number, maximumDistance: number): number[] {
+  const candidates: number[] = [];
+  for (let distance = 1; distance <= maximumDistance; distance += 1) {
+    if (origin + distance <= 65_535) candidates.push(origin + distance);
+    if (origin - distance >= 1) candidates.push(origin - distance);
+  }
+  return candidates;
+}
+
+async function loopbackPortAvailable(port: number): Promise<boolean> {
+  return await new Promise<boolean>((resolve) => {
+    const server = createServer();
+    let settled = false;
+    const finish = (available: boolean): void => {
+      if (settled) return;
+      settled = true;
+      server.removeAllListeners();
+      resolve(available);
+    };
+    server.once("error", () => finish(false));
+    server.listen({ host: "127.0.0.1", port, exclusive: true }, () => {
+      server.close((error) => finish(error === undefined));
+    });
+  });
+}
+
 class ParentTcpCaptureProxy {
   readonly #server: Server;
   readonly #sockets = new Set<Socket>();
+  readonly #clients = new Set<Socket>();
   #clientToTarget = counters();
   #targetToClient = counters();
   #acceptedConnections = 0;
+  #clientToTargetBackpressure = false;
+  #stopped = false;
   #startedAtMonotonicMs = performance.now();
   #listeningPort = 0;
 
@@ -357,6 +551,21 @@ class ParentTcpCaptureProxy {
     this.#startedAtMonotonicMs = performance.now();
   }
 
+  setClientToTargetBackpressure(enabled: boolean): {
+    enabled: boolean;
+    activeConnections: number;
+  } {
+    this.#clientToTargetBackpressure = enabled;
+    for (const client of this.#clients) {
+      if (enabled) client.pause();
+      else client.resume();
+    }
+    return {
+      enabled,
+      activeConnections: this.#clients.size,
+    };
+  }
+
   summary(): ParentCaptureSummary {
     return {
       proxy: this.name,
@@ -380,6 +589,8 @@ class ParentTcpCaptureProxy {
   }
 
   async stop(): Promise<void> {
+    if (this.#stopped) return;
+    this.#stopped = true;
     for (const socket of this.#sockets) socket.destroy();
     await new Promise<void>((resolve, reject) => {
       this.#server.close((error) => {
@@ -401,17 +612,21 @@ class ParentTcpCaptureProxy {
     const target = new Socket();
     this.#sockets.add(client);
     this.#sockets.add(target);
+    this.#clients.add(client);
+    if (this.#clientToTargetBackpressure) client.pause();
     const close = (): void => {
       client.destroy();
       target.destroy();
       this.#sockets.delete(client);
       this.#sockets.delete(target);
+      this.#clients.delete(client);
     };
     client.once("error", close);
     target.once("error", close);
     client.once("close", () => {
       target.destroy();
       this.#sockets.delete(client);
+      this.#clients.delete(client);
     });
     target.once("close", () => {
       client.destroy();
@@ -431,7 +646,10 @@ interface ActiveStack {
   preserveState: boolean;
   instanceRoot: string;
   instanceRootId: string;
+  tokens: Record<string, string>;
+  startupOverrides?: GatewayStartupOverrides;
   components: Map<ComponentId, StartedStackComponent>;
+  extraFixtures: StartedStackComponent[];
   fixtureProxy: ParentTcpCaptureProxy;
   gatewayProxy: ParentTcpCaptureProxy;
   tlsIdentity?: EphemeralTlsIdentity;
@@ -467,7 +685,11 @@ export class CaseStackSupervisor {
   }
 
   get pids(): number[] {
-    return [...this.#stack().components.values()].map(({ pid }) => pid);
+    const stack = this.#stack();
+    return [
+      ...stack.components.values(),
+      ...stack.extraFixtures,
+    ].map(({ pid }) => pid);
   }
 
   readiness(): { fixture: JsonObject; gateway: JsonObject; bridge: JsonObject } {
@@ -488,11 +710,247 @@ export class CaseStackSupervisor {
     return { started: true, atMonotonicMs: performance.now() };
   }
 
+  setGatewayProxyBackpressure(enabled: boolean): {
+    enabled: boolean;
+    activeConnections: number;
+  } {
+    return this.#stack().gatewayProxy.setClientToTargetBackpressure(enabled);
+  }
+
   wireCapture(): { gateway: ParentCaptureSummary; fixture: ParentCaptureSummary } {
     const stack = this.#stack();
     return {
       gateway: stack.gatewayProxy.summary(),
       fixture: stack.fixtureProxy.summary(),
+    };
+  }
+
+  rawBindingEndpoint(): JsonObject {
+    const stack = this.#stack();
+    const tlsTrust = stack.publicReadiness.gateway.tlsTrust;
+    return {
+      binding: stack.binding,
+      wsUrl: stack.publicReadiness.gateway.ws_url ?? null,
+      httpConnectionUrl: stack.publicReadiness.gateway.http_connection_url ?? null,
+      tlsTrust: isObject(tlsTrust) ? structuredClone(tlsTrust) : null,
+    };
+  }
+
+  async restartComponent(
+    input: {
+      componentId: ComponentId;
+      preserveState: boolean;
+      startupOverrides?: GatewayStartupOverrides;
+    },
+    stepId: string,
+    action: string,
+  ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
+    const stack = this.#stack();
+    if (input.componentId === "addin_loopback_fixture") {
+      throw new Error("restart_component does not replace the canonical fixture process");
+    }
+    const previous = this.component(input.componentId);
+    const stopped = await previous.stop();
+    const survivors = await waitForNoSurvivors([previous.pid]);
+    if (survivors.length > 0) {
+      throw new Error(`${input.componentId} restart left the prior process alive`);
+    }
+    const stoppedObservation = this.#lifecycleObservation(
+      previous,
+      stepId,
+      action,
+      "stopped",
+      {
+        orphanProcessCount: 0,
+        survivingPids: [],
+        killEscalated: stopped.killEscalated,
+        stopOrder: [input.componentId],
+      },
+    );
+    if (!input.preserveState) this.#removeComponentState(stack, input.componentId);
+    const startupOverrides = {
+      ...(stack.startupOverrides ?? {}),
+      ...(input.startupOverrides ?? {}),
+    };
+    stack.startupOverrides = structuredClone(startupOverrides);
+
+    if (input.componentId === "gateway_stub") {
+      await stack.gatewayProxy.stop();
+      const replacement = await this.#startComponent(
+        this.#componentPlan("gateway_stub"),
+        stack.tokens,
+        startupOverrides,
+        stack.tlsIdentity,
+      );
+      let replacementProxy: ParentTcpCaptureProxy | undefined;
+      try {
+        const gatewayWs = parseLoopbackUrl(replacement.readiness.ws_url, "Gateway ws_url");
+        const gatewayHttp = parseLoopbackUrl(
+          replacement.readiness.http_connection_url,
+          "Gateway http_connection_url",
+        );
+        if (gatewayWs.hostname !== gatewayHttp.hostname || gatewayWs.port !== gatewayHttp.port) {
+          throw new Error("restarted Gateway readiness bindings do not share one loopback listener");
+        }
+        const expectedSchemes = stack.tlsIdentity === undefined
+          ? { ws: "ws:", http: "http:" }
+          : { ws: "wss:", http: "https:" };
+        if (
+          gatewayWs.protocol !== expectedSchemes.ws ||
+          gatewayHttp.protocol !== expectedSchemes.http
+        ) {
+          throw new Error("restarted Gateway transport schemes do not match supervised TLS mode");
+        }
+        replacementProxy = await ParentTcpCaptureProxy.start({
+          name: "gateway",
+          targetHost: gatewayWs.hostname,
+          targetPort: safePort(Number(gatewayWs.port), "restarted Gateway target port"),
+        });
+        stack.tokens.gateway_ws_url = proxyUrl(
+          String(replacement.readiness.ws_url),
+          replacementProxy.listeningPort,
+        );
+        stack.tokens.gateway_http_connection_url = proxyUrl(
+          String(replacement.readiness.http_connection_url),
+          replacementProxy.listeningPort,
+        );
+        stack.tokens.gateway_control_url = String(replacement.readiness.control_url);
+        stack.gatewayProxy = replacementProxy;
+        stack.publicReadiness.gateway = {
+          ...replacement.readiness,
+          ws_url: stack.tokens.gateway_ws_url,
+          http_connection_url: stack.tokens.gateway_http_connection_url,
+          control_url: stack.tokens.gateway_control_url,
+          proxyCapture: true,
+          tlsTrust: stack.tlsIdentity === undefined
+            ? {
+                enabled: false,
+                caCertificatePath: null,
+                caCertificateSha256: null,
+                serverCertificateSha256: null,
+              }
+            : {
+                enabled: true,
+                caCertificatePath: stack.tlsIdentity.caCertificatePath,
+                caCertificateSha256: stack.tlsIdentity.caCertificateSha256,
+                serverCertificateSha256: stack.tlsIdentity.serverCertificateSha256,
+              },
+        };
+        stack.components.set(input.componentId, replacement);
+      } catch (error) {
+        await replacementProxy?.stop().catch(() => undefined);
+        await replacement.stop().catch(() => undefined);
+        throw error;
+      }
+      return {
+        result: {
+          restarted: true,
+          componentId: input.componentId,
+          preserveState: input.preserveState,
+          previousPid: previous.pid,
+          pid: replacement.pid,
+          readiness: structuredClone(stack.publicReadiness.gateway),
+        },
+        observations: [
+          stoppedObservation,
+          this.#lifecycleObservation(replacement, stepId, action, "started", {
+            orphanProcessCount: 0,
+            survivingPids: [],
+            killEscalated: false,
+            stopOrder: [],
+          }),
+        ],
+      };
+    }
+
+    const replacement = await this.#startComponent(
+      this.#componentPlan("bridge_simulator"),
+      stack.tokens,
+      startupOverrides,
+    );
+    stack.components.set(input.componentId, replacement);
+    stack.publicReadiness.bridge = { ...replacement.readiness };
+    return {
+      result: {
+        restarted: true,
+        componentId: input.componentId,
+        preserveState: input.preserveState,
+        previousPid: previous.pid,
+        pid: replacement.pid,
+        readiness: structuredClone(stack.publicReadiness.bridge),
+      },
+      observations: [
+        stoppedObservation,
+        this.#lifecycleObservation(replacement, stepId, action, "started", {
+          orphanProcessCount: 0,
+          survivingPids: [],
+          killEscalated: false,
+          stopOrder: [],
+        }),
+      ],
+    };
+  }
+
+  async spawnAdditionalFixture(
+    stepId: string,
+    action: string,
+  ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
+    const stack = this.#stack();
+    if (stack.extraFixtures.length > 0) {
+      throw new Error("the supervised early-case stack permits exactly one additional fixture");
+    }
+    const primaryPort = safePort(
+      stack.publicReadiness.fixture.port,
+      "primary fixture readiness port",
+    );
+    const fixturePlan = this.#componentPlan("addin_loopback_fixture");
+    let fixture: StartedStackComponent | undefined;
+    let selectedPort = 0;
+    for (const candidate of adjacentPorts(primaryPort, 64)) {
+      if (!await loopbackPortAvailable(candidate)) continue;
+      try {
+        fixture = await this.#startComponent(
+          fixturePlan,
+          stack.tokens,
+          stack.startupOverrides,
+          undefined,
+          { "--port": candidate },
+        );
+        selectedPort = safePort(fixture.readiness.port, "additional fixture readiness port");
+        if (selectedPort !== candidate) {
+          await fixture.stop();
+          fixture = undefined;
+          throw new Error("additional fixture did not bind the parent-selected port");
+        }
+        break;
+      } catch {
+        fixture = undefined;
+      }
+    }
+    if (fixture === undefined) {
+      throw new Error("unable to start an additional fixture in the bounded adjacent port range");
+    }
+    stack.extraFixtures.push(fixture);
+    return {
+      result: {
+        started: true,
+        fixtureIndex: 1,
+        pid: fixture.pid,
+        host: numericLoopback(fixture.readiness.host, "additional fixture host"),
+        port: selectedPort,
+        firstPort: Math.min(primaryPort, selectedPort),
+        lastPort: Math.max(primaryPort, selectedPort),
+        expectedSessionCount: 2,
+        tempRegistryPath: null,
+      },
+      observations: [
+        this.#lifecycleObservation(fixture, stepId, action, "started", {
+          orphanProcessCount: 0,
+          survivingPids: [],
+          killEscalated: false,
+          stopOrder: [],
+        }),
+      ],
     };
   }
 
@@ -507,6 +965,7 @@ export class CaseStackSupervisor {
     const instanceRoot = this.#privateInstanceRoot(options.caseId, options.binding);
     const instanceRootId = `sha256:${createHash("sha256").update(instanceRoot).digest("hex")}`;
     const components = new Map<ComponentId, StartedStackComponent>();
+    const extraFixtures: StartedStackComponent[] = [];
     let fixtureProxy: ParentTcpCaptureProxy | undefined;
     let gatewayProxy: ParentTcpCaptureProxy | undefined;
     try {
@@ -612,7 +1071,12 @@ export class CaseStackSupervisor {
         preserveState: options.preserveState,
         instanceRoot,
         instanceRootId,
+        tokens,
+        ...(options.startupOverrides === undefined
+          ? {}
+          : { startupOverrides: structuredClone(options.startupOverrides) }),
         components,
+        extraFixtures,
         fixtureProxy,
         gatewayProxy,
         ...(tlsIdentity === undefined ? {} : { tlsIdentity }),
@@ -643,7 +1107,7 @@ export class CaseStackSupervisor {
       };
     } catch (error) {
       const cleanupErrors: Error[] = [];
-      for (const component of [...components.values()].reverse()) {
+      for (const component of [...components.values(), ...extraFixtures].reverse()) {
         await component.stop().catch((cleanupError: unknown) => {
           cleanupErrors.push(
             cleanupError instanceof Error ? cleanupError : new Error(String(cleanupError)),
@@ -661,7 +1125,7 @@ export class CaseStackSupervisor {
         );
       });
       const survivors = await waitForNoSurvivors(
-        [...components.values()].map(({ pid }) => pid),
+        [...components.values(), ...extraFixtures].map(({ pid }) => pid),
       );
       if (survivors.length === 0) {
         rmSync(instanceRoot, { recursive: true, force: true });
@@ -687,7 +1151,8 @@ export class CaseStackSupervisor {
     const stack = this.#stack();
     const killEscalated = new Map<ComponentId, boolean>();
     let firstError: Error | undefined;
-    for (const component of [...stack.components.values()].reverse()) {
+    const components = [...stack.components.values(), ...stack.extraFixtures];
+    for (const component of [...components].reverse()) {
       stack.stopOrder.push(component.componentId);
       try {
         const stopped = await component.stop();
@@ -703,9 +1168,9 @@ export class CaseStackSupervisor {
     await stack.fixtureProxy.stop().catch((error: unknown) => {
       firstError ??= error instanceof Error ? error : new Error(String(error));
     });
-    const pids = [...stack.components.values()].map(({ pid }) => pid);
+    const pids = components.map(({ pid }) => pid);
     const survivors = await waitForNoSurvivors(pids);
-    const observations = [...stack.components.values()].map((component) =>
+    const observations = components.map((component) =>
       this.#lifecycleObservation(component, stepId, action, "stopped", {
         orphanProcessCount: survivors.length,
         survivingPids: survivors,
@@ -731,7 +1196,18 @@ export class CaseStackSupervisor {
     return { result, observations };
   }
 
-  async gatewayControl(action: string, argumentsValue: JsonObject): Promise<JsonValue> {
+  async gatewayControl(
+    action: string,
+    argumentsValue: JsonObject,
+    maxResponseBytes = 64 * 1024,
+  ): Promise<JsonValue> {
+    if (
+      !Number.isSafeInteger(maxResponseBytes) ||
+      maxResponseBytes < 1 ||
+      maxResponseBytes > MAX_INTERNAL_GATEWAY_SNAPSHOT_BYTES
+    ) {
+      throw new Error("Gateway control response bound is outside the parent-owned limit");
+    }
     const stack = this.#stack();
     const controlUrl = stack.publicReadiness.gateway.control_url;
     if (typeof controlUrl !== "string") throw new Error("Gateway readiness lacks control_url");
@@ -760,13 +1236,29 @@ export class CaseStackSupervisor {
       status = response.status;
       bytes = Buffer.from(await response.arrayBuffer());
     }
-    if (bytes.length > 64 * 1024) throw new Error("Gateway control response exceeds 64 KiB");
+    if (bytes.length > maxResponseBytes) {
+      throw new Error(`Gateway control response exceeds ${maxResponseBytes} bytes`);
+    }
     const parsed = JSON.parse(bytes.toString("utf8")) as unknown;
     if (!isObject(parsed)) throw new Error("Gateway control response is not a JSON object");
     if (status !== 200) {
-      throw new Error(`Gateway control ${action} returned HTTP ${status}: ${bytes.toString("utf8")}`);
+      throw new GatewayControlRequestError(action, status, parsed);
     }
     return parsed;
+  }
+
+  async compactGatewaySnapshot(): Promise<JsonObject> {
+    const raw = await this.gatewayControl(
+      "snapshot",
+      {},
+      MAX_INTERNAL_GATEWAY_SNAPSHOT_BYTES,
+    );
+    if (!isObject(raw)) throw new Error("Gateway snapshot is not an object");
+    const compact = compactGatewaySnapshotValue(raw);
+    if (Buffer.byteLength(JSON.stringify(compact), "utf8") > MAX_COMPACT_GATEWAY_SNAPSHOT_BYTES) {
+      throw new Error("compact Gateway snapshot exceeds the 60 KiB observation bound");
+    }
+    return compact;
   }
 
   async jsonlControl(
@@ -883,15 +1375,39 @@ export class CaseStackSupervisor {
     return root;
   }
 
+  #removeComponentState(
+    stack: ActiveStack,
+    componentId: "gateway_stub" | "bridge_simulator",
+  ): void {
+    const candidate = componentId === "gateway_stub"
+      ? path.join(stack.instanceRoot, "state", "gateway.json")
+      : path.join(stack.instanceRoot, "state", "bridge");
+    const relative = path.relative(stack.instanceRoot, path.resolve(candidate));
+    if (relative.length === 0 || relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error(`refusing to clear ${componentId} state outside its exact instance root`);
+    }
+    rmSync(candidate, {
+      recursive: componentId === "bridge_simulator",
+      force: true,
+    });
+  }
+
   async #startComponent(
     component: PlannedComponent,
     tokens: Readonly<Record<string, string>>,
     gatewayOverrides: GatewayStartupOverrides | undefined,
     tlsIdentity?: EphemeralTlsIdentity,
+    scalarOverrides: Readonly<Record<string, string | number>> = {},
   ): Promise<StartedStackComponent> {
     let command = expandedCommand(component.command, tokens);
     if (component.id === "gateway_stub") {
       command = withGatewayOverrides(command, gatewayOverrides, tlsIdentity);
+    }
+    for (const [flag, value] of Object.entries(scalarOverrides)) {
+      if (!/^--[a-z0-9-]+$/u.test(flag)) {
+        throw new Error(`component scalar override flag is invalid: ${flag}`);
+      }
+      command = { ...command, args: setCliScalarArgument(command.args, flag, value) };
     }
     const cwd = confinedWorkingDirectory(this.#repoRoot, command);
     const identity = observedIdentity(component, command, cwd);
@@ -984,6 +1500,9 @@ export class CaseStackSupervisor {
     },
   ): ProcessObservationRecord {
     const stack = this.#stack();
+    const auxiliaryIndex = stack.extraFixtures.findIndex(
+      (candidate) => candidate === component,
+    );
     return {
       schemaVersion: "rbp-process-observation/v2",
       observationId: `${this.#plan.runId}:${stack.caseId}:${stack.binding}:stack:${++this.#observationOrdinal}`,
@@ -998,6 +1517,8 @@ export class CaseStackSupervisor {
         stepId,
         action,
         spawnOwner: "parent_runner",
+        processRole: auxiliaryIndex >= 0 ? "auxiliary_fixture" : "canonical_component",
+        auxiliaryIndex: auxiliaryIndex >= 0 ? auxiliaryIndex + 1 : null,
         phase,
         instanceRootId: stack.instanceRootId,
         identity: component.identity,
@@ -1019,6 +1540,8 @@ export class CaseStackSupervisor {
         return await this.aggregateSnapshot("addin_loopback_fixture");
       case "gateway.snapshot":
         return await this.gatewayControl("snapshot", {}) as JsonObject;
+      case "gateway.compact_snapshot":
+        return await this.compactGatewaySnapshot();
       case "wire_capture":
         return this.wireCapture() as unknown as JsonObject;
       default:
@@ -1051,6 +1574,8 @@ function conditionMatches(operator: string, value: JsonValue | undefined, expect
       return value !== undefined && value !== null;
     case "equals":
       return JSON.stringify(value) === JSON.stringify(expected);
+    case "not_equals":
+      return value !== undefined && JSON.stringify(value) !== JSON.stringify(expected);
     case "count_equals":
       return Array.isArray(value) && value.length === expected;
     case "minimum_count":
@@ -1064,6 +1589,10 @@ function conditionMatches(operator: string, value: JsonValue | undefined, expect
 
 function dynamicValues(snapshot: JsonObject): JsonObject {
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+  const rsids = sessions
+    .filter(isObject)
+    .map((session) => session.rsid)
+    .filter((rsid): rsid is string => typeof rsid === "string");
   const firstSession = sessions.find(isObject);
   const sequences = Array.isArray(snapshot.sequences) ? snapshot.sequences : [];
   const firstSequence = sequences.find(isObject);
@@ -1072,6 +1601,7 @@ function dynamicValues(snapshot: JsonObject): JsonObject {
   const lastPeerAck = Number.isSafeInteger(firstSequence?.lastPeerAck) ? Number(firstSequence?.lastPeerAck) : 0;
   return {
     rsid,
+    rsids,
     nextSeq: lastRxSeq + 1,
     lastAck: lastPeerAck,
     grantedSessionCapabilities: Array.isArray(firstSession?.grantedSessionCapabilities)

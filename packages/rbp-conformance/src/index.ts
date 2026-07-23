@@ -72,7 +72,10 @@ export {
   executeParentSteps,
   observationsForRequirement,
 } from "./parentStepEngine.js";
-export { CaseStackSupervisor } from "./caseStackSupervisor.js";
+export {
+  CaseStackSupervisor,
+  GatewayControlRequestError,
+} from "./caseStackSupervisor.js";
 export { createEphemeralLoopbackTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type { EphemeralTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type {
@@ -82,7 +85,10 @@ export type {
   RestartCaseStackOptions,
   StartedStackComponent,
 } from "./caseStackSupervisor.js";
-export { createProductionCaseDrivers } from "./productionDrivers.js";
+export {
+  createProductionCaseDrivers,
+  gatewayControlErrorOutcome,
+} from "./productionDrivers.js";
 export {
   executeProductionCaseBinding,
   executeProductionCaseBothBindings,

@@ -691,6 +691,7 @@ export class BridgeDaemonRuntime {
       "fallbackProvisioned",
       "endpointPolicy",
       "tlsTrust",
+      "clockStartMs",
     ]);
     if (this.#binding !== null || this.#peer !== null) throw new Error("transport is already open");
     const kind = record.kind;
@@ -698,6 +699,9 @@ export class BridgeDaemonRuntime {
       throw new Error("kind must be wss, streamable_http_sse, or primary_then_fallback");
     }
     const deviceToken = boundedString(record.deviceToken, "deviceToken", 8_192);
+    if (record.clockStartMs !== undefined) {
+      this.#clockMs = safeInteger(record.clockStartMs, "clockStartMs");
+    }
     const endpointPolicy = record.endpointPolicy === undefined
       ? undefined
       : loopbackEndpointPolicy(record.endpointPolicy);
@@ -894,8 +898,14 @@ export class BridgeDaemonRuntime {
     exactKeys(record, ["controlVersion", "id", "action", "nowMs"]);
     this.#clockMs = safeInteger(record.nowMs, "nowMs");
     const peer = this.#requirePeer();
+    const livenessBeforeActions = peer.livenessAt(this.#clockMs);
     const liveness = await peer.tick(this.#clockMs);
-    return { nowMs: this.#clockMs, liveness, peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue };
+    return {
+      nowMs: this.#clockMs,
+      livenessBeforeActions,
+      liveness,
+      peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue,
+    };
   }
 
   async #pollContext(record: JsonObject): Promise<FixtureJsonValue> {

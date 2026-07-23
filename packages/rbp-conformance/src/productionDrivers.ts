@@ -2,10 +2,11 @@ import { createHash } from "node:crypto";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
-import type {
-  CaseStackSupervisor,
-  GatewayStartupOverrides,
-  ParentCaptureSummary,
+import {
+  GatewayControlRequestError,
+  type CaseStackSupervisor,
+  type GatewayStartupOverrides,
+  type ParentCaptureSummary,
 } from "./caseStackSupervisor.js";
 import type {
   ParentStepDriver,
@@ -150,10 +151,18 @@ function gatewayOverrides(argumentsValue: JsonObject): GatewayStartupOverrides |
   )) {
     throw new Error("restart_case_stack startupOverrides.supportedProtocols must be positive integers");
   }
+  const clockStartMs = value.clockStartMs;
+  if (
+    clockStartMs !== undefined &&
+    (!Number.isSafeInteger(clockStartMs) || Number(clockStartMs) < 0)
+  ) {
+    throw new Error("restart_case_stack startupOverrides.clockStartMs must be a non-negative safe integer");
+  }
   return {
     sessionCapabilities: strings("sessionCapabilities"),
     connectionCapabilities: strings("connectionCapabilities"),
     supportedProtocols: protocols === undefined ? undefined : protocols.map(Number),
+    clockStartMs: clockStartMs === undefined ? undefined : Number(clockStartMs),
   };
 }
 
@@ -162,6 +171,24 @@ function asSuccess(result: unknown, observations?: ProcessObservationRecord[]): 
     kind: "success",
     result: jsonValue(result, "driver result"),
     ...(observations === undefined || observations.length === 0 ? {} : { observations }),
+  };
+}
+
+export function gatewayControlErrorOutcome(error: unknown): RawStepOutcome | null {
+  if (!(error instanceof GatewayControlRequestError)) return null;
+  const remoteMessage = typeof error.response.error === "string"
+    ? error.response.error
+    : typeof error.response.message === "string"
+      ? error.response.message
+      : error.message;
+  return {
+    kind: "control_error",
+    code: `gateway_control_http_${error.status}`,
+    message: remoteMessage,
+    details: {
+      status: error.status,
+      response: jsonValue(error.response, "Gateway control error response"),
+    },
   };
 }
 
@@ -226,7 +253,14 @@ function pendingJournalCount(snapshot: JsonObject): number {
 
 function createGatewayDriver(supervisor: CaseStackSupervisor): ParentStepDriver {
   return async (request) => {
-    const result = await supervisor.gatewayControl(request.action, request.arguments);
+    let result: JsonValue;
+    try {
+      result = await supervisor.gatewayControl(request.action, request.arguments);
+    } catch (error) {
+      const outcome = gatewayControlErrorOutcome(error);
+      if (outcome !== null) return outcome;
+      throw error;
+    }
     const observations = request.action === "snapshot" && isObject(result)
       ? [observation(
           request,
