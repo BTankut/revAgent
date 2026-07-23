@@ -21,6 +21,7 @@ import {
   evaluateResourceSamples,
 } from "../src/resourceMetrics.js";
 import {
+  hasCanonicalOneHourFinalCoverage,
   ONE_HOUR_SOAK_CYCLE_INTERVAL_MS,
   ONE_HOUR_SOAK_DURATION_MS,
   ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT,
@@ -77,19 +78,30 @@ function writeMetricRows(
   artifact.sha256 = createHash("sha256").update(bytes).digest("hex");
 }
 
-function canonicalOneHourFixture(root: string): SoakReport {
+function canonicalOneHourFixture(
+  root: string,
+  options: { measuredJitter?: boolean } = {},
+): SoakReport {
   const plan = createPlan();
   plan.runId = "one-hour-validator-fixture";
   const startedMs = Date.UTC(2026, 6, 23, 9, 0, 0);
+  const jitterPatternMs = [120, 640, 310, 900] as const;
   const cycles: SoakReport["cycles"] = Array.from(
     { length: ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT },
     (_, index) => {
       const scheduledOffsetMs = index * ONE_HOUR_SOAK_CYCLE_INTERVAL_MS;
+      const jitterMs = options.measuredJitter === true
+        ? jitterPatternMs[index % jitterPatternMs.length]!
+        : 0;
       return {
         cycle: index + 1,
         binding: index % 2 === 0 ? "wss" : "streamable_http_sse",
-        startedAt: new Date(startedMs + scheduledOffsetMs).toISOString(),
-        finishedAt: new Date(startedMs + scheduledOffsetMs + 100).toISOString(),
+        startedAt: new Date(
+          startedMs + scheduledOffsetMs + jitterMs,
+        ).toISOString(),
+        finishedAt: new Date(
+          startedMs + scheduledOffsetMs + jitterMs + 100,
+        ).toISOString(),
         reconnects: 1,
         proxyChurns: 1,
         heartbeatAcks: 1,
@@ -102,7 +114,14 @@ function canonicalOneHourFixture(root: string): SoakReport {
   const samples: SoakReport["resources"]["samples"] = cycles.map(
     (_cycle, index) => ({
       index,
-      offsetMs: index * ONE_HOUR_SOAK_CYCLE_INTERVAL_MS + 200,
+      offsetMs:
+        index * ONE_HOUR_SOAK_CYCLE_INTERVAL_MS +
+        (
+          options.measuredJitter === true
+            ? jitterPatternMs[index % jitterPatternMs.length]!
+            : 0
+        ) +
+        200,
       residentBytes: 100_000_000,
       openFileDescriptorCount: 12,
       journalPendingCount: 0,
@@ -147,6 +166,43 @@ function canonicalOneHourFixture(root: string): SoakReport {
     }],
     failure: null,
   } satisfies SoakReport;
+  report.artifacts[0]!.path = retainedSoakPath(
+    canonicalManifest.retainedEvidence.soakMetrics,
+    report,
+  );
+  writeMetricRows(root, report, metricRows(report));
+  return report;
+}
+
+function canonicalSmokeFixture(root: string): SoakReport {
+  const report = canonicalOneHourFixture(root);
+  const startedMs = Date.parse(report.startedAt);
+  const sampleIntervalMs = 4_000;
+  report.mode = "smoke";
+  report.runId = "smoke-validator-fixture";
+  report.requestedDurationMs = 30_000;
+  report.actualDurationMs = 30_000;
+  report.finishedAt = new Date(
+    startedMs + report.actualDurationMs,
+  ).toISOString();
+  report.cycles = report.cycles.slice(0, 8).map((cycle, index) => ({
+    ...cycle,
+    cycle: index + 1,
+    binding: index % 2 === 0 ? "wss" : "streamable_http_sse",
+    startedAt: new Date(startedMs + index * sampleIntervalMs).toISOString(),
+    finishedAt: new Date(
+      startedMs + index * sampleIntervalMs + 100,
+    ).toISOString(),
+  }));
+  report.resources.sampleIntervalMs = sampleIntervalMs;
+  report.resources.samples = report.cycles.map((_cycle, index) => ({
+    index,
+    offsetMs: index * sampleIntervalMs + 200,
+    residentBytes: 100_000_000,
+    openFileDescriptorCount: 12,
+    journalPendingCount: 0,
+  }));
+  refreshResourceEvaluation(report);
   report.artifacts[0]!.path = retainedSoakPath(
     canonicalManifest.retainedEvidence.soakMetrics,
     report,
@@ -226,6 +282,93 @@ describe("final one-hour soak cadence", () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-one-hour-shape-"));
     try {
       const report = canonicalOneHourFixture(root);
+      expect(evaluatePassingSoak(report, {
+        verifyArtifactFiles: true,
+        artifactRoot: root,
+      })).toMatchObject({ ok: true, issues: [] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("accepts bounded measured jitter without requiring synthetic exact slots", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-one-hour-jitter-"));
+    try {
+      const report = canonicalOneHourFixture(root, {
+        measuredJitter: true,
+      });
+      const observedGaps = report.resources.samples.slice(1).map(
+        (sample, index) =>
+          sample.offsetMs - report.resources.samples[index]!.offsetMs,
+      );
+      expect(new Set(observedGaps).size).toBeGreaterThan(1);
+      expect(hasCanonicalOneHourFinalCoverage(
+        report.cycles.length,
+        report.resources.samples,
+        report.actualDurationMs,
+      )).toBe(true);
+      expect(evaluatePassingSoak(report, {
+        verifyArtifactFiles: true,
+        artifactRoot: root,
+      })).toMatchObject({ ok: true, issues: [] });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a runner finish with a 7.8-second unsampled tail", () => {
+    const samples = Array.from(
+      { length: ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT },
+      (_, index) => ({
+        offsetMs: index * ONE_HOUR_SOAK_CYCLE_INTERVAL_MS + 200,
+      }),
+    );
+    expect(hasCanonicalOneHourFinalCoverage(
+      ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT,
+      samples,
+      ONE_HOUR_SOAK_DURATION_MS + 3_000,
+    )).toBe(false);
+  });
+
+  it("rejects parent-claimed PASS when all 720 cycles retain pending journal work", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-one-hour-pending-"));
+    try {
+      const report = canonicalOneHourFixture(root, {
+        measuredJitter: true,
+      });
+      report.cycles = report.cycles.map((cycle) => ({
+        ...cycle,
+        journalPending: 1,
+        passed: true,
+      }));
+      report.resources.samples = report.resources.samples.map((sample) => ({
+        ...sample,
+        journalPendingCount: 1,
+      }));
+      refreshResourceEvaluation(report);
+      expect(report.resources.evaluation?.passed).toBe(true);
+      writeMetricRows(root, report, metricRows(report));
+
+      const result = evaluatePassingSoak(report, {
+        verifyArtifactFiles: true,
+        artifactRoot: root,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.issues.map(({ code }) => code)).toContain(
+        "soak.cycle_result_mismatch",
+      );
+      expect(result.issues.map(({ code }) => code)).not.toContain(
+        "soak.metric_mismatch",
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps a canonical smoke report valid", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-smoke-regression-"));
+    try {
+      const report = canonicalSmokeFixture(root);
       expect(evaluatePassingSoak(report, {
         verifyArtifactFiles: true,
         artifactRoot: root,

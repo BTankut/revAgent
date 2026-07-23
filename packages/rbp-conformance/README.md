@@ -465,9 +465,10 @@ it requires exactly 720 alternating cycles and 720 same-index resource samples
 at 5,000 ms slots. A cycle may start at most 2,500 ms late and its sample must
 complete within 7,500 ms of that slot; observed sample gaps must stay within
 2,500-7,500 ms. Sampling begins within the first 7,500 ms, extends from the
-final scheduled window through the bounded run end, and the runner must reach
-the one-hour deadline no more than 7,500 ms late. An event-loop suspension or
-late cycle outside those bounds fails the run instead
+final scheduled window through the bounded run end, and the final
+sample-to-finish gap may not exceed one 5,000 ms slot. The runner must reach the
+one-hour deadline no more than 7,500 ms late. An event-loop suspension or late
+cycle outside those bounds fails the run instead
 of permitting catch-up cycles or a timestamp-only PASS.
 
 ## Retained evidence rules

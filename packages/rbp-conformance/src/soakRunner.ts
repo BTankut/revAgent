@@ -56,6 +56,25 @@ export const ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS = 2_500 as const;
 export const ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS = 7_500 as const;
 export const ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS = 7_500 as const;
 
+export function hasCanonicalOneHourFinalCoverage(
+  cycleCount: number,
+  samples: readonly Pick<ResourceSample, "offsetMs">[],
+  finishedOffsetMs: number,
+): boolean {
+  const lastSample = samples.at(-1);
+  return (
+    cycleCount === ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT &&
+    samples.length === ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT &&
+    finishedOffsetMs >= ONE_HOUR_SOAK_DURATION_MS &&
+    finishedOffsetMs <=
+      ONE_HOUR_SOAK_DURATION_MS + ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS &&
+    lastSample !== undefined &&
+    lastSample.offsetMs <= finishedOffsetMs &&
+    finishedOffsetMs - lastSample.offsetMs <=
+      ONE_HOUR_SOAK_CYCLE_INTERVAL_MS
+  );
+}
+
 const RECONNECT_SOAK_INPUT_FIELDS = new Set<PropertyKey>([
   "mode",
   "plan",
@@ -310,19 +329,23 @@ export async function runReconnectSoak(
   if (
     mode === "one_hour" &&
     failure === null &&
-    (
-      cycles.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT ||
-      samples.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT ||
-      finishedOffsetMs < ONE_HOUR_SOAK_DURATION_MS ||
-      finishedOffsetMs >
-        ONE_HOUR_SOAK_DURATION_MS + ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS
+    !hasCanonicalOneHourFinalCoverage(
+      cycles.length,
+      samples,
+      finishedOffsetMs,
     )
   ) {
+    const lastSampleOffsetMs = samples.at(-1)?.offsetMs;
+    const finalSampleGapMs =
+      lastSampleOffsetMs === undefined
+        ? undefined
+        : finishedOffsetMs - lastSampleOffsetMs;
     failure = {
       code: "soak_cadence_violation",
       message:
         "one-hour soak did not retain the exact full-duration cycle/sample coverage " +
-        `(${cycles.length} cycles, ${samples.length} samples, ${finishedOffsetMs} ms)`,
+        `(${cycles.length} cycles, ${samples.length} samples, ${finishedOffsetMs} ms, ` +
+        `final sample gap ${finalSampleGapMs === undefined ? "missing" : `${finalSampleGapMs} ms`})`,
     };
   }
   const resources: SoakReport["resources"] = {

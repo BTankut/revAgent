@@ -29,6 +29,16 @@ function issue(issues: ValidationIssue[], pathValue: string, code: string, messa
   issues.push({ path: pathValue, code, message });
 }
 
+function canonicalCyclePassed(cycle: SoakReport["cycles"][number]): boolean {
+  return (
+    cycle.reconnects >= 1 &&
+    cycle.proxyChurns >= 1 &&
+    cycle.heartbeatAcks >= 1 &&
+    cycle.controlRoundTrips >= 1 &&
+    cycle.journalPending === 0
+  );
+}
+
 function retainedPath(template: string, report: SoakReport): string {
   return `${canonicalManifest.retainedEvidence.root}/${template}`
     .replaceAll("{mode}", report.mode)
@@ -342,6 +352,14 @@ export function validateSoakReport(
   report.cycles.forEach((cycle, index) => {
     if (cycle.cycle !== index + 1) {
       issue(issues, `/cycles/${index}/cycle`, "soak.cycle_order", "soak cycles must be contiguous and one based");
+    }
+    if (cycle.passed !== canonicalCyclePassed(cycle)) {
+      issue(
+        issues,
+        `/cycles/${index}/passed`,
+        "soak.cycle_result_mismatch",
+        "cycle passed must exactly match the parent-recomputed reconnect, proxy, heartbeat, control, and zero-pending-journal invariants",
+      );
     }
     const cycleStart = Date.parse(cycle.startedAt);
     const cycleFinish = Date.parse(cycle.finishedAt);
