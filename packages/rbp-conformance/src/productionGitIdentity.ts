@@ -35,12 +35,14 @@ function sanitizedEnvironment(): NodeJS.ProcessEnv {
     GIT_CONFIG_GLOBAL: nullDevice,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_SYSTEM: nullDevice,
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_TERMINAL_PROMPT: "0",
   };
 }
 
 const HARDENED_REPOSITORY_CONFIG = [
+  "--no-replace-objects",
   "-c",
   "core.attributesfile=",
   "-c",
@@ -53,6 +55,8 @@ const HARDENED_REPOSITORY_CONFIG = [
   "core.ignorestat=false",
   "-c",
   "core.preloadindex=false",
+  "-c",
+  "core.useReplaceRefs=false",
   "-c",
   "core.safecrlf=false",
   "-c",

@@ -208,6 +208,18 @@ const RUNTIME_RESOLUTION_ENVIRONMENT_KEYS = new Set([
   "WS_NO_UTF_8_VALIDATE",
 ]);
 
+export function assertProductionControllerEnvironmentSafe(
+  source: NodeJS.ProcessEnv = process.env,
+): void {
+  const forbidden = Object.keys(source).find((key) =>
+    RUNTIME_RESOLUTION_ENVIRONMENT_KEYS.has(key.toUpperCase()));
+  if (forbidden !== undefined) {
+    throw new Error(
+      `production controller environment cannot set ${forbidden}`,
+    );
+  }
+}
+
 function isRejectedProductionEnvironmentKey(key: string): boolean {
   const normalized = key.toUpperCase();
   return (

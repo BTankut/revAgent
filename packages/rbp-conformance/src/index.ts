@@ -181,7 +181,10 @@ export type {
   ProductionRuntimeVerificationOptions,
 } from "./productionBuildProvenance.js";
 export { prepareProductionExecutionPlan } from "./productionPreparation.js";
-export { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
+export {
+  assertProductionControllerEnvironmentSafe,
+  sanitizedProductionRuntimeEnvironment,
+} from "./productionRuntimeIdentity.js";
 export {
   productionCaseVariables,
   SUPPORTED_PRODUCTION_CASES,

@@ -14,9 +14,12 @@ import {
   buildProductionExecutionPlan,
 } from "./productionExecutionPlan.js";
 import {
+  resolveInstalledBuildGeneratorDependencyClosure,
   resolveProductionToolchainIdentity,
   sanitizedProductionRuntimeEnvironment,
   TYPESCRIPT_ENTRYPOINT_PATH,
+  type InstalledBuildGeneratorDependencyClosure,
+  type ProductionNodeExecutableIdentity,
   type ProductionToolchainIdentity,
 } from "./productionRuntimeIdentity.js";
 import { stableJson } from "./stableJson.js";
@@ -143,6 +146,7 @@ function runWorkspaceBuild(input: {
   npmExecutable: string;
   runtimeNodeExecutable: string;
   expectedToolchain: ProductionToolchainIdentity;
+  expectedBuildGeneratorDependencies: InstalledBuildGeneratorDependencyClosure;
   workspace: ProductionBuildWorkspace;
 }): void {
   const typescriptEntrypoint = path.resolve(
@@ -150,13 +154,20 @@ function runWorkspaceBuild(input: {
     TYPESCRIPT_ENTRYPOINT_PATH,
   );
   if (input.workspace === "@revagent/protocol") {
-    runBoundNodeChild({
-      ...input,
-      args: [path.resolve(
-        input.repoRoot,
-        "packages/protocol/scripts/generate-types.mjs",
-      )],
-      label: "canonical protocol type generation",
+    executeGuardedProtocolGeneration({
+      repoRoot: input.repoRoot,
+      runtimeNode: input.expectedToolchain.runtimeNode,
+      expected: input.expectedBuildGeneratorDependencies,
+      executeGeneration: () => {
+        runBoundNodeChild({
+          ...input,
+          args: [path.resolve(
+            input.repoRoot,
+            "packages/protocol/scripts/generate-types.mjs",
+          )],
+          label: "canonical protocol type generation",
+        });
+      },
     });
     runBoundNodeChild({
       ...input,
@@ -173,6 +184,40 @@ function runWorkspaceBuild(input: {
       path.resolve(input.repoRoot, `packages/${packageName}/tsconfig.json`),
     ],
     label: `canonical direct TypeScript build for ${input.workspace}`,
+  });
+}
+
+function assertBuildGeneratorDependenciesUnchanged(input: {
+  repoRoot: string;
+  runtimeNode: ProductionNodeExecutableIdentity;
+  expected: InstalledBuildGeneratorDependencyClosure;
+  phase: string;
+}): void {
+  const current = resolveInstalledBuildGeneratorDependencyClosure(
+    input.repoRoot,
+    input.runtimeNode,
+  );
+  if (stableJson(current) !== stableJson(input.expected)) {
+    throw new Error(
+      `protocol build-generator dependency closure changed ${input.phase}`,
+    );
+  }
+}
+
+export function executeGuardedProtocolGeneration(input: {
+  repoRoot: string;
+  runtimeNode: ProductionNodeExecutableIdentity;
+  expected: InstalledBuildGeneratorDependencyClosure;
+  executeGeneration: () => void;
+}): void {
+  assertBuildGeneratorDependenciesUnchanged({
+    ...input,
+    phase: "before generation",
+  });
+  input.executeGeneration();
+  assertBuildGeneratorDependenciesUnchanged({
+    ...input,
+    phase: "after generation",
   });
 }
 
@@ -302,6 +347,11 @@ export function prepareProductionExecutionPlan(input: {
     runtimeNodeExecutable,
     npmExecutable,
   );
+  const expectedBuildGeneratorDependencies =
+    resolveInstalledBuildGeneratorDependencyClosure(
+      input.repoRoot,
+      expectedToolchain.runtimeNode,
+    );
   const sourceBeforeBuild = resolveSourceIdentity(
     input.repoRoot,
     expectedToolchain.git.path,
@@ -320,6 +370,7 @@ export function prepareProductionExecutionPlan(input: {
         npmExecutable,
         runtimeNodeExecutable,
         expectedToolchain,
+        expectedBuildGeneratorDependencies,
       });
     },
   });

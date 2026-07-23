@@ -51,18 +51,21 @@ function gitEnvironment() {
     GIT_CONFIG_GLOBAL: nullDevice,
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_CONFIG_SYSTEM: nullDevice,
+    GIT_NO_REPLACE_OBJECTS: "1",
     GIT_OPTIONAL_LOCKS: "0",
     GIT_TERMINAL_PROMPT: "0",
   };
 }
 
 const hardenedGitConfig = [
+  "--no-replace-objects",
   "-c", "core.attributesfile=",
   "-c", "core.autocrlf=input",
   "-c", "core.excludesfile=",
   "-c", "core.fsmonitor=false",
   "-c", "core.ignorestat=false",
   "-c", "core.preloadindex=false",
+  "-c", "core.useReplaceRefs=false",
   "-c", "core.safecrlf=false",
   "-c", "core.trustctime=true",
   "-c", "core.untrackedCache=false",
@@ -221,6 +224,24 @@ function assertBootstrapSourceClean() {
   if (filters.status !== 0 && filters.status !== 1) {
     throw new Error(`Git local-filter probe failed: ${String(filters.stderr).trim()}`);
   }
+  const replaceRefs = String(runGit(
+    ["for-each-ref", "--format=%(refname)", "refs/replace"],
+    "Git replace-ref probe",
+  ).stdout).trim();
+  if (replaceRefs.length > 0) {
+    throw new Error("canonical preparation rejects Git replace refs");
+  }
+  const graftsPath = String(runGit(
+    ["rev-parse", "--git-path", "info/grafts"],
+    "Git graft path",
+  ).stdout).trim();
+  const absoluteGrafts = path.resolve(repoRoot, graftsPath);
+  if (
+    existsSync(absoluteGrafts) &&
+    readFileSync(absoluteGrafts, "utf8").trim().length > 0
+  ) {
+    throw new Error("canonical preparation rejects legacy Git grafts");
+  }
   const commit = String(runGit(
     ["rev-parse", "--verify", "HEAD^{commit}"],
     "Git protected commit",
@@ -258,7 +279,7 @@ function assertBootstrapSourceClean() {
   });
   const hashResult = run(
     gitIdentity.real,
-    [...hardenedGitConfig, "hash-object", "--stdin-paths"],
+    [...hardenedGitConfig, "hash-object", "--no-filters", "--stdin-paths"],
     {
       env: gitEnvironment(),
       input: `${tree.map((entry) => entry.path).join("\n")}\n`,

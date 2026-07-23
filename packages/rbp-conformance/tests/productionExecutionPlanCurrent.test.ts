@@ -163,4 +163,28 @@ describe("production execution plan source gate", () => {
     expect(() => assertProductionControllerRuntimeCurrent(plan))
       .toThrow(/controller Node does not match/u);
   });
+
+  it.each([
+    "NODE_OPTIONS",
+    "node_path",
+    "Node_Preserve_Symlinks",
+    "NODE_COMPILE_CACHE",
+    "node_disable_compile_cache",
+    "WS_NO_BUFFER_UTIL",
+    "ws_no_utf_8_validate",
+  ])("rejects controller runtime-affecting environment key %s", (key) => {
+    const plan = createPlan();
+    const current = resolveCurrentProcessNodeIdentity();
+    plan.components.forEach((component, index) => {
+      const identity = provenance(index + 1);
+      identity.toolchain.runtimeNode = structuredClone(current);
+      component.expectedIdentity.buildProvenance = identity;
+    });
+    expect(() =>
+      assertProductionControllerRuntimeCurrent(
+        plan,
+        () => structuredClone(current),
+        { [key]: "hostile" },
+      )).toThrow(new RegExp(key, "iu"));
+  });
 });

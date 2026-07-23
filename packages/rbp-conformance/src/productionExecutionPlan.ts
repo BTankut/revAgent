@@ -11,6 +11,7 @@ import {
   type ProductionProvenanceVerificationOptions,
 } from "./productionBuildProvenance.js";
 import {
+  assertProductionControllerEnvironmentSafe,
   normalizeExecutablePath,
   resolveCurrentProcessNodeIdentity,
   verifyPowerShellIdentityCurrent,
@@ -241,7 +242,9 @@ export function assertProductionControllerRuntimeCurrent(
   plan: ExecutionPlan,
   resolveCurrent: () => ProductionNodeExecutableIdentity =
     resolveCurrentProcessNodeIdentity,
+  environment: NodeJS.ProcessEnv = process.env,
 ): void {
+  assertProductionControllerEnvironmentSafe(environment);
   const planned = plannedRuntimeNodeIdentity(plan);
   const current = resolveCurrent();
   if (stableJson(current) !== stableJson(planned)) {

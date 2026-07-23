@@ -135,6 +135,29 @@ function assertNoLocalFilterOverrides(
   }
 }
 
+function assertNoHistoryOverrides(
+  repoRoot: string,
+  gitIdentity: ProductionGitIdentity,
+): void {
+  const replaceRefs = runBoundGit(
+    repoRoot,
+    ["for-each-ref", "--format=%(refname)", "refs/replace"],
+    gitIdentity,
+  ).stdout.trim();
+  if (replaceRefs.length > 0) {
+    throw new Error("conformance source identity rejects Git replace refs");
+  }
+  const grafts = runBoundGit(
+    repoRoot,
+    ["rev-parse", "--git-path", "info/grafts"],
+    gitIdentity,
+  ).stdout.trim();
+  const graftsPath = path.resolve(repoRoot, grafts);
+  if (existsSync(graftsPath) && readFileSync(graftsPath, "utf8").trim().length > 0) {
+    throw new Error("conformance source identity rejects legacy Git grafts");
+  }
+}
+
 function assertIndexMatchesProtectedTree(
   tree: readonly GitTreeEntry[],
   index: readonly GitTreeEntry[],
@@ -178,7 +201,7 @@ function assertWorktreeMatchesProtectedTree(
   }
   const hashes = runBoundGit(
     repoRoot,
-    ["hash-object", "--stdin-paths"],
+    ["hash-object", "--no-filters", "--stdin-paths"],
     gitIdentity,
     { input: `${tree.map(({ path: filePath }) => filePath).join("\n")}\n` },
   ).stdout.trim().split(/\r?\n/u);
@@ -215,6 +238,7 @@ export function resolveSourceIdentity(
     : resolveProductionGitIdentity(gitExecutable);
   assertNoIndexTrustFlags(repoRoot, gitIdentity);
   assertNoLocalFilterOverrides(repoRoot, gitIdentity);
+  assertNoHistoryOverrides(repoRoot, gitIdentity);
   const commitSha = runBoundGit(
     repoRoot,
     ["rev-parse", "--verify", "HEAD^{commit}"],

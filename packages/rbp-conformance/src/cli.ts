@@ -45,7 +45,7 @@ function usage(): never {
       "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
       "  rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
-      "  rbp-conformance validate-soak <soak-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>]",
+      "  rbp-conformance validate-soak <soak-report.json> --plan <soak-plan.json> --aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance junit <run-report.json> <junit.xml>",
       "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance summary <aggregate.json> <summary.md>",
@@ -277,6 +277,13 @@ interface ProductionValidationContext {
   repoRoot: string;
 }
 
+interface ProductionFinalEvidenceContext {
+  options: PassingValidationOptions;
+  aggregatePlans: [ExecutionPlan, ExecutionPlan, ExecutionPlan];
+  soakPlan: ExecutionPlan;
+  aggregateFile: string;
+}
+
 function assertPlansShareExactCandidate(plans: readonly ExecutionPlan[]): void {
   if (plans.length === 0) throw new Error("at least one production plan is required");
   const candidate = stableJson({
@@ -369,6 +376,86 @@ function productionValidationContext(
   options.expectedCommitSha = source.commitSha;
   options.expectedTreeSha = source.treeSha;
   return { options, plans, repoRoot };
+}
+
+function productionFinalEvidenceContext(
+  args: string[],
+  cwd: string,
+): ProductionFinalEvidenceContext {
+  const options: PassingValidationOptions = {
+    verifyArtifactFiles: true,
+    artifactRoot: cwd,
+  };
+  const aggregatePlanFiles = new Map<number, string>();
+  let soakPlanFile: string | undefined;
+  let aggregateFile: string | undefined;
+  let repoRoot: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const name = args[index];
+    const value = args[index + 1];
+    if (value === undefined) usage();
+    if (name === "--expected-commit") {
+      options.expectedCommitSha = value;
+    } else if (name === "--expected-tree") {
+      options.expectedTreeSha = value;
+    } else if (name === "--artifact-root") {
+      options.artifactRoot = resolveFrom(cwd, value);
+    } else if (name === "--repo-root") {
+      repoRoot = resolveFrom(cwd, value);
+    } else if (name === "--plan") {
+      soakPlanFile = resolveFrom(cwd, value);
+    } else if (name === "--aggregate") {
+      aggregateFile = resolveFrom(cwd, value);
+    } else if (
+      name === "--plan-1" ||
+      name === "--plan-2" ||
+      name === "--plan-3"
+    ) {
+      aggregatePlanFiles.set(Number(name.at(-1)), resolveFrom(cwd, value));
+    } else {
+      usage();
+    }
+    index += 1;
+  }
+  if (
+    repoRoot === undefined ||
+    soakPlanFile === undefined ||
+    aggregateFile === undefined ||
+    aggregatePlanFiles.size !== 3
+  ) {
+    usage();
+  }
+  const gatePlan = (planFile: string): ExecutionPlan => {
+    const plan = readJson(planFile, cwd) as ExecutionPlan;
+    assertProductionExecutionPlanCurrent(plan, repoRoot);
+    assertProductionControllerRuntimeCurrent(plan);
+    return plan;
+  };
+  const aggregatePlans = ([1, 2, 3] as const).map((sequence) =>
+    gatePlan(aggregatePlanFiles.get(sequence)!)) as [
+      ExecutionPlan,
+      ExecutionPlan,
+      ExecutionPlan,
+    ];
+  const soakPlan = gatePlan(soakPlanFile);
+  assertPlansShareExactCandidate(aggregatePlans);
+  assertPlansShareExactCandidate([...aggregatePlans, soakPlan]);
+  const source = aggregatePlans[0].source;
+  if (
+    options.expectedCommitSha !== undefined &&
+    options.expectedCommitSha !== source.commitSha
+  ) {
+    throw new Error("--expected-commit does not match the gated production plans");
+  }
+  if (
+    options.expectedTreeSha !== undefined &&
+    options.expectedTreeSha !== source.treeSha
+  ) {
+    throw new Error("--expected-tree does not match the gated production plans");
+  }
+  options.expectedCommitSha = source.commitSha;
+  options.expectedTreeSha = source.treeSha;
+  return { options, aggregatePlans, soakPlan, aggregateFile };
 }
 
 function assertRunMatchesPlan(report: RunReport, plan: ExecutionPlan): void {
@@ -493,16 +580,22 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   if (command === "validate-soak") {
     const [file, ...flags] = rest;
     if (file === undefined) usage();
-    const context = productionValidationContext(flags, cwd, 1);
+    const context = productionFinalEvidenceContext(flags, cwd);
+    const aggregate = readJson(context.aggregateFile, cwd);
+    context.options.aggregateReportFile = context.aggregateFile;
+    assertPassingAggregateReport(aggregate, context.options);
+    assertAggregateMatchesPlans(
+      aggregate as AggregateReport,
+      context.aggregatePlans,
+    );
     const report = readJson(file, cwd);
-    const options = context.options;
-    options.soakReportFile = resolveFrom(cwd, file);
-    assertPassingSoakReport(report, options);
+    context.options.soakReportFile = resolveFrom(cwd, file);
+    assertPassingSoakReport(report, context.options);
     assertSoakMatchesPlan(
       report as SoakReport,
-      context.plans[0]!,
+      context.soakPlan,
     );
-    process.stdout.write("RBP reconnect/proxy-churn soak: PASS\n");
+    process.stdout.write("RBP final aggregate and soak evidence set: PASS\n");
     return;
   }
   if (command === "junit") {
