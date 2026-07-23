@@ -400,6 +400,57 @@ describe("add-in loopback fixture listener", () => {
     }
   });
 
+  it("honors bounded deterministic multi-file scenario sizing and rejects an over-budget scenario", async () => {
+    const { address } = await started();
+    const socket = await connected(address);
+    const response = await writeAndRead(
+      socket,
+      request(uuid7(28), "fixture_multi_file_output", {
+        scenario: "valid_multifile",
+        fileCount: 3,
+        bytesPerFile: 1_048_577,
+        contentType: "application/octet-stream",
+      }),
+    );
+    const result = response.result as JsonObject;
+    const files = result.files as unknown as JsonObject[];
+
+    expect(result).toMatchObject({
+      fixtureArtifactProgress: true,
+      artifactScenario: "valid_multifile",
+    });
+    expect(files).toHaveLength(3);
+    expect(files.map((entry) => entry.artifactIndex)).toEqual([0, 1, 2]);
+    expect(files.map((entry) => entry.sizeBytes)).toEqual([1_048_577, 1_048_577, 1_048_577]);
+
+    const rejected = await writeAndRead(
+      socket,
+      request(uuid7(29), "fixture_multi_file_output", {
+        scenario: "valid_multifile",
+        fileCount: 16,
+        bytesPerFile: 4 * 1024 * 1024,
+      }),
+    );
+    expect(rejected.result).toMatchObject({
+      state: "failed",
+      error: { code: "command_failure" },
+    });
+
+    const localPath = "C:\\private-workstation\\local-artifact.bin";
+    const localPathVector = await writeAndRead(
+      socket,
+      request(uuid7(30), "fixture_multi_file_output", {
+        scenario: "local_path",
+        path: localPath,
+      }),
+    );
+    expect(localPathVector.result).toMatchObject({
+      fixtureArtifactProgress: true,
+      artifactScenario: "local_path",
+      files: [{ path: localPath, contentType: "application/octet-stream" }],
+    });
+  });
+
   it("updates the deterministic cached document context within one listener session", async () => {
     const { fixture, address } = await started();
     const socket = await connected(address);
@@ -442,6 +493,53 @@ describe("add-in loopback fixture listener", () => {
       activeDocumentId: "fixture-document-2",
       activeView: { id: "2002" },
     });
+    const evidence = fixture.snapshotEvidence().documentContextEvidence;
+    expect(evidence).toMatchObject({
+      clock: "process_monotonic_ms",
+      currentRevision: 2,
+      applicationEventCacheUpdateCount: 1,
+      cacheReadCount: 2,
+      pollRequestCount: 2,
+      externalEventRaiseCount: 0,
+    });
+    expect(evidence.timeline.map((entry) => entry.kind)).toEqual([
+      "cache_initialized",
+      "cache_read",
+      "application_event_cache_update",
+      "cache_read",
+    ]);
+    for (let index = 1; index < evidence.timeline.length; index += 1) {
+      expect(evidence.timeline[index]!.atMonotonicMs)
+        .toBeGreaterThan(evidence.timeline[index - 1]!.atMonotonicMs);
+    }
+  });
+
+  it("bounds document-context evidence while retaining monotonic totals", () => {
+    const fixture = new AddinLoopbackFixture();
+    for (let index = 0; index < 260; index += 1) {
+      fixture.applyDocumentContextEvent({
+        capturedAtUtc: "2026-07-22T10:15:00.000Z",
+        cacheState: "ready",
+        unavailableReason: null,
+        documents: [],
+        activeDocumentId: null,
+        activeView: null,
+        disciplineHint: null,
+      });
+    }
+    const evidence = fixture.snapshotEvidence().documentContextEvidence;
+
+    expect(evidence).toMatchObject({
+      evidenceVersion: 1,
+      capacity: 256,
+      totalEventCount: 261,
+      droppedEventCount: 5,
+      applicationEventCacheUpdateCount: 260,
+      externalEventRaiseCount: 0,
+    });
+    expect(evidence.timeline).toHaveLength(256);
+    expect(evidence.timeline[0]!.sequence).toBe(6);
+    expect(evidence.timeline.at(-1)!.sequence).toBe(261);
   });
 
   it("rejects malformed UTF-8 before JSON parsing or method dispatch", async () => {

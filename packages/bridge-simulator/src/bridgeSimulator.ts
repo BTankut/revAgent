@@ -48,6 +48,7 @@ import type {
   ArtifactInput,
   ChunkedResultCarrier,
   DurableResultCarrier,
+  SanitizedArtifactSpoolEvidence,
 } from "./artifacts.js";
 import type {
   AcceptInboundBatchDecision,
@@ -764,6 +765,13 @@ export class BridgeSimulator {
 
   public get journal(): DurableBridgeJournal {
     return this.#journal;
+  }
+
+  public artifactSpoolEvidence(): SanitizedArtifactSpoolEvidence {
+    const carriers = this.#journal.retainedDeliveryCarrierJsons().map((carrierJson) =>
+      JSON.parse(carrierJson) as DurableResultCarrier
+    );
+    return this.#spool.inspectRetained(carriers);
   }
 
   public applyNegotiatedLimits(limits: BridgeNegotiatedLimits): void {

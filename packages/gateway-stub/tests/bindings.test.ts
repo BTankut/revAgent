@@ -364,6 +364,75 @@ for (const [binding, connect] of [
 }
 
 describe("opening and proxy fault controls", () => {
+  it("rejects bridge-claimed seat and user authority on authenticated WSS paths without retaining values", async () => {
+    const handle = await start("authorization-audit-server-path");
+    const spoofVectors = [
+      {
+        field: "seat_id",
+        secret: "server-path-attacker-seat",
+        payload: {
+          ...sessionRegister(),
+          seat_id: "server-path-attacker-seat",
+        },
+      },
+      {
+        field: "user_hint.user_id",
+        secret: "server-path-attacker-user",
+        payload: {
+          ...sessionRegister(),
+          user_hint: {
+            ...sessionRegister().user_hint,
+            user_id: "server-path-attacker-user",
+          },
+        },
+      },
+    ] as const;
+
+    for (const [index, vector] of spoofVectors.entries()) {
+      const socket = await openRawWebSocket(handle);
+      try {
+        socket.send(JSON.stringify(hello(340 + index * 2)));
+        await nextRawMessage(socket);
+        const fault = nextRawMessage(socket);
+        const closed = nextClose(socket);
+        socket.send(JSON.stringify(controlEnvelope(
+          "session_register",
+          vector.payload,
+          341 + index * 2,
+        )));
+        await expect(fault).resolves.toMatchObject({
+          type: "error",
+          payload: {
+            fault_class: "auth",
+            message: "session registration contains bridge-claimed principal or seat authority",
+          },
+        });
+        await expect(closed).resolves.toMatchObject({ code: 4403 });
+      } finally {
+        if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      }
+    }
+
+    const snapshot = handle.core.snapshot().authorizationAudit;
+    expect(snapshot).toMatchObject({
+      evidenceVersion: 1,
+      capacity: 256,
+      totalEventCount: 4,
+      droppedEventCount: 0,
+      secretsRedacted: true,
+    });
+    expect(snapshot.entries.filter((entry) => entry.decision === "rejected")).toEqual(
+      spoofVectors.map((vector) => expect.objectContaining({
+        operation: "session_register",
+        reason: "claimed_identity",
+        claimedIdentityFields: [vector.field],
+      })),
+    );
+    const serialized = JSON.stringify(snapshot);
+    for (const vector of spoofVectors) expect(serialized).not.toContain(vector.secret);
+    expect(serialized).not.toContain(TOKEN);
+  });
+
   it("returns one shared close promise to every concurrent caller, including rejection", async () => {
     const successful = await start("shared-close-success");
     const first = successful.close();

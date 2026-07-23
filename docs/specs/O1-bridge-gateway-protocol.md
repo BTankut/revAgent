@@ -1167,6 +1167,9 @@ steps use `replayed:true` because the recovery delivery executes no add-in step.
 - Long-running add-in waits SHOULD emit progress every 10 seconds.
 - The bridge pauses data emission while the transport's buffered outbound data exceeds 8 MiB.
 - Control messages and heartbeats MUST remain serviceable while result chunks are backpressured.
+- O1-T6 evidence samples the active binding's actual `bufferedAmount` and retains a versioned bounded summary
+  of high-water blocks, control frames sent while above high water, and per-invocation chunk/progress/terminal
+  frame counts. These counters are evidence about observed transport behavior; they do not replace wire capture.
 - The combined decoded bytes of the structured-result stream and every artifact stream are limited to 32 MiB
   per invocation. Larger results fail with `oversize`; Gateway-side result/artifact hygiene is a separate WP2
   layer and does not raise this wire limit.
@@ -1811,3 +1814,10 @@ the exact aggregate max/max-plus-one byte tests, are golden schema/semantic vect
 correlation/rollback invariants, and serialization boundaries without Revit. They do
 not prove framing behavior, a listener binding, an ExternalEvent, a `TransactionGroup`, crash behavior, or a
 real rollback. Those remain O1-T3 and O1-T7 executable gates under Sections 21 and 22.
+
+The executable O1 fixtures additionally expose bounded versioned snapshots for conformance correlation:
+document-context cache update/read/poll counters with a zero-valued ExternalEvent counter and monotonic event
+ordering; a Gateway authorization trail containing only decision metadata, hashed connection/device identity,
+and claimed-field names; and Bridge retained-carrier descriptors that redact every spool/local path and are
+rehydrated through the ordinary containment, non-reparse, size, and digest guards. A snapshot overflow is
+reported through explicit dropped counts or fails closed at the artifact-carrier inspection bound.

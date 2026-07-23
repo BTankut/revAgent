@@ -65,6 +65,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
 const MAX_ACTIVE_EVIDENCE_SNAPSHOTS = 4;
 const ROWS_PER_PAGE = 8;
 const EVENTS_PER_PAGE = 16;
+const ARTIFACT_CARRIERS_PER_PAGE = 1;
 
 interface EvidenceCursor {
   invocationOffset: number;
@@ -72,6 +73,7 @@ interface EvidenceCursor {
   durabilityOffset: number;
   sessionOffset: number;
   sequenceOffset: number;
+  artifactCarrierOffset: number;
 }
 
 interface BridgeEvidenceSnapshot {
@@ -83,6 +85,7 @@ interface BridgeEvidenceSnapshot {
   readonly durabilityEvents: readonly JsonObject[];
   readonly sessions: readonly JsonObject[];
   readonly sequences: readonly JsonObject[];
+  readonly artifactSpool: JsonObject;
   readonly discovery: JsonObject | null;
   readonly peer: JsonObject | null;
   readonly crash: JsonObject;
@@ -313,6 +316,7 @@ function zeroCursor(): EvidenceCursor {
     durabilityOffset: 0,
     sessionOffset: 0,
     sequenceOffset: 0,
+    artifactCarrierOffset: 0,
   };
 }
 
@@ -324,6 +328,7 @@ function parseCursor(value: unknown): EvidenceCursor {
     "durabilityOffset",
     "sessionOffset",
     "sequenceOffset",
+    "artifactCarrierOffset",
   ] as const;
   exactKeys(value, keys);
   return {
@@ -332,16 +337,22 @@ function parseCursor(value: unknown): EvidenceCursor {
     durabilityOffset: safeInteger(value.durabilityOffset, "cursor.durabilityOffset"),
     sessionOffset: safeInteger(value.sessionOffset, "cursor.sessionOffset"),
     sequenceOffset: safeInteger(value.sequenceOffset, "cursor.sequenceOffset"),
+    artifactCarrierOffset: safeInteger(value.artifactCarrierOffset, "cursor.artifactCarrierOffset"),
   };
 }
 
 function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, cursor: EvidenceCursor): JsonObject {
+  const artifactCarriers = snapshot.artifactSpool.carriers;
+  if (!Array.isArray(artifactCarriers) || artifactCarriers.some((carrier) => !isObject(carrier))) {
+    throw new Error("artifact spool evidence carriers must be objects");
+  }
   for (const [offset, length, label] of [
     [cursor.invocationOffset, snapshot.invocations.length, "invocationOffset"],
     [cursor.holdOffset, snapshot.holds.length, "holdOffset"],
     [cursor.durabilityOffset, snapshot.durabilityEvents.length, "durabilityOffset"],
     [cursor.sessionOffset, snapshot.sessions.length, "sessionOffset"],
     [cursor.sequenceOffset, snapshot.sequences.length, "sequenceOffset"],
+    [cursor.artifactCarrierOffset, artifactCarriers.length, "artifactCarrierOffset"],
   ] as const) {
     if (offset > length) throw new Error(`cursor.${label} exceeds snapshot length`);
   }
@@ -353,19 +364,25 @@ function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, curs
   );
   const sessions = snapshot.sessions.slice(cursor.sessionOffset, cursor.sessionOffset + ROWS_PER_PAGE);
   const sequences = snapshot.sequences.slice(cursor.sequenceOffset, cursor.sequenceOffset + ROWS_PER_PAGE);
+  const artifactCarrierPage = artifactCarriers.slice(
+    cursor.artifactCarrierOffset,
+    cursor.artifactCarrierOffset + ARTIFACT_CARRIERS_PER_PAGE,
+  );
   const nextCursor: EvidenceCursor = {
     invocationOffset: cursor.invocationOffset + invocations.length,
     holdOffset: cursor.holdOffset + holds.length,
     durabilityOffset: cursor.durabilityOffset + durabilityEvents.length,
     sessionOffset: cursor.sessionOffset + sessions.length,
     sequenceOffset: cursor.sequenceOffset + sequences.length,
+    artifactCarrierOffset: cursor.artifactCarrierOffset + artifactCarrierPage.length,
   };
   const complete =
     nextCursor.invocationOffset === snapshot.invocations.length &&
     nextCursor.holdOffset === snapshot.holds.length &&
     nextCursor.durabilityOffset === snapshot.durabilityEvents.length &&
     nextCursor.sessionOffset === snapshot.sessions.length &&
-    nextCursor.sequenceOffset === snapshot.sequences.length;
+    nextCursor.sequenceOffset === snapshot.sequences.length &&
+    nextCursor.artifactCarrierOffset === artifactCarriers.length;
   return {
     snapshotId,
     evidenceVersion: snapshot.evidenceVersion,
@@ -376,6 +393,12 @@ function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, curs
     durabilityEvents: durabilityEvents as unknown as FixtureJsonValue,
     sessions: sessions as unknown as FixtureJsonValue,
     sequences: sequences as unknown as FixtureJsonValue,
+    artifactSpool: {
+      ...snapshot.artifactSpool,
+      carrierOffset: cursor.artifactCarrierOffset,
+      carrierPageCount: artifactCarrierPage.length,
+      carriers: artifactCarrierPage as unknown as FixtureJsonValue,
+    },
     discovery: snapshot.discovery,
     peer: snapshot.peer,
     crash: snapshot.crash,
@@ -532,6 +555,7 @@ export class BridgeDaemonRuntime {
           acceptedInbound: state.acceptedInbound.map((entry) => ({ ...entry })),
         };
       }),
+      artifactSpool: this.#simulator.artifactSpoolEvidence() as unknown as JsonObject,
       discovery: this.#discoveryEvidence === null ? null : this.#sanitizeDiscovery(this.#discoveryEvidence),
       peer: peerSnapshot === null
         ? null

@@ -1210,6 +1210,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       ...sessionSetup("O1-C40"),
       ...[
         "raw_path",
+        "local_path",
         "traversal_path",
         "reparse_path",
         "valid_multifile",
@@ -1229,13 +1230,14 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
 const OBSERVATION_POINTERS: Readonly<Record<ProcessObservationRecord["kind"], readonly string[]>> = {
   control_result: ["/request", "/response", "/requestBytes", "/responseBytes"],
   wire_event: ["/direction", "/binding", "/serialized", "/frame", "/atMonotonicMs"],
-  gateway_snapshot: ["/sessions", "/mutationHolds", "/runtime"],
+  gateway_snapshot: ["/sessions", "/mutationHolds", "/authorizationAudit", "/runtime"],
   bridge_snapshot: [
     "/invocations",
     "/holds",
     "/durabilityEvents",
     "/sessions",
     "/sequences",
+    "/artifactSpool",
     "/peer",
     "/transport",
     "/crash",
@@ -1246,6 +1248,7 @@ const OBSERVATION_POINTERS: Readonly<Record<ProcessObservationRecord["kind"], re
     "/methodExecutionCounts",
     "/modelStateDigest",
     "/pendingStalls",
+    "/documentContextEvidence",
     "/openSocketCount",
   ],
   fixture_execution_count: ["/executionCounts", "/methodExecutionCounts"],

@@ -4,6 +4,9 @@ export {
   DeterministicUuid7Source,
   type ArtifactCarrier,
   type ArtifactInput,
+  type SanitizedArtifactCarrierEvidence,
+  type SanitizedArtifactSpoolEvidence,
+  type SanitizedArtifactStreamEvidence,
 } from "./artifacts.js";
 export {
   BRIDGE_CONTROL_ACTIONS,

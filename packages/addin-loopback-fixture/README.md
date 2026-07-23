@@ -18,7 +18,13 @@ The fixture provides:
 - deterministic response-prefix disconnects for partial-header and
   partial-payload fault windows;
 - a validated `applyDocumentContextEvent` control that increments the cached
-  context revision inside one running fixture session.
+  context revision inside one running fixture session;
+- bounded, versioned document-context evidence that separately counts
+  application-event cache updates, cache reads/poll requests, and the
+  deliberately zero ExternalEvent-raise path, with process-monotonic ordering;
+- bounded `fixture_multi_file_output` scenarios for deterministic file count,
+  byte size, distinct raw/local/traversal/reparse-path handling, and invalid-member
+  all-or-nothing vectors.
 
 Run the standalone CLI after building:
 
@@ -36,7 +42,8 @@ select busy, delay, stall, guarded/failed outcomes, standard JSON-RPC errors,
 before/after-dispatch disconnect or crash, response-prefix disconnect, and
 rollback failure. Evidence is paged below the line limit and retains ordered
 observations, request/method execution counts, pending stalls, open-socket
-count, and only a digest/count for model state; it never emits raw model state.
+count, versioned document-context cache evidence, and only a digest/count for
+model state; it never emits raw model state.
 Use the returned `snapshotId` and `nextCursor` until `complete:true`.
 
 There is deliberately no unsafe-bind override or network control endpoint. The

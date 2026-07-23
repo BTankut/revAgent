@@ -40,9 +40,11 @@ import {
   openDispatchWindow,
   parseRbpFrame,
   queueOutboundData,
+  RBP_MAX_CONTROL_FRAME_BYTES,
   RBP_HEARTBEAT_DEGRADED_AFTER_MS,
   RBP_HEARTBEAT_DISCONNECTED_AFTER_MS,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
+  RbpFrameError,
   recordLateTerminalEvidence,
   recordVerificationEvidence,
   resolveMutationHold,
@@ -74,6 +76,7 @@ import { DurableGatewayStateStore } from "./stateStore.js";
 import type {
   AuthStatus,
   AuthenticatedDevice,
+  AuthorizationAuditEntry,
   DispatchBatchRequest,
   DispatchCancelRequest,
   DispatchInvokeRequest,
@@ -94,6 +97,14 @@ import type {
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const PENDING_HOLD_MS = 10 * 60 * 1000;
+const AUTHORIZATION_AUDIT_CAPACITY = 256;
+const RESERVED_IDENTITY_FIELDS = new Set([
+  "tenant_id",
+  "user_id",
+  "seat_id",
+  "principal",
+  "seat",
+]);
 
 class SystemClock implements GatewayClock {
   nowMs(): number {
@@ -106,6 +117,107 @@ interface RuntimeConnection {
   helloReceived: boolean;
   grantedCapabilities: string[];
   lifecycle: ConnectionLifecycleState;
+}
+
+function claimedSessionIdentityFields(payload: unknown): string[] {
+  const claimed: string[] = [];
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return claimed;
+  const record = payload as Record<string, unknown>;
+  for (const field of RESERVED_IDENTITY_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(record, field)) claimed.push(field);
+  }
+  const hint = record.user_hint;
+  if (typeof hint === "object" && hint !== null && !Array.isArray(hint)) {
+    for (const field of RESERVED_IDENTITY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(hint, field)) claimed.push(`user_hint.${field}`);
+    }
+  }
+  return claimed.sort();
+}
+
+const rejectedClaimDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const rejectedClaimEncoder = new TextEncoder();
+
+function preflightRejectedSessionIdentityClaims(
+  frame: Uint8Array,
+  parseError: unknown,
+): string[] {
+  // parseRbpFrame reaches invalid_envelope only after strict UTF-8, JSON syntax,
+  // duplicate-key, and frame-limit checks. Re-parse solely to identify and
+  // remove reserved field names, then require the remainder to pass the
+  // unchanged canonical schema before classifying the rejection as auth.
+  if (
+    !(parseError instanceof RbpFrameError) ||
+    parseError.code !== "invalid_envelope" ||
+    frame.byteLength > RBP_MAX_CONTROL_FRAME_BYTES
+  ) {
+    return [];
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(rejectedClaimDecoder.decode(frame)) as unknown;
+  } catch {
+    return [];
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const envelope = value as Record<string, unknown>;
+  if (envelope.type !== "session_register") return [];
+  const payload = envelope.payload;
+  const claimedFields = claimedSessionIdentityFields(payload);
+  if (
+    claimedFields.length === 0 ||
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    return [];
+  }
+
+  const sanitizedPayload = { ...(payload as Record<string, unknown>) };
+  for (const field of RESERVED_IDENTITY_FIELDS) delete sanitizedPayload[field];
+  if (
+    typeof sanitizedPayload.user_hint === "object" &&
+    sanitizedPayload.user_hint !== null &&
+    !Array.isArray(sanitizedPayload.user_hint)
+  ) {
+    const sanitizedHint = {
+      ...(sanitizedPayload.user_hint as Record<string, unknown>),
+    };
+    for (const field of RESERVED_IDENTITY_FIELDS) delete sanitizedHint[field];
+    sanitizedPayload.user_hint = sanitizedHint;
+  }
+
+  try {
+    const sanitized = parseRbpFrame(rejectedClaimEncoder.encode(JSON.stringify({
+      ...envelope,
+      payload: sanitizedPayload,
+    })));
+    return sanitized.type === "session_register" ? claimedFields : [];
+  } catch {
+    return [];
+  }
+}
+
+function authorizationOperation(envelope: RbpEnvelope): AuthorizationAuditEntry["operation"] {
+  switch (envelope.type) {
+    case "session_register":
+    case "session_resume":
+    case "session_unregister":
+    case "heartbeat":
+      return envelope.type;
+    default:
+      return "bridge_data";
+  }
+}
+
+function authorizationReason(fault: GatewayStubFault): AuthorizationAuditEntry["reason"] {
+  if (fault.message.includes("bridge-claimed")) return "claimed_identity";
+  if (fault.message.includes("machine fingerprint")) return "machine_fingerprint_mismatch";
+  if (fault.message.includes("credential") || fault.message.includes("seat authorization")) {
+    return "credential_or_seat_status";
+  }
+  return "connection_or_session_authority";
 }
 
 export class GatewayStubFault extends Error {
@@ -222,6 +334,8 @@ export class GatewayStubCore {
   private readonly tokenTable: Map<string, StaticDeviceIdentity>;
   private readonly connections = new Map<string, RuntimeConnection>();
   private readonly sessionBindings = new Map<string, string>();
+  private readonly authorizationAudit: AuthorizationAuditEntry[] = [];
+  private authorizationAuditSequence = 0;
 
   private constructor(options: GatewayStubCoreOptions, store: DurableGatewayStateStore) {
     this.store = store;
@@ -312,6 +426,7 @@ export class GatewayStubCore {
       throw new GatewayStubFault("hello may appear only once", "protocol", 4400);
     }
     if (!secureStringEqual(hello.payload.device_id, runtime.transport.device.deviceId)) {
+      this.recordAuthorizationAudit(runtime, "hello", "rejected", "connection_or_session_authority", []);
       throw new GatewayStubFault("hello device_id does not match authenticated enrollment", "auth", 4403);
     }
 
@@ -379,6 +494,7 @@ export class GatewayStubCore {
       selectedProtocol: selected,
       grantedCapabilities: granted,
     });
+    this.recordAuthorizationAudit(runtime, "hello", "allowed", "enrollment_bound", []);
     return ack;
   }
 
@@ -396,6 +512,21 @@ export class GatewayStubCore {
     try {
       envelope = parseRbpFrame(frame);
     } catch (error) {
+      const claimedFields = preflightRejectedSessionIdentityClaims(frame, error);
+      if (claimedFields.length > 0) {
+        this.recordAuthorizationAudit(
+          runtime,
+          "session_register",
+          "rejected",
+          "claimed_identity",
+          claimedFields,
+        );
+        throw new GatewayStubFault(
+          "session registration contains bridge-claimed principal or seat authority",
+          "auth",
+          4403,
+        );
+      }
       throw new GatewayStubFault(
         error instanceof Error ? error.message : "invalid RBP frame",
         "protocol",
@@ -408,13 +539,29 @@ export class GatewayStubCore {
     if (envelope.v !== runtime.transport.selectedProtocol) {
       throw new GatewayStubFault("message version differs from selected protocol", "protocol", 4400);
     }
-    return this.faults.apply(
-      connectionId,
-      runtime.transport.binding,
-      "bridge_to_gateway",
-      envelope.type === "partial" ? envelope.payload.kind : envelope.type,
-      async () => this.processEnvelope(connectionId, envelope),
-    );
+    try {
+      return await this.faults.apply(
+        connectionId,
+        runtime.transport.binding,
+        "bridge_to_gateway",
+        envelope.type === "partial" ? envelope.payload.kind : envelope.type,
+        async () => this.processEnvelope(connectionId, envelope),
+      );
+    } catch (error) {
+      if (error instanceof GatewayStubFault && error.faultClass === "auth") {
+        const claimedFields = envelope.type === "session_register"
+          ? claimedSessionIdentityFields(envelope.payload)
+          : [];
+        this.recordAuthorizationAudit(
+          runtime,
+          authorizationOperation(envelope),
+          "rejected",
+          authorizationReason(error),
+          claimedFields,
+        );
+      }
+      throw error;
+    }
   }
 
   async dispatchInvoke(request: DispatchInvokeRequest): Promise<RbpEnvelope> {
@@ -746,6 +893,14 @@ export class GatewayStubCore {
       schemaVersion: 1,
       sessions,
       mutationHolds: structuredClone(state.mutationHolds),
+      authorizationAudit: {
+        evidenceVersion: 1,
+        capacity: AUTHORIZATION_AUDIT_CAPACITY,
+        totalEventCount: this.authorizationAuditSequence,
+        droppedEventCount: Math.max(0, this.authorizationAuditSequence - this.authorizationAudit.length),
+        secretsRedacted: true,
+        entries: structuredClone(this.authorizationAudit),
+      },
       runtime: {
         openConnections: this.connections.size,
         connectionPhases: Object.fromEntries(
@@ -1086,6 +1241,14 @@ export class GatewayStubCore {
 
   private async handleSessionRegister(connectionId: string, payload: SessionRegister): Promise<void> {
     const runtime = this.requireActiveConnection(connectionId);
+    const claimedIdentityFields = claimedSessionIdentityFields(payload);
+    if (claimedIdentityFields.length > 0) {
+      throw new GatewayStubFault(
+        "session registration contains bridge-claimed principal or seat authority",
+        "auth",
+        4403,
+      );
+    }
     if (!secureStringEqual(payload.machine.fingerprint, runtime.transport.device.machineFingerprint)) {
       throw new GatewayStubFault("session machine fingerprint does not match enrollment", "auth", 4403);
     }
@@ -1178,6 +1341,7 @@ export class GatewayStubCore {
       this.sessionBindings.delete(replacedRsid);
     }
     this.sessionBindings.set(output.rsid, connectionId);
+    this.recordAuthorizationAudit(runtime, "session_register", "allowed", "enrollment_bound", []);
     await this.sendEnvelope(connectionId, output.response);
   }
 
@@ -2043,6 +2207,32 @@ export class GatewayStubCore {
       this.sessionBindings.get(rsid) !== connectionId
     ) {
       throw new GatewayStubFault("cross-device or cross-session authorization failure", "auth", 4403);
+    }
+  }
+
+  private recordAuthorizationAudit(
+    runtime: RuntimeConnection,
+    operation: AuthorizationAuditEntry["operation"],
+    decision: AuthorizationAuditEntry["decision"],
+    reason: AuthorizationAuditEntry["reason"],
+    claimedIdentityFields: readonly string[],
+  ): void {
+    this.authorizationAuditSequence += 1;
+    this.authorizationAudit.push({
+      sequence: this.authorizationAuditSequence,
+      atMs: this.clock.nowMs(),
+      operation,
+      decision,
+      reason,
+      connectionIdDigest: sha256Digest(runtime.transport.connectionId),
+      deviceIdDigest: sha256Digest(runtime.transport.device.deviceId),
+      claimedIdentityFields: [...new Set(claimedIdentityFields)].sort(),
+    });
+    if (this.authorizationAudit.length > AUTHORIZATION_AUDIT_CAPACITY) {
+      this.authorizationAudit.splice(
+        0,
+        this.authorizationAudit.length - AUTHORIZATION_AUDIT_CAPACITY,
+      );
     }
   }
 

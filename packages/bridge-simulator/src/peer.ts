@@ -38,6 +38,7 @@ import { GatewayTransportError, type GatewayBinding } from "./transport.js";
 
 export const BRIDGE_OUTBOUND_HIGH_WATER_BYTES = 8 * 1024 * 1024;
 export const BRIDGE_DOCUMENT_CONTEXT_POLL_MS = 15_000;
+const MAX_DELIVERY_PROGRESS_RECORDS = 128;
 
 export type BridgePeerLiveness = "steady" | "degraded" | "disconnected";
 
@@ -63,6 +64,17 @@ interface BatchReplyContext {
   readonly batchId: string;
   readonly atomic: boolean;
   readonly steps: readonly InvocationReplyContext[];
+}
+
+interface MutableDeliveryProgress {
+  rsid: string;
+  invocationId: string;
+  chunkFramesSent: number;
+  artifactChunkFramesSent: number;
+  resultChunkFramesSent: number;
+  progressFramesSent: number;
+  terminalFramesSent: number;
+  lastSentSeq: number;
 }
 
 export interface BridgeGatewayPeerOptions {
@@ -99,6 +111,33 @@ export interface BridgeGatewayPeerSnapshot {
   readonly grantedCapabilities: readonly string[];
   readonly retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null;
   readonly reconnectDelayFloorMs: number;
+  readonly backpressure: {
+    readonly evidenceVersion: 1;
+    readonly source: "transport.bufferedAmount";
+    readonly highWaterBytes: number;
+    readonly currentBufferedAmount: number;
+    readonly maxObservedBufferedAmount: number;
+    readonly sampleCount: number;
+    readonly blockedPumpCount: number;
+    readonly active: boolean;
+    readonly controlFramesSentWhileBackpressured: number;
+  };
+  readonly deliveryProgress: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalRecordCount: number;
+    readonly droppedRecordCount: number;
+    readonly records: readonly {
+      readonly rsid: string;
+      readonly invocationId: string;
+      readonly chunkFramesSent: number;
+      readonly artifactChunkFramesSent: number;
+      readonly resultChunkFramesSent: number;
+      readonly progressFramesSent: number;
+      readonly terminalFramesSent: number;
+      readonly lastSentSeq: number;
+    }[];
+  };
 }
 
 function defaultId(): string {
@@ -221,7 +260,15 @@ function invocationDrafts(
 ): QueuedDataDraft[] {
   const drafts: QueuedDataDraft[] = [];
   if (outcome.kind === "result") {
-    for (const partial of outcome.partials) {
+    const progressRequested =
+      typeof outcome.result === "object" &&
+      outcome.result !== null &&
+      !Array.isArray(outcome.result) &&
+      (outcome.result as Record<string, unknown>).fixtureArtifactProgress === true;
+    const totalChunks = outcome.partials.length;
+    let chunksSent = 0;
+    for (let index = 0; index < outcome.partials.length; index += 1) {
+      const partial = outcome.partials[index] as (typeof outcome.partials)[number];
       drafts.push({
         type: "partial",
         id: id(),
@@ -229,6 +276,27 @@ function invocationDrafts(
         payload: partial as unknown as JsonValue,
         deliveryCarrier: null,
       });
+      chunksSent += 1;
+      const next = outcome.partials[index + 1];
+      if (progressRequested && (next === undefined || next.stream_id !== partial.stream_id)) {
+        drafts.push({
+          type: "partial",
+          id: id(),
+          ts: ts(),
+          payload: {
+            kind: "progress",
+            invocation_id: invocation.invocationId,
+            progress: {
+              elapsed_ms: 0,
+              note: "bridge_chunk_delivery",
+              chunks_sent: chunksSent,
+              total_chunks: totalChunks,
+              stream_id: partial.stream_id,
+            },
+          },
+          deliveryCarrier: null,
+        });
+      }
     }
     drafts.push({
       type: "result",
@@ -439,6 +507,7 @@ export class BridgeGatewayPeer {
   readonly #lastContextPollAt = new Map<string, number>();
   readonly #queuedData = new Map<string, QueuedDataDraft[]>();
   readonly #sentSeq = new Map<string, number>();
+  readonly #deliveryProgress = new Map<string, MutableDeliveryProgress>();
   readonly #resumeRetransmit = new Set<string>();
   readonly #inboundTasks = new Set<Promise<void>>();
   readonly #pumpChains = new Map<string, Promise<void>>();
@@ -459,6 +528,12 @@ export class BridgeGatewayPeer {
   #grantedCapabilities = new Set<string>();
   #retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null = null;
   #reconnectDelayFloorMs = 0;
+  #maxObservedBufferedAmount = 0;
+  #bufferedAmountSampleCount = 0;
+  #backpressureBlockedPumpCount = 0;
+  #controlFramesSentWhileBackpressured = 0;
+  #deliveryProgressTotalRecordCount = 0;
+  #deliveryProgressDroppedRecordCount = 0;
   #inboundError: unknown = null;
   #asyncTransportFailure: GatewayTransportError | null = null;
   #runLoopActive = false;
@@ -520,10 +595,11 @@ export class BridgeGatewayPeer {
   }
 
   public snapshot(nowMs = this.#nowMs()): BridgeGatewayPeerSnapshot {
+    const bufferedAmount = this.#sampleBufferedAmount(this.#binding);
     return {
       bindingKind: this.#binding.kind,
       connectionId: this.#binding.connectionId,
-      bufferedAmount: this.#binding.bufferedAmount,
+      bufferedAmount,
       liveness: this.livenessAt(nowMs),
       lastHeartbeatAckAtMs: this.#lastHeartbeatAckAtMs,
       lastHeartbeatSentAtMs: this.#lastHeartbeatSentAtMs,
@@ -541,6 +617,24 @@ export class BridgeGatewayPeer {
       grantedCapabilities: [...this.#grantedCapabilities].sort(),
       retrySuppressedFault: this.#retrySuppressedFault,
       reconnectDelayFloorMs: this.#reconnectDelayFloorMs,
+      backpressure: {
+        evidenceVersion: 1,
+        source: "transport.bufferedAmount",
+        highWaterBytes: BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
+        currentBufferedAmount: bufferedAmount,
+        maxObservedBufferedAmount: this.#maxObservedBufferedAmount,
+        sampleCount: this.#bufferedAmountSampleCount,
+        blockedPumpCount: this.#backpressureBlockedPumpCount,
+        active: bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
+        controlFramesSentWhileBackpressured: this.#controlFramesSentWhileBackpressured,
+      },
+      deliveryProgress: {
+        evidenceVersion: 1,
+        capacity: MAX_DELIVERY_PROGRESS_RECORDS,
+        totalRecordCount: this.#deliveryProgressTotalRecordCount,
+        droppedRecordCount: this.#deliveryProgressDroppedRecordCount,
+        records: [...this.#deliveryProgress.values()].map((entry) => ({ ...entry })),
+      },
     };
   }
 
@@ -1341,10 +1435,11 @@ export class BridgeGatewayPeer {
   async #pumpSession(rsid: string): Promise<void> {
     const lifecycle = this.#sessions.get(rsid);
     const binding = this.#binding;
-    if (
-      this.#closed || lifecycle?.dispatchAllowed !== true ||
-      binding.bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES
-    ) return;
+    if (this.#closed || lifecycle?.dispatchAllowed !== true) return;
+    if (this.#sampleBufferedAmount(binding) > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#backpressureBlockedPumpCount += 1;
+      return;
+    }
     const sequence = this.#simulator.journal.loadSequence(rsid);
     const retained = sequence.outbox[0];
     if (retained !== undefined) {
@@ -1353,7 +1448,7 @@ export class BridgeGatewayPeer {
         ? this.#simulator.retransmit(rsid, this.#nowIso())[0] ?? retained.envelope
         : retained.envelope;
       this.#assertOutboundEnvelopeCapabilities(envelope);
-      await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+      if (!await this.#sendData(binding, envelope as unknown as RbpEnvelope)) return;
       if (
         binding !== this.#binding ||
         this.#sessions.get(rsid)?.phase === "unregistered" ||
@@ -1389,7 +1484,7 @@ export class BridgeGatewayPeer {
       );
     }
     this.#assertOutboundEnvelopeCapabilities(envelope);
-    await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+    if (!await this.#sendData(binding, envelope as unknown as RbpEnvelope)) return;
     if (
       binding !== this.#binding ||
       this.#sessions.get(rsid)?.phase === "unregistered" ||
@@ -1398,9 +1493,16 @@ export class BridgeGatewayPeer {
     this.#sentSeq.set(rsid, envelope.seq);
   }
 
-  async #sendData(binding: GatewayBinding, envelope: RbpEnvelope): Promise<void> {
+  async #sendData(binding: GatewayBinding, envelope: RbpEnvelope): Promise<boolean> {
+    if (this.#sampleBufferedAmount(binding) > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#backpressureBlockedPumpCount += 1;
+      return false;
+    }
     try {
       await binding.send(envelope);
+      this.#sampleBufferedAmount(binding);
+      this.#recordOutboundData(envelope);
+      return true;
     } catch (error) {
       if (error instanceof GatewayTransportError && error.faultClass === "retryable_network") {
         try {
@@ -1410,6 +1512,61 @@ export class BridgeGatewayPeer {
         }
       }
       throw error;
+    }
+  }
+
+  #sampleBufferedAmount(binding: GatewayBinding): number {
+    const sampled = binding.bufferedAmount;
+    if (!Number.isSafeInteger(sampled) || sampled < 0) {
+      throw new Error("transport bufferedAmount must be a non-negative safe integer");
+    }
+    this.#bufferedAmountSampleCount += 1;
+    this.#maxObservedBufferedAmount = Math.max(this.#maxObservedBufferedAmount, sampled);
+    return sampled;
+  }
+
+  #recordOutboundData(envelope: RbpEnvelope): void {
+    if (envelope.type !== "partial" && envelope.type !== "result") return;
+    const payload = envelope.payload;
+    if (payload.kind !== "progress" && payload.kind !== "chunk" && payload.kind !== "invocation") return;
+    const invocationId = payload.invocation_id;
+    const key = `${envelope.rsid}\u0000${invocationId}`;
+    let progress = this.#deliveryProgress.get(key);
+    if (progress === undefined) {
+      if (this.#deliveryProgress.size >= MAX_DELIVERY_PROGRESS_RECORDS) {
+        const oldest = this.#deliveryProgress.keys().next().value as string | undefined;
+        if (oldest !== undefined) {
+          this.#deliveryProgress.delete(oldest);
+          this.#deliveryProgressDroppedRecordCount += 1;
+        }
+      }
+      this.#deliveryProgressTotalRecordCount += 1;
+      progress = {
+        rsid: envelope.rsid,
+        invocationId,
+        chunkFramesSent: 0,
+        artifactChunkFramesSent: 0,
+        resultChunkFramesSent: 0,
+        progressFramesSent: 0,
+        terminalFramesSent: 0,
+        lastSentSeq: envelope.seq,
+      };
+      this.#deliveryProgress.set(key, progress);
+    }
+    progress.lastSentSeq = envelope.seq;
+    if (envelope.type === "result") {
+      progress.terminalFramesSent += 1;
+      return;
+    }
+    if (payload.kind === "progress") {
+      progress.progressFramesSent += 1;
+      return;
+    }
+    progress.chunkFramesSent += 1;
+    if (payload.stream_id === "result") {
+      progress.resultChunkFramesSent += 1;
+    } else {
+      progress.artifactChunkFramesSent += 1;
     }
   }
 
@@ -1638,7 +1795,12 @@ export class BridgeGatewayPeer {
     if (!validateRbpEnvelope(envelope)) {
       throw new Error(`invalid outbound control envelope ${envelopeType}`);
     }
+    const bufferedBefore = this.#sampleBufferedAmount(this.#binding);
     await this.#binding.send(envelope);
+    this.#sampleBufferedAmount(this.#binding);
+    if (bufferedBefore > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#controlFramesSentWhileBackpressured += 1;
+    }
   }
 
   #nowIso(): string {

@@ -519,6 +519,83 @@ describe("Gateway stub shared FSM authority", () => {
     }
   });
 
+  it("rejects bridge-claimed seat/user authority and retains a bounded secret-free audit", async () => {
+    const fixture = await connectedCore("authorization-audit");
+    try {
+      const seatSpoof = {
+        ...sessionRegister(),
+        seat_id: "attacker-seat",
+      };
+      await expect(fixture.core.receiveFrame(
+        fixture.transport.connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_register", seatSpoof, 401))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      const userSpoof = {
+        ...sessionRegister(),
+        user_hint: {
+          ...sessionRegister().user_hint,
+          user_id: "attacker-user",
+        },
+      };
+      await expect(fixture.core.receiveFrame(
+        fixture.transport.connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_register", userSpoof, 402))),
+      )).rejects.toMatchObject({ faultClass: "auth", closeCode: 4403 });
+
+      let snapshot = fixture.core.snapshot();
+      expect(snapshot.authorizationAudit).toMatchObject({
+        evidenceVersion: 1,
+        capacity: 256,
+        totalEventCount: 4,
+        droppedEventCount: 0,
+        secretsRedacted: true,
+      });
+      expect(snapshot.authorizationAudit.entries.slice(-2)).toEqual([
+        expect.objectContaining({
+          operation: "session_register",
+          decision: "rejected",
+          reason: "claimed_identity",
+          claimedIdentityFields: ["seat_id"],
+        }),
+        expect.objectContaining({
+          operation: "session_register",
+          decision: "rejected",
+          reason: "claimed_identity",
+          claimedIdentityFields: ["user_hint.user_id"],
+        }),
+      ]);
+      const serialized = JSON.stringify(snapshot.authorizationAudit);
+      expect(serialized).not.toContain(TOKEN);
+      expect(serialized).not.toContain(fixture.resumeToken);
+      expect(serialized).not.toContain(fixture.transport.connectionId);
+      expect(serialized).not.toContain("device-01");
+      expect(serialized).not.toContain("attacker-seat");
+      expect(serialized).not.toContain("attacker-user");
+
+      for (let index = 0; index < 260; index += 1) {
+        await expect(fixture.core.receiveFrame(
+          fixture.transport.connectionId,
+          encoder.encode(JSON.stringify(controlEnvelope("session_register", {
+            ...sessionRegister(),
+            seat_id: `unretained-secret-${index}`,
+          }, 500 + index))),
+        )).rejects.toMatchObject({ faultClass: "auth" });
+      }
+      snapshot = fixture.core.snapshot();
+      expect(snapshot.authorizationAudit).toMatchObject({
+        evidenceVersion: 1,
+        capacity: 256,
+        totalEventCount: 264,
+        droppedEventCount: 8,
+      });
+      expect(snapshot.authorizationAudit.entries).toHaveLength(256);
+      expect(JSON.stringify(snapshot.authorizationAudit)).not.toContain("unretained-secret");
+    } finally {
+      await fixture.core.close();
+    }
+  });
+
   it("uses the T2 mutation ledger to block fresh writes while allowing the exact verification read", async () => {
     const fixture = await connectedCore("holds");
     try {

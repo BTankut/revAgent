@@ -20,7 +20,11 @@ The simulator provides:
   unregister, heartbeat liveness, bounded document-context polling, and the
   8 MiB outbound data backpressure boundary;
 - chunk/artifact reconstruction, durable acknowledgement-driven cleanup,
-  heartbeat/backoff helpers, cancellation, and deterministic crash injection.
+  heartbeat/backoff helpers, cancellation, and deterministic crash injection;
+- versioned backpressure samples taken from the active transport's real
+  `bufferedAmount`, bounded per-invocation chunk/progress counters, and
+  fail-closed retained-carrier evidence that exposes descriptors/digests but
+  never the spool root, retained directories, or local file paths.
 
 Run the focused tests and three-run determinism gate:
 
@@ -98,5 +102,10 @@ cleartext-readiness, HTTP/SSE, fallback, and custom-WebSocket-factory paths.
 Evidence records the resolved certificate path and both digests, never private
 key material. Evidence pages are immutable
 and expose redacted journal/hold/durability/sequence/session facts plus Bridge
-peer and transport state. Shutdown closes transports, loopback clients, the
+peer and transport state. `peer.backpressure`, `peer.deliveryProgress`, and
+`artifactSpool` are versioned/bounded evidence surfaces; artifact evidence is
+rehydrated through the ordinary containment, non-reparse, size, and digest
+guards before being returned. Snapshot pages carry at most one retained carrier;
+descriptor content-type text is capped at 128 characters with its full digest
+and truncation flag retained. Shutdown closes transports, loopback clients, the
 run loop, and SQLite, then reports the corresponding zero-leak counters.

@@ -11,7 +11,7 @@ The stub provides:
 - WSS-primary upgrade semantics and the exact HTTP create/SSE events/HTTP
   messages fallback lifecycle;
 - static, revocable test-device identities with derived tenant/user/seat
-  bindings;
+  bindings and explicit rejection of bridge-claimed principal/seat fields;
 - durable session, sequence, acknowledgement, outbox, resume, in-flight,
   recovery-hold, chunk, and artifact-carrier state;
 - authoritative per-`rsid` invocation window enforcement;
@@ -90,8 +90,11 @@ test-harness overrides. Unknown or duplicate options fail before readiness.
 The readiness record identifies the component, configured protocol window,
 control-contract version, deterministic-clock mode, control authentication
 header, endpoints, PID, and supported shutdown signals. It never contains the
-device credential or control token. Durable snapshots likewise retain token
-digests and derived identity only, never raw credentials.
+device credential or control token. Durable session snapshots likewise retain
+token digests and derived identity only, never raw credentials. The runtime
+`authorizationAudit` snapshot surface is versioned and capped at 256 entries; it records
+only operation/decision/reason, hashed connection/device identities, and the
+names (never values) of rejected claimed-identity fields.
 Signal handlers remain installed across repeated or mixed SIGINT/SIGTERM bursts
 until the one shared shutdown promise settles; every programmatic close caller
 receives that same completion or rejection.
