@@ -590,15 +590,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-all.ps1
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\test-ci.ps1
 ```
 
-`test-ci.ps1` is the local equivalent of the protected `Engineering gates`
-job. Its isolated `npm ci` helper enables lifecycle scripts process-locally and
-then restores the caller environment, so a user-level `ignore-scripts=true`
-setting cannot suppress native dependencies such as `better-sqlite3`. Passing
-it does not publish or deploy. The canonical continuation is a topic-branch
-draft PR, protected review/checks, merge to `main`, automatic signed source-free
-  build/validation, and only then a separately approved manual pilot or stable
-  workflow dispatch. Never publish either NAS channel directly from a topic
-  branch. Spatial Phase 1a and Phase 1b also have separate live Revit acceptance
+`test-ci.ps1` covers the shared CI-safe local gate used by the protected
+`Engineering gates` workflow. It is not the full local equivalent: the workflow
+then runs 11 additional Windows PowerShell 5.1 scripts, and the separate
+Gateway/O1 jobs remain GitHub-only evidence. Its isolated `npm ci` helper
+enables lifecycle scripts process-locally and then restores the caller
+environment, so a user-level `ignore-scripts=true` setting cannot suppress
+native dependencies such as `better-sqlite3`. Passing it does not publish,
+deploy, or prove the complete protected CI result. The canonical continuation
+is a topic-branch draft PR, protected review/checks, merge to `main`, automatic
+signed source-free build/validation, and only then a separately approved manual
+pilot or stable workflow dispatch. Never publish either NAS channel directly
+from a topic branch. Spatial Phase 1a and Phase 1b also have separate live Revit acceptance
 gates documented in `docs/REVAGENT_SPATIAL_PHASE1A_ACCEPTANCE.md` and
 `docs/REVAGENT_SPATIAL_PHASE1B_ACCEPTANCE.md`; neither gate is part of
 `test-all.ps1` or `test-ci.ps1`.

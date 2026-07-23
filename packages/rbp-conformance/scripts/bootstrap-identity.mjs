@@ -12,6 +12,10 @@ import path from "node:path";
 
 const BOOTSTRAP_IDENTITY_SCHEMA_VERSION =
   "rbp-production-bootstrap-build-dependencies/v1";
+const NPM_BOOTSTRAP_IDENTITY_SCHEMA_VERSION =
+  "rbp-production-npm-bootstrap-dependency/v1";
+const CONTROLLER_RUNTIME_IDENTITY_SCHEMA_VERSION =
+  "rbp-production-controller-runtime-dependencies/v1";
 
 function compareText(left, right) {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -101,14 +105,23 @@ function readPackage(packageRootValue) {
   return { packageRoot, packageFile, value };
 }
 
-function walkPackageFiles(packageRootValue) {
+function walkPackageFiles(
+  packageRootValue,
+  { includeNodeModules = false } = {},
+) {
   const packageRoot = realpathSync(packageRootValue);
   const records = [];
   const visit = (directory, relativeDirectory) => {
     const entries = readdirSync(directory, { withFileTypes: true })
       .sort((left, right) => compareText(left.name, right.name));
     for (const entry of entries) {
-      if (entry.isDirectory() && entry.name === "node_modules") continue;
+      if (
+        !includeNodeModules &&
+        entry.isDirectory() &&
+        entry.name === "node_modules"
+      ) {
+        continue;
+      }
       const absolute = path.join(directory, entry.name);
       const relative = normalizePath(path.join(relativeDirectory, entry.name));
       if (entry.isSymbolicLink()) {
@@ -477,6 +490,237 @@ export function captureProductionBootstrapIdentity(repoRootValue) {
     ...payload,
     digestSha256: sha256Bytes(stableJson(payload)),
   };
+}
+
+function externalOwningPackageRoot(fileValue, expectedName) {
+  const file = realpathSync(fileValue);
+  let cursor = path.dirname(file);
+  while (true) {
+    const packageFile = path.join(cursor, "package.json");
+    if (existsSync(packageFile)) {
+      const manifest = readPackage(cursor);
+      if (manifest.value.name === expectedName) return manifest.packageRoot;
+    }
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  throw new Error(`${fileValue} is not owned by installed package ${expectedName}`);
+}
+
+export function captureProductionNpmBootstrapIdentity(npmEntrypointValue) {
+  const entrypoint = assertAbsoluteRegularFile(
+    npmEntrypointValue,
+    "npm bootstrap entrypoint",
+  );
+  const packageRoot = externalOwningPackageRoot(entrypoint, "npm");
+  const manifest = readPackage(packageRoot);
+  const files = walkPackageFiles(packageRoot, { includeNodeModules: true });
+  const entrypointRelativePath = normalizePath(
+    path.relative(packageRoot, entrypoint),
+  );
+  if (
+    entrypointRelativePath === ".." ||
+    entrypointRelativePath.startsWith("../") ||
+    path.isAbsolute(entrypointRelativePath)
+  ) {
+    throw new Error("npm bootstrap entrypoint escapes its package");
+  }
+  const payload = {
+    schemaVersion: NPM_BOOTSTRAP_IDENTITY_SCHEMA_VERSION,
+    name: manifest.value.name,
+    version: manifest.value.version,
+    entrypointRelativePath,
+    entrypointSha256: sha256File(entrypoint),
+    fileCount: files.length,
+    filesSha256: sha256Bytes(stableJson(files)),
+  };
+  return {
+    ...payload,
+    digestSha256: sha256Bytes(stableJson(payload)),
+  };
+}
+
+export function assertProductionNpmBootstrapIdentityCurrent(
+  npmEntrypoint,
+  expected,
+) {
+  const current = captureProductionNpmBootstrapIdentity(npmEntrypoint);
+  if (stableJson(current) !== stableJson(expected)) {
+    throw new Error(
+      "production npm bootstrap dependency identity changed during canonical preparation",
+    );
+  }
+  return current;
+}
+
+function controllerRuntimeDependencyClosure(repoRootValue) {
+  const repoRoot = realpathSync(repoRootValue);
+  const controllerRoot = realpathSync(
+    path.join(repoRoot, "packages", "rbp-conformance"),
+  );
+  const controller = readPackage(controllerRoot);
+  const declarations = dependencyDeclarations(controller.value)
+    .filter((entry) => entry.dependencyName !== "@revagent/protocol");
+  const queue = [];
+  const resolutions = [];
+  for (const declaration of declarations) {
+    const candidate = dependencyCandidate(
+      repoRoot,
+      controllerRoot,
+      declaration.dependencyName,
+    );
+    if (candidate === undefined) {
+      if (!declaration.optional) {
+        throw new Error(
+          `controller runtime dependency is missing: ${declaration.dependencyName}`,
+        );
+      }
+      resolutions.push({
+        requesterName: controller.value.name,
+        requesterPath: normalizePath(path.relative(repoRoot, controllerRoot)),
+        dependencyName: declaration.dependencyName,
+        dependencyRange: declaration.dependencyRange,
+        kind: declaration.kind,
+        status: "absent_optional",
+        resolvedPackagePath: null,
+        resolvedVersion: null,
+      });
+      continue;
+    }
+    verifyNodePackageResolution(
+      repoRoot,
+      controllerRoot,
+      declaration.dependencyName,
+      candidate.resolved,
+    );
+    const resolved = readPackage(candidate.resolved);
+    resolutions.push({
+      requesterName: controller.value.name,
+      requesterPath: normalizePath(path.relative(repoRoot, controllerRoot)),
+      dependencyName: declaration.dependencyName,
+      dependencyRange: declaration.dependencyRange,
+      kind: declaration.kind,
+      status: "installed",
+      resolvedPackagePath: normalizePath(path.relative(repoRoot, candidate.resolved)),
+      resolvedVersion: resolved.value.version,
+    });
+    queue.push(candidate.resolved);
+  }
+
+  const visited = new Set();
+  const packages = new Map();
+  while (queue.length > 0) {
+    const requesterRoot = queue.shift();
+    if (visited.has(requesterRoot)) continue;
+    visited.add(requesterRoot);
+    const requester = readPackage(requesterRoot);
+    const requesterPath = normalizePath(path.relative(repoRoot, requesterRoot));
+    packages.set(requesterRoot, packageIdentity(repoRoot, requesterRoot));
+    for (const declaration of dependencyDeclarations(requester.value)) {
+      const candidate = dependencyCandidate(
+        repoRoot,
+        requesterRoot,
+        declaration.dependencyName,
+      );
+      if (candidate === undefined) {
+        if (!declaration.optional) {
+          throw new Error(
+            `${requester.value.name} required runtime dependency is missing: ` +
+              declaration.dependencyName,
+          );
+        }
+        resolutions.push({
+          requesterName: requester.value.name,
+          requesterPath,
+          dependencyName: declaration.dependencyName,
+          dependencyRange: declaration.dependencyRange,
+          kind: declaration.kind,
+          status: "absent_optional",
+          resolvedPackagePath: null,
+          resolvedVersion: null,
+        });
+        continue;
+      }
+      const resolved = readPackage(candidate.resolved);
+      if (resolved.value.name !== declaration.dependencyName) {
+        throw new Error(
+          `${requester.value.name} resolved ${declaration.dependencyName} ` +
+            `to ${resolved.value.name}`,
+        );
+      }
+      verifyNodePackageResolution(
+        repoRoot,
+        requesterRoot,
+        declaration.dependencyName,
+        candidate.resolved,
+      );
+      resolutions.push({
+        requesterName: requester.value.name,
+        requesterPath,
+        dependencyName: declaration.dependencyName,
+        dependencyRange: declaration.dependencyRange,
+        kind: declaration.kind,
+        status: "installed",
+        resolvedPackagePath: normalizePath(
+          path.relative(repoRoot, candidate.resolved),
+        ),
+        resolvedVersion: resolved.value.version,
+      });
+      if (!visited.has(candidate.resolved)) queue.push(candidate.resolved);
+    }
+  }
+  resolutions.sort((left, right) =>
+    compareText(
+      [
+        left.requesterPath,
+        left.dependencyName,
+        left.kind,
+        left.resolvedPackagePath ?? "",
+      ].join("\0"),
+      [
+        right.requesterPath,
+        right.dependencyName,
+        right.kind,
+        right.resolvedPackagePath ?? "",
+      ].join("\0"),
+    )
+  );
+  return {
+    root: {
+      name: controller.value.name,
+      version: controller.value.version,
+      packagePath: normalizePath(path.relative(repoRoot, controllerRoot)),
+    },
+    resolutions,
+    packages: [...packages.values()]
+      .sort((left, right) => compareText(left.packagePath, right.packagePath)),
+  };
+}
+
+export function captureProductionControllerRuntimeIdentity(repoRootValue) {
+  const repoRoot = realpathSync(repoRootValue);
+  const payload = {
+    schemaVersion: CONTROLLER_RUNTIME_IDENTITY_SCHEMA_VERSION,
+    dependencyClosure: controllerRuntimeDependencyClosure(repoRoot),
+  };
+  return {
+    ...payload,
+    digestSha256: sha256Bytes(stableJson(payload)),
+  };
+}
+
+export function assertProductionControllerRuntimeIdentityCurrent(
+  repoRoot,
+  expected,
+) {
+  const current = captureProductionControllerRuntimeIdentity(repoRoot);
+  if (stableJson(current) !== stableJson(expected)) {
+    throw new Error(
+      "production controller runtime dependency identity changed during canonical preparation",
+    );
+  }
+  return current;
 }
 
 export function assertProductionBootstrapIdentityCurrent(

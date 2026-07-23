@@ -1,0 +1,25 @@
+{
+  "schemaVersion": "rbp-production-bootstrap-identity-pin/v1",
+  "minimumNodeVersion": "22.15.0",
+  "compilerAndGenerator": {
+    "schemaVersion": "rbp-production-bootstrap-build-dependencies/v1",
+    "digestSha256": "5354d46041bc998a4388342b135d8532326a4a35da37f7961217ae59be2a3946",
+    "typescriptVersion": "5.9.3",
+    "generatorVersion": "15.0.4"
+  },
+  "controllerRuntime": {
+    "schemaVersion": "rbp-production-controller-runtime-dependencies/v1",
+    "digestSha256": "4b71dfb2bd65b1c1c73bbc2c7e660b24fbb7afb3c674f5310fe68cf66255c49e",
+    "packageCount": 9
+  },
+  "npm": {
+    "schemaVersion": "rbp-production-npm-bootstrap-dependency/v1",
+    "name": "npm",
+    "version": "10.9.7",
+    "entrypointRelativePath": "bin/npm-cli.js",
+    "entrypointSha256": "3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e",
+    "fileCount": 1965,
+    "filesSha256": "770864d14941ec22cd2748987a5be08da5d804ee09ec1a8961bc29406ed82cf1",
+    "digestSha256": "ea3dc5497e247a87ebfb90671ec104557bf39736668cc7e261c5317165b70e04"
+  }
+}

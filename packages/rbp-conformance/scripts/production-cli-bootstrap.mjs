@@ -1,6 +1,5 @@
-import { existsSync, lstatSync, realpathSync } from "node:fs";
 import path from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
 
 import { assertTrustedProductionLaunch } from "./production-launch-attestation.mjs";
 
@@ -19,6 +18,14 @@ if (firstArgument === "__launcher-attestation-argv-spoof") {
   process.argv[2] = "__mutated_after_handoff";
   assertTrustedProductionLaunch({ repoRoot, role: "cli-bootstrap" });
   throw new Error("mutated argv unexpectedly retained trusted launch status");
+} else if (firstArgument === "__launcher-attestation-cwd-spoof") {
+  const [targetDirectory] = remainingArguments;
+  if (targetDirectory === undefined) {
+    throw new Error("launcher cwd-spoof probe requires a target directory");
+  }
+  process.chdir(targetDirectory);
+  assertTrustedProductionLaunch({ repoRoot, role: "cli-bootstrap" });
+  throw new Error("mutated cwd unexpectedly retained trusted launch status");
 } else if (firstArgument === "__launcher-attestation-probe") {
   const [outputFile, exitCodeValue, ...forwarded] = remainingArguments;
   if (outputFile === undefined || exitCodeValue === undefined) {
@@ -29,22 +36,19 @@ if (firstArgument === "__launcher-attestation-argv-spoof") {
     outputFile,
     JSON.stringify({
       nodeOptions: process.env.NODE_OPTIONS ?? null,
+      workingDirectory: process.cwd(),
       forwarded,
     }),
     "utf8",
   );
   process.exitCode = Number(exitCodeValue);
 } else {
-  const cli = path.join(packageRoot, "dist", "src", "cli.js");
-  if (
-    !existsSync(cli) ||
-    !lstatSync(cli).isFile() ||
-    lstatSync(cli).isSymbolicLink() ||
-    realpathSync(cli) !== path.resolve(cli)
-  ) {
-    throw new Error("canonical freshly-built production CLI is unavailable");
-  }
-  const module = await import(pathToFileURL(cli).href);
+  const { buildAndImportTrustedProductionController } = await import(
+    "./production-controller-bootstrap.mjs"
+  );
+  const { module } = await buildAndImportTrustedProductionController({
+    repoRoot,
+  });
   if (typeof module.runProductionCliMain !== "function") {
     throw new Error("canonical production CLI does not expose its guarded main");
   }

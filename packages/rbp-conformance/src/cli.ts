@@ -1463,5 +1463,6 @@ export async function runProductionCliMain(args: string[]): Promise<void> {
 // Direct execution is retained only to fail closed with the launcher guard.
 // The canonical path enters through the tracked pre-controller bootstrap.
 if (isDirectInvocation) {
+  assertProductionCliPath(process.cwd(), "cli-bootstrap");
   void runProductionCliMain(process.argv.slice(2));
 }

@@ -128,8 +128,11 @@ the executable candidate closure immediately before each spawn, after
 readiness, after supervised shutdown (including failed-start cleanup), and
 after each soak churn cycle. Full compiler/npm provenance remains a
 prepare/run/validation-boundary gate; the launch guard rechecks the bytes that
-can execute in the candidate run. Windows system DLLs and kernel-level
-hardlink races remain outside this application provenance boundary.
+can execute in the candidate run. Windows system DLLs, kernel-level hardlink
+races, and an already-running same-user process that can actively mutate and
+restore writable build/dependency files during a guarded generator/compiler
+subprocess remain outside this application provenance boundary; canonical
+evidence requires those other writers to be quiesced.
 
 This dated R-F entry closes the identified contract/design gap only. It does
 not declare the O1 spec frozen, does not validate a candidate run, and does not
@@ -148,24 +151,61 @@ built controller could capture or verify those bytes. Finally, the outer
 wrapper selected Git but did not pass that exact resolved executable to the
 inner preparation command.
 
-Canonical Windows evidence now begins with the tracked
-`packages/rbp-conformance/scripts/invoke-production.ps1` under the exact
-SystemRoot Windows PowerShell with `-NoProfile` and `-NonInteractive`. The
-launcher removes the exact Node and `ws` resolution-control variables from the
-process environment before starting the bound Node, preserves the argument
-vector and exit code, and is required for every prepare, production run,
-aggregate, and validator invocation. The existing in-process environment
-guards remain defense in depth; direct Node invocation is not canonical
-evidence.
+Implementation clarification from the same closing audit: canonical Windows
+evidence begins with one fixed, compressed `-EncodedCommand` under the exact
+SystemRoot Windows PowerShell with `-NoProfile` and `-NonInteractive`; it does
+not execute the mutable worktree `invoke-production.ps1`. Canonical
+`-EncodedArguments` bind the explicit clean candidate commit/tree, role, root,
+and child arguments. Production entry also does not execute the mutable
+worktree renderer or run Node/Git to derive that command or the candidate
+identity. An independently protected authority supplies the exact eight host
+arguments and retains their whole `EncodedArguments`, `EncodedCommand`,
+bootstrap-template, and payload SHA-256 values, expected commit/tree,
+generation timestamp, and authority label outside the checkout and evidence
+artifact root. Before launch, the authority executor requires strict UTF-16LE
+round-trip and ordinal equality to the one canonical single-string CLIXML
+document; arbitrary serialized object graphs are not deserialized or searched
+for a decoy payload. The expected commit/tree are approved literals at this
+boundary, not the output of a pre-bootstrap Git probe. The tracked renderer
+produces review-only candidates and cannot confer authority.
+
+The same R-F clarification also makes the payload-bound repository root the
+only permitted Node child working directory. The launcher does not inherit the
+authority executor's ambient directory, the retained authority record exposes
+that bound working directory, and the child attestation rejects a working
+directory other than the approved repository root before controller import.
+
+The fixed bootstrap authenticates and locks the exact
+Program Files Git binary, reads the constant launcher path as raw bytes from
+the expected commit with `git cat-file`, recomputes the Git blob object id and
+SHA-256, strict-decodes it, and executes that blob as a scriptblock in the same
+PowerShell process. Caller-provided commit/tree identities prove consistency,
+not publisher approval; candidate approval remains a separate protected
+release-policy input.
+
+The launcher removes the exact Node and `ws` resolution-control variables
+before starting the authenticated Program Files Node and is required for every
+production prepare and the sole PASS-capable final invocation. Standalone run,
+aggregate, and validator invocations remain launcher-bound diagnostics;
+standalone aggregate is write-free and non-authoritative. The launcher verifies
+and holds read locks on the complete initial JavaScript import closure plus the
+bootstrap pin, then sends those captured bytes over a separate
+current-user/PID-bound pipe. A static `node -e` loader installs synchronous
+hooks over that in-memory map before the CLI bootstrap or prepare wrapper is
+imported. The child re-renders and verifies both encoded PowerShell arguments,
+the fixed outer command, compressed template, launcher blob identity, initial
+loader, exact argv, and full source anchor in the receipt. The existing
+in-process environment guards remain defense in depth; direct Node or direct
+`-File` invocation is not canonical evidence.
 
 Before any protocol generator, clean, or TypeScript child runs, the outer
 preparation wrapper captures the complete physical TypeScript package and the
 actual installed transitive package closure rooted at the protocol package's
 `json-schema-to-typescript` dependency. It rehashes that identity immediately
 before and after every generator/clean/compiler child and before entering the
-inner CLI. The wrapper rejects caller-provided `--git-executable`, resolves and
-validates Git once through the absolute SystemRoot locator, then appends that
-exact absolute Git path to the inner CLI exactly once. A changed bootstrap
+inner CLI. The wrapper rejects caller-provided `--git-executable`; the
+launcher and source anchor independently authenticate the fixed Program Files
+Git path and append that exact absolute path to the inner CLI exactly once. A changed bootstrap
 dependency, compiler implementation, resolution path, injected preloader, or
 Git substitution fails closed.
 

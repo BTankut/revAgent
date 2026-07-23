@@ -204,6 +204,11 @@ export function productionProvenanceFixture(): ProductionProvenanceFixture {
   );
   writeFixtureFile(
     root,
+    "packages/rbp-conformance/.gitattributes",
+    "scripts/*.ps1 text eol=lf\n",
+  );
+  writeFixtureFile(
+    root,
     "packages/rbp-conformance/scripts/bootstrap-identity.mjs",
     "export {};\n",
   );
@@ -219,12 +224,32 @@ export function productionProvenanceFixture(): ProductionProvenanceFixture {
   );
   writeFixtureFile(
     root,
+    "packages/rbp-conformance/scripts/production-bootstrap-identity.json",
+    "{}\n",
+  );
+  writeFixtureFile(
+    root,
     "packages/rbp-conformance/scripts/production-cli-bootstrap.mjs",
     "export {};\n",
   );
   writeFixtureFile(
     root,
+    "packages/rbp-conformance/scripts/production-controller-bootstrap.mjs",
+    "export {};\n",
+  );
+  writeFixtureFile(
+    root,
+    "packages/rbp-conformance/scripts/production-launch-bootstrap.mjs",
+    "export {};\n",
+  );
+  writeFixtureFile(
+    root,
     "packages/rbp-conformance/scripts/production-launch-attestation.mjs",
+    "export {};\n",
+  );
+  writeFixtureFile(
+    root,
+    "packages/rbp-conformance/scripts/production-source-anchor.mjs",
     "export {};\n",
   );
   writeFixtureFile(

@@ -165,68 +165,374 @@ rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-r
 ### Canonical production prepare runbook
 
 Do not assemble a production plan from an existing ignored `dist` tree. Every
-production prepare and the sole PASS-capable final command begin in the tracked
-external launcher under the exact SystemRoot Windows PowerShell. That
-launcher removes Node and `ws` resolution overrides before the exact reviewed
-Node executable can load any production JavaScript. Before any production
-controller import, the child uses a separate exact SystemRoot Windows
+production prepare and the sole PASS-capable final command begin in the
+expected commit's tracked launcher blob under the exact SystemRoot Windows
+PowerShell. That launcher removes Node and `ws` resolution overrides before the exact reviewed
+Node executable can load any production JavaScript. The production launcher
+requires an unelevated Windows token and Node 22.15 or newer. It accepts only
+the exact native `Program Files\nodejs\node.exe` and
+`Program Files\Git\bin\git.exe` known-folder candidates, rejects every
+symlink/junction/reparse segment, verifies the full protected ACL chain and a
+valid Authenticode publisher (`OpenJS Foundation` for Node and
+`Johannes Schindelin` for Git), and holds read locks on both executable files
+through the child lifetime. Git is never selected from `PATH`. A behavioral
+probe must prove that the selected Node's synchronous `module.registerHooks`
+observes both dynamic `import()` and `createRequire()` before any pipe is
+created.
+
+Before any pipe is created, a fixed `-EncodedCommand` bootstrap receives only
+canonical Base64 fields through `-EncodedArguments`. It authenticates and
+locks the exact Program Files Git binary, resolves the constant launcher path
+from the operator-locked commit, reads that object with `git cat-file` as raw
+bytes, recomputes the Git blob object id and SHA-256, strict-decodes UTF-8, and
+executes that blob as a scriptblock in the same SystemRoot PowerShell process.
+The worktree `invoke-production.ps1` is never executed. The launcher then
+proves that its derived root is the actual clean Git worktree, binds the exact
+HEAD commit and tree, rejects
+index flags/local filters/replace refs/grafts/info attributes and untracked
+compile inputs, and raw-hashes the tracked protocol and conformance source
+trees against HEAD without Git content filters. The source-anchor helper,
+attestation client, selected entrypoint, launcher, bootstrap pin, and related
+guard files have fixed structural paths and HEAD-current byte identities. The
+PowerShell launcher raw-verifies the builtins-only source-anchor helper before
+asking the authenticated Node to execute it. It opens the complete initial
+JavaScript import closure and bootstrap pin with `FileShare.Read`, keeps those
+handles through child exit, and sends the verified bytes through a separate
+current-user/PID-bound pipe. A static `node -e` loader installs synchronous
+hooks over that in-memory map before importing the CLI bootstrap or prepare
+wrapper. A scripts-only copied tree, parent junction, dirty helper, dirty
+launcher, or ignored `dist` tree cannot receive a launch receipt.
+
+Before any production controller import, the child uses a separate exact
+SystemRoot Windows
 PowerShell probe and `GetNamedPipeServerProcessId` to prove that its
 current-user-only authentication pipe is owned by its OS parent. The probe
 returns the parent's OS executable and `Win32_Process.CommandLine`; the child
-requires the exact `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File
-<canonical invoke-production.ps1>` argument vector. The launcher independently
+requires the exact fixed
+`-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedArguments
+<canonical payload> -EncodedCommand <fixed bootstrap>` argument vector and
+re-renders both encoded fields byte for byte. The launcher independently
 uses `GetNamedPipeClientProcessId` on both the authentication connection and
 the second one-shot receipt connection, and requires the receipt client to be
 the Node PID it started. The receipt binds that OS handoff to the exact argv,
-launcher/Node/entrypoint paths, and their SHA-256 identities. The tracked CLI
-bootstrap validates the receipt before importing the freshly built controller.
-Do not enter the canonical path
-through `npm run`, an npm lifecycle, a shell bin shim, the `rbp-conformance`
-bin, or a direct Node-to-CLI invocation:
+launcher commit/tree/path/mode/blob object id/blob SHA-256, compressed bootstrap
+template and outer-command digests, initial-loader digest, Node/entrypoint
+identities, and the complete Git/source-anchor record. The tracked CLI
+bootstrap recomputes that anchor and validates the receipt before importing
+the freshly built controller.
+Do not enter the canonical path through `npm run`, an npm lifecycle, a shell
+bin shim, the `rbp-conformance` bin, a direct Node-to-CLI invocation, or a
+worktree launch renderer. No Node, Git, or worktree executable/source is run to
+derive the production host command. The exact expected commit and tree are
+operator-approved literals; they are not calculated by a pre-bootstrap Git
+command.
+
+Each launch begins from an independently protected authority vector produced
+and reviewed in a separate clean step. Its retained record contains exactly
+eight host arguments, the whole `EncodedArguments` SHA-256, the
+`EncodedCommand` SHA-256, bootstrap-template SHA-256, payload SHA-256, expected
+commit/tree, the bound repository root as the exact child working directory,
+generation timestamp, and authority label. The approved vector is retained
+outside both the mutable checkout and the evidence artifact root.
+Canonical execution passes those eight saved arguments directly to the exact
+SystemRoot Windows PowerShell. The ceremony below starts only after the
+protected authority has supplied the five approved prepare/final vector
+objects; the ceremony itself must come from that protected operator record,
+not from the candidate checkout:
 
 ```powershell
-$RepoRoot = (Resolve-Path -LiteralPath '.').Path
-$BoundNode = 'C:\Program Files\nodejs\node.exe'
-$NpmCli = 'C:\Program Files\nodejs\node_modules\npm\bin\npm-cli.js'
-$PowerShell = Join-Path `
-  ([Environment]::GetFolderPath([Environment+SpecialFolder]::Windows)) `
-  'System32\WindowsPowerShell\v1.0\powershell.exe'
-$EvidenceRoot = 'C:\Users\BT\Projects\revAgent-freeze-evidence\rbp-v1.0-<sha12>-s01'
-$PlanRoot = Join-Path $EvidenceRoot 'artifacts\conformance\rbp-v1\1.0\plans\rbp-v1.0-<sha12>-s01'
-$Launcher = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\invoke-production.ps1'
-$Wrapper = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\prepare-production.mjs'
-$CliBootstrap = Join-Path $RepoRoot 'packages\rbp-conformance\scripts\production-cli-bootstrap.mjs'
+$PowerShell = [IO.Path]::Combine(
+  [Environment]::GetFolderPath([Environment+SpecialFolder]::Windows),
+  'System32',
+  'WindowsPowerShell',
+  'v1.0',
+  'powershell.exe'
+)
 
-$PlanR1 = Join-Path $PlanRoot 'run-1.execution-plan.json'
-$PlanR2 = Join-Path $PlanRoot 'run-2.execution-plan.json'
-$PlanR3 = Join-Path $PlanRoot 'run-3.execution-plan.json'
-$PlanSoak = Join-Path $PlanRoot 'soak-one-hour.execution-plan.json'
+function Get-RbpVectorHash([byte[]]$Bytes) {
+  $algorithm = [Security.Cryptography.SHA256]::Create()
+  try {
+    return ([BitConverter]::ToString(
+      $algorithm.ComputeHash($Bytes)
+    )).Replace('-', '').ToLowerInvariant()
+  }
+  finally {
+    $algorithm.Dispose()
+  }
+}
 
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
-  --npm-executable $NpmCli $PlanR1 `
-  --run-id 'rbp-v1.0-<sha12>-s01-r1' --sequence 1 `
-  --repo-root $RepoRoot --node-executable $BoundNode
-if ($LASTEXITCODE -ne 0) { throw 'r1 prepare failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
-  --npm-executable $NpmCli $PlanR2 `
-  --run-id 'rbp-v1.0-<sha12>-s01-r2' --sequence 2 `
-  --repo-root $RepoRoot --node-executable $BoundNode
-if ($LASTEXITCODE -ne 0) { throw 'r2 prepare failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
-  --npm-executable $NpmCli $PlanR3 `
-  --run-id 'rbp-v1.0-<sha12>-s01-r3' --sequence 3 `
-  --repo-root $RepoRoot --node-executable $BoundNode
-if ($LASTEXITCODE -ne 0) { throw 'r3 prepare failed' }
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $Wrapper `
-  --npm-executable $NpmCli $PlanSoak `
-  --run-id 'rbp-v1.0-<sha12>-s01-soak-1h' --sequence 1 `
-  --repo-root $RepoRoot --node-executable $BoundNode
-if ($LASTEXITCODE -ne 0) { throw 'soak prepare failed' }
+function ConvertFrom-RbpVectorBase64([string]$Value, [string]$Label) {
+  $bytes = [Convert]::FromBase64String($Value)
+  if (-not [StringComparer]::Ordinal.Equals(
+    [Convert]::ToBase64String($bytes),
+    $Value
+  )) {
+    throw "$Label is not canonical Base64"
+  }
+  return ,$bytes
+}
+
+function ConvertTo-RbpWindowsArgument([string]$Value) {
+  if ($Value.Length -gt 0 -and $Value -notmatch '[\s"]') {
+    return $Value
+  }
+  $builder = [Text.StringBuilder]::new()
+  [void]$builder.Append('"')
+  $slashes = 0
+  foreach ($character in $Value.ToCharArray()) {
+    if ($character -eq '\') {
+      $slashes++
+      continue
+    }
+    if ($character -eq '"') {
+      [void]$builder.Append(('\' * (2 * $slashes + 1)))
+      [void]$builder.Append('"')
+      $slashes = 0
+      continue
+    }
+    if ($slashes -gt 0) {
+      [void]$builder.Append(('\' * $slashes))
+      $slashes = 0
+    }
+    [void]$builder.Append($character)
+  }
+  if ($slashes -gt 0) {
+    [void]$builder.Append(('\' * (2 * $slashes)))
+  }
+  [void]$builder.Append('"')
+  return $builder.ToString()
+}
+
+function Invoke-ApprovedRbpVector($Vector) {
+  [string[]]$hostArguments = @($Vector.hostArguments)
+  if (
+    [string]$Vector.schemaVersion -ne
+      'rbp-production-launch-authority-vector/v2' -or
+    $Vector.authoritative -ne $true -or
+    -not [StringComparer]::OrdinalIgnoreCase.Equals(
+      [IO.Path]::GetFullPath([string]$Vector.powershellExecutable),
+      $PowerShell
+    ) -or
+    $hostArguments.Count -ne 8 -or
+    $hostArguments[0] -ne '-NoProfile' -or
+    $hostArguments[1] -ne '-NonInteractive' -or
+    $hostArguments[2] -ne '-ExecutionPolicy' -or
+    $hostArguments[3] -ne 'Bypass' -or
+    $hostArguments[4] -ne '-EncodedArguments' -or
+    $hostArguments[6] -ne '-EncodedCommand'
+  ) {
+    throw 'approved production vector has a non-canonical host argument shape'
+  }
+  $commandBytes = ConvertFrom-RbpVectorBase64 `
+    $hostArguments[7] 'EncodedCommand'
+  if (
+    (Get-RbpVectorHash $commandBytes) -ne
+    [string]$Vector.encodedCommandSha256
+  ) {
+    throw 'approved EncodedCommand hash mismatch'
+  }
+  $encodedArgumentBytes = ConvertFrom-RbpVectorBase64 `
+    $hostArguments[5] 'EncodedArguments'
+  if (
+    (Get-RbpVectorHash $encodedArgumentBytes) -ne
+    [string]$Vector.encodedArgumentsSha256
+  ) {
+    throw 'approved EncodedArguments hash mismatch'
+  }
+  $utf16 = [Text.UnicodeEncoding]::new(
+    $false,
+    $false,
+    $true
+  )
+  $xml = $utf16.GetString($encodedArgumentBytes)
+  if (-not [StringComparer]::Ordinal.Equals(
+    [Convert]::ToBase64String($utf16.GetBytes($xml)),
+    [Convert]::ToBase64String($encodedArgumentBytes)
+  )) {
+    throw 'approved EncodedArguments are not strict UTF-16LE'
+  }
+  $xmlPrefix = [string]::Join(
+    "`r`n",
+    @(
+      '<Objs Version="1.1.0.1" xmlns="http://schemas.microsoft.com/powershell/2004/04">',
+      '  <Obj RefId="0">',
+      '    <TN RefId="0">',
+      '      <T>System.Object[]</T>',
+      '      <T>System.Array</T>',
+      '      <T>System.Object</T>',
+      '    </TN>',
+      '    <LST>',
+      '      <S>'
+    )
+  )
+  $xmlSuffix = [string]::Join(
+    "`r`n",
+    @(
+      '</S>',
+      '    </LST>',
+      '  </Obj>',
+      '</Objs>'
+    )
+  )
+  if (
+    -not $xml.StartsWith($xmlPrefix, [StringComparison]::Ordinal) -or
+    -not $xml.EndsWith($xmlSuffix, [StringComparison]::Ordinal) -or
+    $xml.Length -le $xmlPrefix.Length + $xmlSuffix.Length
+  ) {
+    throw 'approved EncodedArguments document is not canonical'
+  }
+  $payloadBase64 = $xml.Substring(
+    $xmlPrefix.Length,
+    $xml.Length - $xmlPrefix.Length - $xmlSuffix.Length
+  )
+  if (-not [StringComparer]::Ordinal.Equals(
+    $xml,
+    $xmlPrefix + $payloadBase64 + $xmlSuffix
+  )) {
+    throw 'approved EncodedArguments document is not canonical'
+  }
+  $payloadBytes = ConvertFrom-RbpVectorBase64 `
+    $payloadBase64 'bootstrap payload'
+  if ((Get-RbpVectorHash $payloadBytes) -ne [string]$Vector.payloadSha256) {
+    throw 'approved bootstrap payload hash mismatch'
+  }
+  $utf8 = [Text.UTF8Encoding]::new($false, $true)
+  $payloadText = $utf8.GetString($payloadBytes)
+  if (-not [Convert]::ToBase64String(
+    $utf8.GetBytes($payloadText)
+  ).Equals([Convert]::ToBase64String($payloadBytes))) {
+    throw 'approved bootstrap payload is not strict UTF-8'
+  }
+  $encodedFields = $payloadText.Split(
+    [char]9,
+    [StringSplitOptions]::None
+  )
+  $fields = [Collections.Generic.List[string]]::new()
+  foreach ($encodedField in $encodedFields) {
+    $fieldBytes = ConvertFrom-RbpVectorBase64 $encodedField 'payload field'
+    $field = $utf8.GetString($fieldBytes)
+    if (-not [Convert]::ToBase64String(
+      $utf8.GetBytes($field)
+    ).Equals([Convert]::ToBase64String($fieldBytes))) {
+      throw 'approved payload field is not strict UTF-8'
+    }
+    [void]$fields.Add($field)
+  }
+  $argumentCount = 0
+  if (
+    $fields.Count -lt 7 -or
+    $fields[0] -ne 'rbp-production-encoded-bootstrap/v2' -or
+    $fields[3] -ne
+      'packages/rbp-conformance/scripts/invoke-production.ps1' -or
+    -not [int]::TryParse(
+      $fields[6],
+      [Globalization.NumberStyles]::None,
+      [Globalization.CultureInfo]::InvariantCulture,
+      [ref]$argumentCount
+    ) -or
+    $argumentCount -lt 0 -or
+    $fields.Count -ne 7 + $argumentCount -or
+    -not [StringComparer]::Ordinal.Equals(
+      $fields[1],
+      [string]$Vector.repoRoot
+    ) -or
+    -not [StringComparer]::Ordinal.Equals(
+      $fields[2],
+      [string]$Vector.role
+    ) -or
+    -not [StringComparer]::Ordinal.Equals(
+      $fields[4],
+      [string]$Vector.expectedCommit
+    ) -or
+    -not [StringComparer]::Ordinal.Equals(
+      $fields[5],
+      [string]$Vector.expectedTree
+    ) -or
+    [string]::IsNullOrWhiteSpace([string]$Vector.workingDirectory) -or
+    -not [IO.Path]::IsPathRooted([string]$Vector.workingDirectory) -or
+    -not [StringComparer]::Ordinal.Equals(
+      [string]$Vector.workingDirectory,
+      [string]$Vector.repoRoot
+    )
+  ) {
+    throw 'approved authority fields do not match the executed payload'
+  }
+  [string[]]$approvedCommandArguments = @($Vector.commandArguments)
+  if ($approvedCommandArguments.Count -ne $argumentCount) {
+    throw 'approved command-argument count does not match the executed payload'
+  }
+  for ($index = 0; $index -lt $argumentCount; $index++) {
+    if (-not [StringComparer]::Ordinal.Equals(
+      $fields[7 + $index],
+      $approvedCommandArguments[$index]
+    )) {
+      throw 'approved command arguments do not match the executed payload'
+    }
+  }
+  $timestamp = [DateTimeOffset]::MinValue
+  $timestampValid = [DateTimeOffset]::TryParseExact(
+    [string]$Vector.generationTimestamp,
+    'yyyy-MM-ddTHH:mm:ss.fffZ',
+    [Globalization.CultureInfo]::InvariantCulture,
+    [Globalization.DateTimeStyles]::AssumeUniversal,
+    [ref]$timestamp
+  )
+  if (
+    [string]$Vector.expectedCommit -notmatch '^[0-9a-f]{40,64}$' -or
+    [string]$Vector.expectedTree -notmatch '^[0-9a-f]{40,64}$' -or
+    [string]$Vector.encodedArgumentsSha256 -notmatch '^[0-9a-f]{64}$' -or
+    [string]$Vector.bootstrapTemplateSha256 -notmatch '^[0-9a-f]{64}$' -or
+    -not $timestampValid -or
+    [string]::IsNullOrWhiteSpace([string]$Vector.authorityLabel) -or
+    [string]$Vector.authorityLabel -ne
+      ([string]$Vector.authorityLabel).Trim() -or
+    ([string]$Vector.authorityLabel).Length -gt 160
+  ) {
+    throw 'approved production vector audit fields are incomplete'
+  }
+  $commandLineParts = [Collections.Generic.List[string]]::new()
+  [void]$commandLineParts.Add((ConvertTo-RbpWindowsArgument $PowerShell))
+  foreach ($hostArgument in $hostArguments) {
+    [void]$commandLineParts.Add(
+      (ConvertTo-RbpWindowsArgument $hostArgument)
+    )
+  }
+  if ([string]::Join(' ', $commandLineParts).Length -gt 32766) {
+    throw 'approved production vector exceeds the Windows command-line limit'
+  }
+  & $PowerShell @hostArguments
+  if ($LASTEXITCODE -ne 0) {
+    throw 'approved production vector failed'
+  }
+}
+
+# These are exact records supplied by the independently protected authority.
+# They are not read or generated from the checkout or evidence artifact root.
+Invoke-ApprovedRbpVector $ApprovedPrepareR1Vector
+Invoke-ApprovedRbpVector $ApprovedPrepareR2Vector
+Invoke-ApprovedRbpVector $ApprovedPrepareR3Vector
+Invoke-ApprovedRbpVector $ApprovedPrepareSoakVector
 ```
+
+`production-launch-bootstrap.mjs
+__render-production-launch-review-candidate` is an optional review-only
+producer. Its output is explicitly `authoritative: false`; it may be used in
+the separate clean review step, but production entry must not execute it or
+trust its output until the exact vector and reported identities have been
+independently reviewed, approved, and retained by the protected authority. That
+authority preserves every reported field and exact host argument, changes the
+record schema to `rbp-production-launch-authority-vector/v2`, and records
+`authoritative: true`; this promotion is an external approval act, not a
+worktree capability. The old `__render-production-launch` mode fails closed. A
+renderer candidate rejects a Windows command line longer than 32,766
+characters. The launcher ignores the authority executor's ambient directory,
+starts the Node child with the approved `repoRoot` as its exact working
+directory, and the child attestation rejects any mismatch before loading the
+production controller.
+
+`expectedCommit`/`expectedTree` prove the approved clean candidate's internal
+consistency; they do not establish publisher approval. Publisher/candidate
+approval remains a separate protected release-policy input.
 
 The four paths are intentionally distinct and outside the source worktree.
 Never prepare r1, r2, r3, or the soak into a shared
@@ -241,30 +547,37 @@ junction, or reparse entry rejects the set. When all four plans are outside the
 artifact root, that root must be absent or empty.
 
 The wrapper refuses npm lifecycle invocation, caller-supplied
-`--git-executable`, hostile in-process resolution overrides, and a dirty Git
-tree. It resolves Git once through the absolute SystemRoot `where.exe`,
-validates the selected file/version, and passes that exact absolute path to
-the freshly built inner CLI; the CLI never resolves Git from `PATH`.
+`--git-executable`, hostile in-process resolution overrides, a dirty Git tree,
+and any npm entrypoint other than the exact npm CLI below the authenticated
+Program Files Node installation. It passes the fixed authenticated Program
+Files Git path to the freshly built inner CLI; neither wrapper nor CLI resolves
+Git from `PATH`.
 
-Before protocol generation or controller compilation, the wrapper captures
-the complete physical TypeScript package and the actual installed
-`json-schema-to-typescript` transitive package closure selected from the
-protocol package. It rehashes that bootstrap identity immediately before and
-after each generator, clean, and TypeScript child, and once more before
-starting the inner CLI. A changed compiler shim/implementation, formatter,
-schema parser, transitive dependency, physical resolution, or optional
-dependency state fails closed. This bootstrap check does not depend on a
-not-yet-built controller.
+Before protocol generation or controller compilation, both launcher roles
+delete the ignored protocol and conformance `dist` roots and rebuild them from
+the clean anchored source. The tracked
+`scripts/production-bootstrap-identity.json` pins the complete physical
+TypeScript package, the selected `json-schema-to-typescript` transitive
+closure, the complete npm package tree used by preparation, and the Ajv,
+Ajv-formats, ws, and transitive runtime-package closure used by the controller.
+Those identities are rehashed around every generator, clean, and TypeScript
+child and again around controller import. A changed compiler
+shim/implementation, formatter, schema parser, npm byte, runtime dependency,
+physical resolution, or optional dependency state fails closed. This check
+does not depend on a plan, sidecar, or not-yet-imported controller.
 
-The wrapper deletes only the ignored `rbp-conformance/dist` controller output
-and directly runs the bound Node for protocol generation/cleaning and
-TypeScript compilation. It builds protocol and the conformance controller
-from source, then starts that freshly built CLI with the same bound
-build/controller Node. There is no outer native smoke under an incidental
-Node. The inner CLI resolves the selected runtime Node (`--node-executable`,
-or the current controller Node when omitted) and opens, queries, and closes
-the Bridge simulator's exact installed `better-sqlite3` module under that
-runtime before and after the component DAG.
+After the clean rebuild, the bootstrap captures every protocol/controller and
+pinned runtime-package file into an in-memory byte map. A synchronous,
+process-local loader guard permits only Node builtins or an exact captured file,
+rejects alternate schemes/query/hash aliases and uncaptured paths, and returns
+the captured bytes for the initial CLI and every later JavaScript/JSON module.
+Additional synchronous or asynchronous loader-hook registration is disabled
+after the guard is installed. On-disk closure bytes and pinned package
+identities are checked again after import. There is no outer native smoke under
+an incidental Node. The inner CLI resolves the selected runtime Node
+(`--node-executable`, or the current controller Node when omitted) and opens,
+queries, and closes the Bridge simulator's exact installed `better-sqlite3`
+module under that runtime before and after the component DAG.
 
 The CLI validates and hashes the toolchain before cleaning component output.
 Protocol, add-in loopback fixture, Gateway stub, and Bridge simulator are then
@@ -300,29 +613,24 @@ not substituted for the copy Node actually loads.
 The selected runtime Node may differ from the build/controller Node only when
 its complete recorded identity is used consistently by every canonical
 component command, native smoke, production run, and validator invocation.
-For the M1 runbook above they are deliberately the same `$BoundNode`. A
-different current controller Node fails closed against the plan.
-No timestamp or filesystem mtime participates. Windows system DLLs and
-kernel-level filesystem races are outside the application provenance
-boundary; every repo/npm-controlled executable byte is inside it.
+For the M1 authority vectors they are deliberately the same exact Program Files
+Node. A different current controller Node fails closed against the plan.
+No timestamp or filesystem mtime participates. At each guarded boundary every
+static repo/npm-controlled executable byte is inside the application provenance
+anchor. Windows system DLLs, kernel-level filesystem races, and an already
+running same-user process that can actively mutate and restore build inputs or
+installed dependency bytes during a generator/compiler subprocess are outside
+that anchor; the operator must quiesce other writers for canonical evidence.
 
 After all four plans are prepared, the entire three-run, aggregate/JUnit, and
 fixed one-hour-soak chain runs in one attested Node process. This is the only
-command allowed to print the literal final `PASS`; `<sha>` and `<tree>` are the
-locked candidate identities:
+command allowed to print the literal final `PASS`. The independently protected
+final authority vector binds the same approved commit/tree and exact four plan
+paths used by the prepare vectors:
 
 ```powershell
-$ExpectedCommit = '<sha>'
-$ExpectedTree = '<tree>'
-
-& $PowerShell -NoProfile -NonInteractive -ExecutionPolicy Bypass `
-  -File $Launcher -NodeExecutable $BoundNode -Entrypoint $CliBootstrap `
-  run-final-evidence `
-  --plan-1 $PlanR1 --plan-2 $PlanR2 --plan-3 $PlanR3 `
-  --soak-plan $PlanSoak `
-  --repo-root $RepoRoot --artifact-root $EvidenceRoot `
-  --expected-commit $ExpectedCommit --expected-tree $ExpectedTree
-if ($LASTEXITCODE -ne 0) { throw 'final evidence run failed' }
+# Exact record supplied outside the checkout and evidence artifact root.
+Invoke-ApprovedRbpVector $ApprovedFinalEvidenceVector
 ```
 
 The command accepts no retained report, aggregate, soak result, duration,
@@ -375,11 +683,13 @@ documented Windows APIs at both ends without adding an untracked binary.
 This is an application provenance anchor, not Windows code integrity. An
 attacker able to inject native code into, debug, or replace state inside the
 already-running canonical PowerShell/Node processes, hook the OS process/pipe
-APIs, or act with kernel-equivalent authority is outside the boundary. Those
-capabilities can falsify any JavaScript/.NET in-process check and require a
-separate signed native or OS policy anchor. Same-user pipe-name guessing alone,
-ordinary direct invocation, and an untrusted parent process are inside the
-tested fail-closed boundary.
+APIs, actively race writable build/dependency files during the guarded
+generator/compiler window, or act with kernel-equivalent authority is outside
+the boundary. Those capabilities can falsify an application-level check and
+require operator quiescence plus a separate signed native or OS policy anchor.
+Pre-existing dirty/tampered bytes, same-user pipe-name guessing alone, ordinary
+direct invocation, and an untrusted parent process are inside the tested
+fail-closed boundary.
 
 `prepare-production` verifies those sidecars before writing the plan. The plan
 retains each sidecar hash and its compile/runtime/dependency/controller/tool
