@@ -96,6 +96,7 @@ describe("raw production case runner", () => {
         .filter(({ caseId }) => caseId === "O1-C30")
         .map(({ stepId }) => stepId)
         .sort();
+      const assertions = canonicalManifest.requiredAssertions["O1-C30"]!;
       for (const execution of executions) {
         const rawStepIds = execution.evidence.observations
           .filter(({ kind }) => kind === "wire_event")
@@ -104,6 +105,16 @@ describe("raw production case runner", () => {
           .map(({ stepId }) => String(stepId))
           .sort();
         expect(rawStepIds).toEqual(expectedStepIds);
+        for (const assertion of assertions) {
+          const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id);
+          expect(oracle, assertion.id).toBeDefined();
+          expect(oracle!({
+            caseId: "O1-C30",
+            binding: execution.binding,
+            assertion,
+            observations: execution.evidence.observations,
+          }), `${assertion.id}/${execution.binding}`).toBe(true);
+        }
         expect(execution.evidence.observations.filter(stoppedLifecycle)).toHaveLength(3);
         expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
           /"(?:actual|passed|verdict)"\s*:/u,
