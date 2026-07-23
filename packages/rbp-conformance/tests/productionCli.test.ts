@@ -27,6 +27,27 @@ function git(cwd: string, args: readonly string[]): void {
   }
 }
 
+function writeCanonicalComponentManifests(repo: string): void {
+  for (
+    const [packageDirectory, packageName] of [
+      ["gateway-stub", "@revagent/gateway-stub"],
+      ["bridge-simulator", "@revagent/bridge-simulator"],
+      ["addin-loopback-fixture", "@revagent/addin-loopback-fixture"],
+    ] as const
+  ) {
+    const target = path.join(repo, "packages", packageDirectory, "package.json");
+    mkdirSync(path.dirname(target), { recursive: true });
+    writeFileSync(
+      target,
+      `${JSON.stringify({
+        name: packageName,
+        version: "0.0.0",
+      })}\n`,
+      "utf8",
+    );
+  }
+}
+
 describe("run-production CLI gates", () => {
   it("rejects a stale plan against an otherwise clean repository before execution", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-production-cli-"));
@@ -37,7 +58,8 @@ describe("run-production CLI gates", () => {
       mkdirSync(repo);
       git(repo, ["init"]);
       writeFileSync(path.join(repo, "source.txt"), "clean\n", "utf8");
-      git(repo, ["add", "source.txt"]);
+      writeCanonicalComponentManifests(repo);
+      git(repo, ["add", "."]);
       git(repo, [
         "-c",
         "user.name=Conformance Test",
@@ -91,7 +113,8 @@ describe("run-production CLI gates", () => {
       mkdirSync(repo);
       git(repo, ["init"]);
       writeFileSync(path.join(repo, "source.txt"), "clean\n", "utf8");
-      git(repo, ["add", "source.txt"]);
+      writeCanonicalComponentManifests(repo);
+      git(repo, ["add", "."]);
       git(repo, [
         "-c",
         "user.name=Conformance Test",

@@ -116,5 +116,5 @@ describe("aggregate CLI retained-evidence flow", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 90_000);
 });

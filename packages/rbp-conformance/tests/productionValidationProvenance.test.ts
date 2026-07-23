@@ -1,9 +1,13 @@
-import { spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -14,43 +18,108 @@ import {
 } from "../src/productionRuntimeIdentity.js";
 import { stableJson } from "../src/stableJson.js";
 import type { ExecutionPlan } from "../src/types.js";
-import {
-  buildFixturePlan,
-  cleanupProductionProvenanceFixtures,
-  createFixtureSidecars,
-  productionProvenanceFixture,
-  writeFixtureFile,
-} from "./productionProvenanceFixture.js";
+import { createCurrentProductionPlan } from "./helpers.js";
 
-let compiledCli = "";
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
   "..",
 );
 const repoRoot = path.resolve(packageRoot, "..", "..");
+const compiledCli = path.join(
+  repoRoot,
+  "packages",
+  "rbp-conformance",
+  "dist",
+  "src",
+  "cli.js",
+);
+const productionLauncher = path.join(
+  packageRoot,
+  "scripts",
+  "invoke-production.ps1",
+);
+const windowsRoot = process.env.SystemRoot ?? process.env.WINDIR;
+if (windowsRoot === undefined) {
+  throw new Error("validator launcher tests require SystemRoot");
+}
+const systemPowerShell = path.join(
+  windowsRoot,
+  "System32",
+  "WindowsPowerShell",
+  "v1.0",
+  "powershell.exe",
+);
 
-function compileCurrentController(): string {
-  const result = spawnSync(process.execPath, [
-    path.join(repoRoot, "node_modules/typescript/lib/tsc.js"),
-    "-p",
-    path.join(repoRoot, "packages/rbp-conformance/tsconfig.json"),
-    "--pretty",
-    "false",
-  ], {
-    cwd: repoRoot,
-    encoding: "utf8",
-    shell: false,
-    env: sanitizedProductionRuntimeEnvironment(),
-    timeout: 60_000,
-    windowsHide: true,
+interface CliInvocationResult {
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  error: Error | undefined;
+}
+
+function invokeCurrentCli(input: {
+  args: readonly string[];
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  nodeExecutable?: string;
+}): Promise<CliInvocationResult> {
+  const child = spawn(
+    systemPowerShell,
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      productionLauncher,
+      "-NodeExecutable",
+      input.nodeExecutable ?? process.execPath,
+      "-Entrypoint",
+      compiledCli,
+      ...input.args,
+    ],
+    {
+      cwd: input.cwd,
+      shell: false,
+      env: input.env ?? sanitizedProductionRuntimeEnvironment(),
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  );
+  return new Promise((resolve) => {
+    let stdout = "";
+    let stderr = "";
+    let launchError: Error | undefined;
+    let timedOut = false;
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk: string) => {
+      stderr += chunk;
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, 90_000);
+    child.on("error", (error) => {
+      launchError = error;
+    });
+    child.on("close", (status, signal) => {
+      clearTimeout(timeout);
+      resolve({
+        status,
+        signal,
+        stdout,
+        stderr,
+        error: timedOut
+          ? new Error("validator launcher timed out after 90000ms")
+          : launchError,
+      });
+    });
   });
-  if (result.error !== undefined) throw result.error;
-  if (result.status !== 0) {
-    throw new Error(
-      `controller fixture compilation failed: ${String(result.stderr).trim()}`,
-    );
-  }
-  return path.join(repoRoot, "packages/rbp-conformance/dist/src/cli.js");
 }
 
 function planSequence(
@@ -65,14 +134,32 @@ function planSequence(
   };
 }
 
+const temporaryRoots: string[] = [];
+
+function temporaryRoot(prefix: string): string {
+  const root = mkdtempSync(path.join(tmpdir(), prefix));
+  temporaryRoots.push(root);
+  return root;
+}
+
+function writeTemporaryFile(
+  root: string,
+  relative: string,
+  contents: string,
+): string {
+  const target = path.join(root, relative);
+  mkdirSync(path.dirname(target), { recursive: true });
+  writeFileSync(target, contents, "utf8");
+  return target;
+}
+
 function writePlan(root: string, name: string, plan: ExecutionPlan): string {
   const relative = `node_modules/.test-plans/${name}`;
-  writeFixtureFile(root, relative, stableJson(plan));
-  return path.join(root, relative);
+  return writeTemporaryFile(root, relative, stableJson(plan));
 }
 
 function aggregatePlanFlags(
-  root: string,
+  currentRepoRoot: string,
   planFiles: readonly [string, string, string],
 ): string[] {
   return [
@@ -83,170 +170,210 @@ function aggregatePlanFlags(
     "--plan-3",
     planFiles[2],
     "--repo-root",
-    root,
+    currentRepoRoot,
   ];
 }
 
 beforeAll(() => {
-  compiledCli = compileCurrentController();
+  expect(existsSync(systemPowerShell)).toBe(true);
+  expect(existsSync(productionLauncher)).toBe(true);
+  expect(existsSync(compiledCli)).toBe(true);
 });
 
-afterEach(cleanupProductionProvenanceFixtures);
+afterEach(() => {
+  for (const root of temporaryRoots.splice(0)) {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 describe("PASS-capable validator production identity", { timeout: 120_000 }, () => {
-  it("rejects an alternate real Node executable as the validation controller", () => {
-    const value = productionProvenanceFixture();
+  it("rejects an alternate real Node executable as the validation controller", async () => {
+    const root = temporaryRoot("rbp-validation-alternate-node-");
     const alternateNode = path.join(
-      value.root,
+      root,
       "node_modules",
       ".bound-node",
       process.platform === "win32" ? "node.exe" : "node",
     );
     mkdirSync(path.dirname(alternateNode), { recursive: true });
     copyFileSync(process.execPath, alternateNode);
-    value.nodeExecutable = alternateNode;
-    createFixtureSidecars(value);
     const planFile = writePlan(
-      value.root,
-      "alternate-node.json",
-      buildFixturePlan(value),
+      root,
+      "current-production.json",
+      createCurrentProductionPlan(
+        repoRoot,
+        "alternate-node-controller-test",
+      ),
     );
-    const result = spawnSync(process.execPath, [
-      compiledCli,
-      "validate-run",
-      path.join(value.root, "missing-report.json"),
-      "--plan",
-      planFile,
-      "--repo-root",
-      value.root,
-    ], {
-      cwd: value.root,
-      encoding: "utf8",
-      shell: false,
-      env: sanitizedProductionRuntimeEnvironment(),
-      timeout: 90_000,
-      windowsHide: true,
+    const result = await invokeCurrentCli({
+      cwd: root,
+      nodeExecutable: alternateNode,
+      args: [
+        "validate-run",
+        path.join(root, "missing-report.json"),
+        "--plan",
+        planFile,
+        "--repo-root",
+        repoRoot,
+      ],
     });
 
+    expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
-    expect(String(result.stderr)).toMatch(/controller Node does not match/u);
+    expect(String(result.stderr)).toMatch(
+      /production controller Node does not match the plan-bound runtime Node identity/u,
+    );
+    expect(String(result.stderr)).not.toMatch(/ENOENT|no such file/u);
     expect(String(result.stdout)).not.toContain("PASS");
   });
 
-  it("rejects hostile NODE_OPTIONS in every PASS-capable validator CLI", () => {
-    const value = productionProvenanceFixture();
-    createFixtureSidecars(value);
-    const base = buildFixturePlan(value);
+  it("clears hostile parent NODE_OPTIONS before every validator loads JavaScript", async () => {
+    const root = temporaryRoot("rbp-validation-node-options-");
+    const base = createCurrentProductionPlan(
+      repoRoot,
+      "node-options-run-1",
+    );
     const planFiles = ([1, 2, 3] as const).map((sequence) =>
       writePlan(
-        value.root,
+        root,
         `plan-${String(sequence)}.json`,
         planSequence(base, sequence),
       )) as [string, string, string];
+    const soakPlan = writePlan(
+      root,
+      "soak-plan.json",
+      planSequence(base, 1, "node-options-soak"),
+    );
     const attacker = path.join(
-      value.root,
+      root,
       "node_modules/.hostile-controller/node-options-attacker.cjs",
     );
-    writeFixtureFile(
-      value.root,
-      "node_modules/.hostile-controller/node-options-attacker.cjs",
-      "process.stderr.write('NODE_OPTIONS_FIXTURE_LOADED\\n');\n",
+    const attackerMarker = path.join(
+      root,
+      "node_modules/.hostile-controller/node-options-attacker.loaded",
     );
-    const missingReport = path.join(value.root, "missing-report.json");
-    const missingAggregate = path.join(value.root, "missing-aggregate.json");
+    writeTemporaryFile(
+      root,
+      "node_modules/.hostile-controller/node-options-attacker.cjs",
+      [
+        "const fs = require('node:fs');",
+        `fs.writeFileSync(${JSON.stringify(attackerMarker)}, 'loaded');`,
+        "process.stderr.write('NODE_OPTIONS_FIXTURE_LOADED\\n');",
+        "",
+      ].join("\n"),
+    );
+    const missingReport = path.join(root, "missing-report.json");
+    const missingAggregate = path.join(root, "missing-aggregate.json");
     const commands = [
-      [
-        "validate-run",
-        missingReport,
-        "--plan",
-        planFiles[0],
-        "--repo-root",
-        value.root,
-      ],
-      [
-        "validate-aggregate",
-        missingAggregate,
-        ...aggregatePlanFlags(value.root, planFiles),
-      ],
-      [
-        "validate-soak",
-        missingReport,
-        "--plan",
-        planFiles[0],
-        "--aggregate",
-        missingAggregate,
-        ...aggregatePlanFlags(value.root, planFiles),
-      ],
+      {
+        name: "validate-run",
+        expectedMissing: missingReport,
+        args: [
+          "validate-run",
+          missingReport,
+          "--plan",
+          planFiles[0],
+          "--repo-root",
+          repoRoot,
+        ],
+      },
+      {
+        name: "validate-aggregate",
+        expectedMissing: missingAggregate,
+        args: [
+          "validate-aggregate",
+          missingAggregate,
+          ...aggregatePlanFlags(repoRoot, planFiles),
+        ],
+      },
+      {
+        name: "validate-soak",
+        expectedMissing: missingAggregate,
+        args: [
+          "validate-soak",
+          missingReport,
+          "--plan",
+          soakPlan,
+          "--aggregate",
+          missingAggregate,
+          ...aggregatePlanFlags(repoRoot, planFiles),
+        ],
+      },
     ];
     for (const command of commands) {
-      const result = spawnSync(process.execPath, [compiledCli, ...command], {
-        cwd: value.root,
-        encoding: "utf8",
-        shell: false,
+      const result = await invokeCurrentCli({
+        args: command.args,
+        cwd: root,
         env: {
           ...sanitizedProductionRuntimeEnvironment(),
           NODE_OPTIONS: `--require=${attacker.replaceAll("\\", "/")}`,
         },
-        timeout: 90_000,
-        windowsHide: true,
       });
-      expect(result.status, command[0]).not.toBe(0);
-      expect(String(result.stderr)).toContain("NODE_OPTIONS_FIXTURE_LOADED");
-      expect(String(result.stderr)).toMatch(
+      expect(result.error, command.name).toBeUndefined();
+      expect(result.status, command.name).not.toBe(0);
+      expect(String(result.stderr)).not.toContain("NODE_OPTIONS_FIXTURE_LOADED");
+      expect(String(result.stderr)).not.toMatch(
         /production controller environment cannot set NODE_OPTIONS/u,
       );
+      expect(String(result.stderr)).toContain(path.basename(command.expectedMissing));
+      expect(String(result.stderr)).toMatch(
+        /ENOENT|no such file/u,
+      );
       expect(String(result.stdout)).not.toContain("PASS");
+      expect(existsSync(attackerMarker)).toBe(false);
     }
-  });
+  }, 180_000);
 
-  it("does not consult hostile npm script-shell, user config, or node.cmd", () => {
-    const value = productionProvenanceFixture();
-    createFixtureSidecars(value);
-    const planFile = writePlan(value.root, "plan.json", buildFixturePlan(value));
+  it("does not consult hostile npm script-shell, user config, or node.cmd", async () => {
+    const root = temporaryRoot("rbp-validation-hostile-npm-");
+    const planFile = writePlan(
+      root,
+      "plan.json",
+      createCurrentProductionPlan(repoRoot, "hostile-npm-test"),
+    );
     const hostileRoot = path.join(
-      value.root,
+      root,
       "node_modules/.hostile-controller",
     );
     const marker = path.join(hostileRoot, "launcher-hijack.txt");
-    writeFixtureFile(
-      value.root,
+    writeTemporaryFile(
+      root,
       "node_modules/.hostile-controller/node.cmd",
       `@echo hijacked>${marker}\r\n@exit /b 99\r\n`,
     );
-    writeFixtureFile(
-      value.root,
+    writeTemporaryFile(
+      root,
       "node_modules/.hostile-controller/script-shell.cmd",
       `@echo hijacked>${marker}\r\n@exit /b 99\r\n`,
     );
-    writeFixtureFile(
-      value.root,
+    writeTemporaryFile(
+      root,
       "node_modules/.hostile-controller/hostile.npmrc",
       `script-shell=${path.join(hostileRoot, "script-shell.cmd")}\n`,
     );
-    const result = spawnSync(process.execPath, [
-      compiledCli,
-      "validate-run",
-      path.join(value.root, "missing-report.json"),
-      "--plan",
-      planFile,
-      "--repo-root",
-      value.root,
-    ], {
-      cwd: value.root,
-      encoding: "utf8",
-      shell: false,
+    const missingReport = path.join(root, "missing-report.json");
+    const result = await invokeCurrentCli({
+      cwd: root,
+      args: [
+        "validate-run",
+        missingReport,
+        "--plan",
+        planFile,
+        "--repo-root",
+        repoRoot,
+      ],
       env: {
         ...sanitizedProductionRuntimeEnvironment(),
         PATH: `${hostileRoot}${path.delimiter}${process.env.PATH ?? ""}`,
         npm_config_script_shell: path.join(hostileRoot, "script-shell.cmd"),
         NPM_CONFIG_USERCONFIG: path.join(hostileRoot, "hostile.npmrc"),
       },
-      timeout: 90_000,
-      windowsHide: true,
     });
 
+    expect(result.error).toBeUndefined();
     expect(result.status).not.toBe(0);
     expect(String(result.stderr)).toMatch(/ENOENT|no such file/u);
+    expect(String(result.stderr)).toContain(path.basename(missingReport));
     expect(String(result.stdout)).not.toContain("PASS");
     expect(existsSync(marker)).toBe(false);
   });
