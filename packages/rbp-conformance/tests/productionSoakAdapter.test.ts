@@ -29,11 +29,16 @@ function productionPlan(): ExecutionPlan {
 
 describe("production reconnect/proxy-churn soak adapter", () => {
   it("keeps two real three-process stacks alive across both binding churn cycles", async () => {
+    let runtimeGuardCalls = 0;
     const adapter = await createProductionReconnectSoakAdapter({
       plan: productionPlan(),
       repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+      },
     });
     try {
+      expect(runtimeGuardCalls).toBe(12);
       const before = await adapter.sampleResources();
       expect(before).toMatchObject({ journalPendingCount: 0 });
       expect(before.residentBytes).toBeGreaterThan(0);
@@ -55,6 +60,7 @@ describe("production reconnect/proxy-churn soak adapter", () => {
       });
       const after = await adapter.sampleResources();
       expect(after.journalPendingCount).toBe(0);
+      expect(runtimeGuardCalls).toBe(12);
     } finally {
       await adapter.close();
     }

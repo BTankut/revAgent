@@ -1,6 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { TextDecoder } from "node:util";
 
+import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type { ComponentId, ProcessCommandDescriptor, ProcessEvidence } from "./types.js";
 
 export const MAX_CONTROL_LINE_BYTES = 64 * 1024;
@@ -166,7 +167,7 @@ export class StrictJsonlProcess {
     const startedAt = new Date().toISOString();
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
-      env: { ...process.env, ...options.environment },
+      env: sanitizedProductionRuntimeEnvironment(process.env, options.environment),
       shell: false,
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
@@ -443,11 +444,10 @@ export class StrictReadyProcess {
     const startedAt = new Date().toISOString();
     const child = spawn(options.command.executable, options.command.args, {
       cwd: options.absoluteWorkingDirectory,
-      env: {
-        ...process.env,
+      env: sanitizedProductionRuntimeEnvironment(process.env, {
         ...options.environment,
         ...(options.useTestSignalProxy === true ? { NODE_ENV: "test" } : {}),
-      },
+      }),
       shell: false,
       stdio: options.useTestSignalProxy === true
         ? ["pipe", "pipe", "pipe", "ipc"]

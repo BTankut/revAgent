@@ -21,6 +21,59 @@ function command(mode = "good"): ProcessCommandDescriptor {
 }
 
 describe("strict JSONL process control", () => {
+  it("uses the canonical sanitized environment and rejects resolution overrides", async () => {
+    const hostileEnvironment = {
+      NODE_OPTIONS: "--no-warnings",
+      NODE_PATH: "hostile-node-path",
+      NODE_PRESERVE_SYMLINKS: "1",
+      NODE_COMPILE_CACHE: "hostile-compile-cache",
+      NODE_DISABLE_COMPILE_CACHE: "1",
+      WS_NO_BUFFER_UTIL: "1",
+      WS_NO_UTF_8_VALIDATE: "1",
+    } as const;
+    const original = new Map(
+      Object.keys(hostileEnvironment).map((key) => [key, process.env[key]]),
+    );
+    try {
+      Object.assign(process.env, hostileEnvironment);
+      const child = await StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: command("environment"),
+        absoluteWorkingDirectory: here,
+        environment: { RBP_EXPLICIT_CHILD_VALUE: "retained" },
+        expectedReadinessFields: {
+          component: "fixture-test",
+          environment: {
+            NODE_OPTIONS: null,
+            NODE_PATH: null,
+            NODE_PRESERVE_SYMLINKS: null,
+            NODE_COMPILE_CACHE: null,
+            NODE_DISABLE_COMPILE_CACHE: null,
+            WS_NO_BUFFER_UTIL: null,
+            WS_NO_UTF_8_VALIDATE: null,
+            RBP_EXPLICIT_CHILD_VALUE: "retained",
+          },
+        },
+        requiredActions: ["shutdown"],
+      });
+      await expect(child.stop()).resolves.toMatchObject({ exitCode: 0 });
+
+      await expect(StrictJsonlProcess.start({
+        componentId: "addin_loopback_fixture",
+        command: command(),
+        absoluteWorkingDirectory: here,
+        environment: { NODE_OPTIONS: "--no-warnings" },
+        expectedReadinessFields: { component: "fixture-test" },
+        requiredActions: ["shutdown"],
+      })).rejects.toThrow(/cannot set NODE_OPTIONS/u);
+    } finally {
+      for (const [key, value] of original) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("requires exact readiness and correlates FIFO responses under the 64 KiB cap", async () => {
     const child = await StrictJsonlProcess.start({
       componentId: "addin_loopback_fixture",

@@ -8,6 +8,20 @@ process.stdout.write(`${JSON.stringify({
   controlVersion: 1,
   maxControlLineBytes: 65536,
   actions,
+  ...(mode === "environment"
+    ? {
+        environment: {
+          NODE_OPTIONS: process.env.NODE_OPTIONS ?? null,
+          NODE_PATH: process.env.NODE_PATH ?? null,
+          NODE_PRESERVE_SYMLINKS: process.env.NODE_PRESERVE_SYMLINKS ?? null,
+          NODE_COMPILE_CACHE: process.env.NODE_COMPILE_CACHE ?? null,
+          NODE_DISABLE_COMPILE_CACHE: process.env.NODE_DISABLE_COMPILE_CACHE ?? null,
+          WS_NO_BUFFER_UTIL: process.env.WS_NO_BUFFER_UTIL ?? null,
+          WS_NO_UTF_8_VALIDATE: process.env.WS_NO_UTF_8_VALIDATE ?? null,
+          RBP_EXPLICIT_CHILD_VALUE: process.env.RBP_EXPLICIT_CHILD_VALUE ?? null,
+        },
+      }
+    : {}),
 })}\n`);
 
 let buffer = "";

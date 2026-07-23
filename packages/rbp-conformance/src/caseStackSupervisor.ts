@@ -34,6 +34,11 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./processHarness.js";
+import {
+  assertProductionRuntimeLaunchCurrent,
+  boundProductionPowerShellExecutable,
+} from "./productionExecutionPlan.js";
+import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type {
   Binding,
   ComponentId,
@@ -350,6 +355,22 @@ function observedIdentity(
   return { ...component.expectedIdentity };
 }
 
+async function stopAfterLaunchFailure(
+  processHandle: { stop(): Promise<unknown> },
+  error: unknown,
+  label: string,
+): Promise<never> {
+  try {
+    await processHandle.stop();
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [error, cleanupError],
+      `${label} failed launch verification and cleanup`,
+    );
+  }
+  throw error;
+}
+
 function setCliListArgument(
   args: readonly string[],
   flag: string,
@@ -612,7 +633,7 @@ async function runFixtureBindPolicyProcess(input: {
 }): Promise<JsonObject> {
   const child = spawn(input.command.executable, input.command.args, {
     cwd: input.cwd,
-    env: { ...process.env, ...input.environment },
+    env: sanitizedProductionRuntimeEnvironment(process.env, input.environment),
     shell: false,
     windowsHide: true,
   });
@@ -889,6 +910,7 @@ export interface CaseStackSupervisorOptions {
   plan: ExecutionPlan;
   repoRoot: string;
   environment?: Readonly<Record<string, string | undefined>>;
+  runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
 }
 
 export interface FixtureBindPolicyProbeInput {
@@ -955,6 +977,7 @@ export class CaseStackSupervisor {
   readonly #plan: ExecutionPlan;
   readonly #repoRoot: string;
   readonly #environment: Readonly<Record<string, string | undefined>>;
+  readonly #runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
   #active: ActiveStack | null = null;
   #observationOrdinal = 0;
 
@@ -962,6 +985,12 @@ export class CaseStackSupervisor {
     this.#plan = structuredClone(options.plan);
     this.#repoRoot = realpathSync(options.repoRoot);
     this.#environment = { ...(options.environment ?? {}) };
+    this.#runtimeLaunchGuard =
+      options.runtimeLaunchGuard ?? assertProductionRuntimeLaunchCurrent;
+  }
+
+  #assertRuntimeLaunchCurrent(): void {
+    this.#runtimeLaunchGuard(this.#plan, this.#repoRoot);
   }
 
   get active(): boolean {
@@ -974,6 +1003,10 @@ export class CaseStackSupervisor {
       ...stack.components.values(),
       ...stack.extraFixtures,
     ].map(({ pid }) => pid);
+  }
+
+  productionPowerShellExecutable(): string {
+    return boundProductionPowerShellExecutable(this.#plan);
   }
 
   readiness(): { fixture: JsonObject; gateway: JsonObject; bridge: JsonObject } {
@@ -1376,18 +1409,34 @@ export class CaseStackSupervisor {
       input,
     );
     const cwd = confinedWorkingDirectory(this.#repoRoot, command);
+    const identity = observedIdentity(component, command, cwd);
     const environment: Record<string, string | undefined> = {};
     for (const key of command.environmentKeys) environment[key] = this.#environment[key];
-    const processEvidence = await runFixtureBindPolicyProcess({
-      command,
-      cwd,
-      environment,
-      probe: input,
-    });
+    this.#assertRuntimeLaunchCurrent();
+    let processEvidence: JsonObject;
+    try {
+      processEvidence = await runFixtureBindPolicyProcess({
+        command,
+        cwd,
+        environment,
+        probe: input,
+      });
+    } catch (error) {
+      try {
+        this.#assertRuntimeLaunchCurrent();
+      } catch (guardError) {
+        throw new AggregateError(
+          [error, guardError],
+          "fixture bind policy process failed and post-exit runtime identity changed",
+        );
+      }
+      throw error;
+    }
+    this.#assertRuntimeLaunchCurrent();
     return {
       schemaVersion: "supervisor.loopback-probe/v1",
       probeKind: "fixture_bind_process",
-      executableSha256: component.expectedIdentity.executableSha256,
+      executableSha256: identity.executableSha256,
       ...processEvidence,
     };
   }
@@ -2302,6 +2351,7 @@ export class CaseStackSupervisor {
     }
     const environment: Record<string, string | undefined> = {};
     for (const key of command.environmentKeys) environment[key] = this.#environment[key];
+    this.#assertRuntimeLaunchCurrent();
 
     if (component.id === "gateway_stub") {
       const processHandle = await StrictReadyProcess.start({
@@ -2321,9 +2371,13 @@ export class CaseStackSupervisor {
           }
         },
       });
-      if (processHandle.readiness.pid !== processHandle.pid) {
-        await processHandle.stop();
-        throw new Error("Gateway readiness PID does not match the spawned child");
+      try {
+        if (processHandle.readiness.pid !== processHandle.pid) {
+          throw new Error("Gateway readiness PID does not match the spawned child");
+        }
+        this.#assertRuntimeLaunchCurrent();
+      } catch (error) {
+        return await stopAfterLaunchFailure(processHandle, error, "Gateway");
       }
       return {
         componentId: component.id,
@@ -2356,9 +2410,13 @@ export class CaseStackSupervisor {
         : { contract: "addin-loopback/v1" },
       requiredActions: ["snapshot_evidence", "shutdown"],
     });
-    if (isBridge && processHandle.readiness.pid !== processHandle.pid) {
-      await processHandle.stop();
-      throw new Error("Bridge readiness PID does not match the spawned child");
+    try {
+      if (isBridge && processHandle.readiness.pid !== processHandle.pid) {
+        throw new Error("Bridge readiness PID does not match the spawned child");
+      }
+      this.#assertRuntimeLaunchCurrent();
+    } catch (error) {
+      return await stopAfterLaunchFailure(processHandle, error, component.id);
     }
     return {
       componentId: component.id,

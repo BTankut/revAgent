@@ -32,9 +32,16 @@ describe("shared production case-stack controls", () => {
   it.each(["wss", "streamable_http_sse"] as const)(
     "owns restart, extra-fixture, compact-snapshot, and backpressure seams for %s",
     async (binding) => {
+      const plan = productionPlan(binding);
+      let runtimeGuardCalls = 0;
       const supervisor = new CaseStackSupervisor({
-        plan: productionPlan(binding),
+        plan,
         repoRoot,
+        runtimeLaunchGuard(receivedPlan, receivedRepoRoot) {
+          expect(receivedPlan.runId).toBe(plan.runId);
+          expect(receivedRepoRoot).toBe(repoRoot);
+          runtimeGuardCalls += 1;
+        },
       });
       try {
         const started = await supervisor.restartCaseStack({
@@ -110,6 +117,7 @@ describe("shared production case-stack controls", () => {
         }, "shared.restart-bridge", "restart_component");
         expect(bridgeRestart.result.previousPid).toBe(oldBridgePid);
         expect(bridgeRestart.result.pid).not.toBe(oldBridgePid);
+        expect(runtimeGuardCalls).toBe(12);
 
         const stopped = await supervisor.stopCaseStack("shared.stop", "stop_case_stack");
         expect(stopped.result).toMatchObject({
@@ -136,4 +144,27 @@ describe("shared production case-stack controls", () => {
     },
     120_000,
   );
+
+  it("stops the new child when post-readiness runtime identity changes", async () => {
+    let runtimeGuardCalls = 0;
+    const supervisor = new CaseStackSupervisor({
+      plan: productionPlan("streamable_http_sse"),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 2) {
+          throw new Error("planned post-readiness runtime drift");
+        }
+      },
+    });
+    await expect(supervisor.restartCaseStack({
+      caseId: "O1-C04",
+      binding: "streamable_http_sse",
+      preserveState: false,
+    }, "shared.guard-failure", "restart_case_stack")).rejects.toThrow(
+      /planned post-readiness runtime drift/u,
+    );
+    expect(runtimeGuardCalls).toBe(2);
+    expect(supervisor.active).toBe(false);
+  }, 30_000);
 });

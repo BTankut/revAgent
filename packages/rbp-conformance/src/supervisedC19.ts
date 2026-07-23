@@ -13,6 +13,7 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./processHarness.js";
+import { assertProductionRuntimeLaunchCurrent } from "./productionExecutionPlan.js";
 import { createUnexecutedRunReport } from "./scaffold.js";
 import { validateSchema } from "./schemas.js";
 import { SecureEvidenceStore } from "./secureEvidenceStore.js";
@@ -75,6 +76,7 @@ export interface SupervisedC19RunInput {
   repoRoot: string;
   artifactRoot: string;
   seed: string;
+  runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
 }
 
 export interface SupervisedC19RunResult {
@@ -174,6 +176,22 @@ function observedIdentity(component: PlannedComponent, command: ProcessCommandDe
   return { ...component.expectedIdentity };
 }
 
+async function stopAfterLaunchFailure(
+  processHandle: { stop(): Promise<unknown> },
+  error: unknown,
+  label: string,
+): Promise<never> {
+  try {
+    await processHandle.stop();
+  } catch (cleanupError) {
+    throw new AggregateError(
+      [error, cleanupError],
+      `${label} failed launch verification and cleanup`,
+    );
+  }
+  throw error;
+}
+
 function numericLoopback(host: unknown): string {
   if (host !== "127.0.0.1" && host !== "::1") throw new Error("fixture readiness is not numeric loopback");
   return host;
@@ -181,8 +199,10 @@ function numericLoopback(host: unknown): string {
 
 async function startComponent(input: {
   component: PlannedComponent;
+  plan: ExecutionPlan;
   repoRoot: string;
   tokens: Readonly<Record<string, string>>;
+  runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
 }): Promise<StartedComponent> {
   const command = expandedCommand(input.component.command, input.tokens);
   const cwd = workingDirectory(input.repoRoot, command);
@@ -190,6 +210,7 @@ async function startComponent(input: {
   if (command.readiness.kind !== "stdout_pattern") {
     throw new Error(`${input.component.id} must expose supervised JSON stdout readiness`);
   }
+  input.runtimeLaunchGuard(input.plan, input.repoRoot);
 
   if (input.component.id === "gateway_stub") {
     const process = await StrictReadyProcess.start({
@@ -208,7 +229,14 @@ async function startComponent(input: {
         }
       },
     });
-    if (process.readiness.pid !== process.pid) throw new Error("Gateway readiness PID does not match the spawned child");
+    try {
+      if (process.readiness.pid !== process.pid) {
+        throw new Error("Gateway readiness PID does not match the spawned child");
+      }
+      input.runtimeLaunchGuard(input.plan, input.repoRoot);
+    } catch (error) {
+      return await stopAfterLaunchFailure(process, error, "Gateway");
+    }
     return {
       componentId: input.component.id,
       identity,
@@ -235,13 +263,17 @@ async function startComponent(input: {
       : { contract: "addin-loopback/v1" },
     requiredActions: isBridge ? ["snapshot_evidence", "shutdown"] : ["snapshot_evidence", "shutdown"],
   });
-  if (isBridge && process.readiness.pid !== process.pid) {
-    await process.stop();
-    throw new Error("Bridge readiness PID does not match the spawned child");
-  }
-  if (!isBridge) {
-    numericLoopback(process.readiness.host);
-    safeInteger(process.readiness.port, "fixture readiness port", 1, 65535);
+  try {
+    if (isBridge && process.readiness.pid !== process.pid) {
+      throw new Error("Bridge readiness PID does not match the spawned child");
+    }
+    if (!isBridge) {
+      numericLoopback(process.readiness.host);
+      safeInteger(process.readiness.port, "fixture readiness port", 1, 65535);
+    }
+    input.runtimeLaunchGuard(input.plan, input.repoRoot);
+  } catch (error) {
+    return await stopAfterLaunchFailure(process, error, input.component.id);
   }
   return {
     componentId: input.component.id,
@@ -615,6 +647,7 @@ async function runBinding(input: {
   plan: ExecutionPlan;
   repoRoot: string;
   binding: Binding;
+  runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
 }): Promise<BindingExecution> {
   const startedMs = Date.now();
   const instanceRoot = privateTempDirectory(input.plan.runId, input.binding);
@@ -629,20 +662,38 @@ async function runBinding(input: {
       instance_root: instanceRoot,
     };
     const fixturePlan = input.plan.components.find(({ id }) => id === "addin_loopback_fixture")!;
-    const fixture = await startComponent({ component: fixturePlan, repoRoot: input.repoRoot, tokens });
+    const fixture = await startComponent({
+      component: fixturePlan,
+      plan: input.plan,
+      repoRoot: input.repoRoot,
+      tokens,
+      runtimeLaunchGuard: input.runtimeLaunchGuard,
+    });
     started.push(fixture);
     tokens.fixture_host = String(fixture.readiness.host);
     tokens.fixture_port = String(fixture.readiness.port);
 
     const gatewayPlan = input.plan.components.find(({ id }) => id === "gateway_stub")!;
-    const gateway = await startComponent({ component: gatewayPlan, repoRoot: input.repoRoot, tokens });
+    const gateway = await startComponent({
+      component: gatewayPlan,
+      plan: input.plan,
+      repoRoot: input.repoRoot,
+      tokens,
+      runtimeLaunchGuard: input.runtimeLaunchGuard,
+    });
     started.push(gateway);
     for (const [key, value] of Object.entries(gateway.readiness)) {
       if (typeof value === "string") tokens[`gateway_${key}`] = value;
     }
 
     const bridgePlan = input.plan.components.find(({ id }) => id === "bridge_simulator")!;
-    const bridge = await startComponent({ component: bridgePlan, repoRoot: input.repoRoot, tokens });
+    const bridge = await startComponent({
+      component: bridgePlan,
+      plan: input.plan,
+      repoRoot: input.repoRoot,
+      tokens,
+      runtimeLaunchGuard: input.runtimeLaunchGuard,
+    });
     started.push(bridge);
     observations.push(...await executeVectors(input.plan.runId, input.binding, fixture));
 
@@ -688,8 +739,15 @@ export async function executeSupervisedC19Run(input: SupervisedC19RunInput): Pro
   result.status = "running";
   result.startedAt = new Date(caseStartedMs).toISOString();
   const executions: BindingExecution[] = [];
+  const runtimeLaunchGuard =
+    input.runtimeLaunchGuard ?? assertProductionRuntimeLaunchCurrent;
   for (const binding of result.bindings.map(({ binding }) => binding)) {
-    executions.push(await runBinding({ plan: input.plan, repoRoot: input.repoRoot, binding }));
+    executions.push(await runBinding({
+      plan: input.plan,
+      repoRoot: input.repoRoot,
+      binding,
+      runtimeLaunchGuard,
+    }));
   }
 
   const ledger = new CaseObservationLedger(report.run.runId, C19_ID);

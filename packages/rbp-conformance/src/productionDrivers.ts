@@ -19,6 +19,7 @@ import {
   type JsonObject,
   type JsonValue,
 } from "./processHarness.js";
+import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type {
   ComponentId,
   ProcessObservationRecord,
@@ -210,7 +211,10 @@ function linuxMetrics(pid: number): { residentBytes: number; descriptorCount: nu
   };
 }
 
-function windowsMetrics(pids: readonly number[]): Map<number, { residentBytes: number; descriptorCount: number }> {
+export function sampleProductionDriverWindowsMetrics(
+  pids: readonly number[],
+  powershellExecutable: string,
+): Map<number, { residentBytes: number; descriptorCount: number }> {
   const literal = pids.join(",");
   const script = [
     `$ids=@(${literal})`,
@@ -218,9 +222,15 @@ function windowsMetrics(pids: readonly number[]): Map<number, { residentBytes: n
     "$rows | ConvertTo-Json -Compress",
   ].join("; ");
   const result = spawnSync(
-    "powershell.exe",
+    powershellExecutable,
     ["-NoProfile", "-NonInteractive", "-Command", script],
-    { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+    {
+      encoding: "utf8",
+      env: sanitizedProductionRuntimeEnvironment(),
+      shell: false,
+      windowsHide: true,
+      timeout: 10_000,
+    },
   );
   if (result.status !== 0) {
     throw new Error(`Windows process sampling failed: ${String(result.stderr).trim()}`);
@@ -241,8 +251,13 @@ function windowsMetrics(pids: readonly number[]): Map<number, { residentBytes: n
   return metrics;
 }
 
-function processMetrics(pids: readonly number[]): Map<number, { residentBytes: number; descriptorCount: number }> {
-  if (process.platform === "win32") return windowsMetrics(pids);
+function processMetrics(
+  pids: readonly number[],
+  powershellExecutable: () => string,
+): Map<number, { residentBytes: number; descriptorCount: number }> {
+  if (process.platform === "win32") {
+    return sampleProductionDriverWindowsMetrics(pids, powershellExecutable());
+  }
   if (process.platform === "linux" && existsSync("/proc/self/status")) {
     return new Map(pids.map((pid) => [pid, linuxMetrics(pid)]));
   }
@@ -436,7 +451,10 @@ function createHarnessDriver(supervisor: CaseStackSupervisor): ParentStepDriver 
           "bridge_simulator",
           "addin_loopback_fixture",
         ] as const).map((componentId) => supervisor.component(componentId));
-        const metrics = processMetrics(components.map(({ pid }) => pid));
+        const metrics = processMetrics(
+          components.map(({ pid }) => pid),
+          () => supervisor.productionPowerShellExecutable(),
+        );
         const bridge = await supervisor.aggregateSnapshot("bridge_simulator");
         const observations = components.map((component) => {
           const sample = metrics.get(component.pid);

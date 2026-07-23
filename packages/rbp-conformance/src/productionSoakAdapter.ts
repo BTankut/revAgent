@@ -2,6 +2,8 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 import { CaseStackSupervisor } from "./caseStackSupervisor.js";
+import { boundProductionPowerShellExecutable } from "./productionExecutionPlan.js";
+import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type { ReconnectSoakAdapter, SoakCycleObservation } from "./soakRunner.js";
 import type { JsonObject, JsonValue } from "./processHarness.js";
 import type { Binding, ExecutionPlan, ResourceSample } from "./types.js";
@@ -38,11 +40,12 @@ function linuxMetric(pid: number): { residentBytes: number; descriptorCount: num
   };
 }
 
-function windowsMetrics(
+export function sampleProductionSoakWindowsMetrics(
   pids: readonly number[],
+  powershellExecutable: string,
 ): Map<number, { residentBytes: number; descriptorCount: number }> {
   const result = spawnSync(
-    "powershell.exe",
+    powershellExecutable,
     [
       "-NoProfile",
       "-NonInteractive",
@@ -53,7 +56,13 @@ function windowsMetrics(
         "$rows | ConvertTo-Json -Compress",
       ].join("; "),
     ],
-    { encoding: "utf8", windowsHide: true, timeout: 10_000 },
+    {
+      encoding: "utf8",
+      env: sanitizedProductionRuntimeEnvironment(),
+      shell: false,
+      windowsHide: true,
+      timeout: 10_000,
+    },
   );
   if (result.status !== 0) {
     throw new Error(`Windows process sampling failed: ${String(result.stderr).trim()}`);
@@ -80,8 +89,14 @@ function windowsMetrics(
 
 function processMetrics(
   pids: readonly number[],
+  plan: ExecutionPlan,
 ): Map<number, { residentBytes: number; descriptorCount: number }> {
-  if (process.platform === "win32") return windowsMetrics(pids);
+  if (process.platform === "win32") {
+    return sampleProductionSoakWindowsMetrics(
+      pids,
+      boundProductionPowerShellExecutable(plan),
+    );
+  }
   if (process.platform === "linux" && existsSync("/proc/self/status")) {
     return new Map(pids.map((pid) => [pid, linuxMetric(pid)]));
   }
@@ -96,12 +111,17 @@ function numeric(value: unknown, label: string): number {
 }
 
 export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
+  readonly #plan: ExecutionPlan;
   readonly #supervisors: ReadonlyMap<Binding, CaseStackSupervisor>;
   readonly #clockMs = new Map<Binding, number>();
   #closed = false;
   #orphanProcessCount = 0;
 
-  private constructor(supervisors: ReadonlyMap<Binding, CaseStackSupervisor>) {
+  private constructor(
+    plan: ExecutionPlan,
+    supervisors: ReadonlyMap<Binding, CaseStackSupervisor>,
+  ) {
+    this.#plan = plan;
     this.#supervisors = supervisors;
     for (const binding of BINDINGS) this.#clockMs.set(binding, CLOCK_START_MS);
   }
@@ -109,14 +129,18 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
   static async create(input: {
     plan: ExecutionPlan;
     repoRoot: string;
+    runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
   }): Promise<ProductionReconnectSoakAdapter> {
     const supervisors = new Map<Binding, CaseStackSupervisor>();
-    const adapter = new ProductionReconnectSoakAdapter(supervisors);
+    const adapter = new ProductionReconnectSoakAdapter(input.plan, supervisors);
     try {
       for (const binding of BINDINGS) {
         const supervisor = new CaseStackSupervisor({
           plan: input.plan,
           repoRoot: input.repoRoot,
+          ...(input.runtimeLaunchGuard === undefined
+            ? {}
+            : { runtimeLaunchGuard: input.runtimeLaunchGuard }),
         });
         supervisors.set(binding, supervisor);
         await supervisor.restartCaseStack({
@@ -197,7 +221,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
     if (pids.length !== 6 || new Set(pids).size !== 6) {
       throw new Error(`production soak requires exactly six live component PIDs, observed ${pids.length}`);
     }
-    const metrics = processMetrics(pids);
+    const metrics = processMetrics(pids, this.#plan);
     let residentBytes = 0;
     let openFileDescriptorCount = 0;
     for (const pid of pids) {
@@ -335,6 +359,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
 export async function createProductionReconnectSoakAdapter(input: {
   plan: ExecutionPlan;
   repoRoot: string;
+  runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
 }): Promise<ProductionReconnectSoakAdapter> {
   return await ProductionReconnectSoakAdapter.create(input);
 }

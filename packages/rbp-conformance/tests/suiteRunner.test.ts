@@ -42,13 +42,18 @@ function supervisedPlan(): ExecutionPlan {
 describe("supervised C19 runner", () => {
   it("starts a fresh real process trio for each binding and derives C19 from raw v2 evidence", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-"));
+    let runtimeGuardCalls = 0;
     try {
       const { report, reportPath } = await executeSupervisedC19Run({
         plan: supervisedPlan(),
         repoRoot: packageRoot,
         artifactRoot: root,
         seed: "supervised-c19-test",
+        runtimeLaunchGuard() {
+          runtimeGuardCalls += 1;
+        },
       });
+      expect(runtimeGuardCalls).toBe(12);
       const c19 = report.cases.find(({ caseId }) => caseId === "O1-C19")!;
       expect(c19.status).toBe("passed");
       expect(c19.bindings.map(({ status }) => status)).toEqual(["passed", "passed"]);

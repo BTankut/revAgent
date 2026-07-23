@@ -40,9 +40,16 @@ function productionPlan(caseId: "O1-C33" | "O1-C40"): ExecutionPlan {
 async function execute(
   caseId: "O1-C33" | "O1-C40",
   binding: Binding,
-): Promise<ProcessObservationRecord[]> {
+): Promise<{ observations: ProcessObservationRecord[]; runtimeGuardCalls: number }> {
   const plan = productionPlan(caseId);
-  const supervisor = new CaseStackSupervisor({ plan, repoRoot });
+  let runtimeGuardCalls = 0;
+  const supervisor = new CaseStackSupervisor({
+    plan,
+    repoRoot,
+    runtimeLaunchGuard() {
+      runtimeGuardCalls += 1;
+    },
+  });
   try {
     const evidence = await executeParentSteps({
       runId: plan.runId,
@@ -53,7 +60,7 @@ async function execute(
       variables: rawProductionCaseVariables(caseId, { binding }),
     });
     expect(supervisor.active).toBe(false);
-    return evidence.observations;
+    return { observations: evidence.observations, runtimeGuardCalls };
   } finally {
     if (supervisor.active) {
       await supervisor.stopCaseStack(`${caseId.toLowerCase()}.test-abort`, "abort_and_drain");
@@ -75,11 +82,46 @@ function containsForbiddenVerdictKey(value: unknown): boolean {
 }
 
 describe("C33/C40 external production evidence", () => {
+  it("fails closed when the C33 direct probe post-exit guard detects drift", async () => {
+    const plan = productionPlan("O1-C33");
+    let runtimeGuardCalls = 0;
+    const supervisor = new CaseStackSupervisor({
+      plan,
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 8) {
+          throw new Error("planned C33 post-exit runtime drift");
+        }
+      },
+    });
+    try {
+      await supervisor.restartCaseStack({
+        caseId: "O1-C33",
+        binding: "streamable_http_sse",
+        preserveState: false,
+      }, "c33.guard-stack", "restart_case_stack");
+      expect(runtimeGuardCalls).toBe(6);
+
+      await expect(supervisor.probeFixtureBindPolicy({
+        host: "0.0.0.0",
+        allowUnsafeBind: false,
+      })).rejects.toThrow(/planned C33 post-exit runtime drift/u);
+      expect(runtimeGuardCalls).toBe(8);
+      expect(supervisor.pids).toHaveLength(3);
+    } finally {
+      if (supervisor.active) {
+        await supervisor.stopCaseStack("c33.guard-stop", "abort_and_drain");
+      }
+    }
+  }, 30_000);
+
   it.each(["O1-C33", "O1-C40"] as const)(
     "runs %s against both real bindings with fail-closed parent oracles",
     async (caseId) => {
       for (const binding of ["wss", "streamable_http_sse"] as const) {
-        const observations = await execute(caseId, binding);
+        const { observations, runtimeGuardCalls } = await execute(caseId, binding);
+        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 10 : 6);
         const assertions = canonicalManifest.requiredAssertions[caseId]!;
         for (const assertion of assertions) {
           const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id)!;
