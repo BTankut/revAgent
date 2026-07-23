@@ -1,5 +1,11 @@
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,22 +33,16 @@ function git(cwd: string, args: readonly string[]): void {
 }
 
 function writeCanonicalComponentManifests(repo: string): void {
-  for (
-    const [packageDirectory, packageName] of [
-      ["gateway-stub", "@revagent/gateway-stub"],
-      ["bridge-simulator", "@revagent/bridge-simulator"],
-      ["addin-loopback-fixture", "@revagent/addin-loopback-fixture"],
-    ] as const
-  ) {
+  for (const packageDirectory of [
+    "gateway-stub",
+    "bridge-simulator",
+    "addin-loopback-fixture",
+  ]) {
     const target = path.join(repo, "packages", packageDirectory, "package.json");
     mkdirSync(path.dirname(target), { recursive: true });
-    writeFileSync(
+    copyFileSync(
+      path.join(currentRepoRoot, "packages", packageDirectory, "package.json"),
       target,
-      `${JSON.stringify({
-        name: packageName,
-        version: "0.0.0",
-      })}\n`,
-      "utf8",
     );
   }
 }
