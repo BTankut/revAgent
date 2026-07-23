@@ -85,6 +85,7 @@ Action fields, in addition to the base fields, are exact:
 | `restart_simulator` | — | — |
 | `configure_reconnect_conformance` | `mode`, `jitterUnits` | — |
 | `advance_reconnect_conformance_clock` | `advanceByMs`, `heartbeatStepMs` | — |
+| `send_chunk_conformance` | `vector`, `rsid`, `invocationId` | — |
 | `snapshot_evidence` | — | continuation-only `snapshotId` and `cursor` |
 | `shutdown` | — | — |
 
@@ -123,3 +124,13 @@ heartbeat steps, waits for real Gateway heartbeat acknowledgements, and refuses
 to move beyond the 120-second steady boundary. Snapshot evidence reports the
 actual zero-based reconnect callback/sleep trace and peer reset transitions;
 it never reports a verdict or a self-declared pass.
+
+`send_chunk_conformance` is a narrow T6-only negative-vector seam. It requires
+the exact stalled invocation of a locally registered Bridge session whose peer
+is registered and dispatch-enabled on the current Gateway binding. The
+simulator generates one bounded O1-C32 fixture, sends any schema-valid prefix
+through the ordinary binding, and sends only the expected-fault frame through
+the conformance seam. Its result retains the pre-fault connection/session
+identity, sequence basis, frame byte counts/digests, decoded-size and terminal
+descriptor facts, and the authenticated Gateway protocol rejection. It cannot
+be used by production invocation delivery and does not emit a verdict.

@@ -75,8 +75,26 @@ export interface GatewayBinding {
   readonly bufferedAmount: number;
   open(hello: HelloEnvelope): Promise<HelloAckEnvelope>;
   send(envelope: RbpEnvelope): Promise<void>;
+  /**
+   * Test-simulator seam for sending one deliberately invalid chunk frame over
+   * the already negotiated binding. Production Bridge flows never call this.
+   */
+  sendChunkConformanceFrame?(
+    frame: unknown,
+  ): Promise<GatewayChunkConformanceFaultEvidence>;
   messages(): AsyncIterable<RbpEnvelope>;
   close(): Promise<void>;
+}
+
+export interface GatewayChunkConformanceFaultEvidence {
+  readonly binding: BridgeBindingKind;
+  readonly accepted: false;
+  readonly source: "gateway_error_envelope_and_close" | "authenticated_http_response";
+  readonly faultClass: GatewayTransportFailureClass;
+  readonly httpStatus: number | null;
+  readonly closeCode: number | null;
+  readonly closeReason: string | null;
+  readonly message: string;
 }
 
 export interface BindingOptions {
@@ -793,6 +811,93 @@ export class WssGatewayBinding implements GatewayBinding {
     });
   }
 
+  public async sendChunkConformanceFrame(
+    frame: unknown,
+  ): Promise<GatewayChunkConformanceFaultEvidence> {
+    if (this.#socket?.readyState !== WebSocket.OPEN || this.#connectionId === null) {
+      throw new Error("WSS binding is not steady");
+    }
+    const socket = this.#socket;
+    const body = JSON.stringify(frame);
+    if (Buffer.byteLength(body, "utf8") > MAX_RBP_WIRE_FRAME_BYTES) {
+      throw new Error(`WSS conformance frame exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+    }
+    const sendTimeoutMs = positiveTimeout(
+      this.#options.sendTimeoutMs,
+      DEFAULT_SEND_TIMEOUT_MS,
+      "WSS send timeout",
+    );
+    return await new Promise<GatewayChunkConformanceFaultEvidence>((resolve, reject) => {
+      let settled = false;
+      let remoteFault: GatewayTransportError | null = null;
+      const cleanup = (): void => {
+        clearTimeout(timeout);
+        socket.off("message", onMessage);
+        socket.off("close", onClose);
+        socket.off("error", onError);
+      };
+      const fail = (error: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(error instanceof Error ? error : new Error(String(error)));
+      };
+      const onMessage = (data: WebSocket.RawData, binary: boolean): void => {
+        try {
+          if (binary) return;
+          const envelope = parseEnvelope(rawDataBytes(data));
+          if (envelope.type !== "error" || envelope.payload.fault_class !== "protocol") return;
+          remoteFault = new GatewayTransportError(envelope.payload.message, {
+            faultClass: "protocol",
+          });
+        } catch {
+          // The normal binding listener owns general transport parsing. This
+          // narrow observer retains only an authenticated protocol fault.
+        }
+      };
+      const onClose = (code: number, reason: Buffer): void => {
+        if (settled) return;
+        if (remoteFault === null) {
+          fail(new Error("chunk conformance close lacked an authenticated Gateway error envelope"));
+          return;
+        }
+        const fault = remoteFault;
+        if (fault.faultClass !== "protocol" || classForCloseCode(code) !== "protocol") {
+          fail(new Error(`chunk conformance frame closed with ${fault.faultClass}`));
+          return;
+        }
+        settled = true;
+        cleanup();
+        resolve({
+          binding: "wss",
+          accepted: false,
+          source: "gateway_error_envelope_and_close",
+          faultClass: fault.faultClass,
+          httpStatus: null,
+          closeCode: code,
+          closeReason: reason.toString("utf8").slice(0, 600),
+          message: fault.message.slice(0, 600),
+        });
+      };
+      const onError = (error: Error): void => fail(normalizedTransportError(error, "WSS conformance send failed"));
+      const timeout = setTimeout(() => {
+        fail(new GatewayTransportError(
+          `WSS conformance fault timed out after ${sendTimeoutMs}ms`,
+          { faultClass: "retryable_network" },
+        ));
+        socket.terminate();
+      }, sendTimeoutMs);
+      socket.on("message", onMessage);
+      socket.once("close", onClose);
+      socket.once("error", onError);
+      socket.send(body, (error) => {
+        if (error !== undefined && error !== null) {
+          fail(normalizedTransportError(error, "WSS conformance send failed"));
+        }
+      });
+    });
+  }
+
   public messages(): AsyncIterable<RbpEnvelope> {
     return this.#queue;
   }
@@ -1133,6 +1238,75 @@ export class HttpSseGatewayBinding implements GatewayBinding {
       if (lifecycleFenced && this.#lifecycleSendChain === pending) this.#lifecycleSendChain = null;
       this.#unacceptedBytes -= bodyBytes;
     }
+  }
+
+  public async sendChunkConformanceFrame(
+    frame: unknown,
+  ): Promise<GatewayChunkConformanceFaultEvidence> {
+    const connectionId = this.#connectionId;
+    if (connectionId === null) throw new Error("HTTP/SSE binding is not steady");
+    const body = JSON.stringify(frame);
+    if (Buffer.byteLength(body, "utf8") > MAX_RBP_WIRE_FRAME_BYTES) {
+      throw new Error(`HTTP/SSE conformance frame exceeds ${MAX_RBP_WIRE_FRAME_BYTES} raw bytes`);
+    }
+    const fetchTimeoutMs = positiveTimeout(
+      this.#options.fetchTimeoutMs,
+      DEFAULT_FETCH_TIMEOUT_MS,
+      "HTTP/SSE fetch timeout",
+    );
+    const response = await timedFetch(
+      this.#fetch,
+      new URL(`/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, this.#base),
+      {
+        method: "POST",
+        headers: {
+          ...authHeaders(this.#options),
+          Accept: "application/json",
+          "Content-Type": "application/json",
+        },
+        body,
+        redirect: "error",
+      },
+      fetchTimeoutMs,
+      "HTTP/SSE conformance message send",
+    );
+    if (response.status === 202) {
+      throw new Error("HTTP/SSE Gateway unexpectedly accepted the invalid chunk conformance frame");
+    }
+    const faultClass = classForHttpStatus(response.status, "message_send");
+    if (faultClass !== "protocol") {
+      throw await httpResponseError(
+        response,
+        "HTTP/SSE conformance message send",
+        "message_send",
+        fetchTimeoutMs,
+      );
+    }
+    const bytes = await readBoundedResponseBytes(
+      response,
+      "HTTP/SSE conformance fault",
+      fetchTimeoutMs,
+      MAX_HTTP_ERROR_BODY_BYTES,
+    );
+    let message = `HTTP/SSE conformance message send received HTTP ${response.status}`;
+    try {
+      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes)) as unknown;
+      if (isJsonRecord(parsed) && typeof parsed.error === "string") {
+        message = parsed.error;
+      }
+    } catch {
+      // The authenticated status remains the factual protocol-fault evidence.
+    }
+    return {
+      binding: "streamable_http_sse",
+      accepted: false,
+      source: "authenticated_http_response",
+      faultClass,
+      httpStatus: response.status,
+      closeCode: null,
+      closeReason: null,
+      message: message.slice(0, 600),
+    };
   }
 
   async #sendImmediately(connectionId: string, body: string): Promise<void> {

@@ -112,6 +112,14 @@ binds every `send_binding_frame` step to its exact source, type, UTF-8 byte
 count, and SHA-256; the parent oracle rejects any retained wire observation
 that does not match those bytes.
 
+O1-C32 deliberately does not use an independent raw-binding connection. Each
+chunk vector starts a fresh current-stack session, dispatches one stalled
+fixture invocation, snapshots the registered Gateway state, and asks the
+registered Bridge simulator to send the exact negative response on its own
+selected binding. The parent oracles require matching Bridge/Gateway session
+and invocation identities plus exact Base64, missing-identifier, chunk-order,
+decoded-byte, reconstruction-size, and content-digest facts on both bindings.
+
 `createRawProductionBindingStepHooks` combines that catalog with the real
 pinned WSS and HTTPS/SSE drivers. It injects a valid opening `hello` before
 every non-hello target and selects the other enrolled device hello only for

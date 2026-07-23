@@ -13,9 +13,15 @@ import type {
   InvokeBatchEnvelope,
   InvokeEnvelope,
   MutationHold,
+  PartialEnvelope,
+  RbpEnvelope,
   SessionUnregister,
 } from "@revagent/protocol";
-import { reconnectBackoffLimitMs } from "@revagent/protocol";
+import {
+  RBP_MAX_DECODED_CHUNK_BYTES,
+  reconnectBackoffLimitMs,
+  validateRbpEnvelope,
+} from "@revagent/protocol";
 
 import { ArtifactSpool, DeterministicUuid7Source } from "./artifacts.js";
 import {
@@ -67,6 +73,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "restart_simulator",
   "configure_reconnect_conformance",
   "advance_reconnect_conformance_clock",
+  "send_chunk_conformance",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -361,6 +368,229 @@ function failure(id: string | null, code: string, message: string): ControlFailu
 
 function sha256Bytes(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+const CHUNK_CONFORMANCE_VECTORS = [
+  "base64_alphabet",
+  "base64_padding",
+  "stream_identity",
+  "stream_indexing",
+  "decoded_limit",
+  "reconstruction_size",
+  "content_digest",
+] as const;
+
+type ChunkConformanceVector = (typeof CHUNK_CONFORMANCE_VECTORS)[number];
+
+interface ChunkConformancePlan {
+  readonly prefixFrames: readonly RbpEnvelope[];
+  readonly targetFrame: unknown;
+  readonly requirements: JsonObject;
+}
+
+function chunkConformanceVector(value: unknown): ChunkConformanceVector {
+  if (
+    typeof value !== "string" ||
+    !(CHUNK_CONFORMANCE_VECTORS as readonly string[]).includes(value)
+  ) {
+    throw new Error("vector must be a supported O1-C32 chunk conformance vector");
+  }
+  return value as ChunkConformanceVector;
+}
+
+function chunkEnvelope(input: {
+  readonly id: string;
+  readonly ts: string;
+  readonly rsid: string;
+  readonly seq: number;
+  readonly ack: number;
+  readonly type: "partial" | "result";
+  readonly payload: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    v: 1,
+    type: input.type,
+    id: input.id,
+    ts: input.ts,
+    rsid: input.rsid,
+    seq: input.seq,
+    ack: input.ack,
+    payload: input.payload,
+  };
+}
+
+function chunkConformancePlan(input: {
+  readonly vector: ChunkConformanceVector;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly firstSeq: number;
+  readonly ack: number;
+  readonly id: () => string;
+  readonly ts: string;
+}): ChunkConformancePlan {
+  const bytes = Buffer.from("raw-chunk", "utf8");
+  const validData = bytes.toString("base64");
+  const actualSha256 = sha256Bytes(bytes);
+  const commonChunk = {
+    kind: "chunk",
+    invocation_id: input.invocationId,
+    stream_id: "result",
+    chunk_index: 0,
+    encoding: "base64",
+    content_type: "application/octet-stream",
+    data: validData,
+  };
+  const envelope = (
+    type: "partial" | "result",
+    payload: Record<string, unknown>,
+    sequenceOffset = 0,
+  ): Record<string, unknown> => chunkEnvelope({
+    id: input.id(),
+    ts: input.ts,
+    rsid: input.rsid,
+    seq: input.firstSeq + sequenceOffset,
+    ack: input.ack,
+    type,
+    payload,
+  });
+  const commonRequirements = {
+    chunkIndexes: [] as number[],
+    missingIdentifiers: [] as string[],
+    encodedData: null as string | null,
+    encodedDataBytes: null as number | null,
+    encodedDataSha256: null as string | null,
+    base64Canonical: null as boolean | null,
+    decodedBytes: null as number | null,
+    reconstructedBytes: null as number | null,
+    declaredTotalSize: null as number | null,
+    actualSha256: null as string | null,
+    declaredSha256: null as string | null,
+  };
+  if (input.vector === "base64_alphabet" || input.vector === "base64_padding") {
+    const data = input.vector === "base64_alphabet" ? "AA-_" : "A===";
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, data }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        encodedData: data,
+        encodedDataBytes: Buffer.byteLength(data, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(data, "utf8")),
+        base64Canonical: false,
+      },
+    };
+  }
+  if (input.vector === "stream_identity") {
+    const artifactId = input.id();
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", {
+        ...commonChunk,
+        stream_id: `artifact:${artifactId}`,
+        // artifact_id and artifact_index are deliberately absent. The
+        // omissions themselves are the conformance fixture; no production
+        // data is consulted.
+      }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        missingIdentifiers: ["artifact_id", "artifact_index"],
+        encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+        base64Canonical: true,
+        decodedBytes: bytes.byteLength,
+      },
+    };
+  }
+  if (input.vector === "stream_indexing") {
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, chunk_index: 1 }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [1],
+        encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+        base64Canonical: true,
+        decodedBytes: bytes.byteLength,
+      },
+    };
+  }
+  if (input.vector === "decoded_limit") {
+    const data = Buffer.alloc(RBP_MAX_DECODED_CHUNK_BYTES + 1).toString("base64");
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, data }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        encodedDataBytes: Buffer.byteLength(data, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(data, "utf8")),
+        base64Canonical: true,
+        decodedBytes: RBP_MAX_DECODED_CHUNK_BYTES + 1,
+      },
+    };
+  }
+  const prefix = envelope("partial", commonChunk) as unknown as PartialEnvelope;
+  if (!validateRbpEnvelope(prefix)) {
+    throw new Error("internal O1-C32 valid prefix failed RBP validation");
+  }
+  const declaredSha256 = input.vector === "content_digest"
+    ? `sha256:${"9".repeat(64)}`
+    : actualSha256;
+  const declaredTotalSize = input.vector === "reconstruction_size"
+    ? bytes.byteLength + 1
+    : bytes.byteLength;
+  return {
+    prefixFrames: [prefix],
+    targetFrame: envelope("result", {
+      kind: "invocation",
+      invocation_id: input.invocationId,
+      status: "completed",
+      replayed: false,
+      metrics: {
+        execute_ms: 1,
+        request_bytes: 64,
+        response_bytes: 64,
+        framing: "length-prefixed",
+      },
+      chunked: true,
+      stream_id: "result",
+      content_type: "application/octet-stream",
+      total_chunks: 1,
+      total_size: declaredTotalSize,
+      sha256: declaredSha256,
+    }, 1),
+    requirements: {
+      ...commonRequirements,
+      chunkIndexes: [0],
+      encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+      encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+      base64Canonical: true,
+      decodedBytes: bytes.byteLength,
+      reconstructedBytes: bytes.byteLength,
+      declaredTotalSize,
+      actualSha256,
+      declaredSha256,
+    },
+  };
+}
+
+function chunkConformanceFrameEvidence(frame: unknown): JsonObject {
+  if (!isObject(frame)) throw new Error("internal O1-C32 frame must be an object");
+  const serialized = Buffer.from(JSON.stringify(frame), "utf8");
+  const payload = isObject(frame.payload) ? frame.payload : {};
+  return {
+    type: typeof frame.type === "string" ? frame.type : null,
+    seq: Number.isSafeInteger(frame.seq) ? Number(frame.seq) : null,
+    ack: Number.isSafeInteger(frame.ack) ? Number(frame.ack) : null,
+    payloadKind: typeof payload.kind === "string" ? payload.kind : null,
+    streamId: typeof payload.stream_id === "string" ? payload.stream_id : null,
+    chunkIndex: Number.isSafeInteger(payload.chunk_index) ? Number(payload.chunk_index) : null,
+    serializedBytes: serialized.byteLength,
+    serializedSha256: sha256Bytes(serialized),
+  };
 }
 
 function sanitizedResultExposureCounts(value: FixtureJsonValue): {
@@ -664,6 +894,8 @@ export class BridgeDaemonRuntime {
         return { value: this.#configureReconnectConformance(record), shutdown: false };
       case "advance_reconnect_conformance_clock":
         return { value: await this.#advanceReconnectConformanceClock(record), shutdown: false };
+      case "send_chunk_conformance":
+        return { value: await this.#sendChunkConformance(record), shutdown: false };
       case "snapshot_evidence":
         throw new Error("snapshot_evidence is handled by the JSONL controller");
       case "shutdown": {
@@ -1345,6 +1577,100 @@ export class BridgeDaemonRuntime {
     return { sent: true, requestId, localSessionKey: probe.localSessionKey };
   }
 
+  async #sendChunkConformance(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, [
+      "controlVersion",
+      "id",
+      "action",
+      "vector",
+      "rsid",
+      "invocationId",
+    ]);
+    const vector = chunkConformanceVector(record.vector);
+    const rsid = boundedId(record.rsid, "rsid");
+    const invocationId = boundedId(record.invocationId, "invocationId");
+    const binding = this.#binding;
+    const peer = this.#requirePeer();
+    if (binding === null || binding.connectionId === null) {
+      throw new Error("chunk conformance requires the current steady Gateway binding");
+    }
+    const connectionId = binding.connectionId;
+    if (binding.sendChunkConformanceFrame === undefined) {
+      throw new Error("current Gateway binding lacks the chunk conformance simulator seam");
+    }
+    const localSession = this.#simulator.registeredSessions().find(
+      (candidate) => candidate.rsid === rsid,
+    );
+    if (localSession === undefined) {
+      throw new Error("chunk conformance rsid is not a registered Bridge simulator session");
+    }
+    const peerSnapshot = peer.snapshot(this.#clockMs);
+    const peerSession = peerSnapshot.sessions.find((candidate) => candidate.rsid === rsid);
+    if (
+      peerSnapshot.bindingKind !== binding.kind ||
+      peerSnapshot.connectionId !== binding.connectionId ||
+      peerSnapshot.runLoopActive !== true ||
+      peerSession?.phase !== "registered" ||
+      peerSession.dispatchAllowed !== true
+    ) {
+      throw new Error("chunk conformance requires the registered Bridge peer on the current binding");
+    }
+    const invocation = this.#journal.listInvocations().find(
+      (candidate) =>
+        candidate.binding.rsid === rsid &&
+        candidate.binding.invocationId === invocationId,
+    );
+    if (invocation?.state !== "executing") {
+      throw new Error("chunk conformance requires the exact active stalled invocation");
+    }
+    const sequence = this.#journal.loadSequence(rsid);
+    if (sequence.lastRxSeq < 1) {
+      throw new Error("chunk conformance requires the Bridge to accept the active Gateway invocation first");
+    }
+    if (sequence.nextTxSeq === null) {
+      throw new Error("chunk conformance cannot use an exhausted Bridge sequence");
+    }
+    const plan = chunkConformancePlan({
+      vector,
+      rsid,
+      invocationId,
+      firstSeq: sequence.nextTxSeq,
+      ack: sequence.lastRxSeq,
+      id: () => this.#ids.next(),
+      ts: new Date(this.#clockMs).toISOString(),
+    });
+    for (const prefixFrame of plan.prefixFrames) {
+      await binding.send(prefixFrame);
+    }
+    const fault = await binding.sendChunkConformanceFrame(plan.targetFrame);
+    const frames = [...plan.prefixFrames, plan.targetFrame].map(chunkConformanceFrameEvidence);
+    return {
+      schemaVersion: "bridge-chunk-conformance-evidence/v1",
+      vector,
+      rsid,
+      invocationId,
+      bridgeSession: {
+        localRegistered: true,
+        localSessionKey: localSession.probe.localSessionKey,
+        peerPhase: peerSession.phase,
+        peerDispatchAllowed: peerSession.dispatchAllowed,
+        invocationState: invocation.state,
+      },
+      transport: {
+        kind: binding.kind,
+        connectionId,
+      },
+      sequenceBefore: {
+        nextTxSeq: sequence.nextTxSeq,
+        lastRxSeq: sequence.lastRxSeq,
+      },
+      requirements: plan.requirements,
+      frames: frames as unknown as FixtureJsonValue,
+      fault: fault as unknown as FixtureJsonValue,
+    };
+  }
+
   async #resume(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "rsid"]);
@@ -1740,6 +2066,7 @@ const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
   "restart_simulator",
   "configure_reconnect_conformance",
   "advance_reconnect_conformance_clock",
+  "send_chunk_conformance",
   "snapshot_evidence",
   "shutdown",
 ]);

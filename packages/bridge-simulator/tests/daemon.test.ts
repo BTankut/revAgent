@@ -205,6 +205,7 @@ describe("long-lived Bridge JSONL daemon", () => {
       "restart_simulator",
       "configure_reconnect_conformance",
       "advance_reconnect_conformance_clock",
+      "send_chunk_conformance",
       "snapshot_evidence",
       "shutdown",
     ]);

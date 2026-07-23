@@ -1013,8 +1013,6 @@ function frameFacts(): ReadonlyMap<string, RawProductionFrameFact> {
       )),
     ...Object.entries(vectors.c31 as Record<string, JsonValue>).map(([name, value]) =>
       frameFact("O1-C31", `o1-c31.${name}`, value)),
-    ...Object.entries(vectors.c32 as Record<string, JsonValue>).map(([name, value]) =>
-      frameFact("O1-C32", `o1-c32.${name}`, value)),
     frameFact(
       "O1-C34",
       "o1-c34.document-schema",

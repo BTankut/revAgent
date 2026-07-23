@@ -57,6 +57,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "restart_simulator",
   "configure_reconnect_conformance",
   "advance_reconnect_conformance_clock",
+  "send_chunk_conformance",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -667,6 +668,202 @@ function c30JournalEnvelope(
       batch_digest: makeBatchDigest(digestInput),
     },
   };
+}
+
+const C32_VECTORS = [
+  "base64_alphabet",
+  "base64_padding",
+  "stream_identity",
+  "stream_indexing",
+  "decoded_limit",
+  "reconstruction_size",
+  "content_digest",
+] as const;
+
+type C32Vector = (typeof C32_VECTORS)[number];
+
+function c32CaptureRoot(vector: C32Vector, initial: boolean): string {
+  return initial ? "case" : `c32.${vector}.case`;
+}
+
+function c32ReadinessRoot(vector: C32Vector, initial: boolean): string {
+  return initial ? "" : `c32.${vector}.`;
+}
+
+function c32RestartStack(vector: C32Vector): CaseControlStep {
+  return withCaptures(
+    harness(`o1-c32.${vector}.restart-stack`, "restart_case_stack", args({
+      caseId: "O1-C32",
+      binding: "{{binding}}",
+      preserveState: false,
+      requireExactExecutionPlanIdentity: true,
+    }), "setup"),
+    [
+      {
+        name: `c32.${vector}.fixture.ready.host`,
+        source: "result",
+        jsonPointer: "/readiness/fixture/host",
+      },
+      {
+        name: `c32.${vector}.fixture.ready.port`,
+        source: "result",
+        jsonPointer: "/readiness/fixture/port",
+      },
+      {
+        name: `c32.${vector}.gateway.ready.ws_url`,
+        source: "result",
+        jsonPointer: "/readiness/gateway/ws_url",
+      },
+      {
+        name: `c32.${vector}.gateway.ready.http_connection_url`,
+        source: "result",
+        jsonPointer: "/readiness/gateway/http_connection_url",
+      },
+      {
+        name: `c32.${vector}.gateway.ready.ca_certificate_path`,
+        source: "result",
+        jsonPointer: "/readiness/gateway/tlsTrust/caCertificatePath",
+      },
+      {
+        name: `c32.${vector}.gateway.ready.ca_certificate_sha256`,
+        source: "result",
+        jsonPointer: "/readiness/gateway/tlsTrust/caCertificateSha256",
+      },
+      {
+        name: `c32.${vector}.gateway.ready.server_certificate_sha256`,
+        source: "result",
+        jsonPointer: "/readiness/gateway/tlsTrust/serverCertificateSha256",
+      },
+    ],
+  );
+}
+
+function c32SessionSetup(vector: C32Vector, initial: boolean): CaseControlStep[] {
+  const stepPrefix = `o1-c32.${vector}`;
+  const readiness = c32ReadinessRoot(vector, initial);
+  const captureRoot = c32CaptureRoot(vector, initial);
+  return [
+    bridge(`${stepPrefix}.discover`, "discover_fixture", args({
+      host: `{{${readiness}fixture.ready.host}}`,
+      port: `{{${readiness}fixture.ready.port}}`,
+      probeTimeoutMs: 1_000,
+    }), "setup"),
+    withCaptures(
+      bridge(`${stepPrefix}.open`, "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: `{{${readiness}gateway.ready.ws_url}}`,
+          tlsTrust: {
+            caCertificatePath: `{{${readiness}gateway.ready.ca_certificate_path}}`,
+            caCertificateSha256: `{{${readiness}gateway.ready.ca_certificate_sha256}}`,
+            serverCertificateSha256: `{{${readiness}gateway.ready.server_certificate_sha256}}`,
+          },
+          hello: hello("O1-C32"),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: `{{${readiness}gateway.ready.http_connection_url}}`,
+          hello: hello("O1-C32"),
+        },
+      ), "setup"),
+      [
+        {
+          name: `${captureRoot}.connection_id`,
+          source: "result",
+          jsonPointer: "/connectionId",
+        },
+        {
+          name: `${captureRoot}.connection_capabilities`,
+          source: "result",
+          jsonPointer: "/helloAck/payload/granted_capabilities",
+        },
+        {
+          name: `${captureRoot}.negotiated_protocol`,
+          source: "result",
+          jsonPointer: "/helloAck/payload/protocol",
+        },
+      ],
+    ),
+    bridge(`${stepPrefix}.run-loop`, "start_run_loop", args(), "setup"),
+    bridge(`${stepPrefix}.register`, "session_register", args({
+      probeIndex: 0,
+      userHint: "conformance-user",
+      hostname: "conformance-host",
+      fingerprint: FINGERPRINT,
+      bridgeVersion: "0.0.0",
+    }), "setup"),
+    withCaptures(
+      harness(`${stepPrefix}.await-register`, "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/sessions/0/rsid",
+        operator: "exists",
+        timeoutMs: 5_000,
+      }), "setup"),
+      [
+        { name: `${captureRoot}.rsid`, source: "result", jsonPointer: "/dynamic/rsid" },
+        { name: `${captureRoot}.next_seq`, source: "result", jsonPointer: "/dynamic/nextSeq" },
+        { name: `${captureRoot}.last_ack`, source: "result", jsonPointer: "/dynamic/lastAck" },
+        {
+          name: `${captureRoot}.session_capabilities`,
+          source: "result",
+          jsonPointer: "/dynamic/grantedSessionCapabilities",
+        },
+      ],
+    ),
+  ];
+}
+
+function c32Controls(): CaseControlStep[] {
+  const controls: CaseControlStep[] = [];
+  C32_VECTORS.forEach((vector, index) => {
+    const initial = index === 0;
+    if (!initial) {
+      controls.push(c32RestartStack(vector));
+    }
+    const captureRoot = c32CaptureRoot(vector, initial);
+    const invocationId = invocationRef("O1-C32", "retransmission");
+    const dispatchHandle = `o1-c32.${vector}.dispatch`;
+    controls.push(
+      ...c32SessionSetup(vector, initial),
+      fixture(`o1-c32.${vector}.stall`, "plan_fault", args({
+        requestId: invocationId,
+        fault: { stall: true },
+      })),
+      withExecution(
+        gateway(`o1-c32.${vector}.dispatch`, "dispatch_invoke", args({
+          request: {
+            rsid: `{{${captureRoot}.rsid}}`,
+            payload: invokePayload("O1-C32", "retransmission"),
+          },
+        })),
+        { mode: "async_start", handle: dispatchHandle },
+      ),
+      harness(`o1-c32.${vector}.await-stalled`, "await_condition", args({
+        source: "fixture.snapshot_evidence",
+        jsonPointer: "/pendingStalls/0/requestId",
+        operator: "equals",
+        expected: invocationId,
+        timeoutMs: 5_000,
+      })),
+      gateway(`o1-c32.${vector}.gateway-registered`, "snapshot", args(), "observation"),
+      bridge(`o1-c32.${vector}`, "send_chunk_conformance", args({
+        vector,
+        rsid: `{{${captureRoot}.rsid}}`,
+        invocationId,
+      })),
+      withExecution(
+        gateway(`o1-c32.${vector}.expire`, "expire_pending", args({
+          rsid: `{{${captureRoot}.rsid}}`,
+        })),
+        { mode: "async_join", handles: [dispatchHandle] },
+      ),
+    );
+  });
+  return controls;
 }
 
 interface ProgramDefinition {
@@ -1603,21 +1800,13 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
   },
   {
     caseId: "O1-C32",
-    controls: [
-      ...sessionSetup("O1-C32"),
-      ...[
-        "base64_alphabet",
-        "base64_padding",
-        "stream_identity",
-        "stream_indexing",
-        "decoded_limit",
-        "reconstruction_size",
-        "content_digest",
-      ].map((vector) => harness(`o1-c32.${vector}`, "send_binding_frame", args({
-        frame: `{{vectors.c32.${vector}}}`,
-      }))),
+    controls: c32Controls(),
+    requiredHarnessCapabilities: [
+      "registered_session_chunk_conformance",
+      "base64_boundary_vectors",
+      "chunk_reconstruction_verification",
+      "decoded_digest_verification",
     ],
-    requiredHarnessCapabilities: ["chunk_vector_generation", "raw_binding_frame", "decoded_digest_verification"],
   },
   {
     caseId: "O1-C33",

@@ -508,6 +508,145 @@ function exactSchemaRejected(stepId: string, detail?: RegExp): CanonicalAssertio
   return safe((context) => rawSchemaRejected(context, stepId, detail));
 }
 
+function exactValues(value: unknown, expected: readonly unknown[]): boolean {
+  if (!Array.isArray(value)) return false;
+  const actual = value;
+  return actual.length === expected.length &&
+    actual.every((entry, index) => entry === expected[index]);
+}
+
+function c32RegisteredGatewaySession(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  vector: string,
+  rsid: string,
+  invocationId: string,
+  connectionId: string,
+): boolean {
+  const snapshot = controlResult(context, `o1-c32.${vector}.gateway-registered`);
+  const sessions = objectValue(snapshot?.sessions);
+  const session = sessions === null ? null : objectValue(sessions[rsid]);
+  const lifecycle = objectValue(session?.lifecycle);
+  const inFlight = objectValue(session?.inFlight);
+  const runtime = objectValue(snapshot?.runtime);
+  const phases = objectValue(runtime?.connectionPhases);
+  return snapshot?.schemaVersion === 1 &&
+    session?.rsid === rsid &&
+    session.revoked === false &&
+    lifecycle?.phase === "registered" &&
+    lifecycle.dispatchAllowed === true &&
+    inFlight?.kind === "invoke" &&
+    inFlight.correlationId === invocationId &&
+    phases?.[connectionId] === "steady";
+}
+
+function c32ConformanceFault(
+  vector: string,
+  faultMessage: RegExp,
+  requirementsMatch: (requirements: Readonly<ObjectValue>) => boolean,
+  expectedFrameChunkIndexes: readonly (number | null)[] = [0],
+): CanonicalAssertionOracle {
+  return safe((context) => {
+    const result = controlResult(context, `o1-c32.${vector}`);
+    const bridgeSession = objectValue(result?.bridgeSession);
+    const transport = objectValue(result?.transport);
+    const sequenceBefore = objectValue(result?.sequenceBefore);
+    const requirements = objectValue(result?.requirements);
+    const fault = objectValue(result?.fault);
+    const rsid = stringValue(result?.rsid);
+    const invocationId = stringValue(result?.invocationId);
+    const connectionId = stringValue(transport?.connectionId);
+    const expectedBinding = context.binding === "wss" ? "wss" : "streamable_http_sse";
+    if (
+      result?.schemaVersion !== "bridge-chunk-conformance-evidence/v1" ||
+      result.vector !== vector ||
+      rsid === null ||
+      invocationId === null ||
+      bridgeSession === null ||
+      bridgeSession.localRegistered !== true ||
+      typeof bridgeSession.localSessionKey !== "string" ||
+      bridgeSession.peerPhase !== "registered" ||
+      bridgeSession.peerDispatchAllowed !== true ||
+      bridgeSession.invocationState !== "executing" ||
+      transport?.kind !== expectedBinding ||
+      connectionId === null ||
+      sequenceBefore === null ||
+      !Number.isSafeInteger(sequenceBefore.nextTxSeq) ||
+      Number(sequenceBefore.nextTxSeq) < 1 ||
+      !Number.isSafeInteger(sequenceBefore.lastRxSeq) ||
+      Number(sequenceBefore.lastRxSeq) < 1 ||
+      fault === null ||
+      fault.binding !== expectedBinding ||
+      fault.accepted !== false ||
+      fault.source !== (context.binding === "wss"
+        ? "gateway_error_envelope_and_close"
+        : "authenticated_http_response") ||
+      fault.faultClass !== "protocol" ||
+      typeof fault.message !== "string" ||
+      !faultMessage.test(fault.message) ||
+      requirements === null ||
+      !requirementsMatch(requirements)
+    ) {
+      return false;
+    }
+    if (context.binding === "wss") {
+      if (
+        fault.httpStatus !== null ||
+        fault.closeCode !== 4400 ||
+        typeof fault.closeReason !== "string" ||
+        !faultMessage.test(fault.closeReason)
+      ) {
+        return false;
+      }
+    } else if (
+      fault.httpStatus !== 400 ||
+      fault.closeCode !== null ||
+      fault.closeReason !== null
+    ) {
+      return false;
+    }
+    const frames = arrayValue(result.frames)
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null);
+    const expectedFrameCount = expectedFrameChunkIndexes.length;
+    const firstSeq = Number(sequenceBefore.nextTxSeq);
+    const lastRxSeq = Number(sequenceBefore.lastRxSeq);
+    if (
+      frames.length !== expectedFrameCount ||
+      frames.length !== arrayValue(result.frames).length ||
+      frames.some((frame, index) =>
+        frame.seq !== firstSeq + index ||
+        frame.ack !== lastRxSeq ||
+        frame.type !== (expectedFrameCount === 2 && index === 1 ? "result" : "partial") ||
+        frame.payloadKind !== (expectedFrameCount === 2 && index === 1 ? "invocation" : "chunk") ||
+        frame.chunkIndex !== expectedFrameChunkIndexes[index] ||
+        !Number.isSafeInteger(frame.serializedBytes) ||
+        Number(frame.serializedBytes) < 1 ||
+        typeof frame.serializedSha256 !== "string" ||
+        !SHA256_PATTERN.test(frame.serializedSha256))
+    ) {
+      return false;
+    }
+    if (
+      vector === "stream_identity"
+        ? (
+            typeof frames[0]?.streamId !== "string" ||
+            !/^artifact:[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u
+              .test(frames[0].streamId)
+          )
+        : frames.some((frame) => frame.streamId !== "result")
+    ) {
+      return false;
+    }
+    return c32RegisteredGatewaySession(
+      context,
+      vector,
+      rsid,
+      invocationId,
+      connectionId,
+    );
+  });
+}
+
 function exactHelloAccepted(stepId: string): CanonicalAssertionOracle {
   return safe((context) => rawHasResponseType(context, stepId, "hello_ack"));
 }
@@ -1631,33 +1770,94 @@ for (const [suffix, assertion] of [
   define(`O1-C31-${assertion}`, exactSchemaRejected(`o1-c31.${suffix}`));
 }
 
-define("O1-C32-BASE64-ALPHABET", exactSchemaRejected("o1-c32.base64_alphabet", /base64|alphabet|invalid/i));
-define("O1-C32-BASE64-PADDING", exactSchemaRejected("o1-c32.base64_padding", /base64|padding|invalid/i));
-define("O1-C32-STREAM-IDENTITY", exactSchemaRejected("o1-c32.stream_identity", /stream|artifact|identity|invalid/i));
-define(
-  "O1-C32-STREAM-INDEXING",
-  safe((context) =>
-    rawFault(context, "o1-c32.stream_indexing", "protocol", /chunk index|gap|zero|contiguous/i) ||
-    hasDomainObject(context, ["gateway_snapshot"], (candidate) =>
-      candidate.reason === "chunk_gap" &&
-      candidate.expectedChunkIndex === 0 &&
-      candidate.receivedChunkIndex === 1)),
-);
-define("O1-C32-DECODED-LIMIT", exactSchemaRejected("o1-c32.decoded_limit", /decoded|chunk|1 MiB|1048576|oversize/i));
-define(
-  "O1-C32-RECONSTRUCTION-SIZE",
-  safe((context) =>
-    rawFault(context, "o1-c32.reconstruction_size", "protocol", /size|total_size|reconstruct/i) ||
-    hasDomainObject(context, ["gateway_snapshot"], (candidate) =>
-      candidate.reason === "descriptor_size" && candidate.complete === false)),
-);
-define(
-  "O1-C32-CONTENT-DIGEST",
-  safe((context) =>
-    rawFault(context, "o1-c32.content_digest", "protocol", /digest|sha256|content/i) ||
-    hasDomainObject(context, ["gateway_snapshot"], (candidate) =>
-      candidate.reason === "descriptor_digest" && candidate.complete === false)),
-);
+define("O1-C32-BASE64-ALPHABET", c32ConformanceFault(
+  "base64_alphabet",
+  /payload\/data|must match pattern|base64/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.encodedData === "AA-_" &&
+    requirements.encodedDataBytes === 4 &&
+    typeof requirements.encodedDataSha256 === "string" &&
+    SHA256_PATTERN.test(requirements.encodedDataSha256) &&
+    requirements.base64Canonical === false &&
+    requirements.decodedBytes === null,
+));
+define("O1-C32-BASE64-PADDING", c32ConformanceFault(
+  "base64_padding",
+  /payload\/data|must match pattern|base64/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.encodedData === "A===" &&
+    requirements.encodedDataBytes === 4 &&
+    typeof requirements.encodedDataSha256 === "string" &&
+    SHA256_PATTERN.test(requirements.encodedDataSha256) &&
+    requirements.base64Canonical === false &&
+    requirements.decodedBytes === null,
+));
+define("O1-C32-STREAM-IDENTITY", c32ConformanceFault(
+  "stream_identity",
+  /artifact_id|required property/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, ["artifact_id", "artifact_index"]) &&
+    requirements.encodedData === null &&
+    requirements.encodedDataBytes === 12 &&
+    requirements.base64Canonical === true &&
+    requirements.decodedBytes === 9,
+));
+define("O1-C32-STREAM-INDEXING", c32ConformanceFault(
+  "stream_indexing",
+  /chunk gap|chunk index|expected 0.*received 1|contiguous/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [1]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.encodedDataBytes === 12 &&
+    requirements.base64Canonical === true &&
+    requirements.decodedBytes === 9,
+  [1],
+));
+define("O1-C32-DECODED-LIMIT", c32ConformanceFault(
+  "decoded_limit",
+  /decoded partial chunk|1 MiB|1048576|oversize/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.encodedData === null &&
+    requirements.encodedDataBytes === 1_398_104 &&
+    requirements.base64Canonical === true &&
+    requirements.decodedBytes === 1_048_577,
+));
+define("O1-C32-RECONSTRUCTION-SIZE", c32ConformanceFault(
+  "reconstruction_size",
+  /descriptor size|total_size|reconstruct|size/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.decodedBytes === 9 &&
+    requirements.reconstructedBytes === 9 &&
+    requirements.declaredTotalSize === 10 &&
+    typeof requirements.actualSha256 === "string" &&
+    SHA256_PATTERN.test(requirements.actualSha256) &&
+    requirements.declaredSha256 === requirements.actualSha256,
+  [0, null],
+));
+define("O1-C32-CONTENT-DIGEST", c32ConformanceFault(
+  "content_digest",
+  /descriptor digest|digest|sha256|content/i,
+  (requirements) =>
+    exactValues(requirements.chunkIndexes, [0]) &&
+    exactValues(requirements.missingIdentifiers, []) &&
+    requirements.decodedBytes === 9 &&
+    requirements.reconstructedBytes === 9 &&
+    requirements.declaredTotalSize === 9 &&
+    typeof requirements.actualSha256 === "string" &&
+    SHA256_PATTERN.test(requirements.actualSha256) &&
+    requirements.declaredSha256 === `sha256:${"9".repeat(64)}` &&
+    requirements.declaredSha256 !== requirements.actualSha256,
+  [0, null],
+));
 
 export const RAW_PRODUCTION_EXTERNAL_DEPENDENCIES: ReadonlyMap<string, string> = new Map([
   ["O1-C33-LOOPBACK-ACCEPTED", "supervisor.loopback-probe/v1"],

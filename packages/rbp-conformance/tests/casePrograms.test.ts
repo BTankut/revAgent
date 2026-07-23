@@ -80,6 +80,9 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   "bridge_jsonl_control:advance_reconnect_conformance_clock": {
     required: ["advanceByMs", "heartbeatStepMs"],
   },
+  "bridge_jsonl_control:send_chunk_conformance": {
+    required: ["vector", "rsid", "invocationId"],
+  },
   "bridge_jsonl_control:snapshot_evidence": { required: [], optional: ["snapshotId", "cursor"] },
   "bridge_jsonl_control:shutdown": { required: [] },
   "fixture_jsonl_control:plan_fault": { required: ["requestId", "fault"], optional: ["fixtureIndex"] },
@@ -270,6 +273,44 @@ describe("exact forty-case control and observation catalog", () => {
     expect(c15.steps.indexOf(inspection!)).toBeGreaterThan(
       c15.steps.findIndex(({ stepId }) => stepId === "o1-c15.drive-12"),
     );
+  });
+
+  it("runs every C32 chunk vector through a fresh registered Bridge/Gateway session", () => {
+    const c32 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C32")!;
+    const vectors = [
+      "base64_alphabet",
+      "base64_padding",
+      "stream_identity",
+      "stream_indexing",
+      "decoded_limit",
+      "reconstruction_size",
+      "content_digest",
+    ];
+    expect(c32.steps.filter(({ action }) => action === "send_binding_frame")).toEqual([]);
+    expect(c32.steps
+      .filter(({ action }) => action === "send_chunk_conformance")
+      .map(({ stepId, arguments: input }) => ({
+        stepId,
+        vector: input.common?.vector,
+        invocationId: input.common?.invocationId,
+      }))).toEqual(vectors.map((vector) => ({
+        stepId: `o1-c32.${vector}`,
+        vector,
+        invocationId: "{{ids.O1-C32.retransmission.invocationId}}",
+      })));
+    for (const vector of vectors) {
+      const actionIndex = c32.steps.findIndex(({ stepId }) => stepId === `o1-c32.${vector}`);
+      const snapshotIndex = c32.steps.findIndex(
+        ({ stepId }) => stepId === `o1-c32.${vector}.gateway-registered`,
+      );
+      const stalledIndex = c32.steps.findIndex(
+        ({ stepId }) => stepId === `o1-c32.${vector}.await-stalled`,
+      );
+      expect(stalledIndex).toBeGreaterThan(-1);
+      expect(snapshotIndex).toBeGreaterThan(stalledIndex);
+      expect(actionIndex).toBeGreaterThan(snapshotIndex);
+    }
+    expect(c32.requiredHarnessCapabilities).toContain("registered_session_chunk_conformance");
   });
 
   it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {
