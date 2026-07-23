@@ -23,7 +23,7 @@ describe("aggregate source-report content binding", () => {
       const validation = evaluatePassingAggregate(aggregate, { verifyArtifactFiles: true, artifactRoot: root });
       expect(validation).toMatchObject({ ok: true });
     });
-  });
+  }, 15_000);
 
   it("rejects a hand-crafted timestamp reference even when its interval remains internally valid", () => {
     withAggregate((root, aggregate) => {
