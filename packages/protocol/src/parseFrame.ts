@@ -41,6 +41,36 @@ export class RbpFrameError extends Error {
   }
 }
 
+function validationErrorSpecificity(error: ErrorObject): number {
+  const pathDepth = error.instancePath.split("/").filter(Boolean).length;
+  if (error.keyword === "rbpSemantic") return 10_000 + pathDepth;
+  if (["pattern", "format", "enum", "maximum", "minimum", "maxLength", "minLength",
+    "maxItems", "minItems", "additionalProperties"].includes(error.keyword)) {
+    return 1_000 + pathDepth;
+  }
+  if (["not", "oneOf", "anyOf", "allOf", "if", "const"].includes(error.keyword)) {
+    return pathDepth;
+  }
+  return 100 + pathDepth;
+}
+
+function envelopeValidationMessage(errors: readonly ErrorObject[]): string {
+  const selected = errors.reduce<ErrorObject | undefined>((best, candidate) =>
+    best === undefined ||
+      validationErrorSpecificity(candidate) > validationErrorSpecificity(best)
+      ? candidate
+      : best, undefined);
+  if (selected === undefined) return "RBP envelope validation failed";
+  const path = selected.instancePath.length === 0 ? "/" : selected.instancePath;
+  const keyword = selected.keyword.length === 0 ? "schema" : selected.keyword;
+  const schemaPath = selected.schemaPath.length === 0 ? "#" : selected.schemaPath;
+  const detail = selected.message ?? "invalid value";
+  return `RBP envelope validation failed at ${path} (${keyword}; ${schemaPath}): ${detail}`.slice(
+    0,
+    512,
+  );
+}
+
 interface JsonSpanBase {
   start: number;
   end: number;
@@ -399,8 +429,9 @@ export function parseRbpFrame(frame: Uint8Array): RbpEnvelope {
   }
 
   if (!validateRbpEnvelope(value)) {
-    throw new RbpFrameError("invalid_envelope", "RBP envelope validation failed", {
-      validationErrors: [...rbpEnvelopeErrors()],
+    const validationErrors = [...rbpEnvelopeErrors()];
+    throw new RbpFrameError("invalid_envelope", envelopeValidationMessage(validationErrors), {
+      validationErrors,
     });
   }
 
