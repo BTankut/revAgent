@@ -4,7 +4,16 @@ import { loadConfinedEvidenceFile } from "./evidence.js";
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
 import { resourceProfileIssues } from "./resourceMetrics.js";
 import { validateSchema } from "./schemas.js";
-import { ONE_HOUR_SOAK_CYCLE_INTERVAL_MS } from "./soakRunner.js";
+import {
+  ONE_HOUR_SOAK_CYCLE_INTERVAL_MS,
+  ONE_HOUR_SOAK_DURATION_MS,
+  ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT,
+  ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS,
+  ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS,
+  ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS,
+  ONE_HOUR_SOAK_MAX_START_LATENESS_MS,
+  ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS,
+} from "./soakRunner.js";
 import { stableJson } from "./stableJson.js";
 import type {
   LeakCounters,
@@ -34,6 +43,149 @@ function leakSummary(report: SoakReport): LeakCounters {
     journalPendingDelta: evaluation?.journalPendingGrowth ?? 0,
     orphanProcessCount: evaluation?.orphanProcessCount ?? 0,
   };
+}
+
+function oneHourCadenceIssues(
+  report: SoakReport,
+  issues: ValidationIssue[],
+): void {
+  if (report.requestedDurationMs !== ONE_HOUR_SOAK_DURATION_MS) {
+    issue(
+      issues,
+      "/requestedDurationMs",
+      "soak.one_hour_duration",
+      "one_hour soak must request exactly 3,600,000 monotonic milliseconds",
+    );
+  }
+  if (
+    report.actualDurationMs < ONE_HOUR_SOAK_DURATION_MS ||
+    report.actualDurationMs >
+      ONE_HOUR_SOAK_DURATION_MS + ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS
+  ) {
+    issue(
+      issues,
+      "/actualDurationMs",
+      "soak.one_hour_finish",
+      "one_hour soak must finish at its monotonic deadline within the canonical lateness bound",
+    );
+  }
+  if (report.cycles.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT) {
+    issue(
+      issues,
+      "/cycles",
+      "soak.one_hour_cycle_count",
+      `one_hour soak requires exactly ${ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT} scheduled churn cycles`,
+    );
+  }
+  if (report.resources.samples.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT) {
+    issue(
+      issues,
+      "/resources/samples",
+      "soak.one_hour_sample_count",
+      `one_hour soak requires exactly ${ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT} resource samples`,
+    );
+  }
+
+  const started = Date.parse(report.startedAt);
+  report.cycles.forEach((cycle, index) => {
+    const expectedOffsetMs = index * ONE_HOUR_SOAK_CYCLE_INTERVAL_MS;
+    const cycleStartOffsetMs = Date.parse(cycle.startedAt) - started;
+    const cycleFinishOffsetMs = Date.parse(cycle.finishedAt) - started;
+    const expectedBinding =
+      index % 2 === 0 ? "wss" : "streamable_http_sse";
+    if (cycle.binding !== expectedBinding) {
+      issue(
+        issues,
+        `/cycles/${index}/binding`,
+        "soak.binding_sequence",
+        "one_hour soak must alternate WSS and Streamable HTTP/SSE for the full run",
+      );
+    }
+    if (
+      cycleStartOffsetMs < expectedOffsetMs ||
+      cycleStartOffsetMs >
+        expectedOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS
+    ) {
+      issue(
+        issues,
+        `/cycles/${index}/startedAt`,
+        "soak.cycle_start_cadence",
+        "one_hour cycle start is outside its monotonic schedule window",
+      );
+    }
+    if (
+      cycleFinishOffsetMs < cycleStartOffsetMs ||
+      cycleFinishOffsetMs >
+        expectedOffsetMs + ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS
+    ) {
+      issue(
+        issues,
+        `/cycles/${index}/finishedAt`,
+        "soak.cycle_completion_cadence",
+        "one_hour cycle completion is outside its monotonic schedule window",
+      );
+    }
+
+    const sample = report.resources.samples[index];
+    if (sample === undefined) return;
+    if (
+      sample.offsetMs < cycleFinishOffsetMs ||
+      sample.offsetMs >
+        expectedOffsetMs + ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS
+    ) {
+      issue(
+        issues,
+        `/resources/samples/${index}/offsetMs`,
+        "soak.sample_schedule",
+        "one_hour sample must follow its cycle and remain inside the scheduled completion window",
+      );
+    }
+    if (index > 0) {
+      const previous = report.resources.samples[index - 1];
+      if (previous === undefined) return;
+      const gapMs = sample.offsetMs - previous.offsetMs;
+      if (
+        gapMs < ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS ||
+        gapMs > ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS
+      ) {
+        issue(
+          issues,
+          `/resources/samples/${index}/offsetMs`,
+          "soak.sample_cadence",
+          "one_hour sample gap is outside the canonical interval/jitter bounds",
+        );
+      }
+    }
+  });
+
+  const firstSample = report.resources.samples[0];
+  if (
+    firstSample === undefined ||
+    firstSample.offsetMs > ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS
+  ) {
+    issue(
+      issues,
+      "/resources/samples/0",
+      "soak.cadence_head",
+      "one_hour sampling must begin near the monotonic start",
+    );
+  }
+  const lastSample = report.resources.samples.at(-1);
+  if (
+    lastSample === undefined ||
+    lastSample.offsetMs <
+      ONE_HOUR_SOAK_DURATION_MS - ONE_HOUR_SOAK_CYCLE_INTERVAL_MS ||
+    lastSample.offsetMs > report.actualDurationMs ||
+    report.actualDurationMs - lastSample.offsetMs >
+      ONE_HOUR_SOAK_CYCLE_INTERVAL_MS
+  ) {
+    issue(
+      issues,
+      "/resources/samples",
+      "soak.cadence_tail",
+      "one_hour sampling must extend through the final cadence window",
+    );
+  }
 }
 
 function verifyMetrics(report: SoakReport, artifactRoot: string, issues: ValidationIssue[]): void {
@@ -98,6 +250,7 @@ function verifyMetrics(report: SoakReport, artifactRoot: string, issues: Validat
   }
   rows.forEach((row, index) => {
     const sample = report.resources.samples[index];
+    const cycle = report.cycles[index];
     if (
       sample === undefined ||
       row.cycle !== index + 1 ||
@@ -120,22 +273,27 @@ function verifyMetrics(report: SoakReport, artifactRoot: string, issues: Validat
         "retained metric timestamp must equal its observed monotonic sample offset",
       );
     }
-  });
-  report.cycles.forEach((cycle, index) => {
-    const matches = rows.filter((row) => row.cycle === cycle.cycle && row.binding === cycle.binding);
-    if (matches.length < 1) {
-      issue(issues, `/cycles/${index}`, "soak.unbound_cycle", "each cycle must have same-run, same-binding retained metric evidence");
+    if (cycle === undefined) {
+      issue(
+        issues,
+        `/artifacts/soak_metrics/line/${index + 1}`,
+        "soak.unbound_cycle",
+        "each retained metric must bind to the same-index report cycle",
+      );
       return;
     }
-    const terminal = matches.at(-1)!;
     const actual = {
-      reconnects: terminal.reconnects,
-      proxyChurns: terminal.proxyChurns,
-      heartbeatAcks: terminal.heartbeatAcks,
-      controlRoundTrips: terminal.controlRoundTrips,
-      journalPending: terminal.journalPending,
+      cycle: row.cycle,
+      binding: row.binding,
+      reconnects: row.reconnects,
+      proxyChurns: row.proxyChurns,
+      heartbeatAcks: row.heartbeatAcks,
+      controlRoundTrips: row.controlRoundTrips,
+      journalPending: row.journalPending,
     };
     const expected = {
+      cycle: cycle.cycle,
+      binding: cycle.binding,
       reconnects: cycle.reconnects,
       proxyChurns: cycle.proxyChurns,
       heartbeatAcks: cycle.heartbeatAcks,
@@ -143,7 +301,12 @@ function verifyMetrics(report: SoakReport, artifactRoot: string, issues: Validat
       journalPending: cycle.journalPending,
     };
     if (stableJson(actual) !== stableJson(expected)) {
-      issue(issues, `/cycles/${index}`, "soak.metric_mismatch", "cycle counters do not match retained terminal metrics");
+      issue(
+        issues,
+        `/artifacts/soak_metrics/line/${index + 1}`,
+        "soak.metric_mismatch",
+        "retained metric identity and counters must exactly mirror the same-index report cycle",
+      );
     }
   });
 }
@@ -205,6 +368,9 @@ export function validateSoakReport(
       "one_hour soak must use the canonical fixed per-cycle sample cadence",
     );
   }
+  if (report.mode === "one_hour") {
+    oneHourCadenceIssues(report, issues);
+  }
   report.resources.samples.forEach((sample, index) => {
     if (sample.offsetMs < 0 || sample.offsetMs > report.actualDurationMs) {
       issue(
@@ -215,6 +381,7 @@ export function validateSoakReport(
       );
     }
     if (
+      report.mode === "smoke" &&
       index > 0 &&
       sample.offsetMs - report.resources.samples[index - 1]!.offsetMs <
         report.resources.sampleIntervalMs

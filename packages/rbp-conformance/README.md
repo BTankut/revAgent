@@ -456,7 +456,15 @@ and one for Streamable HTTP/SSE. Both trios stay alive for the whole run while
 the parent alternates real socket backpressure, heartbeat acknowledgement,
 Bridge restart/reconnect/resume, control-plane probes, and six-process resource
 sampling. `one_hour` is hard-coded to 3,600,000 monotonic milliseconds and
-rejects a duration override.
+rejects a duration override. Its scheduler is anchored to the monotonic start:
+it requires exactly 720 alternating cycles and 720 same-index resource samples
+at 5,000 ms slots. A cycle may start at most 2,500 ms late and its sample must
+complete within 7,500 ms of that slot; observed sample gaps must stay within
+2,500-7,500 ms. Sampling begins within the first 7,500 ms, extends from the
+final scheduled window through the bounded run end, and the runner must reach
+the one-hour deadline no more than 7,500 ms late. An event-loop suspension or
+late cycle outside those bounds fails the run instead
+of permitting catch-up cycles or a timestamp-only PASS.
 
 ## Retained evidence rules
 
@@ -512,5 +520,9 @@ duration; `one_hour` is fixed at exactly 3,600,000 requested milliseconds. Both
 bindings, reconnect, proxy churn, heartbeat acknowledgement, control traffic,
 zero pending journal state, bounded resource samples, and zero orphans are
 required. `validate-soak` reopens and hashes the retained JSONL metrics and
-the retained aggregate, gates all four exact plans, and rejects any
-aggregate/soak candidate mismatch before accepting the final evidence set.
+requires every metric row to exactly mirror its same-index report cycle and
+resource sample. It independently enforces the one-hour 720-cycle coverage,
+alternating binding sequence, head/tail windows, and bounded interval/jitter
+policy. It also reopens the retained aggregate, gates all four exact plans, and
+rejects any aggregate/soak candidate mismatch before accepting the final
+evidence set.

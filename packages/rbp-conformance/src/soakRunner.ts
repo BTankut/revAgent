@@ -48,6 +48,13 @@ const realClock: SoakClock = {
 
 export const ONE_HOUR_SOAK_DURATION_MS = 3_600_000 as const;
 export const ONE_HOUR_SOAK_CYCLE_INTERVAL_MS = 5_000 as const;
+export const ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT =
+  ONE_HOUR_SOAK_DURATION_MS / ONE_HOUR_SOAK_CYCLE_INTERVAL_MS;
+export const ONE_HOUR_SOAK_MAX_START_LATENESS_MS = 2_500 as const;
+export const ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS = 7_500 as const;
+export const ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS = 2_500 as const;
+export const ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS = 7_500 as const;
+export const ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS = 7_500 as const;
 
 const RECONNECT_SOAK_INPUT_FIELDS = new Set<PropertyKey>([
   "mode",
@@ -173,14 +180,46 @@ export async function runReconnectSoak(
   const wallAt = (monotonicMs: number): string =>
     new Date(startedWallMs + Math.floor(monotonicMs - startedMonotonicMs)).toISOString();
   const elapsedMs = (): number => Math.floor(monotonicNow() - startedMonotonicMs);
+  const sleepUntil = async (deadlineMonotonicMs: number): Promise<void> => {
+    while (true) {
+      const remainingMs = deadlineMonotonicMs - monotonicNow();
+      if (remainingMs <= 0) return;
+      await clock.sleep(Math.ceil(remainingMs));
+    }
+  };
   const cycles: SoakReport["cycles"] = [];
   const samples: ResourceSample[] = [];
   const metrics: SoakMetricRecord[] = [];
   let cycle = 0;
   let failure: SoakReport["failure"] = null;
 
-  while (elapsedMs() < requestedDurationMs) {
+  while (
+    mode === "one_hour"
+      ? cycle < ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT
+      : elapsedMs() < requestedDurationMs
+  ) {
+    const scheduledOffsetMs = cycle * cycleIntervalMs;
+    if (mode === "one_hour") {
+      await sleepUntil(startedMonotonicMs + scheduledOffsetMs);
+    }
     const cycleStarted = monotonicNow();
+    const cycleStartedOffsetMs = Math.floor(cycleStarted - startedMonotonicMs);
+    if (
+      mode === "one_hour" &&
+      (
+        cycleStartedOffsetMs < scheduledOffsetMs ||
+        cycleStartedOffsetMs >
+          scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS
+      )
+    ) {
+      failure = {
+        code: "soak_cadence_violation",
+        message:
+          `cycle ${cycle + 1} started at ${cycleStartedOffsetMs} ms; ` +
+          `required ${scheduledOffsetMs}-${scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS} ms`,
+      };
+      break;
+    }
     const binding: Binding = cycle % 2 === 0 ? "wss" : "streamable_http_sse";
     cycle += 1;
     try {
@@ -223,16 +262,69 @@ export async function runReconnectSoak(
         ...observation,
         resourceSample,
       });
-      await clock.sleep(Math.min(
-        cycleIntervalMs,
-        Math.max(0, requestedDurationMs - elapsedMs()),
-      ));
+      if (mode === "one_hour") {
+        const latestCompletionOffsetMs =
+          scheduledOffsetMs + ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS;
+        const previousSample = samples.at(-2);
+        const sampleGapMs =
+          previousSample === undefined
+            ? undefined
+            : resourceSample.offsetMs - previousSample.offsetMs;
+        if (
+          resourceSample.offsetMs < cycleStartedOffsetMs ||
+          resourceSample.offsetMs > latestCompletionOffsetMs ||
+          (
+            sampleGapMs !== undefined &&
+            (
+              sampleGapMs < ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS ||
+              sampleGapMs > ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS
+            )
+          )
+        ) {
+          failure = {
+            code: "soak_cadence_violation",
+            message:
+              `cycle ${cycle} completed outside the canonical one-hour cadence ` +
+              `(sample offset ${resourceSample.offsetMs} ms${
+                sampleGapMs === undefined ? "" : `, gap ${sampleGapMs} ms`
+              })`,
+          };
+          break;
+        }
+      } else {
+        await clock.sleep(Math.min(
+          cycleIntervalMs,
+          Math.max(0, requestedDurationMs - elapsedMs()),
+        ));
+      }
     } catch (error) {
       failure = { code: "soak_adapter_error", message: error instanceof Error ? error.message : String(error) };
       break;
     }
   }
+  if (mode === "one_hour" && failure === null) {
+    await sleepUntil(startedMonotonicMs + requestedDurationMs);
+  }
   const finishedMonotonicMs = monotonicNow();
+  const finishedOffsetMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
+  if (
+    mode === "one_hour" &&
+    failure === null &&
+    (
+      cycles.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT ||
+      samples.length !== ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT ||
+      finishedOffsetMs < ONE_HOUR_SOAK_DURATION_MS ||
+      finishedOffsetMs >
+        ONE_HOUR_SOAK_DURATION_MS + ONE_HOUR_SOAK_MAX_FINISH_LATENESS_MS
+    )
+  ) {
+    failure = {
+      code: "soak_cadence_violation",
+      message:
+        "one-hour soak did not retain the exact full-duration cycle/sample coverage " +
+        `(${cycles.length} cycles, ${samples.length} samples, ${finishedOffsetMs} ms)`,
+    };
+  }
   const resources: SoakReport["resources"] = {
     schemaVersion: "rbp-resource-profile/v1",
     samplingMode: "bounded_slope",
