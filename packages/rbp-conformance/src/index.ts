@@ -14,6 +14,10 @@ export { assertPassingSoakReport, evaluatePassingSoak, validateSoakReport } from
 export { runReconnectSoak } from "./soakRunner.js";
 export type { ReconnectSoakAdapter, SoakClock, SoakCycleObservation } from "./soakRunner.js";
 export {
+  createProductionReconnectSoakAdapter,
+  ProductionReconnectSoakAdapter,
+} from "./productionSoakAdapter.js";
+export {
   assertCompleteParentCaseEvaluatorRegistry,
   evaluateSupervisedCaseExecutions,
   executeConformanceRun,
