@@ -545,32 +545,6 @@ function dispatchInvokeRequest(
   };
 }
 
-function batchEnvelope(
-  caseId: string,
-  suffix: string,
-  atomic: boolean,
-  overrides: Readonly<Record<string, unknown>> = {},
-): Record<string, unknown> {
-  return {
-    v: 1,
-    type: "invoke_batch",
-    id: `{{ids.${caseId}.${suffix}.envelopeId}}`,
-    ts: "{{clock.iso}}",
-    rsid: "{{case.rsid}}",
-    seq: "{{case.next_seq}}",
-    ack: "{{case.last_ack}}",
-    payload: {
-      batch_id: `{{ids.${caseId}.${suffix}.batchId}}`,
-      atomic,
-      timeout_ms: 30_000,
-      recovery_clearances: [],
-      steps: `{{batches.${caseId}.${suffix}.steps}}`,
-      batch_digest: `{{batches.${caseId}.${suffix}.batchDigest}}`,
-      ...overrides,
-    },
-  };
-}
-
 function dispatchBatchRequest(
   caseId: string,
   suffix: string,
