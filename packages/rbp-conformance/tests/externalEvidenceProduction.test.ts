@@ -153,7 +153,7 @@ describe("C33/C40 external production evidence", () => {
     async (caseId) => {
       for (const binding of ["wss", "streamable_http_sse"] as const) {
         const { observations, runtimeGuardCalls } = await execute(caseId, binding);
-        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 10 : 6);
+        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 11 : 7);
         const assertions = canonicalManifest.requiredAssertions[caseId]!;
         for (const assertion of assertions) {
           const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id)!;

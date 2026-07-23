@@ -1265,21 +1265,20 @@ export class CaseStackSupervisor {
           targetHost: gatewayWs.hostname,
           targetPort: safePort(Number(gatewayWs.port), "restarted Gateway target port"),
         });
-        stack.tokens.gateway_ws_url = proxyUrl(
+        const gatewayWsUrl = proxyUrl(
           String(replacement.readiness.ws_url),
           replacementProxy.listeningPort,
         );
-        stack.tokens.gateway_http_connection_url = proxyUrl(
+        const gatewayHttpConnectionUrl = proxyUrl(
           String(replacement.readiness.http_connection_url),
           replacementProxy.listeningPort,
         );
-        stack.tokens.gateway_control_url = String(replacement.readiness.control_url);
-        stack.gatewayProxy = replacementProxy;
-        stack.publicReadiness.gateway = {
+        const gatewayControlUrl = String(replacement.readiness.control_url);
+        const publicGatewayReadiness = {
           ...replacement.readiness,
-          ws_url: stack.tokens.gateway_ws_url,
-          http_connection_url: stack.tokens.gateway_http_connection_url,
-          control_url: stack.tokens.gateway_control_url,
+          ws_url: gatewayWsUrl,
+          http_connection_url: gatewayHttpConnectionUrl,
+          control_url: gatewayControlUrl,
           proxyCapture: true,
           tlsTrust: replacementTlsIdentity === undefined
             ? {
@@ -1295,6 +1294,12 @@ export class CaseStackSupervisor {
                 serverCertificateSha256: replacementTlsIdentity.serverCertificateSha256,
               },
         };
+        this.#assertRuntimeLaunchCurrent();
+        stack.tokens.gateway_ws_url = gatewayWsUrl;
+        stack.tokens.gateway_http_connection_url = gatewayHttpConnectionUrl;
+        stack.tokens.gateway_control_url = gatewayControlUrl;
+        stack.gatewayProxy = replacementProxy;
+        stack.publicReadiness.gateway = publicGatewayReadiness;
         if (replacementTlsIdentity === undefined) delete stack.tlsIdentity;
         else stack.tlsIdentity = replacementTlsIdentity;
         stack.components.set(input.componentId, replacement);
@@ -1341,6 +1346,15 @@ export class CaseStackSupervisor {
       stack.tokens,
       startupOverrides,
     );
+    try {
+      this.#assertRuntimeLaunchCurrent();
+    } catch (error) {
+      return await stopAfterLaunchFailure(
+        replacement,
+        error,
+        "Bridge restart lifecycle",
+      );
+    }
     stack.components.set(input.componentId, replacement);
     stack.publicReadiness.bridge = { ...replacement.readiness };
     return {
@@ -2087,16 +2101,22 @@ export class CaseStackSupervisor {
       const survivors = await waitForNoSurvivors(
         [...components.values(), ...extraFixtures].map(({ pid }) => pid),
       );
+      if (survivors.length > 0) {
+        cleanupErrors.push(
+          new Error(`failed stack start left orphan processes: ${survivors.join(", ")}`),
+        );
+      }
+      try {
+        this.#assertRuntimeLaunchCurrent();
+      } catch (cleanupError) {
+        cleanupErrors.push(normalizedError(cleanupError));
+      }
       if (survivors.length === 0) {
         try {
           this.#instanceRootRemover(instanceRoot);
         } catch (cleanupError) {
           cleanupErrors.push(normalizedError(cleanupError));
         }
-      } else {
-        cleanupErrors.push(
-          new Error(`failed stack start left orphan processes: ${survivors.join(", ")}`),
-        );
       }
       if (cleanupErrors.length > 0) {
         throw new AggregateError(
@@ -2134,6 +2154,16 @@ export class CaseStackSupervisor {
     });
     const pids = components.map(({ pid }) => pid);
     const survivors = await waitForNoSurvivors(pids);
+    if (survivors.length > 0) {
+      teardownErrors.push(
+        new Error(`case stack left orphan processes: ${survivors.join(", ")}`),
+      );
+    }
+    try {
+      this.#assertRuntimeLaunchCurrent();
+    } catch (error) {
+      teardownErrors.push(normalizedError(error));
+    }
     const observations = components.map((component) =>
       this.#lifecycleObservation(component, stepId, action, "stopped", {
         orphanProcessCount: survivors.length,
@@ -2156,11 +2186,6 @@ export class CaseStackSupervisor {
       } catch (error) {
         teardownErrors.push(normalizedError(error));
       }
-    }
-    if (survivors.length > 0) {
-      teardownErrors.push(
-        new Error(`case stack left orphan processes: ${survivors.join(", ")}`),
-      );
     }
     if (teardownErrors.length === 1) throw teardownErrors[0];
     if (teardownErrors.length > 1) {

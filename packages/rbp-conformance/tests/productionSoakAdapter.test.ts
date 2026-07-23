@@ -63,10 +63,36 @@ describe("production reconnect/proxy-churn soak adapter", () => {
       });
       const after = await adapter.sampleResources();
       expect(after.journalPendingCount).toBe(0);
-      expect(runtimeGuardCalls).toBe(12);
+      expect(runtimeGuardCalls).toBe(14);
     } finally {
       await adapter.close();
     }
+    expect(runtimeGuardCalls).toBe(16);
+    await expect(adapter.orphanProcessCount()).resolves.toBe(0);
+  }, 120_000);
+
+  it("fails closed when a post-cycle runtime guard detects drift", async () => {
+    let runtimeGuardCalls = 0;
+    const adapter = await createProductionReconnectSoakAdapter({
+      plan: productionPlan(),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 13) {
+          throw new Error("planned soak-cycle runtime drift");
+        }
+      },
+    });
+    try {
+      expect(runtimeGuardCalls).toBe(12);
+      await expect(adapter.churn("wss", 1)).rejects.toThrow(
+        /planned soak-cycle runtime drift/u,
+      );
+      expect(runtimeGuardCalls).toBe(13);
+    } finally {
+      await adapter.close();
+    }
+    expect(runtimeGuardCalls).toBe(15);
     await expect(adapter.orphanProcessCount()).resolves.toBe(0);
   }, 120_000);
 });

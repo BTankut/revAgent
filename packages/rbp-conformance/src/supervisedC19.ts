@@ -723,6 +723,11 @@ async function runBinding(input: {
       component,
     )));
     try {
+      input.runtimeLaunchGuard(input.plan, input.repoRoot);
+    } catch (caught) {
+      cleanupErrors.push(caught instanceof Error ? caught : new Error(String(caught)));
+    }
+    try {
       input.instanceRootRemover(instanceRoot);
     } catch (caught) {
       cleanupErrors.push(caught instanceof Error ? caught : new Error(String(caught)));
@@ -740,7 +745,12 @@ async function runBinding(input: {
   } else if (cleanupErrors.length === 1) {
     error = cleanupErrors[0];
   } else if (cleanupErrors.length > 1) {
-    error = new AggregateError(cleanupErrors, "supervised C19 binding cleanup failed");
+    error = new AggregateError(
+      cleanupErrors,
+      `supervised C19 binding shutdown/cleanup failed: ${
+        cleanupErrors.map(({ message }) => message).join("; ")
+      }`,
+    );
   }
   return { binding: input.binding, observations, durationMs: Date.now() - startedMs, ...(error === undefined ? {} : { error }) };
 }

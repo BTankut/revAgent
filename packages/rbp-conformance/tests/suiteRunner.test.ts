@@ -53,7 +53,7 @@ describe("supervised C19 runner", () => {
           runtimeGuardCalls += 1;
         },
       });
-      expect(runtimeGuardCalls).toBe(12);
+      expect(runtimeGuardCalls).toBe(14);
       const c19 = report.cases.find(({ caseId }) => caseId === "O1-C19")!;
       expect(c19.status).toBe("passed");
       expect(c19.bindings.map(({ status }) => status)).toEqual(["passed", "passed"]);
@@ -119,7 +119,47 @@ describe("supervised C19 runner", () => {
       expect(c19.failure?.message).toMatch(
         /planned C19 instance-root cleanup failure/u,
       );
-      expect(runtimeGuardCalls).toBe(8);
+      expect(runtimeGuardCalls).toBe(10);
+      expect(instanceRoots).toHaveLength(2);
+    } finally {
+      for (const instanceRoot of instanceRoots) {
+        rmSync(instanceRoot, { recursive: true, force: true });
+      }
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  it("surfaces shutdown-boundary drift before later C19 cleanup failure", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-shutdown-"));
+    const instanceRoots: string[] = [];
+    let runtimeGuardCalls = 0;
+    try {
+      const { report } = await executeSupervisedC19Run({
+        plan: supervisedPlan(),
+        repoRoot: packageRoot,
+        artifactRoot: root,
+        seed: "supervised-c19-shutdown-test",
+        runtimeLaunchGuard() {
+          runtimeGuardCalls += 1;
+          if (runtimeGuardCalls === 7) {
+            throw new Error("planned C19 shutdown-boundary runtime drift");
+          }
+        },
+        instanceRootRemover(instanceRoot) {
+          instanceRoots.push(instanceRoot);
+          throw new Error("planned C19 shutdown cleanup failure");
+        },
+      });
+      const c19 = report.cases.find(({ caseId }) => caseId === "O1-C19")!;
+      expect(c19.status).toBe("error");
+      expect(c19.failure).toMatchObject({
+        code: "supervised_process_error",
+      });
+      expect(c19.failure?.message).toMatch(
+        /planned C19 shutdown-boundary runtime drift/u,
+      );
+      expect(c19.failure?.message).toMatch(/planned C19 shutdown cleanup failure/u);
+      expect(runtimeGuardCalls).toBe(14);
       expect(instanceRoots).toHaveLength(2);
     } finally {
       for (const instanceRoot of instanceRoots) {

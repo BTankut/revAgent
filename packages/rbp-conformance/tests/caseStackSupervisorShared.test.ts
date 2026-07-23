@@ -131,9 +131,10 @@ describe("shared production case-stack controls", () => {
         }, "shared.restart-bridge", "restart_component");
         expect(bridgeRestart.result.previousPid).toBe(oldBridgePid);
         expect(bridgeRestart.result.pid).not.toBe(oldBridgePid);
-        expect(runtimeGuardCalls).toBe(12);
+        expect(runtimeGuardCalls).toBe(14);
 
         const stopped = await supervisor.stopCaseStack("shared.stop", "stop_case_stack");
+        expect(runtimeGuardCalls).toBe(15);
         expect(stopped.result).toMatchObject({
           stopped: true,
           orphanProcessCount: 0,
@@ -178,7 +179,7 @@ describe("shared production case-stack controls", () => {
     }, "shared.guard-failure", "restart_case_stack")).rejects.toThrow(
       /planned post-readiness runtime drift/u,
     );
-    expect(runtimeGuardCalls).toBe(2);
+    expect(runtimeGuardCalls).toBe(3);
     expect(supervisor.active).toBe(false);
   }, 30_000);
 
@@ -215,9 +216,103 @@ describe("shared production case-stack controls", () => {
       expect(errors).toHaveLength(2);
       expect(errors[0]!.message).toMatch(/planned primary runtime drift/u);
       expect(errors[1]!.message).toBe("planned instance-root cleanup failure");
-      expect(runtimeGuardCalls).toBe(2);
+      expect(runtimeGuardCalls).toBe(3);
       expect(supervisor.active).toBe(false);
     } finally {
+      for (const instanceRoot of instanceRoots) {
+        rmSync(instanceRoot, { recursive: true, force: true });
+      }
+    }
+  }, 30_000);
+
+  it("fails closed when a component restart completion guard detects drift", async () => {
+    let runtimeGuardCalls = 0;
+    const supervisor = new CaseStackSupervisor({
+      plan: productionPlan("streamable_http_sse"),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 9) {
+          throw new Error("planned component-restart completion drift");
+        }
+      },
+    });
+    try {
+      await supervisor.restartCaseStack({
+        caseId: "O1-C04",
+        binding: "streamable_http_sse",
+        preserveState: false,
+      }, "shared.restart-boundary-stack", "restart_case_stack");
+      expect(runtimeGuardCalls).toBe(6);
+
+      await expect(supervisor.restartComponent({
+        componentId: "bridge_simulator",
+        preserveState: true,
+      }, "shared.restart-boundary", "restart_component")).rejects.toThrow(
+        /planned component-restart completion drift/u,
+      );
+      expect(runtimeGuardCalls).toBe(9);
+    } finally {
+      if (supervisor.active) {
+        await supervisor.stopCaseStack(
+          "shared.restart-boundary-stop",
+          "abort_and_drain",
+        );
+      }
+    }
+  }, 30_000);
+
+  it("keeps shutdown-boundary drift primary when instance-root cleanup also fails", async () => {
+    let runtimeGuardCalls = 0;
+    const instanceRoots: string[] = [];
+    const supervisor = new CaseStackSupervisor({
+      plan: productionPlan("streamable_http_sse"),
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 7) {
+          throw new Error("planned shutdown-boundary runtime drift");
+        }
+      },
+      instanceRootRemover(instanceRoot) {
+        instanceRoots.push(instanceRoot);
+        throw new Error("planned shutdown instance-root cleanup failure");
+      },
+    });
+    let failure: unknown;
+    try {
+      await supervisor.restartCaseStack({
+        caseId: "O1-C04",
+        binding: "streamable_http_sse",
+        preserveState: false,
+      }, "shared.shutdown-boundary-stack", "restart_case_stack");
+      expect(runtimeGuardCalls).toBe(6);
+
+      try {
+        await supervisor.stopCaseStack(
+          "shared.shutdown-boundary-stop",
+          "stop_case_stack",
+        );
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toBeInstanceOf(AggregateError);
+      const errors = (failure as AggregateError).errors as Error[];
+      expect(errors).toHaveLength(2);
+      expect(errors[0]).toMatchObject({
+        name: "ProductionRuntimeLaunchGuardError",
+      });
+      expect(errors[0]!.message).toMatch(/planned shutdown-boundary runtime drift/u);
+      expect(errors[1]!.message).toBe("planned shutdown instance-root cleanup failure");
+      expect(runtimeGuardCalls).toBe(7);
+      expect(supervisor.active).toBe(false);
+    } finally {
+      if (supervisor.active) {
+        await supervisor.stopCaseStack(
+          "shared.shutdown-boundary-abort",
+          "abort_and_drain",
+        ).catch(() => undefined);
+      }
       for (const instanceRoot of instanceRoots) {
         rmSync(instanceRoot, { recursive: true, force: true });
       }

@@ -2,7 +2,10 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 import { CaseStackSupervisor } from "./caseStackSupervisor.js";
-import { boundProductionPowerShellExecutable } from "./productionExecutionPlan.js";
+import {
+  assertProductionRuntimeLaunchCurrent,
+  boundProductionPowerShellExecutable,
+} from "./productionExecutionPlan.js";
 import { sanitizedProductionRuntimeEnvironment } from "./productionRuntimeIdentity.js";
 import type { ReconnectSoakAdapter, SoakCycleObservation } from "./soakRunner.js";
 import type { JsonObject, JsonValue } from "./processHarness.js";
@@ -110,8 +113,26 @@ function numeric(value: unknown, label: string): number {
   return Number(value);
 }
 
+function normalizedError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
+
+class ProductionSoakRuntimeLaunchGuardError extends Error {
+  constructor(cause: unknown) {
+    super(
+      `production soak cycle runtime launch guard failed: ${
+        cause instanceof Error ? cause.message : String(cause)
+      }`,
+      { cause },
+    );
+    this.name = "ProductionSoakRuntimeLaunchGuardError";
+  }
+}
+
 export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
   readonly #plan: ExecutionPlan;
+  readonly #repoRoot: string;
+  readonly #runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void;
   readonly #supervisors: ReadonlyMap<Binding, CaseStackSupervisor>;
   readonly #clockMs = new Map<Binding, number>();
   #closed = false;
@@ -119,9 +140,13 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
 
   private constructor(
     plan: ExecutionPlan,
+    repoRoot: string,
+    runtimeLaunchGuard: (plan: ExecutionPlan, repoRoot: string) => void,
     supervisors: ReadonlyMap<Binding, CaseStackSupervisor>,
   ) {
     this.#plan = plan;
+    this.#repoRoot = repoRoot;
+    this.#runtimeLaunchGuard = runtimeLaunchGuard;
     this.#supervisors = supervisors;
     for (const binding of BINDINGS) this.#clockMs.set(binding, CLOCK_START_MS);
   }
@@ -132,15 +157,20 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
     runtimeLaunchGuard?: (plan: ExecutionPlan, repoRoot: string) => void;
   }): Promise<ProductionReconnectSoakAdapter> {
     const supervisors = new Map<Binding, CaseStackSupervisor>();
-    const adapter = new ProductionReconnectSoakAdapter(input.plan, supervisors);
+    const runtimeLaunchGuard =
+      input.runtimeLaunchGuard ?? assertProductionRuntimeLaunchCurrent;
+    const adapter = new ProductionReconnectSoakAdapter(
+      input.plan,
+      input.repoRoot,
+      runtimeLaunchGuard,
+      supervisors,
+    );
     try {
       for (const binding of BINDINGS) {
         const supervisor = new CaseStackSupervisor({
           plan: input.plan,
           repoRoot: input.repoRoot,
-          ...(input.runtimeLaunchGuard === undefined
-            ? {}
-            : { runtimeLaunchGuard: input.runtimeLaunchGuard }),
+          runtimeLaunchGuard,
         });
         supervisors.set(binding, supervisor);
         await supervisor.restartCaseStack({
@@ -168,6 +198,34 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
   async churn(binding: Binding, cycle: number): Promise<SoakCycleObservation> {
     if (this.#closed) throw new Error("production soak adapter is closed");
     if (!Number.isSafeInteger(cycle) || cycle < 1) throw new Error("soak cycle must be one based");
+    let observation: SoakCycleObservation | undefined;
+    let primaryError: Error | undefined;
+    try {
+      observation = await this.#runChurnCycle(binding, cycle);
+    } catch (error) {
+      primaryError = normalizedError(error);
+    }
+    let boundaryError: Error | undefined;
+    try {
+      this.#assertRuntimeLaunchCurrent();
+    } catch (error) {
+      boundaryError = normalizedError(error);
+    }
+    if (primaryError !== undefined && boundaryError !== undefined) {
+      throw new AggregateError(
+        [primaryError, boundaryError],
+        "production soak cycle failed and its runtime boundary guard also failed",
+      );
+    }
+    if (primaryError !== undefined) throw primaryError;
+    if (boundaryError !== undefined) throw boundaryError;
+    if (observation === undefined) {
+      throw new Error("production soak cycle completed without an observation");
+    }
+    return observation;
+  }
+
+  async #runChurnCycle(binding: Binding, cycle: number): Promise<SoakCycleObservation> {
     const supervisor = this.#supervisor(binding);
     supervisor.beginWireCapture();
     const pause = supervisor.setGatewayProxyBackpressure(true);
@@ -272,6 +330,14 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
   async orphanProcessCount(): Promise<number> {
     if (!this.#closed) throw new Error("orphan count is available only after production soak cleanup");
     return this.#orphanProcessCount;
+  }
+
+  #assertRuntimeLaunchCurrent(): void {
+    try {
+      this.#runtimeLaunchGuard(this.#plan, this.#repoRoot);
+    } catch (error) {
+      throw new ProductionSoakRuntimeLaunchGuardError(error);
+    }
   }
 
   #supervisor(binding: Binding): CaseStackSupervisor {
