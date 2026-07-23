@@ -1,3 +1,10 @@
+import {
+  makeBatchDigest,
+  makeParamsDigest,
+  type BatchDigestInput,
+  type JsonValue,
+} from "@revagent/protocol";
+
 import { canonicalManifest } from "./manifest.js";
 import type {
   AssertionCategory,
@@ -569,6 +576,91 @@ function dispatchBatchRequest(
       recovery_clearances: [],
       steps: `{{batches.${caseId}.${suffix}.steps}}`,
       batch_digest: `{{batches.${caseId}.${suffix}.batchDigest}}`,
+    },
+  };
+}
+
+type C30JournalScenario = "policy" | "scope" | "clearance";
+type C30JournalVariant = "baseline" | "changed";
+
+function c30Uuid(ordinal: number): string {
+  return `019c3000-0000-7000-8000-${ordinal.toString().padStart(12, "0")}`;
+}
+
+/**
+ * A real Bridge-journal redelivery pair. Transport identity changes between
+ * deliveries, while batch/invocation identity remains fixed and exactly one
+ * immutable binding field changes.
+ */
+function c30JournalEnvelope(
+  scenario: C30JournalScenario,
+  variant: C30JournalVariant,
+  seq: number,
+): Record<string, unknown> {
+  const scenarioOrdinal = scenario === "policy" ? 1 : scenario === "scope" ? 2 : 3;
+  const mutating = scenario !== "policy";
+  const params: JsonValue = mutating
+    ? { viewId: 42, mode: "commit", confirmDelete: true, viewType: "ThreeD" }
+    : { scenario, stable: true };
+  const baselineScope = mutating
+    ? { kind: "document", document_id: `c30-${scenario}-document-a` }
+    : null;
+  const mutationScope = scenario === "scope" && variant === "changed"
+    ? { kind: "document", document_id: "c30-scope-document-b" }
+    : baselineScope;
+  const baselinePolicy = mutating
+    ? { class: "confirm", decision: "confirmed", confirmation_id: `c30-${scenario}-confirmation` }
+    : { class: "auto", decision: "auto", confirmation_id: null };
+  const policy = scenario === "policy" && variant === "changed"
+    ? { class: "gated", decision: "gated_approved", confirmation_id: "c30-policy-changed" }
+    : baselinePolicy;
+  const recoveryClearances = scenario === "clearance" && variant === "changed"
+    ? [{
+        hold_id: `vh:${"2".repeat(64)}`,
+        mutation_scope: baselineScope,
+        resolution_id: c30Uuid(301),
+        basis: "late_terminal",
+        verification_invocation_id: null,
+        evidence_digest: `sha256:${"3".repeat(64)}`,
+        decision: "postcondition_verified",
+        audit_id: c30Uuid(302),
+      }]
+    : [];
+  const step = {
+    invocation_id: c30Uuid(100 + scenarioOrdinal),
+    method: mutating ? "delete_review_view" : "get_ui_state",
+    params,
+    params_digest: makeParamsDigest(params),
+    mutating,
+    mutation_scope: mutationScope,
+    policy,
+  };
+  const digestInput: BatchDigestInput = {
+    atomic: false,
+    batch_id: c30Uuid(200 + scenarioOrdinal),
+    recovery_clearances: recoveryClearances as JsonValue[],
+    steps: [{
+      invocation_id: step.invocation_id,
+      method: step.method,
+      mutating: step.mutating,
+      mutation_scope: step.mutation_scope as JsonValue,
+      params_digest: step.params_digest,
+      policy: step.policy,
+    }],
+    timeout_ms: 30_000,
+  };
+  return {
+    v: 1,
+    type: "invoke_batch",
+    id: c30Uuid((variant === "baseline" ? 10 : 20) + scenarioOrdinal),
+    ts: "{{clock.iso}}",
+    rsid: "{{case.rsid}}",
+    seq,
+    ack: 0,
+    payload: {
+      ...digestInput,
+      steps: [{ ...step }],
+      batch_digest: makeBatchDigest(digestInput),
     },
   };
 }
@@ -1436,6 +1528,24 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C30",
     controls: [
       ...sessionSetup("O1-C30"),
+      bridge("o1-c30.journal-policy-baseline", "invoke_local", args({
+        envelope: c30JournalEnvelope("policy", "baseline", 1),
+      })),
+      bridge("o1-c30.journal-policy-changed", "invoke_local", args({
+        envelope: c30JournalEnvelope("policy", "changed", 2),
+      })),
+      bridge("o1-c30.journal-scope-baseline", "invoke_local", args({
+        envelope: c30JournalEnvelope("scope", "baseline", 3),
+      })),
+      bridge("o1-c30.journal-scope-changed", "invoke_local", args({
+        envelope: c30JournalEnvelope("scope", "changed", 4),
+      })),
+      bridge("o1-c30.journal-clearance-baseline", "invoke_local", args({
+        envelope: c30JournalEnvelope("clearance", "baseline", 5),
+      })),
+      bridge("o1-c30.journal-clearance-changed", "invoke_local", args({
+        envelope: c30JournalEnvelope("clearance", "changed", 6),
+      })),
       ...[
         "property-order",
         "number-formatting",
@@ -1455,7 +1565,12 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
           : { frame: `{{vectors.c30.${vector}}}` },
       ))),
     ],
-    requiredHarnessCapabilities: ["rfc8785_vector_generation", "raw_binding_frame", "pre_dispatch_count_capture"],
+    requiredHarnessCapabilities: [
+      "rfc8785_vector_generation",
+      "raw_binding_frame",
+      "pre_dispatch_count_capture",
+      "journal_binding_redelivery",
+    ],
   },
   {
     caseId: "O1-C31",

@@ -327,6 +327,81 @@ function controlArguments(
   return objectValue(pathValue(controlObservation(context, stepId), ["request", "arguments"]));
 }
 
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function c30JournalBindingRejected(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  scenario: "policy" | "scope" | "clearance",
+): boolean {
+  const baselineStepId = `o1-c30.journal-${scenario}-baseline`;
+  const changedStepId = `o1-c30.journal-${scenario}-changed`;
+  const baselineResult = controlResult(context, baselineStepId);
+  const changedResult = controlResult(context, changedStepId);
+  const baselineEnvelope = objectValue(controlArguments(context, baselineStepId)?.envelope);
+  const changedEnvelope = objectValue(controlArguments(context, changedStepId)?.envelope);
+  const baselinePayload = objectValue(baselineEnvelope?.payload);
+  const changedPayload = objectValue(changedEnvelope?.payload);
+  const baselineOutcome = objectValue(baselineResult?.outcome);
+  const changedOutcome = objectValue(changedResult?.outcome);
+  const baselineSteps = arrayValue(baselinePayload?.steps);
+  const changedSteps = arrayValue(changedPayload?.steps);
+  const baselineStep = objectValue(baselineSteps[0]);
+  const changedStep = objectValue(changedSteps[0]);
+  if (
+    baselineEnvelope === null ||
+    changedEnvelope === null ||
+    baselinePayload === null ||
+    changedPayload === null ||
+    baselineOutcome === null ||
+    changedOutcome === null ||
+    baselineStep === null ||
+    changedStep === null ||
+    baselineSteps.length !== 1 ||
+    changedSteps.length !== 1 ||
+    baselineResult?.crashed !== false ||
+    changedResult?.crashed !== false ||
+    baselineOutcome.kind !== "batch" ||
+    baselineOutcome.status !== "completed" ||
+    baselineOutcome.batchId !== baselinePayload.batch_id ||
+    changedOutcome.kind !== "error" ||
+    changedOutcome.batchId !== changedPayload.batch_id ||
+    changedOutcome.faultClass !== "protocol" ||
+    changedOutcome.message !== "batch binding changed on redelivery" ||
+    baselinePayload.batch_id !== changedPayload.batch_id ||
+    baselineStep.invocation_id !== changedStep.invocation_id ||
+    baselineStep.method !== changedStep.method ||
+    !sameJson(baselineStep.params, changedStep.params) ||
+    baselineStep.params_digest !== changedStep.params_digest ||
+    baselineStep.mutating !== changedStep.mutating ||
+    baselinePayload.atomic !== changedPayload.atomic ||
+    baselinePayload.timeout_ms !== changedPayload.timeout_ms ||
+    baselinePayload.batch_digest === changedPayload.batch_digest ||
+    baselineEnvelope.rsid !== changedEnvelope.rsid ||
+    typeof baselineEnvelope.rsid !== "string" ||
+    baselineEnvelope.rsid.length === 0 ||
+    baselineEnvelope.ack !== changedEnvelope.ack ||
+    numberValue(baselineEnvelope.seq) === null ||
+    changedEnvelope.seq !== (numberValue(baselineEnvelope.seq) as number) + 1
+  ) {
+    return false;
+  }
+  if (scenario === "policy") {
+    return !sameJson(baselineStep.policy, changedStep.policy) &&
+      sameJson(baselineStep.mutation_scope, changedStep.mutation_scope) &&
+      sameJson(baselinePayload.recovery_clearances, changedPayload.recovery_clearances);
+  }
+  if (scenario === "scope") {
+    return sameJson(baselineStep.policy, changedStep.policy) &&
+      !sameJson(baselineStep.mutation_scope, changedStep.mutation_scope) &&
+      sameJson(baselinePayload.recovery_clearances, changedPayload.recovery_clearances);
+  }
+  return sameJson(baselineStep.policy, changedStep.policy) &&
+    sameJson(baselineStep.mutation_scope, changedStep.mutation_scope) &&
+    !sameJson(baselinePayload.recovery_clearances, changedPayload.recovery_clearances);
+}
+
 function semanticControl(
   context: Readonly<CanonicalAssertionOracleContext>,
   stepId: string,
@@ -1481,18 +1556,14 @@ define("O1-C30-BATCH-DIGEST", exactSchemaRejected(
   "o1-c30.batch-digest",
   /batch_digest|digest|invalid/i,
 ));
-for (const [suffix, assertion, detail] of [
-  ["changed-policy", "CHANGED-POLICY", /binding mismatch|changed policy|policy binding/i],
-  ["changed-scope", "CHANGED-SCOPE", /binding mismatch|changed mutation scope|scope binding/i],
-  ["changed-clearance", "CHANGED-CLEARANCE", /binding mismatch|changed recovery clearance|clearance binding/i],
+for (const [scenario, assertion] of [
+  ["policy", "CHANGED-POLICY"],
+  ["scope", "CHANGED-SCOPE"],
+  ["clearance", "CHANGED-CLEARANCE"],
 ] as const) {
   define(
     `O1-C30-${assertion}`,
-    safe((context) =>
-      rawFault(context, `o1-c30.${suffix}`, "protocol", detail) ||
-      hasDomainObject(context, ["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-        candidate.reason === "binding_mismatch" &&
-        candidate.changedField === suffix.replace("changed-", ""))),
+    safe((context) => c30JournalBindingRejected(context, scenario)),
   );
 }
 define(
