@@ -261,7 +261,16 @@ describe("parent-owned raw WSS binding driver", () => {
         bytes: Buffer.byteLength(JSON.stringify(sessionRegister())),
         sha256: sha256(JSON.stringify(sessionRegister())),
       },
+      remoteOutcome: {
+        sessionRegistration: {
+          schemaVersion: "raw-session-registration-fact/v1",
+          rsid: expect.any(String),
+          resumeTokenSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+          secretsRedacted: true,
+        },
+      },
     });
+    expect(JSON.stringify(outcome)).not.toMatch(/"resume_token":/u);
     expect(JSON.stringify(outcome)).not.toMatch(/"(?:actual|passed|verdict)":/u);
     expect(outcome.observations).toHaveLength(1);
     expect(Buffer.byteLength(JSON.stringify(outcome.observations![0]!.payload))).toBeLessThan(64 * 1024);
@@ -410,6 +419,15 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
     );
     expect(object(object(remote.createResponse, "createResponse").body, "create body").sha256)
       .toMatch(/^sha256:[0-9a-f]{64}$/u);
+    expect(remote).toMatchObject({
+      sessionRegistration: {
+        schemaVersion: "raw-session-registration-fact/v1",
+        rsid: expect.any(String),
+        resumeTokenSha256: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+        secretsRedacted: true,
+      },
+    });
+    expect(JSON.stringify(outcome)).not.toMatch(/"resume_token":/u);
     expect(JSON.stringify(outcome)).not.toMatch(/"(?:actual|passed|verdict)":/u);
   });
 

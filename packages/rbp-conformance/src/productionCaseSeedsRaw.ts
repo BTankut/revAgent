@@ -49,7 +49,6 @@ export interface RawProductionFrameFact {
 const CLOCK_ISO = "2026-07-22T12:00:00.000Z";
 const MAX_SAFE_SEQUENCE = 9_007_199_254_740_991;
 const DEFAULT_RSID = "rs_raw_primary";
-const OTHER_RSID = "rs_raw_other";
 const DOCUMENT_ID = "doc-raw-001";
 const FINGERPRINT = `sha256:${"0".repeat(64)}`;
 const OTHER_FINGERPRINT = `sha256:${"1".repeat(64)}`;
@@ -691,8 +690,12 @@ function c32Vectors(): Record<string, JsonValue> {
 
 function c34Vectors(): Record<string, JsonValue> {
   const valid = sessionRegisterPayload("c34");
-  const seatSpoof = { ...(valid as Record<string, JsonValue>), claimed_seat_id: "seat-foreign" };
-  const userSpoof = { ...(valid as Record<string, JsonValue>), claimed_user_id: "user-foreign" };
+  const seatSpoof = { ...(valid as Record<string, JsonValue>), seat_id: "seat-foreign" };
+  const userHint = (valid as Record<string, JsonValue>).user_hint as Record<string, JsonValue>;
+  const userSpoof = {
+    ...(valid as Record<string, JsonValue>),
+    user_hint: { ...userHint, user_id: "user-foreign" },
+  };
   return {
     valid_session_register: controlFrame("O1-C34:valid", "session_register", valid),
     seat_spoof_register: controlFrame("O1-C34:seat-spoof", "session_register", seatSpoof),
@@ -813,7 +816,6 @@ function c40Vectors(): Record<string, JsonValue> {
 }
 
 function rawVectors(): Record<string, JsonValue> {
-  const resumeToken = "opaque-original-resume-token";
   const c30 = c30Vectors();
   return {
     raw_opening_hello: hello("raw-opening"),
@@ -822,19 +824,12 @@ function rawVectors(): Record<string, JsonValue> {
       "device-02",
       OTHER_FINGERPRINT,
     ),
-    cross_device_resume: controlFrame("O1-C25:cross-device-resume", "session_resume", {
-      rsid: DEFAULT_RSID,
-      resume_token: resumeToken,
-      last_rx_seq: 0,
-    }),
-    cross_rsid_resume: controlFrame("O1-C25:cross-rsid-resume", "session_resume", {
-      rsid: OTHER_RSID,
-      resume_token: resumeToken,
-      last_rx_seq: 0,
-    }),
-    unregistered_rsid_invoke: {
-      rsid: "rs_unregistered",
-      payload: invokePayload("O1-C25:unregistered"),
+    c25: {
+      foreign_session_register: controlFrame(
+        "O1-C25:foreign-session-register",
+        "session_register",
+        sessionRegisterPayload("c25-foreign"),
+      ),
     },
     hello_version_n: hello("O1-C26:version-n", "device-01", FINGERPRINT, 2, 2),
     hello_version_n_minus_one: hello("O1-C26:version-n-minus-one", "device-01", FINGERPRINT, 1, 1),
@@ -899,6 +894,14 @@ function idsForPrograms(): Record<string, JsonValue> {
         invocationId: invocationId(`${caseId}:${suffix}`),
         batchId: batchId(`${caseId}:${suffix}`),
       };
+    }
+    if (caseId === "O1-C25") {
+      for (const suffix of ["cross-device-resume", "cross-rsid-resume", "foreign-invoke"]) {
+        caseIds[suffix] = {
+          envelopeId: messageId(`${caseId}:${suffix}`),
+          invocationId: invocationId(`${caseId}:${suffix}`),
+        };
+      }
     }
     ids[caseId] = caseIds;
   }
@@ -998,8 +1001,11 @@ function frameFact(
 function frameFacts(): ReadonlyMap<string, RawProductionFrameFact> {
   const vectors = RAW_VECTORS;
   const facts: RawProductionFrameFact[] = [
-    frameFact("O1-C25", "o1-c25.cross-device-resume", vectors.cross_device_resume!, "frame", "step_override"),
-    frameFact("O1-C25", "o1-c25.cross-rsid-resume", vectors.cross_rsid_resume!, "frame", "step_override"),
+    frameFact(
+      "O1-C25",
+      "o1-c25.foreign-session-register",
+      (vectors.c25 as Record<string, JsonValue>).foreign_session_register!,
+    ),
     frameFact("O1-C26", "o1-c26.version-n", vectors.hello_version_n!),
     frameFact("O1-C26", "o1-c26.version-n-minus-one", vectors.hello_version_n_minus_one!),
     frameFact("O1-C26", "o1-c26.additive", vectors.additive_within_version!),

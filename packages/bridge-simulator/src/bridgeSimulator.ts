@@ -1431,7 +1431,7 @@ export class BridgeSimulator {
       return knownError("protocol", "invalid invoke envelope");
     }
     const session = this.#sessions.get(envelope.rsid);
-    if (session === undefined) return knownError("protocol", "invoke targets an unregistered rsid");
+    if (session === undefined) return knownError("auth", "invoke targets an unregistered rsid");
     const sequence = acceptInboundData(
       this.#journal.loadSequence(envelope.rsid),
       envelope as unknown as DataEnvelopeSnapshot,

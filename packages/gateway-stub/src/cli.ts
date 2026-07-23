@@ -123,6 +123,20 @@ const tokenTable: StaticTokenTable = {
       "transport_streamable_http",
     ],
   },
+  "other-device-token": {
+    status: "active",
+    deviceId: "device-02",
+    tenantId: "tenant-02",
+    userId: "user-02",
+    seatId: "seat-02",
+    machineFingerprint: `sha256:${"1".repeat(64)}`,
+    provisionedCapabilities: [
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ],
+  },
   "revoked-device-token": {
     status: "revoked",
     deviceId: "device-revoked",

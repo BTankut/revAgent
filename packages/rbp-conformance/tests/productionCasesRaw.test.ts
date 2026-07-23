@@ -161,7 +161,22 @@ describe("raw production C25-C40 seed catalog", () => {
     const rawRequests: ParentStepDriverRequest[] = [];
     const driver: ParentStepDriver = async (request) => {
       expect(noUnresolvedTokens(request.arguments)).toBe(true);
-      if (request.action === "send_binding_frame") rawRequests.push(request);
+      if (request.action === "send_binding_frame") {
+        rawRequests.push(request);
+        if (request.stepId === "o1-c25.foreign-session-register") {
+          return {
+            kind: "success",
+            result: {
+              remoteOutcome: {
+                sessionRegistration: {
+                  rsid: "rs_raw_foreign",
+                  resumeTokenSha256: `sha256:${"c".repeat(64)}`,
+                },
+              },
+            },
+          };
+        }
+      }
       if (request.action === "restart_case_stack") {
         return {
           kind: "success",
@@ -297,9 +312,28 @@ describe("raw production C25-C40 seed catalog", () => {
     }
 
     const uniqueRawSteps = new Set(rawRequests.map(({ stepId }) => stepId));
-    expect(uniqueRawSteps).toEqual(new Set(RAW_PRODUCTION_FRAME_FACTS.keys()));
+    const dynamicAuthorizationSteps = new Set([
+      "o1-c25.cross-device-resume",
+      "o1-c25.cross-rsid-resume",
+    ]);
+    expect(uniqueRawSteps).toEqual(new Set([
+      ...RAW_PRODUCTION_FRAME_FACTS.keys(),
+      ...dynamicAuthorizationSteps,
+    ]));
     for (const request of rawRequests) {
       const fact = RAW_PRODUCTION_FRAME_FACTS.get(request.stepId);
+      if (dynamicAuthorizationSteps.has(request.stepId)) {
+        expect(fact).toBeUndefined();
+        expect(request.arguments.authorizationProbe).toMatchObject({
+          sourceRsid: "rs_raw_primary",
+          messageId: expect.any(String),
+          ts: NOW,
+        });
+        expect(Object.prototype.hasOwnProperty.call(request.arguments, "frame")).toBe(false);
+        expect(Object.prototype.hasOwnProperty.call(request.arguments, "serializedFrame")).toBe(false);
+        expect(at(rawProductionOpeningHello(request), "type")).toBe("hello");
+        continue;
+      }
       expect(fact).toBeDefined();
       const hasFrame = Object.prototype.hasOwnProperty.call(request.arguments, "frame");
       const hasSerialized = Object.prototype.hasOwnProperty.call(request.arguments, "serializedFrame");
@@ -341,6 +375,7 @@ describe("raw production C25-C40 seed catalog", () => {
       at(variables, "vectors", "c31", "cancel_positive"),
       at(variables, "vectors", "c31", "goodbye_positive"),
       at(variables, "vectors", "c31", "manifest_positive"),
+      at(variables, "vectors", "c25", "foreign_session_register"),
       at(variables, "vectors", "c34", "valid_session_register"),
       at(variables, "vectors", "c35", "max_safe_seq"),
     ];
@@ -373,6 +408,11 @@ describe("raw production C25-C40 seed catalog", () => {
     for (const frame of negativeFrames) {
       expect(validateRbpEnvelope(frame), JSON.stringify(frame).slice(0, 1_000)).toBe(false);
     }
+
+    expect(at(variables, "vectors", "c34", "seat_spoof_register", "payload", "seat_id"))
+      .toBe("seat-foreign");
+    expect(at(variables, "vectors", "c34", "user_spoof_register", "payload", "user_hint", "user_id"))
+      .toBe("user-foreign");
   });
 });
 

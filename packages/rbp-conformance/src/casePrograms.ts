@@ -1431,17 +1431,57 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C25",
     controls: [
       ...sessionSetup("O1-C25"),
+      withCaptures(
+        harness("o1-c25.foreign-session-register", "send_binding_frame", args({
+          frame: "{{vectors.c25.foreign_session_register}}",
+        })),
+        [
+          {
+            name: "case.foreign_rsid",
+            source: "result",
+            jsonPointer: "/remoteOutcome/sessionRegistration/rsid",
+          },
+          {
+            name: "case.foreign_resume_token_sha256",
+            source: "result",
+            jsonPointer: "/remoteOutcome/sessionRegistration/resumeTokenSha256",
+          },
+        ],
+      ),
       harness("o1-c25.cross-device-resume", "send_binding_frame", args({
         credential: "{{case.other_device_token}}",
-        frame: "{{vectors.cross_device_resume}}",
+        authorizationProbe: {
+          sourceRsid: "{{case.rsid}}",
+          targetRsid: "{{case.rsid}}",
+          messageId: "{{ids.O1-C25.cross-device-resume.envelopeId}}",
+          ts: "{{clock.iso}}",
+        },
       })),
       harness("o1-c25.cross-rsid-resume", "send_binding_frame", args({
         credential: "{{case.device_token}}",
-        frame: "{{vectors.cross_rsid_resume}}",
+        authorizationProbe: {
+          sourceRsid: "{{case.rsid}}",
+          targetRsid: "{{case.foreign_rsid}}",
+          messageId: "{{ids.O1-C25.cross-rsid-resume.envelopeId}}",
+          ts: "{{clock.iso}}",
+        },
       })),
-      gateway("o1-c25.unknown-session-invoke", "dispatch_invoke", args({ request: "{{vectors.unregistered_rsid_invoke}}" })),
+      bridge("o1-c25.unknown-session-invoke", "invoke_local", args({
+        envelope: {
+          ...envelope("O1-C25", "foreign-invoke"),
+          rsid: "{{case.foreign_rsid}}",
+          seq: 1,
+          ack: 0,
+        },
+      })),
     ],
-    requiredHarnessCapabilities: ["multiple_device_credentials", "raw_binding_frame", "authorization_fault_capture"],
+    requiredHarnessCapabilities: [
+      "multiple_device_credentials",
+      "raw_binding_frame",
+      "authorization_fault_capture",
+      "gateway_persisted_session_authority_capture",
+      "secret_redacted_resume_probe",
+    ],
   },
   {
     caseId: "O1-C26",

@@ -71,6 +71,11 @@ export interface RestartCaseStackOptions {
   startupOverrides?: GatewayStartupOverrides;
 }
 
+export interface SessionResumeAuthorizationProbe {
+  readonly frame: JsonObject;
+  readonly facts: JsonObject;
+}
+
 export interface ParentCaptureSummary {
   proxy: "gateway" | "fixture";
   target: { host: string; port: number };
@@ -1012,6 +1017,81 @@ export class CaseStackSupervisor {
       wsUrl: stack.publicReadiness.gateway.ws_url ?? null,
       httpConnectionUrl: stack.publicReadiness.gateway.http_connection_url ?? null,
       tlsTrust: isObject(tlsTrust) ? structuredClone(tlsTrust) : null,
+    };
+  }
+
+  sessionResumeAuthorizationProbe(input: {
+    readonly sourceRsid: string;
+    readonly targetRsid: string;
+    readonly messageId: string;
+    readonly ts: string;
+  }): SessionResumeAuthorizationProbe {
+    const stack = this.#stack();
+    for (const [label, value] of Object.entries(input)) {
+      if (typeof value !== "string" || value.length < 1 || value.length > 512) {
+        throw new Error(`session resume authorization probe ${label} must be bounded text`);
+      }
+    }
+    const statePath = path.join(stack.instanceRoot, "state", "gateway.json");
+    const relative = path.relative(stack.instanceRoot, path.resolve(statePath));
+    if (relative.startsWith("..") || path.isAbsolute(relative)) {
+      throw new Error("session resume authorization probe state escaped the private stack");
+    }
+    const parsed = JSON.parse(readFileSync(statePath, "utf8")) as unknown;
+    if (!isObject(parsed) || !isObject(parsed.sessions)) {
+      throw new Error("session resume authorization probe found malformed Gateway state");
+    }
+    const source = parsed.sessions[input.sourceRsid];
+    const target = parsed.sessions[input.targetRsid];
+    if (!isObject(source) || !isObject(target)) {
+      throw new Error("session resume authorization probe requires two persisted sessions");
+    }
+    const sourceSequence = source.sequence;
+    const targetSequence = target.sequence;
+    if (
+      source.rsid !== input.sourceRsid ||
+      target.rsid !== input.targetRsid ||
+      source.revoked === true ||
+      target.revoked === true ||
+      typeof source.resumeToken !== "string" ||
+      typeof target.resumeToken !== "string" ||
+      typeof source.deviceId !== "string" ||
+      typeof target.deviceId !== "string" ||
+      !isObject(sourceSequence) ||
+      !isObject(targetSequence) ||
+      !Number.isSafeInteger(targetSequence.lastPeerAck)
+    ) {
+      throw new Error("session resume authorization probe sessions are not active exact state");
+    }
+    const lastRxSeq = Number(targetSequence.lastPeerAck);
+    return {
+      frame: {
+        v: 1,
+        type: "session_resume",
+        id: input.messageId,
+        ts: input.ts,
+        payload: {
+          rsid: input.targetRsid,
+          resume_token: source.resumeToken,
+          last_rx_seq: lastRxSeq,
+        },
+      },
+      facts: {
+        schemaVersion: "supervisor.session-resume-authorization-material/v1",
+        materialSource: "gateway_persisted_session",
+        sourceRsid: input.sourceRsid,
+        targetRsid: input.targetRsid,
+        sourceDeviceIdSha256: sha256Text(source.deviceId),
+        targetDeviceIdSha256: sha256Text(target.deviceId),
+        sourceResumeTokenSha256: sha256Text(source.resumeToken),
+        targetResumeTokenSha256: sha256Text(target.resumeToken),
+        targetLastPeerAck: lastRxSeq,
+        sourceAndTargetRsidEqual: input.sourceRsid === input.targetRsid,
+        sourceAndTargetDeviceEqual: source.deviceId === target.deviceId,
+        sourceAndTargetResumeTokenEqual: source.resumeToken === target.resumeToken,
+        secretsRedacted: true,
+        rawTokenExposed: false,
+      },
     };
   }
 

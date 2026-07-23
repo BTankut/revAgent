@@ -6,6 +6,7 @@ import {
   type ParentStepDriverRequest,
   type ParentStepExecutionEvidence,
   type RawBindingStepHooks,
+  type RawStepOutcome,
 } from "./parentStepEngine.js";
 import { RAW_PRODUCTION_CASES, rawProductionCaseVariables } from "./productionCaseSeedsRaw.js";
 import { createEarlyProductionCaseDrivers } from "./productionDriversEarly.js";
@@ -100,19 +101,90 @@ function currentRawHooks(
   });
 }
 
+function authorizationProbeRequest(
+  supervisor: CaseStackSupervisor,
+  request: Readonly<ParentStepDriverRequest>,
+): {
+  readonly request: ParentStepDriverRequest;
+  readonly facts: JsonObject;
+} | null {
+  const probe = request.arguments.authorizationProbe;
+  if (probe === undefined) return null;
+  if (
+    request.caseId !== "O1-C25" ||
+    probe === null ||
+    typeof probe !== "object" ||
+    Array.isArray(probe)
+  ) {
+    throw new Error(`${request.stepId} authorizationProbe is outside the exact O1-C25 seam`);
+  }
+  const material = supervisor.sessionResumeAuthorizationProbe({
+    sourceRsid: requiredString(probe.sourceRsid, "authorization probe sourceRsid"),
+    targetRsid: requiredString(probe.targetRsid, "authorization probe targetRsid"),
+    messageId: requiredString(probe.messageId, "authorization probe messageId"),
+    ts: requiredString(probe.ts, "authorization probe ts"),
+  });
+  const argumentsValue = { ...request.arguments };
+  delete argumentsValue.authorizationProbe;
+  argumentsValue.frame = material.frame;
+  return {
+    request: {
+      ...request,
+      arguments: argumentsValue,
+    },
+    facts: material.facts,
+  };
+}
+
+function retainAuthorizationFacts(
+  outcome: RawStepOutcome,
+  facts: JsonObject,
+): RawStepOutcome {
+  if (outcome.kind !== "success") {
+    throw new Error("session resume authorization probe did not produce raw success evidence");
+  }
+  const result = objectValue(outcome.result, "session resume authorization probe result");
+  return {
+    ...outcome,
+    result: {
+      ...result,
+      authorityFacts: structuredClone(facts),
+    },
+    observations: (outcome.observations ?? []).map((record) => {
+      const payload = objectValue(
+        record.payload,
+        `session resume authorization probe observation ${record.observationId}`,
+      );
+      return {
+        ...record,
+        payload: {
+          ...payload,
+          authorityFacts: structuredClone(facts),
+        },
+      };
+    }),
+  };
+}
+
 function dynamicRawHooks(supervisor: CaseStackSupervisor): RawBindingStepHooks {
   return {
     wss: async (request) => {
-      const hook = currentRawHooks(supervisor, request).wss;
+      const probe = authorizationProbeRequest(supervisor, request);
+      const selectedRequest = probe?.request ?? request;
+      const hook = currentRawHooks(supervisor, selectedRequest).wss;
       if (hook === undefined) throw new Error(`${request.stepId} did not resolve a WSS hook`);
-      return await hook(request);
+      const outcome = await hook(selectedRequest);
+      return probe === null ? outcome : retainAuthorizationFacts(outcome, probe.facts);
     },
     streamable_http_sse: async (request) => {
-      const hook = currentRawHooks(supervisor, request).streamable_http_sse;
+      const probe = authorizationProbeRequest(supervisor, request);
+      const selectedRequest = probe?.request ?? request;
+      const hook = currentRawHooks(supervisor, selectedRequest).streamable_http_sse;
       if (hook === undefined) {
         throw new Error(`${request.stepId} did not resolve a Streamable HTTP/SSE hook`);
       }
-      return await hook(request);
+      const outcome = await hook(selectedRequest);
+      return probe === null ? outcome : retainAuthorizationFacts(outcome, probe.facts);
     },
   };
 }

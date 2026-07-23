@@ -111,6 +111,35 @@ interface CapturedEntity {
   readonly parseState: "parsed" | "empty" | "invalid_json" | "parse_budget_exhausted";
 }
 
+function redactedRemoteJson(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) return value.map((entry) => redactedRemoteJson(entry));
+  if (value === null || typeof value !== "object") return value;
+  const object = value as JsonObject;
+  if (object.type !== "session_registered") {
+    return Object.fromEntries(
+      Object.entries(object).map(([key, entry]) => [key, redactedRemoteJson(entry)]),
+    );
+  }
+  const payload = object.payload;
+  if (
+    payload === null ||
+    typeof payload !== "object" ||
+    Array.isArray(payload) ||
+    typeof payload.resume_token !== "string"
+  ) {
+    return structuredClone(value);
+  }
+  const { resume_token: resumeToken, ...retainedPayload } = payload;
+  return {
+    ...structuredClone(object),
+    payload: {
+      ...structuredClone(retainedPayload),
+      resume_token_redacted: true,
+      resume_token_sha256: sha256(resumeToken),
+    },
+  };
+}
+
 class ParseBudget {
   #remaining: number;
 
@@ -137,7 +166,11 @@ class ParseBudget {
       return { ...metadata, parsed: null, parseState: "invalid_json" };
     }
     this.#remaining -= bytes.byteLength;
-    return { ...metadata, parsed, parseState: "parsed" };
+    return {
+      ...metadata,
+      parsed: redactedRemoteJson(parsed as JsonValue),
+      parseState: "parsed",
+    };
   }
 }
 
@@ -571,6 +604,75 @@ function observationId(request: Readonly<ParentStepDriverRequest>, digest: strin
   return base.slice(0, 191);
 }
 
+function parsedRemoteObjects(remoteOutcome: JsonObject): JsonObject[] {
+  const objects: JsonObject[] = [];
+  const appendFrames = (value: JsonValue | undefined): void => {
+    if (!Array.isArray(value)) return;
+    for (const candidate of value) {
+      if (candidate === null || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+      const parsed = candidate.parsed;
+      if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+        objects.push(parsed);
+      }
+    }
+  };
+  appendFrames(remoteOutcome.receivedFrames);
+  const sse = remoteOutcome.sse;
+  if (sse !== null && typeof sse === "object" && !Array.isArray(sse)) {
+    appendFrames(sse.receivedFrames);
+  }
+  for (const responseName of ["createResponse", "messagesResponse"] as const) {
+    const response = remoteOutcome[responseName];
+    if (response === null || typeof response !== "object" || Array.isArray(response)) continue;
+    const body = response.body;
+    if (body === null || typeof body !== "object" || Array.isArray(body)) continue;
+    const parsed = body.parsed;
+    if (parsed !== null && typeof parsed === "object" && !Array.isArray(parsed)) {
+      objects.push(parsed);
+    }
+  }
+  return objects;
+}
+
+function sessionRegistrationFact(remoteOutcome: JsonObject): JsonObject | null {
+  const registrations = parsedRemoteObjects(remoteOutcome).filter((candidate) =>
+    candidate.type === "session_registered");
+  if (registrations.length !== 1) return null;
+  const payload = registrations[0]!.payload;
+  if (payload === null || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const principal = payload.principal;
+  const seat = payload.seat;
+  if (
+    typeof payload.rsid !== "string" ||
+    typeof payload.resume_token_sha256 !== "string" ||
+    payload.resume_token_redacted !== true ||
+    typeof payload.resume_expires_at !== "string" ||
+    principal === null ||
+    typeof principal !== "object" ||
+    Array.isArray(principal) ||
+    typeof principal.tenant_id !== "string" ||
+    typeof principal.user_id !== "string" ||
+    seat === null ||
+    typeof seat !== "object" ||
+    Array.isArray(seat) ||
+    typeof seat.granted !== "boolean" ||
+    typeof seat.seat_id !== "string"
+  ) {
+    return null;
+  }
+  return {
+    schemaVersion: "raw-session-registration-fact/v1",
+    rsid: payload.rsid,
+    resumeTokenSha256: payload.resume_token_sha256,
+    resumeExpiresAt: payload.resume_expires_at,
+    tenantId: principal.tenant_id,
+    userId: principal.user_id,
+    seatGranted: seat.granted,
+    seatId: seat.seat_id,
+    secretsRedacted: true,
+  };
+}
+
 function successOutcome(
   request: Readonly<ParentStepDriverRequest>,
   target: SerializedFrame,
@@ -579,6 +681,10 @@ function successOutcome(
   atMonotonicMs: number,
   now: () => string,
 ): RawStepOutcome {
+  const registration = sessionRegistrationFact(remoteOutcome);
+  const retainedRemoteOutcome = registration === null
+    ? remoteOutcome
+    : { ...remoteOutcome, sessionRegistration: registration };
   const payload: JsonObject = {
     stepId: request.stepId,
     action: request.action,
@@ -593,7 +699,7 @@ function successOutcome(
     },
     credentialSource,
     atMonotonicMs,
-    remoteOutcome,
+    remoteOutcome: retainedRemoteOutcome,
   };
   const payloadBytes = Buffer.byteLength(JSON.stringify(payload), "utf8");
   if (payloadBytes > OBSERVATION_PAYLOAD_LIMIT) {

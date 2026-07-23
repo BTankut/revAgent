@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type {
   CanonicalAssertionOracle,
   CanonicalAssertionOracleContext,
@@ -182,6 +184,278 @@ function rawRemote(
   stepId: string,
 ): ObjectValue | null {
   return objectValue(rawWire(context, stepId)?.remoteOutcome);
+}
+
+function sha256Text(value: string): string {
+  return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function remoteHasResponseType(remote: ObjectValue, expectedType: string): boolean {
+  if (parsedRemoteFrames(remote).some((frame) => frame.type === expectedType)) return true;
+  const created = objectValue(pathValue(remote, ["createResponse", "body", "parsed"]));
+  return created?.type === expectedType;
+}
+
+function rawRegistrationFact(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): ObjectValue | null {
+  const remote = rawRemote(context, stepId);
+  if (remote === null || !remoteHasResponseType(remote, "session_registered")) return null;
+  const fact = objectValue(remote.sessionRegistration);
+  if (
+    fact === null ||
+    fact.schemaVersion !== "raw-session-registration-fact/v1" ||
+    typeof fact.rsid !== "string" ||
+    typeof fact.resumeTokenSha256 !== "string" ||
+    !SHA256_PATTERN.test(fact.resumeTokenSha256) ||
+    typeof fact.resumeExpiresAt !== "string" ||
+    typeof fact.tenantId !== "string" ||
+    typeof fact.userId !== "string" ||
+    fact.seatGranted !== true ||
+    typeof fact.seatId !== "string" ||
+    fact.secretsRedacted !== true
+  ) {
+    return null;
+  }
+  return fact;
+}
+
+interface DynamicResumeEvidence {
+  readonly payload: ObjectValue;
+  readonly remote: ObjectValue;
+  readonly facts: ObjectValue;
+}
+
+function dynamicResumeEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): DynamicResumeEvidence | null {
+  const matches = observations(context, "wire_event").filter(({ payload }) => {
+    const object = objectValue(payload);
+    return object?.stepId === stepId;
+  });
+  if (matches.length !== 1) return null;
+  const payload = objectValue(matches[0]!.payload);
+  const serialized = objectValue(payload?.serialized);
+  const frame = objectValue(payload?.frame);
+  const remote = objectValue(payload?.remoteOutcome);
+  const facts = objectValue(payload?.authorityFacts);
+  const expectedRemoteKind = context.binding === "wss"
+    ? "wss_exchange"
+    : "streamable_http_sse_exchange";
+  if (
+    payload === null ||
+    serialized === null ||
+    frame === null ||
+    remote === null ||
+    facts === null ||
+    payload.action !== "send_binding_frame" ||
+    payload.direction !== "parent_to_gateway" ||
+    payload.binding !== context.binding ||
+    payload.credentialSource !== "step_override" ||
+    frame.type !== "session_resume" ||
+    frame.source !== "frame" ||
+    !Number.isSafeInteger(serialized.bytes) ||
+    Number(serialized.bytes) < 1 ||
+    typeof serialized.sha256 !== "string" ||
+    !SHA256_PATTERN.test(serialized.sha256) ||
+    remote.kind !== expectedRemoteKind ||
+    facts.schemaVersion !== "supervisor.session-resume-authorization-material/v1" ||
+    facts.materialSource !== "gateway_persisted_session" ||
+    typeof facts.sourceRsid !== "string" ||
+    typeof facts.targetRsid !== "string" ||
+    typeof facts.sourceDeviceIdSha256 !== "string" ||
+    !SHA256_PATTERN.test(facts.sourceDeviceIdSha256) ||
+    typeof facts.targetDeviceIdSha256 !== "string" ||
+    !SHA256_PATTERN.test(facts.targetDeviceIdSha256) ||
+    typeof facts.sourceResumeTokenSha256 !== "string" ||
+    !SHA256_PATTERN.test(facts.sourceResumeTokenSha256) ||
+    typeof facts.targetResumeTokenSha256 !== "string" ||
+    !SHA256_PATTERN.test(facts.targetResumeTokenSha256) ||
+    !Number.isSafeInteger(facts.targetLastPeerAck) ||
+    facts.secretsRedacted !== true ||
+    facts.rawTokenExposed !== false
+  ) {
+    return null;
+  }
+  return { payload, remote, facts };
+}
+
+function remoteAuthRejected(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  remote: ObjectValue,
+  message: RegExp,
+): boolean {
+  if (
+    !remoteHasResponseType(remote, "hello_ack") ||
+    remoteFaultClass(remote) !== "auth" ||
+    !remoteMessages(remote).some((candidate) => message.test(candidate))
+  ) {
+    return false;
+  }
+  if (context.binding === "wss") {
+    const close = objectValue(remote.close);
+    return close?.remote === true && close.code === 4403;
+  }
+  return pathValue(remote, ["messagesResponse", "status"]) === 400;
+}
+
+function finalGatewaySnapshot(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): ObjectValue | null {
+  const stepId = `${context.caseId.toLowerCase()}.gateway-snapshot`;
+  const matches = snapshots(context, "gateway_snapshot").filter((snapshot) =>
+    snapshot.stepId === stepId &&
+    snapshot.action === "snapshot" &&
+    snapshot.schemaVersion === "rbp-gateway-snapshot-observation/v1");
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function exactAuthorizationAudit(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  expectedEventCount: number,
+): readonly ObjectValue[] | null {
+  const snapshot = finalGatewaySnapshot(context);
+  const audit = objectValue(snapshot?.authorizationAudit);
+  const entries = arrayValue(audit?.entries)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  if (
+    audit === null ||
+    audit.evidenceVersion !== 1 ||
+    audit.capacity !== 256 ||
+    audit.totalEventCount !== expectedEventCount ||
+    audit.droppedEventCount !== 0 ||
+    audit.secretsRedacted !== true ||
+    entries.length !== expectedEventCount ||
+    entries.length !== arrayValue(audit.entries).length
+  ) {
+    return null;
+  }
+  for (const [index, entry] of entries.entries()) {
+    if (
+      entry.sequence !== index + 1 ||
+      !Number.isSafeInteger(entry.atMs) ||
+      typeof entry.connectionIdDigest !== "string" ||
+      !SHA256_PATTERN.test(entry.connectionIdDigest) ||
+      typeof entry.deviceIdDigest !== "string" ||
+      !SHA256_PATTERN.test(entry.deviceIdDigest) ||
+      !Array.isArray(entry.claimedIdentityFields)
+    ) {
+      return null;
+    }
+  }
+  return entries;
+}
+
+function exactAuditEntry(
+  entry: ObjectValue | undefined,
+  input: {
+    readonly operation: string;
+    readonly decision: string;
+    readonly reason: string;
+    readonly claimedIdentityFields: readonly string[];
+  },
+): boolean {
+  return entry !== undefined &&
+    entry.operation === input.operation &&
+    entry.decision === input.decision &&
+    entry.reason === input.reason &&
+    JSON.stringify(entry.claimedIdentityFields) === JSON.stringify(input.claimedIdentityFields);
+}
+
+function exactC25AuthorizationAudit(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  primaryDeviceDigest: string,
+): readonly ObjectValue[] | null {
+  const entries = exactAuthorizationAudit(context, 8);
+  if (entries === null) return null;
+  const expected = [
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "allowed", "enrollment_bound", []],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "allowed", "enrollment_bound", []],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_resume", "rejected", "connection_or_session_authority", []],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_resume", "rejected", "connection_or_session_authority", []],
+  ] as const;
+  if (!entries.every((entry, index) => {
+    const [operation, decision, reason, claimedIdentityFields] = expected[index]!;
+    return exactAuditEntry(entry, {
+      operation,
+      decision,
+      reason,
+      claimedIdentityFields,
+    });
+  })) {
+    return null;
+  }
+  if (
+    ![0, 1, 2, 3, 6, 7].every((index) =>
+      entries[index]!.deviceIdDigest === primaryDeviceDigest) ||
+    entries[4]!.deviceIdDigest !== entries[5]!.deviceIdDigest ||
+    entries[4]!.deviceIdDigest === primaryDeviceDigest
+  ) {
+    return null;
+  }
+  const connectionPairs = [[0, 1], [2, 3], [4, 5], [6, 7]] as const;
+  if (!connectionPairs.every(([helloIndex, operationIndex]) =>
+    entries[helloIndex]!.connectionIdDigest === entries[operationIndex]!.connectionIdDigest)) {
+    return null;
+  }
+  return new Set(connectionPairs.map(([helloIndex]) =>
+    entries[helloIndex]!.connectionIdDigest)).size === connectionPairs.length
+    ? entries
+    : null;
+}
+
+function exactC34AuthorizationAudit(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  primaryDeviceDigest: string,
+): readonly ObjectValue[] | null {
+  const entries = exactAuthorizationAudit(context, 8);
+  if (entries === null) return null;
+  const expected = [
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "allowed", "enrollment_bound", []],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "allowed", "enrollment_bound", []],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "rejected", "claimed_identity", ["seat_id"]],
+    ["hello", "allowed", "enrollment_bound", []],
+    ["session_register", "rejected", "claimed_identity", ["user_hint.user_id"]],
+  ] as const;
+  if (!entries.every((entry, index) => {
+    const [operation, decision, reason, claimedIdentityFields] = expected[index]!;
+    return exactAuditEntry(entry, {
+      operation,
+      decision,
+      reason,
+      claimedIdentityFields,
+    });
+  })) {
+    return null;
+  }
+  if (!entries.every((entry) => entry.deviceIdDigest === primaryDeviceDigest)) return null;
+  const connectionPairs = [[0, 1], [2, 3], [4, 5], [6, 7]] as const;
+  if (!connectionPairs.every(([helloIndex, operationIndex]) =>
+    entries[helloIndex]!.connectionIdDigest === entries[operationIndex]!.connectionIdDigest)) {
+    return null;
+  }
+  return new Set(connectionPairs.map(([helloIndex]) =>
+    entries[helloIndex]!.connectionIdDigest)).size === connectionPairs.length
+    ? entries
+    : null;
+}
+
+function gatewaySession(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  rsid: string,
+): ObjectValue | null {
+  const sessions = objectValue(finalGatewaySnapshot(context)?.sessions);
+  return objectValue(sessions?.[rsid]);
 }
 
 function rawHasResponseType(
@@ -398,6 +672,64 @@ function c30JournalBindingRejected(
     !sameJson(baselinePayload.recovery_clearances, changedPayload.recovery_clearances);
 }
 
+function exactControlRecord(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): { readonly request: ObjectValue; readonly result: ObjectValue } | null {
+  const matches = observations(context, "control_result").filter(({ payload }) => {
+    const object = objectValue(payload);
+    return object?.schemaVersion === "rbp-step-control-observation/v1" &&
+      object.stepId === stepId;
+  });
+  if (matches.length !== 1) return null;
+  const payload = objectValue(matches[0]!.payload);
+  const request = objectValue(payload?.request);
+  const response = objectValue(payload?.response);
+  const result = objectValue(response?.result);
+  if (
+    request === null ||
+    response === null ||
+    result === null ||
+    response.kind !== "success"
+  ) {
+    return null;
+  }
+  return { request, result };
+}
+
+function exactFixtureExecutionCount(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  invocationId: string,
+): number | null {
+  const stepId = `${context.caseId.toLowerCase()}.fixture-snapshot`;
+  const matches = observations(context, "fixture_execution_count").filter(({ payload }) => {
+    const object = objectValue(payload);
+    return object?.stepId === stepId;
+  });
+  if (matches.length !== 1) return null;
+  const payload = objectValue(matches[0]!.payload);
+  const rawCounts = payload?.executionCounts;
+  if (!Array.isArray(rawCounts)) return null;
+  const counts = rawCounts.map((entry) => objectValue(entry));
+  if (counts.some((entry) => entry === null)) return null;
+  const matchesForInvocation: number[] = [];
+  for (const count of counts) {
+    const requestId = stringValue(count!.requestId);
+    const value = numberValue(count!.count);
+    if (
+      requestId === null ||
+      value === null ||
+      !Number.isSafeInteger(value) ||
+      value < 0
+    ) {
+      return null;
+    }
+    if (requestId === invocationId) matchesForInvocation.push(value);
+  }
+  if (matchesForInvocation.length > 1) return null;
+  return matchesForInvocation[0] ?? 0;
+}
+
 function semanticControl(
   context: Readonly<CanonicalAssertionOracleContext>,
   stepId: string,
@@ -490,14 +822,6 @@ function safe(predicate: CanonicalAssertionOracle): CanonicalAssertionOracle {
       return false;
     }
   };
-}
-
-function exactRawFault(
-  stepId: string,
-  faultClass: "protocol" | "auth",
-  message: RegExp,
-): CanonicalAssertionOracle {
-  return safe((context) => rawFault(context, stepId, faultClass, message));
 }
 
 function exactSchemaAccepted(stepId: string, type: string): CanonicalAssertionOracle {
@@ -1509,22 +1833,97 @@ function define(assertionId: string, oracle: CanonicalAssertionOracle): void {
 
 define(
   "O1-C25-CROSS-DEVICE-RESUME-REJECT",
-  exactRawFault("o1-c25.cross-device-resume", "auth", /device|credential|resume token/i),
+  safe((context) => {
+    const probe = dynamicResumeEvidence(context, "o1-c25.cross-device-resume");
+    const foreign = rawRegistrationFact(context, "o1-c25.foreign-session-register");
+    if (probe === null || foreign === null) return false;
+    const audit = exactC25AuthorizationAudit(
+      context,
+      String(probe.facts.sourceDeviceIdSha256),
+    );
+    if (audit === null) return false;
+    const sourceSession = gatewaySession(context, String(probe.facts.sourceRsid));
+    return sourceSession !== null &&
+      typeof sourceSession.deviceId === "string" &&
+      probe.facts.sourceRsid === probe.facts.targetRsid &&
+      probe.facts.sourceRsid !== foreign.rsid &&
+      probe.facts.sourceAndTargetRsidEqual === true &&
+      probe.facts.sourceAndTargetDeviceEqual === true &&
+      probe.facts.sourceAndTargetResumeTokenEqual === true &&
+      probe.facts.sourceDeviceIdSha256 === probe.facts.targetDeviceIdSha256 &&
+      probe.facts.sourceResumeTokenSha256 === probe.facts.targetResumeTokenSha256 &&
+      probe.facts.sourceDeviceIdSha256 === sha256Text(sourceSession.deviceId) &&
+      remoteAuthRejected(context, probe.remote, /resume token\/session authorization failed/i) &&
+      audit[5]!.deviceIdDigest !== probe.facts.sourceDeviceIdSha256;
+  }),
 );
 define(
   "O1-C25-CROSS-RSID-RESUME-REJECT",
-  exactRawFault("o1-c25.cross-rsid-resume", "auth", /rsid|session|resume token/i),
+  safe((context) => {
+    const probe = dynamicResumeEvidence(context, "o1-c25.cross-rsid-resume");
+    const foreign = rawRegistrationFact(context, "o1-c25.foreign-session-register");
+    if (probe === null || foreign === null) return false;
+    const audit = exactC25AuthorizationAudit(
+      context,
+      String(probe.facts.sourceDeviceIdSha256),
+    );
+    if (audit === null) return false;
+    const sourceSession = gatewaySession(context, String(probe.facts.sourceRsid));
+    const targetSession = gatewaySession(context, String(probe.facts.targetRsid));
+    return sourceSession !== null &&
+      targetSession !== null &&
+      typeof sourceSession.deviceId === "string" &&
+      typeof targetSession.deviceId === "string" &&
+      probe.facts.sourceRsid !== probe.facts.targetRsid &&
+      probe.facts.targetRsid === foreign.rsid &&
+      probe.facts.targetResumeTokenSha256 === foreign.resumeTokenSha256 &&
+      probe.facts.sourceAndTargetRsidEqual === false &&
+      probe.facts.sourceAndTargetDeviceEqual === true &&
+      probe.facts.sourceAndTargetResumeTokenEqual === false &&
+      probe.facts.sourceDeviceIdSha256 === probe.facts.targetDeviceIdSha256 &&
+      probe.facts.sourceResumeTokenSha256 !== probe.facts.targetResumeTokenSha256 &&
+      probe.facts.sourceDeviceIdSha256 === sha256Text(sourceSession.deviceId) &&
+      probe.facts.targetDeviceIdSha256 === sha256Text(targetSession.deviceId) &&
+      remoteAuthRejected(context, probe.remote, /resume token\/session authorization failed/i) &&
+      audit[7]!.deviceIdDigest === probe.facts.sourceDeviceIdSha256;
+  }),
 );
 define(
   "O1-C25-INVOCATION-AUTHORIZATION-REJECT",
-  semanticEvent(["control_result", "gateway_snapshot", "wire_event"], (candidate) =>
-    (candidate.stepId === "o1-c25.unknown-session-invoke" ||
-      candidate.rsid === "rs_unregistered") &&
-    (
-      candidate.faultClass === "auth" ||
-      candidate.fault_class === "auth" ||
-      /not registered|unknown session|foreign session/i.test(String(candidate.message ?? candidate.error ?? ""))
-    )),
+  safe((context) => {
+    const foreign = rawRegistrationFact(context, "o1-c25.foreign-session-register");
+    const control = exactControlRecord(context, "o1-c25.unknown-session-invoke");
+    if (foreign === null || control === null) return false;
+    const argumentsValue = objectValue(control.request.arguments);
+    const envelope = objectValue(argumentsValue?.envelope);
+    const payload = objectValue(envelope?.payload);
+    const outcome = objectValue(control.result.outcome);
+    if (
+      control.request.action !== "invoke_local" ||
+      envelope === null ||
+      payload === null ||
+      outcome === null ||
+      envelope.type !== "invoke" ||
+      envelope.rsid !== foreign.rsid ||
+      typeof payload.invocation_id !== "string" ||
+      control.result.crashed !== false ||
+      outcome.kind !== "error" ||
+      outcome.faultClass !== "auth" ||
+      outcome.message !== "invoke targets an unregistered rsid" ||
+      outcome.outcome !== "known" ||
+      outcome.retryable !== false ||
+      outcome.replayed !== false ||
+      outcome.addinContacted !== false ||
+      exactFixtureExecutionCount(context, payload.invocation_id) !== 0
+    ) {
+      return false;
+    }
+    const bridge = snapshots(context, "bridge_snapshot").find((snapshot) =>
+      snapshot.stepId === "o1-c25.bridge-snapshot");
+    return bridge !== undefined &&
+      arrayValue(bridge.invocations).every((entry) =>
+        objectValue(entry)?.invocationId !== payload.invocation_id);
+  }),
 );
 
 define("O1-C26-N-COMPATIBLE", exactHelloAccepted("o1-c26.version-n"));
@@ -2375,34 +2774,76 @@ define(
 
 define(
   "O1-C34-DOCUMENT-SCHEMA",
-  safe((context) =>
-    rawHasResponseType(context, "o1-c34.document-schema", "session_registered") &&
-    snapshotHas(context, "gateway_snapshot", (candidate) => {
-      if (
-        typeof candidate.document_id !== "string" ||
-        typeof candidate.title !== "string" ||
-        typeof candidate.is_workshared !== "boolean" ||
-        typeof candidate.is_active !== "boolean"
-      ) {
-        return false;
-      }
-      return candidate.path_digest === null ||
-        (typeof candidate.path_digest === "string" && SHA256_PATTERN.test(candidate.path_digest));
-    })),
+  safe((context) => {
+    const registration = rawRegistrationFact(context, "o1-c34.document-schema");
+    if (registration === null) return false;
+    const session = gatewaySession(context, String(registration.rsid));
+    const documents = arrayValue(session?.documents);
+    const document = objectValue(documents[0]);
+    if (
+      session === null ||
+      typeof session.deviceId !== "string"
+    ) {
+      return false;
+    }
+    const audit = exactC34AuthorizationAudit(context, sha256Text(session.deviceId));
+    return audit !== null &&
+      session.rsid === registration.rsid &&
+      session.localSessionKey === "raw:c34" &&
+      session.tenantId === registration.tenantId &&
+      session.userId === registration.userId &&
+      session.seatId === registration.seatId &&
+      registration.seatGranted === true &&
+      documents.length === 1 &&
+      document !== null &&
+      document.document_id === "doc-raw-001" &&
+      document.title === "Raw conformance document" &&
+      typeof document.path_digest === "string" &&
+      SHA256_PATTERN.test(document.path_digest) &&
+      document.is_workshared === false &&
+      document.is_active === true &&
+      session.activeDocument === "doc-raw-001" &&
+      audit[3]!.deviceIdDigest === sha256Text(session.deviceId);
+  }),
 );
 define(
   "O1-C34-SEAT-SPOOF-REJECTED",
-  safe((context) =>
-    rawFault(context, "o1-c34.seat-spoof", "auth", /seat|identity|claim|principal/i) &&
-    hasDomainObject(context, ["gateway_snapshot", "wire_event"], (candidate) =>
-      candidate.auditEvent === "identity_claim_rejected" && candidate.claim === "seat")),
+  safe((context) => {
+    const registration = rawRegistrationFact(context, "o1-c34.document-schema");
+    if (registration === null) return false;
+    const session = gatewaySession(context, String(registration.rsid));
+    if (session === null || typeof session.deviceId !== "string") return false;
+    const audit = exactC34AuthorizationAudit(context, sha256Text(session.deviceId));
+    return audit !== null &&
+      rawFault(
+        context,
+        "o1-c34.seat-spoof",
+        "auth",
+        /bridge-claimed principal or seat authority/i,
+      ) &&
+      audit[5]!.deviceIdDigest === audit[3]!.deviceIdDigest &&
+      audit[5]!.connectionIdDigest !== audit[3]!.connectionIdDigest;
+  }),
 );
 define(
   "O1-C34-USER-SPOOF-REJECTED",
-  safe((context) =>
-    rawFault(context, "o1-c34.user-spoof", "auth", /user|identity|claim|principal/i) &&
-    hasDomainObject(context, ["gateway_snapshot", "wire_event"], (candidate) =>
-      candidate.auditEvent === "identity_claim_rejected" && candidate.claim === "user")),
+  safe((context) => {
+    const registration = rawRegistrationFact(context, "o1-c34.document-schema");
+    if (registration === null) return false;
+    const session = gatewaySession(context, String(registration.rsid));
+    if (session === null || typeof session.deviceId !== "string") return false;
+    const audit = exactC34AuthorizationAudit(context, sha256Text(session.deviceId));
+    return audit !== null &&
+      rawFault(
+        context,
+        "o1-c34.user-spoof",
+        "auth",
+        /bridge-claimed principal or seat authority/i,
+      ) &&
+      audit[7]!.deviceIdDigest === audit[3]!.deviceIdDigest &&
+      audit[7]!.connectionIdDigest !== audit[3]!.connectionIdDigest &&
+      audit[7]!.connectionIdDigest !== audit[5]!.connectionIdDigest;
+  }),
 );
 
 function c35RenewalEvidence(
