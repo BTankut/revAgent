@@ -67,6 +67,39 @@ The C19 binding programs begin with isolated fresh trios using exact
 execution-plan entrypoint hashes. State from one binding is held in a private
 temporary instance root and removed only after every spawned child exits.
 
+## Parent-owned raw binding hooks
+
+`createRawBindingStepHooks` installs binding-specific `send_binding_frame`
+hooks for `createHarnessStepDriverWithRawBindingHooks`. The individual
+`createRawWssBindingDriver` and `createRawHttpSseBindingDriver` factories are
+also exported for a single binding. Each request accepts exactly one of a JSON
+`frame` or a raw UTF-8 `serializedFrame`; the latter is the intentional
+malformed-JSON injection path. A non-`hello` target requires an explicit
+`openingHello` in the factory options or a per-step `hello`. Pre-negotiation
+negative vectors set per-step `targetIsOpeningFrame: true`, which makes the
+target the first WSS message or the HTTP create body instead. A per-step
+`credential` may select an identity vector without retaining the token.
+
+The WSS hook accepts only `wss://<numeric-loopback>:<port>/bridge/v1`. It
+performs normal hostname/IP-SAN validation with `rejectUnauthorized: true`,
+loads an explicitly named public test CA, verifies the SHA-256 of the exact CA
+file bytes, and separately pins the presented DER leaf certificate. The
+Streamable HTTP/SSE hook accepts only the exact numeric-loopback
+`/bridge/v1/http/connections` route. It performs `POST` create, opens
+`GET <connection>/events`, and then performs `POST <connection>/messages` for
+a non-opening target. HTTPS uses the same CA and leaf-pin requirements;
+cleartext HTTP is loopback-only and rejects TLS options.
+
+Both hooks inherit the parent step deadline and `AbortSignal`, enforce bounded
+outbound, response, frame-count, parsed-evidence, and settle limits, and fail
+closed on local TLS, I/O, timeout, or evidence-bound failures. A completed
+remote rejection is still a successful parent control operation:
+`remoteOutcome` contains only bounded wire facts such as WSS frames/close or
+HTTP status/body digest and SSE frames. The hooks retain `stepId`, `action`,
+binding, direction, target byte count/SHA-256, frame source/type, credential
+source, and monotonic capture time. They never emit `actual`, `passed`, or a
+conformance verdict; only the parent evaluator may do that.
+
 Retained evidence belongs below
 `artifacts/conformance/rbp-v1/1.0-rc.1/`. The manifest defines the exact run,
 JUnit, aggregate, log, trace, journal, and metric path templates. Nothing below

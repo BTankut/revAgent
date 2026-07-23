@@ -83,6 +83,18 @@ export type {
   StepObservationLineage,
 } from "./parentStepEngine.js";
 export {
+  createRawBindingStepHooks,
+  createRawHttpSseBindingDriver,
+  createRawWssBindingDriver,
+} from "./rawBindingDrivers.js";
+export type {
+  RawBindingDriverLimits,
+  RawBindingStepHookOptions,
+  RawBindingTlsTrust,
+  RawHttpSseBindingDriverOptions,
+  RawWssBindingDriverOptions,
+} from "./rawBindingDrivers.js";
+export {
   BRIDGE_CONTROL_ACTIONS,
   CASE_CONTROL_OBSERVATION_MAP,
   FIXTURE_CONTROL_ACTIONS,
