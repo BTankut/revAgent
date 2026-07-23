@@ -19,7 +19,14 @@ import { prepareProductionExecutionPlan } from "./productionPreparation.js";
 import { executeProductionConformanceRun } from "./productionSuiteRunner.js";
 import { runReconnectSoak } from "./soakRunner.js";
 import { assertPassingSoakReport } from "./soak.js";
-import type { AggregateInput, AggregateReport, ExecutionPlan, PassingValidationOptions, RunReport } from "./types.js";
+import type {
+  AggregateInput,
+  AggregateReport,
+  ExecutionPlan,
+  PassingValidationOptions,
+  RunReport,
+  SoakReport,
+} from "./types.js";
 import {
   assertPassingAggregateReport,
   assertPassingRunReport,
@@ -387,7 +394,7 @@ function assertRunMatchesPlan(report: RunReport, plan: ExecutionPlan): void {
 }
 
 function assertSoakMatchesPlan(
-  report: import("./types.js").SoakReport,
+  report: SoakReport,
   plan: ExecutionPlan,
 ): void {
   const expectedComponents = plan.components.map((component) => ({
@@ -492,7 +499,7 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     options.soakReportFile = resolveFrom(cwd, file);
     assertPassingSoakReport(report, options);
     assertSoakMatchesPlan(
-      report as import("./types.js").SoakReport,
+      report as SoakReport,
       context.plans[0]!,
     );
     process.stdout.write("RBP reconnect/proxy-churn soak: PASS\n");
