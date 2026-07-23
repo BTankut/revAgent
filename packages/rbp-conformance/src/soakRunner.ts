@@ -121,11 +121,7 @@ export async function runReconnectSoak(
   input: ReconnectSoakRunInput,
 ): Promise<{ report: SoakReport; reportPath: string }> {
   assertNoReconnectSoakOverrides(input);
-  assertTrustedProductionLaunch(input.repoRoot, "cli-bootstrap");
-  const plan = structuredClone(input.plan);
   const mode = input.mode;
-  const repoRoot = input.repoRoot;
-  const artifactRoot = input.artifactRoot;
   const requestedDurationOverride = input.requestedDurationMs;
   const cycleIntervalOverride = input.cycleIntervalMs;
   const sampleIntervalOverride = input.sampleIntervalMs;
@@ -162,6 +158,10 @@ export async function runReconnectSoak(
   if (cycleIntervalMs < 100) {
     throw new Error("soak intervals must be at least 100 ms");
   }
+  assertTrustedProductionLaunch(input.repoRoot, "cli-bootstrap");
+  const plan = structuredClone(input.plan);
+  const repoRoot = input.repoRoot;
+  const artifactRoot = input.artifactRoot;
   const adapter = await createProductionReconnectSoakAdapter({
     plan,
     repoRoot,
