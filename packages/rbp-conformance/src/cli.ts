@@ -8,8 +8,9 @@ import { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js"
 import { aggregateReportToJUnitXml, runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { stableJson } from "./stableJson.js";
+import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { assertPassingSoakReport } from "./soak.js";
-import type { AggregateInput, AggregateReport, PassingValidationOptions, RunReport } from "./types.js";
+import type { AggregateInput, AggregateReport, ExecutionPlan, PassingValidationOptions, RunReport } from "./types.js";
 import {
   assertPassingAggregateReport,
   assertPassingRunReport,
@@ -22,6 +23,7 @@ function usage(): never {
   throw new Error(
     [
       "Usage:",
+      "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
       "  rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
@@ -30,6 +32,37 @@ function usage(): never {
       "  rbp-conformance summary <aggregate.json> <summary.md>",
     ].join("\n"),
   );
+}
+
+export async function runAsyncCli(args: string[], cwd: string = process.cwd()): Promise<void> {
+  const [command, planFile, ...flags] = args;
+  if (command !== "run-c19" || planFile === undefined) usage();
+  let repoRoot = cwd;
+  let artifactRoot = cwd;
+  let seed = `supervised-c19:${Date.now()}`;
+  for (let index = 0; index < flags.length; index += 2) {
+    const name = flags[index];
+    const value = flags[index + 1];
+    if (value === undefined) usage();
+    if (name === "--repo-root") repoRoot = resolveFrom(cwd, value);
+    else if (name === "--artifact-root") artifactRoot = resolveFrom(cwd, value);
+    else if (name === "--seed") seed = value;
+    else usage();
+  }
+  const result = await executeSupervisedC19Run({
+    plan: readJson(planFile, cwd) as ExecutionPlan,
+    repoRoot,
+    artifactRoot,
+    seed,
+  });
+  process.stdout.write(`${stableJson({
+    reportPath: result.reportPath,
+    runStatus: result.report.run.status,
+    exitCode: result.report.run.exitCode,
+    executedCases: result.report.cases.filter(({ status }) => status !== "not_run").map(({ caseId, status }) => ({ caseId, status })),
+    notRunCount: result.report.cases.filter(({ status }) => status === "not_run").length,
+  })}\n`);
+  process.exitCode = result.report.run.exitCode ?? 1;
 }
 
 function resolveFrom(cwd: string, file: string): string {
@@ -166,14 +199,16 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
 const isDirectInvocation = process.argv[1] !== undefined && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url;
 
 if (isDirectInvocation) {
-  try {
-    runCli(process.argv.slice(2));
-  } catch (error) {
+  const main = async (): Promise<void> => {
+    if (process.argv[2] === "run-c19") await runAsyncCli(process.argv.slice(2));
+    else runCli(process.argv.slice(2));
+  };
+  main().catch((error) => {
     if (error instanceof ConformanceValidationError) {
       process.stderr.write(`${error.message}\n${stableJson({ issues: error.issues })}`);
     } else {
       process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
     }
     process.exitCode = 1;
-  }
+  });
 }

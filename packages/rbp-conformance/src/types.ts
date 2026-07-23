@@ -282,7 +282,7 @@ export interface EvidenceAssertionRecord {
 }
 
 export interface ProcessObservationRecord {
-  schemaVersion: "rbp-process-observation/v1";
+  schemaVersion: "rbp-process-observation/v2";
   observationId: string;
   runId: string;
   caseId: string;
@@ -295,18 +295,20 @@ export interface ProcessObservationRecord {
     | "bridge_snapshot"
     | "fixture_snapshot"
     | "fixture_execution_count"
-    | "resource_sample";
+    | "resource_sample"
+    | "process_lifecycle";
   at: string;
   payload: unknown;
 }
 
 export interface CaseEvidenceDocument {
-  schemaVersion: "rbp-case-evidence/v1";
+  schemaVersion: "rbp-case-evidence/v2";
   runId: string;
   caseId: string;
   source: "journal_snapshot" | "case_evidence";
+  evaluationOwner: "parent_runner";
   observations: ProcessObservationRecord[];
-  assertions: EvidenceAssertionRecord[];
+  evaluations: EvidenceAssertionRecord[];
 }
 
 export interface WireTraceRecord {

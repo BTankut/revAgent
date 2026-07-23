@@ -13,31 +13,67 @@ otherwise nonterminal cases, false assertions, incomplete component identity,
 missing hashes, stale expected/observed binaries, leak counters, or any
 manifest/spec mismatch.
 
-`executeConformanceRun` starts only through an injected real three-process
-driver. It runs both bindings for every canonical case and derives assertion
-status in the runner. A driver returns raw observations and measurements; it
-cannot return a case `passed` bit. Every one of the 167 frozen assertions has a
-versioned component/binding/observation-kind requirement. Missing controls,
-missing observations, cross-case ids, duplicate ids, a missing binding, or an
-unsupported case stays failed. The package does not include a synthetic
-passing driver.
+`executeSupervisedC19Run` is the first executable T6 slice. For each supported
+binding it directly spawns a fresh Gateway stub, Bridge simulator, and add-in
+loopback fixture as three separate OS child processes. The parent runner owns
+PID/start/readiness/exit evidence, sends the framing vectors, reads fixture
+execution counts, and derives C19 outcomes from those raw events. No injected
+driver can provide `actual` or `passed`; those fields exist only in the
+parent-owned evaluation section of `rbp-case-evidence/v2`. The reusable adapter
+registry accepts raw observations only, while the separate parent-evaluator
+registry owns predicates. Complete-suite validators fail until both registries
+cover all forty canonical cases and both canonical bindings.
+
+This slice deliberately does **not** claim the complete T6 suite. C19 may pass,
+but the other 39 canonical cases remain explicit `not_run`, the run status is
+`failed`, and the process/report exit code is nonzero. Full O1-T6 and M1 cannot
+be green until real supervised executors exist for every case.
 
 `CASE_CONTROL_OBSERVATION_MAP` is the ordered forty-case choreography catalog.
 It pins the exact T3 fixture JSONL control, T4 Bridge JSONL control, T5 Gateway
 HTTP control, and parent-owned raw transport/process primitives needed by each
 case. Every canonical sub-vector is bound to named, same-case raw observations
-and the parent runner owns its predicate. `LiveConformanceStack.caseSupport`
-must positively declare support for each case/binding before execution. A
-negative declaration leaves that binding `not_run`, marks the case failed, and
-does not call the case executor.
-Each binding program begins with an isolated fresh trio using the exact
-execution-plan identities; state and credentials from one case cannot make a
-later case pass or fail.
+and the parent runner owns its predicate. Choreography without a supervised
+executor remains `not_run`; catalog presence alone is never executable
+evidence.
+`ParentStepEngine` is the generic parent-owned executor foundation for the
+remaining programs. It resolves binding-specific arguments, performs strict
+typed substitution and JSON-pointer captures, matches expected success/error/
+HTTP/close outcomes, and supports explicit async-start, async-join, and barrier
+semantics with deterministic evidence order. Driver outcomes and attached raw
+observations are strict-schema checked before use; opaque wire/tool payloads
+may contain ordinary domain fields named `actual` or `passed`, but neither a
+driver outcome nor an observation envelope may declare the parent verdict.
+Binding-specific raw WSS and Streamable HTTP/SSE frame drivers plug into the
+parent-harness hook; they report wire facts only and cannot declare a
+conformance verdict. A catalog step's `expectedOutcome` describes the parent
+control operation, not the remote protocol verdict: a negative
+`send_binding_frame` step succeeds when injection and capture complete, while
+the peer's WSS close or HTTP response remains a raw wire observation for the
+parent evaluator. The generic close/HTTP outcomes are reserved for driver
+operations whose own terminal is that close/response. The complete
+step/handle/capture/substitution graph is
+preflighted before the first dispatch, inputs and resolved outcomes are
+snapshotted, action/component/kind provenance is enforced, and parent-attached
+step-to-observation lineage is retained for requirement resolution. Each step
+has a catalog-owned deadline (including the longer C27 waits); cancellation
+uses a real `AbortSignal` and requires the supervisor's separately bounded
+abort-and-drain callback. Unresolved tokens, malformed outcomes, duplicate
+captures or observations, unjoined handles, timeout, and incomplete cleanup
+fail closed. Raw frame hooks permit the canonical C16 boundary payloads while
+retained wire observations remain bounded digests/length metadata rather than
+multi-megabyte frame copies.
+The C19 binding programs begin with isolated fresh trios using exact
+execution-plan entrypoint hashes. State from one binding is held in a private
+temporary instance root and removed only after every spawned child exits.
 
 Retained evidence belongs below
 `artifacts/conformance/rbp-v1/1.0-rc.1/`. The manifest defines the exact run,
 JUnit, aggregate, log, trace, journal, and metric path templates. Nothing below
 that path is committed by this scaffold and no case is synthesized as passed.
+The supervised writer confines every target below that root, uses 0700
+directories and 0600 files, and commits each file with exclusive temporary
+creation, file fsync, atomic rename, and directory fsync on Linux.
 
 ## CLI
 
@@ -50,12 +86,14 @@ rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--ex
 rbp-conformance junit <run-report.json> <junit.xml>
 rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>]
 rbp-conformance summary <aggregate.json> <summary.md>
+rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]
 ```
 
-Validation commands are pass gates: a structurally valid but unexecuted report
-still exits nonzero. Fixture, simulator, and stub runners plug in through the
-exported `HarnessComponentAdapter`, `ProcessCommandDescriptor`, and
-`ExecutionPlan` interfaces.
+Validation commands are pass gates: a structurally valid but partially
+executed report still exits nonzero. `run-c19` also exits nonzero by design
+because its retained report leaves 39 cases `not_run`. Fixture, simulator, and
+stub commands are supplied by the versioned `ExecutionPlan`; the supervisor,
+not an adapter or child process, performs every spawn and evaluation.
 
 ## Retained evidence rules
 
@@ -66,9 +104,11 @@ rejected. Required evidence is never allowed to be zero bytes.
 
 - `wire_trace` is UTF-8 JSON Lines using `rbp-wire-trace/v1`; each row binds the
   run, case, binding, status, and in-case timestamp.
-- `journal_snapshot` and optional `case_evidence` are strict
-  `rbp-case-evidence/v1` JSON documents. They retain the raw, same-run,
-  same-case process observations and their exact component/binding identity.
+- Legacy `journal_snapshot` documents remain readable as
+  `rbp-case-evidence/v1`. New supervised `case_evidence` uses
+  `rbp-case-evidence/v2`, separating raw same-run/same-case observations from
+  the `parent_runner` evaluation section and retaining exact
+  component/binding/process identity.
   Every required assertion must identify
   exactly one same-case artifact by SHA-256, and that artifact must contain the
   exact canonical assertion id, sub-vector id, statement, category, result,

@@ -81,8 +81,10 @@ describe("exact forty-case control and observation catalog", () => {
       expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
       for (const step of program.steps) {
         expect(step.expectedOutcome).toEqual({ kind: "success" });
-        expect(step.execution).toEqual({ mode: "sequential" });
+        expect(["sequential", "async_start", "async_join", "barrier"]).toContain(step.execution.mode);
         expect(step.captures).toEqual([]);
+        expect(step.parentTimeoutMs).toBeGreaterThan(0);
+        expect(step.parentTimeoutMs).toBeLessThanOrEqual(300_000);
         expect(() => assertValidCaseControlStepSemantics(step)).not.toThrow();
         const actions = step.channel === "gateway_http_control"
           ? GATEWAY_CONTROL_ACTIONS
@@ -147,6 +149,11 @@ describe("exact forty-case control and observation catalog", () => {
         { name: "same", source: "result", jsonPointer: "/two" },
       ],
     })).toThrow(/unique/u);
+    expect(() => assertValidCaseControlStepSemantics({
+      ...template,
+      expectedOutcome: { kind: "control_error", code: "planned_error" },
+      captures: [{ name: "wrong.source", source: "result", jsonPointer: "" }],
+    })).toThrow(/requires an expected success/u);
   });
 
   it("uses the exact action-specific T3/T4/T5 request-key surfaces for both bindings", () => {
@@ -165,6 +172,45 @@ describe("exact forty-case control and observation catalog", () => {
         }
       }
     }
+  });
+
+  it("gives C27 parent-owned deadlines enough room for the canonical long waits", () => {
+    const c27 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C27")!;
+    for (const stepId of ["o1-c27.await-attempts", "o1-c27.await-steady-reset"]) {
+      const step = c27.steps.find((candidate) => candidate.stepId === stepId)!;
+      const requested = Number(step.arguments.common?.timeoutMs);
+      expect(step.parentTimeoutMs).toBeGreaterThan(requested);
+    }
+  });
+
+  it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {
+    const c12 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C12")!;
+    expect(c12.steps.find(({ stepId }) => stepId === "o1-c12.first")?.execution).toEqual({
+      mode: "async_start",
+      handle: "o1-c12.first",
+    });
+    expect(c12.steps.find(({ stepId }) => stepId === "o1-c12.same-rsid-second")?.execution).toEqual({
+      mode: "async_start",
+      handle: "o1-c12.same-rsid-second",
+    });
+    expect(c12.steps.find(({ stepId }) => stepId === "o1-c12.cross-rsid")?.execution).toEqual({
+      mode: "async_start",
+      handle: "o1-c12.cross-rsid",
+    });
+    expect(c12.steps.find(({ stepId }) => stepId === "o1-c12.release-first")?.execution).toEqual({
+      mode: "async_join",
+      handles: ["o1-c12.first", "o1-c12.same-rsid-second", "o1-c12.cross-rsid"],
+    });
+
+    const c17 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C17")!;
+    expect(c17.steps.find(({ stepId }) => stepId === "o1-c17.dispatch")?.execution).toEqual({
+      mode: "async_start",
+      handle: "o1-c17.dispatch",
+    });
+    expect(c17.steps.find(({ stepId }) => stepId === "o1-c17.release")?.execution).toEqual({
+      mode: "async_join",
+      handles: ["o1-c17.dispatch"],
+    });
   });
 
   it("requires fixture execution evidence for every execution-count assertion", () => {

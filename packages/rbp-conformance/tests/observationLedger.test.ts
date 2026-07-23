@@ -27,7 +27,7 @@ describe("same-case process observation binding", () => {
           const observationId = `obs-${++ordinal}`;
           ids.push(observationId);
           ledger.add({
-            schemaVersion: "rbp-process-observation/v1",
+            schemaVersion: "rbp-process-observation/v2",
             observationId,
             runId: "run-1",
             caseId,
@@ -40,7 +40,11 @@ describe("same-case process observation binding", () => {
         }
       }
     }
-    const results = ledger.evaluate([{ assertionId: assertion.id, actual: true, observationIds: ids }]);
+    const results = ledger.evaluate([{
+      assertionId: assertion.id,
+      observationIds: ids,
+      evaluate: () => true,
+    }]);
     expect(results.find(({ assertionId }) => assertionId === assertion.id)?.passed).toBe(true);
     expect(results.filter(({ passed }) => passed).length).toBe(1);
   });
@@ -48,7 +52,7 @@ describe("same-case process observation binding", () => {
   it("rejects a child-supplied pass bit and cross-case observation identity", () => {
     const ledger = new CaseObservationLedger("run-1", "O1-C01");
     const wrong = {
-      schemaVersion: "rbp-process-observation/v1",
+      schemaVersion: "rbp-process-observation/v2",
       observationId: "wrong-case",
       runId: "run-1",
       caseId: "O1-C02",
@@ -59,11 +63,24 @@ describe("same-case process observation binding", () => {
       payload: {},
     } as ProcessObservationRecord;
     expect(() => ledger.add(wrong)).toThrow(/not bound/u);
+    expect(() => ledger.add({
+      ...wrong,
+      observationId: "self-asserted",
+      caseId: "O1-C01",
+      actual: true,
+      passed: true,
+    } as never)).toThrow(/unknown or missing top-level fields/u);
+    expect(() => ledger.evaluate([{
+      assertionId: canonicalManifest.requiredAssertions["O1-C01"]![0]!.id,
+      observationIds: [],
+      evaluate: () => true,
+      passed: true,
+    } as never])).toThrow(/must not carry/u);
     expect(() => ledger.evaluate([{
       assertionId: canonicalManifest.requiredAssertions["O1-C01"]![0]!.id,
       actual: true,
       observationIds: [],
-      passed: true,
+      evaluate: () => true,
     } as never])).toThrow(/must not carry/u);
   });
 });

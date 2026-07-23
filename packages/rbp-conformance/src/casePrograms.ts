@@ -77,6 +77,12 @@ export interface BindingArguments {
   streamable_http_sse?: Readonly<Record<string, unknown>>;
 }
 
+/**
+ * Parent control-operation terminal, not the remote protocol verdict carried
+ * by a wire observation. For example, a negative send_binding_frame vector
+ * expects success when injection/capture succeeds even if the peer then emits
+ * an HTTP rejection or WSS close.
+ */
 export type StepExpectedOutcome =
   | { kind: "success" }
   | { kind: "control_error"; code: string; messageIncludes?: string }
@@ -101,6 +107,7 @@ interface BaseControlStep {
   expectedOutcome: StepExpectedOutcome;
   execution: StepExecutionSemantics;
   captures: StepCaptureMetadata[];
+  parentTimeoutMs: number;
 }
 
 export type CaseControlStep =
@@ -172,6 +179,7 @@ function gateway(
   action: GatewayControlAction,
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
+  parentTimeoutMs = 30_000,
 ): CaseControlStep {
   return {
     stepId,
@@ -183,6 +191,7 @@ function gateway(
     expectedOutcome: { kind: "success" },
     execution: { mode: "sequential" },
     captures: [],
+    parentTimeoutMs,
   };
 }
 
@@ -191,6 +200,7 @@ function bridge(
   action: BridgeControlAction,
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
+  parentTimeoutMs = 30_000,
 ): CaseControlStep {
   return {
     stepId,
@@ -202,6 +212,7 @@ function bridge(
     expectedOutcome: { kind: "success" },
     execution: { mode: "sequential" },
     captures: [],
+    parentTimeoutMs,
   };
 }
 
@@ -210,6 +221,7 @@ function fixture(
   action: FixtureControlAction,
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
+  parentTimeoutMs = 30_000,
 ): CaseControlStep {
   return {
     stepId,
@@ -221,6 +233,7 @@ function fixture(
     expectedOutcome: { kind: "success" },
     execution: { mode: "sequential" },
     captures: [],
+    parentTimeoutMs,
   };
 }
 
@@ -229,6 +242,7 @@ function harness(
   action: HarnessAction,
   actionArguments: BindingArguments = args(),
   phase: StepPhase = "stimulus",
+  parentTimeoutMs = 30_000,
 ): CaseControlStep {
   return {
     stepId,
@@ -240,7 +254,15 @@ function harness(
     expectedOutcome: { kind: "success" },
     execution: { mode: "sequential" },
     captures: [],
+    parentTimeoutMs,
   };
+}
+
+function withExecution(
+  step: CaseControlStep,
+  execution: StepExecutionSemantics,
+): CaseControlStep {
+  return { ...step, execution };
 }
 
 const METADATA_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
@@ -251,6 +273,9 @@ function assertMetadataName(value: string, label: string): void {
 }
 
 export function assertValidCaseControlStepSemantics(step: CaseControlStep): void {
+  if (!Number.isInteger(step.parentTimeoutMs) || step.parentTimeoutMs < 1 || step.parentTimeoutMs > 300_000) {
+    throw new Error(`${step.stepId} parent timeout must be an integer from 1 through 300000 milliseconds`);
+  }
   const expected = step.expectedOutcome;
   switch (expected.kind) {
     case "success":
@@ -311,11 +336,23 @@ export function assertValidCaseControlStepSemantics(step: CaseControlStep): void
     if (captureNames.has(capture.name)) throw new Error(`${step.stepId} capture names must be unique`);
     captureNames.add(capture.name);
     if (capture.source === "http_header") {
+      if (expected.kind !== "http_status") {
+        throw new Error(`${step.stepId} HTTP-header capture requires an expected HTTP outcome`);
+      }
       if (!HTTP_HEADER_NAME.test(capture.header)) throw new Error(`${step.stepId} capture header is invalid`);
     } else if (capture.source === "close") {
+      if (expected.kind !== "close") {
+        throw new Error(`${step.stepId} close capture requires an expected close outcome`);
+      }
       if (capture.field !== "code" && capture.field !== "reason") throw new Error(`${step.stepId} close capture field is invalid`);
     } else if (capture.jsonPointer !== "" && !capture.jsonPointer.startsWith("/")) {
       throw new Error(`${step.stepId} capture JSON pointer must be empty or begin with a slash`);
+    } else if (capture.source === "result" && expected.kind !== "success") {
+      throw new Error(`${step.stepId} result capture requires an expected success outcome`);
+    } else if (capture.source === "control_error" && expected.kind !== "control_error") {
+      throw new Error(`${step.stepId} control-error capture requires an expected control-error outcome`);
+    } else if (capture.source === "http_body" && expected.kind !== "http_status") {
+      throw new Error(`${step.stepId} HTTP-body capture requires an expected HTTP outcome`);
     }
   }
 }
@@ -610,10 +647,25 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         timeoutMs: 5_000,
       }), "setup"),
       fixture("o1-c12.stall-first", "plan_fault", args({ requestId: invocationRef("O1-C12", "first"), fault: { stall: true } })),
-      bridge("o1-c12.first", "invoke_local", args({ envelope: envelope("O1-C12", "first") })),
-      bridge("o1-c12.same-rsid-second", "invoke_local", args({ envelope: envelope("O1-C12", "same-rsid-second") })),
-      bridge("o1-c12.cross-rsid", "invoke_local", args({ envelope: "{{case.second_rsid_envelope}}" })),
-      fixture("o1-c12.release-first", "release_stall", args({ requestId: invocationRef("O1-C12", "first") })),
+      withExecution(
+        bridge("o1-c12.first", "invoke_local", args({ envelope: envelope("O1-C12", "first") })),
+        { mode: "async_start", handle: "o1-c12.first" },
+      ),
+      withExecution(
+        bridge("o1-c12.same-rsid-second", "invoke_local", args({ envelope: envelope("O1-C12", "same-rsid-second") })),
+        { mode: "async_start", handle: "o1-c12.same-rsid-second" },
+      ),
+      withExecution(
+        bridge("o1-c12.cross-rsid", "invoke_local", args({ envelope: "{{case.second_rsid_envelope}}" })),
+        { mode: "async_start", handle: "o1-c12.cross-rsid" },
+      ),
+      withExecution(
+        fixture("o1-c12.release-first", "release_stall", args({ requestId: invocationRef("O1-C12", "first") })),
+        {
+          mode: "async_join",
+          handles: ["o1-c12.first", "o1-c12.same-rsid-second", "o1-c12.cross-rsid"],
+        },
+      ),
     ],
     requiredHarnessCapabilities: ["two_registered_sessions", "concurrent_control_requests", "fixture_request_execution_count"],
   },
@@ -668,13 +720,19 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     controls: [
       ...sessionSetup("O1-C17"),
       fixture("o1-c17.stall", "plan_fault", args({ requestId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}", fault: { stall: true } })),
-      gateway("o1-c17.dispatch", "dispatch_invoke", args({ request: "{{vectors.c17_dispatch_invoke}}" })),
+      withExecution(
+        gateway("o1-c17.dispatch", "dispatch_invoke", args({ request: "{{vectors.c17_dispatch_invoke}}" })),
+        { mode: "async_start", handle: "o1-c17.dispatch" },
+      ),
       gateway("o1-c17.cancel", "dispatch_cancel", args({ request: {
         rsid: "{{case.rsid}}",
         invocationId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}",
         reason: "user_requested",
       } })),
-      fixture("o1-c17.release", "release_stall", args({ requestId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}" })),
+      withExecution(
+        fixture("o1-c17.release", "release_stall", args({ requestId: "{{vectors.c17_dispatch_invoke.request.payload.invocation_id}}" })),
+        { mode: "async_join", handles: ["o1-c17.dispatch"] },
+      ),
       bridge("o1-c17.flush", "flush_outbound", args({ rsid: "{{case.rsid}}" })),
     ],
     requiredHarnessCapabilities: ["concurrent_control_requests", "late_terminal_capture", "journal_snapshot"],
@@ -843,14 +901,14 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         operator: "minimum_count",
         expected: 8,
         timeoutMs: 180_000,
-      })),
+      }), "stimulus", 190_000),
       harness("o1-c27.await-steady-reset", "await_condition", args({
         source: "bridge_reconnect_schedule",
         jsonPointer: "/steadyDurationMs",
         operator: "crosses",
         expected: 120_000,
         timeoutMs: 130_000,
-      })),
+      }), "stimulus", 140_000),
     ],
     requiredHarnessCapabilities: ["deterministic_random", "reconnect_schedule_capture", "steady_duration_control"],
   },
@@ -1146,6 +1204,7 @@ const OBSERVATION_POINTERS: Readonly<Record<ProcessObservationRecord["kind"], re
   ],
   fixture_execution_count: ["/executionCounts", "/methodExecutionCounts"],
   resource_sample: ["/residentBytes", "/openFileDescriptorCount", "/journalPendingCount"],
+  process_lifecycle: ["/spawnOwner", "/identity", "/process"],
 };
 
 function finalEvidenceSteps(caseId: string): CaseControlStep[] {
@@ -1230,6 +1289,13 @@ function observations(caseId: string, steps: readonly CaseControlStep[]): CaseOb
       sourceStepIds: [`${prefix}.resource-sample`],
       requiredJsonPointers: [...OBSERVATION_POINTERS.resource_sample],
     })),
+    ...(["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] as const).map((componentId) => ({
+      alias: `process.${componentId}`,
+      componentId,
+      kind: "process_lifecycle" as const,
+      sourceStepIds: [`${prefix}.isolated-stack`],
+      requiredJsonPointers: [...OBSERVATION_POINTERS.process_lifecycle],
+    })),
   ];
   return requirements;
 }
@@ -1284,7 +1350,18 @@ function aliasesForCategory(category: AssertionCategory): string[] {
     case "compatibility":
     case "schema":
     case "wire_behavior":
-      return ["gateway.control", "bridge.control", "fixture.control", "wire.gateway_stub", "wire.bridge_simulator", "wire.addin_loopback_fixture"];
+      return [
+        "gateway.control",
+        "bridge.control",
+        "fixture.control",
+        "wire.gateway_stub",
+        "wire.bridge_simulator",
+        "wire.addin_loopback_fixture",
+        "fixture.execution",
+        "process.gateway_stub",
+        "process.bridge_simulator",
+        "process.addin_loopback_fixture",
+      ];
   }
 }
 

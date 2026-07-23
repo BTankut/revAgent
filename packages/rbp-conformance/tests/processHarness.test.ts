@@ -30,7 +30,7 @@ describe("strict JSONL process control", () => {
       requiredActions: ["ping", "fail", "stall", "release", "shutdown"],
     });
     const result = await child.request("ping", { value: "observed" });
-    expect(result).toEqual({ echoed: "observed", passed: true });
+    expect(result).toEqual({ echoed: "observed", observation: "raw" });
     const stopped = await child.stop();
     expect(stopped.exitCode).toBe(0);
     expect(child.process.pid).toBeGreaterThan(0);
@@ -55,11 +55,11 @@ describe("strict JSONL process control", () => {
     } satisfies Partial<ControlResponseError>);
     await expect(concurrentSuccess.response).resolves.toEqual({
       echoed: "concurrent-after-error",
-      passed: true,
+      observation: "raw",
     });
     await expect(child.request("ping", { value: "after-error" })).resolves.toEqual({
       echoed: "after-error",
-      passed: true,
+      observation: "raw",
     });
     await expect(child.stop()).resolves.toMatchObject({ exitCode: 0 });
   });

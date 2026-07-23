@@ -13,8 +13,55 @@ export { CANONICAL_RESOURCE_POLICY, emptyResourceProfile, evaluateResourceSample
 export { assertPassingSoakReport, evaluatePassingSoak, validateSoakReport } from "./soak.js";
 export { runReconnectSoak } from "./soakRunner.js";
 export type { ReconnectSoakAdapter, SoakClock, SoakCycleObservation } from "./soakRunner.js";
-export { executeConformanceRun } from "./suiteRunner.js";
-export type { BindingExecutionEvidence, CaseExecutionSupport, LiveConformanceStack, ThreeProcessSuiteDriver } from "./suiteRunner.js";
+export {
+  assertCompleteParentCaseEvaluatorRegistry,
+  evaluateSupervisedCaseExecutions,
+  executeConformanceRun,
+  validateParentCaseEvaluatorRegistry,
+} from "./suiteRunner.js";
+export type {
+  ConformanceRunInput,
+  ConformanceRunResult,
+  EvaluatedSupervisedCase,
+  ParentCaseEvaluatorRegistry,
+  ParentOwnedCaseEvaluator,
+  SupervisedBindingExecution,
+} from "./suiteRunner.js";
+export {
+  assertCompleteObservationOnlyAdapterRegistry,
+  assertObservationOnlyBatch,
+  validateObservationOnlyAdapterRegistry,
+} from "./adapters.js";
+export type {
+  ObservationOnlyAdapterContext,
+  ObservationOnlyAdapterRegistry,
+  ObservationOnlyCaseAdapter,
+  ParentOwnedComponentView,
+  RawCaseObservationBatch,
+} from "./adapters.js";
+export { executeSupervisedC19Run } from "./supervisedC19.js";
+export type {
+  SupervisedC19RunInput,
+  SupervisedC19RunResult,
+} from "./supervisedC19.js";
+export {
+  ParentStepEngine,
+  ParentStepOutcomeError,
+  createHarnessStepDriverWithRawBindingHooks,
+  executeParentSteps,
+  observationsForRequirement,
+} from "./parentStepEngine.js";
+export type {
+  ParentStepAbortContext,
+  ParentStepDriver,
+  ParentStepDriverRequest,
+  ParentStepDrivers,
+  ParentStepExecutionEvidence,
+  ParentStepExecutionInput,
+  RawBindingStepHooks,
+  RawStepOutcome,
+  StepObservationLineage,
+} from "./parentStepEngine.js";
 export {
   BRIDGE_CONTROL_ACTIONS,
   CASE_CONTROL_OBSERVATION_MAP,
@@ -34,7 +81,7 @@ export type {
   StepExecutionSemantics,
   StepExpectedOutcome,
 } from "./casePrograms.js";
-export { runCli } from "./cli.js";
+export { runAsyncCli, runCli } from "./cli.js";
 export {
   assertPassingAggregateReport,
   assertPassingRunReport,
@@ -48,15 +95,10 @@ export {
 export { sha256Json, sha256Text, stableJson } from "./stableJson.js";
 export { buildExecutionPlan, resolveSourceIdentity, sha256File } from "./executionPlan.js";
 export { ASSERTION_EVIDENCE_BINDINGS, CaseObservationLedger } from "./observationLedger.js";
+export type { ParentAssertionProbe } from "./observationLedger.js";
+export { SecureEvidenceStore } from "./secureEvidenceStore.js";
 export { ControlResponseError, MAX_CONTROL_LINE_BYTES, StrictJsonlProcess, StrictReadyProcess, strictHttpControl } from "./processHarness.js";
 export type { StartedControlRequest } from "./processHarness.js";
 export { assertLinuxProcfs, sampleProcessResources, survivingProcesses } from "./processResources.js";
 export { ASSERTION_CATEGORIES, BINDINGS, COMPONENT_IDS } from "./types.js";
-export type {
-  ConformanceCaseExecutor,
-  HarnessAdapterRegistry,
-  HarnessComponentAdapter,
-  HarnessStartContext,
-  RunningHarnessComponent,
-} from "./adapters.js";
 export type * from "./types.js";

@@ -164,13 +164,13 @@ function parseEvidenceAssertions(value: unknown, issuePath: string, issues: Vali
       typeof entry.subvectorId !== "string" ||
       typeof entry.statement !== "string" ||
       typeof entry.category !== "string" ||
-      entry.passed !== true ||
+      typeof entry.passed !== "boolean" ||
       !Array.isArray(entry.observationIds) ||
       entry.observationIds.length < 1 ||
       !entry.observationIds.every((id) => typeof id === "string") ||
       new Set(entry.observationIds).size !== entry.observationIds.length
     ) {
-      push(issues, `${issuePath}/${index}`, "artifact.assertion_value", "evidence assertion requires canonical identity/statement/category fields and passed=true");
+      push(issues, `${issuePath}/${index}`, "artifact.assertion_value", "evidence assertion requires canonical identity/statement/category fields and a runner-derived boolean outcome");
       return [];
     }
     return [entry as unknown as EvidenceAssertionRecord];
@@ -195,13 +195,13 @@ function parseObservations(
       return [];
     }
     if (
-      entry.schemaVersion !== "rbp-process-observation/v1" ||
+      (entry.schemaVersion !== "rbp-process-observation/v1" && entry.schemaVersion !== "rbp-process-observation/v2") ||
       typeof entry.observationId !== "string" ||
       entry.runId !== report.run.runId ||
       entry.caseId !== result.caseId ||
       entry.binding !== "wss" && entry.binding !== "streamable_http_sse" ||
       !["gateway_stub", "bridge_simulator", "addin_loopback_fixture"].includes(String(entry.componentId)) ||
-      !["control_result", "wire_event", "gateway_snapshot", "bridge_snapshot", "fixture_snapshot", "fixture_execution_count", "resource_sample"].includes(String(entry.kind)) ||
+      !["control_result", "wire_event", "gateway_snapshot", "bridge_snapshot", "fixture_snapshot", "fixture_execution_count", "resource_sample", "process_lifecycle"].includes(String(entry.kind)) ||
       typeof entry.at !== "string" || Number.isNaN(Date.parse(entry.at))
     ) {
       push(issues, rowPath, "artifact.observation_identity", "process observation identity is not bound to this run/case/stack");
@@ -230,23 +230,36 @@ function parseCaseEvidenceDocument(
   issues: ValidationIssue[],
 ): ParsedCaseEvidence | undefined {
   const parsed = parseJson(file.text, issuePath, issues);
-  if (!isRecord(parsed) || !exactKeys(parsed, ["schemaVersion", "runId", "caseId", "source", "observations", "assertions"])) {
-    push(issues, issuePath, "artifact.case_evidence_shape", "case evidence must use the exact rbp-case-evidence/v1 shape");
+  if (!isRecord(parsed)) {
+    push(issues, issuePath, "artifact.case_evidence_shape", "case evidence must be a JSON object");
+    return undefined;
+  }
+  const isV2 = parsed.schemaVersion === "rbp-case-evidence/v2";
+  const expectedKeys = isV2
+    ? ["schemaVersion", "runId", "caseId", "source", "evaluationOwner", "observations", "evaluations"]
+    : ["schemaVersion", "runId", "caseId", "source", "observations", "assertions"];
+  if (!exactKeys(parsed, expectedKeys)) {
+    push(issues, issuePath, "artifact.case_evidence_shape", `case evidence must use the exact rbp-case-evidence/${isV2 ? "v2" : "v1"} shape`);
     return undefined;
   }
   const expectedSource = artifact.kind === "journal_snapshot" ? "journal_snapshot" : "case_evidence";
   if (
-    parsed.schemaVersion !== "rbp-case-evidence/v1" ||
+    (parsed.schemaVersion !== "rbp-case-evidence/v1" && parsed.schemaVersion !== "rbp-case-evidence/v2") ||
     parsed.runId !== report.run.runId ||
     parsed.caseId !== result.caseId ||
-    parsed.source !== expectedSource
+    parsed.source !== expectedSource ||
+    (isV2 && parsed.evaluationOwner !== "parent_runner")
   ) {
     push(issues, issuePath, "artifact.case_evidence_identity", "case evidence identity/source does not match its run and case");
   }
   const observations = parseObservations(parsed.observations, report, result, `${issuePath}/observations`, issues);
   return {
     artifact,
-    assertions: parseEvidenceAssertions(parsed.assertions, `${issuePath}/assertions`, issues),
+    assertions: parseEvidenceAssertions(
+      isV2 ? parsed.evaluations : parsed.assertions,
+      `${issuePath}/${isV2 ? "evaluations" : "assertions"}`,
+      issues,
+    ),
     observationIds: new Set(observations.map(({ observationId }) => observationId)),
   };
 }

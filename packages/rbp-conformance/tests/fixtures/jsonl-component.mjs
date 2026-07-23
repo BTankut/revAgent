@@ -22,7 +22,7 @@ process.stdin.on("data", (chunk) => {
     const request = JSON.parse(line);
     if (request.action === "ping") {
       process.stderr.write(`ping:${String(request.value)}\n`);
-      process.stdout.write(`${JSON.stringify({ controlVersion: 1, id: request.id, ok: true, result: { echoed: request.value, passed: true } })}\n`);
+      process.stdout.write(`${JSON.stringify({ controlVersion: 1, id: request.id, ok: true, result: { echoed: request.value, observation: "raw" } })}\n`);
     } else if (request.action === "fail") {
       process.stdout.write(`${JSON.stringify({
         controlVersion: 1,

@@ -1,0 +1,114 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v2/case-evidence.schema.json",
+  "title": "RBP supervised case evidence v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "runId",
+    "caseId",
+    "source",
+    "evaluationOwner",
+    "observations",
+    "evaluations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "rbp-case-evidence/v2" },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "caseId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)$" },
+    "source": { "enum": ["journal_snapshot", "case_evidence"] },
+    "evaluationOwner": { "const": "parent_runner" },
+    "observations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/rawObservation" }
+    },
+    "evaluations": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/parentEvaluation" }
+    }
+  },
+  "definitions": {
+    "rawObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion",
+        "observationId",
+        "runId",
+        "caseId",
+        "binding",
+        "componentId",
+        "kind",
+        "at",
+        "payload"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "rbp-process-observation/v2" },
+        "observationId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$" },
+        "runId": { "type": "string" },
+        "caseId": { "type": "string" },
+        "binding": { "enum": ["wss", "streamable_http_sse"] },
+        "componentId": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] },
+        "kind": {
+          "enum": [
+            "control_result",
+            "wire_event",
+            "gateway_snapshot",
+            "bridge_snapshot",
+            "fixture_snapshot",
+            "fixture_execution_count",
+            "resource_sample",
+            "process_lifecycle"
+          ]
+        },
+        "at": { "type": "string", "format": "date-time" },
+        "payload": {}
+      }
+    },
+    "parentEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assertionId",
+        "subvectorId",
+        "statement",
+        "category",
+        "passed",
+        "expected",
+        "actual",
+        "observationIds"
+      ],
+      "properties": {
+        "assertionId": { "type": "string", "pattern": "^O1-C(?:0[1-9]|[1-3][0-9]|40)-[A-Z0-9-]+$" },
+        "subvectorId": { "type": "string", "pattern": "^[A-Z][A-Z0-9_]*$" },
+        "statement": { "type": "string", "minLength": 1 },
+        "category": {
+          "enum": [
+            "wire_behavior",
+            "journal_truth",
+            "execution_count",
+            "authorization",
+            "timing",
+            "resource_leak",
+            "artifact_integrity",
+            "compatibility",
+            "schema",
+            "recovery",
+            "transport_parity",
+            "discovery",
+            "safety"
+          ]
+        },
+        "passed": { "type": "boolean" },
+        "expected": {},
+        "actual": {},
+        "observationIds": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,191}$" }
+        }
+      }
+    }
+  }
+}

@@ -1,144 +1,120 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
-import { executeConformanceRun } from "../src/suiteRunner.js";
+import { runAsyncCli } from "../src/cli.js";
+import { executeSupervisedC19Run } from "../src/supervisedC19.js";
+import { verifyRunEvidenceFiles } from "../src/evidence.js";
+import { sha256File } from "../src/executionPlan.js";
+import { stableJson } from "../src/stableJson.js";
+import type { ExecutionPlan } from "../src/types.js";
+import { validateRunReportStructure } from "../src/validator.js";
 import { createPlan } from "./helpers.js";
 
-describe("forty-case process suite runner", () => {
-  it("retains failed observations and never turns absent daemon evidence into a pass", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "rbp-suite-"));
-    const plan = createPlan();
-    const startedAt = "2026-07-22T00:00:00.000Z";
-    const components = plan.components.map((component, index) => ({
-      ...component,
-      observedIdentity: { ...component.expectedIdentity },
-      process: {
-        pid: 1000 + index,
-        startedAt,
-        readyAt: startedAt,
-        stoppedAt: null,
-        exitCode: null,
-      },
-    }));
-    try {
-      const { report } = await executeConformanceRun({
-        plan,
-        artifactRoot: root,
-        seed: "fail-closed-unit-test",
-        driver: {
-          start: async () => ({
-            components,
-            caseSupport: () => ({ supported: true }),
-            executeBinding: async () => ({ observations: [], measurements: [] }),
-            sampleResources: async () => ({ residentBytes: 100_000_000, openFileDescriptorCount: 20, journalPendingCount: 0 }),
-            stop: async () => {
-              const stoppedAt = new Date().toISOString();
-              components.forEach((component) => {
-                component.process.stoppedAt = stoppedAt;
-                component.process.exitCode = 0;
-              });
-              return { orphanProcessCount: 0 };
-            },
-          }),
-        },
-      });
-      expect(report.run.status).toBe("failed");
-      expect(report.cases).toHaveLength(40);
-      expect(report.cases.every(({ status }) => status === "failed")).toBe(true);
-      expect(report.cases.flatMap(({ assertions }) => assertions).every(({ passed }) => passed === false)).toBe(true);
-      expect(report.cases[0]!.assertions[0]!.message).toMatch(/received 0 binding measurements/u);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }, 15_000);
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const componentScript = path.join(packageRoot, "tests", "fixtures", "supervised-c19-component.mjs");
 
-  it("keeps an unsupported binding not_run and never invokes its case executor", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "rbp-suite-unsupported-"));
-    const plan = createPlan();
-    const startedAt = "2026-07-22T00:00:00.000Z";
-    const components = plan.components.map((component, index) => ({
-      ...component,
-      observedIdentity: { ...component.expectedIdentity },
-      process: {
-        pid: 2000 + index,
-        startedAt,
-        readyAt: startedAt,
-        stoppedAt: null,
-        exitCode: null,
-      },
-    }));
-    let executions = 0;
-    try {
-      const { report } = await executeConformanceRun({
-        plan,
-        artifactRoot: root,
-        seed: "unsupported-unit-test",
-        driver: {
-          start: async () => ({
-            components,
-            caseSupport: (caseId, binding) => ({
-              supported: false,
-              reason: `missing exact choreography for ${caseId}/${binding}`,
-            }),
-            executeBinding: async () => {
-              executions += 1;
-              return { observations: [], measurements: [] };
-            },
-            sampleResources: async () => ({ residentBytes: 100_000_000, openFileDescriptorCount: 20, journalPendingCount: 0 }),
-            stop: async () => ({ orphanProcessCount: 0 }),
-          }),
-        },
-      });
-      expect(executions).toBe(0);
-      expect(report.run.status).toBe("failed");
-      expect(report.cases.every(({ status }) => status === "failed")).toBe(true);
-      expect(report.cases.every(({ bindings }) => bindings.every(({ status }) => status === "not_run"))).toBe(true);
-      expect(report.cases.every(({ failure }) => failure?.code === "unsupported_case")).toBe(true);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  }, 15_000);
+function supervisedPlan(): ExecutionPlan {
+  const plan = createPlan();
+  const roleByComponent = {
+    gateway_stub: "gateway",
+    bridge_simulator: "bridge",
+    addin_loopback_fixture: "fixture",
+  } as const;
+  for (const component of plan.components) {
+    component.expectedIdentity.executableSha256 = sha256File(componentScript);
+    component.command = {
+      executable: process.execPath,
+      args: [componentScript, roleByComponent[component.id]],
+      workingDirectory: ".",
+      environmentKeys: [],
+      readiness: { kind: "stdout_pattern", value: "json", timeoutMs: 10_000 },
+      shutdown: { signal: "SIGTERM", timeoutMs: 5_000 },
+    };
+  }
+  return plan;
+}
 
-  it("stops the live stack when an error is thrown after startup", async () => {
-    const root = mkdtempSync(path.join(tmpdir(), "rbp-suite-cleanup-"));
-    const plan = createPlan();
-    const startedAt = "2026-07-22T00:00:00.000Z";
-    const components = plan.components.map((component, index) => ({
-      ...component,
-      observedIdentity: { ...component.expectedIdentity },
-      process: {
-        pid: 3000 + index,
-        startedAt,
-        readyAt: startedAt,
-        stoppedAt: null,
-        exitCode: null,
-      },
-    }));
-    let stopCalls = 0;
+describe("supervised C19 runner", () => {
+  it("starts a fresh real process trio for each binding and derives C19 from raw v2 evidence", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-"));
     try {
-      await expect(executeConformanceRun({
-        plan,
+      const { report, reportPath } = await executeSupervisedC19Run({
+        plan: supervisedPlan(),
+        repoRoot: packageRoot,
         artifactRoot: root,
-        seed: "cleanup-unit-test",
-        driver: {
-          start: async () => ({
-            components,
-            caseSupport: () => ({ supported: true }),
-            executeBinding: async () => ({ observations: [], measurements: [] }),
-            sampleResources: async () => { throw new Error("planned resource sample failure"); },
-            stop: async () => {
-              stopCalls += 1;
-              return { orphanProcessCount: 0 };
-            },
-          }),
-        },
-      })).rejects.toThrow("planned resource sample failure");
-      expect(stopCalls).toBe(1);
+        seed: "supervised-c19-test",
+      });
+      const c19 = report.cases.find(({ caseId }) => caseId === "O1-C19")!;
+      expect(c19.status).toBe("passed");
+      expect(c19.bindings.map(({ status }) => status)).toEqual(["passed", "passed"]);
+      expect(c19.assertions.every(({ passed, actual }) => passed === true && actual === true)).toBe(true);
+      expect(report.cases.filter(({ caseId }) => caseId !== "O1-C19").every(({ status }) => status === "not_run")).toBe(true);
+      expect(report.run).toMatchObject({ status: "failed", exitCode: 1 });
+      expect(validateRunReportStructure(report).ok).toBe(true);
+      expect(verifyRunEvidenceFiles(report, root).filter(({ path: issuePath }) =>
+        issuePath.startsWith("/cases/18"))).toEqual([]);
+
+      const evidenceArtifact = c19.artifacts.find(({ kind }) => kind === "case_evidence")!;
+      const evidence = JSON.parse(readFileSync(path.join(root, evidenceArtifact.path), "utf8"));
+      expect(evidence.schemaVersion).toBe("rbp-case-evidence/v2");
+      expect(evidence.evaluationOwner).toBe("parent_runner");
+      expect(evidence.observations).toHaveLength(16);
+      expect(evidence.evaluations).toHaveLength(4);
+      expect(JSON.stringify(evidence.observations)).not.toMatch(/"(?:actual|passed)"\s*:/u);
+
+      const lifecycles = evidence.observations.filter((entry: { kind: string }) => entry.kind === "process_lifecycle");
+      expect(lifecycles).toHaveLength(6);
+      expect(new Set(lifecycles.map((entry: { payload: { process: { pid: number } } }) => entry.payload.process.pid)).size).toBe(6);
+      expect(lifecycles.every((entry: { payload: { spawnOwner: string; process: { exitCode: number } } }) =>
+        entry.payload.spawnOwner === "parent_runner" && entry.payload.process.exitCode === 0)).toBe(true);
+
+      expect(readFileSync(path.join(root, reportPath), "utf8")).toBe(stableJson(report));
+      if (process.platform !== "win32") {
+        const retainedRoot = path.join(root, "artifacts", "conformance", "rbp-v1", "1.0-rc.1");
+        expect(statSync(retainedRoot).mode & 0o777).toBe(0o700);
+        expect(statSync(path.join(root, evidenceArtifact.path)).mode & 0o777).toBe(0o600);
+      }
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 15_000);
+  }, 30_000);
+
+  it("returns a nonzero CLI result while unexecuted cases remain not_run", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "rbp-supervised-c19-cli-"));
+    const planFile = path.join(root, "execution-plan.json");
+    writeFileSync(planFile, JSON.stringify(supervisedPlan()), "utf8");
+    const previousExitCode = process.exitCode;
+    let stdout = "";
+    const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk) => {
+      stdout += String(chunk);
+      return true;
+    });
+    try {
+      await runAsyncCli([
+        "run-c19",
+        planFile,
+        "--repo-root",
+        packageRoot,
+        "--artifact-root",
+        root,
+        "--seed",
+        "supervised-c19-cli-test",
+      ], packageRoot);
+      expect(process.exitCode).toBe(1);
+      expect(JSON.parse(stdout)).toMatchObject({
+        runStatus: "failed",
+        exitCode: 1,
+        notRunCount: 39,
+        executedCases: [{ caseId: "O1-C19", status: "passed" }],
+      });
+    } finally {
+      write.mockRestore();
+      process.exitCode = previousExitCode;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

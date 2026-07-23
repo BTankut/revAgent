@@ -8,10 +8,10 @@ import type {
   ProcessObservationRecord,
 } from "./types.js";
 
-export interface AssertionMeasurement {
+export interface ParentAssertionProbe {
   assertionId: string;
-  actual: unknown;
   observationIds: string[];
+  evaluate(observations: readonly ProcessObservationRecord[]): unknown;
   message?: string;
 }
 
@@ -22,7 +22,8 @@ export interface AssertionEvidenceBinding {
   requiredKinds: ProcessObservationRecord["kind"][];
 }
 
-function requiredComponents(category: AssertionCategory): ComponentId[] {
+function requiredComponents(category: AssertionCategory, caseId: string): ComponentId[] {
+  if (caseId === "O1-C19") return ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"];
   switch (category) {
     case "execution_count":
       return ["addin_loopback_fixture"];
@@ -40,7 +41,8 @@ function requiredComponents(category: AssertionCategory): ComponentId[] {
   }
 }
 
-function requiredKinds(category: AssertionCategory): ProcessObservationRecord["kind"][] {
+function requiredKinds(category: AssertionCategory, caseId: string): ProcessObservationRecord["kind"][] {
+  if (caseId === "O1-C19") return ["process_lifecycle", "wire_event", "fixture_execution_count"];
   switch (category) {
     case "execution_count":
       return ["fixture_execution_count"];
@@ -63,9 +65,9 @@ export const ASSERTION_EVIDENCE_BINDINGS: ReadonlyMap<string, AssertionEvidenceB
       assertion.id,
       {
         assertionId: assertion.id,
-        requiredComponents: requiredComponents(assertion.category),
+        requiredComponents: requiredComponents(assertion.category, caseEntry.id),
         requiredBindings: [...caseEntry.bindings],
-        requiredKinds: requiredKinds(assertion.category),
+        requiredKinds: requiredKinds(assertion.category, caseEntry.id),
       },
     ] as const)),
 );
@@ -83,7 +85,10 @@ export class CaseObservationLedger {
   }
 
   add(record: ProcessObservationRecord): void {
-    if (record.schemaVersion !== "rbp-process-observation/v1" ||
+    const keys = Object.keys(record).sort().join("|");
+    const expectedKeys = ["schemaVersion", "observationId", "runId", "caseId", "binding", "componentId", "kind", "at", "payload"].sort().join("|");
+    if (keys !== expectedKeys) throw new Error("process observation has unknown or missing top-level fields");
+    if (record.schemaVersion !== "rbp-process-observation/v2" ||
       record.runId !== this.runId || record.caseId !== this.caseId) {
       throw new Error("process observation is not bound to this run/case ledger");
     }
@@ -98,38 +103,53 @@ export class CaseObservationLedger {
     return [...this.#records.values()].map((record) => structuredClone(record));
   }
 
-  evaluate(measurements: readonly AssertionMeasurement[]): AssertionResult[] {
+  evaluate(probes: readonly ParentAssertionProbe[]): AssertionResult[] {
     const required = canonicalManifest.requiredAssertions[this.caseId]!;
-    const byId = new Map<string, AssertionMeasurement>();
-    for (const measurement of measurements) {
-      if (byId.has(measurement.assertionId)) throw new Error(`duplicate assertion measurement ${measurement.assertionId}`);
-      if (Object.prototype.hasOwnProperty.call(measurement, "passed")) {
-        throw new Error(`measurement ${measurement.assertionId} must not carry a child-supplied passed flag`);
+    const byId = new Map<string, ParentAssertionProbe>();
+    for (const probe of probes) {
+      if (byId.has(probe.assertionId)) throw new Error(`duplicate assertion probe ${probe.assertionId}`);
+      const allowed = ["assertionId", "observationIds", "evaluate", "message"];
+      if (Object.prototype.hasOwnProperty.call(probe, "passed") || Object.prototype.hasOwnProperty.call(probe, "actual") ||
+        Object.keys(probe).some((key) => !allowed.includes(key))) {
+        throw new Error(`probe ${probe.assertionId} must not carry child-supplied actual or passed fields`);
       }
-      byId.set(measurement.assertionId, measurement);
+      if (typeof probe.assertionId !== "string" || !Array.isArray(probe.observationIds) ||
+        !probe.observationIds.every((id) => typeof id === "string") || typeof probe.evaluate !== "function") {
+        throw new Error(`probe ${probe.assertionId} lacks a parent evaluator or valid observation ids`);
+      }
+      byId.set(probe.assertionId, probe);
     }
     const unknown = [...byId.keys()].filter((id) => !required.some(({ id: requiredId }) => requiredId === id));
-    if (unknown.length > 0) throw new Error(`unknown assertion measurements: ${unknown.join(", ")}`);
+    if (unknown.length > 0) throw new Error(`unknown parent assertion probes: ${unknown.join(", ")}`);
 
     return required.map((assertion) => {
-      const measurement = byId.get(assertion.id);
+      const probe = byId.get(assertion.id);
       const binding = ASSERTION_EVIDENCE_BINDINGS.get(assertion.id)!;
-      const records = measurement?.observationIds.flatMap((id) => {
+      const records = probe?.observationIds.flatMap((id) => {
         const record = this.#records.get(id);
         return record === undefined ? [] : [record];
       }) ?? [];
-      const allIdsResolve = measurement !== undefined && records.length === measurement.observationIds.length;
+      const allIdsResolve = probe !== undefined && records.length === probe.observationIds.length;
       const observedComponents = new Set(records.map(({ componentId }) => componentId));
       const observedBindings = new Set(records.map(({ binding: observedBinding }) => observedBinding));
       const observedKinds = new Set(records.map(({ kind }) => kind));
       const coverage =
         allIdsResolve &&
-        measurement!.observationIds.length > 0 &&
-        new Set(measurement!.observationIds).size === measurement!.observationIds.length &&
+        probe!.observationIds.length > 0 &&
+        new Set(probe!.observationIds).size === probe!.observationIds.length &&
         binding.requiredComponents.every((component) => observedComponents.has(component)) &&
         binding.requiredBindings.every((requiredBinding) => observedBindings.has(requiredBinding)) &&
         binding.requiredKinds.every((kind) => observedKinds.has(kind));
-      const semantics = measurement !== undefined && stableJson(measurement.actual) === stableJson(assertion.expected);
+      let actual: unknown = null;
+      let evaluationError: string | undefined;
+      if (probe !== undefined && allIdsResolve) {
+        try {
+          actual = probe.evaluate(records.map((record) => structuredClone(record)));
+        } catch (error) {
+          evaluationError = error instanceof Error ? error.message : String(error);
+        }
+      }
+      const semantics = evaluationError === undefined && stableJson(actual) === stableJson(assertion.expected);
       const passed = coverage && semantics;
       return {
         assertionId: assertion.id,
@@ -138,12 +158,12 @@ export class CaseObservationLedger {
         category: assertion.category,
         passed,
         expected: assertion.expected,
-        actual: measurement?.actual ?? null,
-        observationIds: measurement?.observationIds ?? [],
+        actual,
+        observationIds: probe?.observationIds ?? [],
         evidenceSha256: null,
         message: passed
           ? null
-          : measurement?.message ?? (coverage ? "observed value did not meet canonical semantics" : "missing same-case process/binding evidence coverage"),
+          : evaluationError ?? probe?.message ?? (coverage ? "parent predicate did not meet canonical semantics" : "missing same-case process/binding evidence coverage"),
       };
     });
   }

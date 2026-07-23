@@ -9,6 +9,7 @@ This additive workspace hosts the target-architecture packages introduced during
 
 The workspace deliberately does not move or import source from the frozen legacy surfaces during W1-2. In particular, `installer/runtime-mcp-server` retains its own package and lockfile, and `src/revit-plugin`, `installer`, `addons`, `evals`, `config`, root `AGENTS.md`, and root `SKILL.md` remain in place.
 
-The transport spike is a separate W1-5 change. The conformance package defines
-evidence contracts only: all forty cases initialize as `not_run`, and no
-Gateway-to-bridge execution or conformance pass is claimed by this scaffold.
+The transport spike is a separate W1-5 change. The conformance package starts
+all forty cases as `not_run`. Its supervised C19 slice can execute real child
+process fixtures without claiming the complete suite: the remaining 39 cases
+stay `not_run` and the partial run exits nonzero.
