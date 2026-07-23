@@ -1,9 +1,9 @@
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { performance } from "node:perf_hooks";
 
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
 import { CANONICAL_RESOURCE_POLICY, evaluateResourceSamples } from "./resourceMetrics.js";
+import { SecureEvidenceStore } from "./secureEvidenceStore.js";
 import { stableJson } from "./stableJson.js";
 import type {
   Binding,
@@ -31,12 +31,16 @@ export interface ReconnectSoakAdapter {
 }
 
 export interface SoakClock {
+  /** Wall-clock milliseconds used only to anchor retained RFC3339 timestamps. */
   nowMs(): number;
+  /** Monotonic milliseconds used for every duration and deadline decision. */
+  monotonicMs?(): number;
   sleep(ms: number): Promise<void>;
 }
 
 const realClock: SoakClock = {
   nowMs: () => Date.now(),
+  monotonicMs: () => performance.now(),
   sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
 };
 
@@ -74,15 +78,20 @@ export async function runReconnectSoak(input: {
   const cycleIntervalMs = input.cycleIntervalMs ?? 5_000;
   const sampleIntervalMs = input.sampleIntervalMs ?? 1_000;
   if (cycleIntervalMs < 100 || sampleIntervalMs < 100) throw new Error("soak intervals must be at least 100 ms");
-  const startedMs = clock.nowMs();
+  const monotonicNow = (): number => clock.monotonicMs?.() ?? clock.nowMs();
+  const startedWallMs = clock.nowMs();
+  const startedMonotonicMs = monotonicNow();
+  const wallAt = (monotonicMs: number): string =>
+    new Date(startedWallMs + Math.floor(monotonicMs - startedMonotonicMs)).toISOString();
+  const elapsedMs = (): number => Math.floor(monotonicNow() - startedMonotonicMs);
   const cycles: SoakReport["cycles"] = [];
   const samples: ResourceSample[] = [];
   const metrics: SoakMetricRecord[] = [];
   let cycle = 0;
   let failure: SoakReport["failure"] = null;
 
-  while (clock.nowMs() - startedMs < requestedDurationMs) {
-    const cycleStarted = clock.nowMs();
+  while (elapsedMs() < requestedDurationMs) {
+    const cycleStarted = monotonicNow();
     const binding: Binding = cycle % 2 === 0 ? "wss" : "streamable_http_sse";
     cycle += 1;
     try {
@@ -94,12 +103,12 @@ export async function runReconnectSoak(input: {
         observation.heartbeatAcks >= 1 &&
         observation.controlRoundTrips >= 1 &&
         observation.journalPending === 0;
-      const cycleFinished = clock.nowMs();
+      const cycleFinished = monotonicNow();
       cycles.push({
         cycle,
         binding,
-        startedAt: new Date(cycleStarted).toISOString(),
-        finishedAt: new Date(cycleFinished).toISOString(),
+        startedAt: wallAt(cycleStarted),
+        finishedAt: wallAt(cycleFinished),
         ...observation,
         passed,
       });
@@ -110,7 +119,7 @@ export async function runReconnectSoak(input: {
       const sample = await input.adapter.sampleResources();
       const resourceSample: ResourceSample = {
         index: samples.length,
-        offsetMs: clock.nowMs() - startedMs,
+        offsetMs: elapsedMs(),
         ...sample,
       };
       samples.push(resourceSample);
@@ -120,17 +129,20 @@ export async function runReconnectSoak(input: {
         mode: input.mode,
         cycle,
         binding,
-        at: new Date(clock.nowMs()).toISOString(),
+        at: wallAt(monotonicNow()),
         ...observation,
         resourceSample,
       });
-      await clock.sleep(Math.min(cycleIntervalMs, Math.max(0, requestedDurationMs - (clock.nowMs() - startedMs))));
+      await clock.sleep(Math.min(
+        cycleIntervalMs,
+        Math.max(0, requestedDurationMs - elapsedMs()),
+      ));
     } catch (error) {
       failure = { code: "soak_adapter_error", message: error instanceof Error ? error.message : String(error) };
       break;
     }
   }
-  const finishedMs = clock.nowMs();
+  const finishedMonotonicMs = monotonicNow();
   const resources: SoakReport["resources"] = {
     schemaVersion: "rbp-resource-profile/v1",
     samplingMode: "bounded_slope",
@@ -148,10 +160,9 @@ export async function runReconnectSoak(input: {
 
   const metricsPath = template(canonicalManifest.retainedEvidence.soakMetrics, input.mode, input.runId);
   const metricsBytes = Buffer.from(metrics.map((row) => JSON.stringify(row)).join("\n") + "\n", "utf8");
-  const metricsTarget = path.resolve(input.artifactRoot, metricsPath);
-  mkdirSync(path.dirname(metricsTarget), { recursive: true });
-  writeFileSync(metricsTarget, metricsBytes);
-  const actualDurationMs = finishedMs - startedMs;
+  const store = new SecureEvidenceStore(input.artifactRoot);
+  const storedMetrics = store.write(metricsPath, metricsBytes);
+  const actualDurationMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
   const report: SoakReport = {
     schemaVersion: "rbp-reconnect-soak/v1",
     manifest: { ...canonicalManifestIdentity },
@@ -160,8 +171,8 @@ export async function runReconnectSoak(input: {
     status: failure === null && actualDurationMs >= requestedDurationMs ? "passed" : "failed",
     source: input.source,
     components: input.components,
-    startedAt: new Date(startedMs).toISOString(),
-    finishedAt: new Date(finishedMs).toISOString(),
+    startedAt: new Date(startedWallMs).toISOString(),
+    finishedAt: wallAt(finishedMonotonicMs),
     requestedDurationMs,
     actualDurationMs,
     cycles,
@@ -169,15 +180,13 @@ export async function runReconnectSoak(input: {
     artifacts: [{
       kind: "soak_metrics",
       path: metricsPath,
-      sha256: createHash("sha256").update(metricsBytes).digest("hex"),
-      bytes: metricsBytes.length,
+      sha256: createHash("sha256").update(storedMetrics.bytes).digest("hex"),
+      bytes: storedMetrics.bytes.length,
       mediaType: "application/x-ndjson",
     }],
     failure,
   };
   const reportPath = template(canonicalManifest.retainedEvidence.soakReport, input.mode, input.runId);
-  const reportTarget = path.resolve(input.artifactRoot, reportPath);
-  mkdirSync(path.dirname(reportTarget), { recursive: true });
-  writeFileSync(reportTarget, stableJson(report), "utf8");
+  store.write(reportPath, stableJson(report));
   return { report, reportPath };
 }

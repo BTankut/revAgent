@@ -11,10 +11,16 @@ import { runReconnectSoak, type SoakClock } from "../src/soakRunner.js";
 describe("executable reconnect/proxy-churn soak runner", () => {
   it("retains raw cycle metrics and validates a runner-computed smoke result", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "rbp-soak-"));
-    let now = Date.UTC(2026, 6, 22, 0, 0, 0);
+    let wallNow = Date.UTC(2026, 6, 22, 0, 0, 0);
+    let monotonicNow = 1_000;
     const clock: SoakClock = {
-      nowMs: () => now,
-      sleep: async (ms) => { now += ms; },
+      nowMs: () => wallNow,
+      monotonicMs: () => monotonicNow,
+      sleep: async (ms) => {
+        monotonicNow += ms;
+        // A wall-clock correction must not shorten or lengthen the soak gate.
+        wallNow -= 5_000;
+      },
     };
     let samples = 0;
     const commitSha = "1".repeat(40);
@@ -50,6 +56,7 @@ describe("executable reconnect/proxy-churn soak runner", () => {
         clock,
       });
       expect(report.status).toBe("passed");
+      expect(report.actualDurationMs).toBe(30_000);
       expect(report.cycles.map(({ binding }) => binding)).toEqual(expect.arrayContaining(["wss", "streamable_http_sse"]));
       expect(evaluatePassingSoak(report, { verifyArtifactFiles: true, artifactRoot: root }).ok).toBe(true);
     } finally {
