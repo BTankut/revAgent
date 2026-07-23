@@ -17,12 +17,14 @@ import {
 import {
   normalizeExecutablePath,
   provenanceFileSet,
+  resolveInstalledBuildGeneratorDependencyClosure,
   resolveInstalledRuntimeDependencyClosure,
   resolveNodeExecutableIdentity,
   resolvePowerShellIdentity,
   resolveProductionToolchainIdentity,
   summarizeProductionToolchainIdentity,
   verifyPowerShellIdentityCurrent,
+  type InstalledBuildGeneratorDependencyClosure,
   type InstalledRuntimeDependencyClosure,
   type NodeRuntimeMetadataResolver,
   type ProductionToolchainIdentity,
@@ -38,9 +40,9 @@ import type {
 } from "./types.js";
 
 export const PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION =
-  "rbp-production-build-provenance/v2" as const;
+  "rbp-production-build-provenance/v3" as const;
 export const PRODUCTION_BUILD_CONTRACT_VERSION =
-  "rbp-production-typescript-build/v2" as const;
+  "rbp-production-typescript-build/v3" as const;
 
 export { PRODUCTION_FILE_SET_ALGORITHM } from "./productionRuntimeIdentity.js";
 
@@ -67,6 +69,7 @@ export interface ProductionBuildProvenanceSidecar {
   };
   entrypoint: ProvenanceFileRecord;
   compileInputs: ProvenanceFileSet;
+  buildGeneratorDependencies: InstalledBuildGeneratorDependencyClosure;
   runtimeArtifacts: ProvenanceFileSet;
   runtimeDependencies: InstalledRuntimeDependencyClosure;
   harness: ProductionHarnessIdentity;
@@ -318,13 +321,17 @@ export function productionComponentOutputArtifacts(
   return runtimeArtifactFileSet(repoRoot, [relativeRoot], relativeRoot);
 }
 
-function productionHarnessIdentity(repoRoot: string): ProductionHarnessIdentity {
+function productionHarnessIdentity(
+  repoRoot: string,
+  runtimeNode: ProductionToolchainIdentity["runtimeNode"],
+): ProductionHarnessIdentity {
   return {
     entrypoint: fileRecord(repoRoot, HARNESS_ENTRYPOINT_PATH),
     runtimeArtifacts: productionHarnessRuntimeArtifacts(repoRoot),
     runtimeDependencies: resolveInstalledRuntimeDependencyClosure(
       repoRoot,
       HARNESS_RUNTIME_PACKAGE_ROOTS,
+      runtimeNode,
     ),
   };
 }
@@ -335,6 +342,7 @@ function expectedSidecar(
   spec: ProductionProvenanceSpec,
   toolchain: ProductionToolchainIdentity,
   harness: ProductionHarnessIdentity,
+  buildGeneratorDependencies: InstalledBuildGeneratorDependencyClosure,
 ): ProductionBuildProvenanceSidecar {
   return {
     schemaVersion: PRODUCTION_BUILD_PROVENANCE_SCHEMA_VERSION,
@@ -348,10 +356,12 @@ function expectedSidecar(
     compileInputs: provenanceFileSet(
       compileInputRecords(repoRoot, spec, toolchain.git),
     ),
+    buildGeneratorDependencies,
     runtimeArtifacts: runtimeArtifactFileSet(repoRoot, spec.runtimeRoots, spec.id),
     runtimeDependencies: resolveInstalledRuntimeDependencyClosure(
       repoRoot,
       spec.runtimePackageRoots,
+      toolchain.runtimeNode,
     ),
     harness,
     toolchain,
@@ -369,6 +379,8 @@ function sidecarIdentity(
     sidecarPath,
     sidecarSha256: sha256Text(rawSidecar),
     compileInputsSha256: sidecar.compileInputs.digestSha256,
+    buildGeneratorDependenciesSha256:
+      sidecar.buildGeneratorDependencies.digestSha256,
     runtimeArtifactsSha256: sidecar.runtimeArtifacts.digestSha256,
     runtimeDependenciesSha256: sidecar.runtimeDependencies.digestSha256,
     harnessArtifactsSha256: sidecar.harness.runtimeArtifacts.digestSha256,
@@ -473,9 +485,21 @@ export function createProductionBuildProvenanceSidecars(
   inputs: ProductionProvenanceInputs,
 ): ReadonlyMap<ComponentId, ComponentBuildProvenanceIdentity> {
   const toolchain = resolveProductionToolchainIdentity(repoRoot, inputs);
-  const harness = productionHarnessIdentity(repoRoot);
+  const harness = productionHarnessIdentity(repoRoot, toolchain.runtimeNode);
+  const buildGeneratorDependencies =
+    resolveInstalledBuildGeneratorDependencyClosure(
+      repoRoot,
+      toolchain.runtimeNode,
+    );
   for (const spec of PRODUCTION_PROVENANCE_SPECS) {
-    const sidecar = expectedSidecar(repoRoot, source, spec, toolchain, harness);
+    const sidecar = expectedSidecar(
+      repoRoot,
+      source,
+      spec,
+      toolchain,
+      harness,
+      buildGeneratorDependencies,
+    );
     const target = path.resolve(repoRoot, spec.sidecarPath);
     const parent = confinedExistingPath(repoRoot, path.dirname(spec.sidecarPath));
     if (path.dirname(target) !== parent) {
@@ -502,12 +526,24 @@ export function verifyProductionBuildProvenance(
     repoRoot,
     inferredInputs(sidecars, options),
   );
-  const harness = productionHarnessIdentity(repoRoot);
+  const harness = productionHarnessIdentity(repoRoot, toolchain.runtimeNode);
+  const buildGeneratorDependencies =
+    resolveInstalledBuildGeneratorDependencyClosure(
+      repoRoot,
+      toolchain.runtimeNode,
+    );
   const identities = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
 
   for (const spec of PRODUCTION_PROVENANCE_SPECS) {
     const retained = sidecars.get(spec.id)!;
-    const expected = expectedSidecar(repoRoot, source, spec, toolchain, harness);
+    const expected = expectedSidecar(
+      repoRoot,
+      source,
+      spec,
+      toolchain,
+      harness,
+      buildGeneratorDependencies,
+    );
     const sidecar = retained.sidecar;
     if (stableJson(sidecar.source) !== stableJson(expected.source)) {
       throw new Error(`${spec.id} production build provenance source is stale`);
@@ -517,6 +553,14 @@ export function verifyProductionBuildProvenance(
     }
     if (stableJson(sidecar.compileInputs) !== stableJson(expected.compileInputs)) {
       throw new Error(`${spec.id} production compile-input provenance is stale`);
+    }
+    if (
+      stableJson(sidecar.buildGeneratorDependencies) !==
+      stableJson(expected.buildGeneratorDependencies)
+    ) {
+      throw new Error(
+        `${spec.id} build-generator dependency provenance is stale or tampered`,
+      );
     }
     if (stableJson(sidecar.runtimeArtifacts) !== stableJson(expected.runtimeArtifacts)) {
       throw new Error(`${spec.id} production runtime artifacts are stale or tampered`);
@@ -590,7 +634,7 @@ export function verifyProductionRuntimeBuildProvenance(
     ? resolvePowerShellIdentity()
     : verifyPowerShellIdentityCurrent(plannedPowerShell);
   const sidecars = readSidecars(repoRoot);
-  const harness = productionHarnessIdentity(repoRoot);
+  const harness = productionHarnessIdentity(repoRoot, runtimeNode);
   const identities = new Map<ComponentId, ComponentBuildProvenanceIdentity>();
 
   for (const spec of PRODUCTION_PROVENANCE_SPECS) {
@@ -636,6 +680,7 @@ export function verifyProductionRuntimeBuildProvenance(
     const runtimeDependencies = resolveInstalledRuntimeDependencyClosure(
       repoRoot,
       spec.runtimePackageRoots,
+      runtimeNode,
     );
     if (stableJson(sidecar.runtimeDependencies) !== stableJson(runtimeDependencies)) {
       throw new Error(`${spec.id} installed runtime dependencies changed before launch`);

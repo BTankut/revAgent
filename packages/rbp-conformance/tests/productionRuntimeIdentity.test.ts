@@ -14,6 +14,10 @@ describe("production runtime environment", () => {
       node_disable_compile_cache: "1",
       WS_NO_BUFFER_UTIL: "1",
       ws_no_utf_8_validate: "1",
+      NPM_CONFIG_SCRIPT_SHELL: "C:/attacker.cmd",
+      npm_config_userconfig: "C:/attacker.npmrc",
+      NpM_ExEcPaTh: "C:/unbound/npm-cli.js",
+      npm_lifecycle_event: "prepare:rbp-production",
     });
     expect(result).toEqual({
       PATH: "C:/tools",
@@ -27,5 +31,10 @@ describe("production runtime environment", () => {
         { SAFE_VALUE: "retained" },
         { node_options: "--require=attacker.cjs" },
       )).toThrow(/cannot set node_options/u);
+    expect(() =>
+      sanitizedProductionRuntimeEnvironment(
+        { SAFE_VALUE: "retained" },
+        { npm_config_script_shell: "C:/attacker.cmd" },
+      )).toThrow(/cannot set npm_config_script_shell/u);
   });
 });

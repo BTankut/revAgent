@@ -11,6 +11,7 @@
     "source",
     "entrypoint",
     "compileInputs",
+    "buildGeneratorDependencies",
     "runtimeArtifacts",
     "runtimeDependencies",
     "harness",
@@ -19,11 +20,11 @@
   "properties": {
     "schemaVersion": {
       "type": "string",
-      "const": "rbp-production-build-provenance/v2"
+      "const": "rbp-production-build-provenance/v3"
     },
     "buildContractVersion": {
       "type": "string",
-      "const": "rbp-production-typescript-build/v2"
+      "const": "rbp-production-typescript-build/v3"
     },
     "componentId": {
       "enum": [
@@ -53,6 +54,9 @@
     },
     "compileInputs": {
       "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileSet"
+    },
+    "buildGeneratorDependencies": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/installedBuildGeneratorDependencyClosure"
     },
     "runtimeArtifacts": {
       "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileSet"

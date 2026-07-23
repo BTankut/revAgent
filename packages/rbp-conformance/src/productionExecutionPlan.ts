@@ -12,8 +12,10 @@ import {
 } from "./productionBuildProvenance.js";
 import {
   normalizeExecutablePath,
+  resolveCurrentProcessNodeIdentity,
   verifyPowerShellIdentityCurrent,
   type NodeRuntimeMetadataResolver,
+  type ProductionNodeExecutableIdentity,
 } from "./productionRuntimeIdentity.js";
 import type { ProductionGitIdentity } from "./productionGitIdentity.js";
 import { stableJson } from "./stableJson.js";
@@ -221,6 +223,32 @@ function plannedGitIdentity(plan: ExecutionPlan): ProductionGitIdentity {
     throw new Error("production components disagree on the bound Git identity");
   }
   return [...identities.values()][0]!.toolchain.git;
+}
+
+function plannedRuntimeNodeIdentity(
+  plan: ExecutionPlan,
+): ProductionNodeExecutableIdentity {
+  const identities = [...plannedProvenance(plan).values()]
+    .map(({ toolchain }) => toolchain.runtimeNode);
+  const serialized = new Set(identities.map((identity) => stableJson(identity)));
+  if (serialized.size !== 1) {
+    throw new Error("production components disagree on the bound runtime Node identity");
+  }
+  return identities[0]!;
+}
+
+export function assertProductionControllerRuntimeCurrent(
+  plan: ExecutionPlan,
+  resolveCurrent: () => ProductionNodeExecutableIdentity =
+    resolveCurrentProcessNodeIdentity,
+): void {
+  const planned = plannedRuntimeNodeIdentity(plan);
+  const current = resolveCurrent();
+  if (stableJson(current) !== stableJson(planned)) {
+    throw new Error(
+      "production controller Node does not match the plan-bound runtime Node identity",
+    );
+  }
 }
 
 /**

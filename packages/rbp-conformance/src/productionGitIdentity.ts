@@ -24,10 +24,45 @@ function sha256File(file: string): string {
 }
 
 function sanitizedEnvironment(): NodeJS.ProcessEnv {
-  return Object.fromEntries(
+  const result = Object.fromEntries(
     Object.entries(process.env)
       .filter(([key]) => !key.toUpperCase().startsWith("GIT_")),
   );
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  return {
+    ...result,
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: nullDevice,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: nullDevice,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+const HARDENED_REPOSITORY_CONFIG = [
+  "-c",
+  "core.attributesfile=",
+  "-c",
+  "core.autocrlf=input",
+  "-c",
+  "core.excludesfile=",
+  "-c",
+  "core.fsmonitor=false",
+  "-c",
+  "core.ignorestat=false",
+  "-c",
+  "core.preloadindex=false",
+  "-c",
+  "core.safecrlf=false",
+  "-c",
+  "core.trustctime=true",
+  "-c",
+  "core.untrackedCache=false",
+] as const;
+
+function hardenedArgs(args: readonly string[]): string[] {
+  return [...HARDENED_REPOSITORY_CONFIG, ...args];
 }
 
 export function resolveGitExecutableOnPath(): string {
@@ -119,17 +154,19 @@ export function runBoundGit(
   repoRoot: string,
   args: readonly string[],
   expectedIdentity?: ProductionGitIdentity,
+  options: { input?: string | Buffer } = {},
 ): { stdout: string; identity: ProductionGitIdentity } {
   const before = expectedIdentity === undefined
     ? resolveProductionGitIdentity(resolveGitExecutableOnPath())
     : verifyProductionGitIdentityCurrent(expectedIdentity);
-  const result = spawnSync(before.realPath, args, {
+  const result = spawnSync(before.realPath, hardenedArgs(args), {
     cwd: repoRoot,
     encoding: "utf8",
     shell: false,
     windowsHide: true,
     maxBuffer: 8 * 1024 * 1024,
     env: sanitizedEnvironment(),
+    ...(options.input === undefined ? {} : { input: options.input }),
   });
   if (result.error !== undefined) throw result.error;
   if (result.status !== 0) {
@@ -150,7 +187,7 @@ export function runBoundGitOptional(
   expectedIdentity: ProductionGitIdentity,
 ): string | undefined {
   const before = verifyProductionGitIdentityCurrent(expectedIdentity);
-  const result = spawnSync(before.realPath, args, {
+  const result = spawnSync(before.realPath, hardenedArgs(args), {
     cwd: repoRoot,
     encoding: "utf8",
     shell: false,

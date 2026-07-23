@@ -11,7 +11,10 @@ import { stableJson } from "./stableJson.js";
 import { executeSupervisedC19Run } from "./supervisedC19.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
-import { assertProductionExecutionPlanCurrent } from "./productionExecutionPlan.js";
+import {
+  assertProductionControllerRuntimeCurrent,
+  assertProductionExecutionPlanCurrent,
+} from "./productionExecutionPlan.js";
 import { prepareProductionExecutionPlan } from "./productionPreparation.js";
 import { executeProductionConformanceRun } from "./productionSuiteRunner.js";
 import { runReconnectSoak } from "./soakRunner.js";
@@ -33,11 +36,11 @@ function usage(): never {
       "  rbp-conformance run-production <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-c19 <execution-plan.json> [--repo-root <path>] [--artifact-root <path>] [--seed <seed>]",
       "  rbp-conformance run-soak <execution-plan.json> --mode <smoke|one_hour> [--repo-root <path>] [--artifact-root <path>] [--duration-ms <ms>] [--cycle-interval-ms <ms>]",
-      "  rbp-conformance validate-run <run-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
-      "  rbp-conformance validate-aggregate <aggregate.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
-      "  rbp-conformance validate-soak <soak-report.json> [--expected-commit <sha>] [--expected-tree <sha>] [--artifact-root <path>]",
+      "  rbp-conformance validate-run <run-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>]",
+      "  rbp-conformance validate-aggregate <aggregate.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
+      "  rbp-conformance validate-soak <soak-report.json> --plan <execution-plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance junit <run-report.json> <junit.xml>",
-      "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> [--artifact-root <path>] [--expected-commit <sha>] [--expected-tree <sha>]",
+      "  rbp-conformance aggregate <run-1.json> <run-2.json> <run-3.json> --plan-1 <plan.json> --plan-2 <plan.json> --plan-3 <plan.json> --repo-root <path> [--artifact-root <path>]",
       "  rbp-conformance summary <aggregate.json> <summary.md>",
     ].join("\n"),
   );
@@ -101,6 +104,8 @@ export async function runPrepareProductionAsyncCli(
       sidecarSha256: expectedIdentity.buildProvenance?.sidecarSha256 ?? null,
       compileInputsSha256:
         expectedIdentity.buildProvenance?.compileInputsSha256 ?? null,
+      buildGeneratorDependenciesSha256:
+        expectedIdentity.buildProvenance?.buildGeneratorDependenciesSha256 ?? null,
       runtimeArtifactsSha256:
         expectedIdentity.buildProvenance?.runtimeArtifactsSha256 ?? null,
       runtimeDependenciesSha256:
@@ -133,6 +138,7 @@ export async function runProductionAsyncCli(
   }
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertProductionControllerRuntimeCurrent(plan);
   const result = await executeProductionConformanceRun({
     plan,
     repoRoot,
@@ -175,6 +181,7 @@ export async function runAsyncCli(args: string[], cwd: string = process.cwd()): 
   }
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertProductionControllerRuntimeCurrent(plan);
   const result = await executeSupervisedC19Run({
     plan,
     repoRoot,
@@ -218,6 +225,7 @@ export async function runSoakAsyncCli(args: string[], cwd: string = process.cwd(
   if (cycleIntervalMs !== undefined && !Number.isSafeInteger(cycleIntervalMs)) usage();
   const plan = readJson(planFile, cwd) as ExecutionPlan;
   assertProductionExecutionPlanCurrent(plan, repoRoot);
+  assertProductionControllerRuntimeCurrent(plan);
   const adapter = await createProductionReconnectSoakAdapter({ plan, repoRoot });
   const result = await runReconnectSoak({
     mode,
@@ -256,8 +264,52 @@ function writeText(file: string, contents: string, cwd: string): void {
   writeFileSync(target, contents, "utf8");
 }
 
-function validationOptions(args: string[], cwd: string): PassingValidationOptions {
+interface ProductionValidationContext {
+  options: PassingValidationOptions;
+  plans: ExecutionPlan[];
+  repoRoot: string;
+}
+
+function assertPlansShareExactCandidate(plans: readonly ExecutionPlan[]): void {
+  if (plans.length === 0) throw new Error("at least one production plan is required");
+  const candidate = stableJson({
+    manifest: plans[0]!.manifest,
+    source: plans[0]!.source,
+    components: plans[0]!.components.map((component) => ({
+      id: component.id,
+      interfaceVersion: component.interfaceVersion,
+      expectedIdentity: component.expectedIdentity,
+      command: component.command,
+    })),
+  });
+  if (plans.some((plan) => stableJson({
+    manifest: plan.manifest,
+    source: plan.source,
+    components: plan.components.map((component) => ({
+      id: component.id,
+      interfaceVersion: component.interfaceVersion,
+      expectedIdentity: component.expectedIdentity,
+      command: component.command,
+    })),
+  }) !== candidate)) {
+    throw new Error("production plans do not share one exact candidate stack identity");
+  }
+  if (
+    plans.length === 3 &&
+    plans.map(({ sequence }) => sequence).join("|") !== "1|2|3"
+  ) {
+    throw new Error("three-run validation requires plans in sequence 1, 2, 3");
+  }
+}
+
+function productionValidationContext(
+  args: string[],
+  cwd: string,
+  planCount: 1 | 3,
+): ProductionValidationContext {
   const options: PassingValidationOptions = { verifyArtifactFiles: true, artifactRoot: cwd };
+  const planFiles = new Map<number, string>();
+  let repoRoot: string | undefined;
   for (let index = 0; index < args.length; index += 1) {
     const name = args[index];
     const value = args[index + 1];
@@ -270,15 +322,124 @@ function validationOptions(args: string[], cwd: string): PassingValidationOption
       options.expectedTreeSha = value;
     } else if (name === "--artifact-root") {
       options.artifactRoot = resolveFrom(cwd, value);
+    } else if (name === "--repo-root") {
+      repoRoot = resolveFrom(cwd, value);
+    } else if (planCount === 1 && name === "--plan") {
+      planFiles.set(1, resolveFrom(cwd, value));
+    } else if (
+      planCount === 3 &&
+      (name === "--plan-1" || name === "--plan-2" || name === "--plan-3")
+    ) {
+      planFiles.set(Number(name.at(-1)), resolveFrom(cwd, value));
     } else {
       usage();
     }
     index += 1;
   }
-  return options;
+  if (repoRoot === undefined || planFiles.size !== planCount) usage();
+  const plans = Array.from({ length: planCount }, (_, index) => {
+    const planFile = planFiles.get(index + 1);
+    if (planFile === undefined) usage();
+    const plan = readJson(planFile, cwd) as ExecutionPlan;
+    assertProductionExecutionPlanCurrent(plan, repoRoot);
+    assertProductionControllerRuntimeCurrent(plan);
+    return plan;
+  });
+  assertPlansShareExactCandidate(plans);
+  const source = plans[0]!.source;
+  if (
+    options.expectedCommitSha !== undefined &&
+    options.expectedCommitSha !== source.commitSha
+  ) {
+    throw new Error("--expected-commit does not match the gated production plan");
+  }
+  if (
+    options.expectedTreeSha !== undefined &&
+    options.expectedTreeSha !== source.treeSha
+  ) {
+    throw new Error("--expected-tree does not match the gated production plan");
+  }
+  options.expectedCommitSha = source.commitSha;
+  options.expectedTreeSha = source.treeSha;
+  return { options, plans, repoRoot };
 }
 
-function runInput(file: string, cwd: string, artifactRoot: string): AggregateInput {
+function assertRunMatchesPlan(report: RunReport, plan: ExecutionPlan): void {
+  const expectedComponents = plan.components.map((component) => ({
+    id: component.id,
+    interfaceVersion: component.interfaceVersion,
+    expectedIdentity: component.expectedIdentity,
+  }));
+  const actualComponents = report.components.map((component) => ({
+    id: component.id,
+    interfaceVersion: component.interfaceVersion,
+    expectedIdentity: component.expectedIdentity,
+  }));
+  if (
+    report.run.runId !== plan.runId ||
+    report.run.sequence !== plan.sequence ||
+    stableJson(report.manifest) !== stableJson(plan.manifest) ||
+    stableJson(report.source) !== stableJson(plan.source) ||
+    stableJson(actualComponents) !== stableJson(expectedComponents)
+  ) {
+    throw new Error("run report does not match its exact gated execution plan");
+  }
+}
+
+function assertSoakMatchesPlan(
+  report: import("./types.js").SoakReport,
+  plan: ExecutionPlan,
+): void {
+  const expectedComponents = plan.components.map((component) => ({
+    id: component.id,
+    interfaceVersion: component.interfaceVersion,
+    identity: component.expectedIdentity,
+  }));
+  if (
+    report.runId !== plan.runId ||
+    stableJson(report.manifest) !== stableJson(plan.manifest) ||
+    stableJson(report.source) !== stableJson(plan.source) ||
+    stableJson(report.components) !== stableJson(expectedComponents)
+  ) {
+    throw new Error("soak report does not match its exact gated execution plan");
+  }
+}
+
+function assertAggregateMatchesPlans(
+  report: AggregateReport,
+  plans: readonly ExecutionPlan[],
+): void {
+  const expectedRuns = plans.map((plan) => ({
+    runId: plan.runId,
+    sequence: plan.sequence,
+    source: plan.source,
+    components: plan.components.map((component) => ({
+      id: component.id,
+      interfaceVersion: component.interfaceVersion,
+      identity: component.expectedIdentity,
+    })),
+  }));
+  const actualRuns = report.runs.map((run) => ({
+    runId: run.runId,
+    sequence: run.sequence,
+    source: run.source,
+    components: run.components,
+  }));
+  if (
+    stableJson(report.manifest) !== stableJson(plans[0]!.manifest) ||
+    stableJson(report.source) !== stableJson(plans[0]!.source) ||
+    stableJson(actualRuns) !== stableJson(expectedRuns)
+  ) {
+    throw new Error("aggregate report does not match the three exact gated plans");
+  }
+}
+
+function runInput(
+  file: string,
+  cwd: string,
+  artifactRoot: string,
+  plan: ExecutionPlan,
+): AggregateInput {
   const resolvedFile = resolveFrom(cwd, file);
   const bytes = readFileSync(resolvedFile);
   const report = JSON.parse(bytes.toString("utf8")) as unknown;
@@ -286,6 +447,7 @@ function runInput(file: string, cwd: string, artifactRoot: string): AggregateInp
   if (!validation.ok || validation.value === undefined) {
     throw new ConformanceValidationError(`Invalid run report ${file}`, validation.issues);
   }
+  assertRunMatchesPlan(validation.value, plan);
   const reportPath = path.relative(artifactRoot, resolvedFile).replaceAll("\\", "/");
   if (reportPath.startsWith("..") || path.isAbsolute(reportPath)) {
     throw new Error(`Run report must be retained below the artifact root: ${file}`);
@@ -302,28 +464,37 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   if (command === "validate-run") {
     const [file, ...flags] = rest;
     if (file === undefined) usage();
+    const context = productionValidationContext(flags, cwd, 1);
     const report = readJson(file, cwd);
-    assertPassingRunReport(report, validationOptions(flags, cwd));
+    assertPassingRunReport(report, context.options);
+    assertRunMatchesPlan(report as RunReport, context.plans[0]!);
     process.stdout.write("RBP conformance run: PASS\n");
     return;
   }
   if (command === "validate-aggregate") {
     const [file, ...flags] = rest;
     if (file === undefined) usage();
+    const context = productionValidationContext(flags, cwd, 3);
     const report = readJson(file, cwd);
-    const options = validationOptions(flags, cwd);
+    const options = context.options;
     options.aggregateReportFile = resolveFrom(cwd, file);
     assertPassingAggregateReport(report, options);
+    assertAggregateMatchesPlans(report as AggregateReport, context.plans);
     process.stdout.write("RBP conformance three-run aggregate: PASS\n");
     return;
   }
   if (command === "validate-soak") {
     const [file, ...flags] = rest;
     if (file === undefined) usage();
+    const context = productionValidationContext(flags, cwd, 1);
     const report = readJson(file, cwd);
-    const options = validationOptions(flags, cwd);
+    const options = context.options;
     options.soakReportFile = resolveFrom(cwd, file);
     assertPassingSoakReport(report, options);
+    assertSoakMatchesPlan(
+      report as import("./types.js").SoakReport,
+      context.plans[0]!,
+    );
     process.stdout.write("RBP reconnect/proxy-churn soak: PASS\n");
     return;
   }
@@ -339,9 +510,11 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
   }
   if (command === "aggregate") {
     if (rest.length < 3) usage();
-    const options = validationOptions(rest.slice(3), cwd);
+    const context = productionValidationContext(rest.slice(3), cwd, 3);
+    const options = context.options;
     const artifactRoot = path.resolve(options.artifactRoot ?? cwd);
-    const inputs = rest.slice(0, 3).map((file) => runInput(file, cwd, artifactRoot));
+    const inputs = rest.slice(0, 3).map((file, index) =>
+      runInput(file, cwd, artifactRoot, context.plans[index]!));
     inputs.forEach(({ report }) => assertPassingRunReport(report, { ...options, artifactRoot }));
     const aggregate = createThreeRunAggregate(inputs);
     const junitXml = aggregateReportToJUnitXml(aggregate);
@@ -357,6 +530,7 @@ export function runCli(args: string[], cwd: string = process.cwd()): void {
     writeText(junitPath, junitXml, artifactRoot);
     const aggregateReportFile = path.resolve(artifactRoot, aggregate.reportPath);
     assertPassingAggregateReport(aggregate, { ...options, artifactRoot, aggregateReportFile });
+    assertAggregateMatchesPlans(aggregate, context.plans);
     writeText(aggregate.reportPath, stableJson(aggregate), artifactRoot);
     return;
   }

@@ -1,9 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import {
+  assertProductionControllerRuntimeCurrent,
   assertProductionExecutionPlanCurrent,
   productionComponentLaunchConfigs,
 } from "../src/productionExecutionPlan.js";
+import { resolveCurrentProcessNodeIdentity } from "../src/productionRuntimeIdentity.js";
 import type {
   ComponentBuildProvenanceIdentity,
   ComponentId,
@@ -33,11 +35,12 @@ function provenance(seed: number): ComponentBuildProvenanceIdentity {
     napiVersion: "10",
   };
   return {
-    schemaVersion: "rbp-production-build-provenance/v2",
-    buildContractVersion: "rbp-production-typescript-build/v2",
+    schemaVersion: "rbp-production-build-provenance/v3",
+    buildContractVersion: "rbp-production-typescript-build/v3",
     sidecarPath: `packages/component-${String(seed)}/dist/rbp-build-provenance.json`,
     sidecarSha256: hash,
     compileInputsSha256: hash,
+    buildGeneratorDependenciesSha256: hash,
     runtimeArtifactsSha256: hash,
     runtimeDependenciesSha256: hash,
     harnessArtifactsSha256: hash,
@@ -142,5 +145,22 @@ describe("production execution plan source gate", () => {
         () => verified,
       ),
     ).toThrow(/does not match the execution plan/u);
+  });
+
+  it("rejects a substituted controller Node identity before production execution", () => {
+    const plan = createPlan();
+    const current = resolveCurrentProcessNodeIdentity();
+    plan.components.forEach((component, index) => {
+      const identity = provenance(index + 1);
+      identity.toolchain.runtimeNode = structuredClone(current);
+      component.expectedIdentity.buildProvenance = identity;
+    });
+    expect(() => assertProductionControllerRuntimeCurrent(plan)).not.toThrow();
+    plan.components.forEach((component) => {
+      component.expectedIdentity.buildProvenance!.toolchain.runtimeNode.sha256 =
+        "0".repeat(64);
+    });
+    expect(() => assertProductionControllerRuntimeCurrent(plan))
+      .toThrow(/controller Node does not match/u);
   });
 });

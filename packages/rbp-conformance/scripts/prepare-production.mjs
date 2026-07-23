@@ -28,17 +28,45 @@ function childEnvironment() {
     if (
       resolutionEnvironmentKeys.has(normalized) ||
       normalized.startsWith("GIT_") ||
-      normalized === "NPM_CONFIG_IGNORE_SCRIPTS" ||
+      normalized.startsWith("NPM_CONFIG_") ||
+      normalized === "NPM_EXECPATH" ||
+      normalized === "NPM_NODE_EXECPATH" ||
+      normalized.startsWith("NPM_LIFECYCLE_") ||
+      normalized === "RBP_PRODUCTION_NPM_EXECUTABLE" ||
       normalized === "PATH"
     ) {
       continue;
     }
     result[key] = value;
   }
-  result.npm_config_ignore_scripts = "false";
-  result.PATH = `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`;
+  result.PATH = "";
   return result;
 }
+
+function gitEnvironment() {
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  return {
+    ...childEnvironment(),
+    GIT_ATTR_NOSYSTEM: "1",
+    GIT_CONFIG_GLOBAL: nullDevice,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_CONFIG_SYSTEM: nullDevice,
+    GIT_OPTIONAL_LOCKS: "0",
+    GIT_TERMINAL_PROMPT: "0",
+  };
+}
+
+const hardenedGitConfig = [
+  "-c", "core.attributesfile=",
+  "-c", "core.autocrlf=input",
+  "-c", "core.excludesfile=",
+  "-c", "core.fsmonitor=false",
+  "-c", "core.ignorestat=false",
+  "-c", "core.preloadindex=false",
+  "-c", "core.safecrlf=false",
+  "-c", "core.trustctime=true",
+  "-c", "core.untrackedCache=false",
+];
 
 function sha256File(file) {
   return createHash("sha256").update(readFileSync(file)).digest("hex");
@@ -77,11 +105,32 @@ function run(executable, args, options = {}) {
   return result;
 }
 
-const npmEntrypoint = process.env.npm_execpath;
-if (npmEntrypoint === undefined) {
+if (
+  Object.keys(process.env).some((key) =>
+    key.toUpperCase() === "NPM_EXECPATH" ||
+    key.toUpperCase().startsWith("NPM_LIFECYCLE_"))
+) {
   throw new Error(
-    "canonical production preparation must be invoked through npm run prepare:rbp-production",
+    "canonical production preparation must be invoked directly with the bound Node executable",
   );
+}
+const forwardedArgs = [];
+let npmEntrypoint;
+for (let index = 2; index < process.argv.length; index += 1) {
+  const value = process.argv[index];
+  if (value === "--npm-executable") {
+    const candidate = process.argv[index + 1];
+    if (candidate === undefined || npmEntrypoint !== undefined) {
+      throw new Error("--npm-executable requires exactly one absolute path");
+    }
+    npmEntrypoint = candidate;
+    index += 1;
+  } else {
+    forwardedArgs.push(value);
+  }
+}
+if (npmEntrypoint === undefined) {
+  throw new Error("canonical production preparation requires --npm-executable");
 }
 const npmIdentity = exactRegularFile(npmEntrypoint, "npm launcher");
 const nodeIdentity = exactRegularFile(process.execPath, "build Node executable");
@@ -100,8 +149,18 @@ function gitVersion(identity) {
 
 function resolveGitIdentity() {
   const locator = process.platform === "win32"
-    ? run("where.exe", ["git.exe"])
-    : run("sh", ["-c", "command -v git"]);
+    ? run(
+      path.join(
+        process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows",
+        "System32",
+        "where.exe",
+      ),
+      ["git.exe"],
+      { env: { ...childEnvironment(), PATH: process.env.PATH ?? "" } },
+    )
+    : run("/bin/sh", ["-c", "command -v git"], {
+      env: { ...childEnvironment(), PATH: process.env.PATH ?? "" },
+    });
   if (locator.status !== 0) {
     throw new Error(`cannot resolve Git: ${String(locator.stderr).trim()}`);
   }
@@ -128,7 +187,9 @@ const gitIdentity = resolveGitIdentity();
 
 function runGit(args, label) {
   assertSameGit(gitIdentity);
-  const result = run(gitIdentity.real, args);
+  const result = run(gitIdentity.real, [...hardenedGitConfig, ...args], {
+    env: gitEnvironment(),
+  });
   if (result.status !== 0) {
     throw new Error(`${label} failed: ${String(result.stderr).trim()}`);
   }
@@ -136,18 +197,99 @@ function runGit(args, label) {
   return result;
 }
 
-const status = runGit(
-  ["status", "--porcelain=v1", "--untracked-files=all"],
-  "Git status",
-);
-if (String(status.stdout).length > 0) {
-  throw new Error("canonical production preparation requires an exactly clean source tree");
+function assertBootstrapSourceClean() {
+  const assumed = String(runGit(["ls-files", "-v", "-z"], "Git index flag probe").stdout)
+    .split("\0").filter(Boolean).find((record) => /^[a-z] /u.test(record));
+  if (assumed !== undefined) {
+    throw new Error(`canonical preparation rejects assume-unchanged: ${assumed.slice(2)}`);
+  }
+  const skipped = String(runGit(["ls-files", "-t", "-z"], "Git sparse flag probe").stdout)
+    .split("\0").filter(Boolean).find((record) => record.startsWith("S "));
+  if (skipped !== undefined) {
+    throw new Error(`canonical preparation rejects skip-worktree: ${skipped.slice(2)}`);
+  }
+  const filters = run(gitIdentity.real, [
+    ...hardenedGitConfig,
+    "config",
+    "--local",
+    "--get-regexp",
+    "^filter\\.",
+  ], { env: gitEnvironment() });
+  if (filters.status === 0 && String(filters.stdout).trim().length > 0) {
+    throw new Error("canonical preparation rejects repository-local Git filters");
+  }
+  if (filters.status !== 0 && filters.status !== 1) {
+    throw new Error(`Git local-filter probe failed: ${String(filters.stderr).trim()}`);
+  }
+  const commit = String(runGit(
+    ["rev-parse", "--verify", "HEAD^{commit}"],
+    "Git protected commit",
+  ).stdout).trim();
+  const treeRows = String(runGit(
+    ["ls-tree", "-r", "-z", "--full-tree", commit],
+    "Git protected tree",
+  ).stdout).split("\0").filter(Boolean);
+  const tree = treeRows.map((record) => {
+    const match = /^([0-7]{6}) blob ([0-9a-f]{40,64})\t(.+)$/u.exec(record);
+    if (match === null || /[\r\n]/u.test(match[3])) {
+      throw new Error(`unsupported protected tree entry: ${record}`);
+    }
+    return { mode: match[1], objectId: match[2], path: match[3] };
+  });
+  const indexRows = String(runGit(
+    ["ls-files", "--stage", "-z"],
+    "Git index tree",
+  ).stdout).split("\0").filter(Boolean);
+  if (indexRows.length !== tree.length) {
+    throw new Error("Git index path set does not match protected HEAD");
+  }
+  indexRows.forEach((record, index) => {
+    const match = /^([0-7]{6}) ([0-9a-f]{40,64}) 0\t(.+)$/u.exec(record);
+    const expected = tree[index];
+    if (
+      match === null ||
+      expected === undefined ||
+      match[1] !== expected.mode ||
+      match[2] !== expected.objectId ||
+      match[3] !== expected.path
+    ) {
+      throw new Error(`Git index does not match protected HEAD at row ${String(index)}`);
+    }
+  });
+  const hashResult = run(
+    gitIdentity.real,
+    [...hardenedGitConfig, "hash-object", "--stdin-paths"],
+    {
+      env: gitEnvironment(),
+      input: `${tree.map((entry) => entry.path).join("\n")}\n`,
+    },
+  );
+  if (hashResult.status !== 0) {
+    throw new Error(`Git tracked-byte hashing failed: ${String(hashResult.stderr).trim()}`);
+  }
+  const hashes = String(hashResult.stdout).trim().split(/\r?\n/u);
+  if (hashes.length !== tree.length) {
+    throw new Error("Git did not hash every protected tracked path");
+  }
+  hashes.forEach((hash, index) => {
+    if (hash !== tree[index]?.objectId) {
+      throw new Error(`tracked bytes do not match protected HEAD: ${tree[index]?.path}`);
+    }
+  });
+  const untracked = String(runGit(
+    ["ls-files", "--others", "--exclude-standard", "-z"],
+    "Git untracked probe",
+  ).stdout).split("\0").filter(Boolean);
+  if (untracked.length > 0) {
+    throw new Error(`canonical preparation rejects untracked path: ${untracked[0]}`);
+  }
 }
+assertBootstrapSourceClean();
 
-function runNpm(args, label, options = {}) {
+function runBoundNode(args, label, options = {}) {
   assertSameFile(npmIdentity, "npm launcher");
   assertSameFile(nodeIdentity, "build Node executable");
-  const result = run(process.execPath, [npmIdentity.path, ...args], options);
+  const result = run(nodeIdentity.real, args, options);
   if (result.status !== 0) {
     throw new Error(
       `${label} failed (exit ${String(result.status)}): ${String(result.stderr).trim()}`,
@@ -156,14 +298,6 @@ function runNpm(args, label, options = {}) {
   assertSameFile(npmIdentity, "npm launcher");
   assertSameFile(nodeIdentity, "build Node executable");
   return result;
-}
-
-const ignoreScripts = runNpm(
-  ["config", "get", "ignore-scripts"],
-  "npm lifecycle configuration probe",
-);
-if (String(ignoreScripts.stdout).trim() !== "false") {
-  throw new Error("canonical npm lifecycle scripts are not enabled");
 }
 
 const nativeSmoke = run(
@@ -189,22 +323,46 @@ if (existsSync(harnessDist)) {
   rmSync(harnessDist, { recursive: true, force: true });
 }
 
-runNpm(
-  ["run", "build:self", "--workspace", "@revagent/protocol"],
-  "protocol bootstrap build",
+runBoundNode(
+  [path.join(repoRoot, "packages/protocol/scripts/generate-types.mjs")],
+  "protocol bootstrap generation",
   { stdio: ["ignore", "inherit", "inherit"] },
 );
-runNpm(
-  ["run", "build:self", "--workspace", "@revagent/rbp-conformance"],
-  "rbp-conformance build",
+runBoundNode(
+  [path.join(repoRoot, "packages/protocol/scripts/clean.mjs")],
+  "protocol bootstrap clean",
+  { stdio: ["ignore", "inherit", "inherit"] },
+);
+const typescriptEntrypoint = path.join(
+  repoRoot,
+  "node_modules/typescript/lib/tsc.js",
+);
+runBoundNode(
+  [typescriptEntrypoint, "-p", path.join(repoRoot, "packages/protocol/tsconfig.json")],
+  "protocol bootstrap TypeScript build",
+  { stdio: ["ignore", "inherit", "inherit"] },
+);
+runBoundNode(
+  [
+    typescriptEntrypoint,
+    "-p",
+    path.join(repoRoot, "packages/rbp-conformance/tsconfig.json"),
+  ],
+  "rbp-conformance direct TypeScript build",
   { stdio: ["ignore", "inherit", "inherit"] },
 );
 
 const cli = path.join(repoRoot, "packages/rbp-conformance/dist/src/cli.js");
 const prepare = run(
-  process.execPath,
-  [cli, "prepare-production", ...process.argv.slice(2)],
-  { stdio: ["ignore", "inherit", "inherit"] },
+  nodeIdentity.real,
+  [cli, "prepare-production", ...forwardedArgs],
+  {
+    stdio: ["ignore", "inherit", "inherit"],
+    env: {
+      ...childEnvironment(),
+      RBP_PRODUCTION_NPM_EXECUTABLE: npmIdentity.path,
+    },
+  },
 );
 assertSameFile(npmIdentity, "npm launcher");
 assertSameFile(nodeIdentity, "build Node executable");

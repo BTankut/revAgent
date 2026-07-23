@@ -46,11 +46,12 @@ export interface SourceIdentity {
 }
 
 export interface ComponentBuildProvenanceIdentity {
-  schemaVersion: "rbp-production-build-provenance/v2";
-  buildContractVersion: "rbp-production-typescript-build/v2";
+  schemaVersion: "rbp-production-build-provenance/v3";
+  buildContractVersion: "rbp-production-typescript-build/v3";
   sidecarPath: string;
   sidecarSha256: string;
   compileInputsSha256: string;
+  buildGeneratorDependenciesSha256: string;
   runtimeArtifactsSha256: string;
   runtimeDependenciesSha256: string;
   harnessArtifactsSha256: string;

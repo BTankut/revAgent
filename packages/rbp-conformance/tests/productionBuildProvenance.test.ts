@@ -129,10 +129,18 @@ function fixture(): Fixture {
   write(root, "tsconfig.base.json", "{\"compilerOptions\":{}}\n");
 
   const manifests: Record<(typeof PACKAGES)[number], string> = {
-    protocol: packageManifest("@revagent/protocol", {
-      ajv: "^8.0.0",
-      "ajv-formats": "^3.0.0",
-    }),
+    protocol: packageManifest(
+      "@revagent/protocol",
+      {
+        ajv: "^8.0.0",
+        "ajv-formats": "^3.0.0",
+      },
+      {
+        devDependencies: {
+          "json-schema-to-typescript": "15.0.4",
+        },
+      },
+    ),
     "gateway-stub": packageManifest("@revagent/gateway-stub", {
       "@revagent/protocol": "1.0.0",
       ws: "^8.0.0",
@@ -229,6 +237,21 @@ function fixture(): Fixture {
       "build/Release/better_sqlite3.node": Buffer.from("native-fixture"),
     },
   });
+  installedPackage(
+    root,
+    "node_modules/json-schema-to-typescript",
+    "json-schema-to-typescript",
+    {
+      dependencies: { "generator-transitive": "1.0.0" },
+      files: { "index.js": "module.exports = {};\n" },
+    },
+  );
+  installedPackage(
+    root,
+    "node_modules/generator-transitive",
+    "generator-transitive",
+    { files: { "index.js": "module.exports = {};\n" } },
+  );
 
   installedPackage(root, "node_modules/typescript", "typescript", {
     files: {
@@ -242,15 +265,14 @@ function fixture(): Fixture {
       "node_modules/npm-runtime/index.js": "export {};\n",
     },
   });
-  const nodeExecutable = path.join(root, "node_modules", "fixture-node.exe");
-  write(root, "node_modules/fixture-node.exe", Buffer.from("fixture-node-binary"));
+  const nodeExecutable = process.execPath;
   const npmExecutable = path.join(root, "node_modules", "npm", "bin", "npm-cli.js");
   const nodeMetadataResolver = (executable: string): NodeRuntimeMetadata => ({
-    version: "v22.22.2",
-    platform: "win32",
-    arch: "x64",
-    modulesAbi: "127",
-    napiVersion: "10",
+    version: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    modulesAbi: process.versions.modules,
+    napiVersion: process.versions.napi ?? null,
     execPath: executable,
   });
 
@@ -297,8 +319,8 @@ afterEach(() => {
   }
 });
 
-describe("production build provenance", { timeout: 20_000 }, () => {
-  it("writes deterministic v2 sidecars and carries their exact identity in the plan", () => {
+describe("production build provenance", { timeout: 30_000 }, () => {
+  it("writes deterministic v3 sidecars and carries their exact identity in the plan", () => {
     const value = fixture();
     createSidecars(value);
     const first = readFileSync(
@@ -320,6 +342,9 @@ describe("production build provenance", { timeout: 20_000 }, () => {
           nativeFiles: Array<{ path: string }>;
         }>;
       };
+      buildGeneratorDependencies: {
+        packages: Array<{ name: string; contents: { files: Array<{ path: string }> } }>;
+      };
       harness: { runtimeArtifacts: { files: Array<{ path: string }> } };
       toolchain: {
         npmLauncher: { package: { contents: { files: Array<{ path: string }> } } };
@@ -331,6 +356,14 @@ describe("production build provenance", { timeout: 20_000 }, () => {
     expect(sidecar.toolchain.npmLauncher.package.contents.files)
       .toContainEqual(expect.objectContaining({
         path: "node_modules/npm-runtime/index.js",
+      }));
+    expect(sidecar.buildGeneratorDependencies.packages)
+      .toContainEqual(expect.objectContaining({
+        name: "json-schema-to-typescript",
+      }));
+    expect(sidecar.buildGeneratorDependencies.packages)
+      .toContainEqual(expect.objectContaining({
+        name: "generator-transitive",
       }));
     expect(sidecar.harness.runtimeArtifacts.files)
       .toContainEqual(expect.objectContaining({
@@ -404,7 +437,7 @@ describe("production build provenance", { timeout: 20_000 }, () => {
       "utf8",
     );
     expect(() => assertCurrent(value, plan))
-      .toThrow(/requires an exactly clean source tree/u);
+      .toThrow(/tracked bytes do not match protected HEAD/u);
   });
 
   it("rejects canonical-JSON sidecar toolchain tampering", () => {
@@ -442,6 +475,26 @@ describe("production build provenance", { timeout: 20_000 }, () => {
       expected: /runtime dependency closure|runtime dependencies/u,
     },
     {
+      label: "protocol physical Ajv copy",
+      relative: "packages/protocol/node_modules/ajv/dist/runtime.js",
+      expected: /runtime dependency closure|runtime dependencies/u,
+    },
+    {
+      label: "add-in physical Ajv copy",
+      relative: "packages/addin-loopback-fixture/node_modules/ajv/dist/runtime.js",
+      expected: /runtime dependency closure|runtime dependencies/u,
+    },
+    {
+      label: "controller physical Ajv copy",
+      relative: "packages/rbp-conformance/node_modules/ajv/dist/runtime.js",
+      expected: /conformance harness/u,
+    },
+    {
+      label: "ajv-formats nested physical Ajv copy",
+      relative: "node_modules/ajv-formats/node_modules/ajv/dist/runtime.js",
+      expected: /runtime dependency closure|runtime dependencies|conformance harness/u,
+    },
+    {
       label: "native runtime addon",
       relative: "node_modules/better-sqlite3/build/Release/better_sqlite3.node",
       expected: /runtime dependency closure|runtime dependencies/u,
@@ -452,14 +505,19 @@ describe("production build provenance", { timeout: 20_000 }, () => {
       expected: /build toolchain provenance/u,
     },
     {
-      label: "npm package runtime",
-      relative: "node_modules/npm/node_modules/npm-runtime/index.js",
+      label: "build generator transitive dependency",
+      relative: "node_modules/generator-transitive/index.js",
+      expected: /build-generator dependency provenance/u,
+    },
+    {
+      label: "npm launcher main",
+      relative: "node_modules/npm/bin/npm-cli.js",
       expected: /build toolchain provenance/u,
     },
     {
-      label: "runtime Node executable",
-      relative: "node_modules/fixture-node.exe",
-      expected: /build toolchain provenance|runtime Node identity/u,
+      label: "npm package runtime",
+      relative: "node_modules/npm/node_modules/npm-runtime/index.js",
+      expected: /build toolchain provenance/u,
     },
   ])("invalidates an existing plan when $label bytes change", ({ relative, expected }) => {
     const value = fixture();
@@ -478,6 +536,53 @@ describe("production build provenance", { timeout: 20_000 }, () => {
       assertProductionRuntimeLaunchCurrent(plan, value.root, {
         nodeMetadataResolver: value.nodeMetadataResolver,
       })).toThrow(/runtime dependencies changed before launch/u);
+  });
+
+  it.each([
+    {
+      label: "package directory without a manifest",
+      relative: "node_modules/bufferutil/index.js",
+    },
+    {
+      label: "package-like top-level file",
+      relative: "node_modules/bufferutil.js",
+    },
+  ])("rejects optional $label instead of recording false absence", ({ relative }) => {
+    const value = fixture();
+    createSidecars(value);
+    const plan = buildPlan(value);
+    write(value.root, relative, "module.exports = {};\n");
+    expect(() =>
+      assertProductionRuntimeLaunchCurrent(plan, value.root, {
+        nodeMetadataResolver: value.nodeMetadataResolver,
+      })).toThrow(/without a captured owning package manifest|captured physical package/u);
+  });
+
+  it("rejects a workspace junction retarget before launch", () => {
+    const value = fixture();
+    createSidecars(value);
+    const plan = buildPlan(value);
+    write(
+      value.root,
+      "node_modules/.retarget/protocol/package.json",
+      packageManifest("@revagent/protocol"),
+    );
+    write(
+      value.root,
+      "node_modules/.retarget/protocol/index.js",
+      "module.exports = {};\n",
+    );
+    const link = path.join(value.root, "node_modules", "@revagent", "protocol");
+    rmSync(link, { recursive: true, force: true });
+    symlinkSync(
+      path.join(value.root, "node_modules", ".retarget", "protocol"),
+      link,
+      "junction",
+    );
+    expect(() =>
+      assertProductionRuntimeLaunchCurrent(plan, value.root, {
+        nodeMetadataResolver: value.nodeMetadataResolver,
+      })).toThrow(/external dependency is a symbolic link|runtime dependencies/u);
   });
 
   it("rejects command executable substitution before runtime provenance checking", () => {

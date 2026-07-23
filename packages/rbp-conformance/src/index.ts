@@ -149,6 +149,7 @@ export {
 } from "./productionCaseSeedsEarly.js";
 export type { EarlyProductionCase } from "./productionCaseSeedsEarly.js";
 export {
+  assertProductionControllerRuntimeCurrent,
   assertProductionExecutionPlanCurrent,
   assertProductionRuntimeLaunchCurrent,
   boundProductionPowerShellExecutable,

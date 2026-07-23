@@ -15,54 +15,58 @@ import {
 } from "./productionExecutionPlan.js";
 import {
   resolveProductionToolchainIdentity,
+  sanitizedProductionRuntimeEnvironment,
+  TYPESCRIPT_ENTRYPOINT_PATH,
   type ProductionToolchainIdentity,
 } from "./productionRuntimeIdentity.js";
 import { stableJson } from "./stableJson.js";
 import type { ExecutionPlan } from "./types.js";
 
-const PRODUCTION_BUILD_WORKSPACES = [
-  "@revagent/protocol",
-  "@revagent/addin-loopback-fixture",
-  "@revagent/gateway-stub",
-  "@revagent/bridge-simulator",
+export const PRODUCTION_BUILD_STEPS = [
+  {
+    workspace: "@revagent/protocol",
+    outputRoot: "packages/protocol/dist",
+  },
+  {
+    workspace: "@revagent/addin-loopback-fixture",
+    outputRoot: "packages/addin-loopback-fixture/dist",
+  },
+  {
+    workspace: "@revagent/gateway-stub",
+    outputRoot: "packages/gateway-stub/dist",
+  },
+  {
+    workspace: "@revagent/bridge-simulator",
+    outputRoot: "packages/bridge-simulator/dist",
+  },
 ] as const;
 
-const RESOLUTION_ENVIRONMENT_KEYS = new Set([
-  "NODE_OPTIONS",
-  "NODE_PATH",
-  "NODE_PRESERVE_SYMLINKS",
-  "NODE_COMPILE_CACHE",
-  "NODE_DISABLE_COMPILE_CACHE",
-  "WS_NO_BUFFER_UTIL",
-  "WS_NO_UTF_8_VALIDATE",
-]);
+export type ProductionBuildWorkspace =
+  (typeof PRODUCTION_BUILD_STEPS)[number]["workspace"];
+
+const INTERNAL_NPM_EXECUTABLE_KEY = "RBP_PRODUCTION_NPM_EXECUTABLE";
 
 function npmEntrypoint(): string {
-  const value = process.env.npm_execpath;
+  const value = process.env[INTERNAL_NPM_EXECUTABLE_KEY];
   if (value === undefined || !path.isAbsolute(value)) {
     throw new Error(
-      "canonical production preparation must be invoked through npm run prepare:rbp-production",
+      "canonical production preparation requires the direct wrapper and an exact npm identity",
     );
   }
   return value;
 }
 
 function buildEnvironment(): NodeJS.ProcessEnv {
-  const result: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
-    const normalized = key.toUpperCase();
+  const result = sanitizedProductionRuntimeEnvironment();
+  for (const key of Object.keys(result)) {
     if (
-      RESOLUTION_ENVIRONMENT_KEYS.has(normalized) ||
-      normalized.startsWith("GIT_") ||
-      normalized === "NPM_CONFIG_IGNORE_SCRIPTS" ||
-      normalized === "PATH"
+      key.toUpperCase().startsWith("GIT_") ||
+      key.toUpperCase() === INTERNAL_NPM_EXECUTABLE_KEY
     ) {
-      continue;
+      delete result[key];
     }
-    result[key] = value;
   }
-  result.npm_config_ignore_scripts = "false";
-  result.PATH = `${path.dirname(process.execPath)}${path.delimiter}${process.env.PATH ?? ""}`;
+  result.PATH = "";
   return result;
 }
 
@@ -88,7 +92,7 @@ function assertToolchainUnchanged(
   }
 }
 
-function runNpmChild(input: {
+function runBoundNodeChild(input: {
   repoRoot: string;
   npmExecutable: string;
   runtimeNodeExecutable: string;
@@ -106,7 +110,7 @@ function runNpmChild(input: {
     ),
     `before ${input.label}`,
   );
-  const result = spawnSync(process.execPath, [input.npmExecutable, ...input.args], {
+  const result = spawnSync(input.expectedToolchain.buildNode.realPath, input.args, {
     cwd: input.repoRoot,
     encoding: "utf8",
     shell: false,
@@ -134,21 +138,42 @@ function runNpmChild(input: {
   return String(result.stdout).trim();
 }
 
-function assertLifecycleScriptsEnabled(input: {
+function runWorkspaceBuild(input: {
   repoRoot: string;
   npmExecutable: string;
   runtimeNodeExecutable: string;
   expectedToolchain: ProductionToolchainIdentity;
+  workspace: ProductionBuildWorkspace;
 }): void {
-  const value = runNpmChild({
-    ...input,
-    args: ["config", "get", "ignore-scripts"],
-    label: "npm lifecycle configuration probe",
-    capture: true,
-  });
-  if (value !== "false") {
-    throw new Error(`canonical npm lifecycle scripts are not enabled: ${value}`);
+  const typescriptEntrypoint = path.resolve(
+    input.repoRoot,
+    TYPESCRIPT_ENTRYPOINT_PATH,
+  );
+  if (input.workspace === "@revagent/protocol") {
+    runBoundNodeChild({
+      ...input,
+      args: [path.resolve(
+        input.repoRoot,
+        "packages/protocol/scripts/generate-types.mjs",
+      )],
+      label: "canonical protocol type generation",
+    });
+    runBoundNodeChild({
+      ...input,
+      args: [path.resolve(input.repoRoot, "packages/protocol/scripts/clean.mjs")],
+      label: "canonical protocol output clean",
+    });
   }
+  const packageName = input.workspace.slice("@revagent/".length);
+  runBoundNodeChild({
+    ...input,
+    args: [
+      typescriptEntrypoint,
+      "-p",
+      path.resolve(input.repoRoot, `packages/${packageName}/tsconfig.json`),
+    ],
+    label: `canonical direct TypeScript build for ${input.workspace}`,
+  });
 }
 
 function runNativeDependencySmoke(input: {
@@ -223,6 +248,37 @@ function cleanProductionBuildOutputs(repoRoot: string): void {
   }
 }
 
+export function executeCanonicalProductionBuildDag(input: {
+  repoRoot: string;
+  bootstrapHarness: ReturnType<typeof productionHarnessRuntimeArtifacts>;
+  executeStep: (workspace: ProductionBuildWorkspace) => void;
+}): void {
+  const completed = new Map<string, string>();
+  for (const step of PRODUCTION_BUILD_STEPS) {
+    input.executeStep(step.workspace);
+    for (const [outputRoot, expectedDigest] of completed) {
+      const currentDigest = productionComponentOutputArtifacts(
+        input.repoRoot,
+        outputRoot,
+      ).digestSha256;
+      if (currentDigest !== expectedDigest) {
+        throw new Error(`${step.workspace} rewrote upstream output ${outputRoot}`);
+      }
+    }
+    const currentDigest = productionComponentOutputArtifacts(
+      input.repoRoot,
+      step.outputRoot,
+    ).digestSha256;
+    completed.set(step.outputRoot, currentDigest);
+    const currentHarness = productionHarnessRuntimeArtifacts(input.repoRoot);
+    if (stableJson(currentHarness) !== stableJson(input.bootstrapHarness)) {
+      throw new Error(
+        `${step.workspace} changed the bootstrap conformance/protocol harness`,
+      );
+    }
+  }
+}
+
 /**
  * The only supported inner production prepare path. The outer wrapper has
  * already cleaned and rebuilt the controller. This function validates the
@@ -251,59 +307,22 @@ export function prepareProductionExecutionPlan(input: {
     expectedToolchain.git.path,
   );
   const bootstrapHarness = productionHarnessRuntimeArtifacts(input.repoRoot);
-  assertLifecycleScriptsEnabled({
-    repoRoot: input.repoRoot,
-    npmExecutable,
-    runtimeNodeExecutable,
-    expectedToolchain,
-  });
   runNativeDependencySmoke({ repoRoot: input.repoRoot, runtimeNodeExecutable });
 
   cleanProductionBuildOutputs(input.repoRoot);
-  let protocolDigest: string | undefined;
-  let fixtureDigest: string | undefined;
-  for (const workspace of PRODUCTION_BUILD_WORKSPACES) {
-    runNpmChild({
-      repoRoot: input.repoRoot,
-      npmExecutable,
-      runtimeNodeExecutable,
-      expectedToolchain,
-      args: ["run", "build:self", "--workspace", workspace],
-      label: `canonical production build for ${workspace}`,
-    });
-    const componentOutputs = productionComponentBuildOutputRoots();
-    if (workspace === "@revagent/protocol") {
-      protocolDigest = productionComponentOutputArtifacts(
-        input.repoRoot,
-        "packages/protocol/dist",
-      ).digestSha256;
-    } else {
-      const currentProtocolDigest = productionComponentOutputArtifacts(
-        input.repoRoot,
-        componentOutputs[0]!,
-      ).digestSha256;
-      if (currentProtocolDigest !== protocolDigest) {
-        throw new Error(`${workspace} rewrote the upstream protocol output`);
-      }
-    }
-    if (workspace === "@revagent/addin-loopback-fixture") {
-      fixtureDigest = productionComponentOutputArtifacts(
-        input.repoRoot,
-        "packages/addin-loopback-fixture/dist",
-      ).digestSha256;
-    } else if (
-      fixtureDigest !== undefined &&
-      workspace !== "@revagent/protocol"
-    ) {
-      const currentFixtureDigest = productionComponentOutputArtifacts(
-        input.repoRoot,
-        "packages/addin-loopback-fixture/dist",
-      ).digestSha256;
-      if (currentFixtureDigest !== fixtureDigest) {
-        throw new Error(`${workspace} rewrote the upstream add-in fixture output`);
-      }
-    }
-  }
+  executeCanonicalProductionBuildDag({
+    repoRoot: input.repoRoot,
+    bootstrapHarness,
+    executeStep: (workspace) => {
+      runWorkspaceBuild({
+        workspace,
+        repoRoot: input.repoRoot,
+        npmExecutable,
+        runtimeNodeExecutable,
+        expectedToolchain,
+      });
+    },
+  });
   const finalHarness = productionHarnessRuntimeArtifacts(input.repoRoot);
   if (stableJson(finalHarness) !== stableJson(bootstrapHarness)) {
     throw new Error("component build changed the freshly built conformance harness");

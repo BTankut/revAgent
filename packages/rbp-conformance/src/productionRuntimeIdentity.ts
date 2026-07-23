@@ -22,6 +22,10 @@ export const INSTALLED_RUNTIME_CLOSURE_SCHEMA_VERSION =
   "rbp-installed-runtime-closure/v1" as const;
 export const INSTALLED_RUNTIME_CLOSURE_ALGORITHM =
   "sha256-stable-json-resolved-installed-runtime-closure/v1" as const;
+export const INSTALLED_BUILD_GENERATOR_CLOSURE_SCHEMA_VERSION =
+  "rbp-installed-build-generator-closure/v1" as const;
+export const INSTALLED_BUILD_GENERATOR_CLOSURE_ALGORITHM =
+  "sha256-stable-json-resolved-build-generator-closure/v1" as const;
 export const TYPESCRIPT_ENTRYPOINT_PATH =
   "node_modules/typescript/lib/tsc.js" as const;
 
@@ -66,6 +70,7 @@ export type RuntimeDependencyKind =
   | "optional_dependency"
   | "peer_dependency"
   | "optional_peer_dependency";
+export type BuildDependencyKind = RuntimeDependencyKind | "dev_dependency";
 
 export interface RuntimeDependencyResolution {
   requesterName: string;
@@ -85,6 +90,22 @@ export interface InstalledRuntimeDependencyClosure {
   digestSha256: string;
   roots: RuntimeDependencyRoot[];
   resolutions: RuntimeDependencyResolution[];
+  packages: ProductionPackageContentIdentity[];
+}
+
+export interface BuildDependencyResolution extends Omit<
+  RuntimeDependencyResolution,
+  "kind"
+> {
+  kind: BuildDependencyKind;
+}
+
+export interface InstalledBuildGeneratorDependencyClosure {
+  schemaVersion: typeof INSTALLED_BUILD_GENERATOR_CLOSURE_SCHEMA_VERSION;
+  algorithm: typeof INSTALLED_BUILD_GENERATOR_CLOSURE_ALGORITHM;
+  digestSha256: string;
+  roots: RuntimeDependencyRoot[];
+  resolutions: BuildDependencyResolution[];
   packages: ProductionPackageContentIdentity[];
 }
 
@@ -174,6 +195,7 @@ interface PackageManifest {
   optionalDependencies?: unknown;
   peerDependencies?: unknown;
   peerDependenciesMeta?: unknown;
+  devDependencies?: unknown;
 }
 
 const RUNTIME_RESOLUTION_ENVIRONMENT_KEYS = new Set([
@@ -185,6 +207,17 @@ const RUNTIME_RESOLUTION_ENVIRONMENT_KEYS = new Set([
   "WS_NO_BUFFER_UTIL",
   "WS_NO_UTF_8_VALIDATE",
 ]);
+
+function isRejectedProductionEnvironmentKey(key: string): boolean {
+  const normalized = key.toUpperCase();
+  return (
+    RUNTIME_RESOLUTION_ENVIRONMENT_KEYS.has(normalized) ||
+    normalized.startsWith("NPM_CONFIG_") ||
+    normalized === "NPM_EXECPATH" ||
+    normalized === "NPM_NODE_EXECPATH" ||
+    normalized.startsWith("NPM_LIFECYCLE_")
+  );
+}
 
 function compareText(left: string, right: string): number {
   return left < right ? -1 : left > right ? 1 : 0;
@@ -224,12 +257,12 @@ export function sanitizedProductionRuntimeEnvironment(
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {};
   for (const [key, value] of Object.entries(source)) {
-    if (!RUNTIME_RESOLUTION_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+    if (!isRejectedProductionEnvironmentKey(key)) {
       result[key] = value;
     }
   }
   for (const [key, value] of Object.entries(overrides)) {
-    if (RUNTIME_RESOLUTION_ENVIRONMENT_KEYS.has(key.toUpperCase())) {
+    if (isRejectedProductionEnvironmentKey(key)) {
       throw new Error(`production child environment cannot set ${key}`);
     }
     if (value === undefined) delete result[key];
@@ -467,106 +500,137 @@ function declarationRows(manifest: PackageManifest): Array<{
   return rows;
 }
 
-export function resolveInstalledRuntimeDependencyClosure(
-  repoRootValue: string,
-  rootPackagePaths: readonly string[],
-): InstalledRuntimeDependencyClosure {
-  const repoRoot = realpathSync(repoRootValue);
-  const workspaces = workspaceRoots(repoRoot);
-  const roots = rootPackagePaths.map((relativePath) => {
-    const candidate = realpathSync(path.resolve(repoRoot, relativePath));
-    if (!isInside(repoRoot, candidate)) {
-      throw new Error(`runtime dependency root escapes repository: ${relativePath}`);
-    }
-    const manifest = exactPackageManifest(candidate);
-    return {
-      absolute: candidate,
-      record: {
-        name: manifest.name,
-        version: manifest.version,
-        packagePath: normalizePath(path.relative(repoRoot, candidate)),
-      } satisfies RuntimeDependencyRoot,
-    };
-  }).sort((left, right) => compareText(left.record.packagePath, right.record.packagePath));
+interface DependencyDeclaration {
+  dependencyName: string;
+  dependencyRange: string;
+  kind: BuildDependencyKind;
+  optional: boolean;
+}
 
-  const queue = roots.map(({ absolute }) => absolute);
-  const visited = new Set<string>();
-  const resolutions: RuntimeDependencyResolution[] = [];
-  const packages = new Map<string, ProductionPackageContentIdentity>();
+interface PendingDependencyResolution {
+  requesterRoot: string;
+  requesterName: string;
+  requesterPath: string;
+  declaration: DependencyDeclaration;
+  candidate: { lexical: string; resolved: string } | undefined;
+}
 
-  while (queue.length > 0) {
-    const requesterRoot = queue.shift()!;
-    if (visited.has(requesterRoot)) continue;
-    visited.add(requesterRoot);
-    const requester = exactPackageManifest(requesterRoot);
-    const requesterPath = repoRelativePackagePath(repoRoot, requesterRoot);
-    for (const declaration of declarationRows(requester.value)) {
-      const resolvedPackage = dependencyPackageRoot(
-        repoRoot,
-        requesterRoot,
-        declaration.dependencyName,
-      );
-      if (resolvedPackage === undefined) {
-        if (!declaration.optional) {
+interface NodeResolutionProbe {
+  module: {
+    status: "resolved" | "error";
+    resolvedPath?: string;
+    errorCode?: string;
+  };
+  esm: {
+    status: "resolved" | "error";
+    resolvedPath?: string;
+    errorCode?: string;
+  };
+  manifest: {
+    status: "not_attempted" | "resolved" | "error";
+    resolvedPath?: string;
+    errorCode?: string;
+  };
+}
+
+function probeDependencyResolutionWithBoundNode(
+  runtimeNode: ProductionNodeExecutableIdentity,
+  requests: readonly PendingDependencyResolution[],
+): NodeResolutionProbe[] {
+  const before = verifyNodeExecutableIdentityCurrent(runtimeNode);
+  const script = [
+    "import fs from 'node:fs';",
+    "import {createRequire} from 'node:module';",
+    "import {fileURLToPath,pathToFileURL} from 'node:url';",
+    "const requests=JSON.parse(fs.readFileSync(0,'utf8'));",
+    "const attempt=(req,name)=>{try{return {status:'resolved',resolvedPath:req.resolve(name)}}",
+    "catch(error){return {status:'error',errorCode:String(error&&error.code||'UNKNOWN')}}};",
+    "const attemptEsm=(name,parent)=>{try{const value=import.meta.resolve(name,parent);",
+    "return {status:'resolved',resolvedPath:fileURLToPath(value)}}",
+    "catch(error){return {status:'error',errorCode:String(error&&error.code||'UNKNOWN')}}};",
+    "const rows=requests.map(({requesterPackageFile,dependencyName})=>{",
+    "const req=createRequire(requesterPackageFile);",
+    "const module=attempt(req,dependencyName);",
+    "const esm=attemptEsm(dependencyName,pathToFileURL(requesterPackageFile).href);",
+    "const manifest=module.status==='resolved'",
+    "?{status:'not_attempted'}:attempt(req,dependencyName+'/package.json');",
+    "return {module,esm,manifest};});",
+    "process.stdout.write(JSON.stringify(rows));",
+  ].join("");
+  const result = spawnSync(before.realPath, [
+    "--experimental-import-meta-resolve",
+    "--input-type=module",
+    "-e",
+    script,
+  ], {
+    encoding: "utf8",
+    shell: false,
+    windowsHide: true,
+    timeout: 30_000,
+    env: sanitizedProductionRuntimeEnvironment(),
+    input: JSON.stringify(requests.map(({ requesterRoot, declaration }) => ({
+      requesterPackageFile: path.join(requesterRoot, "package.json"),
+      dependencyName: declaration.dependencyName,
+    }))),
+  });
+  if (result.error !== undefined) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(
+      `bound Node dependency-resolution probe failed: ${String(result.stderr).trim()}`,
+    );
+  }
+  const after = verifyNodeExecutableIdentityCurrent(before);
+  if (JSON.stringify(after) !== JSON.stringify(before)) {
+    throw new Error("bound runtime Node changed during dependency resolution");
+  }
+  const parsed = JSON.parse(String(result.stdout)) as unknown;
+  if (!Array.isArray(parsed) || parsed.length !== requests.length) {
+    throw new Error("bound Node dependency-resolution probe returned malformed output");
+  }
+  return parsed as NodeResolutionProbe[];
+}
+
+function owningDependencyPackageRoot(
+  repoRoot: string,
+  resolvedPathValue: string,
+  dependencyName: string,
+): string {
+  if (!path.isAbsolute(resolvedPathValue)) {
+    throw new Error(
+      `Node resolved ${dependencyName} to a non-file module: ${resolvedPathValue}`,
+    );
+  }
+  const resolvedPath = realpathSync(resolvedPathValue);
+  let cursor = statSync(resolvedPath).isDirectory()
+    ? resolvedPath
+    : path.dirname(resolvedPath);
+  while (isInside(repoRoot, cursor)) {
+    const packageFile = path.join(cursor, "package.json");
+    if (existsSync(packageFile)) {
+      const manifest = exactPackageManifest(cursor);
+      if (manifest.name === dependencyName) {
+        if (!isInside(cursor, resolvedPath)) {
           throw new Error(
-            `${requester.name} required runtime dependency is not installed: ${declaration.dependencyName}`,
+            `${dependencyName} entrypoint escapes its captured package root`,
           );
         }
-        resolutions.push({
-          requesterName: requester.name,
-          requesterPath,
-          dependencyName: declaration.dependencyName,
-          dependencyRange: declaration.dependencyRange,
-          kind: declaration.kind,
-          status: "absent_optional",
-          resolutionPath: null,
-          resolvedPackagePath: null,
-          resolvedVersion: null,
-        });
-        continue;
+        return realpathSync(cursor);
       }
-      const resolvedRoot = resolvedPackage.resolved;
-      const resolved = exactPackageManifest(resolvedRoot);
-      if (resolved.name !== declaration.dependencyName) {
-        throw new Error(
-          `${requester.name} resolved ${declaration.dependencyName} to unexpected package ${resolved.name}`,
-        );
-      }
-      const resolvedPackagePath = repoRelativePackagePath(repoRoot, resolvedRoot);
-      const workspace = workspaces.has(resolvedRoot);
-      const lexicalStat = lstatSync(resolvedPackage.lexical);
-      if (lexicalStat.isSymbolicLink() && !workspace) {
-        throw new Error(
-          `${requester.name} external runtime dependency is a symbolic link: ${declaration.dependencyName}`,
-        );
-      }
-      const resolutionPath = normalizePath(path.relative(repoRoot, resolvedPackage.lexical));
-      assertPortableLogicalPath(resolutionPath, "runtime dependency resolution path");
-      resolutions.push({
-        requesterName: requester.name,
-        requesterPath,
-        dependencyName: declaration.dependencyName,
-        dependencyRange: declaration.dependencyRange,
-        kind: declaration.kind,
-        status: workspace ? "workspace" : "installed",
-        resolutionPath,
-        resolvedPackagePath,
-        resolvedVersion: resolved.version,
-      });
-      if (!workspace && !packages.has(resolvedRoot)) {
-        packages.set(
-          resolvedRoot,
-          packageContentIdentity(resolvedRoot, resolvedPackagePath, {
-            includeNodeModules: false,
-          }),
-        );
-      }
-      if (!visited.has(resolvedRoot)) queue.push(resolvedRoot);
     }
+    if (cursor === repoRoot) break;
+    const parent = path.dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
   }
+  throw new Error(
+    `Node resolved ${dependencyName} without a captured owning package manifest`,
+  );
+}
 
-  const orderedRoots = roots.map(({ record }) => record);
-  const orderedResolutions = resolutions.sort((left, right) =>
+function orderedDependencyResolutions(
+  values: BuildDependencyResolution[],
+): BuildDependencyResolution[] {
+  return values.sort((left, right) =>
     compareText(
       [
         left.requesterPath,
@@ -581,20 +645,250 @@ export function resolveInstalledRuntimeDependencyClosure(
         right.resolvedPackagePath ?? "",
       ].join("\u0000"),
     ));
-  const orderedPackages = [...packages.values()]
-    .sort((left, right) => compareText(left.packagePath, right.packagePath));
-  const digestSha256 = sha256Json({
-    roots: orderedRoots,
-    resolutions: orderedResolutions,
-    packages: orderedPackages,
+}
+
+function resolveInstalledDependencyGraph(input: {
+  repoRoot: string;
+  rootPackagePaths: readonly string[];
+  runtimeNode: ProductionNodeExecutableIdentity;
+  declarationOverrides?: ReadonlyMap<string, readonly DependencyDeclaration[]>;
+}): {
+  roots: RuntimeDependencyRoot[];
+  resolutions: BuildDependencyResolution[];
+  packages: ProductionPackageContentIdentity[];
+} {
+  const repoRoot = realpathSync(input.repoRoot);
+  const workspaces = workspaceRoots(repoRoot);
+  const roots = input.rootPackagePaths.map((relativePath) => {
+    const candidate = realpathSync(path.resolve(repoRoot, relativePath));
+    if (!isInside(repoRoot, candidate)) {
+      throw new Error(`dependency root escapes repository: ${relativePath}`);
+    }
+    const manifest = exactPackageManifest(candidate);
+    return {
+      absolute: candidate,
+      record: {
+        name: manifest.name,
+        version: manifest.version,
+        packagePath: normalizePath(path.relative(repoRoot, candidate)),
+      } satisfies RuntimeDependencyRoot,
+    };
+  }).sort((left, right) => compareText(left.record.packagePath, right.record.packagePath));
+
+  const queue = roots.map(({ absolute }) => absolute);
+  const visited = new Set<string>();
+  const pending: PendingDependencyResolution[] = [];
+  const packages = new Map<string, ProductionPackageContentIdentity>();
+
+  while (queue.length > 0) {
+    const requesterRoot = queue.shift()!;
+    if (visited.has(requesterRoot)) continue;
+    visited.add(requesterRoot);
+    const requester = exactPackageManifest(requesterRoot);
+    const requesterPath = repoRelativePackagePath(repoRoot, requesterRoot);
+    const declarations = input.declarationOverrides?.get(requesterRoot) ??
+      declarationRows(requester.value);
+    for (const declaration of declarations) {
+      const candidate = dependencyPackageRoot(
+        repoRoot,
+        requesterRoot,
+        declaration.dependencyName,
+      );
+      pending.push({
+        requesterRoot,
+        requesterName: requester.name,
+        requesterPath,
+        declaration,
+        candidate,
+      });
+      if (candidate === undefined) continue;
+      const resolvedRoot = candidate.resolved;
+      const resolved = exactPackageManifest(resolvedRoot);
+      if (resolved.name !== declaration.dependencyName) {
+        throw new Error(
+          `${requester.name} resolved ${declaration.dependencyName} to unexpected package ${resolved.name}`,
+        );
+      }
+      const workspace = workspaces.has(resolvedRoot);
+      if (declaration.kind === "dev_dependency" && workspace) {
+        throw new Error("protocol build generator must be a captured physical package");
+      }
+      const lexicalStat = lstatSync(candidate.lexical);
+      if (lexicalStat.isSymbolicLink() && !workspace) {
+        throw new Error(
+          `${requester.name} external dependency is a symbolic link: ${declaration.dependencyName}`,
+        );
+      }
+      const resolvedPackagePath = repoRelativePackagePath(repoRoot, resolvedRoot);
+      if (!workspace && !packages.has(resolvedRoot)) {
+        packages.set(
+          resolvedRoot,
+          packageContentIdentity(resolvedRoot, resolvedPackagePath, {
+            includeNodeModules: false,
+          }),
+        );
+      }
+      if (!visited.has(resolvedRoot)) queue.push(resolvedRoot);
+    }
+  }
+
+  const probes = probeDependencyResolutionWithBoundNode(
+    input.runtimeNode,
+    pending,
+  );
+  const resolutions: BuildDependencyResolution[] = [];
+  pending.forEach((entry, index) => {
+    const probe = probes[index]!;
+    const selected = probe.module.status === "resolved"
+      ? probe.module.resolvedPath
+      : probe.esm.status === "resolved"
+        ? probe.esm.resolvedPath
+        : probe.module.errorCode === "MODULE_NOT_FOUND" &&
+          probe.manifest.status === "resolved"
+          ? probe.manifest.resolvedPath
+          : undefined;
+    const absent =
+      probe.module.status === "error" &&
+      probe.module.errorCode === "MODULE_NOT_FOUND" &&
+      probe.esm.status === "error" &&
+      probe.esm.errorCode === "ERR_MODULE_NOT_FOUND" &&
+      probe.manifest.status === "error" &&
+      probe.manifest.errorCode === "MODULE_NOT_FOUND";
+    if (selected === undefined) {
+      if (!absent) {
+        throw new Error(
+          `${entry.requesterName} dependency resolution failed closed for ` +
+          `${entry.declaration.dependencyName}`,
+        );
+      }
+      if (!entry.declaration.optional) {
+        throw new Error(
+          `${entry.requesterName} required dependency is not Node-resolvable: ` +
+          entry.declaration.dependencyName,
+        );
+      }
+      if (entry.candidate !== undefined) {
+        throw new Error(
+          `${entry.requesterName} optional dependency has physical bytes but is not Node-resolvable: ` +
+          entry.declaration.dependencyName,
+        );
+      }
+      resolutions.push({
+        requesterName: entry.requesterName,
+        requesterPath: entry.requesterPath,
+        dependencyName: entry.declaration.dependencyName,
+        dependencyRange: entry.declaration.dependencyRange,
+        kind: entry.declaration.kind,
+        status: "absent_optional",
+        resolutionPath: null,
+        resolvedPackagePath: null,
+        resolvedVersion: null,
+      });
+      return;
+    }
+    const actualRoot = owningDependencyPackageRoot(
+      repoRoot,
+      selected,
+      entry.declaration.dependencyName,
+    );
+    if (
+      entry.candidate === undefined ||
+      realpathSync(entry.candidate.resolved) !== actualRoot
+    ) {
+      throw new Error(
+        `${entry.requesterName} Node resolution for ${entry.declaration.dependencyName} ` +
+        "does not match the captured physical package",
+      );
+    }
+    const resolved = exactPackageManifest(actualRoot);
+    const workspace = workspaces.has(actualRoot);
+    const resolutionPath = normalizePath(
+      path.relative(repoRoot, entry.candidate.lexical),
+    );
+    assertPortableLogicalPath(resolutionPath, "dependency resolution path");
+    resolutions.push({
+      requesterName: entry.requesterName,
+      requesterPath: entry.requesterPath,
+      dependencyName: entry.declaration.dependencyName,
+      dependencyRange: entry.declaration.dependencyRange,
+      kind: entry.declaration.kind,
+      status: workspace ? "workspace" : "installed",
+      resolutionPath,
+      resolvedPackagePath: repoRelativePackagePath(repoRoot, actualRoot),
+      resolvedVersion: resolved.version,
+    });
   });
+
+  return {
+    roots: roots.map(({ record }) => record),
+    resolutions: orderedDependencyResolutions(resolutions),
+    packages: [...packages.values()]
+      .sort((left, right) => compareText(left.packagePath, right.packagePath)),
+  };
+}
+
+export function resolveInstalledRuntimeDependencyClosure(
+  repoRootValue: string,
+  rootPackagePaths: readonly string[],
+  runtimeNode: ProductionNodeExecutableIdentity,
+): InstalledRuntimeDependencyClosure {
+  const graph = resolveInstalledDependencyGraph({
+    repoRoot: repoRootValue,
+    rootPackagePaths,
+    runtimeNode,
+  });
+  if (graph.resolutions.some(({ kind }) => kind === "dev_dependency")) {
+    throw new Error("runtime dependency closure contains a build-only dependency");
+  }
+  const runtimeResolutions = graph.resolutions as RuntimeDependencyResolution[];
+  const digestSha256 = sha256Json(graph);
   return {
     schemaVersion: INSTALLED_RUNTIME_CLOSURE_SCHEMA_VERSION,
     algorithm: INSTALLED_RUNTIME_CLOSURE_ALGORITHM,
     digestSha256,
-    roots: orderedRoots,
-    resolutions: orderedResolutions,
-    packages: orderedPackages,
+    roots: graph.roots,
+    resolutions: runtimeResolutions,
+    packages: graph.packages,
+  };
+}
+
+export function resolveInstalledBuildGeneratorDependencyClosure(
+  repoRootValue: string,
+  runtimeNode: ProductionNodeExecutableIdentity,
+): InstalledBuildGeneratorDependencyClosure {
+  const repoRoot = realpathSync(repoRootValue);
+  const protocolRoot = realpathSync(path.join(repoRoot, "packages", "protocol"));
+  const protocol = exactPackageManifest(protocolRoot);
+  const devDependencies = stringMap(
+    protocol.value.devDependencies,
+    "protocol devDependencies",
+  );
+  const dependencyRange = devDependencies["json-schema-to-typescript"];
+  if (dependencyRange === undefined) {
+    throw new Error("protocol generator dependency json-schema-to-typescript is undeclared");
+  }
+  const graph = resolveInstalledDependencyGraph({
+    repoRoot,
+    rootPackagePaths: ["packages/protocol"],
+    runtimeNode,
+    declarationOverrides: new Map([
+      [
+        protocolRoot,
+        [{
+          dependencyName: "json-schema-to-typescript",
+          dependencyRange,
+          kind: "dev_dependency",
+          optional: false,
+        }],
+      ],
+    ]),
+  });
+  const digestSha256 = sha256Json(graph);
+  return {
+    schemaVersion: INSTALLED_BUILD_GENERATOR_CLOSURE_SCHEMA_VERSION,
+    algorithm: INSTALLED_BUILD_GENERATOR_CLOSURE_ALGORITHM,
+    digestSha256,
+    ...graph,
   };
 }
 
@@ -667,6 +961,45 @@ export function resolveNodeExecutableIdentity(
     modulesAbi: metadata.modulesAbi,
     napiVersion: metadata.napiVersion,
   };
+}
+
+export function verifyNodeExecutableIdentityCurrent(
+  expected: ProductionNodeExecutableIdentity,
+): ProductionNodeExecutableIdentity {
+  const executable = path.resolve(expected.path);
+  if (lstatSync(executable).isSymbolicLink()) {
+    throw new Error(`Node executable cannot be a symbolic link: ${executable}`);
+  }
+  const realExecutable = realpathSync(executable);
+  if (!statSync(realExecutable).isFile()) {
+    throw new Error(`Node executable is not a regular file: ${executable}`);
+  }
+  const current = {
+    ...expected,
+    path: normalizePath(executable),
+    realPath: normalizePath(realExecutable),
+    sha256: sha256File(realExecutable),
+  };
+  if (JSON.stringify(current) !== JSON.stringify(expected)) {
+    throw new Error("bound Node path or bytes changed");
+  }
+  return current;
+}
+
+/**
+ * Describes the Node process that is executing the conformance controller.
+ * Unlike a child probe, version/ABI facts come from the current process while
+ * path confinement and the on-disk executable digest are still revalidated.
+ */
+export function resolveCurrentProcessNodeIdentity(): ProductionNodeExecutableIdentity {
+  return resolveNodeExecutableIdentity(process.execPath, (executable) => ({
+    version: process.version,
+    platform: process.platform,
+    arch: process.arch,
+    modulesAbi: process.versions.modules,
+    napiVersion: process.versions.napi ?? null,
+    execPath: executable,
+  }));
 }
 
 function owningPackageRoot(fileValue: string, expectedName: string): string {
