@@ -37,6 +37,16 @@ export type {
   CanonicalAssertionOracleRegistry,
 } from "./canonicalEvaluators.js";
 export {
+  controlFactForStep,
+  observationObject,
+  observationPointer,
+  observationsForStep,
+  parseStepControlFact,
+  singleStepObservation,
+  successfulControlResult,
+} from "./observationQueries.js";
+export type { ObservationObject, StepControlFact } from "./observationQueries.js";
+export {
   assertCompleteObservationOnlyAdapterRegistry,
   assertObservationOnlyBatch,
   validateObservationOnlyAdapterRegistry,
