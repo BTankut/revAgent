@@ -1268,13 +1268,6 @@ function exactHelloAccepted(stepId: string): CanonicalAssertionOracle {
   return safe((context) => rawHasResponseType(context, stepId, "hello_ack"));
 }
 
-function semanticEvent(
-  kinds: readonly ObservationKind[],
-  predicate: (candidate: Readonly<ObjectValue>) => boolean,
-): CanonicalAssertionOracle {
-  return safe((context) => hasDomainObject(context, kinds, predicate));
-}
-
 interface C27SnapshotEvidence {
   readonly payload: ObjectValue;
   readonly reconnect: ObjectValue;
@@ -3642,24 +3635,197 @@ define(
   }),
 );
 
+interface C39Evidence {
+  readonly rsid: string;
+  readonly originId: string;
+  readonly recoveryId: string;
+  readonly omittedDigest: string;
+  readonly auditId: string;
+  readonly session: ObjectValue;
+  readonly originTerminal: ObjectValue;
+  readonly originPayload: ObjectValue;
+  readonly recovery: ObjectValue;
+  readonly recoveryTerminal: ObjectValue;
+  readonly recoveryPayload: ObjectValue;
+}
+
+function c39Evidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): C39Evidence | null {
+  const origin = c28Dispatch(context, "o1-c39.dispatch-origin");
+  const originId = origin === null ? null : stringValue(origin.payload.invocation_id);
+  const recoveryControl = exactControlRecord(context, "o1-c39.valid-recovery");
+  const recoveryArguments = objectValue(recoveryControl?.request.arguments);
+  const recoveryRequest = objectValue(recoveryArguments?.request);
+  const recoveryInvoke = objectValue(recoveryRequest?.payload);
+  const recoveryParams = objectValue(recoveryInvoke?.params);
+  const recoveryId = stringValue(recoveryInvoke?.invocation_id);
+  const omittedDigest = stringValue(recoveryRequest?.omittedResultDigest);
+  const auditId = stringValue(recoveryRequest?.auditId);
+  const gateway = finalGatewaySnapshot(context);
+  if (
+    origin === null ||
+    originId === null ||
+    recoveryControl === null ||
+    recoveryControl.request.action !== "dispatch_payload_recovery" ||
+    recoveryRequest === null ||
+    recoveryInvoke === null ||
+    recoveryParams === null ||
+    recoveryId === null ||
+    recoveryId === originId ||
+    omittedDigest === null ||
+    !SHA256_PATTERN.test(omittedDigest) ||
+    auditId === null ||
+    auditId.length === 0 ||
+    gateway === null ||
+    gateway.sourceSchemaVersion !== 1 ||
+    origin.payload.method !== "fixture_multi_file_output" ||
+    origin.payload.mutating !== false ||
+    origin.payload.mutation_scope !== null ||
+    recoveryRequest.rsid !== origin.rsid ||
+    recoveryRequest.originInvocationId !== originId ||
+    recoveryInvoke.method !== "fixture_echo" ||
+    recoveryInvoke.mutating !== false ||
+    recoveryInvoke.mutation_scope !== null ||
+    recoveryInvoke.verification !== null ||
+    !sameJson(recoveryInvoke.recovery_clearances, []) ||
+    !sameJson(recoveryParams, {
+      origin_invocation_id: originId,
+      expected_result_digest: omittedDigest,
+    })
+  ) {
+    return null;
+  }
+  const session = c28GatewaySession(gateway, origin.rsid);
+  const terminalOutcomes = objectValue(session?.terminalOutcomes);
+  const originTerminal = objectValue(terminalOutcomes?.[originId]);
+  const originEnvelope = objectValue(originTerminal?.envelope);
+  const originPayload = objectValue(originEnvelope?.payload);
+  const recoveries = objectValue(session?.omittedPayloadRecoveries);
+  const recovery = objectValue(recoveries?.[originId]);
+  const recoveryTerminal = objectValue(terminalOutcomes?.[recoveryId]);
+  const recoveryEnvelope = objectValue(recoveryTerminal?.envelope);
+  const recoveryPayload = objectValue(recoveryEnvelope?.payload);
+  if (
+    session === null ||
+    session.rsid !== origin.rsid ||
+    originTerminal === null ||
+    originEnvelope === null ||
+    originPayload === null ||
+    recovery === null ||
+    recoveryTerminal === null ||
+    recoveryEnvelope === null ||
+    recoveryPayload === null ||
+    originEnvelope.v !== 1 ||
+    originEnvelope.type !== "result" ||
+    originEnvelope.rsid !== origin.rsid ||
+    recoveryEnvelope.v !== 1 ||
+    recoveryEnvelope.type !== "result" ||
+    recoveryEnvelope.rsid !== origin.rsid
+  ) {
+    return null;
+  }
+  return {
+    rsid: origin.rsid,
+    originId,
+    recoveryId,
+    omittedDigest,
+    auditId,
+    session,
+    originTerminal,
+    originPayload,
+    recovery,
+    recoveryTerminal,
+    recoveryPayload,
+  };
+}
+
+function exactC39ReplayOnly(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const evidence = c39Evidence(context);
+  if (evidence === null) return false;
+  const payload = evidence.originPayload;
+  return evidence.originTerminal.correlationId === evidence.originId &&
+    evidence.originTerminal.classification === "payload_omitted" &&
+    payload.kind === "invocation" &&
+    payload.invocation_id === evidence.originId &&
+    payload.status === "completed" &&
+    payload.payload_omitted === true &&
+    payload.replayed === true &&
+    payload.result_digest === evidence.omittedDigest &&
+    SHA256_PATTERN.test(evidence.omittedDigest) &&
+    !Object.prototype.hasOwnProperty.call(payload, "result") &&
+    !Object.prototype.hasOwnProperty.call(payload, "chunked") &&
+    !Object.prototype.hasOwnProperty.call(payload, "artifacts") &&
+    !Object.prototype.hasOwnProperty.call(payload, "stream_id") &&
+    exactFixtureExecutionCount(context, evidence.originId) === 1;
+}
+
+function exactC39AuditedReadRecovery(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const evidence = c39Evidence(context);
+  if (evidence === null) return false;
+  const createdAtMs = numberValue(evidence.recovery.createdAtMs);
+  const completedAtMs = numberValue(evidence.recovery.completedAtMs);
+  const recoveryDigest = stringValue(evidence.recovery.recoveryResultDigest);
+  const recoveredResult = objectValue(evidence.recoveryPayload.result);
+  return evidence.originTerminal.classification === "payload_omitted" &&
+    evidence.originPayload.result_digest === evidence.omittedDigest &&
+    evidence.recovery.originInvocationId === evidence.originId &&
+    evidence.recovery.parentCorrelationId === evidence.originId &&
+    evidence.recovery.omittedResultDigest === evidence.omittedDigest &&
+    evidence.recovery.mutating === false &&
+    evidence.recovery.mutationScope === null &&
+    evidence.recovery.state === "recovered" &&
+    evidence.recovery.auditId === evidence.auditId &&
+    evidence.recovery.recoveryInvocationId === evidence.recoveryId &&
+    recoveryDigest !== null &&
+    SHA256_PATTERN.test(recoveryDigest) &&
+    createdAtMs !== null &&
+    Number.isSafeInteger(createdAtMs) &&
+    completedAtMs !== null &&
+    Number.isSafeInteger(completedAtMs) &&
+    completedAtMs >= createdAtMs &&
+    evidence.recoveryTerminal.correlationId === evidence.recoveryId &&
+    evidence.recoveryTerminal.classification === "result" &&
+    evidence.recoveryPayload.kind === "invocation" &&
+    evidence.recoveryPayload.invocation_id === evidence.recoveryId &&
+    evidence.recoveryPayload.status === "completed" &&
+    evidence.recoveryPayload.replayed === false &&
+    !Object.prototype.hasOwnProperty.call(evidence.recoveryPayload, "payload_omitted") &&
+    evidence.recoveryPayload.result_digest === recoveryDigest &&
+    sameJson(recoveredResult, {
+      success: true,
+      echoed: {
+        origin_invocation_id: evidence.originId,
+        expected_result_digest: evidence.omittedDigest,
+      },
+    }) &&
+    exactFixtureExecutionCount(context, evidence.originId) === 1 &&
+    exactFixtureExecutionCount(context, evidence.recoveryId) === 1;
+}
+
 define(
   "O1-C39-REPLAY-ONLY",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot", "wire_event"], (candidate) =>
-    candidate.payload_omitted === true &&
-    candidate.replayed === true &&
-    typeof candidate.result_digest === "string"),
+  safe(exactC39ReplayOnly),
 );
-define("O1-C39-NONREPLAY-REJECTED", exactSchemaRejected("o1-c39.nonreplay", /payload_omitted|replayed|replay|invalid/i));
-define("O1-C39-DIGEST-REQUIRED", exactSchemaRejected("o1-c39.missing_digest", /payload_omitted|result_digest|required|invalid/i));
-define("O1-C39-RESULT-ABSENT", exactSchemaRejected("o1-c39.inline_result", /payload_omitted|result|forbid|invalid/i));
+define(
+  "O1-C39-NONREPLAY-REJECTED",
+  exactSchemaRejected("o1-c39.nonreplay", /RBP envelope validation failed/iu),
+);
+define(
+  "O1-C39-DIGEST-REQUIRED",
+  exactSchemaRejected("o1-c39.missing_digest", /RBP envelope validation failed/iu),
+);
+define(
+  "O1-C39-RESULT-ABSENT",
+  exactSchemaRejected("o1-c39.inline_result", /RBP envelope validation failed/iu),
+);
 define(
   "O1-C39-AUDITED-READ-RECOVERY",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    candidate.state === "recovered" &&
-    typeof candidate.auditId === "string" &&
-    typeof candidate.recoveryInvocationId === "string" &&
-    typeof candidate.recoveryResultDigest === "string" &&
-    candidate.mutating === false),
+  safe(exactC39AuditedReadRecovery),
 );
 
 const expectedRawAssertionIds = RAW_PRODUCTION_CASES.flatMap((caseId) =>
