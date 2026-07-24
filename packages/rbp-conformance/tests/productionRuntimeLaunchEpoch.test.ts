@@ -73,6 +73,36 @@ describe("production runtime integrity epoch composition", () => {
     );
   });
 
+  it("promotes a supervised case exception before component artifact retention", () => {
+    const suiteRunner = exportedFunction(
+      source("productionSuiteRunner.ts"),
+      "export async function executeProductionConformanceRun(",
+    );
+    const promotion = suiteRunner.indexOf(
+      "const firstCaseExecutionFailure = caseExecutionFailures[0];",
+    );
+    const supervisedError = suiteRunner.indexOf(
+      "supervised_case_error:",
+      promotion,
+    );
+    const representativeBinding = suiteRunner.indexOf(
+      "bindRepresentativeComponents(report, allObservations)",
+      promotion,
+    );
+    const artifactRetention = suiteRunner.indexOf(
+      "retainRunArtifacts(report, artifactRoot);",
+      promotion,
+    );
+
+    expect(promotion).toBeGreaterThanOrEqual(0);
+    expect(supervisedError).toBeGreaterThan(promotion);
+    expect(representativeBinding).toBeGreaterThan(supervisedError);
+    expect(artifactRetention).toBeGreaterThan(representativeBinding);
+    expect(suiteRunner.slice(promotion, artifactRetention)).toContain(
+      "if (infrastructureFailure === undefined)",
+    );
+  });
+
   it("covers soak setup, churn, and cleanup, then closes before report status is retained", () => {
     const soakRunner = exportedFunction(
       source("soakRunner.ts"),

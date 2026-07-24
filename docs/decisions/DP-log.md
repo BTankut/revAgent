@@ -232,6 +232,13 @@ root; a different plan/root or a concurrent/nested epoch fails closed. Closing
 verification failure changes the retained run/soak verdict to error/failed and
 can never produce the sole authoritative PASS.
 
+Any supervised case-execution exception is promoted to the run's
+infrastructure failure before representative component binding or run-level
+artifact retention. The error report retains the case's
+`supervised_case_error` and the thrown diagnostic includes the exact case id
+and original message; a secondary missing-lifecycle/component-log error may
+not mask it.
+
 This is an amortization amendment, not a reduction of the declared application
 provenance anchor. Persistent input or dependency mutation remains detected by
 the closing full check. The already documented exclusion for an active

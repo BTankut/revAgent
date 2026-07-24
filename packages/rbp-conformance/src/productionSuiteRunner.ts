@@ -569,24 +569,35 @@ export async function executeProductionConformanceRun(
   }
 
   const allObservations = executedCases.flatMap(({ observations }) => observations);
+  const firstCaseExecutionFailure = caseExecutionFailures[0];
   let infrastructureFailure: Error | undefined =
-    retentionFailures[0] ?? runtimeEpochFailure;
-  try {
-    const cleanup = bindRepresentativeComponents(report, allObservations);
-    report.resources = measuredResourceProfile(
-      allObservations,
-      runStartedWallMs,
-      cleanup.orphanProcessCount,
+    retentionFailures[0] ??
+    runtimeEpochFailure ??
+    (
+      firstCaseExecutionFailure === undefined
+        ? undefined
+        : new Error(
+          `${firstCaseExecutionFailure.caseId} supervised_case_error: ` +
+          firstCaseExecutionFailure.error.message,
+          { cause: firstCaseExecutionFailure.error },
+        )
     );
-    const evaluation = report.resources.evaluation!;
-    report.leaks = {
-      openFileDescriptorDelta: evaluation.openFileDescriptorGrowth,
-      residentBytesDelta: evaluation.residentGrowthBytes,
-      journalPendingDelta: evaluation.journalPendingGrowth,
-      orphanProcessCount: evaluation.orphanProcessCount,
-    };
-  } catch (caught) {
-    if (infrastructureFailure === undefined) {
+  if (infrastructureFailure === undefined) {
+    try {
+      const cleanup = bindRepresentativeComponents(report, allObservations);
+      report.resources = measuredResourceProfile(
+        allObservations,
+        runStartedWallMs,
+        cleanup.orphanProcessCount,
+      );
+      const evaluation = report.resources.evaluation!;
+      report.leaks = {
+        openFileDescriptorDelta: evaluation.openFileDescriptorGrowth,
+        residentBytesDelta: evaluation.residentGrowthBytes,
+        journalPendingDelta: evaluation.journalPendingGrowth,
+        orphanProcessCount: evaluation.orphanProcessCount,
+      };
+    } catch (caught) {
       infrastructureFailure = caught instanceof Error ? caught : new Error(String(caught));
     }
   }
