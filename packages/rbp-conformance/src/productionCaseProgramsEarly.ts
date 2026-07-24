@@ -16,7 +16,6 @@ import {
 } from "./productionCaseSeedsEarly.js";
 
 const FINGERPRINT = `sha256:${"0".repeat(64)}`;
-const FINAL_STEP_COUNT = 6;
 
 function args(common: Readonly<Record<string, unknown>> = {}): BindingArguments {
   return { common };
@@ -760,6 +759,21 @@ function startupStep(
   return cloned;
 }
 
+function finalEvidenceBoundary(
+  base: ConformanceCaseProgram,
+  caseId: EarlyProductionCase,
+): CaseControlStep[] {
+  const prefix = caseId.toLowerCase();
+  const startStepId = `${prefix}.gateway-snapshot`;
+  const starts = base.steps
+    .map(({ stepId }, index) => stepId === startStepId ? index : -1)
+    .filter((index) => index >= 0);
+  if (starts.length !== 1 || base.steps.at(-1)?.stepId !== `${prefix}.stack-stop`) {
+    throw new Error(`${caseId} base program has an invalid final evidence boundary`);
+  }
+  return base.steps.slice(starts[0]).map((step) => structuredClone(step));
+}
+
 export function earlyProductionCaseProgram(caseId: string): ConformanceCaseProgram {
   if (!(EARLY_PRODUCTION_CASES as readonly string[]).includes(caseId)) {
     throw new Error(`early production program is not implemented: ${caseId}`);
@@ -771,7 +785,7 @@ export function earlyProductionCaseProgram(caseId: string): ConformanceCaseProgr
     startupStep(base.steps[0]!, selected),
     structuredClone(base.steps[1]!),
     ...controls,
-    ...base.steps.slice(-FINAL_STEP_COUNT).map((step) => structuredClone(step)),
+    ...finalEvidenceBoundary(base, selected),
   ];
   for (const step of steps) assertValidCaseControlStepSemantics(step);
   return {

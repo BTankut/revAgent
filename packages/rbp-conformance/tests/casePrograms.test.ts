@@ -11,6 +11,8 @@ import {
 import type { CaseControlStep } from "../src/casePrograms.js";
 import { canonicalManifest } from "../src/manifest.js";
 import { ASSERTION_EVIDENCE_BINDINGS } from "../src/observationLedger.js";
+import { earlyProductionCaseProgram } from "../src/productionCaseProgramsEarly.js";
+import { EARLY_PRODUCTION_CASES } from "../src/productionCaseSeedsEarly.js";
 import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
 
 const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: string[] }>> = {
@@ -97,6 +99,23 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
 };
 
 describe("exact forty-case control and observation catalog", () => {
+  it("retains the complete final evidence boundary in early production programs", () => {
+    for (const caseId of EARLY_PRODUCTION_CASES) {
+      const prefix = caseId.toLowerCase();
+      const program = earlyProductionCaseProgram(caseId);
+      expect(program.steps.slice(-8).map(({ stepId }) => stepId)).toEqual([
+        `${prefix}.gateway-snapshot`,
+        `${prefix}.bridge-snapshot`,
+        `${prefix}.fixture-snapshot`,
+        `${prefix}.wire-end`,
+        `${prefix}.resource-baseline-stop`,
+        `${prefix}.resource-baseline-start`,
+        `${prefix}.resource-sample`,
+        `${prefix}.stack-stop`,
+      ]);
+    }
+  });
+
   it("maps all cases and all 167 assertions in canonical order", () => {
     expect([...CASE_CONTROL_OBSERVATION_MAP.keys()]).toEqual(canonicalManifest.cases.map(({ id }) => id));
     const probes = [...CASE_CONTROL_OBSERVATION_MAP.values()].flatMap(({ assertionProbes }) => assertionProbes);

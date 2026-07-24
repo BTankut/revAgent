@@ -21,6 +21,11 @@ import type {
 
 const MAX_FIXTURE_FRAME_BYTES = 32 * 1024 * 1024;
 const MAX_FIXTURE_RESPONSES = 16;
+// Boundary-fault vectors must retain both the opening acknowledgement and the
+// terminal protocol error under a loaded full-suite run. The raw drivers stop
+// after a quiet window, so use a longer production evidence window than the
+// generic interactive default.
+const BOUNDARY_RESPONSE_SETTLE_MS = 1_000;
 
 function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -162,7 +167,7 @@ async function rawBindingOutcome(
       url: endpoint.wsUrl,
       deviceToken: "test-device-token",
       tlsTrust: tlsTrust(endpoint.tlsTrust),
-      limits: { settleMs: 250 },
+      limits: { settleMs: BOUNDARY_RESPONSE_SETTLE_MS },
     })(request);
   }
   if (typeof endpoint.httpConnectionUrl !== "string") {
@@ -171,6 +176,7 @@ async function rawBindingOutcome(
   return await createRawHttpSseBindingDriver({
     connectionUrl: endpoint.httpConnectionUrl,
     deviceToken: "test-device-token",
+    limits: { settleMs: BOUNDARY_RESPONSE_SETTLE_MS },
   })(request);
 }
 
