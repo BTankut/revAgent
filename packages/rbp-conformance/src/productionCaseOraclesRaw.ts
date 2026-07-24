@@ -854,7 +854,60 @@ function c28CapturedString(
   context: Readonly<CanonicalAssertionOracleContext>,
   stepId: string,
 ): string | null {
-  return stringValue(controlResult(context, stepId)?.observed);
+  const snapshot = snapshotAt(context, "gateway_snapshot", stepId);
+  if (snapshot === null) return null;
+  if (stepId === "o1-c28.capture-hold") {
+    const origin = c28Dispatch(context, "o1-c28.dispatch-origin");
+    const originId = origin === null ? null : stringValue(origin.payload.invocation_id);
+    if (origin === null || originId === null) return null;
+    const matches = arrayValue(objectValue(snapshot.mutationHolds)?.holds)
+      .map((entry) => objectValue(entry))
+      .filter((hold): hold is ObjectValue =>
+        hold !== null &&
+        hold.rsid === origin.rsid &&
+        arrayValue(hold.originIdempotencyKeys).includes(`${origin.rsid}/${originId}`) &&
+        typeof hold.holdId === "string" &&
+        /^vh:[0-9a-f]{64}$/u.test(hold.holdId));
+    return matches.length === 1 ? stringValue(matches[0]!.holdId) : null;
+  }
+  if (stepId === "o1-c28.capture-late-digest") {
+    const origin = c28Dispatch(context, "o1-c28.dispatch-origin");
+    const originId = origin === null ? null : stringValue(origin.payload.invocation_id);
+    if (origin === null || originId === null) return null;
+    const session = c28GatewaySession(snapshot, origin.rsid);
+    const lateEvidence = arrayValue(
+      objectValue(session?.lateTerminalEvidence)?.[originId],
+    )
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue =>
+        entry !== null &&
+        entry.source === "bridge_late_replay" &&
+        entry.classification === "result");
+    const payload = lateEvidence.length === 1
+      ? objectValue(objectValue(lateEvidence[0]!.envelope)?.payload)
+      : null;
+    return stringValue(payload?.result_digest);
+  }
+  if (stepId === "o1-c28.capture-verification-digest") {
+    const verification = c28Dispatch(context, "o1-c28.dispatch-verification");
+    const verificationId = verification === null
+      ? null
+      : stringValue(verification.payload.invocation_id);
+    if (verification === null || verificationId === null) return null;
+    const session = c28GatewaySession(snapshot, verification.rsid);
+    const terminal = objectValue(objectValue(session?.terminalOutcomes)?.[verificationId]);
+    return stringValue(objectValue(objectValue(terminal?.envelope)?.payload)?.result_digest);
+  }
+  if (stepId === "o1-c28.capture-recovery-dispatch-identity") {
+    const recovery = c28Dispatch(context, "o1-c28.dispatch-recovery");
+    const recoveryId = recovery === null ? null : stringValue(recovery.payload.invocation_id);
+    if (recovery === null || recoveryId === null) return null;
+    const inFlight = objectValue(c28GatewaySession(snapshot, recovery.rsid)?.inFlight);
+    return inFlight?.correlationId === recoveryId
+      ? stringValue(inFlight.dispatchIdentity)
+      : null;
+  }
+  return null;
 }
 
 function exactC28HoldInstalled(
@@ -870,7 +923,7 @@ function exactC28HoldInstalled(
     /^vh:[0-9a-f]{64}$/u.test(holdId) &&
     hold !== null &&
     hold.state === "active" &&
-    hold.scopeKey === "session" &&
+    hold.scopeKey === "{\"kind\":\"session\"}" &&
     sameJson(hold.mutationScope, { kind: "session" }) &&
     sameJson(hold.originIdempotencyKeys, [`${origin.rsid}/${invocationId}`]);
 }
