@@ -116,7 +116,24 @@ describe("exact forty-case control and observation catalog", () => {
       expect(program.bindings).toEqual(["wss", "streamable_http_sse"]);
       expect(program.steps[0]).toMatchObject({ channel: "parent_harness", action: "restart_case_stack" });
       expect(program.steps[1]).toMatchObject({ channel: "parent_harness", action: "begin_wire_capture" });
-      expect(program.steps.at(-2)).toMatchObject({ channel: "parent_harness", action: "end_wire_capture" });
+      expect(program.steps.slice(-5)).toMatchObject([
+        { channel: "parent_harness", action: "end_wire_capture" },
+        { channel: "parent_harness", action: "stop_case_stack" },
+        {
+          channel: "parent_harness",
+          action: "restart_case_stack",
+          arguments: {
+            common: {
+              caseId: program.caseId,
+              binding: "{{binding}}",
+              preserveState: false,
+              requireExactExecutionPlanIdentity: true,
+            },
+          },
+        },
+        { channel: "parent_harness", action: "capture_resource_sample" },
+        { channel: "parent_harness", action: "stop_case_stack" },
+      ]);
       expect(program.steps.at(-1)).toMatchObject({ channel: "parent_harness", action: "stop_case_stack" });
       for (const step of program.steps) {
         if (step.stepId === "o1-c21.batch") {

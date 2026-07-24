@@ -74,6 +74,7 @@ export interface ExecutedCaseEvidence {
 
 interface LifecycleFact {
   readonly componentId: ComponentId;
+  readonly stepId: string;
   readonly action: string;
   readonly processRole: "canonical_component" | "auxiliary_fixture";
   readonly identity: ComponentIdentity;
@@ -217,6 +218,7 @@ function lifecycleFact(observation: ProcessObservationRecord): LifecycleFact | u
   const identity = observationObject(payload.identity, `${observation.observationId} identity`);
   const process = observationObject(payload.process, `${observation.observationId} process`);
   if (
+    typeof payload.stepId !== "string" ||
     typeof payload.action !== "string" ||
     (payload.processRole !== "canonical_component" && payload.processRole !== "auxiliary_fixture") ||
     typeof identity.version !== "string" ||
@@ -237,6 +239,7 @@ function lifecycleFact(observation: ProcessObservationRecord): LifecycleFact | u
   }
   return {
     componentId: observation.componentId,
+    stepId: payload.stepId,
     action: payload.action,
     processRole: payload.processRole,
     identity: identity as unknown as ComponentIdentity,
@@ -263,8 +266,9 @@ function bindRepresentativeComponents(
     // Restart and bind-probe actions can legitimately add stopped lifecycle
     // records inside a case. Cardinality and representative process identity
     // are anchored only to the one terminal stack cleanup per binding/case.
-    const componentFacts = facts.filter(({ componentId, action, processRole }) =>
+    const componentFacts = facts.filter(({ componentId, stepId, action, processRole }) =>
       componentId === component.id &&
+      stepId.endsWith(".stack-stop") &&
       action === "stop_case_stack" &&
       processRole === "canonical_component");
     if (componentFacts.length !== canonicalManifest.cases.length * 2) {

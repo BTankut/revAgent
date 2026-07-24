@@ -776,10 +776,16 @@ rejected. Required evidence is never allowed to be zero bytes.
   matches the observed executable identity and process interval.
 - `leak_metrics` is `rbp-conformance-leaks/v1` JSON and must exactly match the
   report timing, raw samples, and derived fd/memory/journal/orphan-process
-  counters. RSS is evaluated from measured post-warmup growth and least-squares
-  slope against the versioned 64 MiB / 2 MiB-per-second bounds; it is not held
-  to an unrealistic exact-zero delta. FD growth, journal-pending growth, and
-  orphan processes remain zero-tolerance.
+  counters. Each conformance case first retains its scenario snapshots and wire
+  evidence, then closes that scenario stack and starts one default, empty stack
+  solely for the comparable resource sample. The empty stack is terminally
+  stopped as a separate cleanup boundary. Scenario-specific socket counts,
+  deliberate pending-journal vectors, and C40 artifact buffers therefore stay
+  in their raw case evidence instead of masquerading as cross-case growth. RSS
+  is evaluated from measured post-warmup growth and least-squares slope against
+  the versioned 64 MiB / 2 MiB-per-second bounds; it is not held to an
+  unrealistic exact-zero delta. FD growth, journal-pending growth, and orphan
+  processes remain zero-tolerance.
 - `junit` and `aggregate_junit` are parsed for totals, case ids, and statuses,
   then byte-compared with the deterministic generator output.
 

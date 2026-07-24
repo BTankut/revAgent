@@ -2867,8 +2867,15 @@ function finalEvidenceSteps(caseId: string): CaseControlStep[] {
     gateway(`${prefix}.gateway-snapshot`, "snapshot", args(), "observation"),
     bridge(`${prefix}.bridge-snapshot`, "snapshot_evidence", args(), "observation"),
     fixture(`${prefix}.fixture-snapshot`, "snapshot_evidence", args(), "observation"),
-    harness(`${prefix}.resource-sample`, "capture_resource_sample", args(), "observation"),
     harness(`${prefix}.wire-end`, "end_wire_capture", args(), "observation"),
+    harness(`${prefix}.resource-baseline-stop`, "stop_case_stack", args(), "observation"),
+    harness(`${prefix}.resource-baseline-start`, "restart_case_stack", args({
+      caseId,
+      binding: "{{binding}}",
+      preserveState: false,
+      requireExactExecutionPlanIdentity: true,
+    }), "observation"),
+    harness(`${prefix}.resource-sample`, "capture_resource_sample", args(), "observation"),
     harness(`${prefix}.stack-stop`, "stop_case_stack", args(), "cleanup"),
   ];
 }
