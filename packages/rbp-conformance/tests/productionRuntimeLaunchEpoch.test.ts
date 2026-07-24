@@ -62,7 +62,7 @@ describe("production runtime integrity epoch composition", () => {
     const end = suiteRunner.indexOf(
       "endProductionRuntimeLaunchEpoch(runtimeEpoch);",
     );
-    const verdict = suiteRunner.indexOf("report.run = {");
+    const verdict = suiteRunner.lastIndexOf("report.run = {");
 
     expect(begin).toBeGreaterThanOrEqual(0);
     expect(caseLoop).toBeGreaterThan(begin);
