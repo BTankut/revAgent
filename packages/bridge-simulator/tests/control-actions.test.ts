@@ -24,6 +24,135 @@ function sha256(value: string | Uint8Array): string {
 }
 
 describe("Bridge daemon journal controls", () => {
+  it("reads one exact bounded and intact durable journal record for conformance", async () => {
+    const root = temporaryRoot();
+    const rsid = "rs_c28_exact_journal";
+    const invocationId = uuid();
+    const binding: InvocationJournalBinding = {
+      rsid,
+      invocationId,
+      method: "fixture_journal_evidence",
+      mutating: false,
+      mutationScope: null,
+      paramsDigest: makeParamsDigest({ evidence: true }),
+      policy: {
+        class: "auto",
+        decision: "auto",
+        confirmation_id: null,
+      },
+      verification: null,
+      recoveryClearances: [],
+    };
+    const journal = new DurableBridgeJournal(join(root.path, "bridge.db"));
+    expect(journal.acceptInvocation(binding, `sha256:${"1".repeat(64)}`).kind).toBe("accepted");
+    journal.markExecuting(rsid, invocationId, 1_721_600_000_000);
+    const expectedRecord = journal.recordTerminal(rsid, invocationId, {
+      status: "completed",
+      payloadRetained: true,
+      payload: { verified: true },
+      resultDigest: `sha256:${"2".repeat(64)}`,
+    }, 1_721_600_000_001);
+    journal.close();
+
+    const runtime = new BridgeDaemonRuntime(root.path);
+    try {
+      const response = await runtime.execute({
+        controlVersion: 1,
+        id: "journal-read",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+      }, "journal-read");
+      expect(response.value).toEqual({
+        rsid,
+        invocationId,
+        journalRecordBytes: Buffer.byteLength(JSON.stringify(expectedRecord), "utf8"),
+        journalRecord: expectedRecord,
+      });
+
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-extra",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+        scanAll: true,
+      }, "journal-read-extra")).rejects.toThrow(/Unknown control field: scanAll/u);
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-invalid-rsid",
+        action: "read_journal_record_for_conformance",
+        rsid: "",
+        invocationId,
+      }, "journal-read-invalid-rsid")).rejects.toThrow(
+        /rsid must be a non-empty bounded single-line string/u,
+      );
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-invalid-invocation",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId: "not-an-invocation-id",
+      }, "journal-read-invalid-invocation")).rejects.toThrow(
+        /invocationId must be a lowercase UUIDv7/u,
+      );
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-missing",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId: uuid(),
+      }, "journal-read-missing")).rejects.toThrow(
+        /Exact durable invocation journal record was not found/u,
+      );
+    } finally {
+      await runtime.shutdown();
+      root.cleanup();
+    }
+  });
+
+  it("refuses to emit an oversized durable journal record on the conformance control channel", async () => {
+    const root = temporaryRoot();
+    const rsid = uuid();
+    const invocationId = uuid();
+    const journal = new DurableBridgeJournal(join(root.path, "bridge.db"));
+    expect(journal.acceptInvocation({
+      rsid,
+      invocationId,
+      method: "fixture_oversized_journal_evidence",
+      mutating: false,
+      mutationScope: null,
+      paramsDigest: makeParamsDigest({ evidence: "oversized" }),
+      policy: { class: "auto", decision: "auto", confirmation_id: null },
+      verification: null,
+      recoveryClearances: [],
+    }, `sha256:${"3".repeat(64)}`).kind).toBe("accepted");
+    journal.markExecuting(rsid, invocationId, 1_721_600_000_000);
+    journal.recordTerminal(rsid, invocationId, {
+      status: "completed",
+      payloadRetained: true,
+      payload: { data: "x".repeat(49 * 1024) },
+      resultDigest: `sha256:${"4".repeat(64)}`,
+    }, 1_721_600_000_001);
+    journal.close();
+
+    const runtime = new BridgeDaemonRuntime(root.path);
+    try {
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-oversized",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+      }, "journal-read-oversized")).rejects.toThrow(
+        /Exact durable invocation journal record exceeds 49152 bytes/u,
+      );
+    } finally {
+      await runtime.shutdown();
+      root.cleanup();
+    }
+  });
+
   it("opens numeric-loopback WSS through the exact JSONL TLS trust contract and retains evidence", async () => {
     const root = temporaryRoot();
     const identity = createTestTlsIdentity("127.0.0.1");

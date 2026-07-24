@@ -3289,7 +3289,7 @@ define(
 );
 define(
   "O1-C38-MISSING-GUARDED-REASON",
-  exactSchemaRejected("o1-c38.missing-reason", /guarded_reason|required|guarded|invalid/i),
+  exactSchemaRejected("o1-c38.missing-reason"),
 );
 define(
   "O1-C38-FIRST-DELIVERY-STOPS",

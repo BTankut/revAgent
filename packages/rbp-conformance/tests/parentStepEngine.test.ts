@@ -187,6 +187,21 @@ describe("parent-owned generic step engine", () => {
       now: () => at,
     })).rejects.toBeInstanceOf(ParentStepOutcomeError);
     expect(mismatchDrainCalls).toBe(1);
+
+    await expect(executeParentSteps({
+      runId: "run-unexpected-control-error",
+      caseId,
+      binding: "wss",
+      steps: [fixtureStep("unexpected-control-error")],
+      drivers: driverSet(async () => ({
+        kind: "control_error",
+        code: "gateway_control_http_403",
+        message: "session is not registered",
+      })),
+      now: () => at,
+    })).rejects.toThrow(
+      /expected success, observed control_error: control error gateway_control_http_403: session is not registered/u,
+    );
   });
 
   it("starts a release concurrently, joins in declared order, and makes barrier captures deterministic", async () => {

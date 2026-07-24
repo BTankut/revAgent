@@ -11,6 +11,7 @@ import {
 import type { CaseControlStep } from "../src/casePrograms.js";
 import { canonicalManifest } from "../src/manifest.js";
 import { ASSERTION_EVIDENCE_BINDINGS } from "../src/observationLedger.js";
+import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
 
 const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: string[] }>> = {
   "gateway_http_control:enqueue_frame_fault": { required: ["rule"] },
@@ -51,6 +52,9 @@ const CONTROL_KEYS: Readonly<Record<string, { required: string[]; optional?: str
   "bridge_jsonl_control:poll_document_context": { required: ["rsid"], optional: ["force"] },
   "bridge_jsonl_control:flush_outbound": { required: [], optional: ["rsid"] },
   "bridge_jsonl_control:invoke_local": { required: ["envelope"], optional: ["crashAt"] },
+  "bridge_jsonl_control:read_journal_record_for_conformance": {
+    required: ["rsid", "invocationId"],
+  },
   "bridge_jsonl_control:record_verification_attempt": {
     required: ["rsid", "holdId", "verificationInvocationId", "evidenceDigest", "conclusion", "atMs"],
   },
@@ -324,6 +328,59 @@ describe("exact forty-case control and observation catalog", () => {
       expect(actionIndex).toBeGreaterThan(snapshotIndex);
     }
     expect(c32.requiredHarnessCapabilities).toContain("registered_session_chunk_conformance");
+  });
+
+  it("uses attested batch reads for C38 and a real omitted-payload recovery flow for C39", () => {
+    const c38Variables = rawProductionCaseVariables("O1-C38");
+    const c38Envelope = (
+      c38Variables.vectors as Record<string, unknown>
+    ).c38 as { guarded?: { payload?: { steps?: Array<{ method?: string }> } } };
+    expect(c38Envelope.guarded?.payload?.steps?.map(({ method }) => method)).toEqual([
+      "get_ui_state",
+      "get_ui_state",
+      "get_ui_state",
+    ]);
+
+    const c39 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C39")!;
+    const ordered = [
+      "o1-c39.dispatch-origin",
+      "o1-c39.await-origin-terminal",
+      "o1-c39.redispatch-origin",
+      "o1-c39.await-omitted",
+      "o1-c39.capture-omitted-digest",
+      "o1-c39.valid-recovery",
+      "o1-c39.await-recovered",
+      "o1-c39.execution-evidence",
+    ];
+    expect(c39.steps
+      .filter(({ stepId }) => ordered.includes(stepId))
+      .map(({ stepId }) => stepId)).toEqual(ordered);
+    expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.capture-omitted-digest"))
+      .toMatchObject({
+        action: "await_condition",
+        captures: [{
+          name: "case.c39_omitted_digest",
+          source: "result",
+          jsonPointer: "/observed",
+        }],
+      });
+    expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.valid-recovery"))
+      .toMatchObject({
+        action: "dispatch_payload_recovery",
+        arguments: {
+          common: {
+            request: {
+              omittedResultDigest: "{{case.c39_omitted_digest}}",
+              payload: {
+                mutating: false,
+                params: {
+                  expected_result_digest: "{{case.c39_omitted_digest}}",
+                },
+              },
+            },
+          },
+        },
+      });
   });
 
   it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {

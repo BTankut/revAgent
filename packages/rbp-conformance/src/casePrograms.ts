@@ -49,6 +49,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "poll_document_context",
   "flush_outbound",
   "invoke_local",
+  "read_journal_record_for_conformance",
   "record_verification_attempt",
   "record_late_evidence",
   "resolve_hold",
@@ -2262,7 +2263,18 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         requestId: "{{vectors.c38.guarded_first_invocation_id}}",
         fault: { injectedOutcome: { state: "guarded", guardedReason: "operator_confirmation_required" } },
       })),
-      bridge("o1-c38.first-delivery", "invoke_local", args({ envelope: "{{vectors.c38.guarded}}" })),
+      bridge("o1-c38.first-delivery", "invoke_local", args({
+        envelope: {
+          v: "{{vectors.c38.guarded.v}}",
+          type: "{{vectors.c38.guarded.type}}",
+          id: "{{vectors.c38.guarded.id}}",
+          ts: "{{clock.iso}}",
+          rsid: "{{case.rsid}}",
+          seq: "{{case.next_seq}}",
+          ack: "{{case.last_ack}}",
+          payload: "{{vectors.c38.guarded.payload}}",
+        },
+      })),
       harness("o1-c38.missing-reason", "send_binding_frame", args({ frame: "{{vectors.c38.guarded_without_reason}}" })),
     ],
     requiredHarnessCapabilities: ["fixture_request_execution_count", "raw_binding_frame", "batch_terminal_capture"],
@@ -2271,7 +2283,79 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C39",
     controls: [
       ...sessionSetup("O1-C39"),
-      gateway("o1-c39.valid-recovery", "dispatch_payload_recovery", args({ request: "{{vectors.c39.valid_recovery}}" })),
+      gateway("o1-c39.dispatch-origin", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c39.origin}}",
+        },
+      })),
+      harness("o1-c39.await-origin-terminal", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c39.origin.invocation_id}}/classification",
+        operator: "equals",
+        expected: "result",
+        timeoutMs: 30_000,
+      }), "observation", 35_000),
+      gateway("o1-c39.redispatch-origin", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c39.origin}}",
+        },
+      })),
+      harness("o1-c39.await-omitted", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/state",
+        operator: "equals",
+        expected: "awaiting_correlated_read",
+        timeoutMs: 15_000,
+      }), "observation", 20_000),
+      withCaptures(
+        harness("o1-c39.capture-omitted-digest", "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer:
+            "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/omittedResultDigest",
+          operator: "exists",
+          timeoutMs: 5_000,
+        }), "observation", 10_000),
+        [{
+          name: "case.c39_omitted_digest",
+          source: "result",
+          jsonPointer: "/observed",
+        }],
+      ),
+      gateway("o1-c39.valid-recovery", "dispatch_payload_recovery", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          originInvocationId: "{{vectors.c39.valid_recovery.originInvocationId}}",
+          omittedResultDigest: "{{case.c39_omitted_digest}}",
+          auditId: "{{vectors.c39.valid_recovery.auditId}}",
+          payload: {
+            invocation_id: "{{vectors.c39.valid_recovery.payload.invocation_id}}",
+            method: "{{vectors.c39.valid_recovery.payload.method}}",
+            params: {
+              origin_invocation_id: "{{vectors.c39.valid_recovery.originInvocationId}}",
+              expected_result_digest: "{{case.c39_omitted_digest}}",
+            },
+            timeout_ms: "{{vectors.c39.valid_recovery.payload.timeout_ms}}",
+            mutating: false,
+            mutation_scope: null,
+            policy: "{{vectors.c39.valid_recovery.payload.policy}}",
+            verification: null,
+            recovery_clearances: [],
+          },
+        },
+      })),
+      harness("o1-c39.await-recovered", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/state",
+        operator: "equals",
+        expected: "recovered",
+        timeoutMs: 15_000,
+      }), "observation", 20_000),
+      fixture("o1-c39.execution-evidence", "snapshot_evidence", args(), "observation"),
       ...[
         "nonreplay",
         "missing_digest",
@@ -2280,7 +2364,12 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         frame: `{{vectors.c39.${vector}}}`,
       }))),
     ],
-    requiredHarnessCapabilities: ["payload_omission_vectors", "raw_binding_frame", "audited_recovery_capture"],
+    requiredHarnessCapabilities: [
+      "payload_omission_vectors",
+      "raw_binding_frame",
+      "audited_recovery_capture",
+      "fixture_request_execution_count",
+    ],
   },
   {
     caseId: "O1-C40",

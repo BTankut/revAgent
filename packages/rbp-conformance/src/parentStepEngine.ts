@@ -465,8 +465,10 @@ function assertExpectedOutcome(step: CaseControlStep, outcome: RawStepOutcome): 
     (expected.reasonIncludes === undefined || outcome.reason.includes(expected.reasonIncludes))) return;
 
   let detail = "outcome kind did not match";
-  if (expected.kind === "control_error" && outcome.kind === "control_error") {
-    detail = `code/message did not match (${outcome.code}: ${outcome.message})`;
+  if (outcome.kind === "control_error") {
+    detail = expected.kind === "control_error"
+      ? `code/message did not match (${outcome.code}: ${outcome.message})`
+      : `control error ${outcome.code}: ${outcome.message}`;
   } else if (expected.kind === "http_status" && outcome.kind === "http_response") {
     detail = `HTTP status ${outcome.status} did not match ${expected.status}`;
   } else if (expected.kind === "close" && outcome.kind === "close") {

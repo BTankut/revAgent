@@ -742,9 +742,9 @@ function c37Vectors(): Record<string, JsonValue> {
 
 function c38Vectors(): Record<string, JsonValue> {
   const guarded = batchEnvelope("O1-C38:guarded", false, [
-    batchStep("O1-C38:guarded:0"),
-    batchStep("O1-C38:guarded:1"),
-    batchStep("O1-C38:guarded:2"),
+    { ...batchStep("O1-C38:guarded:0"), method: "get_ui_state" },
+    { ...batchStep("O1-C38:guarded:1"), method: "get_ui_state" },
+    { ...batchStep("O1-C38:guarded:2"), method: "get_ui_state" },
   ]);
   return {
     guarded,
@@ -779,6 +779,14 @@ function omittedResult(
 }
 
 function c39Vectors(): Record<string, JsonValue> {
+  const origin = invokePayload("O1-C39:origin", {
+    method: "fixture_multi_file_output",
+    params: {
+      scenario: "valid_multifile",
+      fileCount: 1,
+      bytesPerFile: 1_048_577,
+    },
+  });
   const recoveryPayload = invokePayload("O1-C39:recovery", {
     params: {
       origin_invocation_id: invocationId("O1-C39:origin"),
@@ -786,6 +794,7 @@ function c39Vectors(): Record<string, JsonValue> {
     },
   });
   return {
+    origin,
     valid_recovery: {
       rsid: DEFAULT_RSID,
       originInvocationId: invocationId("O1-C39:origin"),

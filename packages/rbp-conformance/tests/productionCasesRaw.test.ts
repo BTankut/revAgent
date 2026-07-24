@@ -276,6 +276,7 @@ describe("raw production C25-C40 seed catalog", () => {
               lastAck: 0,
               grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
             },
+            observed: `sha256:${"d".repeat(64)}`,
           },
         };
       }

@@ -65,6 +65,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "poll_document_context",
   "flush_outbound",
   "invoke_local",
+  "read_journal_record_for_conformance",
   "record_verification_attempt",
   "record_late_evidence",
   "resolve_hold",
@@ -82,6 +83,7 @@ const MAX_ACTIVE_EVIDENCE_SNAPSHOTS = 4;
 const ROWS_PER_PAGE = 8;
 const EVENTS_PER_PAGE = 16;
 const ARTIFACT_CARRIERS_PER_PAGE = 1;
+const MAX_CONFORMANCE_JOURNAL_RECORD_BYTES = 48 * 1024;
 
 interface EvidenceCursor {
   invocationOffset: number;
@@ -878,6 +880,8 @@ export class BridgeDaemonRuntime {
         return { value: await this.#flush(record), shutdown: false };
       case "invoke_local":
         return { value: await this.#invoke(record), shutdown: false };
+      case "read_journal_record_for_conformance":
+        return { value: this.#readJournalRecordForConformance(record), shutdown: false };
       case "record_verification_attempt":
         return { value: this.#recordVerificationAttempt(record), shutdown: false };
       case "record_late_evidence":
@@ -1810,6 +1814,35 @@ export class BridgeDaemonRuntime {
       this.#crashedAt = error.point;
       return { crashed: true, point: error.point };
     }
+  }
+
+  #readJournalRecordForConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertJournalOpen();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid", "invocationId"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    const invocationId = uuidV7(record.invocationId, "invocationId");
+    const journalRecord = this.#journal.getInvocation(rsid, invocationId);
+    if (journalRecord === null) {
+      throw new Error("Exact durable invocation journal record was not found");
+    }
+    if (
+      journalRecord.binding.rsid !== rsid ||
+      journalRecord.binding.invocationId !== invocationId
+    ) {
+      throw new Error("Exact durable invocation journal selector mismatch");
+    }
+    const journalRecordBytes = Buffer.byteLength(JSON.stringify(journalRecord), "utf8");
+    if (journalRecordBytes > MAX_CONFORMANCE_JOURNAL_RECORD_BYTES) {
+      throw new Error(
+        `Exact durable invocation journal record exceeds ${MAX_CONFORMANCE_JOURNAL_RECORD_BYTES} bytes`,
+      );
+    }
+    return {
+      rsid,
+      invocationId,
+      journalRecordBytes,
+      journalRecord: journalRecord as unknown as FixtureJsonValue,
+    };
   }
 
   #recordVerificationAttempt(record: JsonObject): FixtureJsonValue {

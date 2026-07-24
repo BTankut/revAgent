@@ -197,6 +197,7 @@ describe("long-lived Bridge JSONL daemon", () => {
       "poll_document_context",
       "flush_outbound",
       "invoke_local",
+      "read_journal_record_for_conformance",
       "record_verification_attempt",
       "record_late_evidence",
       "resolve_hold",
