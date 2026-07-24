@@ -3,9 +3,9 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     globalSetup: "./tests/globalSetup.ts",
-    // The production suite runs serially for more than an hour on Windows.
-    // Keep reporter work bounded so worker task updates cannot outlive
-    // Vitest's fixed RPC acknowledgement window after every slow PASS.
+    // The production suite uses multiple serial shards on Windows. Keep each
+    // shard's reporter work bounded while preserving final failures and
+    // unhandled-error reporting.
     reporters: ["dot"],
     // Production-stack suites share the host loopback namespace. Running those
     // files concurrently can make one bounded discovery scan observe another

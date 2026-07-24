@@ -10,14 +10,18 @@ if (!existsSync(vitestCli)) {
 }
 
 const forwardedArguments = process.argv.slice(2);
+const shardCount = 5;
 const invocations = forwardedArguments.length > 0
   ? [["run", ...forwardedArguments]]
-  : [
-      ["run", "--shard=1/2"],
-      ["run", "--shard=2/2"],
-    ];
+  : Array.from(
+      { length: shardCount },
+      (_unused, index) => ["run", `--shard=${String(index + 1)}/${String(shardCount)}`],
+    );
 
 for (const argumentsValue of invocations) {
+  const label = argumentsValue.find((value) => value.startsWith("--shard=")) ??
+    "targeted";
+  console.log(`[rbp-conformance] starting ${label}`);
   const result = spawnSync(process.execPath, [vitestCli, ...argumentsValue], {
     cwd: fileURLToPath(new URL("..", import.meta.url)),
     env: process.env,
@@ -29,4 +33,5 @@ for (const argumentsValue of invocations) {
   if (result.status !== 0) {
     process.exit(result.status ?? 1);
   }
+  console.log(`[rbp-conformance] PASS ${label}`);
 }
