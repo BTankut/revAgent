@@ -1705,6 +1705,13 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         gateway("o1-c28.flush-origin-redelivery", "flush_held"),
         { mode: "async_join", handles: ["o1-c28.redeliver-origin"] },
       ),
+      harness(
+        "o1-c28.ack-expiry-and-drive-late-replay",
+        "drive_bridge_outbound",
+        args({ advanceByMs: 15_001 }),
+        "stimulus",
+        20_000,
+      ),
       withCaptures(
         harness("o1-c28.capture-late-digest", "await_condition", args({
           source: "gateway.snapshot",
@@ -2660,12 +2667,15 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C39",
     controls: [
       ...sessionSetup("O1-C39"),
-      gateway("o1-c39.dispatch-origin", "dispatch_invoke", args({
-        request: {
-          rsid: "{{case.rsid}}",
-          payload: "{{vectors.c39.origin}}",
-        },
-      })),
+      withExecution(
+        gateway("o1-c39.dispatch-origin", "dispatch_invoke", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: "{{vectors.c39.origin}}",
+          },
+        }), "stimulus", 60_000),
+        { mode: "async_start", handle: "o1-c39.dispatch-origin" },
+      ),
       harness("o1-c39.await-first-artifact-chunk", "await_condition", args({
         source: "bridge.snapshot_evidence",
         jsonPointer: "/peer/deliveryProgress/records/0/artifactChunkFramesSent",
@@ -2673,9 +2683,30 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         expected: 1,
         timeoutMs: 30_000,
       }), "observation", 35_000),
-      bridge("o1-c39.ack-artifact-chunk-1", "send_heartbeat_for_conformance"),
-      bridge("o1-c39.ack-artifact-chunk-2", "send_heartbeat_for_conformance"),
-      bridge("o1-c39.ack-origin-terminal", "send_heartbeat_for_conformance"),
+      harness(
+        "o1-c39.ack-artifact-chunk-1",
+        "drive_bridge_outbound",
+        args({ advanceByMs: 15_001 }),
+        "stimulus",
+        20_000,
+      ),
+      harness(
+        "o1-c39.ack-artifact-chunk-2",
+        "drive_bridge_outbound",
+        args({ advanceByMs: 15_001 }),
+        "stimulus",
+        20_000,
+      ),
+      withExecution(
+        harness(
+          "o1-c39.ack-origin-terminal",
+          "drive_bridge_outbound",
+          args({ advanceByMs: 15_001 }),
+          "stimulus",
+          20_000,
+        ),
+        { mode: "async_join", handles: ["o1-c39.dispatch-origin"] },
+      ),
       harness("o1-c39.await-origin-terminal", "await_condition", args({
         source: "gateway.compact_snapshot",
         jsonPointer:
