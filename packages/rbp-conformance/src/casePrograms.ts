@@ -1565,16 +1565,284 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C28",
     controls: [
       ...sessionSetup("O1-C28"),
-      gateway("o1-c28.dispatch-origin", "dispatch_invoke", args({ request: "{{vectors.c28_origin_mutation}}" })),
+      fixture("o1-c28.delay-origin", "plan_fault", args({
+        requestId: "{{vectors.c28.origin.invocation_id}}",
+        fault: { delayMs: 750 },
+      })),
+      gateway("o1-c28.dispatch-origin", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: "{{vectors.c28.origin}}",
+        },
+      })),
       gateway("o1-c28.expire", "expire_pending", args({ rsid: "{{case.rsid}}" })),
-      gateway("o1-c28.fresh-id", "dispatch_invoke", args({ request: "{{vectors.c28_fresh_id_mutation}}" })),
-      gateway("o1-c28.batch", "dispatch_batch", args({ request: "{{vectors.c28_conflicting_batch}}" })),
-      gateway("o1-c28.inconclusive", "record_verification_evidence", args({ request: "{{vectors.c28_inconclusive_evidence}}" })),
-      gateway("o1-c28.invalid", "record_verification_evidence", args({ request: "{{vectors.c28_invalid_clearance}}" })),
-      gateway("o1-c28.conclusive", "record_verification_evidence", args({ request: "{{vectors.c28_conclusive_clearance}}" })),
-      gateway("o1-c28.late-terminal", "record_late_terminal_evidence", args({ request: "{{vectors.c28_late_terminal}}" })),
+      withCaptures(
+        harness("o1-c28.capture-hold", "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer: "/mutationHolds/holds/0/holdId",
+          operator: "exists",
+          timeoutMs: 5_000,
+        }), "observation", 10_000),
+        [{ name: "case.c28_hold_id", source: "result", jsonPointer: "/observed" }],
+      ),
+      withExpectedOutcome(
+        gateway("o1-c28.fresh-id", "dispatch_invoke", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: "{{vectors.c28.fresh}}",
+          },
+        })),
+        {
+          kind: "control_error",
+          code: "gateway_control_http_500",
+          messageIncludes: "mutation conflicts",
+        },
+      ),
+      withExpectedOutcome(
+        gateway("o1-c28.batch", "dispatch_batch", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: "{{vectors.c28.conflicting_batch.payload}}",
+          },
+        })),
+        {
+          kind: "control_error",
+          code: "gateway_control_http_500",
+          messageIncludes: "mutation conflicts",
+        },
+      ),
+      harness("o1-c28.await-bridge-indeterminate", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/invocations/0/state",
+        operator: "equals",
+        expected: "indeterminate",
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
+      harness("o1-c28.await-indeterminate-wire", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/lateTerminalEvidence/{{vectors.c28.origin.invocation_id}}/0/classification",
+        operator: "equals",
+        expected: "error",
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
+      harness("o1-c28.await-late-journal", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/invocations/0/lateTerminalOutcomeDigest",
+        operator: "exists",
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
+      bridge("o1-c28.restart-for-late-replay", "restart_simulator"),
+      bridge("o1-c28.reopen-for-late-replay", "open_transport", byBinding(
+        {
+          kind: "wss",
+          endpointPolicy: "loopback_test_tls",
+          deviceToken: "{{case.device_token}}",
+          wssUrl: "{{gateway.ready.ws_url}}",
+          tlsTrust: {
+            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
+            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
+            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          },
+          hello: hello("O1-C28", "late-restart"),
+        },
+        {
+          kind: "streamable_http_sse",
+          endpointPolicy: "loopback_test_readiness",
+          deviceToken: "{{case.device_token}}",
+          fallbackUrl: "{{gateway.ready.http_connection_url}}",
+          hello: hello("O1-C28", "late-restart"),
+        },
+      )),
+      bridge("o1-c28.restart-run-loop", "start_run_loop"),
+      harness("o1-c28.await-resume", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/sessions/0/phase",
+        operator: "equals",
+        expected: "registered",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      withCaptures(
+        harness("o1-c28.capture-late-digest", "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer:
+            "/sessions/{{case.rsid}}/lateTerminalEvidence/{{vectors.c28.origin.invocation_id}}/1/envelope/payload/result_digest",
+          operator: "exists",
+          timeoutMs: 10_000,
+        }), "observation", 15_000),
+        [{ name: "case.c28_late_digest", source: "result", jsonPointer: "/observed" }],
+      ),
+      withCaptures(
+        bridge("o1-c28.read-origin-journal", "read_journal_record_for_conformance", args({
+          rsid: "{{case.rsid}}",
+          invocationId: "{{vectors.c28.origin.invocation_id}}",
+        }), "observation"),
+        [{ name: "case.c28_origin_journal", source: "result", jsonPointer: "/journalRecord" }],
+      ),
+      gateway("o1-c28.late-terminal", "record_late_terminal_evidence", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          holdId: "{{case.c28_hold_id}}",
+          originIdempotencyKey: "{{case.rsid}}/{{vectors.c28.origin.invocation_id}}",
+          evidenceDigest: "{{case.c28_late_digest}}",
+          conclusion: "postcondition_verified",
+          journalRecord: "{{case.c28_origin_journal}}",
+        },
+      })),
+      bridge("o1-c28.bridge-late-terminal", "record_late_evidence", args({
+        rsid: "{{case.rsid}}",
+        holdId: "{{case.c28_hold_id}}",
+        originInvocationId: "{{vectors.c28.origin.invocation_id}}",
+        evidenceDigest: "{{case.c28_late_digest}}",
+        conclusion: "postcondition_verified",
+        atMs: "{{vectors.c28.evidence_at_ms}}",
+      })),
+      gateway("o1-c28.after-late-terminal", "snapshot", args(), "observation"),
+      gateway("o1-c28.dispatch-verification", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: {
+            invocation_id: "{{vectors.c28.verification.invocation_id}}",
+            method: "{{vectors.c28.verification.method}}",
+            params: "{{vectors.c28.verification.params}}",
+            timeout_ms: "{{vectors.c28.verification.timeout_ms}}",
+            mutating: false,
+            mutation_scope: null,
+            policy: "{{vectors.c28.verification.policy}}",
+            verification: {
+              hold_id: "{{case.c28_hold_id}}",
+              mutation_scope: { kind: "session" },
+              purpose: "resolve_indeterminate",
+            },
+            recovery_clearances: [],
+          },
+        },
+      })),
+      withCaptures(
+        harness("o1-c28.capture-verification-digest", "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer:
+            "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c28.verification.invocation_id}}/envelope/payload/result_digest",
+          operator: "exists",
+          timeoutMs: 10_000,
+        }), "observation", 15_000),
+        [{
+          name: "case.c28_verification_digest",
+          source: "result",
+          jsonPointer: "/observed",
+        }],
+      ),
+      withCaptures(
+        bridge("o1-c28.read-verification-journal", "read_journal_record_for_conformance", args({
+          rsid: "{{case.rsid}}",
+          invocationId: "{{vectors.c28.verification.invocation_id}}",
+        }), "observation"),
+        [{
+          name: "case.c28_verification_journal",
+          source: "result",
+          jsonPointer: "/journalRecord",
+        }],
+      ),
+      gateway("o1-c28.inconclusive", "record_verification_evidence", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          holdId: "{{case.c28_hold_id}}",
+          mutationScope: { kind: "session" },
+          verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+          evidenceDigest: "{{case.c28_verification_digest}}",
+          conclusion: "inconclusive",
+          journalRecord: "{{case.c28_verification_journal}}",
+        },
+      })),
+      bridge("o1-c28.bridge-inconclusive", "record_verification_attempt", args({
+        rsid: "{{case.rsid}}",
+        holdId: "{{case.c28_hold_id}}",
+        verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+        evidenceDigest: "{{case.c28_verification_digest}}",
+        conclusion: "inconclusive",
+        atMs: "{{vectors.c28.evidence_at_ms}}",
+      })),
+      gateway("o1-c28.after-inconclusive", "snapshot", args(), "observation"),
+      withExpectedOutcome(
+        gateway("o1-c28.invalid", "record_verification_evidence", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            holdId: "{{case.c28_hold_id}}",
+            mutationScope: { kind: "session" },
+            verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+            evidenceDigest: "{{case.c28_verification_digest}}",
+            conclusion: "postcondition_verified",
+            journalRecord: "{{case.c28_origin_journal}}",
+          },
+        })),
+        {
+          kind: "control_error",
+          code: "gateway_control_http_400",
+          messageIncludes: "verification evidence rejected",
+        },
+      ),
+      gateway("o1-c28.conclusive", "record_verification_evidence", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          holdId: "{{case.c28_hold_id}}",
+          mutationScope: { kind: "session" },
+          verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+          evidenceDigest: "{{case.c28_verification_digest}}",
+          conclusion: "postcondition_verified",
+          journalRecord: "{{case.c28_verification_journal}}",
+        },
+      })),
+      bridge("o1-c28.bridge-conclusive", "record_verification_attempt", args({
+        rsid: "{{case.rsid}}",
+        holdId: "{{case.c28_hold_id}}",
+        verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+        evidenceDigest: "{{case.c28_verification_digest}}",
+        conclusion: "postcondition_verified",
+        atMs: "{{vectors.c28.evidence_at_ms}}",
+      })),
+      gateway("o1-c28.dispatch-recovery", "dispatch_invoke", args({
+        request: {
+          rsid: "{{case.rsid}}",
+          payload: {
+            invocation_id: "{{vectors.c28.recovery.invocation_id}}",
+            method: "{{vectors.c28.recovery.method}}",
+            params: "{{vectors.c28.recovery.params}}",
+            timeout_ms: "{{vectors.c28.recovery.timeout_ms}}",
+            mutating: true,
+            mutation_scope: { kind: "session" },
+            policy: "{{vectors.c28.recovery.policy}}",
+            verification: null,
+            recovery_clearances: [{
+              hold_id: "{{case.c28_hold_id}}",
+              mutation_scope: { kind: "session" },
+              resolution_id: "{{vectors.c28.resolution_id}}",
+              basis: "verification_read",
+              verification_invocation_id: "{{vectors.c28.verification.invocation_id}}",
+              evidence_digest: "{{case.c28_verification_digest}}",
+              decision: "postcondition_verified",
+              audit_id: "{{vectors.c28.audit_id}}",
+            }],
+          },
+        },
+      })),
+      harness("o1-c28.await-cleared", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer: "/mutationHolds/holds/0/state",
+        operator: "equals",
+        expected: "cleared",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      gateway("o1-c28.final-gateway", "snapshot", args(), "observation"),
+      bridge("o1-c28.final-bridge", "snapshot_evidence", args(), "observation"),
+      fixture("o1-c28.fixture-snapshot", "snapshot_evidence", args(), "observation"),
     ],
-    requiredHarnessCapabilities: ["gateway_hold_ledger", "fixture_request_execution_count", "journal_snapshot"],
+    requiredHarnessCapabilities: [
+      "bridge_crash_recovery",
+      "gateway_hold_ledger",
+      "late_terminal_capture",
+      "fixture_request_execution_count",
+      "journal_snapshot",
+    ],
   },
   {
     caseId: "O1-C29",

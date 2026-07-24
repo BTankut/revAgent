@@ -125,6 +125,18 @@ describe("exact forty-case control and observation catalog", () => {
             code: "gateway_control_http_400",
             messageIncludes: "atomic batch",
           });
+        } else if (step.stepId === "o1-c28.fresh-id" || step.stepId === "o1-c28.batch") {
+          expect(step.expectedOutcome).toEqual({
+            kind: "control_error",
+            code: "gateway_control_http_500",
+            messageIncludes: "mutation conflicts",
+          });
+        } else if (step.stepId === "o1-c28.invalid") {
+          expect(step.expectedOutcome).toEqual({
+            kind: "control_error",
+            code: "gateway_control_http_400",
+            messageIncludes: "verification evidence rejected",
+          });
         } else if (step.stepId.endsWith(".resume") && step.stepId.startsWith("o1-c37.")) {
           expect(step.expectedOutcome).toEqual({
             kind: "control_error",
@@ -376,6 +388,80 @@ describe("exact forty-case control and observation catalog", () => {
                 params: {
                   expected_result_digest: "{{case.c39_omitted_digest}}",
                 },
+              },
+            },
+          },
+        },
+      });
+  });
+
+  it("drives C28 from retained late-terminal and exact verification journal evidence", () => {
+    const variables = rawProductionCaseVariables("O1-C28");
+    const vectors = (variables.vectors as Record<string, unknown>).c28 as {
+      origin: { invocation_id: string; method: string; timeout_ms: number };
+      fresh: { method: string };
+      conflicting_batch: { payload: { steps: Array<{ method: string }> } };
+      verification: { invocation_id: string; method: string };
+      recovery: { method: string };
+    };
+    expect(vectors.origin).toMatchObject({
+      method: "send_code_to_revit",
+      timeout_ms: 250,
+    });
+    expect(vectors.fresh.method).toBe("send_code_to_revit");
+    expect(vectors.conflicting_batch.payload.steps.map(({ method }) => method))
+      .toEqual(["delete_review_view"]);
+    expect(vectors.verification.method).toBe("fixture_echo");
+    expect(vectors.recovery.method).toBe("send_code_to_revit");
+
+    const c28 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C28")!;
+    const ordered = [
+      "o1-c28.dispatch-origin",
+      "o1-c28.expire",
+      "o1-c28.capture-hold",
+      "o1-c28.fresh-id",
+      "o1-c28.batch",
+      "o1-c28.await-bridge-indeterminate",
+      "o1-c28.await-late-journal",
+      "o1-c28.restart-for-late-replay",
+      "o1-c28.capture-late-digest",
+      "o1-c28.read-origin-journal",
+      "o1-c28.late-terminal",
+      "o1-c28.dispatch-verification",
+      "o1-c28.capture-verification-digest",
+      "o1-c28.read-verification-journal",
+      "o1-c28.inconclusive",
+      "o1-c28.invalid",
+      "o1-c28.conclusive",
+      "o1-c28.dispatch-recovery",
+      "o1-c28.await-cleared",
+    ];
+    expect(c28.steps
+      .filter(({ stepId }) => ordered.includes(stepId))
+      .map(({ stepId }) => stepId)).toEqual(ordered);
+    expect(c28.steps.find(({ stepId }) => stepId === "o1-c28.invalid"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            request: {
+              journalRecord: "{{case.c28_origin_journal}}",
+              verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+            },
+          },
+        },
+      });
+    expect(c28.steps.find(({ stepId }) => stepId === "o1-c28.dispatch-recovery"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            request: {
+              payload: {
+                recovery_clearances: [{
+                  hold_id: "{{case.c28_hold_id}}",
+                  basis: "verification_read",
+                  verification_invocation_id: "{{vectors.c28.verification.invocation_id}}",
+                  evidence_digest: "{{case.c28_verification_digest}}",
+                }],
               },
             },
           },

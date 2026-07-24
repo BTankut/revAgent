@@ -2037,21 +2037,36 @@ define(
 );
 define(
   "O1-C28-FRESH-ID-BLOCKED",
-  semanticEvent(["control_result", "gateway_snapshot"], (candidate) =>
-    (candidate.stepId === "o1-c28.fresh-id" || candidate.kind === "blocked") &&
-    /hold|journal_indeterminate|conflict/i.test(String(candidate.reason ?? candidate.faultClass ?? candidate.message ?? ""))),
+  safe((context) => {
+    const response = controlResponse(context, "o1-c28.fresh-id");
+    return response?.kind === "control_error" &&
+      response.code === "gateway_control_http_500" &&
+      /mutation conflicts with active recovery hold/i.test(String(response.message));
+  }),
 );
 define(
   "O1-C28-BATCH-WRITE-BLOCKED",
-  semanticEvent(["control_result", "gateway_snapshot"], (candidate) =>
-    (candidate.stepId === "o1-c28.batch" || candidate.kind === "blocked") &&
-    /hold|journal_indeterminate|conflict/i.test(String(candidate.reason ?? candidate.faultClass ?? candidate.message ?? ""))),
+  safe((context) => {
+    const response = controlResponse(context, "o1-c28.batch");
+    return response?.kind === "control_error" &&
+      response.code === "gateway_control_http_500" &&
+      /mutation conflicts with active recovery hold/i.test(String(response.message));
+  }),
 );
 define(
   "O1-C28-INCONCLUSIVE-READ-RETAINS",
-  semanticEvent(["control_result", "gateway_snapshot"], (candidate) =>
-    (candidate.kind === "inconclusive_recorded" || candidate.conclusion === "inconclusive") &&
-    candidate.state !== "cleared"),
+  safe((context) => {
+    const response = controlResponse(context, "o1-c28.inconclusive");
+    const result = objectValue(response?.result);
+    return response?.kind === "success" &&
+      result !== null &&
+      result.state !== "cleared" &&
+      arrayValue(result.evidenceAttempts).some((entry) => {
+        const attempt = objectValue(entry);
+        return attempt?.basis === "verification_read" &&
+          attempt.conclusion === "inconclusive";
+      });
+  }),
 );
 define(
   "O1-C28-CONCLUSIVE-READ-CLEARS",
@@ -2065,19 +2080,25 @@ define(
 define(
   "O1-C28-LATE-TERMINAL-TRANSITION",
   semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    candidate.basis === "late_terminal" &&
-    typeof (candidate.evidenceDigest ?? candidate.evidence_digest) === "string" &&
-    (candidate.state === "evidence_recorded" || candidate.state === "cleared")),
+    (candidate.state === "evidence_recorded" ||
+      candidate.state === "resolved_pending_bridge" ||
+      candidate.state === "cleared") &&
+    arrayValue(candidate.evidenceAttempts).some((entry) => {
+      const attempt = objectValue(entry);
+      return attempt?.basis === "late_terminal" &&
+        typeof (attempt.evidenceDigest ?? attempt.evidence_digest) === "string";
+    })),
 );
 define(
   "O1-C28-INVALID-CLEARANCE-BLOCKED",
-  safe((context) =>
-    semanticControl(context, "o1-c28.invalid", (result) =>
-      result.kind === "rejected" &&
-      ["foreign_hold", "scope_mismatch", "journal_binding_mismatch", "evidence_digest_mismatch"]
-        .includes(String(result.reason))) &&
-    !hasDomainObject(context, ["fixture_snapshot", "fixture_execution_count"], (candidate) =>
-      candidate.invalidClearanceDispatched === true)),
+  safe((context) => {
+    const response = controlResponse(context, "o1-c28.invalid");
+    return response?.kind === "control_error" &&
+      response.code === "gateway_control_http_400" &&
+      /verification evidence rejected: journal_binding_mismatch/i.test(String(response.message)) &&
+      !hasDomainObject(context, ["fixture_snapshot", "fixture_execution_count"], (candidate) =>
+        candidate.invalidClearanceDispatched === true);
+  }),
 );
 
 define(

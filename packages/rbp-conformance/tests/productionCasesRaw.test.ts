@@ -256,6 +256,40 @@ describe("raw production C25-C40 seed catalog", () => {
           message: "unknown or revoked rsid",
         };
       }
+      if (
+        request.caseId === "O1-C28" &&
+        (request.stepId === "o1-c28.fresh-id" || request.stepId === "o1-c28.batch")
+      ) {
+        return {
+          kind: "control_error",
+          code: "gateway_control_http_500",
+          message: "mutation conflicts with active recovery hold(s)",
+        };
+      }
+      if (request.caseId === "O1-C28" && request.stepId === "o1-c28.invalid") {
+        return {
+          kind: "control_error",
+          code: "gateway_control_http_400",
+          message: "verification evidence rejected: journal_binding_mismatch",
+        };
+      }
+      if (
+        request.caseId === "O1-C28" &&
+        request.action === "read_journal_record_for_conformance"
+      ) {
+        return {
+          kind: "success",
+          result: {
+            journalRecord: {
+              binding: {
+                rsid: "019c2800-0000-7000-8000-000000000001",
+                invocationId: "019c2800-0000-7000-8000-000000000002",
+              },
+              retainedForSubstitution: true,
+            },
+          },
+        };
+      }
       if (request.action === "await_condition") {
         const c37Rsids = [
           "rs_raw_primary",
@@ -270,13 +304,17 @@ describe("raw production C25-C40 seed catalog", () => {
               sessions: c37Rsids.map((rsid) => ({ rsid })),
             },
             dynamic: {
-              rsid: "rs_raw_primary",
+              rsid: request.caseId === "O1-C28"
+                ? "019c2800-0000-7000-8000-000000000001"
+                : "rs_raw_primary",
               rsids: c37Rsids,
               nextSeq: 1,
               lastAck: 0,
               grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
             },
-            observed: `sha256:${"d".repeat(64)}`,
+            observed: request.stepId === "o1-c28.capture-hold"
+              ? `vh:${"a".repeat(64)}`
+              : `sha256:${"d".repeat(64)}`,
           },
         };
       }

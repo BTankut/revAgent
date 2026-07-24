@@ -186,6 +186,7 @@ function invokePayload(
   options: {
     readonly method?: string;
     readonly params?: JsonValue;
+    readonly timeoutMs?: number;
     readonly mutating?: boolean;
     readonly mutationScope?: JsonValue;
     readonly verification?: JsonValue;
@@ -197,7 +198,7 @@ function invokePayload(
     invocation_id: invocationId(key),
     method: options.method ?? "fixture_echo",
     params: options.params ?? { vector: key },
-    timeout_ms: 30_000,
+    timeout_ms: options.timeoutMs ?? 30_000,
     mutating,
     mutation_scope: mutating ? (options.mutationScope ?? { kind: "session" }) : null,
     policy: policy(mutating ? "write" : "read"),
@@ -283,65 +284,6 @@ function resultMetrics(): JsonValue {
   };
 }
 
-function terminalJournalRecord(
-  key: string,
-  verification: JsonValue | null,
-  resultDigest = RESULT_DIGEST,
-): JsonValue {
-  const binding = {
-    rsid: DEFAULT_RSID,
-    invocationId: invocationId(key),
-    method: "fixture_echo",
-    mutating: false,
-    mutationScope: null,
-    paramsDigest: sha256Json({ vector: key }),
-    policy: policy("read"),
-    verification,
-    recoveryClearances: [],
-  };
-  const outcome = {
-    status: "completed",
-    resultDigest,
-    payloadRetained: true,
-    payload: { verified: true },
-  };
-  const bindingIdentity = {
-    batch_digest: null,
-    batch_id: null,
-    batch_index: null,
-    invocation_id: binding.invocationId,
-    method: binding.method,
-    mutating: binding.mutating,
-    mutation_scope: binding.mutationScope,
-    params_digest: binding.paramsDigest,
-    policy: binding.policy,
-    recovery_clearances: [],
-    rsid: binding.rsid,
-    verification,
-  };
-  const outcomeIdentity = {
-    guarded_reason: null,
-    payload: outcome.payload,
-    payload_present: true,
-    payload_retained: true,
-    result_digest: resultDigest,
-    status: "completed",
-  };
-  return {
-    binding,
-    bindingDigest: sha256Json(bindingIdentity),
-    state: "completed",
-    dispatchMayHaveStarted: true,
-    readRecoveryConsumed: false,
-    abandoned: false,
-    terminalOutcome: outcome,
-    terminalOutcomeDigest: sha256Json(outcomeIdentity),
-    lateTerminalOutcome: null,
-    lateTerminalOutcomeDigest: null,
-    verificationHoldId: null,
-  };
-}
-
 function sessionRegisterPayload(key: string): JsonValue {
   return {
     local_session_key: `raw:${key}`,
@@ -367,55 +309,49 @@ function sessionRegisterPayload(key: string): JsonValue {
 }
 
 function c28Vectors(): Record<string, JsonValue> {
-  const origin = invokePayload("O1-C28:origin", { mutating: true });
-  const fresh = invokePayload("O1-C28:fresh", { mutating: true });
+  const origin = invokePayload("O1-C28:origin", {
+    method: "send_code_to_revit",
+    params: { vector: "O1-C28:origin", fixtureOnly: true },
+    timeoutMs: 250,
+    mutating: true,
+  });
+  const fresh = invokePayload("O1-C28:fresh", {
+    method: "send_code_to_revit",
+    params: { vector: "O1-C28:fresh", fixtureOnly: true },
+    mutating: true,
+  });
+  const conflictingParams = {
+    viewId: 28_001,
+    mode: "commit",
+    confirmDelete: true,
+    viewType: "ThreeD",
+  };
+  const conflictingStep: BatchStepSeed = {
+    ...batchStep("O1-C28:batch-write", conflictingParams, true),
+    method: "delete_review_view",
+  };
   const conflictingBatch = batchEnvelope(
     "O1-C28:conflicting",
     false,
-    [batchStep("O1-C28:batch-write", { vector: "conflicting" }, true)],
+    [conflictingStep],
   ) as Record<string, JsonValue>;
-  const verificationInvocationId = invocationId("O1-C28:verification");
-  const verification = {
-    hold_id: HOLD_ID,
-    mutation_scope: { kind: "session" },
-    purpose: "resolve_indeterminate",
-  };
-  const journalRecord = terminalJournalRecord("O1-C28:verification", verification);
-  const evidenceBase = {
-    rsid: DEFAULT_RSID,
-    holdId: HOLD_ID,
-    mutationScope: { kind: "session" },
-    verificationInvocationId,
-    evidenceDigest: EVIDENCE_DIGEST,
-    journalRecord,
-  };
   return {
-    c28_origin_mutation: { rsid: DEFAULT_RSID, payload: origin },
-    c28_fresh_id_mutation: { rsid: DEFAULT_RSID, payload: fresh },
-    c28_conflicting_batch: {
-      rsid: DEFAULT_RSID,
-      payload: conflictingBatch.payload!,
-    },
-    c28_inconclusive_evidence: {
-      ...evidenceBase,
-      conclusion: "inconclusive",
-    },
-    c28_invalid_clearance: {
-      ...evidenceBase,
-      holdId: `vh:${"f".repeat(64)}`,
-      conclusion: "postcondition_verified",
-    },
-    c28_conclusive_clearance: {
-      ...evidenceBase,
-      conclusion: "postcondition_verified",
-    },
-    c28_late_terminal: {
-      rsid: DEFAULT_RSID,
-      holdId: HOLD_ID,
-      originIdempotencyKey: `${DEFAULT_RSID}/${(origin as Record<string, JsonValue>).invocation_id as string}`,
-      evidenceDigest: EVIDENCE_DIGEST,
-      conclusion: "postcondition_verified",
-      journalRecord,
+    c28: {
+      origin,
+      fresh,
+      conflicting_batch: conflictingBatch,
+      verification: invokePayload("O1-C28:verification", {
+        method: "fixture_echo",
+        params: { vector: "O1-C28:verification", fixtureOnly: true },
+      }),
+      recovery: invokePayload("O1-C28:recovery", {
+        method: "send_code_to_revit",
+        params: { vector: "O1-C28:recovery", fixtureOnly: true },
+        mutating: true,
+      }),
+      resolution_id: deterministicUuid("O1-C28:resolution"),
+      audit_id: deterministicUuid("O1-C28:audit"),
+      evidence_at_ms: Date.parse(CLOCK_ISO),
     },
   };
 }
@@ -885,6 +821,11 @@ function idsForPrograms(): Record<string, JsonValue> {
       };
       caseIds["hello-atomic-restart"] = {
         envelopeId: messageId(`${caseId}:hello-atomic-restart`),
+      };
+    }
+    if (caseId === "O1-C28") {
+      caseIds["hello-late-restart"] = {
+        envelopeId: messageId(`${caseId}:hello-late-restart`),
       };
     }
     for (const suffix of [
