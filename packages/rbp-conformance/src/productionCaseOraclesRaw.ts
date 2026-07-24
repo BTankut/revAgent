@@ -815,6 +815,254 @@ function dispatchedInvocationId(
   ]));
 }
 
+function c28Dispatch(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): { readonly rsid: string; readonly payload: ObjectValue } | null {
+  const observation = controlObservation(context, stepId);
+  const request = objectValue(observation?.request);
+  const argumentsValue = objectValue(request?.arguments);
+  const dispatch = objectValue(argumentsValue?.request);
+  const payload = objectValue(dispatch?.payload);
+  return request?.action === "dispatch_invoke" &&
+      typeof dispatch?.rsid === "string" &&
+      payload !== null
+    ? { rsid: dispatch.rsid, payload }
+    : null;
+}
+
+function c28GatewaySession(snapshot: ObjectValue, rsid: string): ObjectValue | null {
+  return objectValue(objectValue(snapshot.sessions)?.[rsid]);
+}
+
+function c28GatewayHold(
+  snapshot: ObjectValue,
+  rsid: string,
+  holdId: string,
+): ObjectValue | null {
+  const matches = arrayValue(objectValue(snapshot.mutationHolds)?.holds)
+    .map((entry) => objectValue(entry))
+    .filter((hold): hold is ObjectValue =>
+      hold !== null && hold.rsid === rsid && hold.holdId === holdId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function c28BridgeHold(
+  snapshot: ObjectValue,
+  rsid: string,
+  holdId: string,
+): ObjectValue | null {
+  const matches = arrayValue(snapshot.holds)
+    .map((entry) => objectValue(entry))
+    .filter((hold): hold is ObjectValue =>
+      hold !== null && hold.rsid === rsid && hold.holdId === holdId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function c28CapturedString(
+  context: Readonly<CanonicalAssertionOracleContext>,
+  stepId: string,
+): string | null {
+  return stringValue(controlResult(context, stepId)?.observed);
+}
+
+function exactC28HoldInstalled(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const origin = c28Dispatch(context, "o1-c28.dispatch-origin");
+  const holdId = c28CapturedString(context, "o1-c28.capture-hold");
+  const snapshot = snapshotAt(context, "gateway_snapshot", "o1-c28.capture-hold");
+  if (origin === null || holdId === null || snapshot === null) return false;
+  const invocationId = stringValue(origin.payload.invocation_id);
+  const hold = c28GatewayHold(snapshot, origin.rsid, holdId);
+  return invocationId !== null &&
+    /^vh:[0-9a-f]{64}$/u.test(holdId) &&
+    hold !== null &&
+    hold.state === "active" &&
+    hold.scopeKey === "session" &&
+    sameJson(hold.mutationScope, { kind: "session" }) &&
+    sameJson(hold.originIdempotencyKeys, [`${origin.rsid}/${invocationId}`]);
+}
+
+function exactC28LateTerminalTransition(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const origin = c28Dispatch(context, "o1-c28.dispatch-origin");
+  const holdId = c28CapturedString(context, "o1-c28.capture-hold");
+  const lateDigest = c28CapturedString(context, "o1-c28.capture-late-digest");
+  const snapshot = snapshotAt(context, "gateway_snapshot", "o1-c28.capture-late-digest");
+  const gatewayEvidenceHold = controlResult(context, "o1-c28.late-terminal");
+  const bridgeEvidenceResult = controlResult(context, "o1-c28.bridge-late-terminal");
+  const bridgeEvidenceHold = objectValue(bridgeEvidenceResult?.hold);
+  if (
+    origin === null ||
+    holdId === null ||
+    lateDigest === null ||
+    !SHA256_PATTERN.test(lateDigest) ||
+    snapshot === null ||
+    gatewayEvidenceHold === null ||
+    bridgeEvidenceHold === null
+  ) {
+    return false;
+  }
+  const originId = stringValue(origin.payload.invocation_id);
+  const session = c28GatewaySession(snapshot, origin.rsid);
+  const lateByInvocation = objectValue(session?.lateTerminalEvidence);
+  const terminalOutcomes = objectValue(session?.terminalOutcomes);
+  const terminal = originId === null ? null : objectValue(terminalOutcomes?.[originId]);
+  const evidence = originId === null
+    ? []
+    : arrayValue(lateByInvocation?.[originId])
+      .map((entry) => objectValue(entry))
+      .filter((entry): entry is ObjectValue => entry !== null);
+  const expiry = evidence.filter((entry) =>
+    entry.source === "gateway_expiry" &&
+    entry.classification === "error" &&
+    entry.correlationId === originId);
+  const replay = evidence.filter((entry) =>
+    entry.source === "bridge_late_replay" &&
+    entry.classification === "result" &&
+    entry.correlationId === originId);
+  const replayEnvelope = replay.length === 1 ? objectValue(replay[0]!.envelope) : null;
+  const replayPayload = objectValue(replayEnvelope?.payload);
+  const gatewaySelected = objectValue(gatewayEvidenceHold.selectedEvidence);
+  const bridgeSelected = objectValue(bridgeEvidenceHold.selectedEvidence);
+  const originKey = originId === null ? null : `${origin.rsid}/${originId}`;
+  return originId !== null &&
+    evidence.length === 2 &&
+    expiry.length === 1 &&
+    replay.length === 1 &&
+    replayEnvelope?.type === "result" &&
+    replayPayload?.kind === "invocation" &&
+    replayPayload.invocation_id === originId &&
+    replayPayload.status === "completed" &&
+    replayPayload.replayed === true &&
+    replayPayload.late_after_indeterminate === true &&
+    replayPayload.verification_hold_id === holdId &&
+    replayPayload.result_digest === lateDigest &&
+    terminal?.classification === "journal_indeterminate" &&
+    gatewayEvidenceHold.rsid === origin.rsid &&
+    gatewayEvidenceHold.holdId === holdId &&
+    gatewayEvidenceHold.state === "evidence_recorded" &&
+    gatewaySelected?.basis === "late_terminal" &&
+    gatewaySelected.originIdempotencyKey === originKey &&
+    gatewaySelected.evidenceDigest === lateDigest &&
+    gatewaySelected.conclusion === "postcondition_verified" &&
+    bridgeEvidenceHold.rsid === origin.rsid &&
+    bridgeEvidenceHold.holdId === holdId &&
+    bridgeEvidenceHold.state === "evidence_recorded" &&
+    bridgeSelected?.basis === "late_terminal" &&
+    bridgeSelected.originIdempotencyKey === originKey &&
+    bridgeSelected.evidenceDigest === lateDigest &&
+    bridgeSelected.conclusion === "postcondition_verified" &&
+    exactFixtureExecutionCount(context, originId) === 1;
+}
+
+function exactC28ConclusiveRecovery(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const recovery = c28Dispatch(context, "o1-c28.dispatch-recovery");
+  const holdId = c28CapturedString(context, "o1-c28.capture-hold");
+  const verificationDigest = c28CapturedString(context, "o1-c28.capture-verification-digest");
+  const dispatchIdentity = c28CapturedString(
+    context,
+    "o1-c28.capture-recovery-dispatch-identity",
+  );
+  const resolveArguments = controlArguments(context, "o1-c28.resolve-bridge-hold");
+  const resolveResult = controlResult(context, "o1-c28.resolve-bridge-hold");
+  const resolvedHold = objectValue(resolveResult?.hold);
+  const resolvedResolution = objectValue(resolvedHold?.resolution);
+  const clearanceResult = controlResult(context, "o1-c28.capture-bridge-clearance");
+  const bridgeClearance = objectValue(clearanceResult?.clearance);
+  const recoveryClearances = recovery === null
+    ? []
+    : arrayValue(recovery.payload.recovery_clearances);
+  const recoveryClearance = objectValue(recoveryClearances[0]);
+  const finalGateway = snapshotAt(context, "gateway_snapshot", "o1-c28.gateway-snapshot");
+  const finalBridge = snapshotAt(context, "bridge_snapshot", "o1-c28.bridge-snapshot");
+  if (
+    recovery === null ||
+    holdId === null ||
+    verificationDigest === null ||
+    dispatchIdentity === null ||
+    !SHA256_PATTERN.test(dispatchIdentity) ||
+    resolveArguments === null ||
+    resolveResult === null ||
+    resolvedHold === null ||
+    resolvedResolution === null ||
+    bridgeClearance === null ||
+    recoveryClearances.length !== 1 ||
+    recoveryClearance === null ||
+    finalGateway === null ||
+    finalBridge === null
+  ) {
+    return false;
+  }
+  const recoveryId = stringValue(recovery.payload.invocation_id);
+  const verificationId = stringValue(resolveArguments.verificationInvocationId);
+  const gatewayHold = c28GatewayHold(finalGateway, recovery.rsid, holdId);
+  const bridgeHold = c28BridgeHold(finalBridge, recovery.rsid, holdId);
+  const gatewayResolution = objectValue(gatewayHold?.resolution);
+  const session = c28GatewaySession(finalGateway, recovery.rsid);
+  const terminal = recoveryId === null
+    ? null
+    : objectValue(objectValue(session?.terminalOutcomes)?.[recoveryId]);
+  const envelope = objectValue(terminal?.envelope);
+  const payload = objectValue(envelope?.payload);
+  return recoveryId !== null &&
+    verificationId !== null &&
+    SHA256_PATTERN.test(verificationDigest) &&
+    resolveArguments.rsid === recovery.rsid &&
+    resolveArguments.holdId === holdId &&
+    resolveArguments.basis === "verification_read" &&
+    resolveArguments.evidenceDigest === verificationDigest &&
+    resolveArguments.decision === "postcondition_verified" &&
+    resolveArguments.authorizedDispatchIdentity === dispatchIdentity &&
+    resolveResult.resolved === true &&
+    resolvedHold.rsid === recovery.rsid &&
+    resolvedHold.holdId === holdId &&
+    resolvedHold.state === "resolved_pending_bridge" &&
+    resolvedResolution.authorizedDispatchIdentity === dispatchIdentity &&
+    sameJson(bridgeClearance, recoveryClearance) &&
+    gatewayHold?.state === "cleared" &&
+    gatewayHold.clearedBy === dispatchIdentity &&
+    gatewayResolution?.authorizedDispatchIdentity === dispatchIdentity &&
+    bridgeHold?.state === "cleared" &&
+    bridgeHold.clearedBy === dispatchIdentity &&
+    terminal?.classification === "result" &&
+    envelope?.type === "result" &&
+    payload?.kind === "invocation" &&
+    payload.invocation_id === recoveryId &&
+    payload.status === "completed" &&
+    exactFixtureExecutionCount(context, recoveryId) === 1;
+}
+
+function exactC28InvalidClearanceBlocked(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): boolean {
+  const invalid = c28Dispatch(context, "o1-c28.invalid");
+  const response = controlResponse(context, "o1-c28.invalid");
+  const finalGateway = snapshotAt(context, "gateway_snapshot", "o1-c28.gateway-snapshot");
+  if (invalid === null || response === null || finalGateway === null) return false;
+  const invocationId = stringValue(invalid.payload.invocation_id);
+  const clearances = arrayValue(invalid.payload.recovery_clearances);
+  const clearance = objectValue(clearances[0]);
+  const session = c28GatewaySession(finalGateway, invalid.rsid);
+  const terminalOutcomes = objectValue(session?.terminalOutcomes);
+  return invocationId !== null &&
+    invalid.payload.mutating === true &&
+    sameJson(invalid.payload.mutation_scope, { kind: "session" }) &&
+    clearances.length === 1 &&
+    clearance?.basis === "verification_read" &&
+    typeof clearance.hold_id === "string" &&
+    SHA256_PATTERN.test(String(clearance.evidence_digest)) &&
+    response.kind === "control_error" &&
+    response.code === "gateway_control_http_400" &&
+    response.message === "recovery clearance rejected: clearance_not_ready" &&
+    exactFixtureExecutionCount(context, invocationId) === 0 &&
+    !Object.prototype.hasOwnProperty.call(terminalOutcomes ?? {}, invocationId);
+}
+
 function safe(predicate: CanonicalAssertionOracle): CanonicalAssertionOracle {
   return (context) => {
     try {
@@ -2023,17 +2271,7 @@ define(
 
 define(
   "O1-C28-HOLD-INSTALLED",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    typeof (candidate.holdId ?? candidate.hold_id) === "string" &&
-    (candidate.state === "active" ||
-      candidate.state === "evidence_recorded" ||
-      candidate.state === "resolved_pending_bridge" ||
-      candidate.state === "cleared") &&
-    (
-      candidate.scopeKey === "session" ||
-      objectValue(candidate.mutationScope ?? candidate.mutation_scope)?.kind === "session"
-    ) &&
-    arrayValue(candidate.originIdempotencyKeys ?? candidate.origin_invocation_ids).length > 0),
+  safe(exactC28HoldInstalled),
 );
 define(
   "O1-C28-FRESH-ID-BLOCKED",
@@ -2070,35 +2308,15 @@ define(
 );
 define(
   "O1-C28-CONCLUSIVE-READ-CLEARS",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    candidate.state === "cleared" &&
-    (
-      candidate.decision === "postcondition_verified" ||
-      objectValue(candidate.resolution)?.decision === "postcondition_verified"
-    )),
+  safe(exactC28ConclusiveRecovery),
 );
 define(
   "O1-C28-LATE-TERMINAL-TRANSITION",
-  semanticEvent(["gateway_snapshot", "bridge_snapshot"], (candidate) =>
-    (candidate.state === "evidence_recorded" ||
-      candidate.state === "resolved_pending_bridge" ||
-      candidate.state === "cleared") &&
-    arrayValue(candidate.evidenceAttempts).some((entry) => {
-      const attempt = objectValue(entry);
-      return attempt?.basis === "late_terminal" &&
-        typeof (attempt.evidenceDigest ?? attempt.evidence_digest) === "string";
-    })),
+  safe(exactC28LateTerminalTransition),
 );
 define(
   "O1-C28-INVALID-CLEARANCE-BLOCKED",
-  safe((context) => {
-    const response = controlResponse(context, "o1-c28.invalid");
-    return response?.kind === "control_error" &&
-      response.code === "gateway_control_http_400" &&
-      /verification evidence rejected: journal_binding_mismatch/i.test(String(response.message)) &&
-      !hasDomainObject(context, ["fixture_snapshot", "fixture_execution_count"], (candidate) =>
-        candidate.invalidClearanceDispatched === true);
-  }),
+  safe(exactC28InvalidClearanceBlocked),
 );
 
 define(

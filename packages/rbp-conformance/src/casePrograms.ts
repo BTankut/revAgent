@@ -1611,6 +1611,38 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
           messageIncludes: "mutation conflicts",
         },
       ),
+      withExpectedOutcome(
+        gateway("o1-c28.invalid", "dispatch_invoke", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: {
+              invocation_id: "{{vectors.c28.invalid_recovery.invocation_id}}",
+              method: "{{vectors.c28.invalid_recovery.method}}",
+              params: "{{vectors.c28.invalid_recovery.params}}",
+              timeout_ms: "{{vectors.c28.invalid_recovery.timeout_ms}}",
+              mutating: true,
+              mutation_scope: { kind: "session" },
+              policy: "{{vectors.c28.invalid_recovery.policy}}",
+              verification: null,
+              recovery_clearances: [{
+                hold_id: "{{case.c28_hold_id}}",
+                mutation_scope: { kind: "session" },
+                resolution_id: "{{vectors.c28.invalid_resolution_id}}",
+                basis: "verification_read",
+                verification_invocation_id: "{{vectors.c28.invalid_verification_invocation_id}}",
+                evidence_digest: "{{vectors.c28.invalid_evidence_digest}}",
+                decision: "postcondition_verified",
+                audit_id: "{{vectors.c28.invalid_audit_id}}",
+              }],
+            },
+          },
+        })),
+        {
+          kind: "control_error",
+          code: "gateway_control_http_400",
+          messageIncludes: "recovery clearance rejected: clearance_not_ready",
+        },
+      ),
       harness("o1-c28.await-bridge-indeterminate", "await_condition", args({
         source: "bridge.snapshot_evidence",
         jsonPointer: "/invocations/0/state",
@@ -1632,36 +1664,47 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         operator: "exists",
         timeoutMs: 5_000,
       }), "observation", 10_000),
-      bridge("o1-c28.restart-for-late-replay", "restart_simulator"),
-      bridge("o1-c28.reopen-for-late-replay", "open_transport", byBinding(
+      gateway("o1-c28.hold-origin-redelivery", "enqueue_frame_fault", byBinding(
         {
-          kind: "wss",
-          endpointPolicy: "loopback_test_tls",
-          deviceToken: "{{case.device_token}}",
-          wssUrl: "{{gateway.ready.ws_url}}",
-          tlsTrust: {
-            caCertificatePath: "{{gateway.ready.ca_certificate_path}}",
-            caCertificateSha256: "{{gateway.ready.ca_certificate_sha256}}",
-            serverCertificateSha256: "{{gateway.ready.server_certificate_sha256}}",
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "hold",
+            binding: "wss",
+            messageType: "invoke",
+            remaining: 1,
           },
-          hello: hello("O1-C28", "late-restart"),
         },
         {
-          kind: "streamable_http_sse",
-          endpointPolicy: "loopback_test_readiness",
-          deviceToken: "{{case.device_token}}",
-          fallbackUrl: "{{gateway.ready.http_connection_url}}",
-          hello: hello("O1-C28", "late-restart"),
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "hold",
+            binding: "http_sse",
+            messageType: "invoke",
+            remaining: 1,
+          },
         },
       )),
-      bridge("o1-c28.restart-run-loop", "start_run_loop"),
-      harness("o1-c28.await-resume", "await_condition", args({
-        source: "bridge.snapshot_evidence",
-        jsonPointer: "/peer/sessions/0/phase",
+      withExecution(
+        gateway("o1-c28.redeliver-origin", "dispatch_invoke", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: "{{vectors.c28.origin}}",
+          },
+        })),
+        { mode: "async_start", handle: "o1-c28.redeliver-origin" },
+      ),
+      harness("o1-c28.await-origin-redelivery-held", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/runtime/heldOutboundFrames",
         operator: "equals",
-        expected: "registered",
-        timeoutMs: 10_000,
-      }), "observation", 15_000),
+        expected: 1,
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
+      gateway("o1-c28.expire-redelivery", "expire_pending", args({ rsid: "{{case.rsid}}" })),
+      withExecution(
+        gateway("o1-c28.flush-origin-redelivery", "flush_held"),
+        { mode: "async_join", handles: ["o1-c28.redeliver-origin"] },
+      ),
       withCaptures(
         harness("o1-c28.capture-late-digest", "await_condition", args({
           source: "gateway.snapshot",
@@ -1763,24 +1806,6 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         atMs: "{{vectors.c28.evidence_at_ms}}",
       })),
       gateway("o1-c28.after-inconclusive", "snapshot", args(), "observation"),
-      withExpectedOutcome(
-        gateway("o1-c28.invalid", "record_verification_evidence", args({
-          request: {
-            rsid: "{{case.rsid}}",
-            holdId: "{{case.c28_hold_id}}",
-            mutationScope: { kind: "session" },
-            verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
-            evidenceDigest: "{{case.c28_verification_digest}}",
-            conclusion: "postcondition_verified",
-            journalRecord: "{{case.c28_origin_journal}}",
-          },
-        })),
-        {
-          kind: "control_error",
-          code: "gateway_control_http_400",
-          messageIncludes: "verification evidence rejected",
-        },
-      ),
       gateway("o1-c28.conclusive", "record_verification_evidence", args({
         request: {
           rsid: "{{case.rsid}}",
@@ -1800,41 +1825,125 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         conclusion: "postcondition_verified",
         atMs: "{{vectors.c28.evidence_at_ms}}",
       })),
-      gateway("o1-c28.dispatch-recovery", "dispatch_invoke", args({
-        request: {
-          rsid: "{{case.rsid}}",
-          payload: {
-            invocation_id: "{{vectors.c28.recovery.invocation_id}}",
-            method: "{{vectors.c28.recovery.method}}",
-            params: "{{vectors.c28.recovery.params}}",
-            timeout_ms: "{{vectors.c28.recovery.timeout_ms}}",
-            mutating: true,
-            mutation_scope: { kind: "session" },
-            policy: "{{vectors.c28.recovery.policy}}",
-            verification: null,
-            recovery_clearances: [{
-              hold_id: "{{case.c28_hold_id}}",
-              mutation_scope: { kind: "session" },
-              resolution_id: "{{vectors.c28.resolution_id}}",
-              basis: "verification_read",
-              verification_invocation_id: "{{vectors.c28.verification.invocation_id}}",
-              evidence_digest: "{{case.c28_verification_digest}}",
-              decision: "postcondition_verified",
-              audit_id: "{{vectors.c28.audit_id}}",
-            }],
+      gateway("o1-c28.hold-recovery", "enqueue_frame_fault", byBinding(
+        {
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "hold",
+            binding: "wss",
+            messageType: "invoke",
+            remaining: 1,
           },
         },
+        {
+          rule: {
+            direction: "gateway_to_bridge",
+            action: "hold",
+            binding: "http_sse",
+            messageType: "invoke",
+            remaining: 1,
+          },
+        },
+      )),
+      withExecution(
+        gateway("o1-c28.dispatch-recovery", "dispatch_invoke", args({
+          request: {
+            rsid: "{{case.rsid}}",
+            payload: {
+              invocation_id: "{{vectors.c28.recovery.invocation_id}}",
+              method: "{{vectors.c28.recovery.method}}",
+              params: "{{vectors.c28.recovery.params}}",
+              timeout_ms: "{{vectors.c28.recovery.timeout_ms}}",
+              mutating: true,
+              mutation_scope: { kind: "session" },
+              policy: "{{vectors.c28.recovery.policy}}",
+              verification: null,
+              recovery_clearances: [{
+                hold_id: "{{case.c28_hold_id}}",
+                mutation_scope: { kind: "session" },
+                resolution_id: "{{vectors.c28.resolution_id}}",
+                basis: "verification_read",
+                verification_invocation_id: "{{vectors.c28.verification.invocation_id}}",
+                evidence_digest: "{{case.c28_verification_digest}}",
+                decision: "postcondition_verified",
+                audit_id: "{{vectors.c28.audit_id}}",
+              }],
+            },
+          },
+        })),
+        { mode: "async_start", handle: "o1-c28.dispatch-recovery" },
+      ),
+      harness("o1-c28.await-recovery-held", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/runtime/heldOutboundFrames",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 5_000,
+      }), "observation", 10_000),
+      withCaptures(
+        harness("o1-c28.capture-recovery-dispatch-identity", "await_condition", args({
+          source: "gateway.snapshot",
+          jsonPointer: "/sessions/{{case.rsid}}/inFlight/dispatchIdentity",
+          operator: "exists",
+          timeoutMs: 5_000,
+        }), "observation", 10_000),
+        [{
+          name: "case.c28_recovery_dispatch_identity",
+          source: "result",
+          jsonPointer: "/observed",
+        }],
+      ),
+      bridge("o1-c28.resolve-bridge-hold", "resolve_hold", args({
+        rsid: "{{case.rsid}}",
+        holdId: "{{case.c28_hold_id}}",
+        basis: "verification_read",
+        verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+        evidenceDigest: "{{case.c28_verification_digest}}",
+        decision: "postcondition_verified",
+        resolutionId: "{{vectors.c28.resolution_id}}",
+        auditId: "{{vectors.c28.audit_id}}",
+        authorizedDispatchIdentity: "{{case.c28_recovery_dispatch_identity}}",
+        atMs: "{{vectors.c28.evidence_at_ms}}",
       })),
-      harness("o1-c28.await-cleared", "await_condition", args({
+      withCaptures(
+        bridge("o1-c28.capture-bridge-clearance", "clearance_for_hold", args({
+          rsid: "{{case.rsid}}",
+          holdId: "{{case.c28_hold_id}}",
+        }), "observation"),
+        [{
+          name: "case.c28_bridge_clearance",
+          source: "result",
+          jsonPointer: "/clearance",
+        }],
+      ),
+      withExecution(
+        gateway("o1-c28.flush-recovery", "flush_held"),
+        { mode: "async_join", handles: ["o1-c28.dispatch-recovery"] },
+      ),
+      harness("o1-c28.await-gateway-cleared", "await_condition", args({
         source: "gateway.snapshot",
         jsonPointer: "/mutationHolds/holds/0/state",
         operator: "equals",
         expected: "cleared",
         timeoutMs: 10_000,
       }), "observation", 15_000),
+      harness("o1-c28.await-bridge-cleared", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/holds/0/state",
+        operator: "equals",
+        expected: "cleared",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
+      harness("o1-c28.await-recovery-terminal", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer:
+          "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c28.recovery.invocation_id}}/classification",
+        operator: "equals",
+        expected: "result",
+        timeoutMs: 10_000,
+      }), "observation", 15_000),
       gateway("o1-c28.final-gateway", "snapshot", args(), "observation"),
       bridge("o1-c28.final-bridge", "snapshot_evidence", args(), "observation"),
-      fixture("o1-c28.fixture-snapshot", "snapshot_evidence", args(), "observation"),
     ],
     requiredHarnessCapabilities: [
       "bridge_crash_recovery",

@@ -270,7 +270,7 @@ describe("raw production C25-C40 seed catalog", () => {
         return {
           kind: "control_error",
           code: "gateway_control_http_400",
-          message: "verification evidence rejected: journal_binding_mismatch",
+          message: "recovery clearance rejected: clearance_not_ready",
         };
       }
       if (
@@ -318,6 +318,23 @@ describe("raw production C25-C40 seed catalog", () => {
           },
         };
       }
+      if (request.caseId === "O1-C28" && request.action === "clearance_for_hold") {
+        return {
+          kind: "success",
+          result: {
+            clearance: {
+              hold_id: `vh:${"a".repeat(64)}`,
+              mutation_scope: { kind: "session" },
+              resolution_id: "019c2800-0000-7000-8000-000000000003",
+              basis: "verification_read",
+              verification_invocation_id: "019c2800-0000-7000-8000-000000000004",
+              evidence_digest: `sha256:${"d".repeat(64)}`,
+              decision: "postcondition_verified",
+              audit_id: "019c2800-0000-7000-8000-000000000005",
+            },
+          },
+        };
+      }
       return { kind: "success", result: { retainedFact: request.action } };
     };
     const drivers: ParentStepDrivers = {
@@ -340,7 +357,7 @@ describe("raw production C25-C40 seed catalog", () => {
           variables: rawProductionCaseVariables(caseId, { binding }),
           now: () => NOW,
         });
-        if (caseId === "O1-C32") {
+        if (caseId === "O1-C28" || caseId === "O1-C32") {
           expect(new Set(result.completedStepIds)).toEqual(
             new Set(program.steps.map(({ stepId }) => stepId)),
           );

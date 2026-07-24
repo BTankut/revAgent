@@ -335,6 +335,11 @@ function c28Vectors(): Record<string, JsonValue> {
     false,
     [conflictingStep],
   ) as Record<string, JsonValue>;
+  const invalidRecovery = invokePayload("O1-C28:invalid-recovery", {
+    method: "send_code_to_revit",
+    params: { vector: "O1-C28:invalid-recovery", fixtureOnly: true },
+    mutating: true,
+  });
   return {
     c28: {
       origin,
@@ -349,6 +354,11 @@ function c28Vectors(): Record<string, JsonValue> {
         params: { vector: "O1-C28:recovery", fixtureOnly: true },
         mutating: true,
       }),
+      invalid_recovery: invalidRecovery,
+      invalid_verification_invocation_id: invocationId("O1-C28:invalid-verification"),
+      invalid_evidence_digest: sha256Json({ vector: "O1-C28:invalid-evidence" }),
+      invalid_resolution_id: deterministicUuid("O1-C28:invalid-resolution"),
+      invalid_audit_id: deterministicUuid("O1-C28:invalid-audit"),
       resolution_id: deterministicUuid("O1-C28:resolution"),
       audit_id: deterministicUuid("O1-C28:audit"),
       evidence_at_ms: Date.parse(CLOCK_ISO),
@@ -821,11 +831,6 @@ function idsForPrograms(): Record<string, JsonValue> {
       };
       caseIds["hello-atomic-restart"] = {
         envelopeId: messageId(`${caseId}:hello-atomic-restart`),
-      };
-    }
-    if (caseId === "O1-C28") {
-      caseIds["hello-late-restart"] = {
-        envelopeId: messageId(`${caseId}:hello-late-restart`),
       };
     }
     for (const suffix of [

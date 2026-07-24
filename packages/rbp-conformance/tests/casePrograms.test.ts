@@ -135,7 +135,7 @@ describe("exact forty-case control and observation catalog", () => {
           expect(step.expectedOutcome).toEqual({
             kind: "control_error",
             code: "gateway_control_http_400",
-            messageIncludes: "verification evidence rejected",
+            messageIncludes: "recovery clearance rejected: clearance_not_ready",
           });
         } else if (step.stepId.endsWith(".resume") && step.stepId.startsWith("o1-c37.")) {
           expect(step.expectedOutcome).toEqual({
@@ -401,6 +401,7 @@ describe("exact forty-case control and observation catalog", () => {
       origin: { invocation_id: string; method: string; timeout_ms: number };
       fresh: { method: string };
       conflicting_batch: { payload: { steps: Array<{ method: string }> } };
+      invalid_recovery: { invocation_id: string; method: string };
       verification: { invocation_id: string; method: string };
       recovery: { method: string };
     };
@@ -411,6 +412,7 @@ describe("exact forty-case control and observation catalog", () => {
     expect(vectors.fresh.method).toBe("send_code_to_revit");
     expect(vectors.conflicting_batch.payload.steps.map(({ method }) => method))
       .toEqual(["delete_review_view"]);
+    expect(vectors.invalid_recovery.method).toBe("send_code_to_revit");
     expect(vectors.verification.method).toBe("fixture_echo");
     expect(vectors.recovery.method).toBe("send_code_to_revit");
 
@@ -421,9 +423,13 @@ describe("exact forty-case control and observation catalog", () => {
       "o1-c28.capture-hold",
       "o1-c28.fresh-id",
       "o1-c28.batch",
+      "o1-c28.invalid",
       "o1-c28.await-bridge-indeterminate",
       "o1-c28.await-late-journal",
-      "o1-c28.restart-for-late-replay",
+      "o1-c28.hold-origin-redelivery",
+      "o1-c28.redeliver-origin",
+      "o1-c28.expire-redelivery",
+      "o1-c28.flush-origin-redelivery",
       "o1-c28.capture-late-digest",
       "o1-c28.read-origin-journal",
       "o1-c28.late-terminal",
@@ -431,10 +437,16 @@ describe("exact forty-case control and observation catalog", () => {
       "o1-c28.capture-verification-digest",
       "o1-c28.read-verification-journal",
       "o1-c28.inconclusive",
-      "o1-c28.invalid",
       "o1-c28.conclusive",
+      "o1-c28.hold-recovery",
       "o1-c28.dispatch-recovery",
-      "o1-c28.await-cleared",
+      "o1-c28.capture-recovery-dispatch-identity",
+      "o1-c28.resolve-bridge-hold",
+      "o1-c28.capture-bridge-clearance",
+      "o1-c28.flush-recovery",
+      "o1-c28.await-gateway-cleared",
+      "o1-c28.await-bridge-cleared",
+      "o1-c28.await-recovery-terminal",
     ];
     expect(c28.steps
       .filter(({ stepId }) => ordered.includes(stepId))
@@ -444,8 +456,14 @@ describe("exact forty-case control and observation catalog", () => {
         arguments: {
           common: {
             request: {
-              journalRecord: "{{case.c28_origin_journal}}",
-              verificationInvocationId: "{{vectors.c28.verification.invocation_id}}",
+              payload: {
+                invocation_id: "{{vectors.c28.invalid_recovery.invocation_id}}",
+                recovery_clearances: [{
+                  hold_id: "{{case.c28_hold_id}}",
+                  verification_invocation_id: "{{vectors.c28.invalid_verification_invocation_id}}",
+                  evidence_digest: "{{vectors.c28.invalid_evidence_digest}}",
+                }],
+              },
             },
           },
         },
@@ -466,7 +484,20 @@ describe("exact forty-case control and observation catalog", () => {
             },
           },
         },
+        execution: {
+          mode: "async_start",
+          handle: "o1-c28.dispatch-recovery",
+        },
       });
+    expect(c28.steps.find(({ stepId }) => stepId === "o1-c28.resolve-bridge-hold"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            authorizedDispatchIdentity: "{{case.c28_recovery_dispatch_identity}}",
+          },
+        },
+      });
+    expect(c28.steps.filter(({ stepId }) => stepId === "o1-c28.fixture-snapshot")).toHaveLength(1);
   });
 
   it("makes the canonical C12 and C17 stalled flows executable instead of deadlocking sequentially", () => {
