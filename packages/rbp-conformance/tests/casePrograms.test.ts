@@ -367,6 +367,10 @@ describe("exact forty-case control and observation catalog", () => {
           stepId: `o1-c32.${vector}.restart-stack`,
           parentTimeoutMs: 90_000,
         })),
+        {
+          stepId: "o1-c32.resource-baseline-start",
+          parentTimeoutMs: 30_000,
+        },
       ]);
     for (const vector of vectors) {
       const actionIndex = c32.steps.findIndex(({ stepId }) => stepId === `o1-c32.${vector}`);
