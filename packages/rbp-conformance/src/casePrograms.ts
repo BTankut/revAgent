@@ -1653,9 +1653,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       harness("o1-c28.await-indeterminate-wire", "await_condition", args({
         source: "gateway.snapshot",
         jsonPointer:
-          "/sessions/{{case.rsid}}/lateTerminalEvidence/{{vectors.c28.origin.invocation_id}}/0/classification",
+          "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c28.origin.invocation_id}}/classification",
         operator: "equals",
-        expected: "error",
+        expected: "journal_indeterminate",
         timeoutMs: 5_000,
       }), "observation", 10_000),
       harness("o1-c28.await-late-journal", "await_condition", args({

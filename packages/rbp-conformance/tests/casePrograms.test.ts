@@ -429,6 +429,7 @@ describe("exact forty-case control and observation catalog", () => {
       "o1-c28.batch",
       "o1-c28.invalid",
       "o1-c28.await-bridge-indeterminate",
+      "o1-c28.await-indeterminate-wire",
       "o1-c28.await-late-journal",
       "o1-c28.hold-origin-redelivery",
       "o1-c28.redeliver-origin",
@@ -469,6 +470,18 @@ describe("exact forty-case control and observation catalog", () => {
                 }],
               },
             },
+          },
+        },
+      });
+    expect(c28.steps.find(({ stepId }) => stepId === "o1-c28.await-indeterminate-wire"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            source: "gateway.snapshot",
+            jsonPointer:
+              "/sessions/{{case.rsid}}/terminalOutcomes/{{vectors.c28.origin.invocation_id}}/classification",
+            operator: "equals",
+            expected: "journal_indeterminate",
           },
         },
       });
