@@ -47,6 +47,110 @@ function payload(record: ProcessObservationRecord): Record<string, unknown> {
   return record.payload as Record<string, unknown>;
 }
 
+function objectValue(value: unknown): Record<string, unknown> | null {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function stepPayload(
+  records: readonly ProcessObservationRecord[],
+  kind: ProcessObservationRecord["kind"],
+  stepId: string,
+): Record<string, unknown> | null {
+  const matches = records
+    .filter((record) => record.kind === kind)
+    .map(payload)
+    .filter((candidate) => candidate.stepId === stepId);
+  return matches.length === 1 ? matches[0]! : null;
+}
+
+function pathValue(value: unknown, path: readonly (string | number)[]): unknown {
+  let current = value;
+  for (const segment of path) {
+    if (typeof segment === "number") {
+      if (!Array.isArray(current)) return undefined;
+      current = current[segment];
+      continue;
+    }
+    const object = objectValue(current);
+    if (object === null) return undefined;
+    current = object[segment];
+  }
+  return current;
+}
+
+function c28FailureFacts(records: readonly ProcessObservationRecord[]): Record<string, unknown> {
+  const control = (stepId: string) =>
+    stepPayload(records, "control_result", stepId);
+  const snapshot = (
+    kind: Extract<ProcessObservationRecord["kind"], "gateway_snapshot" | "bridge_snapshot">,
+    stepId: string,
+  ) => stepPayload(records, kind, stepId);
+  const origin = pathValue(control("o1-c28.dispatch-origin"), [
+    "request", "arguments", "request", "payload", "invocation_id",
+  ]);
+  const recovery = pathValue(control("o1-c28.dispatch-recovery"), [
+    "request", "arguments", "request", "payload", "invocation_id",
+  ]);
+  const hold = pathValue(control("o1-c28.capture-hold"), [
+    "response", "result", "observed",
+  ]);
+  const rsid = pathValue(control("o1-c28.dispatch-origin"), [
+    "request", "arguments", "request", "rsid",
+  ]);
+  const late = snapshot("gateway_snapshot", "o1-c28.capture-late-digest");
+  const finalGateway = snapshot("gateway_snapshot", "o1-c28.gateway-snapshot");
+  const finalBridge = snapshot("bridge_snapshot", "o1-c28.bridge-snapshot");
+  const fixture = stepPayload(records, "fixture_execution_count", "o1-c28.fixture-snapshot");
+  return {
+    rsid,
+    origin,
+    recovery,
+    hold,
+    holdAtCapture: pathValue(snapshot("gateway_snapshot", "o1-c28.capture-hold"), [
+      "mutationHolds", "holds", 0,
+    ]),
+    lateDigest: pathValue(control("o1-c28.capture-late-digest"), [
+      "response", "result", "observed",
+    ]),
+    lateEvidence: pathValue(late, [
+      "sessions", String(rsid), "lateTerminalEvidence", String(origin),
+    ]),
+    originTerminal: pathValue(late, [
+      "sessions", String(rsid), "terminalOutcomes", String(origin),
+    ]),
+    gatewayLateHold: pathValue(control("o1-c28.late-terminal"), [
+      "response", "result",
+    ]),
+    bridgeLateHold: pathValue(control("o1-c28.bridge-late-terminal"), [
+      "response", "result", "hold",
+    ]),
+    recoveryDispatch: pathValue(control("o1-c28.dispatch-recovery"), [
+      "request", "arguments", "request", "payload",
+    ]),
+    recoveryDispatchIdentity: pathValue(
+      control("o1-c28.capture-recovery-dispatch-identity"),
+      ["response", "result", "observed"],
+    ),
+    bridgeResolutionRequest: pathValue(control("o1-c28.resolve-bridge-hold"), [
+      "request", "arguments",
+    ]),
+    bridgeResolutionResult: pathValue(control("o1-c28.resolve-bridge-hold"), [
+      "response", "result",
+    ]),
+    bridgeClearance: pathValue(control("o1-c28.capture-bridge-clearance"), [
+      "response", "result", "clearance",
+    ]),
+    finalGatewayHold: pathValue(finalGateway, ["mutationHolds", "holds", 0]),
+    finalBridgeHold: pathValue(finalBridge, ["holds", 0]),
+    recoveryTerminal: pathValue(finalGateway, [
+      "sessions", String(rsid), "terminalOutcomes", String(recovery),
+    ]),
+    executionCounts: fixture?.executionCounts ?? null,
+  };
+}
+
 describe.sequential("C28/C38/C39 production recovery regressions", () => {
   it.each(caseIds)(
     "%s passes every frozen assertion on both real Gateway bindings",
@@ -72,7 +176,15 @@ describe.sequential("C28/C38/C39 production recovery regressions", () => {
           }));
         expect(
           results.every(({ passed }) => passed),
-          JSON.stringify({ caseId, binding: execution.binding, results, controls }),
+          JSON.stringify({
+            caseId,
+            binding: execution.binding,
+            results,
+            controls,
+            ...(caseId === "O1-C28"
+              ? { exactFailureFacts: c28FailureFacts(execution.evidence.observations) }
+              : {}),
+          }),
         ).toBe(true);
 
         const stopped = execution.evidence.observations
