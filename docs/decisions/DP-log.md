@@ -239,6 +239,14 @@ artifact retention. The error report retains the case's
 and original message; a secondary missing-lifecycle/component-log error may
 not mask it.
 
+The same fail-closed run isolated an intermittent C27 setup race: session
+registration became visible before the Bridge's initial outbound window was
+acknowledged, so opening-fault injection and disconnect could overlap that
+delivery. C27 now explicitly invokes its existing Bridge `flush_outbound`
+control and waits for an empty durable outbox before fault injection. This
+uses the C27 production driver's existing control surface and does not add a
+new test-only action or alter the reconnect/backoff oracle.
+
 This is an amortization amendment, not a reduction of the declared application
 provenance anchor. Persistent input or dependency mutation remains detected by
 the closing full check. The already documented exclusion for an active
