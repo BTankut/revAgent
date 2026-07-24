@@ -355,6 +355,9 @@ describe("exact forty-case control and observation catalog", () => {
 
     const c39 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C39")!;
     const ordered = [
+      "o1-c39.await-initial-context",
+      "o1-c39.ack-initial-context",
+      "o1-c39.await-initial-drain",
       "o1-c39.dispatch-origin",
       "o1-c39.await-first-artifact-chunk",
       "o1-c39.ack-artifact-chunk-1",
@@ -382,6 +385,7 @@ describe("exact forty-case control and observation catalog", () => {
         },
       });
     for (const stepId of [
+      "o1-c39.ack-initial-context",
       "o1-c39.ack-artifact-chunk-1",
       "o1-c39.ack-artifact-chunk-2",
       "o1-c39.ack-origin-terminal",

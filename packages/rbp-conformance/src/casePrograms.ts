@@ -2665,6 +2665,21 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
     caseId: "O1-C39",
     controls: [
       ...sessionSetup("O1-C39"),
+      harness("o1-c39.await-initial-context", "await_condition", args({
+        source: "gateway.compact_snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 10_000,
+      }), "setup"),
+      bridge("o1-c39.ack-initial-context", "send_heartbeat_for_conformance", args(), "setup"),
+      harness("o1-c39.await-initial-drain", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/sequences/0/outbox",
+        operator: "count_equals",
+        expected: 0,
+        timeoutMs: 10_000,
+      }), "setup"),
       withExecution(
         gateway("o1-c39.dispatch-origin", "dispatch_invoke", args({
           request: {
