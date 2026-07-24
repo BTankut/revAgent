@@ -27,7 +27,7 @@
     "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "lint": "eslint src tests",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build --workspace @revagent/protocol && vitest run"
+    "test": "npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs"
   },
   "engines": {
     "node": ">=20"
