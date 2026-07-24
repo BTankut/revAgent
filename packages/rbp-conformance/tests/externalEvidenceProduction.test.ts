@@ -140,7 +140,7 @@ describe("C33/C40 external production evidence", () => {
     async (caseId) => {
       for (const binding of ["wss", "streamable_http_sse"] as const) {
         const { observations, runtimeGuardCalls } = await execute(caseId, binding);
-        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 11 : 7);
+        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 17 : 13);
         const assertions = canonicalManifest.requiredAssertions[caseId]!;
         for (const assertion of assertions) {
           const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id)!;
@@ -167,7 +167,13 @@ describe("C33/C40 external production evidence", () => {
 
         const stopped = observations.filter((record) =>
           record.kind === "process_lifecycle" && payload(record).phase === "stopped");
-        expect(stopped).toHaveLength(3);
+        const stoppedAt = (stepId: string) => stopped.filter((record) =>
+          payload(record).processRole === "canonical_component" &&
+          payload(record).stepId === stepId);
+        expect(stoppedAt(`${caseId.toLowerCase()}.resource-baseline-stop`))
+          .toHaveLength(3);
+        expect(stoppedAt(`${caseId.toLowerCase()}.stack-stop`))
+          .toHaveLength(3);
         expect(stopped.every((record) =>
           payload(record).orphanProcessCount === 0 &&
           payload(record).killEscalated === false)).toBe(true);

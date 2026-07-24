@@ -224,8 +224,14 @@ describe.sequential("middle production three-process case stack", () => {
         const stopped = execution.evidence.observations
           .filter(({ kind }) => kind === "process_lifecycle")
           .filter((record) => recordPayload(record).phase === "stopped");
-        expect(stopped).toHaveLength(3);
-        expect(new Set(stopped.map((record) =>
+        const stoppedAt = (stepId: string) => stopped.filter((record) =>
+          recordPayload(record).processRole === "canonical_component" &&
+          recordPayload(record).stepId === stepId);
+        expect(stoppedAt(`${caseId.toLowerCase()}.resource-baseline-stop`))
+          .toHaveLength(3);
+        const terminalStopped = stoppedAt(`${caseId.toLowerCase()}.stack-stop`);
+        expect(terminalStopped).toHaveLength(3);
+        expect(new Set(terminalStopped.map((record) =>
           Number((recordPayload(record).process as Record<string, unknown>).pid))).size)
           .toBe(3);
         expect(stopped.every((record) =>

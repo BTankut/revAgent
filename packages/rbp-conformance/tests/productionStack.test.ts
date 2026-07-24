@@ -114,8 +114,14 @@ describe("production three-process case stack", () => {
         }
         const lifecycles = execution.evidence.observations.filter(({ kind }) => kind === "process_lifecycle");
         const stopped = lifecycles.filter((record) => payload(record).phase === "stopped");
-        expect(stopped).toHaveLength(3);
-        expect(new Set(stopped.map((record) =>
+        const stoppedAt = (stepId: string) => stopped.filter((record) =>
+          payload(record).processRole === "canonical_component" &&
+          payload(record).stepId === stepId);
+        expect(stoppedAt(`${caseId.toLowerCase()}.resource-baseline-stop`))
+          .toHaveLength(3);
+        const terminalStopped = stoppedAt(`${caseId.toLowerCase()}.stack-stop`);
+        expect(terminalStopped).toHaveLength(3);
+        expect(new Set(terminalStopped.map((record) =>
           Number((payload(record).process as Record<string, unknown>).pid))).size).toBe(3);
         expect(stopped.every((record) =>
           payload(record).orphanProcessCount === 0 &&

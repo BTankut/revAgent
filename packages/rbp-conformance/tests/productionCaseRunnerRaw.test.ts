@@ -20,12 +20,15 @@ function productionPlan(caseId = "O1-C30"): ExecutionPlan {
   );
 }
 
-function stoppedLifecycle(observation: ProcessObservationRecord): boolean {
-  if (observation.kind !== "process_lifecycle") return false;
-  const payload = observation.payload as Record<string, unknown>;
-  return payload.phase === "stopped" &&
-    payload.action === "stop_case_stack" &&
-    payload.processRole === "canonical_component";
+function stoppedLifecycleAt(stepId: string): (observation: ProcessObservationRecord) => boolean {
+  return (observation) => {
+    if (observation.kind !== "process_lifecycle") return false;
+    const payload = observation.payload as Record<string, unknown>;
+    return payload.phase === "stopped" &&
+      payload.action === "stop_case_stack" &&
+      payload.processRole === "canonical_component" &&
+      payload.stepId === stepId;
+  };
 }
 
 describe("raw production case runner", () => {
@@ -54,7 +57,12 @@ describe("raw production case runner", () => {
           });
           expect(passed, `${assertion.id}/${execution.binding}`).toBe(true);
         }
-        const stops = execution.evidence.observations.filter(stoppedLifecycle);
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt(`${caseId.toLowerCase()}.resource-baseline-stop`),
+        )).toHaveLength(3);
+        const stops = execution.evidence.observations.filter(
+          stoppedLifecycleAt(`${caseId.toLowerCase()}.stack-stop`),
+        );
         expect(stops).toHaveLength(3);
         for (const stop of stops) {
           expect(stop.payload).toMatchObject({
@@ -105,7 +113,12 @@ describe("raw production case runner", () => {
             observations: execution.evidence.observations,
           }), `${assertion.id}/${execution.binding}`).toBe(true);
         }
-        expect(execution.evidence.observations.filter(stoppedLifecycle)).toHaveLength(3);
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt("o1-c30.resource-baseline-stop"),
+        )).toHaveLength(3);
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt("o1-c30.stack-stop"),
+        )).toHaveLength(3);
         expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
           /"(?:actual|passed|verdict)"\s*:/u,
         );

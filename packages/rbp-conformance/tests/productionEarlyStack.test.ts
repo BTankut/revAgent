@@ -43,8 +43,13 @@ describe("early production case stack", () => {
           kind === "process_lifecycle" &&
           payload.phase === "stopped" &&
           payload.action === "stop_case_stack");
-        expect(stopped.filter(({ payload }) =>
-          payload.processRole === "canonical_component")).toHaveLength(3);
+        const canonicalStoppedAt = (stepId: string) => stopped.filter(({ payload }) =>
+          payload.processRole === "canonical_component" &&
+          payload.stepId === stepId);
+        expect(canonicalStoppedAt(`${caseId.toLowerCase()}.resource-baseline-stop`))
+          .toHaveLength(3);
+        expect(canonicalStoppedAt(`${caseId.toLowerCase()}.stack-stop`))
+          .toHaveLength(3);
         const stopFailures = stopped
           .filter(({ payload }) =>
             payload.orphanProcessCount !== 0 ||

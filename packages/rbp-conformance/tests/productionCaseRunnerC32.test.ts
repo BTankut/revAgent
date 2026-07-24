@@ -20,12 +20,15 @@ function productionPlan(): ExecutionPlan {
   );
 }
 
-function stoppedLifecycle(observation: ProcessObservationRecord): boolean {
-  if (observation.kind !== "process_lifecycle") return false;
-  const payload = observation.payload as Record<string, unknown>;
-  return payload.phase === "stopped" &&
-    payload.action === "stop_case_stack" &&
-    payload.processRole === "canonical_component";
+function stoppedLifecycleAt(stepId: string): (observation: ProcessObservationRecord) => boolean {
+  return (observation) => {
+    if (observation.kind !== "process_lifecycle") return false;
+    const payload = observation.payload as Record<string, unknown>;
+    return payload.phase === "stopped" &&
+      payload.action === "stop_case_stack" &&
+      payload.processRole === "canonical_component" &&
+      payload.stepId === stepId;
+  };
 }
 
 describe("O1-C32 registered-session production conformance", () => {
@@ -62,7 +65,12 @@ describe("O1-C32 registered-session production conformance", () => {
       expect(report, JSON.stringify(actionEvidence, null, 2)).toEqual(
         report.map((entry) => ({ ...entry, passed: true })),
       );
-      expect(execution.evidence.observations.filter(stoppedLifecycle)).toHaveLength(3);
+      expect(execution.evidence.observations.filter(
+        stoppedLifecycleAt("o1-c32.resource-baseline-stop"),
+      )).toHaveLength(3);
+      expect(execution.evidence.observations.filter(
+        stoppedLifecycleAt("o1-c32.stack-stop"),
+      )).toHaveLength(3);
       expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
         /"(?:actual|passed|verdict)"\s*:/u,
       );

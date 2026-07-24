@@ -93,9 +93,12 @@ describe("C26 production version window", () => {
       expect(stopped.every((record) =>
         payload(record).orphanProcessCount === 0 &&
         payload(record).killEscalated === false)).toBe(true);
-      expect(stopped.filter((record) =>
+      const canonicalStoppedAt = (stepId: string) => stopped.filter((record) =>
         payload(record).action === "stop_case_stack" &&
-        payload(record).processRole === "canonical_component")).toHaveLength(3);
+        payload(record).processRole === "canonical_component" &&
+        payload(record).stepId === stepId);
+      expect(canonicalStoppedAt("o1-c26.resource-baseline-stop")).toHaveLength(3);
+      expect(canonicalStoppedAt("o1-c26.stack-stop")).toHaveLength(3);
     }
   }, 180_000);
 });
