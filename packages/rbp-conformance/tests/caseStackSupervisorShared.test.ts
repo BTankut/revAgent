@@ -311,12 +311,13 @@ describe("shared production case-stack controls", () => {
 
   it("does not retry an additional fixture after its post-readiness guard fails", async () => {
     let runtimeGuardCalls = 0;
+    let teardownStarted = false;
     const supervisor = new CaseStackSupervisor({
       plan: productionPlan("streamable_http_sse"),
       repoRoot,
       runtimeLaunchGuard() {
         runtimeGuardCalls += 1;
-        if (runtimeGuardCalls === 8) {
+        if (!teardownStarted && runtimeGuardCalls === 8) {
           throw new Error("planned additional-fixture post-readiness drift");
         }
       },
@@ -337,6 +338,7 @@ describe("shared production case-stack controls", () => {
       expect(supervisor.pids).toHaveLength(3);
     } finally {
       if (supervisor.active) {
+        teardownStarted = true;
         await supervisor.stopCaseStack(
           "shared.additional-guard-stop",
           "abort_and_drain",
