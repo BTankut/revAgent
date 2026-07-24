@@ -510,26 +510,6 @@ function sessionSetupDrain(caseId: string): CaseControlStep[] {
   ];
 }
 
-function sessionSetupFlush(caseId: string): CaseControlStep[] {
-  const prefix = caseId.toLowerCase();
-  return [
-    bridge(
-      `${prefix}.flush-setup`,
-      "flush_outbound",
-      args({ rsid: "{{case.rsid}}" }),
-      "setup",
-      20_000,
-    ),
-    harness(`${prefix}.await-setup-drain`, "await_condition", args({
-      source: "bridge.snapshot_evidence",
-      jsonPointer: "/sequences/0/outbox",
-      operator: "count_equals",
-      expected: 0,
-      timeoutMs: 10_000,
-    }), "setup", 15_000),
-  ];
-}
-
 function invocationRef(caseId: string, suffix: string): string {
   return `{{ids.${caseId}.${suffix}.invocationId}}`;
 }
@@ -1529,7 +1509,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         jitterUnits: "{{vectors.c27_reconnect_jitter_units}}",
       }), "setup"),
       ...sessionSetup("O1-C27"),
-      ...sessionSetupFlush("O1-C27"),
+      ...sessionSetupDrain("O1-C27"),
       gateway("o1-c27.opening-faults", "enqueue_opening_fault", byBinding(
         {
           rule: {

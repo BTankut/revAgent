@@ -243,9 +243,13 @@ The same fail-closed run isolated an intermittent C27 setup race: session
 registration became visible before the Bridge's initial outbound window was
 acknowledged, so opening-fault injection and disconnect could overlap that
 delivery. C27 now explicitly invokes its existing Bridge `flush_outbound`
-control and waits for an empty durable outbox before fault injection. This
-uses the C27 production driver's existing control surface and does not add a
-new test-only action or alter the reconnect/backoff oracle.
+path through the already canonical `drive_bridge_outbound` parent decorator:
+the parent advances the virtual clock, observes heartbeat acknowledgement,
+flushes outbound work, and then waits for an empty durable outbox before fault
+injection. The raw-case runner shares that narrowly extracted decorator with
+the middle-case runner; it does not inherit the middle runner's dispatch or
+raw-frame behavior. This adds no new test-only action and does not alter the
+reconnect/backoff oracle.
 
 This is an amortization amendment, not a reduction of the declared application
 provenance anchor. Persistent input or dependency mutation remains detected by

@@ -4,18 +4,11 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { canonicalManifest } from "../src/manifest.js";
-import {
-  executeParentSteps,
-  type ParentStepExecutionEvidence,
-} from "../src/parentStepEngine.js";
-import { caseProgram } from "../src/casePrograms.js";
-import { CaseStackSupervisor } from "../src/caseStackSupervisor.js";
+import type { ParentStepExecutionEvidence } from "../src/parentStepEngine.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
-import { rawProductionCaseVariables } from "../src/productionCaseSeedsRaw.js";
-import { createEarlyProductionCaseDrivers } from "../src/productionDriversEarly.js";
 import {
-  createExternalEvidenceProductionDrivers,
-} from "../src/productionDriversExternalEvidence.js";
+  executeRawProductionCaseBinding,
+} from "../src/productionCaseRunnerRaw.js";
 import type {
   Binding,
   ExecutionPlan,
@@ -45,40 +38,16 @@ async function executeBinding(
   plan: ExecutionPlan,
   binding: Binding,
 ): Promise<C27Execution> {
-  const supervisor = new CaseStackSupervisor({ plan, repoRoot });
-  const drivers = createExternalEvidenceProductionDrivers(
-    supervisor,
-    createEarlyProductionCaseDrivers(supervisor),
-  );
-  try {
-    const evidence = await executeParentSteps({
-      runId: plan.runId,
-      caseId,
-      binding,
-      steps: caseProgram(caseId).steps,
-      drivers,
-      variables: rawProductionCaseVariables(caseId, { binding }),
-    });
-    if (supervisor.active) {
-      throw new Error(`${caseId}/${binding} completed without stop_case_stack`);
-    }
-    return { binding, evidence };
-  } catch (error) {
-    if (supervisor.active) {
-      try {
-        await supervisor.stopCaseStack(
-          `${caseId.toLowerCase()}.abort-stop`,
-          "abort_and_drain",
-        );
-      } catch (cleanupError) {
-        throw new AggregateError(
-          [error, cleanupError],
-          `${caseId}/${binding} failed and supervised cleanup also failed`,
-        );
-      }
-    }
-    throw error;
-  }
+  const execution = await executeRawProductionCaseBinding({
+    plan,
+    repoRoot,
+    caseId,
+    binding,
+  });
+  return {
+    binding: execution.binding,
+    evidence: execution.evidence,
+  };
 }
 
 function oracleContext(

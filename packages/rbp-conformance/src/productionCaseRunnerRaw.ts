@@ -11,6 +11,9 @@ import {
 import { RAW_PRODUCTION_CASES, rawProductionCaseVariables } from "./productionCaseSeedsRaw.js";
 import { createEarlyProductionCaseDrivers } from "./productionDriversEarly.js";
 import { createExternalEvidenceProductionDrivers } from "./productionDriversExternalEvidence.js";
+import {
+  createDriveBridgeOutboundProductionDriver,
+} from "./productionDriversMiddle.js";
 import { createRawProductionBindingStepHooks } from "./productionDriversRaw.js";
 import type { JsonObject } from "./processHarness.js";
 import type { RawBindingTlsTrust } from "./rawBindingDrivers.js";
@@ -211,10 +214,17 @@ export async function executeRawProductionCaseBinding(input: {
     supervisor,
     createEarlyProductionCaseDrivers(supervisor),
   );
-  const drivers = {
+  const baseWithOutboundDrive = {
     ...base,
-    parent_harness: createHarnessStepDriverWithRawBindingHooks(
+    parent_harness: createDriveBridgeOutboundProductionDriver(
+      supervisor,
       base.parent_harness,
+    ),
+  };
+  const drivers = {
+    ...baseWithOutboundDrive,
+    parent_harness: createHarnessStepDriverWithRawBindingHooks(
+      baseWithOutboundDrive.parent_harness,
       dynamicRawHooks(supervisor),
     ),
   };

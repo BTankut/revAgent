@@ -8,6 +8,7 @@ import {
 } from "./rawBindingDrivers.js";
 import { createProductionCaseDrivers } from "./productionDrivers.js";
 import type {
+  ParentStepDriver,
   ParentStepDriverRequest,
   ParentStepDrivers,
   RawStepOutcome,
@@ -439,14 +440,15 @@ function lastPeerClock(snapshot: JsonObject): number {
   return Math.max(...values);
 }
 
-export function createMiddleProductionCaseDrivers(
+export function createDriveBridgeOutboundProductionDriver(
   supervisor: CaseStackSupervisor,
-): ParentStepDrivers {
-  const base = createProductionCaseDrivers(supervisor);
+  base: ParentStepDriver,
+): ParentStepDriver {
   let drivenBridgeClockMs: number | null = null;
-  const driveBridgeOutbound = async (
-    request: Readonly<ParentStepDriverRequest>,
-  ): Promise<RawStepOutcome> => {
+  return async (request) => {
+    if (request.action !== "drive_bridge_outbound") {
+      return await base(request);
+    }
     if (!Number.isSafeInteger(request.arguments.advanceByMs)) {
       throw new Error("drive_bridge_outbound advanceByMs must be a safe integer");
     }
@@ -501,6 +503,16 @@ export function createMiddleProductionCaseDrivers(
       observation(request, "bridge_simulator", "wire_event", "driven-outbound-bridge", payload),
     ]);
   };
+}
+
+export function createMiddleProductionCaseDrivers(
+  supervisor: CaseStackSupervisor,
+): ParentStepDrivers {
+  const base = createProductionCaseDrivers(supervisor);
+  const driveBridgeOutbound = createDriveBridgeOutboundProductionDriver(
+    supervisor,
+    base.parent_harness,
+  );
   return {
     ...base,
     gateway_http_control: async (request) => {
@@ -521,9 +533,6 @@ export function createMiddleProductionCaseDrivers(
     parent_harness: async (request) => {
       if (request.action === "set_gateway_proxy_backpressure") {
         return backpressureObservation(supervisor, request);
-      }
-      if (request.action === "drive_bridge_outbound") {
-        return await driveBridgeOutbound(request);
       }
       if (request.action === "inspect_gateway_artifact_bytes") {
         return gatewayArtifactByteObservation(supervisor, request);
@@ -556,7 +565,7 @@ export function createMiddleProductionCaseDrivers(
           ? [gatewaySnapshotObservation(request, snapshot, "await-compact")]
           : []);
       }
-      return await base.parent_harness(request);
+      return await driveBridgeOutbound(request);
     },
   };
 }

@@ -247,8 +247,8 @@ describe("exact forty-case control and observation catalog", () => {
 
   it("runs C27 through bounded virtual time instead of wall-clock backoff waits", () => {
     const c27 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C27")!;
-    const setupFlush = c27.steps.find(
-      ({ stepId }) => stepId === "o1-c27.flush-setup",
+    const setupDrive = c27.steps.find(
+      ({ stepId }) => stepId === "o1-c27.drain-setup",
     );
     const setupDrainIndex = c27.steps.findIndex(
       ({ stepId }) => stepId === "o1-c27.await-setup-drain",
@@ -259,15 +259,15 @@ describe("exact forty-case control and observation catalog", () => {
     const disconnectIndex = c27.steps.findIndex(
       ({ stepId }) => stepId === "o1-c27.disconnect",
     );
-    expect(setupFlush).toMatchObject({
-      channel: "bridge_jsonl_control",
-      action: "flush_outbound",
+    expect(setupDrive).toMatchObject({
+      channel: "parent_harness",
+      action: "drive_bridge_outbound",
       phase: "setup",
-      arguments: { common: { rsid: "{{case.rsid}}" } },
+      arguments: { common: { advanceByMs: 15_000 } },
     });
     expect(setupDrainIndex).toBeGreaterThanOrEqual(0);
     expect(setupDrainIndex).toBeGreaterThan(
-      c27.steps.findIndex(({ stepId }) => stepId === "o1-c27.flush-setup"),
+      c27.steps.findIndex(({ stepId }) => stepId === "o1-c27.drain-setup"),
     );
     expect(openingFaultIndex).toBeGreaterThan(setupDrainIndex);
     expect(disconnectIndex).toBeGreaterThan(openingFaultIndex);
