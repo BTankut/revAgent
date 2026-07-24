@@ -357,7 +357,7 @@ describe("raw production C25-C40 seed catalog", () => {
           variables: rawProductionCaseVariables(caseId, { binding }),
           now: () => NOW,
         });
-        if (caseId === "O1-C28" || caseId === "O1-C32") {
+        if (caseId === "O1-C28" || caseId === "O1-C32" || caseId === "O1-C39") {
           expect(new Set(result.completedStepIds)).toEqual(
             new Set(program.steps.map(({ stepId }) => stepId)),
           );
