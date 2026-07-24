@@ -454,6 +454,15 @@ export function assertProductionRuntimeLaunchCurrent(
   repoRoot: string,
   options: { nodeMetadataResolver?: NodeRuntimeMetadataResolver } = {},
 ): void {
+  const epochKey = productionRuntimeLaunchEpochKey(plan, repoRoot);
+  if (activeProductionRuntimeLaunchEpoch !== null) {
+    if (activeProductionRuntimeLaunchEpoch.key !== epochKey) {
+      throw new Error(
+        "component launch does not match the active production runtime integrity epoch",
+      );
+    }
+    return;
+  }
   const validation = validateExecutionPlanStructure(plan);
   if (!validation.ok) {
     throw new Error(
@@ -478,6 +487,80 @@ export function assertProductionRuntimeLaunchCurrent(
   const currentAfterVerification = resolveSourceIdentity(repoRoot, gitIdentity);
   if (stableJson(currentAfterVerification) !== stableJson(current)) {
     throw new Error("clean repository source changed during runtime provenance verification");
+  }
+}
+
+interface ProductionRuntimeLaunchEpoch {
+  readonly key: string;
+  readonly plan: ExecutionPlan;
+  readonly repoRoot: string;
+  readonly token: symbol;
+}
+
+let activeProductionRuntimeLaunchEpoch: {
+  readonly key: string;
+  readonly token: symbol;
+} | null = null;
+
+function productionRuntimeLaunchEpochKey(
+  plan: ExecutionPlan,
+  repoRoot: string,
+): string {
+  const physicalRoot = realpathSync(repoRoot);
+  const normalizedRoot = process.platform === "win32"
+    ? physicalRoot.toLowerCase()
+    : physicalRoot;
+  return stableJson({
+    plan,
+    repoRoot: normalizedRoot,
+  });
+}
+
+/**
+ * Amortizes the expensive exact-byte runtime gate across one complete
+ * authoritative suite run. The full gate is executed immediately before the
+ * epoch opens and again after it closes. Component-level checks inside the
+ * epoch remain fail-closed to any different plan or physical repository root.
+ */
+export function beginProductionRuntimeLaunchEpoch(
+  plan: ExecutionPlan,
+  repoRoot: string,
+): ProductionRuntimeLaunchEpoch {
+  if (activeProductionRuntimeLaunchEpoch !== null) {
+    throw new Error("a production runtime integrity epoch is already active");
+  }
+  assertProductionRuntimeLaunchCurrent(plan, repoRoot);
+  const epoch: ProductionRuntimeLaunchEpoch = Object.freeze({
+    key: productionRuntimeLaunchEpochKey(plan, repoRoot),
+    plan: structuredClone(plan),
+    repoRoot: realpathSync(repoRoot),
+    token: Symbol("production-runtime-launch-epoch"),
+  });
+  activeProductionRuntimeLaunchEpoch = {
+    key: epoch.key,
+    token: epoch.token,
+  };
+  return epoch;
+}
+
+export function endProductionRuntimeLaunchEpoch(
+  epoch: ProductionRuntimeLaunchEpoch,
+): void {
+  if (
+    activeProductionRuntimeLaunchEpoch === null ||
+    activeProductionRuntimeLaunchEpoch.token !== epoch.token ||
+    activeProductionRuntimeLaunchEpoch.key !== epoch.key
+  ) {
+    throw new Error("production runtime integrity epoch ownership mismatch");
+  }
+  activeProductionRuntimeLaunchEpoch = null;
+  try {
+    assertProductionRuntimeLaunchCurrent(epoch.plan, epoch.repoRoot);
+  } catch (error) {
+    throw new Error(
+      "production runtime integrity epoch closing verification failed",
+      { cause: error },
+    );
   }
 }
 

@@ -3,6 +3,10 @@ import { performance } from "node:perf_hooks";
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { canonicalManifest, canonicalManifestIdentity } from "./manifest.js";
+import {
+  beginProductionRuntimeLaunchEpoch,
+  endProductionRuntimeLaunchEpoch,
+} from "./productionExecutionPlan.js";
 import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import { createProductionReconnectSoakAdapter } from "./productionSoakAdapter.js";
 import { CANONICAL_RESOURCE_POLICY, evaluateResourceSamples } from "./resourceMetrics.js";
@@ -188,10 +192,31 @@ export async function runReconnectSoak(
   const plan = structuredClone(input.plan);
   const repoRoot = input.repoRoot;
   const artifactRoot = input.artifactRoot;
-  const adapter = await createProductionReconnectSoakAdapter({
-    plan,
-    repoRoot,
-  });
+  const runtimeEpoch = beginProductionRuntimeLaunchEpoch(plan, repoRoot);
+  let adapter: ReconnectSoakAdapter;
+  try {
+    adapter = await createProductionReconnectSoakAdapter({
+      plan,
+      repoRoot,
+    });
+  } catch (caught) {
+    const setupFailure =
+      caught instanceof Error ? caught : new Error(String(caught));
+    try {
+      endProductionRuntimeLaunchEpoch(runtimeEpoch);
+    } catch (epochError) {
+      throw new AggregateError(
+        [
+          setupFailure,
+          epochError instanceof Error
+            ? epochError
+            : new Error(String(epochError)),
+        ],
+        "production soak setup failed and its runtime integrity epoch did not close cleanly",
+      );
+    }
+    throw setupFailure;
+  }
   const clock = realClock;
   const monotonicNow = (): number => clock.monotonicMs?.() ?? clock.nowMs();
   const startedWallMs = clock.nowMs();
@@ -211,142 +236,179 @@ export async function runReconnectSoak(
   const metrics: SoakMetricRecord[] = [];
   let cycle = 0;
   let failure: SoakReport["failure"] = null;
+  let finishedMonotonicMs = startedMonotonicMs;
+  let finishedOffsetMs = 0;
+  let operationFailure: Error | undefined;
+  let cleanupFailure: Error | undefined;
+  let runtimeEpochFailure: Error | undefined;
 
-  while (
-    mode === "one_hour"
-      ? cycle < ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT
-      : elapsedMs() < requestedDurationMs
-  ) {
-    const scheduledOffsetMs = cycle * cycleIntervalMs;
-    if (mode === "one_hour") {
-      await sleepUntil(startedMonotonicMs + scheduledOffsetMs);
+  try {
+    while (
+      mode === "one_hour"
+        ? cycle < ONE_HOUR_SOAK_EXPECTED_CYCLE_COUNT
+        : elapsedMs() < requestedDurationMs
+    ) {
+      const scheduledOffsetMs = cycle * cycleIntervalMs;
+      if (mode === "one_hour") {
+        await sleepUntil(startedMonotonicMs + scheduledOffsetMs);
+      }
+      const cycleStarted = monotonicNow();
+      const cycleStartedOffsetMs = Math.floor(cycleStarted - startedMonotonicMs);
+      if (
+        mode === "one_hour" &&
+        (
+          cycleStartedOffsetMs < scheduledOffsetMs ||
+          cycleStartedOffsetMs >
+            scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS
+        )
+      ) {
+        failure = {
+          code: "soak_cadence_violation",
+          message:
+            `cycle ${cycle + 1} started at ${cycleStartedOffsetMs} ms; ` +
+            `required ${scheduledOffsetMs}-${scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS} ms`,
+        };
+        break;
+      }
+      const binding: Binding = cycle % 2 === 0 ? "wss" : "streamable_http_sse";
+      cycle += 1;
+      try {
+        const observation = await adapter.churn(binding, cycle);
+        exactObservation(observation);
+        const passed =
+          observation.reconnects >= 1 &&
+          observation.proxyChurns >= 1 &&
+          observation.heartbeatAcks >= 1 &&
+          observation.controlRoundTrips >= 1 &&
+          observation.journalPending === 0;
+        const cycleFinished = monotonicNow();
+        cycles.push({
+          cycle,
+          binding,
+          startedAt: wallAt(cycleStarted),
+          finishedAt: wallAt(cycleFinished),
+          ...observation,
+          passed,
+        });
+        if (!passed) {
+          failure = { code: "soak_cycle_failed", message: `cycle ${cycle} did not preserve reconnect/proxy/journal invariants` };
+          break;
+        }
+        const sample = await adapter.sampleResources();
+        const sampleMonotonicMs = monotonicNow();
+        const resourceSample: ResourceSample = {
+          index: samples.length,
+          offsetMs: Math.floor(sampleMonotonicMs - startedMonotonicMs),
+          ...sample,
+        };
+        samples.push(resourceSample);
+        metrics.push({
+          schemaVersion: "rbp-reconnect-soak-metric/v1",
+          runId: plan.runId,
+          mode,
+          cycle,
+          binding,
+          at: wallAt(sampleMonotonicMs),
+          ...observation,
+          resourceSample,
+        });
+        if (mode === "one_hour") {
+          const latestCompletionOffsetMs =
+            scheduledOffsetMs + ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS;
+          const previousSample = samples.at(-2);
+          const sampleGapMs =
+            previousSample === undefined
+              ? undefined
+              : resourceSample.offsetMs - previousSample.offsetMs;
+          if (
+            resourceSample.offsetMs < cycleStartedOffsetMs ||
+            resourceSample.offsetMs > latestCompletionOffsetMs ||
+            (
+              sampleGapMs !== undefined &&
+              (
+                sampleGapMs < ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS ||
+                sampleGapMs > ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS
+              )
+            )
+          ) {
+            failure = {
+              code: "soak_cadence_violation",
+              message:
+                `cycle ${cycle} completed outside the canonical one-hour cadence ` +
+                `(sample offset ${resourceSample.offsetMs} ms${
+                  sampleGapMs === undefined ? "" : `, gap ${sampleGapMs} ms`
+                })`,
+            };
+            break;
+          }
+        } else {
+          await clock.sleep(Math.min(
+            cycleIntervalMs,
+            Math.max(0, requestedDurationMs - elapsedMs()),
+          ));
+        }
+      } catch (error) {
+        failure = { code: "soak_adapter_error", message: error instanceof Error ? error.message : String(error) };
+        break;
+      }
     }
-    const cycleStarted = monotonicNow();
-    const cycleStartedOffsetMs = Math.floor(cycleStarted - startedMonotonicMs);
+    if (mode === "one_hour" && failure === null) {
+      await sleepUntil(startedMonotonicMs + requestedDurationMs);
+    }
+    finishedMonotonicMs = monotonicNow();
+    finishedOffsetMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
     if (
       mode === "one_hour" &&
-      (
-        cycleStartedOffsetMs < scheduledOffsetMs ||
-        cycleStartedOffsetMs >
-          scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS
+      failure === null &&
+      !hasCanonicalOneHourFinalCoverage(
+        cycles.length,
+        samples,
+        finishedOffsetMs,
       )
     ) {
+      const lastSampleOffsetMs = samples.at(-1)?.offsetMs;
+      const finalSampleGapMs =
+        lastSampleOffsetMs === undefined
+          ? undefined
+          : finishedOffsetMs - lastSampleOffsetMs;
       failure = {
         code: "soak_cadence_violation",
         message:
-          `cycle ${cycle + 1} started at ${cycleStartedOffsetMs} ms; ` +
-          `required ${scheduledOffsetMs}-${scheduledOffsetMs + ONE_HOUR_SOAK_MAX_START_LATENESS_MS} ms`,
+          "one-hour soak did not retain the exact full-duration cycle/sample coverage " +
+          `(${cycles.length} cycles, ${samples.length} samples, ${finishedOffsetMs} ms, ` +
+          `final sample gap ${finalSampleGapMs === undefined ? "missing" : `${finalSampleGapMs} ms`})`,
       };
-      break;
     }
-    const binding: Binding = cycle % 2 === 0 ? "wss" : "streamable_http_sse";
-    cycle += 1;
+  } catch (caught) {
+    operationFailure =
+      caught instanceof Error ? caught : new Error(String(caught));
+  } finally {
     try {
-      const observation = await adapter.churn(binding, cycle);
-      exactObservation(observation);
-      const passed =
-        observation.reconnects >= 1 &&
-        observation.proxyChurns >= 1 &&
-        observation.heartbeatAcks >= 1 &&
-        observation.controlRoundTrips >= 1 &&
-        observation.journalPending === 0;
-      const cycleFinished = monotonicNow();
-      cycles.push({
-        cycle,
-        binding,
-        startedAt: wallAt(cycleStarted),
-        finishedAt: wallAt(cycleFinished),
-        ...observation,
-        passed,
-      });
-      if (!passed) {
-        failure = { code: "soak_cycle_failed", message: `cycle ${cycle} did not preserve reconnect/proxy/journal invariants` };
-        break;
-      }
-      const sample = await adapter.sampleResources();
-      const sampleMonotonicMs = monotonicNow();
-      const resourceSample: ResourceSample = {
-        index: samples.length,
-        offsetMs: Math.floor(sampleMonotonicMs - startedMonotonicMs),
-        ...sample,
-      };
-      samples.push(resourceSample);
-      metrics.push({
-        schemaVersion: "rbp-reconnect-soak-metric/v1",
-        runId: plan.runId,
-        mode,
-        cycle,
-        binding,
-        at: wallAt(sampleMonotonicMs),
-        ...observation,
-        resourceSample,
-      });
-      if (mode === "one_hour") {
-        const latestCompletionOffsetMs =
-          scheduledOffsetMs + ONE_HOUR_SOAK_MAX_COMPLETION_LATENESS_MS;
-        const previousSample = samples.at(-2);
-        const sampleGapMs =
-          previousSample === undefined
-            ? undefined
-            : resourceSample.offsetMs - previousSample.offsetMs;
-        if (
-          resourceSample.offsetMs < cycleStartedOffsetMs ||
-          resourceSample.offsetMs > latestCompletionOffsetMs ||
-          (
-            sampleGapMs !== undefined &&
-            (
-              sampleGapMs < ONE_HOUR_SOAK_MIN_SAMPLE_GAP_MS ||
-              sampleGapMs > ONE_HOUR_SOAK_MAX_SAMPLE_GAP_MS
-            )
-          )
-        ) {
-          failure = {
-            code: "soak_cadence_violation",
-            message:
-              `cycle ${cycle} completed outside the canonical one-hour cadence ` +
-              `(sample offset ${resourceSample.offsetMs} ms${
-                sampleGapMs === undefined ? "" : `, gap ${sampleGapMs} ms`
-              })`,
-          };
-          break;
-        }
-      } else {
-        await clock.sleep(Math.min(
-          cycleIntervalMs,
-          Math.max(0, requestedDurationMs - elapsedMs()),
-        ));
-      }
-    } catch (error) {
-      failure = { code: "soak_adapter_error", message: error instanceof Error ? error.message : String(error) };
-      break;
+      await adapter.close();
+    } catch (caught) {
+      cleanupFailure =
+        caught instanceof Error ? caught : new Error(String(caught));
+    }
+    try {
+      endProductionRuntimeLaunchEpoch(runtimeEpoch);
+    } catch (caught) {
+      runtimeEpochFailure =
+        caught instanceof Error ? caught : new Error(String(caught));
     }
   }
-  if (mode === "one_hour" && failure === null) {
-    await sleepUntil(startedMonotonicMs + requestedDurationMs);
-  }
-  const finishedMonotonicMs = monotonicNow();
-  const finishedOffsetMs = Math.floor(finishedMonotonicMs - startedMonotonicMs);
-  if (
-    mode === "one_hour" &&
-    failure === null &&
-    !hasCanonicalOneHourFinalCoverage(
-      cycles.length,
-      samples,
-      finishedOffsetMs,
-    )
-  ) {
-    const lastSampleOffsetMs = samples.at(-1)?.offsetMs;
-    const finalSampleGapMs =
-      lastSampleOffsetMs === undefined
-        ? undefined
-        : finishedOffsetMs - lastSampleOffsetMs;
-    failure = {
-      code: "soak_cadence_violation",
-      message:
-        "one-hour soak did not retain the exact full-duration cycle/sample coverage " +
-        `(${cycles.length} cycles, ${samples.length} samples, ${finishedOffsetMs} ms, ` +
-        `final sample gap ${finalSampleGapMs === undefined ? "missing" : `${finalSampleGapMs} ms`})`,
-    };
+  if (operationFailure !== undefined) {
+    const failures = [
+      operationFailure,
+      ...(cleanupFailure === undefined ? [] : [cleanupFailure]),
+      ...(runtimeEpochFailure === undefined ? [] : [runtimeEpochFailure]),
+    ];
+    if (failures.length > 1) {
+      throw new AggregateError(
+        failures,
+        "production soak execution failed and cleanup or runtime integrity verification was incomplete",
+      );
+    }
+    throw operationFailure;
   }
   const resources: SoakReport["resources"] = {
     schemaVersion: "rbp-resource-profile/v1",
@@ -357,13 +419,16 @@ export async function runReconnectSoak(
     samples,
     evaluation: null,
   };
-  let cleanupFailure: Error | undefined;
-  try {
-    await adapter.close();
-  } catch (error) {
-    cleanupFailure = error instanceof Error ? error : new Error(String(error));
-  }
   const orphanProcessCount = await adapter.orphanProcessCount();
+  if (runtimeEpochFailure !== undefined) {
+    const priorFailure = failure === null
+      ? ""
+      : `; prior soak failure ${failure.code}: ${failure.message}`;
+    failure = {
+      code: "soak_runtime_integrity",
+      message: `${runtimeEpochFailure.message}${priorFailure}`,
+    };
+  }
   if (cleanupFailure !== undefined && failure === null) {
     failure = { code: "soak_cleanup_error", message: cleanupFailure.message };
   }

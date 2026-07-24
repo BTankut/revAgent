@@ -704,15 +704,23 @@ NON-AUTHORITATIVE audit/reconstruction tools. They may exit zero and print
 Likewise, standalone `run-production` and `run-soak` produce diagnostic or
 partial retained evidence, not final freeze acceptance.
 
-The launch guard re-derives the canonical command and rechecks source,
-sidecar, runtime Node, entrypoint, component/protocol/controller output, and
-installed runtime/native dependency closure immediately before each component
-spawn and after readiness. It repeats after every supervised shutdown; failed
-starts also run the boundary guard after cleanup. The soak retains two
-independent three-process stacks, applies the same guard at child boundaries,
-after every churn cycle, and during shutdown cleanup. Component children
-inherit a sanitized environment without `NODE_OPTIONS`, `NODE_PATH`, Node
-compile-cache/preserve-symlink controls, or `WS_NO_*` resolution switches.
+Each authoritative suite or soak opens one process-owned runtime-integrity
+epoch. The epoch fully re-derives the canonical commands and rechecks source,
+sidecars, runtime Node, entrypoints, component/protocol/controller output, and
+the installed runtime/native dependency closure before any component starts
+and again after every supervised component has stopped. Component launch,
+readiness, failed-start cleanup, supervised shutdown, and per-cycle soak
+boundaries remain fail-closed to the exact epoch plan bytes and physical
+repository root; a different plan/root or a nested/concurrent epoch is
+rejected. Amortizing the static byte walk across the run keeps the real
+forty-case suite inside its ten-minute gate and keeps the 5-second soak cadence
+measurable without weakening the persistent-mutation check. As stated in the
+threat boundary above, an active same-user writer able to mutate and restore
+anchored bytes entirely between the epoch's opening and closing checks remains
+outside the application provenance anchor and requires operator quiescence.
+Component children inherit a sanitized environment without `NODE_OPTIONS`,
+`NODE_PATH`, Node compile-cache/preserve-symlink controls, or `WS_NO_*`
+resolution switches.
 A missing sidecar, stale source, stale binary, changed dependency/native byte,
 unexpected optional peer, changed controller, command or Node substitution,
 changed toolchain, sidecar tamper, or dirty tree fails closed before retained

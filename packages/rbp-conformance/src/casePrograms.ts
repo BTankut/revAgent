@@ -1509,6 +1509,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         jitterUnits: "{{vectors.c27_reconnect_jitter_units}}",
       }), "setup"),
       ...sessionSetup("O1-C27"),
+      ...sessionSetupDrain("O1-C27"),
       gateway("o1-c27.opening-faults", "enqueue_opening_fault", byBinding(
         {
           rule: {

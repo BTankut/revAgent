@@ -247,6 +247,18 @@ describe("exact forty-case control and observation catalog", () => {
 
   it("runs C27 through bounded virtual time instead of wall-clock backoff waits", () => {
     const c27 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C27")!;
+    const setupDrainIndex = c27.steps.findIndex(
+      ({ stepId }) => stepId === "o1-c27.await-setup-drain",
+    );
+    const openingFaultIndex = c27.steps.findIndex(
+      ({ stepId }) => stepId === "o1-c27.opening-faults",
+    );
+    const disconnectIndex = c27.steps.findIndex(
+      ({ stepId }) => stepId === "o1-c27.disconnect",
+    );
+    expect(setupDrainIndex).toBeGreaterThanOrEqual(0);
+    expect(openingFaultIndex).toBeGreaterThan(setupDrainIndex);
+    expect(disconnectIndex).toBeGreaterThan(openingFaultIndex);
     const attempts = c27.steps.find(({ stepId }) => stepId === "o1-c27.await-attempts")!;
     expect(attempts.arguments.common).toMatchObject({
       jsonPointer: "/reconnectConformance/attempts",

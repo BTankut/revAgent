@@ -213,6 +213,34 @@ This amendment closes the launch/bootstrap contract gap only. No canonical
 three-run or soak evidence was produced by this change, and it does not declare
 O1 v1.0 frozen, M1 passed, the freeze PR ready, or a tag authorized.
 
+### 2026-07-23 — R-F: authoritative runtime integrity is bounded by a run-scoped epoch
+
+The M1 closing run exposed that repeating the complete static source,
+provenance, toolchain, output, and installed-dependency byte walk at every
+component lifecycle boundary consumed most of each case runtime. The measured
+full suite could not satisfy the O1-T6 ten-minute non-soak gate, and the same
+multi-second check after each of 720 soak cycles could not preserve the
+canonical five-second cadence.
+
+Each authoritative conformance run and reconnect soak therefore owns one
+non-nestable runtime-integrity epoch. The runner performs the complete existing
+byte/provenance verification immediately before opening the epoch and again
+only after every supervised component has stopped. Every component launch,
+readiness, failed-start cleanup, shutdown, and soak-cycle boundary still checks
+that it is operating under the exact epoch plan bytes and physical repository
+root; a different plan/root or a concurrent/nested epoch fails closed. Closing
+verification failure changes the retained run/soak verdict to error/failed and
+can never produce the sole authoritative PASS.
+
+This is an amortization amendment, not a reduction of the declared application
+provenance anchor. Persistent input or dependency mutation remains detected by
+the closing full check. The already documented exclusion for an active
+same-user writer capable of mutating and restoring anchored bytes entirely
+inside a subprocess/run window remains unchanged and requires operator
+quiescence during canonical evidence production. No protocol wire rule,
+component contract, accepted threat boundary, or freeze/tag authorization is
+changed by this amendment.
+
 ### 2026-07-23 — Operator checkpoint: M1 draft-only stop and assistant lane assignment
 
 Source: operator instruction from Barış Tankut, 2026-07-23. When the M1

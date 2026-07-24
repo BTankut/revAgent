@@ -7,6 +7,10 @@ import { runReportToJUnitXml } from "./junit.js";
 import { canonicalManifest } from "./manifest.js";
 import { observationObject } from "./observationQueries.js";
 import { PRODUCTION_CASE_COMPOSITION } from "./productionCaseComposition.js";
+import {
+  beginProductionRuntimeLaunchEpoch,
+  endProductionRuntimeLaunchEpoch,
+} from "./productionExecutionPlan.js";
 import { assertTrustedProductionLaunch } from "./productionLaunchAttestation.js";
 import {
   CANONICAL_RESOURCE_POLICY,
@@ -477,81 +481,96 @@ export async function executeProductionConformanceRun(
   };
   const executedCases: ExecutedCaseEvidence[] = [];
   const retentionFailures: Error[] = [];
-  let caseExecutionFailureCount = 0;
+  const caseExecutionFailures: Array<{
+    readonly caseId: string;
+    readonly error: Error;
+  }> = [];
   let firstCaseStartedWallMs: number | undefined;
   let lastCaseFinishedWallMs: number | undefined;
   let firstCaseStartedMonotonicMs: number | undefined;
   let lastCaseFinishedMonotonicMs: number | undefined;
+  let runtimeEpochFailure: Error | undefined;
 
-  for (const result of report.cases) {
-    const caseStartedWallMs = productionWallNowMs();
-    const caseStartedMonotonicMs = productionMonotonicNowMs();
-    firstCaseStartedWallMs ??= caseStartedWallMs;
-    firstCaseStartedMonotonicMs ??= caseStartedMonotonicMs;
-    result.status = "running";
-    result.startedAt = new Date(caseStartedWallMs).toISOString();
-    try {
-      const executions = await PRODUCTION_CASE_EXECUTOR({
-        plan,
-        repoRoot,
-        caseId: result.caseId,
-        clockIso: result.startedAt,
-      });
-      const evaluated = evaluateSupervisedCaseExecutions({
-        runId: report.run.runId,
-        caseId: result.caseId,
-        executions: executions.map(({ binding, evidence, durationMs }) => ({
-          binding,
-          observations: evidence.observations,
-          durationMs,
-        })),
-        evaluator: evaluators.get(result.caseId)!,
-      });
-      const caseFinishedWallMs = productionWallNowMs();
-      const caseFinishedMonotonicMs = productionMonotonicNowMs();
-      result.finishedAt = new Date(caseFinishedWallMs).toISOString();
-      result.durationMs = serializedWallDurationMs(
-        caseStartedWallMs,
-        caseFinishedWallMs,
-        `${result.caseId} case`,
-      );
-      result.status = evaluated.status;
-      result.failure = evaluated.failure;
-      result.assertions = evaluated.assertions;
-      result.bindings = evaluated.bindings;
-      retainAccountedCaseEvidence({
-        artifactRoot,
-        runId: report.run.runId,
-        result,
-        observations: evaluated.observations,
-        executedCases,
-        retentionFailures,
-      });
-      lastCaseFinishedWallMs = caseFinishedWallMs;
-      lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
-    } catch (caught) {
-      caseExecutionFailureCount += 1;
-      const error = caught instanceof Error ? caught : new Error(String(caught));
-      const caseFinishedWallMs = productionWallNowMs();
-      const caseFinishedMonotonicMs = productionMonotonicNowMs();
-      markCaseError(
-        result,
-        caseStartedWallMs,
-        caseFinishedWallMs,
-        serializedWallDurationMs(
+  const runtimeEpoch = beginProductionRuntimeLaunchEpoch(plan, repoRoot);
+  try {
+    for (const result of report.cases) {
+      const caseStartedWallMs = productionWallNowMs();
+      const caseStartedMonotonicMs = productionMonotonicNowMs();
+      firstCaseStartedWallMs ??= caseStartedWallMs;
+      firstCaseStartedMonotonicMs ??= caseStartedMonotonicMs;
+      result.status = "running";
+      result.startedAt = new Date(caseStartedWallMs).toISOString();
+      try {
+        const executions = await PRODUCTION_CASE_EXECUTOR({
+          plan,
+          repoRoot,
+          caseId: result.caseId,
+          clockIso: result.startedAt,
+        });
+        const evaluated = evaluateSupervisedCaseExecutions({
+          runId: report.run.runId,
+          caseId: result.caseId,
+          executions: executions.map(({ binding, evidence, durationMs }) => ({
+            binding,
+            observations: evidence.observations,
+            durationMs,
+          })),
+          evaluator: evaluators.get(result.caseId)!,
+        });
+        const caseFinishedWallMs = productionWallNowMs();
+        const caseFinishedMonotonicMs = productionMonotonicNowMs();
+        result.finishedAt = new Date(caseFinishedWallMs).toISOString();
+        result.durationMs = serializedWallDurationMs(
           caseStartedWallMs,
           caseFinishedWallMs,
           `${result.caseId} case`,
-        ),
-        error,
-      );
-      lastCaseFinishedWallMs = caseFinishedWallMs;
-      lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
+        );
+        result.status = evaluated.status;
+        result.failure = evaluated.failure;
+        result.assertions = evaluated.assertions;
+        result.bindings = evaluated.bindings;
+        retainAccountedCaseEvidence({
+          artifactRoot,
+          runId: report.run.runId,
+          result,
+          observations: evaluated.observations,
+          executedCases,
+          retentionFailures,
+        });
+        lastCaseFinishedWallMs = caseFinishedWallMs;
+        lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
+      } catch (caught) {
+        const error = caught instanceof Error ? caught : new Error(String(caught));
+        caseExecutionFailures.push({ caseId: result.caseId, error });
+        const caseFinishedWallMs = productionWallNowMs();
+        const caseFinishedMonotonicMs = productionMonotonicNowMs();
+        markCaseError(
+          result,
+          caseStartedWallMs,
+          caseFinishedWallMs,
+          serializedWallDurationMs(
+            caseStartedWallMs,
+            caseFinishedWallMs,
+            `${result.caseId} case`,
+          ),
+          error,
+        );
+        lastCaseFinishedWallMs = caseFinishedWallMs;
+        lastCaseFinishedMonotonicMs = caseFinishedMonotonicMs;
+      }
+    }
+  } finally {
+    try {
+      endProductionRuntimeLaunchEpoch(runtimeEpoch);
+    } catch (caught) {
+      runtimeEpochFailure =
+        caught instanceof Error ? caught : new Error(String(caught));
     }
   }
 
   const allObservations = executedCases.flatMap(({ observations }) => observations);
-  let infrastructureFailure: Error | undefined = retentionFailures[0];
+  let infrastructureFailure: Error | undefined =
+    retentionFailures[0] ?? runtimeEpochFailure;
   try {
     const cleanup = bindRepresentativeComponents(report, allObservations);
     report.resources = measuredResourceProfile(
@@ -567,7 +586,7 @@ export async function executeProductionConformanceRun(
       orphanProcessCount: evaluation.orphanProcessCount,
     };
   } catch (caught) {
-    if (infrastructureFailure === undefined && caseExecutionFailureCount === 0) {
+    if (infrastructureFailure === undefined) {
       infrastructureFailure = caught instanceof Error ? caught : new Error(String(caught));
     }
   }
@@ -638,9 +657,16 @@ export async function executeProductionConformanceRun(
   }
   new SecureEvidenceStore(artifactRoot).write(reportPath, stableJson(report));
   if (infrastructureFailure !== undefined) {
-    throw new Error(`production suite infrastructure failed: ${infrastructureFailure.message}`, {
-      cause: infrastructureFailure,
-    });
+    const caseSummary = caseExecutionFailures.length === 0
+      ? ""
+      : `; case execution failures: ${caseExecutionFailures
+        .slice(0, 3)
+        .map(({ caseId, error }) => `${caseId}: ${error.message.slice(0, 512)}`)
+        .join(" | ")}`;
+    throw new Error(
+      `production suite infrastructure failed: ${infrastructureFailure.message}${caseSummary}`,
+      { cause: infrastructureFailure },
+    );
   }
   return { report, reportPath };
 }
