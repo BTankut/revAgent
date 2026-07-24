@@ -2716,7 +2716,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         },
       })),
       harness("o1-c39.await-omitted", "await_condition", args({
-        source: "gateway.snapshot",
+        source: "gateway.compact_snapshot",
         jsonPointer:
           "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/state",
         operator: "equals",
@@ -2725,7 +2725,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       }), "observation", 20_000),
       withCaptures(
         harness("o1-c39.capture-omitted-digest", "await_condition", args({
-          source: "gateway.snapshot",
+          source: "gateway.compact_snapshot",
           jsonPointer:
             "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/omittedResultDigest",
           operator: "exists",
@@ -2760,7 +2760,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         },
       })),
       harness("o1-c39.await-recovered", "await_condition", args({
-        source: "gateway.snapshot",
+        source: "gateway.compact_snapshot",
         jsonPointer:
           "/sessions/{{case.rsid}}/omittedPayloadRecoveries/{{vectors.c39.origin.invocation_id}}/state",
         operator: "equals",

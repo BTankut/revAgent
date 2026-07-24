@@ -245,6 +245,26 @@ function compactGatewaySnapshotValue(snapshot: JsonObject): JsonObject {
           ]),
         )
       : {};
+    const omittedPayloadRecoveries = isObject(rawSession.omittedPayloadRecoveries)
+      ? Object.fromEntries(
+          Object.entries(rawSession.omittedPayloadRecoveries).map(([invocationId, entry]) => [
+            invocationId,
+            selectedObjectFields(entry, [
+              "originInvocationId",
+              "parentCorrelationId",
+              "omittedResultDigest",
+              "mutating",
+              "mutationScope",
+              "state",
+              "auditId",
+              "recoveryInvocationId",
+              "recoveryResultDigest",
+              "createdAtMs",
+              "completedAtMs",
+            ]),
+          ]),
+        )
+      : {};
     compactSessions[rsid] = {
       ...(selectedObjectFields(rawSession, [
         "rsid",
@@ -269,6 +289,7 @@ function compactGatewaySnapshotValue(snapshot: JsonObject): JsonObject {
       terminalOutcomes,
       artifacts,
       chunkedResults,
+      omittedPayloadRecoveries,
     };
   }
   return {

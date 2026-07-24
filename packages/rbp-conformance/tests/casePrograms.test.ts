@@ -423,12 +423,26 @@ describe("exact forty-case control and observation catalog", () => {
     expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.capture-omitted-digest"))
       .toMatchObject({
         action: "await_condition",
+        arguments: {
+          common: {
+            source: "gateway.compact_snapshot",
+          },
+        },
         captures: [{
           name: "case.c39_omitted_digest",
           source: "result",
           jsonPointer: "/observed",
         }],
       });
+    for (const stepId of ["o1-c39.await-omitted", "o1-c39.await-recovered"]) {
+      expect(c39.steps.find((step) => step.stepId === stepId)).toMatchObject({
+        arguments: {
+          common: {
+            source: "gateway.compact_snapshot",
+          },
+        },
+      });
+    }
     expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.valid-recovery"))
       .toMatchObject({
         action: "dispatch_payload_recovery",
