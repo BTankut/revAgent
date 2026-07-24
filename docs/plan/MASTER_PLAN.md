@@ -31,6 +31,17 @@ final v0.9→v1.0 diff summary, and complete conformance result, then stops. The
 PR is not readied or merged and `rbp/v1.0.0` is not created until the
 operator-channel closing review explicitly approves continuation.
 
+The 2026-07-24 pre-lock candidate gate passed `scripts/test-ci.ps1`, the
+Windows PowerShell 5.1 `scripts/test-all.ps1` gate, all 11 named protected PS5
+installer/updater/security scripts, generated-type clean diff, protocol
+303/303, add-in fixture 55/55, Gateway stub 78/78, Bridge simulator 211/211,
+three deterministic Bridge runs of 211/211 each, and the complete conformance
+harness gate (57 files, 352/352 tests, 5/5 serial shards). These results are
+implementation-readiness evidence only. M1 remains `in_progress` until the
+documentation-complete candidate produces its authoritative three-run
+aggregate, real one-hour soak, retained-artifact validation, and draft PR
+checks; the assistant then reports and stops without ready/merge/tag.
+
 After that approval, this assistant is assigned only to WP2/M2 on
 `codex/wp2-*`. It may not edit `packages/bridge/**` or
 `src/revit-plugin/**`; any `packages/protocol/**` change requires a prior dated

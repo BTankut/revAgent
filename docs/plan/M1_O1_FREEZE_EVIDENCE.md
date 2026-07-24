@@ -6,8 +6,10 @@
 
 **Milestone:** M1
 
-**Tag state:** `rbp/v1.0.0` MUST NOT be created until the retained evidence
-validator and the protected-candidate identity checks below both pass
+**Tag state:** `rbp/v1.0.0` MUST NOT be created during this draft-gate
+checkpoint. Even after the retained evidence and protected-candidate identity
+checks below pass, tag creation requires a later explicit operator-channel
+closing approval.
 
 This ledger closes O1-T8 only after the executable O1-T3–T6 artifacts and every
 M1 item in `docs/specs/O1-bridge-gateway-protocol.md` Section 22 are linked to
@@ -16,6 +18,34 @@ protected `main`. A schema result, unit-test count, draft PR, or a passing
 subset of the forty cases cannot substitute for the retained three-process
 suite. O1-T7 real-add-in and DP-10 client evidence remain separate pilot-entry
 gates after the protocol freeze.
+
+## 2026-07-24 draft-gate checkpoint
+
+The operator instruction dated 2026-07-23 limits this lane to one draft freeze
+PR and its gate report. When the authoritative three-run aggregate and real
+one-hour soak are ready, the implementation assistant opens the PR as
+**draft**, reports the gate demo and final v0.9→v1.0 diff, and stops. This
+checkpoint does not authorize making the PR ready, merging it, creating
+`rbp/v1.0.0`, or starting M2/M3.
+
+The following pre-lock executable gates passed on the candidate tree before
+the final authority-vector ceremony. They prove implementation readiness, not
+the freeze verdict:
+
+| Gate | 2026-07-24 local result | Remaining closure |
+|---|---|---|
+| Engineering gate | `pwsh -File scripts/test-ci.ps1`: PASS | Protected PR checks still run on the final pushed commit |
+| Windows non-Revit gate | Windows PowerShell 5.1 `scripts/test-all.ps1`: PASS | Protected PR checks still run on the final pushed commit |
+| Windows protected-script matrix | 11/11 named PS5 installer/updater/security scripts: PASS | None locally; protected PR remains authoritative |
+| Workspace/package gate | Generated diff clean; protocol 303/303; add-in fixture 55/55; Gateway stub 78/78; Bridge simulator 211/211; conformance harness 57 files and 352/352 tests across 5/5 serial shards: PASS | GitHub `gateway-gates` supplies the exact Node 20 runner |
+| Bridge determinism/package boundary | Three independent deterministic runs, 211/211 tests each, `failed=0`; package dry-run: PASS | Linux workflow reruns on the protected PR |
+| Source-byte attestation | Clean detached raw worktree; every tracked file byte-hashed to protected HEAD with zero mismatches | Repeat against the final documentation-complete candidate commit |
+
+The workstation npm policy has `ignore-scripts=true`; therefore the local
+Bridge workflow explicitly rebuilt and verified the allowlisted
+`better-sqlite3` native binding before its determinism runs. The repository
+workflow uses ordinary `npm ci` with lifecycle scripts enabled. This
+environmental step does not weaken or skip the native dependency check.
 
 ## Freeze identity
 
@@ -97,13 +127,13 @@ push to `main`.
 
 | Item | Required executable evidence | Current evidence | State |
 |---|---|---|---|
-| O1-T1 | Complete protocol schemas, generated types, and generate-then-clean-diff gate | Protocol package and CI gate merged; exact freeze-tree run to be linked | `in_progress` |
+| O1-T1 | Complete protocol schemas, generated types, and generate-then-clean-diff gate | Pre-lock generated diff, 303 protocol tests, and conformance vectors pass; final candidate protected-PR run remains to be linked | `in_progress` |
 | O1-T2 | Shared FSM/digest/sequence/hold implementation consumed by T4/T5 | PR #282 merged; exact freeze-tree test report to be linked | `passed` |
-| O1-T3 | Separate add-in loopback fixture process with framing, capability, fault, count, batch, and artifact evidence | PRs #283–#285 merged; exact process identity and suite evidence to be linked by T6 | `passed` |
-| O1-T4 | Separate Bridge simulator process with both bindings, durable journal/holds, recovery, and artifact spool | PR #287 merged; 195/195 package tests and full local gates passed before merge; T6 process identity remains pending | `passed` |
-| O1-T5 | Separate Gateway stub process with both bindings, auth/session tables, dispatch, resume, proxy/fault controls, and artifact sink | PR #286 merged; 70/70 package tests passed before merge; T6 process identity remains pending | `passed` |
-| O1-T6 | Forty canonical cases × two bindings, three consecutive passing runs, retained JSON/JUnit, suite under ten minutes, zero fd/journal/orphan leak and bounded memory | Complete supervised suite not yet available | `in_progress` |
-| O1-T8 | Harness findings folded into the candidate; canonical `1.0` metadata and protocol constant; this ledger; validated protected-main tag | Blocked by O1-T6 and soak | `not_started` |
+| O1-T3 | Separate add-in loopback fixture process with framing, capability, fault, count, batch, and artifact evidence | PRs #283–#285 merged; pre-lock fixture gate is 55/55; exact final process identity will be retained by T6 | `passed` |
+| O1-T4 | Separate Bridge simulator process with both bindings, durable journal/holds, recovery, and artifact spool | PR #287 merged; pre-lock package gate is 211/211 and three determinism runs are 211/211 each; exact final process identity will be retained by T6 | `passed` |
+| O1-T5 | Separate Gateway stub process with both bindings, auth/session tables, dispatch, resume, proxy/fault controls, and artifact sink | PR #286 merged; pre-lock package gate is 78/78; exact final process identity will be retained by T6 | `passed` |
+| O1-T6 | Forty canonical cases × two bindings, three consecutive passing runs, retained JSON/JUnit, suite under ten minutes, zero fd/journal/orphan leak and bounded memory | Fail-closed harness gate passes 57 files and 352/352 tests; authoritative three-run aggregate and one-hour soak are still pending | `in_progress` |
+| O1-T8 | Harness findings folded into the candidate; canonical `1.0` metadata and protocol constant; this ledger; validated protected-main tag | Candidate metadata and ledger are present; owner acceptance, final R-F review, protected merge, and tag remain pending | `in_progress` |
 
 ## Three-run conformance aggregate
 
@@ -148,13 +178,13 @@ clock cannot satisfy it.
 
 | Section 22 requirement | Acceptance evidence | Current evidence | State |
 |---|---|---|---|
-| Payload/conditional schemas and byte-stable generated types | Exact freeze-tree protocol tests, conformance schema vectors, and clean generated diff | Candidate implementation exists; freeze-tree output pending | `in_progress` |
+| Payload/conditional schemas and byte-stable generated types | Exact freeze-tree protocol tests, conformance schema vectors, and clean generated diff | Pre-lock generated diff and protocol/conformance tests pass; final protected-PR output pending | `in_progress` |
 | Complete Section 21 suite | Three-run aggregate and retained per-case parent evidence | Not available | `not_started` |
-| WSS and Streamable HTTP/SSE proxy/interoperability parity | Raw per-binding transport observations plus equal journal/resume outcomes | Not available | `not_started` |
-| Exact loopback fixture contract | C04, C13, C14, C19, C22, C23, C33 and related raw/count evidence | Not available | `not_started` |
+| WSS and Streamable HTTP/SSE proxy/interoperability parity | Raw per-binding transport observations plus equal journal/resume outcomes | Harness implementation and pre-lock 352/352 gate pass; retained final-run observations pending | `in_progress` |
+| Exact loopback fixture contract | C04, C13, C14, C19, C22, C23, C33 and related raw/count evidence | Fixture 55/55 and harness pre-lock gates pass; retained final-run evidence pending | `in_progress` |
 | Batchable-command restrictions and atomic rollback acceptance | Exact `batchable:true` command set, one-frame commit/rollback, model digest, and owner acceptance record | Executable owner-acceptance evidence not yet linked | `in_progress` |
-| GAP-7 RBP artifact carrier | C15/C32/C40 stream, descriptor, digest, size, retransmission, confinement, cleanup evidence | Not available | `not_started` |
-| Exact RES-21 materialization | Gateway audit and Bridge journal rows showing literal `rsid + "/" + invocation_id` for the same invocation | Not available | `not_started` |
+| GAP-7 RBP artifact carrier | C15/C32/C40 stream, descriptor, digest, size, retransmission, confinement, cleanup evidence | Harness implementation and pre-lock gates pass; retained final-run evidence pending | `in_progress` |
+| Exact RES-21 materialization | Gateway audit and Bridge journal rows showing literal `rsid + "/" + invocation_id` for the same invocation | Pre-lock Bridge/harness gates pass; retained final-run rows pending | `in_progress` |
 | Review/R-F record | Dated closure review and every normative implementation amendment in `docs/decisions/DP-log.md` | W1 records exist; final harness-finding review pending | `in_progress` |
 
 ## Freeze decision
@@ -166,4 +196,6 @@ tree equals the tested executable source tree, and the annotated tag resolves
 to that exact protected candidate commit. A later evidence-record-only
 protected PR records those immutable facts without becoming or modifying the
 tagged candidate. Milestone-owner promotion from `passed` to `accepted`
-remains a separate decision.
+remains a separate decision. Under the current checkpoint, even a green draft
+gate report stops before ready/merge/tag and awaits explicit operator-channel
+closing approval.
