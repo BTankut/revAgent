@@ -395,7 +395,7 @@ describe("exact forty-case control and observation catalog", () => {
       .toMatchObject({
         arguments: {
           common: {
-            source: "gateway.snapshot",
+            source: "gateway.compact_snapshot",
             jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
             operator: "equals",
             expected: 3,
@@ -406,7 +406,7 @@ describe("exact forty-case control and observation catalog", () => {
       .toMatchObject({
         arguments: {
           common: {
-            source: "gateway.snapshot",
+            source: "gateway.compact_snapshot",
             jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
             operator: "equals",
             expected: 4,

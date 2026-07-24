@@ -2683,7 +2683,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       }), "observation", 35_000),
       bridge("o1-c39.ack-artifact-chunk-1", "send_heartbeat_for_conformance"),
       harness("o1-c39.await-artifact-chunk-2", "await_condition", args({
-        source: "gateway.snapshot",
+        source: "gateway.compact_snapshot",
         jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
         operator: "equals",
         expected: 3,
@@ -2691,7 +2691,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       }), "observation", 20_000),
       bridge("o1-c39.ack-artifact-chunk-2", "send_heartbeat_for_conformance"),
       harness("o1-c39.await-artifact-progress", "await_condition", args({
-        source: "gateway.snapshot",
+        source: "gateway.compact_snapshot",
         jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
         operator: "equals",
         expected: 4,
