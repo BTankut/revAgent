@@ -344,7 +344,7 @@ describe("Bridge daemon journal controls", () => {
 
   it("records and resolves durable late evidence, then emits its exact clearance", async () => {
     const root = temporaryRoot();
-    const rsid = uuid();
+    const rsid = "rs_gateway_session_001";
     const originInvocationId = uuid();
     const evidenceDigest = `sha256:${"b".repeat(64)}`;
     const binding: InvocationJournalBinding = {

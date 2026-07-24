@@ -1859,7 +1859,7 @@ export class BridgeDaemonRuntime {
       "atMs",
     ]);
     const hold = this.#journal.recordVerificationAttempt({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       verificationInvocationId: uuidV7(record.verificationInvocationId, "verificationInvocationId"),
       evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
@@ -1883,7 +1883,7 @@ export class BridgeDaemonRuntime {
       "atMs",
     ]);
     const hold = this.#journal.recordLateEvidence({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       originInvocationId: uuidV7(record.originInvocationId, "originInvocationId"),
       evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
@@ -1919,7 +1919,7 @@ export class BridgeDaemonRuntime {
       throw new Error("late_terminal requires verificationInvocationId=null");
     }
     const hold = this.#journal.resolveHold({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       basis,
       verificationInvocationId: verificationInvocationId === null
@@ -1942,7 +1942,7 @@ export class BridgeDaemonRuntime {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "rsid", "holdId"]);
     const clearance = this.#journal.clearanceForHold(
-      uuidV7(record.rsid, "rsid"),
+      boundedId(record.rsid, "rsid"),
       verificationHoldId(record.holdId, "holdId"),
     );
     return { clearance: clearance as unknown as FixtureJsonValue };

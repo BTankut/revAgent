@@ -356,6 +356,10 @@ describe("exact forty-case control and observation catalog", () => {
     const c39 = CASE_CONTROL_OBSERVATION_MAP.get("O1-C39")!;
     const ordered = [
       "o1-c39.dispatch-origin",
+      "o1-c39.await-first-artifact-chunk",
+      "o1-c39.ack-artifact-chunk-1",
+      "o1-c39.ack-artifact-chunk-2",
+      "o1-c39.ack-origin-terminal",
       "o1-c39.await-origin-terminal",
       "o1-c39.redispatch-origin",
       "o1-c39.await-omitted",

@@ -2666,6 +2666,16 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
           payload: "{{vectors.c39.origin}}",
         },
       })),
+      harness("o1-c39.await-first-artifact-chunk", "await_condition", args({
+        source: "bridge.snapshot_evidence",
+        jsonPointer: "/peer/deliveryProgress/records/0/artifactChunkFramesSent",
+        operator: "equals",
+        expected: 1,
+        timeoutMs: 30_000,
+      }), "observation", 35_000),
+      bridge("o1-c39.ack-artifact-chunk-1", "send_heartbeat_for_conformance"),
+      bridge("o1-c39.ack-artifact-chunk-2", "send_heartbeat_for_conformance"),
+      bridge("o1-c39.ack-origin-terminal", "send_heartbeat_for_conformance"),
       harness("o1-c39.await-origin-terminal", "await_condition", args({
         source: "gateway.compact_snapshot",
         jsonPointer:
@@ -2746,6 +2756,8 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       "raw_binding_frame",
       "audited_recovery_capture",
       "fixture_request_execution_count",
+      "chunk_wire_capture",
+      "heartbeat_wire_capture",
     ],
   },
   {

@@ -731,15 +731,6 @@ function exactFixtureExecutionCount(
   return matchesForInvocation[0] ?? 0;
 }
 
-function semanticControl(
-  context: Readonly<CanonicalAssertionOracleContext>,
-  stepId: string,
-  predicate: (result: Readonly<ObjectValue>) => boolean,
-): boolean {
-  const result = controlResult(context, stepId);
-  return result !== null && predicate(result);
-}
-
 function transportOpened(
   context: Readonly<CanonicalAssertionOracleContext>,
   requestedKind: "wss" | "streamable_http_sse",
@@ -1229,16 +1220,6 @@ function semanticEvent(
   predicate: (candidate: Readonly<ObjectValue>) => boolean,
 ): CanonicalAssertionOracle {
   return safe((context) => hasDomainObject(context, kinds, predicate));
-}
-
-function fixtureCount(
-  context: Readonly<CanonicalAssertionOracleContext>,
-  invocation: RegExp,
-  expected: number,
-): boolean {
-  return snapshotHas(context, "fixture_execution_count", (candidate) =>
-    Object.entries(candidate).some(([key, value]) =>
-      invocation.test(key) && value === expected));
 }
 
 interface C27SnapshotEvidence {
@@ -3520,11 +3501,63 @@ for (const reason of ["REVIT-EXITED", "BRIDGE-SHUTDOWN", "SESSION-REPLACED", "OP
   );
 }
 
+interface C38FirstDeliveryEvidence {
+  readonly invocationIds: readonly [string, string, string];
+  readonly outcome: ObjectValue;
+  readonly steps: readonly [ObjectValue, ObjectValue, ObjectValue];
+}
+
+function c38FirstDeliveryEvidence(
+  context: Readonly<CanonicalAssertionOracleContext>,
+): C38FirstDeliveryEvidence | null {
+  const control = exactControlRecord(context, "o1-c38.first-delivery");
+  if (control === null || control.request.action !== "invoke_local") return null;
+  const argumentsValue = objectValue(control.request.arguments);
+  const envelope = objectValue(argumentsValue?.envelope);
+  const inputPayload = objectValue(envelope?.payload);
+  const inputSteps = arrayValue(inputPayload?.steps)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  const outcome = objectValue(control.result.outcome);
+  const outputSteps = arrayValue(outcome?.steps)
+    .map((entry) => objectValue(entry))
+    .filter((entry): entry is ObjectValue => entry !== null);
+  const invocationIds = inputSteps.map((step) => stringValue(step.invocation_id));
+  if (
+    control.result.crashed !== false ||
+    envelope?.type !== "invoke_batch" ||
+    inputPayload?.atomic !== false ||
+    typeof inputPayload.batch_id !== "string" ||
+    inputSteps.length !== 3 ||
+    outputSteps.length !== 3 ||
+    invocationIds.some((invocationId) => invocationId === null) ||
+    new Set(invocationIds).size !== 3 ||
+    outcome?.kind !== "batch" ||
+    outcome.batchId !== inputPayload.batch_id ||
+    outcome.transactionState !== "not_applicable" ||
+    outcome.replayed !== false
+  ) {
+    return null;
+  }
+  return {
+    invocationIds: invocationIds as [string, string, string],
+    outcome,
+    steps: outputSteps as [ObjectValue, ObjectValue, ObjectValue],
+  };
+}
+
 define(
   "O1-C38-VALID-GUARDED-REASON",
-  semanticEvent(["bridge_snapshot", "wire_event"], (candidate) =>
-    candidate.status === "guarded" &&
-    /^[a-z][a-z0-9_]{0,63}$/u.test(String(candidate.guarded_reason ?? candidate.guardedReason ?? ""))),
+  safe((context) => {
+    const evidence = c38FirstDeliveryEvidence(context);
+    if (evidence === null) return false;
+    const first = evidence.steps[0];
+    return evidence.outcome.status === "guarded" &&
+      evidence.outcome.failedStepIndex === 0 &&
+      first.kind === "result" &&
+      first.status === "guarded" &&
+      /^[a-z][a-z0-9_]{0,63}$/u.test(String(first.guardedReason ?? ""));
+  }),
 );
 define(
   "O1-C38-MISSING-GUARDED-REASON",
@@ -3532,23 +3565,28 @@ define(
 );
 define(
   "O1-C38-FIRST-DELIVERY-STOPS",
-  safe((context) =>
-    semanticControl(context, "o1-c38.first-delivery", (result) =>
-      result.atomic === false &&
-      result.status === "guarded" &&
-      result.failed_step_index === 0) &&
-    fixtureCount(context, /O1-C38:guarded:0|guarded:0/i, 1)),
+  safe((context) => {
+    const evidence = c38FirstDeliveryEvidence(context);
+    return evidence !== null &&
+      evidence.outcome.status === "guarded" &&
+      evidence.outcome.failedStepIndex === 0 &&
+      evidence.steps[0].kind === "result" &&
+      evidence.steps[0].status === "guarded" &&
+      exactFixtureExecutionCount(context, evidence.invocationIds[0]) === 1;
+  }),
 );
 define(
   "O1-C38-SUCCESSORS-NOT-STARTED",
-  safe((context) =>
-    hasDomainObject(context, ["bridge_snapshot", "wire_event"], (candidate) =>
-      candidate.status === "not_started" &&
-      numberValue(candidate.index) !== null &&
-      (candidate.index as number) > 0) &&
-    !snapshotHas(context, "fixture_execution_count", (candidate) =>
-      Object.entries(candidate).some(([key, value]) =>
-        /O1-C38:guarded:[12]|guarded:[12]/i.test(key) && typeof value === "number" && value > 0))),
+  safe((context) => {
+    const evidence = c38FirstDeliveryEvidence(context);
+    return evidence !== null &&
+      evidence.steps.slice(1).every((step) =>
+        step.kind === "not_started" &&
+        step.addinContacted === false &&
+        step.replayed === false) &&
+      exactFixtureExecutionCount(context, evidence.invocationIds[1]) === 0 &&
+      exactFixtureExecutionCount(context, evidence.invocationIds[2]) === 0;
+  }),
 );
 
 define(
