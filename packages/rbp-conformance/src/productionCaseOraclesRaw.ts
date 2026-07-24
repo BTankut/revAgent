@@ -3802,6 +3802,7 @@ function exactC39AuditedReadRecovery(
         origin_invocation_id: evidence.originId,
         expected_result_digest: evidence.omittedDigest,
       },
+      resultContractVersion: 2,
     }) &&
     exactFixtureExecutionCount(context, evidence.originId) === 1 &&
     exactFixtureExecutionCount(context, evidence.recoveryId) === 1;
