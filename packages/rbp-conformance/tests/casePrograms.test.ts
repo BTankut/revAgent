@@ -358,7 +358,9 @@ describe("exact forty-case control and observation catalog", () => {
       "o1-c39.dispatch-origin",
       "o1-c39.await-first-artifact-chunk",
       "o1-c39.ack-artifact-chunk-1",
+      "o1-c39.await-artifact-chunk-2",
       "o1-c39.ack-artifact-chunk-2",
+      "o1-c39.await-artifact-progress",
       "o1-c39.ack-origin-terminal",
       "o1-c39.await-origin-terminal",
       "o1-c39.redispatch-origin",
@@ -385,11 +387,32 @@ describe("exact forty-case control and observation catalog", () => {
       "o1-c39.ack-origin-terminal",
     ]) {
       expect(c39.steps.find((step) => step.stepId === stepId)).toMatchObject({
-        channel: "parent_harness",
-        action: "drive_bridge_outbound",
-        arguments: { common: { advanceByMs: 15_001 } },
+        channel: "bridge_jsonl_control",
+        action: "send_heartbeat_for_conformance",
       });
     }
+    expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.await-artifact-chunk-2"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            source: "gateway.snapshot",
+            jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+            operator: "equals",
+            expected: 3,
+          },
+        },
+      });
+    expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.await-artifact-progress"))
+      .toMatchObject({
+        arguments: {
+          common: {
+            source: "gateway.snapshot",
+            jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+            operator: "equals",
+            expected: 4,
+          },
+        },
+      });
     expect(c39.steps.find(({ stepId }) => stepId === "o1-c39.ack-origin-terminal"))
       .toMatchObject({
         execution: {
@@ -515,10 +538,8 @@ describe("exact forty-case control and observation catalog", () => {
     expect(c28.steps.find(
       ({ stepId }) => stepId === "o1-c28.ack-expiry-and-drive-late-replay",
     )).toMatchObject({
-      channel: "parent_harness",
-      action: "drive_bridge_outbound",
-      arguments: { common: { advanceByMs: 15_001 } },
-      parentTimeoutMs: 20_000,
+      channel: "bridge_jsonl_control",
+      action: "send_heartbeat_for_conformance",
     });
     expect(c28.steps.find(({ stepId }) => stepId === "o1-c28.dispatch-recovery"))
       .toMatchObject({

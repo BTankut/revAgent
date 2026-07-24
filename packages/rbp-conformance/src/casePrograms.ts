@@ -1705,12 +1705,9 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         gateway("o1-c28.flush-origin-redelivery", "flush_held"),
         { mode: "async_join", handles: ["o1-c28.redeliver-origin"] },
       ),
-      harness(
+      bridge(
         "o1-c28.ack-expiry-and-drive-late-replay",
-        "drive_bridge_outbound",
-        args({ advanceByMs: 15_001 }),
-        "stimulus",
-        20_000,
+        "send_heartbeat_for_conformance",
       ),
       withCaptures(
         harness("o1-c28.capture-late-digest", "await_condition", args({
@@ -1957,6 +1954,7 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
       "gateway_hold_ledger",
       "late_terminal_capture",
       "fixture_request_execution_count",
+      "heartbeat_wire_capture",
       "journal_snapshot",
     ],
   },
@@ -2683,28 +2681,24 @@ const CASE_DEFINITIONS: ProgramDefinition[] = [
         expected: 1,
         timeoutMs: 30_000,
       }), "observation", 35_000),
-      harness(
-        "o1-c39.ack-artifact-chunk-1",
-        "drive_bridge_outbound",
-        args({ advanceByMs: 15_001 }),
-        "stimulus",
-        20_000,
-      ),
-      harness(
-        "o1-c39.ack-artifact-chunk-2",
-        "drive_bridge_outbound",
-        args({ advanceByMs: 15_001 }),
-        "stimulus",
-        20_000,
-      ),
+      bridge("o1-c39.ack-artifact-chunk-1", "send_heartbeat_for_conformance"),
+      harness("o1-c39.await-artifact-chunk-2", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 3,
+        timeoutMs: 15_000,
+      }), "observation", 20_000),
+      bridge("o1-c39.ack-artifact-chunk-2", "send_heartbeat_for_conformance"),
+      harness("o1-c39.await-artifact-progress", "await_condition", args({
+        source: "gateway.snapshot",
+        jsonPointer: "/sessions/{{case.rsid}}/sequence/lastRxSeq",
+        operator: "equals",
+        expected: 4,
+        timeoutMs: 15_000,
+      }), "observation", 20_000),
       withExecution(
-        harness(
-          "o1-c39.ack-origin-terminal",
-          "drive_bridge_outbound",
-          args({ advanceByMs: 15_001 }),
-          "stimulus",
-          20_000,
-        ),
+        bridge("o1-c39.ack-origin-terminal", "send_heartbeat_for_conformance"),
         { mode: "async_join", handles: ["o1-c39.dispatch-origin"] },
       ),
       harness("o1-c39.await-origin-terminal", "await_condition", args({
