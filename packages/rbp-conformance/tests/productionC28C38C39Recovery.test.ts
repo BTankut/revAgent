@@ -151,6 +151,43 @@ function c28FailureFacts(records: readonly ProcessObservationRecord[]): Record<s
   };
 }
 
+function c39FailureFacts(records: readonly ProcessObservationRecord[]): Record<string, unknown> {
+  const control = (stepId: string) =>
+    stepPayload(records, "control_result", stepId);
+  const finalGateway = stepPayload(
+    records,
+    "gateway_snapshot",
+    "o1-c39.gateway-snapshot",
+  );
+  const origin = pathValue(control("o1-c39.dispatch-origin"), [
+    "request", "arguments", "request", "payload", "invocation_id",
+  ]);
+  const rsid = pathValue(control("o1-c39.dispatch-origin"), [
+    "request", "arguments", "request", "rsid",
+  ]);
+  const recoveryRequest = pathValue(control("o1-c39.valid-recovery"), [
+    "request", "arguments", "request",
+  ]);
+  const recovery = pathValue(recoveryRequest, ["payload", "invocation_id"]);
+  const fixture = stepPayload(records, "fixture_execution_count", "o1-c39.fixture-snapshot");
+  return {
+    rsid,
+    origin,
+    recovery,
+    recoveryRequest,
+    originTerminal: pathValue(finalGateway, [
+      "sessions", String(rsid), "terminalOutcomes", String(origin),
+    ]),
+    omittedRecovery: pathValue(finalGateway, [
+      "sessions", String(rsid), "omittedPayloadRecoveries", String(origin),
+    ]),
+    recoveryTerminal: pathValue(finalGateway, [
+      "sessions", String(rsid), "terminalOutcomes", String(recovery),
+    ]),
+    executionCounts: fixture?.executionCounts ?? null,
+  };
+}
+
 describe.sequential("C28/C38/C39 production recovery regressions", () => {
   it.each(caseIds)(
     "%s passes every frozen assertion on both real Gateway bindings",
@@ -183,6 +220,9 @@ describe.sequential("C28/C38/C39 production recovery regressions", () => {
             controls,
             ...(caseId === "O1-C28"
               ? { exactFailureFacts: c28FailureFacts(execution.evidence.observations) }
+              : {}),
+            ...(caseId === "O1-C39"
+              ? { exactFailureFacts: c39FailureFacts(execution.evidence.observations) }
               : {}),
           }),
         ).toBe(true);
