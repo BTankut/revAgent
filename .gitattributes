@@ -1,3 +1,5 @@
+* text=auto eol=lf
+
 installer/runtime-mcp-server/src/**/*.ts text eol=lf
 installer/runtime-mcp-server/scripts/**/*.ts text eol=lf
 installer/runtime-mcp-server/build/**/*.js text eol=lf
