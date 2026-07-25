@@ -151,7 +151,7 @@ describe("strict JSONL process control", () => {
     await expect(child.stop()).resolves.toMatchObject({ exitCode: expect.any(Number) });
   });
 
-  it("fails closed when a required daemon control is absent", async () => {
+  it("fails closed when readiness controls are absent or startup exits with stderr", async () => {
     await expect(StrictJsonlProcess.start({
       componentId: "addin_loopback_fixture",
       command: command("missing-action"),
@@ -159,9 +159,7 @@ describe("strict JSONL process control", () => {
       expectedReadinessFields: { component: "fixture-test" },
       requiredActions: ["ping", "shutdown"],
     })).rejects.toThrow(/missing controls/u);
-  });
 
-  it("retains bounded stderr when a component exits before readiness", async () => {
     await expect(StrictJsonlProcess.start({
       componentId: "addin_loopback_fixture",
       command: command("stderr-exit"),
