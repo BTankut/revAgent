@@ -257,16 +257,13 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
     );
     const restarted = isObject(restartedValue) ? restartedValue : {};
     const opened = await this.#discoverAndOpen(binding, cycle, false);
-    const gatewaySnapshotValue = await supervisor.compactGatewaySnapshot();
+    const gatewaySessionCount = await supervisor.gatewaySessionCount();
     const bridgeSnapshot = await supervisor.aggregateSnapshot("bridge_simulator");
-    const sessions = isObject(gatewaySnapshotValue.sessions)
-      ? Object.keys(gatewaySnapshotValue.sessions)
-      : [];
     const peer = isObject(bridgeSnapshot.peer) ? bridgeSnapshot.peer : {};
     const reconnects =
       numeric(restarted.restoredSessionCount, "restoredSessionCount") >= 1 &&
       opened.selectedKind === binding &&
-      sessions.length >= 1 &&
+      gatewaySessionCount >= 1 &&
       peer.runLoopActive === true
         ? 1
         : 0;

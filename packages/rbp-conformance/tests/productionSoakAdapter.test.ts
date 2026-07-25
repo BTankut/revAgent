@@ -15,8 +15,9 @@ function productionPlan(): ExecutionPlan {
 }
 
 describe("production reconnect/proxy-churn soak adapter", () => {
-  it("keeps two real three-process stacks alive across both binding churn cycles", async () => {
+  it("keeps two real three-process stacks alive beyond the compact snapshot bound", async () => {
     let runtimeGuardCalls = 0;
+    const stressCycleCount = 360;
     const adapter = await createProductionReconnectSoakAdapter({
       plan: productionPlan(),
       repoRoot,
@@ -31,27 +32,24 @@ describe("production reconnect/proxy-churn soak adapter", () => {
       expect(before.residentBytes).toBeGreaterThan(0);
       expect(before.openFileDescriptorCount).toBeGreaterThan(0);
 
-      await expect(adapter.churn("wss", 1)).resolves.toEqual({
+      const expectedObservation = {
         reconnects: 1,
         proxyChurns: 1,
         heartbeatAcks: 1,
         controlRoundTrips: 2,
         journalPending: 0,
-      });
-      await expect(adapter.churn("streamable_http_sse", 2)).resolves.toEqual({
-        reconnects: 1,
-        proxyChurns: 1,
-        heartbeatAcks: 1,
-        controlRoundTrips: 2,
-        journalPending: 0,
-      });
+      };
+      for (let cycle = 1; cycle <= stressCycleCount; cycle += 1) {
+        const binding = cycle % 2 === 1 ? "wss" : "streamable_http_sse";
+        expect(await adapter.churn(binding, cycle)).toEqual(expectedObservation);
+      }
       const after = await adapter.sampleResources();
       expect(after.journalPendingCount).toBe(0);
-      expect(runtimeGuardCalls).toBe(14);
+      expect(runtimeGuardCalls).toBe(12 + stressCycleCount);
     } finally {
       await adapter.close();
     }
-    expect(runtimeGuardCalls).toBe(16);
+    expect(runtimeGuardCalls).toBe(12 + stressCycleCount + 2);
     await expect(adapter.orphanProcessCount()).resolves.toBe(0);
   }, 120_000);
 

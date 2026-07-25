@@ -55,6 +55,7 @@ describe("shared production case-stack controls", () => {
           schemaVersion: "rbp-gateway-compact-snapshot/v1",
           sessions: {},
         });
+        expect(await supervisor.gatewaySessionCount()).toBe(0);
         let gatewayControlFailure: unknown;
         try {
           await supervisor.gatewayControl("not-a-control-action", {});

@@ -2303,6 +2303,16 @@ export class CaseStackSupervisor {
     return compact;
   }
 
+  async gatewaySessionCount(): Promise<number> {
+    const raw = await this.gatewayControl(
+      "snapshot",
+      {},
+      MAX_INTERNAL_GATEWAY_SNAPSHOT_BYTES,
+    );
+    if (!isObject(raw)) throw new Error("Gateway snapshot is not an object");
+    return isObject(raw.sessions) ? Object.keys(raw.sessions).length : 0;
+  }
+
   async jsonlControl(
     componentId: "bridge_simulator" | "addin_loopback_fixture",
     action: string,
