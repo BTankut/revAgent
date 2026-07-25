@@ -246,7 +246,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
       released = true;
       await tick;
       await supervisor.awaitCondition({
-        source: "bridge.snapshot_evidence",
+        source: "bridge.soak_status",
         jsonPointer: "/peer/lastHeartbeatAckAtMs",
         operator: "equals",
         expected: nextClock,
@@ -422,7 +422,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
       });
     }
     await supervisor.awaitCondition({
-      source: "bridge.snapshot_evidence",
+      source: "bridge.soak_status",
       jsonPointer: "/peer/runLoopActive",
       operator: "equals",
       expected: true,

@@ -2669,6 +2669,8 @@ export class CaseStackSupervisor {
       );
     }
     switch (source) {
+      case "bridge.soak_status":
+        return await this.soakBridgeSnapshot();
       case "bridge.snapshot_evidence":
       case "bridge_reconnect_schedule":
         return await this.aggregateSnapshot("bridge_simulator");
