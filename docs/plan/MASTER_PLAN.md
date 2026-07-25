@@ -36,7 +36,7 @@ Windows PowerShell 5.1 `scripts/test-all.ps1` gate, all 11 named protected PS5
 installer/updater/security scripts, generated-type clean diff, protocol
 303/303, add-in fixture 55/55, Gateway stub 78/78, Bridge simulator 211/211,
 three deterministic Bridge runs of 211/211 each, and the complete conformance
-harness gate (57 files, 352/352 tests, 5/5 serial shards). These results are
+harness gate (59 files, 365/365 tests, 5/5 serial shards). These results are
 implementation-readiness evidence only. M1 remains `in_progress` until the
 documentation-complete candidate produces its authoritative three-run
 aggregate, real one-hour soak, retained-artifact validation, and draft PR
