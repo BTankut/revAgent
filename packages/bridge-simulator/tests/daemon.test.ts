@@ -207,9 +207,21 @@ describe("long-lived Bridge JSONL daemon", () => {
       "configure_reconnect_conformance",
       "advance_reconnect_conformance_clock",
       "send_chunk_conformance",
+      "snapshot_soak_status",
       "snapshot_evidence",
       "shutdown",
     ]);
+
+    await expect(bridgeChannel.send(control("soak-status", "snapshot_soak_status")))
+      .resolves.toMatchObject({
+        id: "soak-status",
+        ok: true,
+        result: {
+          schemaVersion: "bridge-simulator-soak-status/v1",
+          journalPendingCount: 0,
+          peer: null,
+        },
+      });
 
     bridge.stdin.write(
       '{"controlVersion":1,"id":"duplicate","action":"snapshot_evidence","action":"shutdown"}\n',

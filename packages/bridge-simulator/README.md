@@ -86,6 +86,7 @@ Action fields, in addition to the base fields, are exact:
 | `configure_reconnect_conformance` | `mode`, `jitterUnits` | — |
 | `advance_reconnect_conformance_clock` | `advanceByMs`, `heartbeatStepMs` | — |
 | `send_chunk_conformance` | `vector`, `rsid`, `invocationId` | — |
+| `snapshot_soak_status` | — | — |
 | `snapshot_evidence` | — | continuation-only `snapshotId` and `cursor` |
 | `shutdown` | — | — |
 

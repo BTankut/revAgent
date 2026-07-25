@@ -75,6 +75,7 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "configure_reconnect_conformance",
   "advance_reconnect_conformance_clock",
   "send_chunk_conformance",
+  "snapshot_soak_status",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -900,6 +901,9 @@ export class BridgeDaemonRuntime {
         return { value: await this.#advanceReconnectConformanceClock(record), shutdown: false };
       case "send_chunk_conformance":
         return { value: await this.#sendChunkConformance(record), shutdown: false };
+      case "snapshot_soak_status":
+        exactKeys(record, ["controlVersion", "id", "action"]);
+        return { value: this.snapshotSoakStatus(), shutdown: false };
       case "snapshot_evidence":
         throw new Error("snapshot_evidence is handled by the JSONL controller");
       case "shutdown": {
@@ -994,6 +998,24 @@ export class BridgeDaemonRuntime {
       },
       openLoopbackClientCount: this.#probes.filter((probe) => !probe.client.closed).length,
       journalClosed: this.#journalClosed,
+    };
+  }
+
+  public snapshotSoakStatus(): JsonObject {
+    this.#assertJournalOpen();
+    const peerSnapshot = this.#peer?.snapshot(this.#clockMs) ?? null;
+    return {
+      schemaVersion: "bridge-simulator-soak-status/v1",
+      journalPendingCount: this.#journal.listInvocations().filter((record) =>
+        record.state !== "completed" &&
+        record.state !== "failed" &&
+        record.state !== "guarded").length,
+      peer: peerSnapshot === null
+        ? null
+        : {
+            ...peerSnapshot,
+            runLoopError: this.#runLoopError,
+          } as unknown as JsonObject,
     };
   }
 
@@ -2100,6 +2122,7 @@ const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
   "configure_reconnect_conformance",
   "advance_reconnect_conformance_clock",
   "send_chunk_conformance",
+  "snapshot_soak_status",
   "snapshot_evidence",
   "shutdown",
 ]);

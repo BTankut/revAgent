@@ -2314,61 +2314,17 @@ export class CaseStackSupervisor {
   }
 
   async soakBridgeSnapshot(): Promise<JsonObject> {
-    let fields: Readonly<Record<string, JsonValue>> = {};
-    let expectedSnapshotId: string | undefined;
-    let invocationOffset = 0;
-    let peer: JsonValue | undefined;
-    const invocations: JsonValue[] = [];
-    for (let pageIndex = 0; pageIndex < MAX_SNAPSHOT_PAGES; pageIndex += 1) {
-      const page = await this.jsonlControl("bridge_simulator", "snapshot_evidence", fields);
-      if (
-        !isObject(page) ||
-        !Array.isArray(page.invocations) ||
-        !Object.hasOwn(page, "peer") ||
-        typeof page.snapshotId !== "string"
-      ) {
-        throw new Error("bridge_simulator soak snapshot page is malformed");
-      }
-      if (expectedSnapshotId === undefined) {
-        expectedSnapshotId = page.snapshotId;
-        peer = structuredClone(page.peer);
-      } else if (
-        page.snapshotId !== expectedSnapshotId ||
-        JSON.stringify(page.peer) !== JSON.stringify(peer)
-      ) {
-        throw new Error("bridge_simulator soak snapshot changed during pagination");
-      }
-      invocations.push(...structuredClone(page.invocations));
-      const compact = {
-        schemaVersion: "rbp-bridge-soak-snapshot/v1",
-        invocations,
-        peer: peer ?? null,
-      } satisfies JsonObject;
-      if (Buffer.byteLength(JSON.stringify(compact), "utf8") > MAX_AGGREGATED_SNAPSHOT_BYTES) {
-        throw new Error("bridge_simulator soak snapshot exceeds 4 MiB");
-      }
-      if (page.complete === true || page.invocations.length === 0) {
-        return compact;
-      }
-      if (!isObject(page.nextCursor)) {
-        throw new Error("bridge_simulator soak snapshot continuation is malformed");
-      }
-      const nextInvocationOffset = page.nextCursor.invocationOffset;
-      if (
-        !Number.isSafeInteger(nextInvocationOffset) ||
-        Number(nextInvocationOffset) !== invocationOffset + page.invocations.length
-      ) {
-        throw new Error("bridge_simulator soak invocation cursor is malformed");
-      }
-      invocationOffset = Number(nextInvocationOffset);
-      fields = {
-        snapshotId: page.snapshotId,
-        cursor: page.nextCursor,
-      };
+    const raw = await this.jsonlControl("bridge_simulator", "snapshot_soak_status", {});
+    if (
+      !isObject(raw) ||
+      raw.schemaVersion !== "bridge-simulator-soak-status/v1" ||
+      !Number.isSafeInteger(raw.journalPendingCount) ||
+      Number(raw.journalPendingCount) < 0 ||
+      !Object.hasOwn(raw, "peer")
+    ) {
+      throw new Error("bridge_simulator soak status is malformed");
     }
-    throw new Error(
-      `bridge_simulator soak invocation pagination exceeded ${MAX_SNAPSHOT_PAGES} pages`,
-    );
+    return raw;
   }
 
   async jsonlControl(
@@ -2632,7 +2588,9 @@ export class CaseStackSupervisor {
             contract: "bridge-simulator-control/v1",
           }
         : { contract: "addin-loopback/v1" },
-      requiredActions: ["snapshot_evidence", "shutdown"],
+      requiredActions: isBridge
+        ? ["snapshot_soak_status", "snapshot_evidence", "shutdown"]
+        : ["snapshot_evidence", "shutdown"],
     });
     try {
       if (isBridge && processHandle.readiness.pid !== processHandle.pid) {

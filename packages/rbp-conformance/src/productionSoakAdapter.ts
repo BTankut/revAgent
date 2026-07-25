@@ -25,6 +25,12 @@ function helloId(binding: Binding, cycle: number): string {
 }
 
 function pendingJournalCount(snapshot: JsonObject): number {
+  if (
+    Number.isSafeInteger(snapshot.journalPendingCount) &&
+    Number(snapshot.journalPendingCount) >= 0
+  ) {
+    return Number(snapshot.journalPendingCount);
+  }
   const invocations = Array.isArray(snapshot.invocations) ? snapshot.invocations : [];
   return invocations.filter((entry) =>
     isObject(entry) &&
