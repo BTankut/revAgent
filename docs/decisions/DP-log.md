@@ -377,6 +377,50 @@ index and worktree still equal HEAD. The amendment is limited to deterministic
 checkout bytes: no job, release path, source-identity exception, or PASS
 condition is added or relaxed.
 
+### 2026-07-25 — R-F: M1 semantic freeze and tag closure are decoupled (RES-28)
+
+Source: operator closing instruction from Barış Tankut, 2026-07-25.
+
+- `M1 KAPANIŞ: ONAY`.
+- Add-in implementation owner: Barış Tankut.
+- Owner acceptance: the batchable-command restrictions and atomic rollback
+  evidence are accepted.
+- Draft PR [#290](https://github.com/BTankut/revAgent/pull/290) is authorized
+  to become ready and, after the protected required gates are green, squash
+  merge to `main`. The protected tree-equal merge freezes RBP/1 and closes M1.
+- `rbp/v1.0.0` is not authorized by that merge and MUST NOT be created now.
+  Tag creation requires a separately validated retained three-run aggregate,
+  a real one-hour reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE
+  proxy-interoperability evidence, and protected-tag identity.
+- Missing or incomplete tag evidence is non-blocking for M1 and may be produced
+  in parallel with M2/M3. It does not block M2/M3 start. A substantive
+  semantic or safety finding still follows R-F/versioning and leaves the gate
+  it affects red. M2/M3 kickoff remains subject to a separate authorized
+  operator instruction.
+
+This amendment supersedes the 2026-07-23 entries only where they classify the
+three-run aggregate, one-hour soak, proxy-interoperability evidence, or tag as
+prerequisites for M1 protected merge or M2/M3 build entry. Their fail-closed
+provenance, exact-byte identity, report-validation, protected-branch, and
+versioning controls remain in force. The normative resolution is RES-28 in
+`docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-25 — R-H: milestone evidence is bounded by the authoritative gate
+
+Source: operator instruction from Barış Tankut, 2026-07-25. For every
+milestone, required evidence is limited to the evidence explicitly named by
+the authoritative plan/gate definition. The implementing assistant may not
+promote extra runs, soak tests, demonstrations, repetitions, or other
+diagnostics beyond the governing gate into a blocking requirement or delay a
+milestone on that basis. Required current-head CI and other runs already named
+by the gate remain required. Any proposed
+additional gate evidence must first be submitted for explicit operator
+authorization through an R-G operator task card, including rationale, cost,
+and affected gate. Until approved, supplementary evidence remains
+non-blocking. This rule does not weaken evidence already named by a governing
+gate; it prevents assistant-created escalation. The permanent normative
+wording is R-H in `docs/implementation-plan/00-INDEX.md` §8.
+
 ### 2026-07-22 — R-G: mandatory operator task cards
 
 Source: operator instruction from Barış Tankut, 2026-07-22. Every implementation report that leaves an

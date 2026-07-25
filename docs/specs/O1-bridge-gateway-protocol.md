@@ -4,9 +4,9 @@
 |---|---|
 | Protocol name | RBP/1 (RevAgent Bridge Protocol, version 1) |
 | Document version | 1.0 |
-| Status | Normative v1.0 candidate; freeze verdict pending until Section 22 evidence and protected-tag gates close |
-| Milestone | M1 semantic closure; the v1.0 tag remains conditional on schemas, vectors, and interop evidence |
-| Updated | 2026-07-23 |
+| Status | Normative RBP/1 v1.0; semantic freeze is established by the Section 22 protected-merge gate, while tag closure remains separate |
+| Milestone | M1 closing accepted by the operator; effective when the green protected candidate is merged |
+| Updated | 2026-07-25 |
 | Owner | WP1 / O1 |
 
 RBP/1 is the internal RPC protocol between the RevAgent Gateway and the thin desktop bridge. It is not MCP. MCP exists only at the Gateway north boundary. The bridge-to-add-in hop remains the existing length-prefixed JSON-RPC TCP protocol.
@@ -1527,7 +1527,7 @@ The implementation-independent harness uses a Gateway stub, bridge simulator, an
 
 The required pilot stack additionally runs a real-add-in smoke covering each method family, one confirm-class write, forced reconnect, and one atomic batch.
 
-## 22. v1.0 freeze gate
+## 22. v1.0 semantic-freeze gate and deferred tag closure
 
 The `1.0` candidate text closes the known semantic review items: primary/fallback lifecycle and opening failures,
 zero-based backoff, version window, per-session capability/version fields, unregistration, guarded and omitted
@@ -1535,50 +1535,71 @@ result fields, first-delivery and redelivery batch behavior, session/scope mutat
 verification/late-evidence clearance, RFC 8785 invocation and batch digest inputs, complete nested errors, and
 the multi-file RBP-side GAP-7 output carrier.
 
-The document is nevertheless **not frozen or tagged v1.0** until all of this evidence is merged:
+The document reaches **M1 semantic freeze** when one protected-PR candidate
+contains all of the following evidence and is squash merged through the
+protected `main` path:
 
 - JSON Schemas under `packages/protocol/schemas/rbp/v1` cover every payload, conditional result/batch field,
   control/data envelope prohibition, and capability gate in this document; generated types are byte-stable.
-- The Section 21 golden-vector/conformance suite is green and its machine-readable report is retained.
-- WSS and Streamable HTTP/SSE pass proxy/interoperability tests against the same journal/resume fixtures.
+- One complete Section 21 golden-vector/conformance suite is green on the exact
+  current candidate and the protected PR check rollup is retained.
 - The exact loopback fixture proves the required `mcp_status`/`get_document_context` version and per-session
   capability fields, loopback rejection, and `execute_batch` success/rollback wire behavior.
-- The add-in implementation owner accepts the batchable-command restrictions and atomic rollback evidence.
+- The add-in implementation owner accepts the batchable-command restrictions
+  and atomic rollback evidence. Barış Tankut recorded that acceptance on
+  2026-07-25.
 - GAP-7 RBP stub vectors prove the Section 13.1 multi-file output carrier, stream/descriptor integrity, spool
   confinement, acknowledgement/replay, and cleanup without a general RBP `file_fetch`. WP2/WP9 retain all
   client upload, `artifact_ref`, north-resource authorization, and display/download evidence.
 - Gateway audit and bridge journal evidence materialize the exact RES-21 key, and the dated review outcome plus
   any normative R-F amendments are recorded in `docs/decisions/DP-log.md`.
 
-Evidence is reported in three non-interchangeable tiers:
+Evidence is reported in four non-interchangeable tiers:
 
 1. **Semantic/schema evidence:** this `1.0` candidate text, complete payload schemas, clean generated-type diff, and
    byte-exact golden vectors show that the proposed contract is internally expressible. They do not prove a
    running bridge, Gateway, journal, add-in fixture, or live Revit path and MUST NOT be reported as full M1.
 2. **Executable M1 evidence:** O1-T3 add-in loopback fixture, O1-T4 bridge simulator, O1-T5 Gateway stub, and
-   O1-T6 complete Section 21 suite must produce retained machine-readable results. Until those artifacts are
-   linked and green, `1.0` remains an untagged candidate and the M1 freeze/tag gate is pending.
-3. **Pilot evidence:** O1-T7 exercises the adapted add-in on real Windows/Revit after protocol freeze; WP9
+   O1-T6 complete Section 21 suite must produce one full green current-candidate
+   PR check rollup. Protected tree-equal merge of that candidate establishes
+   the frozen RBP/1 contract and opens the M1 dependency for M2/M3. Absence of
+   the tag does not reopen M1 or block those lanes.
+3. **Deferred tag-closure evidence:** three consecutive complete retained
+   Section 21 runs, one real one-hour reconnect/proxy-churn soak, WSS and exact
+   Streamable HTTP/SSE proxy-interoperability parity against the same
+   journal/resume fixtures, and protected candidate/tag identity validation.
+   This evidence may be produced in parallel with M2/M3 and is non-blocking for
+   their start. It is not a substitute for the M1 suite and it MUST be complete
+   before `rbp/v1.0.0` is created.
+4. **Pilot evidence:** O1-T7 exercises the adapted add-in on real Windows/Revit after protocol freeze; WP9
    separately proves the selected client. These are pilot-entry gates and cannot be substituted by schema,
    simulator, or fixture results.
 
-If T3–T7 implementation evidence reveals that a required field, state transition, digest, carrier, or safety
-rule cannot be implemented as written, the owner MUST leave the affected gate red and record a dated R-F
-amendment before changing the normative contract. Weakening a vector, adding an undocumented tolerance, or
-calling a partial tier “passed” is not conformance.
+If T3–T7 implementation evidence reveals that a required field, state
+transition, digest, carrier, or safety rule cannot be implemented as written,
+the owner MUST leave the affected gate red and record a dated R-F amendment
+before changing the normative contract. Missing or incomplete deferred tag
+evidence keeps only tag closure pending and does not retroactively reopen M1 or
+block M2/M3. A substantive semantic or safety finding still follows R-F and
+Section 7.3, and every gate it affects remains red. Evidence is repeated,
+multiplied, or made blocking beyond the authoritative gate only with explicit
+R-G operator authorization. Weakening a vector, adding an undocumented
+tolerance, or calling a partial tier “passed” is not conformance.
 
 The executable candidate carries the canonical `1.0` metadata and runtime
 constant before the real evidence runs. That version identity is a byte under
-test, not a freeze verdict. Only after the retained evidence and protected-tree
-identity checks pass may the exact protected candidate commit receive
-`rbp/v1.0.0`; the later evidence-record-only protected PR records those facts
-without changing the tagged candidate. Any semantic finding before the tag
-creates a new candidate and new vectors and requires the complete rebuild,
-three-run, and one-hour-soak cycle. Any semantic change after the tag follows
-Section 7.3 versioning rules.
+test, not by itself a freeze verdict. The protected tree-equal M1 merge fixes
+the semantic candidate. Only after the separate retained three-run aggregate,
+one-hour soak, proxy-interoperability evidence, and protected-tree identity
+checks pass may that exact protected candidate commit receive `rbp/v1.0.0`;
+the later evidence-record-only protected PR records those facts without
+changing the tagged candidate. A semantic finding before the tag follows the
+dated R-F and Section 7.3 versioning rules; any required evidence repetition is
+bounded by the applicable gate and R-H evidence ceiling. Any semantic change
+after the tag also follows Section 7.3.
 
 The real adapted-add-in smoke in Section 21 and WP9 hands-on DP-10 artifact/client evidence remain separate
-pilot-entry gates after protocol freeze; they are not prerequisites for the M1 semantic tag. They MUST validate
+pilot-entry gates after protocol freeze; they are not prerequisites for M1 semantic freeze or tag closure. They MUST validate
 the frozen contract, and an incompatibility cannot be papered over: it requires the applicable additive
 capability or protocol-version/R-F change before pilot use.
 

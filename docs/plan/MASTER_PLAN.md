@@ -2,11 +2,12 @@
 
 **Document state:** living migration tracker
 
-**Current milestone:** M1 — in progress
+**Current milestone:** M1 — operator accepted; protected merge of PR #290 is
+the final mechanical close
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-07-23
+**Last updated:** 2026-07-25
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -23,31 +24,39 @@ This file is the operational milestone tracker for the migration described by `d
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
 
-## 2026-07-23 operator lane checkpoint
+## 2026-07-25 M1 closing and operator lane checkpoint
 
-M1 remains the only active milestone. When its candidate is ready, the
-implementation assistant opens the freeze PR as draft, presents the gate demo,
-final v0.9→v1.0 diff summary, and complete conformance result, then stops. The
-PR is not readied or merged and `rbp/v1.0.0` is not created until the
-operator-channel closing review explicitly approves continuation.
+Barış Tankut recorded `M1 KAPANIŞ: ONAY`, identified himself as add-in
+implementation owner, and accepted the batchable-command restrictions and
+atomic rollback evidence. PR #290 may become ready and, after the protected
+required checks are green, squash merge to `main`. Inclusion of the accepted
+candidate through that protected merge freezes RBP/1 and closes M1.
 
 The 2026-07-24 pre-lock candidate gate passed `scripts/test-ci.ps1`, the
 Windows PowerShell 5.1 `scripts/test-all.ps1` gate, all 11 named protected PS5
 installer/updater/security scripts, generated-type clean diff, protocol
-303/303, add-in fixture 55/55, Gateway stub 78/78, Bridge simulator 211/211,
+303/303, add-in fixture 55/55, Gateway stub 78/78, Bridge simulator 214/214,
 three deterministic Bridge runs of 211/211 each, and the complete conformance
 harness gate (59 files, 365/365 tests, 5/5 serial shards). These results are
-implementation-readiness evidence only. M1 remains `in_progress` until the
-documentation-complete candidate produces its authoritative three-run
-aggregate, real one-hour soak, retained-artifact validation, and draft PR
-checks; the assistant then reports and stops without ready/merge/tag.
+supplemented by one complete green current-candidate PR suite, the retained M1
+gate report, and the 2026-07-25 owner acceptance. The exact final PR head must
+remain green and tree-equal through protected merge.
 
-After that approval, this assistant is assigned only to WP2/M2 on
+`rbp/v1.0.0` MUST NOT be created by the M1 merge. Under RES-28, the retained
+three-run aggregate, real one-hour soak, WSS/Streamable HTTP/SSE
+proxy-interoperability evidence, and tag identity form a separate,
+non-blocking closure that may run in parallel with M2/M3. It does not block
+their start. The evidence ceiling in R-H prohibits adding or promoting
+assistant-created evidence requirements.
+
+After the M1 closeout, this assistant is assigned only to WP2/M2 on
 `codex/wp2-*`. It may not edit `packages/bridge/**` or
 `src/revit-plugin/**`; any `packages/protocol/**` change requires a prior dated
 R-F amendment. This is an assistant execution assignment, not an architecture
 change: WP3 remains the M3 bridge/add-in/installer owner and a separate
-assistant receives that lane.
+assistant receives that lane. Neither M2 nor M3 starts from this closing
+approval; each requires a separate authorized kickoff. The current assistant
+stops after PR #290 merge and closeout reporting.
 
 Draft PR [#288](https://github.com/BTankut/revAgent/pull/288) retains the M2
 planning already performed and remains on hold. Its proposed M2 `RES-26`
@@ -89,7 +98,7 @@ pilot-entry carry-forwards. They remain open and are not silently converted into
 | Milestone | Outcome and executable exit demonstration | Depends on | Primary owner(s) | State |
 |---|---|---|---|---|
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `passed` |
-| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults | M0 | WP1 | `in_progress` |
+| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | `accepted` |
 | M2 | North MCP endpoint serves capability index/deferred schemas and dispatches the relocated catalog through executor abstractions | M1 | WP2 | `not_started` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `not_started` |
 | M4 | **Vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with audit evidence | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
@@ -102,7 +111,10 @@ pilot-entry carry-forwards. They remain open and are not silently converted into
 
 ## Work-package map
 
-This Week-1 skeleton maps package lanes to milestone ranges. P8-T2 must expand it to task-level rows before M1 is accepted.
+This Week-1 skeleton maps package lanes to milestone ranges. RES-28 and the
+2026-07-25 owner acceptance supersede P8-T2's former M1-blocking
+classification; task-level schedule expansion remains open planning
+maintenance and is not additional M1 gate evidence.
 
 | Work package | Milestone lane |
 |---|---|
