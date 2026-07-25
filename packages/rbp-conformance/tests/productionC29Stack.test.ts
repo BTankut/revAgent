@@ -12,7 +12,10 @@ import type {
   ManifestAssertion,
   ProcessObservationRecord,
 } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -66,11 +69,16 @@ describe.sequential("C29 production batch redelivery and crash recovery", () => 
   it(
     "proves exact mixed redelivery, atomic replay, and indeterminate recovery on both bindings",
     async () => {
-      const executions = await executeRawProductionCaseBothBindings({
-        plan: productionPlan(),
+      const plan = productionPlan();
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId,
-      });
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
 
       for (const execution of executions) {
         const results = canonicalManifest.requiredAssertions[caseId]!.map((assertion) => ({

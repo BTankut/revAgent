@@ -18,6 +18,10 @@ import type {
   ExecutionPlan,
   RunReport,
 } from "../src/index.js";
+import {
+  beginProductionRuntimeLaunchEpoch,
+  endProductionRuntimeLaunchEpoch,
+} from "../src/productionExecutionPlan.js";
 import { evaluateResourceSamples } from "../src/resourceMetrics.js";
 
 const COMMIT_SHA = "1".repeat(40);
@@ -113,6 +117,19 @@ export function attachCurrentProductionToolchainProvenance(
     component.expectedIdentity.buildProvenance = structuredClone(provenance);
   }
   return plan;
+}
+
+export async function withProductionRuntimeLaunchEpoch<T>(
+  plan: ExecutionPlan,
+  repoRoot: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const epoch = beginProductionRuntimeLaunchEpoch(plan, repoRoot);
+  try {
+    return await action();
+  } finally {
+    endProductionRuntimeLaunchEpoch(epoch);
+  }
 }
 
 export function artifact(kind: ArtifactEvidence["kind"], path: string, hashSeed: number): ArtifactEvidence {

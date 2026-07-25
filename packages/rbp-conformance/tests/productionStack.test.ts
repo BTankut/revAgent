@@ -16,7 +16,10 @@ import type {
   ParentOwnedCaseEvaluator,
   ProcessObservationRecord,
 } from "../src/index.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -78,11 +81,15 @@ describe("production three-process case stack", () => {
     "runs %s through both real Gateway bindings and parent-owned predicates",
     async (caseId) => {
       const plan = productionPlan(caseId);
-      const executions = await executeProductionCaseBothBindings({
+      const executions = await withProductionRuntimeLaunchEpoch(
         plan,
         repoRoot,
-        caseId,
-      });
+        () => executeProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
       const evaluated = evaluateSupervisedCaseExecutions({
         runId: plan.runId,
         caseId,

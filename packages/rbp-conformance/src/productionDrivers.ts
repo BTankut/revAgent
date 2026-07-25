@@ -403,16 +403,28 @@ function conditionObservation(
   return [];
 }
 
-function createHarnessDriver(supervisor: CaseStackSupervisor): ParentStepDriver {
+function createHarnessDriver(
+  supervisor: CaseStackSupervisor,
+  inFlightRestarts: Set<Promise<void>>,
+): ParentStepDriver {
   return async (request) => {
     switch (request.action) {
       case "restart_case_stack": {
-        const restarted = await supervisor.restartCaseStack({
+        const operation = supervisor.restartCaseStack({
           caseId: String(request.arguments.caseId),
           binding: request.binding,
           preserveState: request.arguments.preserveState === true,
           startupOverrides: gatewayOverrides(request.arguments),
-        }, request.stepId, request.action);
+        }, request.stepId, request.action, request.signal);
+        const drained = operation.then(
+          () => undefined,
+          () => undefined,
+        );
+        inFlightRestarts.add(drained);
+        void drained.finally(() => {
+          inFlightRestarts.delete(drained);
+        });
+        const restarted = await operation;
         return asSuccess(restarted.result, restarted.observations);
       }
       case "stop_case_stack": {
@@ -491,12 +503,14 @@ function createHarnessDriver(supervisor: CaseStackSupervisor): ParentStepDriver 
 }
 
 export function createProductionCaseDrivers(supervisor: CaseStackSupervisor): ParentStepDrivers {
+  const inFlightRestarts = new Set<Promise<void>>();
   return {
     gateway_http_control: createGatewayDriver(supervisor),
     bridge_jsonl_control: createBridgeDriver(supervisor),
     fixture_jsonl_control: createFixtureDriver(supervisor),
-    parent_harness: createHarnessDriver(supervisor),
+    parent_harness: createHarnessDriver(supervisor, inFlightRestarts),
     abortAndDrain: async () => {
+      await Promise.all([...inFlightRestarts]);
       if (supervisor.active) {
         await supervisor.stopCaseStack("abort-and-drain", "abort_and_drain");
       }

@@ -423,6 +423,11 @@ function normalizedError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
 }
 
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted !== true) return;
+  throw normalizedError(signal.reason ?? new Error("case stack restart was aborted"));
+}
+
 function setCliListArgument(
   args: readonly string[],
   flag: string,
@@ -1958,9 +1963,12 @@ export class CaseStackSupervisor {
     options: RestartCaseStackOptions,
     stepId: string,
     action: string,
+    signal?: AbortSignal,
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
+    throwIfAborted(signal);
     if (this.#active !== null) {
       await this.stopCaseStack(stepId, "implicit_stop_before_restart");
+      throwIfAborted(signal);
     }
     const instanceRoot = this.#privateInstanceRoot(options.caseId, options.binding);
     const instanceRootId = `sha256:${createHash("sha256").update(instanceRoot).digest("hex")}`;
@@ -1986,6 +1994,7 @@ export class CaseStackSupervisor {
       const fixturePlan = this.#componentPlan("addin_loopback_fixture");
       const fixture = await this.#startComponent(fixturePlan, tokens, options.startupOverrides);
       components.set(fixture.componentId, fixture);
+      throwIfAborted(signal);
       const fixtureHost = numericLoopback(fixture.readiness.host, "fixture readiness host");
       const fixturePort = safePort(fixture.readiness.port, "fixture readiness port");
       fixtureProxy = await ParentTcpCaptureProxy.start({
@@ -1993,6 +2002,7 @@ export class CaseStackSupervisor {
         targetHost: fixtureHost,
         targetPort: fixturePort,
       });
+      throwIfAborted(signal);
       tokens.fixture_host = "127.0.0.1";
       tokens.fixture_port = String(fixtureProxy.listeningPort);
 
@@ -2004,6 +2014,7 @@ export class CaseStackSupervisor {
         tlsIdentity,
       );
       components.set(gateway.componentId, gateway);
+      throwIfAborted(signal);
       const gatewayWs = parseLoopbackUrl(gateway.readiness.ws_url, "Gateway ws_url");
       const gatewayHttp = parseLoopbackUrl(
         gateway.readiness.http_connection_url,
@@ -2023,6 +2034,7 @@ export class CaseStackSupervisor {
         targetHost: gatewayWs.hostname,
         targetPort: safePort(Number(gatewayWs.port), "Gateway proxy target port"),
       });
+      throwIfAborted(signal);
       tokens.gateway_ws_url = proxyUrl(String(gateway.readiness.ws_url), gatewayProxy.listeningPort);
       tokens.gateway_http_connection_url = proxyUrl(
         String(gateway.readiness.http_connection_url),
@@ -2033,6 +2045,7 @@ export class CaseStackSupervisor {
       const bridgePlan = this.#componentPlan("bridge_simulator");
       const bridge = await this.#startComponent(bridgePlan, tokens, options.startupOverrides);
       components.set(bridge.componentId, bridge);
+      throwIfAborted(signal);
 
       const publicReadiness = {
         fixture: {
@@ -2065,6 +2078,7 @@ export class CaseStackSupervisor {
         },
         bridge: { ...bridge.readiness },
       };
+      throwIfAborted(signal);
       this.#active = {
         caseId: options.caseId,
         binding: options.binding,

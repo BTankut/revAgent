@@ -7,7 +7,10 @@ import { canonicalManifest } from "../src/manifest.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { executeRawProductionCaseBothBindings } from "../src/productionCaseRunnerRaw.js";
 import type { ExecutionPlan } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -23,11 +26,16 @@ describe("O1-C35 production sequence boundary", () => {
   it(
     "passes every frozen assertion on both real Gateway bindings",
     async () => {
-      const executions = await executeRawProductionCaseBothBindings({
-        plan: productionPlan(),
+      const plan = productionPlan();
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId: "O1-C35",
-      });
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId: "O1-C35",
+        }),
+      );
       const assertions = canonicalManifest.requiredAssertions["O1-C35"]!;
       for (const execution of executions) {
         for (const assertion of assertions) {

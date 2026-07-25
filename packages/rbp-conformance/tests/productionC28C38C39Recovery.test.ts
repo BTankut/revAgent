@@ -12,7 +12,10 @@ import type {
   ManifestAssertion,
   ProcessObservationRecord,
 } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -192,11 +195,16 @@ describe.sequential("C28/C38/C39 production recovery regressions", () => {
   it.each(caseIds)(
     "%s passes every frozen assertion on both real Gateway bindings",
     async (caseId) => {
-      const executions = await executeRawProductionCaseBothBindings({
-        plan: productionPlan(caseId),
+      const plan = productionPlan(caseId);
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId,
-      });
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
 
       for (const execution of executions) {
         const results = canonicalManifest.requiredAssertions[caseId]!.map((assertion) => ({

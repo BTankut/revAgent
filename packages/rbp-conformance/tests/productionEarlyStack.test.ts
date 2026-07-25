@@ -12,7 +12,10 @@ import {
 } from "../src/productionCaseSeedsEarly.js";
 import { canonicalManifest } from "../src/manifest.js";
 import type { ExecutionPlan } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -28,11 +31,16 @@ describe("early production case stack", () => {
   it.each(EARLY_PRODUCTION_CASES)(
     "runs %s through both real bindings without unresolved tokens or orphan processes",
     async (caseId) => {
-      const executions = await executeEarlyProductionCaseBothBindings({
-        plan: productionPlan(caseId),
+      const plan = productionPlan(caseId);
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId,
-      });
+        () => executeEarlyProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
       expect(executions.map(({ binding }) => binding)).toEqual([
         "wss",
         "streamable_http_sse",

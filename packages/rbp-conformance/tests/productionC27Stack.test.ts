@@ -16,7 +16,10 @@ import type {
   ProcessObservationRecord,
 } from "../src/types.js";
 import type { CanonicalAssertionOracleContext } from "../src/canonicalEvaluators.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -88,10 +91,17 @@ describe.sequential("C27 production reconnect backoff", () => {
     "proves attempts 0..8, the 60-second cap, and the exact 120-second reset on both bindings",
     async () => {
       const plan = productionPlan();
-      const executions: C27Execution[] = [];
-      for (const binding of ["wss", "streamable_http_sse"] as const) {
-        executions.push(await executeBinding(plan, binding));
-      }
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
+        repoRoot,
+        async () => {
+          const results: C27Execution[] = [];
+          for (const binding of ["wss", "streamable_http_sse"] as const) {
+            results.push(await executeBinding(plan, binding));
+          }
+          return results;
+        },
+      );
 
       for (const execution of executions) {
         const results = canonicalManifest.requiredAssertions[caseId]!.map((assertion) => ({

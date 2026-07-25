@@ -21,7 +21,10 @@ import type {
   ProcessObservationRecord,
 } from "../src/types.js";
 import type { ParentOwnedCaseEvaluator } from "../src/suiteRunner.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -111,11 +114,15 @@ describe.sequential("middle production three-process case stack", () => {
     "runs %s through both real Gateway bindings with semantic oracles",
     async (caseId) => {
       const plan = productionPlan(caseId);
-      const executions = await executeMiddleProductionCaseBothBindings({
+      const executions = await withProductionRuntimeLaunchEpoch(
         plan,
         repoRoot,
-        caseId,
-      });
+        () => executeMiddleProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
       const evaluated = evaluateSupervisedCaseExecutions({
         runId: plan.runId,
         caseId,

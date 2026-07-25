@@ -1,11 +1,16 @@
-import { rmSync } from "node:fs";
+import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import type { CaseControlStep } from "../src/casePrograms.js";
 import { CaseStackSupervisor } from "../src/caseStackSupervisor.js";
-import { gatewayControlErrorOutcome } from "../src/productionDrivers.js";
+import { executeParentSteps } from "../src/parentStepEngine.js";
+import {
+  createProductionCaseDrivers,
+  gatewayControlErrorOutcome,
+} from "../src/productionDrivers.js";
 import type { Binding, ExecutionPlan } from "../src/types.js";
 import { createCurrentProductionPlan } from "./helpers.js";
 
@@ -171,6 +176,59 @@ describe("shared production case-stack controls", () => {
     );
     expect(runtimeGuardCalls).toBe(3);
     expect(supervisor.active).toBe(false);
+  }, 30_000);
+
+  it("drains an aborted partial stack start before parent execution returns", async () => {
+    const controller = new AbortController();
+    const removedInstanceRoots: string[] = [];
+    let runtimeGuardCalls = 0;
+    const plan = productionPlan("streamable_http_sse");
+    const supervisor = new CaseStackSupervisor({
+      plan,
+      repoRoot,
+      runtimeLaunchGuard() {
+        runtimeGuardCalls += 1;
+        if (runtimeGuardCalls === 2) {
+          controller.abort(new Error("planned partial stack-start abort"));
+        }
+      },
+      instanceRootRemover(instanceRoot) {
+        removedInstanceRoots.push(instanceRoot);
+        rmSync(instanceRoot, { recursive: true, force: true });
+      },
+    });
+    const restartStep = {
+      stepId: "shared.abort-partial-stack",
+      phase: "setup",
+      channel: "parent_harness",
+      componentId: null,
+      action: "restart_case_stack",
+      arguments: {
+        common: {
+          caseId: "O1-C04",
+          binding: "streamable_http_sse",
+          preserveState: false,
+        },
+      },
+      expectedOutcome: { kind: "success" },
+      execution: { mode: "sequential" },
+      captures: [],
+      parentTimeoutMs: 30_000,
+    } satisfies CaseControlStep;
+
+    await expect(executeParentSteps({
+      runId: plan.runId,
+      caseId: "O1-C04",
+      binding: "streamable_http_sse",
+      steps: [restartStep],
+      drivers: createProductionCaseDrivers(supervisor),
+      signal: controller.signal,
+    })).rejects.toThrow(/planned partial stack-start abort/u);
+
+    expect(runtimeGuardCalls).toBe(3);
+    expect(supervisor.active).toBe(false);
+    expect(removedInstanceRoots).toHaveLength(1);
+    expect(existsSync(removedInstanceRoots[0]!)).toBe(false);
   }, 30_000);
 
   it("preserves runtime drift as primary when failed-start cleanup also fails", async () => {

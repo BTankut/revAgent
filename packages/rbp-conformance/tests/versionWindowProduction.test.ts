@@ -15,7 +15,10 @@ import type {
   ExecutionPlan,
   ProcessObservationRecord,
 } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -40,23 +43,25 @@ function containsForbiddenVerdictKey(value: unknown): boolean {
 
 async function execute(binding: Binding): Promise<ProcessObservationRecord[]> {
   const plan = productionPlan(binding);
-  const supervisor = new CaseStackSupervisor({ plan, repoRoot });
-  try {
-    const evidence = await executeParentSteps({
-      runId: plan.runId,
-      caseId,
-      binding,
-      steps: caseProgram(caseId).steps,
-      drivers: createEarlyProductionCaseDrivers(supervisor),
-      variables: rawProductionCaseVariables(caseId, { binding }),
-    });
-    expect(supervisor.active).toBe(false);
-    return evidence.observations;
-  } finally {
-    if (supervisor.active) {
-      await supervisor.stopCaseStack(`${caseId.toLowerCase()}.test-abort`, "abort_and_drain");
+  return withProductionRuntimeLaunchEpoch(plan, repoRoot, async () => {
+    const supervisor = new CaseStackSupervisor({ plan, repoRoot });
+    try {
+      const evidence = await executeParentSteps({
+        runId: plan.runId,
+        caseId,
+        binding,
+        steps: caseProgram(caseId).steps,
+        drivers: createEarlyProductionCaseDrivers(supervisor),
+        variables: rawProductionCaseVariables(caseId, { binding }),
+      });
+      expect(supervisor.active).toBe(false);
+      return evidence.observations;
+    } finally {
+      if (supervisor.active) {
+        await supervisor.stopCaseStack(`${caseId.toLowerCase()}.test-abort`, "abort_and_drain");
+      }
     }
-  }
+  });
 }
 
 describe("C26 production version window", () => {

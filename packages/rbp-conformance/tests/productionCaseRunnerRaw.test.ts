@@ -8,7 +8,10 @@ import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { executeRawProductionCaseBothBindings } from "../src/productionCaseRunnerRaw.js";
 import { RAW_PRODUCTION_FRAME_FACTS } from "../src/productionCaseSeedsRaw.js";
 import type { ExecutionPlan, ProcessObservationRecord } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -35,11 +38,16 @@ describe("raw production case runner", () => {
   it.each(["O1-C25", "O1-C34"] as const)(
     "executes %s on both authenticated product bindings with exact parent-owned identity oracles",
     async (caseId) => {
-      const executions = await executeRawProductionCaseBothBindings({
-        plan: productionPlan(caseId),
+      const plan = productionPlan(caseId);
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId,
-      });
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
       expect(executions.map(({ binding }) => binding)).toEqual([
         "wss",
         "streamable_http_sse",
@@ -81,11 +89,16 @@ describe("raw production case runner", () => {
   it(
     "executes C30 on both current-stack raw bindings and retains the exact raw frame evidence",
     async () => {
-      const executions = await executeRawProductionCaseBothBindings({
-        plan: productionPlan(),
+      const plan = productionPlan();
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId: "O1-C30",
-      });
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId: "O1-C30",
+        }),
+      );
       expect(executions.map(({ binding }) => binding)).toEqual([
         "wss",
         "streamable_http_sse",

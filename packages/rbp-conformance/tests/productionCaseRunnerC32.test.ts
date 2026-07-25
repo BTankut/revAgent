@@ -7,7 +7,10 @@ import { canonicalManifest } from "../src/manifest.js";
 import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
 import { executeRawProductionCaseBinding } from "../src/productionCaseRunnerRaw.js";
 import type { ExecutionPlan, ProcessObservationRecord } from "../src/types.js";
-import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
@@ -35,12 +38,17 @@ describe("O1-C32 registered-session production conformance", () => {
   it.each(CURRENT_STACK_BINDINGS)(
     "passes every exact chunk assertion on the %s current-stack binding",
     async (binding) => {
-      const execution = await executeRawProductionCaseBinding({
-        plan: productionPlan(),
+      const plan = productionPlan();
+      const execution = await withProductionRuntimeLaunchEpoch(
+        plan,
         repoRoot,
-        caseId: "O1-C32",
-        binding,
-      });
+        () => executeRawProductionCaseBinding({
+          plan,
+          repoRoot,
+          caseId: "O1-C32",
+          binding,
+        }),
+      );
       const assertions = canonicalManifest.requiredAssertions["O1-C32"]!;
       const report: Array<{ binding: string; assertionId: string; passed: boolean }> = [];
       for (const assertion of assertions) {
