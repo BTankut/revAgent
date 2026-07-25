@@ -15,6 +15,33 @@ function decodeUtf8(bytes: Buffer, label: string): string {
   }
 }
 
+function readinessExitError(
+  componentId: ComponentId,
+  code: number | null,
+  signal: NodeJS.Signals | null,
+  transcript: readonly ProcessTranscriptRecord[],
+  trailingStderr = Buffer.alloc(0),
+): Error {
+  const stderrLines = transcript
+    .filter((entry) => entry.stream === "stderr")
+    .map((entry) => entry.line);
+  if (trailingStderr.length > 0) {
+    try {
+      const trailing = decodeUtf8(trailingStderr, `${componentId} trailing stderr`).trimEnd();
+      if (trailing.length > 0) stderrLines.push(trailing);
+    } catch {
+      stderrLines.push("<invalid-utf8>");
+    }
+  }
+  const stderr = stderrLines.join(" | ");
+  const excerpt = stderr.length <= 4_096 ? stderr : stderr.slice(-4_096);
+  return new Error(
+    `${componentId} exited before readiness (${String(code ?? signal)})${
+      excerpt.length === 0 ? "" : `; stderr: ${excerpt}`
+    }`,
+  );
+}
+
 export interface JsonObject {
   [key: string]: JsonValue;
 }
@@ -199,8 +226,16 @@ export class StrictJsonlProcess {
         child.kill("SIGTERM");
       };
       child.once("error", fail);
-      child.once("exit", (code, signal) => {
-        if (!settled) fail(new Error(`${options.componentId} exited before readiness (${String(code ?? signal)})`));
+      child.once("close", (code, signal) => {
+        if (!settled) {
+          fail(readinessExitError(
+            options.componentId,
+            code,
+            signal,
+            transcript,
+            stderrBuffer,
+          ));
+        }
       });
       child.stdout.on("data", (chunk: Buffer) => {
         stdoutBuffer = Buffer.concat([stdoutBuffer, chunk]);
@@ -464,8 +499,10 @@ export class StrictReadyProcess {
         child.kill("SIGTERM");
       }, options.command.readiness.timeoutMs);
       child.once("error", reject);
-      child.once("exit", (code, signal) => {
-        if (!settled) reject(new Error(`${options.componentId} exited before readiness (${String(code ?? signal)})`));
+      child.once("close", (code, signal) => {
+        if (!settled) {
+          reject(readinessExitError(options.componentId, code, signal, transcript));
+        }
       });
       child.stdout.on("data", (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);

@@ -160,4 +160,16 @@ describe("strict JSONL process control", () => {
       requiredActions: ["ping", "shutdown"],
     })).rejects.toThrow(/missing controls/u);
   });
+
+  it("retains bounded stderr when a component exits before readiness", async () => {
+    await expect(StrictJsonlProcess.start({
+      componentId: "addin_loopback_fixture",
+      command: command("stderr-exit"),
+      absoluteWorkingDirectory: here,
+      expectedReadinessFields: { component: "fixture-test" },
+      requiredActions: ["shutdown"],
+    })).rejects.toThrow(
+      /exited before readiness \(1\).*EADDRINUSE.*address already in use/u,
+    );
+  });
 });

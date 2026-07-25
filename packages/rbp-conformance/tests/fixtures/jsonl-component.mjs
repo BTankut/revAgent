@@ -1,4 +1,13 @@
 const mode = process.argv[2] ?? "good";
+if (mode === "stderr-exit") {
+  await new Promise((resolve) => {
+    process.stderr.write(
+      "listen EADDRINUSE: address already in use 127.0.0.1:43123\n",
+      resolve,
+    );
+  });
+  process.exit(1);
+}
 const actions = mode === "missing-action"
   ? ["shutdown"]
   : ["ping", "fail", "stall", "release", "shutdown"];
