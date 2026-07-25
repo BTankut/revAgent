@@ -37,7 +37,7 @@ the freeze verdict:
 | Engineering gate | `pwsh -File scripts/test-ci.ps1`: PASS | Protected PR checks still run on the final pushed commit |
 | Windows non-Revit gate | Windows PowerShell 5.1 `scripts/test-all.ps1`: PASS | Protected PR checks still run on the final pushed commit |
 | Windows protected-script matrix | 11/11 named PS5 installer/updater/security scripts: PASS | None locally; protected PR remains authoritative |
-| Workspace/package gate | Generated diff clean; protocol 303/303; add-in fixture 55/55; Gateway stub 78/78; Bridge simulator 211/211; conformance harness 57 files and 352/352 tests across 5/5 serial shards: PASS | GitHub `gateway-gates` supplies the exact Node 20 runner |
+| Workspace/package gate | Generated diff clean; protocol 303/303; add-in fixture 55/55; Gateway stub 78/78; Bridge simulator 211/211; conformance harness 59 files and 365/365 tests across 5/5 serial shards: PASS | GitHub `gateway-gates` supplies the exact Node 20 runner |
 | Bridge determinism/package boundary | Three independent deterministic runs, 211/211 tests each, `failed=0`; package dry-run: PASS | Linux workflow reruns on the protected PR |
 | Source-byte attestation | Clean detached raw worktree; every tracked file byte-hashed to protected HEAD with zero mismatches | Repeat against the final documentation-complete candidate commit |
 
@@ -132,7 +132,7 @@ push to `main`.
 | O1-T3 | Separate add-in loopback fixture process with framing, capability, fault, count, batch, and artifact evidence | PRs #283–#285 merged; pre-lock fixture gate is 55/55; exact final process identity will be retained by T6 | `passed` |
 | O1-T4 | Separate Bridge simulator process with both bindings, durable journal/holds, recovery, and artifact spool | PR #287 merged; pre-lock package gate is 211/211 and three determinism runs are 211/211 each; exact final process identity will be retained by T6 | `passed` |
 | O1-T5 | Separate Gateway stub process with both bindings, auth/session tables, dispatch, resume, proxy/fault controls, and artifact sink | PR #286 merged; pre-lock package gate is 78/78; exact final process identity will be retained by T6 | `passed` |
-| O1-T6 | Forty canonical cases × two bindings, three consecutive passing runs, retained JSON/JUnit, suite under ten minutes, zero fd/journal/orphan leak and bounded memory | Fail-closed harness gate passes 57 files and 352/352 tests; authoritative three-run aggregate and one-hour soak are still pending | `in_progress` |
+| O1-T6 | Forty canonical cases × two bindings, three consecutive passing runs, retained JSON/JUnit, suite under ten minutes, zero fd/journal/orphan leak and bounded memory | Fail-closed harness gate passes 59 files and 365/365 tests; authoritative three-run aggregate and one-hour soak are still pending | `in_progress` |
 | O1-T8 | Harness findings folded into the candidate; canonical `1.0` metadata and protocol constant; this ledger; validated protected-main tag | Candidate metadata and ledger are present; owner acceptance, final R-F review, protected merge, and tag remain pending | `in_progress` |
 
 ## Three-run conformance aggregate
@@ -180,7 +180,7 @@ clock cannot satisfy it.
 |---|---|---|---|
 | Payload/conditional schemas and byte-stable generated types | Exact freeze-tree protocol tests, conformance schema vectors, and clean generated diff | Pre-lock generated diff and protocol/conformance tests pass; final protected-PR output pending | `in_progress` |
 | Complete Section 21 suite | Three-run aggregate and retained per-case parent evidence | Not available | `not_started` |
-| WSS and Streamable HTTP/SSE proxy/interoperability parity | Raw per-binding transport observations plus equal journal/resume outcomes | Harness implementation and pre-lock 352/352 gate pass; retained final-run observations pending | `in_progress` |
+| WSS and Streamable HTTP/SSE proxy/interoperability parity | Raw per-binding transport observations plus equal journal/resume outcomes | Harness implementation and pre-lock 365/365 gate pass; retained final-run observations pending | `in_progress` |
 | Exact loopback fixture contract | C04, C13, C14, C19, C22, C23, C33 and related raw/count evidence | Fixture 55/55 and harness pre-lock gates pass; retained final-run evidence pending | `in_progress` |
 | Batchable-command restrictions and atomic rollback acceptance | Exact `batchable:true` command set, one-frame commit/rollback, model digest, and owner acceptance record | Executable owner-acceptance evidence not yet linked | `in_progress` |
 | GAP-7 RBP artifact carrier | C15/C32/C40 stream, descriptor, digest, size, retransmission, confinement, cleanup evidence | Harness implementation and pre-lock gates pass; retained final-run evidence pending | `in_progress` |
