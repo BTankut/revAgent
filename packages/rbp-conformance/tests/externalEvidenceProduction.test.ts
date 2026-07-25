@@ -22,6 +22,11 @@ import { createCurrentProductionPlan } from "./helpers.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(packageRoot, "..", "..");
+const THREE_COMPONENT_STACK_START_GUARD_CALLS = 3 * 2;
+const STACK_STOP_GUARD_CALLS = 1;
+const FIXTURE_BIND_PROBE_GUARD_CALLS = 2;
+const CLEAN_RESOURCE_LIFECYCLE_GUARD_CALLS =
+  (THREE_COMPONENT_STACK_START_GUARD_CALLS * 2) + (STACK_STOP_GUARD_CALLS * 2);
 
 function productionPlan(caseId: "O1-C33" | "O1-C40"): ExecutionPlan {
   return createCurrentProductionPlan(
@@ -140,7 +145,10 @@ describe("C33/C40 external production evidence", () => {
     async (caseId) => {
       for (const binding of ["wss", "streamable_http_sse"] as const) {
         const { observations, runtimeGuardCalls } = await execute(caseId, binding);
-        expect(runtimeGuardCalls).toBe(caseId === "O1-C33" ? 17 : 13);
+        // C33 adds two direct bind probes, each guarded before and after execution.
+        const expectedRuntimeGuardCalls = CLEAN_RESOURCE_LIFECYCLE_GUARD_CALLS +
+          (caseId === "O1-C33" ? FIXTURE_BIND_PROBE_GUARD_CALLS * 2 : 0);
+        expect(runtimeGuardCalls).toBe(expectedRuntimeGuardCalls);
         const assertions = canonicalManifest.requiredAssertions[caseId]!;
         for (const assertion of assertions) {
           const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id)!;
