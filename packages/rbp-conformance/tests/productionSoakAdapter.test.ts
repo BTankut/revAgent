@@ -15,9 +15,9 @@ function productionPlan(): ExecutionPlan {
 }
 
 describe("production reconnect/proxy-churn soak adapter", () => {
-  it("keeps two real three-process stacks alive beyond the compact snapshot bound", async () => {
+  it("keeps two real three-process stacks alive beyond full snapshot pagination bounds", async () => {
     let runtimeGuardCalls = 0;
-    const stressCycleCount = 360;
+    const stressCycleCount = 720;
     const adapter = await createProductionReconnectSoakAdapter({
       plan: productionPlan(),
       repoRoot,
@@ -51,7 +51,7 @@ describe("production reconnect/proxy-churn soak adapter", () => {
     }
     expect(runtimeGuardCalls).toBe(12 + stressCycleCount + 2);
     await expect(adapter.orphanProcessCount()).resolves.toBe(0);
-  }, 120_000);
+  }, 180_000);
 
   it("fails closed when a post-cycle runtime guard detects drift", async () => {
     let runtimeGuardCalls = 0;

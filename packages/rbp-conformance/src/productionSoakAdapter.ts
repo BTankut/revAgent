@@ -258,7 +258,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
     const restarted = isObject(restartedValue) ? restartedValue : {};
     const opened = await this.#discoverAndOpen(binding, cycle, false);
     const gatewaySessionCount = await supervisor.gatewaySessionCount();
-    const bridgeSnapshot = await supervisor.aggregateSnapshot("bridge_simulator");
+    const bridgeSnapshot = await supervisor.soakBridgeSnapshot();
     const peer = isObject(bridgeSnapshot.peer) ? bridgeSnapshot.peer : {};
     const reconnects =
       numeric(restarted.restoredSessionCount, "restoredSessionCount") >= 1 &&
@@ -293,7 +293,7 @@ export class ProductionReconnectSoakAdapter implements ReconnectSoakAdapter {
       openFileDescriptorCount += sample.descriptorCount;
     }
     const snapshots = await Promise.all([...this.#supervisors.values()].map(async (supervisor) =>
-      await supervisor.aggregateSnapshot("bridge_simulator")));
+      await supervisor.soakBridgeSnapshot()));
     return {
       residentBytes,
       openFileDescriptorCount,
