@@ -142,6 +142,14 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   leaks an add-in-local path. A malformed atomic committed carrier is indeterminate, not repaired by
   inference. This is a protocol clarification required by executable W1 evidence, not a relaxation of the
   batch or conformance gates.
+- **RES-27 (2026-07-25 R-F review) — Windows CI rematerializes the protected HEAD bytes after checkout.**
+  The M1 source-identity gate raw-hashes every tracked file and intentionally ignores Git clean filters.
+  A reused self-hosted Windows worktree can therefore remain physically CRLF even after a new
+  `eol=lf` rule makes Git's normalized status clean. Both existing Windows jobs in `.github/workflows/ci.yml`
+  run `git -c core.autocrlf=false checkout-index --force --all` immediately after checkout so all tracked
+  paths are rewritten from the checked-out index before any test executes. This is a bounded M1
+  source-integrity correction to RES-24; it does not add a job, alter a release workflow, or weaken the
+  exact-byte gate.
 
 ---
 

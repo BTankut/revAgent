@@ -358,6 +358,21 @@ malformed/contradictory committed carriers fail closed as indeterminate. This am
 contract hole; it does not weaken any batch, rollback, journal, or conformance assertion. The normative
 amendment is RES-26 in `docs/implementation-plan/00-INDEX.md`.
 
+### 2026-07-25 — R-F: Windows CI rematerializes protected source bytes (RES-27)
+
+M1 gate evidence on the reused self-hosted Windows runner showed that
+`.gitattributes` alone does not rewrite tracked files whose blob ids did not
+change. Git reported the checkout as clean through LF normalization while the
+raw worktree bytes remained CRLF, so the fail-closed source-identity check
+correctly rejected the candidate.
+
+RES-27 requires both existing Windows jobs in `.github/workflows/ci.yml` to run
+`git -c core.autocrlf=false checkout-index --force --all` immediately after
+checkout. This forces every tracked path to be materialized from the protected
+index under the repository's LF policy before tests begin. The amendment is
+limited to deterministic checkout bytes: no job, release path, source-identity
+exception, or PASS condition is added or relaxed.
+
 ### 2026-07-22 — R-G: mandatory operator task cards
 
 Source: operator instruction from Barış Tankut, 2026-07-22. Every implementation report that leaves an
