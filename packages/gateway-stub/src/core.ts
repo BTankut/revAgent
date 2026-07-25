@@ -38,11 +38,13 @@ import {
   mutationScopeKey,
   mutationScopesConflict,
   openDispatchWindow,
-  parseRbpFrame,
   queueOutboundData,
+  RBP_MAX_CONTROL_FRAME_BYTES,
   RBP_HEARTBEAT_DEGRADED_AFTER_MS,
   RBP_HEARTBEAT_DISCONNECTED_AFTER_MS,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
+  RBP_MAX_SAFE_SEQUENCE,
+  RbpFrameError,
   recordLateTerminalEvidence,
   recordVerificationEvidence,
   resolveMutationHold,
@@ -71,9 +73,15 @@ import {
 } from "./negotiation.js";
 import { serializeHelloAck } from "./preNegotiation.js";
 import { DurableGatewayStateStore } from "./stateStore.js";
+import {
+  assertImplementedProtocolWindow,
+  parseNegotiatedRbpFrame,
+  serializeNegotiatedRbpEnvelope,
+} from "./versionAdapter.js";
 import type {
   AuthStatus,
   AuthenticatedDevice,
+  AuthorizationAuditEntry,
   DispatchBatchRequest,
   DispatchCancelRequest,
   DispatchInvokeRequest,
@@ -94,6 +102,14 @@ import type {
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const PENDING_HOLD_MS = 10 * 60 * 1000;
+const AUTHORIZATION_AUDIT_CAPACITY = 256;
+const RESERVED_IDENTITY_FIELDS = new Set([
+  "tenant_id",
+  "user_id",
+  "seat_id",
+  "principal",
+  "seat",
+]);
 
 class SystemClock implements GatewayClock {
   nowMs(): number {
@@ -106,6 +122,111 @@ interface RuntimeConnection {
   helloReceived: boolean;
   grantedCapabilities: string[];
   lifecycle: ConnectionLifecycleState;
+}
+
+function claimedSessionIdentityFields(payload: unknown): string[] {
+  const claimed: string[] = [];
+  if (typeof payload !== "object" || payload === null || Array.isArray(payload)) return claimed;
+  const record = payload as Record<string, unknown>;
+  for (const field of RESERVED_IDENTITY_FIELDS) {
+    if (Object.prototype.hasOwnProperty.call(record, field)) claimed.push(field);
+  }
+  const hint = record.user_hint;
+  if (typeof hint === "object" && hint !== null && !Array.isArray(hint)) {
+    for (const field of RESERVED_IDENTITY_FIELDS) {
+      if (Object.prototype.hasOwnProperty.call(hint, field)) claimed.push(`user_hint.${field}`);
+    }
+  }
+  return claimed.sort();
+}
+
+const rejectedClaimDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
+const rejectedClaimEncoder = new TextEncoder();
+
+function preflightRejectedSessionIdentityClaims(
+  frame: Uint8Array,
+  parseError: unknown,
+  selectedProtocol: number,
+): string[] {
+  // parseRbpFrame reaches invalid_envelope only after strict UTF-8, JSON syntax,
+  // duplicate-key, and frame-limit checks. Re-parse solely to identify and
+  // remove reserved field names, then require the remainder to pass the
+  // unchanged canonical schema before classifying the rejection as auth.
+  if (
+    !(parseError instanceof RbpFrameError) ||
+    parseError.code !== "invalid_envelope" ||
+    frame.byteLength > RBP_MAX_CONTROL_FRAME_BYTES
+  ) {
+    return [];
+  }
+
+  let value: unknown;
+  try {
+    value = JSON.parse(rejectedClaimDecoder.decode(frame)) as unknown;
+  } catch {
+    return [];
+  }
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
+  const envelope = value as Record<string, unknown>;
+  if (envelope.type !== "session_register") return [];
+  const payload = envelope.payload;
+  const claimedFields = claimedSessionIdentityFields(payload);
+  if (
+    claimedFields.length === 0 ||
+    typeof payload !== "object" ||
+    payload === null ||
+    Array.isArray(payload)
+  ) {
+    return [];
+  }
+
+  const sanitizedPayload = { ...(payload as Record<string, unknown>) };
+  for (const field of RESERVED_IDENTITY_FIELDS) delete sanitizedPayload[field];
+  if (
+    typeof sanitizedPayload.user_hint === "object" &&
+    sanitizedPayload.user_hint !== null &&
+    !Array.isArray(sanitizedPayload.user_hint)
+  ) {
+    const sanitizedHint = {
+      ...(sanitizedPayload.user_hint as Record<string, unknown>),
+    };
+    for (const field of RESERVED_IDENTITY_FIELDS) delete sanitizedHint[field];
+    sanitizedPayload.user_hint = sanitizedHint;
+  }
+
+  try {
+    const sanitized = parseNegotiatedRbpFrame(
+      rejectedClaimEncoder.encode(JSON.stringify({
+        ...envelope,
+        payload: sanitizedPayload,
+      })),
+      selectedProtocol,
+    ).envelope;
+    return sanitized.type === "session_register" ? claimedFields : [];
+  } catch {
+    return [];
+  }
+}
+
+function authorizationOperation(envelope: RbpEnvelope): AuthorizationAuditEntry["operation"] {
+  switch (envelope.type) {
+    case "session_register":
+    case "session_resume":
+    case "session_unregister":
+    case "heartbeat":
+      return envelope.type;
+    default:
+      return "bridge_data";
+  }
+}
+
+function authorizationReason(fault: GatewayStubFault): AuthorizationAuditEntry["reason"] {
+  if (fault.message.includes("bridge-claimed")) return "claimed_identity";
+  if (fault.message.includes("machine fingerprint")) return "machine_fingerprint_mismatch";
+  if (fault.message.includes("credential") || fault.message.includes("seat authorization")) {
+    return "credential_or_seat_status";
+  }
+  return "connection_or_session_authority";
 }
 
 export class GatewayStubFault extends Error {
@@ -222,14 +343,14 @@ export class GatewayStubCore {
   private readonly tokenTable: Map<string, StaticDeviceIdentity>;
   private readonly connections = new Map<string, RuntimeConnection>();
   private readonly sessionBindings = new Map<string, string>();
+  private readonly authorizationAudit: AuthorizationAuditEntry[] = [];
+  private authorizationAuditSequence = 0;
 
   private constructor(options: GatewayStubCoreOptions, store: DurableGatewayStateStore) {
     this.store = store;
     this.clock = options.clock ?? new SystemClock();
     const supportedProtocols = normalizeSupportedProtocols(options.supportedProtocols ?? [1]);
-    if (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1) {
-      throw new TypeError("the O1-T5 bootstrap stub implements and advertises only RBP/1 until an RBP/2 adapter exists");
-    }
+    assertImplementedProtocolWindow(supportedProtocols);
     this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
@@ -312,13 +433,15 @@ export class GatewayStubCore {
       throw new GatewayStubFault("hello may appear only once", "protocol", 4400);
     }
     if (!secureStringEqual(hello.payload.device_id, runtime.transport.device.deviceId)) {
+      this.recordAuthorizationAudit(runtime, "hello", "rejected", "connection_or_session_authority", []);
       throw new GatewayStubFault("hello device_id does not match authenticated enrollment", "auth", 4403);
     }
 
     let selected: number;
     try {
       selected = selectProtocolVersion(
-        this.supportedProtocols,
+        this.supportedProtocols.filter((version) =>
+          runtime.transport.offeredProtocols.includes(version)),
         hello.payload.min_protocol,
         hello.payload.max_protocol,
       );
@@ -328,14 +451,6 @@ export class GatewayStubCore {
       }
       throw error;
     }
-    if (selected !== 1) {
-      throw new GatewayStubFault(
-        `RBP/${selected} wire adapter is not implemented by the O1-T5 v1 stub`,
-        "unsupported",
-        4426,
-      );
-    }
-
     const provisioned = new Set(runtime.transport.device.provisionedCapabilities);
     const requested = new Set(hello.payload.capabilities);
     const granted = this.connectionCapabilities.filter(
@@ -379,6 +494,7 @@ export class GatewayStubCore {
       selectedProtocol: selected,
       grantedCapabilities: granted,
     });
+    this.recordAuthorizationAudit(runtime, "hello", "allowed", "enrollment_bound", []);
     return ack;
   }
 
@@ -393,9 +509,34 @@ export class GatewayStubCore {
   async receiveFrame(connectionId: string, frame: Uint8Array): Promise<FrameDeliveryResult> {
     const runtime = this.requireActiveConnection(connectionId);
     let envelope: RbpEnvelope;
+    let wireProtocol: number | null;
     try {
-      envelope = parseRbpFrame(frame);
+      const parsed = parseNegotiatedRbpFrame(
+        frame,
+        runtime.transport.selectedProtocol,
+      );
+      envelope = parsed.envelope;
+      wireProtocol = parsed.wireProtocol;
     } catch (error) {
+      const claimedFields = preflightRejectedSessionIdentityClaims(
+        frame,
+        error,
+        runtime.transport.selectedProtocol,
+      );
+      if (claimedFields.length > 0) {
+        this.recordAuthorizationAudit(
+          runtime,
+          "session_register",
+          "rejected",
+          "claimed_identity",
+          claimedFields,
+        );
+        throw new GatewayStubFault(
+          "session registration contains bridge-claimed principal or seat authority",
+          "auth",
+          4403,
+        );
+      }
       throw new GatewayStubFault(
         error instanceof Error ? error.message : "invalid RBP frame",
         "protocol",
@@ -405,16 +546,32 @@ export class GatewayStubCore {
     if (envelope.type === "hello" || envelope.type === "hello_ack") {
       throw new GatewayStubFault("pre-negotiation message received after hello exchange", "protocol", 4400);
     }
-    if (envelope.v !== runtime.transport.selectedProtocol) {
+    if (wireProtocol !== runtime.transport.selectedProtocol) {
       throw new GatewayStubFault("message version differs from selected protocol", "protocol", 4400);
     }
-    return this.faults.apply(
-      connectionId,
-      runtime.transport.binding,
-      "bridge_to_gateway",
-      envelope.type === "partial" ? envelope.payload.kind : envelope.type,
-      async () => this.processEnvelope(connectionId, envelope),
-    );
+    try {
+      return await this.faults.apply(
+        connectionId,
+        runtime.transport.binding,
+        "bridge_to_gateway",
+        envelope.type === "partial" ? envelope.payload.kind : envelope.type,
+        async () => this.processEnvelope(connectionId, envelope),
+      );
+    } catch (error) {
+      if (error instanceof GatewayStubFault && error.faultClass === "auth") {
+        const claimedFields = envelope.type === "session_register"
+          ? claimedSessionIdentityFields(envelope.payload)
+          : [];
+        this.recordAuthorizationAudit(
+          runtime,
+          authorizationOperation(envelope),
+          "rejected",
+          authorizationReason(error),
+          claimedFields,
+        );
+      }
+      throw error;
+    }
   }
 
   async dispatchInvoke(request: DispatchInvokeRequest): Promise<RbpEnvelope> {
@@ -624,6 +781,87 @@ export class GatewayStubCore {
     });
   }
 
+  /**
+   * Strict conformance-only counter seam. It advances an otherwise idle,
+   * durable sequence state so the real parser and dispatch paths can exercise
+   * JSON-safe exhaustion and forward-gap behavior in bounded wall-clock time.
+   */
+  async primeSequenceForConformance(
+    rsid: string,
+    mode: "bridge_to_gateway_near_exhaustion" | "gateway_to_bridge_gap_after_one",
+  ): Promise<{
+    readonly rsid: string;
+    readonly mode: typeof mode;
+    readonly nextTxSeq: number | null;
+    readonly highestTxSeq: number;
+    readonly lastRxSeq: number;
+    readonly lastPeerAck: number;
+    readonly outboxCount: number;
+  }> {
+    this.requireSession(rsid);
+    if (!this.sessionBindings.has(rsid)) {
+      throw new GatewayStubFault("sequence conformance prime requires a connected session", "environment", 1011);
+    }
+    const state = await this.store.update((draft) => {
+      const session = draft.sessions[rsid];
+      if (
+        session === undefined ||
+        session.revoked ||
+        !session.lifecycle.dispatchAllowed
+      ) {
+        throw new GatewayStubFault("sequence conformance prime requires an active session", "auth", 4403);
+      }
+      if (
+        session.inFlight !== null ||
+        session.dispatchWindow.active.length !== 0 ||
+        session.sequence.outbox.length !== 0
+      ) {
+        throw new GatewayStubFault("sequence conformance prime requires an idle data window", "protocol", 4400);
+      }
+      if (mode === "bridge_to_gateway_near_exhaustion") {
+        if (
+          session.sequence.lastRxSeq !== 1 ||
+          session.sequence.nextTxSeq !== 1 ||
+          session.sequence.highestTxSeq !== 0 ||
+          session.sequence.lastPeerAck !== 0
+        ) {
+          throw new GatewayStubFault("near-exhaustion prime requires the exact post-registration baseline", "protocol", 4400);
+        }
+        session.sequence = {
+          ...session.sequence,
+          lastRxSeq: RBP_MAX_SAFE_SEQUENCE - 1,
+        };
+      } else if (mode === "gateway_to_bridge_gap_after_one") {
+        if (
+          session.sequence.nextTxSeq !== 2 ||
+          session.sequence.highestTxSeq !== 1 ||
+          session.sequence.lastPeerAck !== 1
+        ) {
+          throw new GatewayStubFault("forward-gap prime requires one completed outbound dispatch", "protocol", 4400);
+        }
+        session.sequence = {
+          ...session.sequence,
+          nextTxSeq: 3,
+          highestTxSeq: 2,
+          lastPeerAck: 2,
+          outbox: [],
+        };
+      } else {
+        throw new GatewayStubFault("sequence conformance mode is invalid", "protocol", 4400);
+      }
+      return structuredClone(session.sequence);
+    });
+    return {
+      rsid,
+      mode,
+      nextTxSeq: state.nextTxSeq,
+      highestTxSeq: state.highestTxSeq,
+      lastRxSeq: state.lastRxSeq,
+      lastPeerAck: state.lastPeerAck,
+      outboxCount: state.outbox.length,
+    };
+  }
+
   async livenessSweep(): Promise<string[]> {
     const now = this.clock.nowMs();
     const disconnectConnections = new Set<string>();
@@ -746,6 +984,14 @@ export class GatewayStubCore {
       schemaVersion: 1,
       sessions,
       mutationHolds: structuredClone(state.mutationHolds),
+      authorizationAudit: {
+        evidenceVersion: 1,
+        capacity: AUTHORIZATION_AUDIT_CAPACITY,
+        totalEventCount: this.authorizationAuditSequence,
+        droppedEventCount: Math.max(0, this.authorizationAuditSequence - this.authorizationAudit.length),
+        secretsRedacted: true,
+        entries: structuredClone(this.authorizationAudit),
+      },
       runtime: {
         openConnections: this.connections.size,
         connectionPhases: Object.fromEntries(
@@ -1010,7 +1256,10 @@ export class GatewayStubCore {
   private async sendEnvelope(connectionId: string, envelope: RbpEnvelope): Promise<void> {
     const runtime = this.requireActiveConnection(connectionId);
     assertEnvelope(envelope);
-    const serialized = JSON.stringify(envelope);
+    const serialized = serializeNegotiatedRbpEnvelope(
+      envelope,
+      runtime.transport.selectedProtocol,
+    );
     await this.faults.apply(
       connectionId,
       runtime.transport.binding,
@@ -1086,6 +1335,14 @@ export class GatewayStubCore {
 
   private async handleSessionRegister(connectionId: string, payload: SessionRegister): Promise<void> {
     const runtime = this.requireActiveConnection(connectionId);
+    const claimedIdentityFields = claimedSessionIdentityFields(payload);
+    if (claimedIdentityFields.length > 0) {
+      throw new GatewayStubFault(
+        "session registration contains bridge-claimed principal or seat authority",
+        "auth",
+        4403,
+      );
+    }
     if (!secureStringEqual(payload.machine.fingerprint, runtime.transport.device.machineFingerprint)) {
       throw new GatewayStubFault("session machine fingerprint does not match enrollment", "auth", 4403);
     }
@@ -1178,6 +1435,7 @@ export class GatewayStubCore {
       this.sessionBindings.delete(replacedRsid);
     }
     this.sessionBindings.set(output.rsid, connectionId);
+    this.recordAuthorizationAudit(runtime, "session_register", "allowed", "enrollment_bound", []);
     await this.sendEnvelope(connectionId, output.response);
   }
 
@@ -2043,6 +2301,32 @@ export class GatewayStubCore {
       this.sessionBindings.get(rsid) !== connectionId
     ) {
       throw new GatewayStubFault("cross-device or cross-session authorization failure", "auth", 4403);
+    }
+  }
+
+  private recordAuthorizationAudit(
+    runtime: RuntimeConnection,
+    operation: AuthorizationAuditEntry["operation"],
+    decision: AuthorizationAuditEntry["decision"],
+    reason: AuthorizationAuditEntry["reason"],
+    claimedIdentityFields: readonly string[],
+  ): void {
+    this.authorizationAuditSequence += 1;
+    this.authorizationAudit.push({
+      sequence: this.authorizationAuditSequence,
+      atMs: this.clock.nowMs(),
+      operation,
+      decision,
+      reason,
+      connectionIdDigest: sha256Digest(runtime.transport.connectionId),
+      deviceIdDigest: sha256Digest(runtime.transport.device.deviceId),
+      claimedIdentityFields: [...new Set(claimedIdentityFields)].sort(),
+    });
+    if (this.authorizationAudit.length > AUTHORIZATION_AUDIT_CAPACITY) {
+      this.authorizationAudit.splice(
+        0,
+        this.authorizationAudit.length - AUTHORIZATION_AUDIT_CAPACITY,
+      );
     }
   }
 

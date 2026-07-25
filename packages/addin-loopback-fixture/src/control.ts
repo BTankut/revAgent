@@ -154,6 +154,7 @@ function evidencePage(
     methodExecutionCounts: methodExecutionCounts as unknown as JsonValue,
     modelStateDigest: snapshot.modelStateDigest,
     modelStateEntryCount: snapshot.modelStateEntryCount,
+    documentContextEvidence: snapshot.documentContextEvidence as unknown as JsonObject,
     pendingStalls: pendingStalls as unknown as JsonValue,
     openSocketCount: snapshot.openSocketCount,
     crashed: snapshot.crashed,

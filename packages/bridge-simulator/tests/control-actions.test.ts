@@ -1,5 +1,8 @@
 import { Buffer } from "node:buffer";
+import { createHash, X509Certificate } from "node:crypto";
 import { once } from "node:events";
+import { writeFileSync } from "node:fs";
+import { createServer as createHttpsServer } from "node:https";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
@@ -14,8 +17,236 @@ import { WebSocketServer } from "ws";
 import { BridgeDaemonRuntime } from "../src/control.js";
 import { DurableBridgeJournal } from "../src/journal.js";
 import { readInvoke, simulatorForFixture, temporaryRoot, uuid } from "./helpers.js";
+import { createTestTlsIdentity } from "./tlsFixture.js";
+
+function sha256(value: string | Uint8Array): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
 
 describe("Bridge daemon journal controls", () => {
+  it("reads one exact bounded and intact durable journal record for conformance", async () => {
+    const root = temporaryRoot();
+    const rsid = "rs_c28_exact_journal";
+    const invocationId = uuid();
+    const binding: InvocationJournalBinding = {
+      rsid,
+      invocationId,
+      method: "fixture_journal_evidence",
+      mutating: false,
+      mutationScope: null,
+      paramsDigest: makeParamsDigest({ evidence: true }),
+      policy: {
+        class: "auto",
+        decision: "auto",
+        confirmation_id: null,
+      },
+      verification: null,
+      recoveryClearances: [],
+    };
+    const journal = new DurableBridgeJournal(join(root.path, "bridge.db"));
+    expect(journal.acceptInvocation(binding, `sha256:${"1".repeat(64)}`).kind).toBe("accepted");
+    journal.markExecuting(rsid, invocationId, 1_721_600_000_000);
+    const expectedRecord = journal.recordTerminal(rsid, invocationId, {
+      status: "completed",
+      payloadRetained: true,
+      payload: { verified: true },
+      resultDigest: `sha256:${"2".repeat(64)}`,
+    }, 1_721_600_000_001);
+    journal.close();
+
+    const runtime = new BridgeDaemonRuntime(root.path);
+    try {
+      const response = await runtime.execute({
+        controlVersion: 1,
+        id: "journal-read",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+      }, "journal-read");
+      expect(response.value).toEqual({
+        rsid,
+        invocationId,
+        journalRecordBytes: Buffer.byteLength(JSON.stringify(expectedRecord), "utf8"),
+        journalRecord: expectedRecord,
+      });
+
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-extra",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+        scanAll: true,
+      }, "journal-read-extra")).rejects.toThrow(/Unknown control field: scanAll/u);
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-invalid-rsid",
+        action: "read_journal_record_for_conformance",
+        rsid: "",
+        invocationId,
+      }, "journal-read-invalid-rsid")).rejects.toThrow(
+        /rsid must be a non-empty bounded single-line string/u,
+      );
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-invalid-invocation",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId: "not-an-invocation-id",
+      }, "journal-read-invalid-invocation")).rejects.toThrow(
+        /invocationId must be a lowercase UUIDv7/u,
+      );
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-missing",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId: uuid(),
+      }, "journal-read-missing")).rejects.toThrow(
+        /Exact durable invocation journal record was not found/u,
+      );
+    } finally {
+      await runtime.shutdown();
+      root.cleanup();
+    }
+  });
+
+  it("refuses to emit an oversized durable journal record on the conformance control channel", async () => {
+    const root = temporaryRoot();
+    const rsid = uuid();
+    const invocationId = uuid();
+    const journal = new DurableBridgeJournal(join(root.path, "bridge.db"));
+    expect(journal.acceptInvocation({
+      rsid,
+      invocationId,
+      method: "fixture_oversized_journal_evidence",
+      mutating: false,
+      mutationScope: null,
+      paramsDigest: makeParamsDigest({ evidence: "oversized" }),
+      policy: { class: "auto", decision: "auto", confirmation_id: null },
+      verification: null,
+      recoveryClearances: [],
+    }, `sha256:${"3".repeat(64)}`).kind).toBe("accepted");
+    journal.markExecuting(rsid, invocationId, 1_721_600_000_000);
+    journal.recordTerminal(rsid, invocationId, {
+      status: "completed",
+      payloadRetained: true,
+      payload: { data: "x".repeat(49 * 1024) },
+      resultDigest: `sha256:${"4".repeat(64)}`,
+    }, 1_721_600_000_001);
+    journal.close();
+
+    const runtime = new BridgeDaemonRuntime(root.path);
+    try {
+      await expect(runtime.execute({
+        controlVersion: 1,
+        id: "journal-read-oversized",
+        action: "read_journal_record_for_conformance",
+        rsid,
+        invocationId,
+      }, "journal-read-oversized")).rejects.toThrow(
+        /Exact durable invocation journal record exceeds 49152 bytes/u,
+      );
+    } finally {
+      await runtime.shutdown();
+      root.cleanup();
+    }
+  });
+
+  it("opens numeric-loopback WSS through the exact JSONL TLS trust contract and retains evidence", async () => {
+    const root = temporaryRoot();
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const caCertificatePath = join(root.path, "gateway-current-stack.pem");
+    writeFileSync(caCertificatePath, identity.certificate, { encoding: "utf8", flag: "wx" });
+    const tlsTrust = {
+      caCertificatePath,
+      caCertificateSha256: sha256(identity.certificate),
+      serverCertificateSha256: sha256(new X509Certificate(identity.certificate).raw),
+    };
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    websocketServer.on("connection", (socket) => {
+      socket.once("message", () => {
+        socket.send(JSON.stringify({
+          type: "hello_ack",
+          id: uuid(),
+          ts: "2026-07-22T00:00:00.000Z",
+          payload: {
+            protocol: 1,
+            connection_id: "control-loopback-tls",
+            granted_capabilities: ["journal_v1", "chunked_results", "artifact_result_v1"],
+            heartbeat_interval_ms: 15_000,
+            limits: {
+              max_params_bytes: 4_194_304,
+              max_result_bytes: 33_554_432,
+              max_partial_bytes: 1_048_576,
+            },
+            manifest: { latest_bridge_version: "bridge-test", manifest_url: "/bridge/update/manifest" },
+          },
+        }));
+      });
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const runtime = new BridgeDaemonRuntime(root.path);
+    const request = {
+      controlVersion: 1,
+      id: "tls-control",
+      action: "open_transport",
+      kind: "wss",
+      deviceToken: "fixture-device-token",
+      wssUrl: `wss://127.0.0.1:${port}/bridge/v1`,
+      endpointPolicy: "loopback_test_tls",
+      tlsTrust,
+      hello: {
+        id: uuid(),
+        ts: "2026-07-22T00:00:00.000Z",
+        bridgeVersion: "0.0.0",
+        deviceId: "fixture-device",
+        hostname: "fixture-host",
+        os: "fixture-os",
+      },
+    };
+    try {
+      await expect(runtime.execute({
+        ...request,
+        id: "invalid-tls-control",
+        endpointPolicy: "loopback_test_readiness",
+      }, "invalid-tls-control")).rejects.toThrow(
+        /tlsTrust is accepted only by kind=wss with endpointPolicy=loopback_test_tls/u,
+      );
+      await expect(runtime.execute({
+        ...request,
+        id: "invalid-tls-schema",
+        tlsTrust: { ...tlsTrust, allowUntrusted: true },
+      }, "invalid-tls-schema")).rejects.toThrow(/Unknown control field: allowUntrusted/u);
+      await expect(runtime.execute(request, "tls-control")).resolves.toMatchObject({
+        value: {
+          selectedKind: "wss",
+          connectionId: "control-loopback-tls",
+          testTlsTrust: tlsTrust,
+        },
+      });
+      expect(runtime.snapshotEvidence().transport).toMatchObject({
+        kind: "wss",
+        open: true,
+        testTlsTrust: tlsTrust,
+      });
+    } finally {
+      await runtime.shutdown();
+      websocketServer.close();
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error === undefined ? resolve() : reject(error));
+        server.closeAllConnections();
+      });
+      root.cleanup();
+    }
+  }, 15_000);
+
   it("closes a selected binding when cold-start peer recovery fails and permits a clean retry", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -113,7 +344,7 @@ describe("Bridge daemon journal controls", () => {
 
   it("records and resolves durable late evidence, then emits its exact clearance", async () => {
     const root = temporaryRoot();
-    const rsid = uuid();
+    const rsid = "rs_gateway_session_001";
     const originInvocationId = uuid();
     const evidenceDigest = `sha256:${"b".repeat(64)}`;
     const binding: InvocationJournalBinding = {

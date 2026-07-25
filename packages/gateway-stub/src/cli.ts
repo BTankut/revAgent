@@ -89,9 +89,6 @@ function parseArguments(arguments_: string[]): CliOptions {
   if (supportedProtocols?.some((entry) => !Number.isSafeInteger(entry) || entry < 1)) {
     throw new Error("--supported-protocols values must be positive safe integers");
   }
-  if (supportedProtocols !== undefined && (supportedProtocols.length !== 1 || supportedProtocols[0] !== 1)) {
-    throw new Error("--supported-protocols must be exactly 1 until an RBP/2 adapter exists");
-  }
   const clockText = values.get("--clock-start-ms");
   const clockStartMs = clockText === undefined ? undefined : Number(clockText);
   if (clockStartMs !== undefined && (!Number.isSafeInteger(clockStartMs) || clockStartMs < 0)) {
@@ -119,6 +116,20 @@ const tokenTable: StaticTokenTable = {
     userId: "user-01",
     seatId: "seat-01",
     machineFingerprint: `sha256:${"0".repeat(64)}`,
+    provisionedCapabilities: [
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ],
+  },
+  "other-device-token": {
+    status: "active",
+    deviceId: "device-02",
+    tenantId: "tenant-02",
+    userId: "user-02",
+    seatId: "seat-02",
+    machineFingerprint: `sha256:${"1".repeat(64)}`,
     provisionedCapabilities: [
       "journal_v1",
       "chunked_results",

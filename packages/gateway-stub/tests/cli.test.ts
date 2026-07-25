@@ -242,25 +242,17 @@ describe("Gateway stub CLI", () => {
     });
   });
 
-  it("rejects a fake RBP/2 adapter window before readiness", async () => {
-    const child = spawn(
-      process.execPath,
-      [cliPath, "--state", await statePath("fake-rbp2-window"), "--supported-protocols", "2,1"],
-      { stdio: "pipe", windowsHide: true },
+  it("publishes readiness for the implemented RBP/2 and RBP/1 compatibility window", async () => {
+    const { child, ready } = await startCli(
+      "rbp2-window",
+      ["--supported-protocols", "2,1"],
     );
     children.push(child);
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-    child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-    const [code, signal] = await once(child, "exit") as [number | null, NodeJS.Signals | null];
-    expect(code).toBe(1);
-    expect(signal).toBeNull();
-    expect(Buffer.concat(stdout).toString("utf8")).toBe("");
-    expect(JSON.parse(Buffer.concat(stderr).toString("utf8"))).toEqual({
-      event: "fatal",
-      error: "--supported-protocols must be exactly 1 until an RBP/2 adapter exists",
+    expect(ready).toMatchObject({
+      event: "ready",
+      protocol_versions: [2, 1],
     });
+    expect(await stopCli(child)).toMatchObject({ code: 0 });
   });
 
   it("applies startup protocol/capability overrides and drives liveness from process control time", async () => {

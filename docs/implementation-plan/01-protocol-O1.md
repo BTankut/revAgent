@@ -232,25 +232,30 @@ Estimates: one senior dev + AI coding assistant, in dev-days.
 
 | ID | Task | Depends on | Acceptance criteria | Est. |
 |---|---|---|---|---|
-| O1-T1 | **Freeze-candidate spec + full JSON Schemas.** Maintain `docs/specs/O1-bridge-gateway-protocol.md`; author envelope and every payload/conditional branch under `packages/protocol/schemas/rbp/v1`; generate types into `packages/protocol/src/generated`. | — | `1.0-rc.1` semantic review closed; schema positives/negatives cover every applicable field/conditional in the 40-case corpus; generate then clean-diff gate passes. This is semantic/schema evidence, not an executable-case or M1 pass. | 3 |
+| O1-T1 | **Freeze-candidate spec + full JSON Schemas.** Maintain `docs/specs/O1-bridge-gateway-protocol.md`; author envelope and every payload/conditional branch under `packages/protocol/schemas/rbp/v1`; generate types into `packages/protocol/src/generated`. | — | Canonical `1.0` candidate semantic review closed; schema positives/negatives cover every applicable field/conditional in the 40-case corpus; generate then clean-diff gate passes. This is semantic/schema evidence, not an executable-case or M1 pass. | 3 |
 | O1-T2 | **Shared protocol library** `packages/protocol` (TS, ESM, strict): validation, canonical invocation/step/batch digest helpers, seq/ack bookkeeping, mutation-scope conflict/clearance logic, and pure connection/invocation/journal FSMs with zero transport I/O. | O1-T1 | Unit/property tests green; Gateway stub and simulator consume one implementation; production .NET Bridge uses the same vectors rather than importing TS. | 3 |
 | O1-T3 | **Add-in loopback fixture:** exact 4-byte BE framing, limits, `mcp_status`/`get_document_context` version-capability shapes, `execute_batch`, guarded/full nested-failure outcomes, multi-file output artifacts, busy/delay/stall, and disconnect/crash/late-outcome windows. | O1-T1 | Framing and payload vectors pass on Linux; execution counters expose every exactly-once assertion. | 2 |
 | O1-T4 | **Implementation-independent Bridge simulator:** both RBP bindings, durable journal and `(rsid,mutation_scope)` hold semantics through a test adapter, correlated verification/late evidence/clearance, multi-stream chunk/artifact path, bounded loopback discovery, heartbeat/backoff/resume, and fault injection. It is conformance code, not the production Bridge technology decision. | O1-T2, O1-T3 | N sessions register with exact capabilities; crash/restart preserves holds and evidence; fresh ids cannot bypass; mutation executes at most once; no temp registry or filesystem lock dependency. | 4 |
 | O1-T5 | **Gateway stub:** WSS plus exact HTTP/SSE lifecycle, static test authentication, version/capability/session tables, window=1 dispatcher, resume/retransmit, RBP-carrier-only artifact sink, and fault/proxy controls. It does not implement WP2 `artifact_ref` or north-resource behavior. | O1-T2 | Both bindings run the same semantic corpus; opening-error, buffer, EOF, duplicate, gap, restart, and scope faults are injectable. | 3 |
-| O1-T6 | **40-case conformance suite + CI:** execute spec §21 against T3/T4/T5; retain JSON/JUnit evidence and run a nightly reconnect/proxy churn soak. | O1-T3, O1-T4, O1-T5 | All 40 cases green deterministically in three consecutive runs; suite <10 min outside soak; no fd/memory/journal-state leak. | 5 |
+| O1-T6 | **40-case conformance suite + CI:** execute spec §21 against T3/T4/T5 and retain the protected PR check rollup. The nightly reconnect/proxy-churn soak and retained aggregate continue in the separate tag-closure lane. | O1-T3, O1-T4, O1-T5 | One complete current-candidate suite is green for all 40 cases and both bindings; suite <10 min; no fd/memory/journal-state leak. The deferred tag closure separately requires three retained runs and the real one-hour soak. | 5 |
 | O1-T7 | **Adapted real-add-in pilot interop smoke** on an approved Windows/Revit seat: all method families, cached context/version grants, loopback rejection, confirm write, bridge kill/resume, artifact output, and atomic commit/rollback. | O1-T6 + WP3 add-in adaptation | Post-freeze pilot gate: RBP/add-in versions retained; model, audit, and journal agree; indeterminate write is verified; atomic batch and loopback-only requirements pass. Any mismatch follows version/R-F rules. | 2 |
-| O1-T8 | **Ratification & conditional freeze:** fold harness findings into spec/schemas, publish the protocol constant, produce `docs/plan/M1_O1_FREEZE_EVIDENCE.md`, and tag `rbp/v1.0.0` only after every spec §22 M1 item is linked and green. | O1-T6 | Metadata becomes `1.0 / Frozen` only in the evidence-closing commit; later semantic change follows P-O1-9; MASTER_PLAN links the retained report. Real add-in and WP9 hands-on proof remain pilot gates, not M1 tag prerequisites. | 1 |
+| O1-T8 | **Ratification & semantic freeze:** fold harness findings into spec/schemas, publish the protocol constant, produce `docs/plan/M1_O1_FREEZE_EVIDENCE.md`, and protected-merge the green candidate. Create `rbp/v1.0.0` only after the separate tag-closure evidence passes. | O1-T6 | The protected tree-equal squash merge freezes canonical `1.0` and closes M1. The same protected candidate may be tagged only after the retained three-run aggregate, real one-hour soak, WSS/Streamable HTTP/SSE proxy-interoperability evidence, and tag-identity checks pass. That lane is non-blocking for M2/M3. Later semantic change follows P-O1-9; real add-in and WP9 hands-on proof remain pilot gates. | 1 |
 
-**Package total: 23 dev-days.** M1 freeze path: T1 → T2/T3 → T4/T5 → T6 → T8. Pilot-validation path then adds T7 plus WP9 hands-on evidence.
+**Package total: 23 dev-days.** M1 freeze path: T1 → T2/T3 → T4/T5 → one full current-candidate T6 suite → T8 protected merge. The deferred three-run/soak/proxy-interoperability tag lane may then run in parallel with M2/M3. Pilot validation separately adds T7 plus WP9 hands-on evidence.
 
 ### Evidence/status discipline
 
 - A spec diff, complete schemas, generated-type clean diff, and golden serialization vectors prove only the
   semantic/schema tier. They MUST NOT mark O1-T3, T4, T5, T6, T7, or the full M1 milestone passed.
-- O1-T3/T4/T5 are running fixture/simulator/stub deliverables; O1-T6 is the retained machine-readable 40-case
-  conformance result. T8 cannot set `1.0 / Frozen` or tag until those executable M1 artifacts are green.
+- O1-T3/T4/T5 are running fixture/simulator/stub deliverables; O1-T6 is the
+  complete green 40-case PR check rollup. T8 sets `1.0 / Frozen` only after that exact green candidate reaches protected `main`.
+  Tag creation remains a separate non-blocking closure and does not hold M2/M3.
 - O1-T7 is a distinct post-freeze Windows/real-Revit pilot-entry smoke. WP9 client evidence is distinct again;
   neither may be inferred from the Linux harness or schema/golden demo.
+- Evidence requirements are limited by RES-28 and R-H. The implementing assistant
+  cannot add repetitions, soak duration, or blocking status beyond the
+  authoritative gate without explicit R-G operator authorization. Required
+  current-head CI remains part of the authoritative gate.
 - Any implementation-driven departure from the required shape, hold transition, digest, error carrier, or
   artifact stream requires a dated R-F record before the plan/spec changes. A relaxed test or undocumented
   tolerance is a red gate, not acceptance.
@@ -266,7 +271,7 @@ Estimates: one senior dev + AI coding assistant, in dev-days.
   only path through the deterministic clear transition.
 - **Conformance matrix (integration):** §8 list, three-process harness (fixture + simulator + stub) on Linux CI; every test asserts both wire behavior and journal/DB ground truth (execution counts asserted at the fixture, not inferred).
 - **Fault injection:** stub control API + OS-level actions (SIGKILL the simulator, `socket.destroy()` for RST, half-open by suspending the stub) — specifically covering the crash window between add-in completion and journal outcome commit.
-- **Soak:** nightly 1 h reconnect churn in CI; a 24 h soak on office hardware through the real Cloudflare-style tunnel is a pre-pilot exit criterion (validates heartbeat intervals vs real proxy idle timeouts).
+- **Soak:** nightly 1 h reconnect churn in CI is retained tag-closure evidence and is non-blocking for M1/M2/M3; a 24 h soak on office hardware through the real Cloudflare-style tunnel remains a pre-pilot exit criterion (validates heartbeat intervals vs real proxy idle timeouts).
 - **Real interop:** O1-T7 on Windows with live Revit — the only test tier that exercises ExternalEvent timing truths (per-command 15–60 s waits, UI-thread serialization) that fixtures can't emulate.
 - **Negative security:** revoked token mid-connection, another rsid's `resume_token`, cross-rsid invoke,
   params/step/batch-digest mismatch, omitted batch params/step, fresh-id hold bypass, forged evidence digest,

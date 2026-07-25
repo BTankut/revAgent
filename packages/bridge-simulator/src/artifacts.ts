@@ -65,8 +65,59 @@ export interface ChunkedResultCarrier {
 
 export type DurableResultCarrier = ArtifactCarrier | ChunkedResultCarrier;
 
+export interface SanitizedArtifactStreamEvidence {
+  readonly streamId: string;
+  readonly artifactId: string | null;
+  readonly artifactIndex: number | null;
+  readonly filename: string | null;
+  readonly contentType: string;
+  readonly contentTypeTruncated: boolean;
+  readonly contentTypeDigest: `sha256:${string}`;
+  readonly totalChunks: number;
+  readonly totalSize: number;
+  readonly sha256: `sha256:${string}`;
+}
+
+export interface SanitizedArtifactCarrierEvidence {
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly kind: DurableResultCarrier["kind"];
+  readonly chunkBytes: number;
+  readonly streamCount: number;
+  readonly retainedFileCount: number;
+  readonly totalChunks: number;
+  readonly totalSize: number;
+  readonly descriptorDigest: `sha256:${string}`;
+  readonly streams: readonly SanitizedArtifactStreamEvidence[];
+}
+
+export interface SanitizedArtifactSpoolEvidence {
+  readonly evidenceVersion: 1;
+  readonly rootPathRedacted: true;
+  readonly rawPathExposed: false;
+  readonly carrierCount: number;
+  readonly retainedFileCount: number;
+  readonly totalChunks: number;
+  readonly totalSize: number;
+  readonly carriers: readonly SanitizedArtifactCarrierEvidence[];
+}
+
+const MAX_SPOOL_EVIDENCE_CARRIERS = 128;
+const MAX_SPOOL_EVIDENCE_CONTENT_TYPE_CHARS = 128;
+
 function sha256(bytes: Uint8Array): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function sanitizedContentTypeEvidence(contentType: string): Pick<
+  SanitizedArtifactStreamEvidence,
+  "contentType" | "contentTypeTruncated" | "contentTypeDigest"
+> {
+  return {
+    contentType: contentType.slice(0, MAX_SPOOL_EVIDENCE_CONTENT_TYPE_CHARS),
+    contentTypeTruncated: contentType.length > MAX_SPOOL_EVIDENCE_CONTENT_TYPE_CHARS,
+    contentTypeDigest: sha256(Buffer.from(contentType, "utf8")),
+  };
 }
 
 function safeFilename(value: string): boolean {
@@ -324,6 +375,76 @@ export class ArtifactSpool {
   /** Compact durable metadata; payload bytes remain in the guarded spool. */
   public compact<T extends DurableResultCarrier>(carrier: T): T {
     return { ...carrier, partials: [] };
+  }
+
+  /**
+   * Returns bounded carrier/descriptor evidence without exposing the managed
+   * spool root, retained directories, or local file paths. Every selected
+   * carrier is rehydrated through the same non-reparse/containment/digest
+   * guards used for retransmission; malformed retained state fails closed.
+   */
+  public inspectRetained(
+    carriers: readonly DurableResultCarrier[],
+  ): SanitizedArtifactSpoolEvidence {
+    if (carriers.length > MAX_SPOOL_EVIDENCE_CARRIERS) {
+      throw new Error(`retained carrier evidence exceeds ${MAX_SPOOL_EVIDENCE_CARRIERS}`);
+    }
+    const byIdentity = new Map<string, SanitizedArtifactCarrierEvidence>();
+    for (const compact of carriers) {
+      const carrier = this.rehydrate(compact);
+      const streams: SanitizedArtifactStreamEvidence[] = carrier.kind === "artifacts"
+        ? carrier.descriptors.map((descriptor) => ({
+            streamId: descriptor.stream_id,
+            artifactId: descriptor.artifact_id,
+            artifactIndex: descriptor.artifact_index,
+            filename: descriptor.filename,
+            ...sanitizedContentTypeEvidence(descriptor.content_type),
+            totalChunks: descriptor.total_chunks,
+            totalSize: descriptor.total_size,
+            sha256: descriptor.sha256 as `sha256:${string}`,
+          }))
+        : [{
+            streamId: "result",
+            artifactId: null,
+            artifactIndex: null,
+            filename: null,
+            ...sanitizedContentTypeEvidence(carrier.contentType),
+            totalChunks: carrier.totalChunks,
+            totalSize: carrier.totalSize,
+            sha256: carrier.sha256,
+          }];
+      const evidence: SanitizedArtifactCarrierEvidence = {
+        rsid: carrier.rsid,
+        invocationId: carrier.invocationId,
+        kind: carrier.kind,
+        chunkBytes: carrier.chunkBytes,
+        streamCount: streams.length,
+        retainedFileCount: carrier.retainedFiles.length,
+        totalChunks: streams.reduce((sum, stream) => sum + stream.totalChunks, 0),
+        totalSize: streams.reduce((sum, stream) => sum + stream.totalSize, 0),
+        descriptorDigest: sha256(Buffer.from(JSON.stringify(streams), "utf8")),
+        streams,
+      };
+      const identity = `${carrier.rsid}\u0000${carrier.invocationId}`;
+      const existing = byIdentity.get(identity);
+      if (existing !== undefined && JSON.stringify(existing) !== JSON.stringify(evidence)) {
+        throw new Error("conflicting retained carriers share one composite identity");
+      }
+      byIdentity.set(identity, evidence);
+    }
+    const ordered = [...byIdentity.values()].sort((left, right) =>
+      left.rsid.localeCompare(right.rsid) || left.invocationId.localeCompare(right.invocationId)
+    );
+    return {
+      evidenceVersion: 1,
+      rootPathRedacted: true,
+      rawPathExposed: false,
+      carrierCount: ordered.length,
+      retainedFileCount: ordered.reduce((sum, carrier) => sum + carrier.retainedFileCount, 0),
+      totalChunks: ordered.reduce((sum, carrier) => sum + carrier.totalChunks, 0),
+      totalSize: ordered.reduce((sum, carrier) => sum + carrier.totalSize, 0),
+      carriers: ordered,
+    };
   }
 
   /**

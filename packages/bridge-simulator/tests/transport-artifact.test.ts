@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { once } from "node:events";
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 
@@ -312,6 +312,22 @@ describe("artifact, outbox, resume, and backoff", () => {
       '{"ok":true}\n',
       "evidence\n",
     ]);
+    const inspected = spool.inspectRetained([spool.compact(carrier)]);
+    expect(inspected).toMatchObject({
+      rootPathRedacted: true,
+      rawPathExposed: false,
+      carrierCount: 1,
+      retainedFileCount: 2,
+      totalSize: Buffer.byteLength('{"ok":true}\n') + Buffer.byteLength("evidence\n"),
+    });
+    expect(JSON.stringify(inspected)).not.toContain(spoolRoot);
+    expect(() => spool.inspectRetained(
+      Array.from({ length: 129 }, () => spool.compact(carrier)),
+    )).toThrow(/retained carrier evidence exceeds 128/u);
+    expect(() => spool.inspectRetained([{
+      ...spool.compact(carrier),
+      retainedDirectory: join(root.path, "outside"),
+    }])).toThrow(/path does not match its composite identity/u);
     const queued = simulator.queueOutbound(rsid, {
       type: "result",
       id: uuid(),
@@ -351,6 +367,44 @@ describe("artifact, outbox, resume, and backoff", () => {
     expect(simulator.shouldResetReconnect(120_000)).toBe(true);
     simulator.close();
     journal.close();
+    root.cleanup();
+  });
+
+  it("rejects reparse escapes and bounds sanitized descriptor text without exposing source paths", () => {
+    const root = temporaryRoot();
+    const spoolRoot = join(root.path, "spool");
+    const outside = join(root.path, "outside-artifacts");
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "secret.bin"), Buffer.from("secret"));
+    const spool = new ArtifactSpool(spoolRoot, () => uuid());
+    const linkedDirectory = join(spoolRoot, "linked-source");
+    symlinkSync(outside, linkedDirectory, process.platform === "win32" ? "junction" : "dir");
+    const escapedPath = join(linkedDirectory, "secret.bin");
+    expect(() => spool.captureDeclaredPaths(uuid(), uuid(), [{
+      path: escapedPath,
+      contentType: "application/octet-stream",
+    }])).toThrow("declared artifact source could not be captured");
+
+    const safeSource = join(spoolRoot, "safe-source.bin");
+    writeFileSync(safeSource, Buffer.from("safe"));
+    const longContentType = `application/x-${"a".repeat(4_082)}`;
+    const carrier = spool.captureDeclaredPaths(uuid(), uuid(), [{
+      path: safeSource,
+      contentType: longContentType,
+    }]);
+    const evidence = spool.inspectRetained([spool.compact(carrier)]);
+    expect(evidence.evidenceVersion).toBe(1);
+    expect(evidence.carriers[0]?.streams[0]).toMatchObject({
+      contentType: longContentType.slice(0, 128),
+      contentTypeTruncated: true,
+      contentTypeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    const serialized = JSON.stringify(evidence);
+    expect(serialized).not.toContain(spoolRoot);
+    expect(serialized).not.toContain(escapedPath);
+    expect(serialized).not.toContain(safeSource);
+    expect(serialized).not.toContain(longContentType);
+
     root.cleanup();
   });
 

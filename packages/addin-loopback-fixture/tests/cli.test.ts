@@ -427,6 +427,11 @@ describe("fixture CLI JSONL control and cleanup", () => {
       fixtureContract: "addin-loopback/v1",
       modelStateDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
       modelStateEntryCount: 0,
+      documentContextEvidence: {
+        evidenceVersion: 1,
+        externalEventRaiseCount: 0,
+        timeline: expect.any(Array),
+      },
       pendingStalls: [],
     });
     const evidencePages: JsonObject[] = [evidence];

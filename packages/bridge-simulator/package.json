@@ -19,7 +19,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && tsc -p tsconfig.json",
+    "build": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && npm run build:self",
+    "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "demo:crash": "node dist/cli.js crash-recovery",
     "lint": "eslint src tests",
     "typecheck": "npm run build --workspace @revagent/protocol && npm run build --workspace @revagent/addin-loopback-fixture && tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json",

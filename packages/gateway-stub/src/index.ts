@@ -17,6 +17,15 @@ export {
   selectProtocolVersion,
 } from "./negotiation.js";
 export { parseHelloFrame, serializeHelloAck } from "./preNegotiation.js";
+export {
+  assertImplementedProtocolVersion,
+  assertImplementedProtocolWindow,
+  GATEWAY_IMPLEMENTED_PROTOCOLS,
+  parseNegotiatedRbpFrame,
+  serializeNegotiatedRbpEnvelope,
+  type GatewayImplementedProtocol,
+  type ParsedNegotiatedRbpFrame,
+} from "./versionAdapter.js";
 export { startGatewayStub } from "./server.js";
 export type {
   AuthStatus,

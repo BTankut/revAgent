@@ -1,0 +1,44 @@
+{
+  "name": "@revagent/rbp-conformance",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./manifest": "./manifest/v1.0.json",
+    "./schemas/*": "./schemas/*"
+  },
+  "bin": {
+    "rbp-conformance": "./dist/src/cli.js"
+  },
+  "files": [
+    "dist",
+    "manifest",
+    "schemas",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "npm run build:self",
+    "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
+    "lint": "eslint src tests",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build --workspace @revagent/protocol && node scripts/run-tests.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@revagent/protocol": "0.0.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
+    "ws": "^8.20.1"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.18.1"
+  }
+}

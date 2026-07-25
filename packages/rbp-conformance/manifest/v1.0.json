@@ -1,0 +1,613 @@
+{
+  "$schema": "../schemas/v1/manifest.schema.json",
+  "schemaVersion": "rbp-conformance-manifest/v1",
+  "manifestId": "rbp-v1.0-freeze-section-21",
+  "manifestVersion": "1",
+  "spec": {
+    "name": "O1 Bridge-Gateway Protocol",
+    "version": "1.0",
+    "section": "21",
+    "sourcePath": "docs/specs/O1-bridge-gateway-protocol.md"
+  },
+  "requiredAggregateRuns": 3,
+  "requiredComponents": [
+    {
+      "id": "gateway_stub",
+      "interfaceVersion": "rbp-gateway-stub/v1"
+    },
+    {
+      "id": "bridge_simulator",
+      "interfaceVersion": "rbp-bridge-simulator/v1"
+    },
+    {
+      "id": "addin_loopback_fixture",
+      "interfaceVersion": "addin-loopback-fixture/v1"
+    }
+  ],
+  "retainedEvidence": {
+    "root": "artifacts/conformance/rbp-v1/1.0",
+    "runReport": "runs/{run_id}/run-report.json",
+    "junit": "runs/{run_id}/junit.xml",
+    "componentLog": "runs/{run_id}/components/{component_id}.log",
+    "wireTrace": "runs/{run_id}/wire/{case_id}-{binding}.jsonl",
+    "journalSnapshot": "runs/{run_id}/journal/{case_id}.json",
+    "caseEvidence": "runs/{run_id}/cases/{case_id}/{evidence_name}.json",
+    "leakMetrics": "runs/{run_id}/metrics/leaks.json",
+    "aggregateReport": "aggregate/three-run-report.json",
+    "aggregateJunit": "aggregate/junit.xml",
+    "soakReport": "soak/{mode}/{run_id}/soak-report.json",
+    "soakMetrics": "soak/{mode}/{run_id}/metrics.jsonl",
+    "hashAlgorithm": "sha256"
+  },
+  "cases": [
+    {
+      "id": "O1-C01",
+      "ordinal": 1,
+      "title": "Authenticated hello/version/capability negotiation",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "authorization", "compatibility"]
+    },
+    {
+      "id": "O1-C02",
+      "ordinal": 2,
+      "title": "Version mismatch with manifest pointer and bounded reconnect behavior",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "compatibility", "timing"]
+    },
+    {
+      "id": "O1-C03",
+      "ordinal": 3,
+      "title": "Revoked device credential refusal",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["authorization", "wire_behavior"]
+    },
+    {
+      "id": "O1-C04",
+      "ordinal": 4,
+      "title": "Multi-session discovery through bounded scan; explicit proof that no temp registry file is read",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["discovery", "safety", "wire_behavior"]
+    },
+    {
+      "id": "O1-C05",
+      "ordinal": 5,
+      "title": "Registration and context snapshot",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "schema", "journal_truth"]
+    },
+    {
+      "id": "O1-C06",
+      "ordinal": 6,
+      "title": "Heartbeat transitions at 35/65 seconds and reconnect on missing acknowledgement",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["timing", "recovery", "wire_behavior"]
+    },
+    {
+      "id": "O1-C07",
+      "ordinal": 7,
+      "title": "Gateway restart plus session resume and bidirectional retransmission",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["recovery", "journal_truth", "wire_behavior"]
+    },
+    {
+      "id": "O1-C08",
+      "ordinal": 8,
+      "title": "Terminal journal replay with exactly one add-in execution",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "execution_count", "recovery"]
+    },
+    {
+      "id": "O1-C09",
+      "ordinal": 9,
+      "title": "Indeterminate mutating invocation returns journal_indeterminate with zero re-executions",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "execution_count", "safety"]
+    },
+    {
+      "id": "O1-C10",
+      "ordinal": 10,
+      "title": "Indeterminate read invocation executes at most once more",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "execution_count", "recovery"]
+    },
+    {
+      "id": "O1-C11",
+      "ordinal": 11,
+      "title": "Canonical-key params-digest mismatch fails as protocol",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "wire_behavior", "safety"]
+    },
+    {
+      "id": "O1-C12",
+      "ordinal": 12,
+      "title": "Authoritative window=1 rejection on one rsid, with parallel success across two rsid values",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "journal_truth", "execution_count"]
+    },
+    {
+      "id": "O1-C13",
+      "ordinal": 13,
+      "title": "Proof that normal invokes do not send mcp_status preflight traffic",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "execution_count"]
+    },
+    {
+      "id": "O1-C14",
+      "ordinal": 14,
+      "title": "Failure enrichment using mcp_status after a simulated busy/timeout path",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "execution_count", "recovery"]
+    },
+    {
+      "id": "O1-C15",
+      "ordinal": 15,
+      "title": "Ordered chunking, digest verification, progress, and backpressure",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "artifact_integrity", "timing"]
+    },
+    {
+      "id": "O1-C16",
+      "ordinal": 16,
+      "title": "Params/result oversize rejection at the correct boundary",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "wire_behavior", "safety"]
+    },
+    {
+      "id": "O1-C17",
+      "ordinal": 17,
+      "title": "Cancellation with late real outcome preserved in the journal",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "recovery", "wire_behavior"]
+    },
+    {
+      "id": "O1-C18",
+      "ordinal": 18,
+      "title": "Error mapping for method-not-found, invalid params, add-in exception, guarded result, and failure-shaped result",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "wire_behavior", "journal_truth"]
+    },
+    {
+      "id": "O1-C19",
+      "ordinal": 19,
+      "title": "Exact 4-byte big-endian add-in framing vectors, including split/coalesced reads and the former 8192-byte case",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "schema"]
+    },
+    {
+      "id": "O1-C20",
+      "ordinal": 20,
+      "title": "atomic:false batch fan-out and failure index",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "execution_count", "journal_truth"]
+    },
+    {
+      "id": "O1-C21",
+      "ordinal": 21,
+      "title": "atomic:true rejection without batch_atomic",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["compatibility", "wire_behavior", "safety", "execution_count"]
+    },
+    {
+      "id": "O1-C22",
+      "ordinal": 22,
+      "title": "atomic:true one-frame execute_batch success/rollback with batch_atomic",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "execution_count", "journal_truth", "compatibility"]
+    },
+    {
+      "id": "O1-C23",
+      "ordinal": 23,
+      "title": "get_document_context propagation within 15 seconds without ExternalEvent polling",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["timing", "wire_behavior", "execution_count"]
+    },
+    {
+      "id": "O1-C24",
+      "ordinal": 24,
+      "title": "Duplicate/reordered data-frame handling across reconnect",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["wire_behavior", "recovery", "journal_truth"]
+    },
+    {
+      "id": "O1-C25",
+      "ordinal": 25,
+      "title": "Cross-device/cross-rsid resume and invocation authorization negatives",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["authorization", "safety", "wire_behavior"]
+    },
+    {
+      "id": "O1-C26",
+      "ordinal": 26,
+      "title": "Gateway N/N-1 compatibility plus within-version additive-change vectors",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["compatibility", "wire_behavior", "schema"]
+    },
+    {
+      "id": "O1-C27",
+      "ordinal": 27,
+      "title": "Reconnect full-jitter bounds, 60-second cap, and reset only after 120 seconds continuously steady",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["timing", "recovery"]
+    },
+    {
+      "id": "O1-C28",
+      "ordinal": 28,
+      "title": "Pending-expiry mutation installs the (rsid,mutation_scope) conflict hold; fresh-id invoke and batch writes are blocked; correlated read and late-terminal evidence exercise every retained/cleared transition and an invalid or inconclusive clearance never opens dispatch",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "safety", "recovery", "execution_count"]
+    },
+    {
+      "id": "O1-C29",
+      "ordinal": 29,
+      "title": "Mixed terminal/non-terminal atomic:false batch redelivery plus atomic terminal replay/indeterminate recovery; every nested error carries explicit outcome/verification fields and affected scope holds",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["journal_truth", "recovery", "schema", "execution_count", "safety"]
+    },
+    {
+      "id": "O1-C30",
+      "ordinal": 30,
+      "title": "RFC 8785 params_digest, explicit per-step digest, and batch_digest golden vectors cover property order, number formatting, Unicode, escapes, step omission, params/digest mismatch, and changed policy/scope/clearance",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "artifact_integrity", "wire_behavior", "safety"]
+    },
+    {
+      "id": "O1-C31",
+      "ordinal": 31,
+      "title": "heartbeat_ack, registration/unregistration/resume, cancel, goodbye, and manifest payload-schema positive/negative vectors",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "wire_behavior"]
+    },
+    {
+      "id": "O1-C32",
+      "ordinal": 32,
+      "title": "Chunk Base64 alphabet/padding, per-stream identity/indexing, decoded-byte limits, reconstruction size, and decoded-content digest",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "artifact_integrity", "wire_behavior", "safety"]
+    },
+    {
+      "id": "O1-C33",
+      "ordinal": 33,
+      "title": "Loopback-only discovery/connect rejection for wildcard, LAN, hostname-resolved remote, and override targets",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["discovery", "safety", "authorization"]
+    },
+    {
+      "id": "O1-C34",
+      "ordinal": 34,
+      "title": "Session document-schema and seat/user spoof rejection against authenticated enrollment",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "authorization", "safety"]
+    },
+    {
+      "id": "O1-C35",
+      "ordinal": 35,
+      "title": "Maximum-safe seq acceptance, unsafe 2^53 rejection, no-wrap renewal, duplicate, and gap behavior",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "wire_behavior", "recovery"]
+    },
+    {
+      "id": "O1-C36",
+      "ordinal": 36,
+      "title": "WSS-primary and the exact Streamable HTTP/SSE create/events/messages lifecycle produce identical journal/resume outcomes, including opening-error and proxy-buffering vectors",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["transport_parity", "journal_truth", "recovery", "wire_behavior", "timing"]
+    },
+    {
+      "id": "O1-C37",
+      "ordinal": 37,
+      "title": "Every session_unregister reason revokes resume, prevents new dispatch, and preserves a possibly dispatched mutation as indeterminate",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["authorization", "journal_truth", "safety", "recovery"]
+    },
+    {
+      "id": "O1-C38",
+      "ordinal": 38,
+      "title": "status:\"guarded\" requires a valid guarded_reason; first-delivery atomic:false stops on that guarded step and marks all successors not_started",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "safety", "journal_truth", "execution_count"]
+    },
+    {
+      "id": "O1-C39",
+      "ordinal": 39,
+      "title": "payload_omitted positive/negative vectors enforce replay-only use, required digest, absent result, and audited read-based recovery",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["schema", "journal_truth", "recovery", "safety"]
+    },
+    {
+      "id": "O1-C40",
+      "ordinal": 40,
+      "title": "GAP-7 RBP artifact vectors reject raw/local/traversal/reparse paths and prove multi-file artifact_id/artifact_index mapping, independent chunk streams, descriptor/digest/size verification, retransmission identity, and all-or-nothing invalid-member rejection; no north-client claim is made",
+      "requiredComponents": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"],
+      "bindings": ["wss", "streamable_http_sse"],
+      "assertionCategories": ["artifact_integrity", "schema", "safety", "wire_behavior"]
+    }
+  ],
+  "requiredAssertions": {
+    "O1-C01": [
+      {"id":"O1-C01-AUTHENTICATED-HELLO","subvectorId":"AUTHENTICATED_HELLO","statement":"An authenticated hello is accepted.","category":"authorization","expected":true},
+      {"id":"O1-C01-VERSION-NEGOTIATED","subvectorId":"VERSION_NEGOTIATED","statement":"The peers negotiate the compatible RBP version.","category":"compatibility","expected":true},
+      {"id":"O1-C01-CAPABILITIES-NEGOTIATED","subvectorId":"CAPABILITIES_NEGOTIATED","statement":"The peers negotiate the exact granted capability intersection.","category":"wire_behavior","expected":true}
+    ],
+    "O1-C02": [
+      {"id":"O1-C02-MANIFEST-POINTER","subvectorId":"VERSION_MISMATCH_MANIFEST_POINTER","statement":"A version mismatch is rejected with the compatible manifest pointer.","category":"compatibility","expected":true},
+      {"id":"O1-C02-BOUNDED-RECONNECT","subvectorId":"VERSION_MISMATCH_BOUNDED_RECONNECT","statement":"Version-mismatch reconnect attempts remain within the specified bound.","category":"timing","expected":true}
+    ],
+    "O1-C03": [
+      {"id":"O1-C03-REVOKED-CREDENTIAL-REFUSED","subvectorId":"REVOKED_DEVICE_CREDENTIAL_REFUSED","statement":"A revoked device credential is refused before session authorization.","category":"authorization","expected":true}
+    ],
+    "O1-C04": [
+      {"id":"O1-C04-BOUNDED-MULTI-SESSION-SCAN","subvectorId":"BOUNDED_MULTI_SESSION_SCAN","statement":"A bounded scan discovers every fixture session in scope.","category":"discovery","expected":true},
+      {"id":"O1-C04-NO-TEMP-REGISTRY-READ","subvectorId":"NO_TEMP_REGISTRY_READ","statement":"Discovery performs zero reads of a temporary registry file.","category":"safety","expected":true}
+    ],
+    "O1-C05": [
+      {"id":"O1-C05-REGISTRATION","subvectorId":"SESSION_REGISTRATION","statement":"The authenticated session registration is accepted with its exact schema.","category":"schema","expected":true},
+      {"id":"O1-C05-CONTEXT-SNAPSHOT","subvectorId":"CONTEXT_SNAPSHOT","statement":"The registered session carries the exact context snapshot.","category":"journal_truth","expected":true}
+    ],
+    "O1-C06": [
+      {"id":"O1-C06-HEARTBEAT-35S","subvectorId":"HEARTBEAT_TRANSITION_35S","statement":"The heartbeat state makes the required transition at 35 seconds.","category":"timing","expected":true},
+      {"id":"O1-C06-HEARTBEAT-65S","subvectorId":"HEARTBEAT_TRANSITION_65S","statement":"The heartbeat state makes the required transition at 65 seconds.","category":"timing","expected":true},
+      {"id":"O1-C06-MISSING-ACK-RECONNECT","subvectorId":"MISSING_HEARTBEAT_ACK_RECONNECT","statement":"A missing heartbeat acknowledgement causes reconnect.","category":"recovery","expected":true}
+    ],
+    "O1-C07": [
+      {"id":"O1-C07-GATEWAY-RESTART","subvectorId":"GATEWAY_RESTART","statement":"The fixture survives a Gateway process restart.","category":"recovery","expected":true},
+      {"id":"O1-C07-SESSION-RESUME","subvectorId":"SESSION_RESUME","statement":"The session resumes with its durable sequence state.","category":"journal_truth","expected":true},
+      {"id":"O1-C07-UPLINK-RETRANSMISSION","subvectorId":"BRIDGE_TO_GATEWAY_RETRANSMISSION","statement":"Unacknowledged bridge-to-Gateway data is retransmitted in sequence order.","category":"wire_behavior","expected":true},
+      {"id":"O1-C07-DOWNLINK-RETRANSMISSION","subvectorId":"GATEWAY_TO_BRIDGE_RETRANSMISSION","statement":"Unacknowledged Gateway-to-bridge data is retransmitted in sequence order.","category":"wire_behavior","expected":true}
+    ],
+    "O1-C08": [
+      {"id":"O1-C08-TERMINAL-REPLAY","subvectorId":"TERMINAL_JOURNAL_REPLAY","statement":"A terminal journal row replays the stored terminal outcome.","category":"journal_truth","expected":true},
+      {"id":"O1-C08-EXECUTION-COUNT-ONE","subvectorId":"ADDIN_EXECUTION_COUNT_ONE","statement":"Terminal replay leaves the add-in execution count exactly one.","category":"execution_count","expected":true}
+    ],
+    "O1-C09": [
+      {"id":"O1-C09-JOURNAL-INDETERMINATE","subvectorId":"MUTATION_JOURNAL_INDETERMINATE","statement":"An indeterminate mutation returns journal_indeterminate with verification required.","category":"journal_truth","expected":true},
+      {"id":"O1-C09-ZERO-REEXECUTION","subvectorId":"MUTATION_ZERO_REEXECUTION","statement":"The indeterminate mutation is never re-executed.","category":"execution_count","expected":true}
+    ],
+    "O1-C10": [
+      {"id":"O1-C10-READ-AT-MOST-ONE-REEXECUTION","subvectorId":"READ_AT_MOST_ONE_REEXECUTION","statement":"An indeterminate read executes no more than one additional time.","category":"execution_count","expected":true}
+    ],
+    "O1-C11": [
+      {"id":"O1-C11-DIGEST-MISMATCH-PROTOCOL","subvectorId":"CANONICAL_KEY_DIGEST_MISMATCH_PROTOCOL","statement":"A canonical-key params digest mismatch terminates as a protocol fault.","category":"safety","expected":true}
+    ],
+    "O1-C12": [
+      {"id":"O1-C12-SAME-RSID-WINDOW-REJECT","subvectorId":"SAME_RSID_WINDOW_ONE_REJECTION","statement":"A second in-flight invocation on the same rsid is rejected at window one.","category":"wire_behavior","expected":true},
+      {"id":"O1-C12-CROSS-RSID-PARALLEL-SUCCESS","subvectorId":"CROSS_RSID_PARALLEL_SUCCESS","statement":"Invocations on two different rsid values can succeed in parallel.","category":"execution_count","expected":true}
+    ],
+    "O1-C13": [
+      {"id":"O1-C13-NO-NORMAL-PREFLIGHT","subvectorId":"NORMAL_INVOKE_ZERO_MCP_STATUS","statement":"A normal invocation sends zero mcp_status preflight requests.","category":"execution_count","expected":true}
+    ],
+    "O1-C14": [
+      {"id":"O1-C14-SIMULATED-FAILURE","subvectorId":"SIMULATED_BUSY_TIMEOUT","statement":"The fixture produces the selected busy or timeout failure path.","category":"wire_behavior","expected":true},
+      {"id":"O1-C14-POST-FAILURE-MCP-STATUS","subvectorId":"POST_FAILURE_MCP_STATUS","statement":"Failure handling consults mcp_status only after the simulated failure.","category":"execution_count","expected":true},
+      {"id":"O1-C14-ENRICHED-FAILURE","subvectorId":"ENRICHED_FAILURE_RESULT","statement":"The returned failure is enriched with the correlated mcp_status evidence.","category":"recovery","expected":true}
+    ],
+    "O1-C15": [
+      {"id":"O1-C15-ORDERED-CHUNKS","subvectorId":"ORDERED_CHUNKING","statement":"Chunks reconstruct in their required per-stream order.","category":"wire_behavior","expected":true},
+      {"id":"O1-C15-DIGEST-VERIFIED","subvectorId":"CHUNK_DIGEST_VERIFIED","statement":"The reconstructed decoded bytes match the terminal digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C15-PROGRESS","subvectorId":"PROGRESS_DELIVERY","statement":"Progress remains correlated and deliverable during chunking.","category":"wire_behavior","expected":true},
+      {"id":"O1-C15-BACKPRESSURE","subvectorId":"BACKPRESSURE_CONTROL","statement":"Backpressure bounds data while control traffic remains serviceable.","category":"timing","expected":true}
+    ],
+    "O1-C16": [
+      {"id":"O1-C16-PARAMS-OVERSIZE","subvectorId":"PARAMS_OVERSIZE_BOUNDARY","statement":"Oversize params are rejected at the specified params boundary.","category":"schema","expected":true},
+      {"id":"O1-C16-RESULT-OVERSIZE","subvectorId":"RESULT_OVERSIZE_BOUNDARY","statement":"Oversize results are rejected at the specified result boundary.","category":"schema","expected":true}
+    ],
+    "O1-C17": [
+      {"id":"O1-C17-CANCELLATION","subvectorId":"CANCELLATION_DELIVERY","statement":"Cancellation reaches the correlated in-flight invocation.","category":"wire_behavior","expected":true},
+      {"id":"O1-C17-LATE-OUTCOME-PRESERVED","subvectorId":"LATE_REAL_OUTCOME_PRESERVED","statement":"A later real outcome is retained as journal evidence after cancellation.","category":"journal_truth","expected":true}
+    ],
+    "O1-C18": [
+      {"id":"O1-C18-METHOD-NOT-FOUND","subvectorId":"METHOD_NOT_FOUND_MAPPING","statement":"Method-not-found maps to the specified RBP error.","category":"schema","expected":true},
+      {"id":"O1-C18-INVALID-PARAMS","subvectorId":"INVALID_PARAMS_MAPPING","statement":"Invalid params map to the specified RBP error.","category":"schema","expected":true},
+      {"id":"O1-C18-ADDIN-EXCEPTION","subvectorId":"ADDIN_EXCEPTION_MAPPING","statement":"An add-in exception maps to the specified RBP error.","category":"wire_behavior","expected":true},
+      {"id":"O1-C18-GUARDED-RESULT","subvectorId":"GUARDED_RESULT_MAPPING","statement":"A guarded add-in result maps to status guarded rather than failure.","category":"journal_truth","expected":true},
+      {"id":"O1-C18-FAILURE-SHAPED-RESULT","subvectorId":"FAILURE_SHAPED_RESULT_MAPPING","statement":"A failure-shaped add-in result maps to the specified terminal failure.","category":"wire_behavior","expected":true}
+    ],
+    "O1-C19": [
+      {"id":"O1-C19-BIG-ENDIAN-PREFIX","subvectorId":"FOUR_BYTE_BIG_ENDIAN_PREFIX","statement":"The add-in frame uses the exact four-byte big-endian length prefix.","category":"wire_behavior","expected":true},
+      {"id":"O1-C19-SPLIT-READ","subvectorId":"SPLIT_FRAME_READ","statement":"A frame split across reads reconstructs exactly once.","category":"wire_behavior","expected":true},
+      {"id":"O1-C19-COALESCED-READ","subvectorId":"COALESCED_FRAME_READ","statement":"Coalesced frames are separated and delivered in order.","category":"wire_behavior","expected":true},
+      {"id":"O1-C19-FORMER-8192-CASE","subvectorId":"FORMER_8192_BYTE_CASE","statement":"The former 8192-byte boundary vector frames and reads correctly.","category":"schema","expected":true}
+    ],
+    "O1-C20": [
+      {"id":"O1-C20-ORDERED-FANOUT","subvectorId":"NONATOMIC_ORDERED_FANOUT","statement":"An atomic false batch fans out steps in input order.","category":"execution_count","expected":true},
+      {"id":"O1-C20-FAILURE-INDEX","subvectorId":"NONATOMIC_FAILED_STEP_INDEX","statement":"The result carries the zero-based first failed step index.","category":"journal_truth","expected":true}
+    ],
+    "O1-C21": [
+      {"id":"O1-C21-UNSUPPORTED-WITHOUT-CAPABILITY","subvectorId":"ATOMIC_WITHOUT_CAPABILITY_UNSUPPORTED","statement":"An atomic true batch without batch_atomic terminates as unsupported.","category":"compatibility","expected":true},
+      {"id":"O1-C21-ZERO-STEP-EXECUTION","subvectorId":"ATOMIC_WITHOUT_CAPABILITY_ZERO_EXECUTION","statement":"No batch step executes when batch_atomic is absent.","category":"execution_count","expected":true}
+    ],
+    "O1-C22": [
+      {"id":"O1-C22-CAPABILITY-GATED","subvectorId":"ATOMIC_CAPABILITY_GRANTED","statement":"The atomic path is available only with the per-session batch_atomic grant.","category":"compatibility","expected":true},
+      {"id":"O1-C22-ONE-FRAME-COMMIT","subvectorId":"ATOMIC_ONE_FRAME_COMMIT","statement":"A successful atomic batch executes as one frame and commits.","category":"journal_truth","expected":true},
+      {"id":"O1-C22-ONE-FRAME-ROLLBACK","subvectorId":"ATOMIC_ONE_FRAME_ROLLBACK","statement":"A failed atomic batch rolls back without any committed mutation claim.","category":"journal_truth","expected":true}
+    ],
+    "O1-C23": [
+      {"id":"O1-C23-CONTEXT-WITHIN-15S","subvectorId":"DOCUMENT_CONTEXT_WITHIN_15_SECONDS","statement":"Document context propagates within fifteen seconds.","category":"timing","expected":true},
+      {"id":"O1-C23-NO-EXTERNAL-EVENT-POLLING","subvectorId":"ZERO_EXTERNAL_EVENT_POLLING","statement":"Context propagation performs zero ExternalEvent polling calls.","category":"execution_count","expected":true}
+    ],
+    "O1-C24": [
+      {"id":"O1-C24-DUPLICATE-DATA-FRAME","subvectorId":"DUPLICATE_DATA_FRAME","statement":"A duplicate data frame is handled without duplicate execution or journal mutation.","category":"journal_truth","expected":true},
+      {"id":"O1-C24-REORDERED-DATA-FRAME","subvectorId":"REORDERED_DATA_FRAME_ACROSS_RECONNECT","statement":"Reordered data frames across reconnect are restored to authoritative sequence order.","category":"recovery","expected":true}
+    ],
+    "O1-C25": [
+      {"id":"O1-C25-CROSS-DEVICE-RESUME-REJECT","subvectorId":"CROSS_DEVICE_RESUME_REJECT","statement":"A resume token cannot be used by another device.","category":"authorization","expected":true},
+      {"id":"O1-C25-CROSS-RSID-RESUME-REJECT","subvectorId":"CROSS_RSID_RESUME_REJECT","statement":"A resume token cannot be used for another rsid.","category":"authorization","expected":true},
+      {"id":"O1-C25-INVOCATION-AUTHORIZATION-REJECT","subvectorId":"UNREGISTERED_SESSION_INVOCATION_REJECT","statement":"An invocation for a session not registered by the bridge is rejected.","category":"safety","expected":true}
+    ],
+    "O1-C26": [
+      {"id":"O1-C26-N-COMPATIBLE","subvectorId":"GATEWAY_VERSION_N_COMPATIBLE","statement":"The Gateway accepts the current supported protocol version N.","category":"compatibility","expected":true},
+      {"id":"O1-C26-N-MINUS-ONE-COMPATIBLE","subvectorId":"GATEWAY_VERSION_N_MINUS_ONE_COMPATIBLE","statement":"The Gateway accepts the immediately prior supported protocol version N-1.","category":"compatibility","expected":true},
+      {"id":"O1-C26-ADDITIVE-CHANGE-ACCEPTED","subvectorId":"WITHIN_VERSION_ADDITIVE_CHANGE_ACCEPTED","statement":"An additive within-version field change remains compatible.","category":"schema","expected":true},
+      {"id":"O1-C26-BREAKING-CHANGE-REJECTED","subvectorId":"WITHIN_VERSION_BREAKING_CHANGE_REJECTED","statement":"A non-additive within-version change is rejected.","category":"schema","expected":true}
+    ],
+    "O1-C27": [
+      {"id":"O1-C27-FULL-JITTER-BOUNDS","subvectorId":"FULL_JITTER_BOUNDS","statement":"Every reconnect delay stays within the full-jitter bound for its zero-based attempt index.","category":"timing","expected":true},
+      {"id":"O1-C27-SIXTY-SECOND-CAP","subvectorId":"SIXTY_SECOND_CAP","statement":"The reconnect base is capped at sixty seconds.","category":"timing","expected":true},
+      {"id":"O1-C27-NO-EARLY-RESET","subvectorId":"NO_RESET_BEFORE_120_SECONDS","statement":"Backoff does not reset before 120 seconds of continuous steady connection.","category":"recovery","expected":true},
+      {"id":"O1-C27-RESET-AFTER-STEADY","subvectorId":"RESET_AFTER_120_SECONDS_STEADY","statement":"Backoff resets after 120 seconds of continuous steady connection.","category":"recovery","expected":true}
+    ],
+    "O1-C28": [
+      {"id":"O1-C28-HOLD-INSTALLED","subvectorId":"PENDING_EXPIRY_SCOPE_HOLD_INSTALLED","statement":"Pending expiry installs the exact rsid and mutation_scope conflict hold.","category":"journal_truth","expected":true},
+      {"id":"O1-C28-FRESH-ID-BLOCKED","subvectorId":"FRESH_INVOCATION_ID_WRITE_BLOCKED","statement":"A fresh invocation id cannot bypass the active mutation hold.","category":"safety","expected":true},
+      {"id":"O1-C28-BATCH-WRITE-BLOCKED","subvectorId":"BATCH_WRITE_BLOCKED","statement":"A conflicting batch write cannot bypass the active mutation hold.","category":"safety","expected":true},
+      {"id":"O1-C28-INCONCLUSIVE-READ-RETAINS","subvectorId":"INCONCLUSIVE_VERIFICATION_RETAINS_HOLD","statement":"An inconclusive correlated verification read retains the hold.","category":"recovery","expected":true},
+      {"id":"O1-C28-CONCLUSIVE-READ-CLEARS","subvectorId":"CONCLUSIVE_VERIFICATION_CLEARS_HOLD","statement":"A valid conclusive correlated verification clearance clears the matching hold.","category":"recovery","expected":true},
+      {"id":"O1-C28-LATE-TERMINAL-TRANSITION","subvectorId":"LATE_TERMINAL_EVIDENCE_TRANSITION","statement":"Correlated late-terminal evidence exercises the specified retained or cleared transition.","category":"journal_truth","expected":true},
+      {"id":"O1-C28-INVALID-CLEARANCE-BLOCKED","subvectorId":"INVALID_CLEARANCE_NEVER_DISPATCHES","statement":"An invalid clearance never opens conflicting mutation dispatch.","category":"execution_count","expected":true}
+    ],
+    "O1-C29": [
+      {"id":"O1-C29-MIXED-NONATOMIC-REDELIVERY","subvectorId":"MIXED_NONATOMIC_REDELIVERY","statement":"Non-atomic redelivery returns the exact mixed terminal and non-terminal step outcomes.","category":"journal_truth","expected":true},
+      {"id":"O1-C29-ATOMIC-TERMINAL-REPLAY","subvectorId":"ATOMIC_TERMINAL_REPLAY","statement":"A durable atomic terminal result replays without add-in execution.","category":"execution_count","expected":true},
+      {"id":"O1-C29-ATOMIC-INDETERMINATE-RECOVERY","subvectorId":"ATOMIC_INDETERMINATE_RECOVERY","statement":"A possibly dispatched atomic batch recovers as wholly indeterminate without step retry.","category":"recovery","expected":true},
+      {"id":"O1-C29-NESTED-OUTCOME-FIELDS","subvectorId":"NESTED_ERROR_OUTCOME_FIELDS","statement":"Every nested error carries its complete outcome fields.","category":"schema","expected":true},
+      {"id":"O1-C29-NESTED-VERIFICATION-FIELDS","subvectorId":"NESTED_ERROR_VERIFICATION_FIELDS","statement":"Every nested error carries its complete verification fields.","category":"schema","expected":true},
+      {"id":"O1-C29-AFFECTED-SCOPE-HOLDS","subvectorId":"AFFECTED_SCOPE_HOLDS","statement":"Every possibly executed mutating scope receives the required hold.","category":"safety","expected":true}
+    ],
+    "O1-C30": [
+      {"id":"O1-C30-PROPERTY-ORDER","subvectorId":"JCS_PROPERTY_ORDER","statement":"RFC 8785 property-order variants produce the same params digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C30-NUMBER-FORMATTING","subvectorId":"JCS_NUMBER_FORMATTING","statement":"RFC 8785 number-formatting vectors produce the specified digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C30-UNICODE","subvectorId":"JCS_UNICODE","statement":"Unicode vectors use UTF-8 without extra normalization and produce the specified digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C30-ESCAPES","subvectorId":"JCS_ESCAPES","statement":"Equivalent JSON escape forms produce the same canonical digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C30-STEP-OMISSION","subvectorId":"BATCH_STEP_OMISSION_REJECTED","statement":"A batch with an omitted step is rejected.","category":"schema","expected":true},
+      {"id":"O1-C30-PARAMS-DIGEST-MISMATCH","subvectorId":"PARAMS_DIGEST_MISMATCH_REJECTED","statement":"A params value and params_digest mismatch is rejected before dispatch.","category":"safety","expected":true},
+      {"id":"O1-C30-PER-STEP-DIGEST","subvectorId":"EXPLICIT_PER_STEP_DIGEST_VERIFIED","statement":"Every explicit batch-step digest is independently verified.","category":"schema","expected":true},
+      {"id":"O1-C30-BATCH-DIGEST","subvectorId":"BATCH_DIGEST_VERIFIED","statement":"The complete ordered batch digest is verified.","category":"schema","expected":true},
+      {"id":"O1-C30-CHANGED-POLICY","subvectorId":"CHANGED_POLICY_REJECTED","statement":"Redelivery with changed policy binding is rejected.","category":"safety","expected":true},
+      {"id":"O1-C30-CHANGED-SCOPE","subvectorId":"CHANGED_SCOPE_REJECTED","statement":"Redelivery with changed mutation scope is rejected.","category":"safety","expected":true},
+      {"id":"O1-C30-CHANGED-CLEARANCE","subvectorId":"CHANGED_CLEARANCE_REJECTED","statement":"Redelivery with changed recovery clearance is rejected.","category":"safety","expected":true},
+      {"id":"O1-C30-HARMLESS-RESERIALIZATION","subvectorId":"HARMLESS_RESERIALIZATION_ACCEPTED","statement":"Harmless property-order or escape reserialization is not treated as a digest mismatch.","category":"wire_behavior","expected":true}
+    ],
+    "O1-C31": [
+      {"id":"O1-C31-HEARTBEAT-ACK-POSITIVE","subvectorId":"HEARTBEAT_ACK_SCHEMA_POSITIVE","statement":"A valid heartbeat_ack payload is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-HEARTBEAT-ACK-NEGATIVE","subvectorId":"HEARTBEAT_ACK_SCHEMA_NEGATIVE","statement":"An invalid heartbeat_ack payload is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-REGISTER-POSITIVE","subvectorId":"SESSION_REGISTER_SCHEMA_POSITIVE","statement":"A valid session_register payload is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-REGISTER-NEGATIVE","subvectorId":"SESSION_REGISTER_SCHEMA_NEGATIVE","statement":"An invalid session_register payload is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-UNREGISTER-POSITIVE","subvectorId":"SESSION_UNREGISTER_SCHEMA_POSITIVE","statement":"A valid session_unregister payload is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-UNREGISTER-NEGATIVE","subvectorId":"SESSION_UNREGISTER_SCHEMA_NEGATIVE","statement":"An invalid session_unregister payload is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-RESUME-POSITIVE","subvectorId":"SESSION_RESUME_SCHEMA_POSITIVE","statement":"A valid session_resume and resume_ack payload pair is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-RESUME-NEGATIVE","subvectorId":"SESSION_RESUME_SCHEMA_NEGATIVE","statement":"An invalid session_resume or resume_ack payload is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-CANCEL-POSITIVE","subvectorId":"CANCEL_SCHEMA_POSITIVE","statement":"A valid cancel payload is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-CANCEL-NEGATIVE","subvectorId":"CANCEL_SCHEMA_NEGATIVE","statement":"An invalid cancel payload is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-GOODBYE-POSITIVE","subvectorId":"GOODBYE_SCHEMA_POSITIVE","statement":"A valid goodbye payload and reason is accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-GOODBYE-NEGATIVE","subvectorId":"GOODBYE_SCHEMA_NEGATIVE","statement":"An invalid goodbye payload or reason is rejected.","category":"schema","expected":true},
+      {"id":"O1-C31-MANIFEST-POSITIVE","subvectorId":"MANIFEST_SCHEMA_POSITIVE","statement":"Valid manifest-family payloads are accepted.","category":"schema","expected":true},
+      {"id":"O1-C31-MANIFEST-NEGATIVE","subvectorId":"MANIFEST_SCHEMA_NEGATIVE","statement":"Invalid manifest-family payloads are rejected.","category":"schema","expected":true}
+    ],
+    "O1-C32": [
+      {"id":"O1-C32-BASE64-ALPHABET","subvectorId":"CHUNK_BASE64_ALPHABET","statement":"Chunk data accepts only the specified Base64 alphabet.","category":"schema","expected":true},
+      {"id":"O1-C32-BASE64-PADDING","subvectorId":"CHUNK_BASE64_PADDING","statement":"Chunk data enforces valid Base64 padding.","category":"schema","expected":true},
+      {"id":"O1-C32-STREAM-IDENTITY","subvectorId":"PER_STREAM_IDENTITY","statement":"Every chunk remains bound to its invocation and stream identity.","category":"wire_behavior","expected":true},
+      {"id":"O1-C32-STREAM-INDEXING","subvectorId":"PER_STREAM_INDEXING","statement":"Chunk indexes are zero-based and contiguous independently per stream.","category":"wire_behavior","expected":true},
+      {"id":"O1-C32-DECODED-LIMIT","subvectorId":"DECODED_BYTE_LIMIT","statement":"The per-chunk limit is enforced on decoded bytes.","category":"safety","expected":true},
+      {"id":"O1-C32-RECONSTRUCTION-SIZE","subvectorId":"RECONSTRUCTION_SIZE","statement":"The reconstructed byte count matches the terminal total size.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C32-CONTENT-DIGEST","subvectorId":"DECODED_CONTENT_DIGEST","statement":"The ordered decoded content matches the terminal digest.","category":"artifact_integrity","expected":true}
+    ],
+    "O1-C33": [
+      {"id":"O1-C33-LOOPBACK-ACCEPTED","subvectorId":"LOOPBACK_TARGET_ACCEPTED","statement":"An exact loopback target is accepted.","category":"discovery","expected":true},
+      {"id":"O1-C33-WILDCARD-REJECTED","subvectorId":"WILDCARD_TARGET_REJECTED","statement":"A wildcard listener or target is rejected.","category":"safety","expected":true},
+      {"id":"O1-C33-LAN-REJECTED","subvectorId":"LAN_TARGET_REJECTED","statement":"A LAN address is rejected.","category":"authorization","expected":true},
+      {"id":"O1-C33-HOSTNAME-REMOTE-REJECTED","subvectorId":"HOSTNAME_RESOLVED_REMOTE_REJECTED","statement":"A hostname resolving to a non-loopback address is rejected.","category":"authorization","expected":true},
+      {"id":"O1-C33-OVERRIDE-REJECTED","subvectorId":"OVERRIDE_TARGET_REJECTED","statement":"A configured non-loopback override target is rejected.","category":"safety","expected":true}
+    ],
+    "O1-C34": [
+      {"id":"O1-C34-DOCUMENT-SCHEMA","subvectorId":"SESSION_DOCUMENT_SCHEMA","statement":"Session document rows satisfy the exact document schema.","category":"schema","expected":true},
+      {"id":"O1-C34-SEAT-SPOOF-REJECTED","subvectorId":"SEAT_IDENTITY_SPOOF_REJECTED","statement":"A bridge-claimed seat identity mismatch is rejected and audited.","category":"authorization","expected":true},
+      {"id":"O1-C34-USER-SPOOF-REJECTED","subvectorId":"USER_IDENTITY_SPOOF_REJECTED","statement":"A bridge-claimed user identity mismatch is rejected and audited.","category":"authorization","expected":true}
+    ],
+    "O1-C35": [
+      {"id":"O1-C35-MAX-SAFE-SEQ","subvectorId":"MAX_SAFE_SEQ_ACCEPTED","statement":"The maximum safe integer sequence value is accepted.","category":"schema","expected":true},
+      {"id":"O1-C35-UNSAFE-SEQ","subvectorId":"UNSAFE_TWO_POW_53_REJECTED","statement":"An unsafe 2^53 sequence value is rejected.","category":"schema","expected":true},
+      {"id":"O1-C35-NO-WRAP-RENEWAL","subvectorId":"NO_WRAP_SESSION_RENEWAL","statement":"Approaching sequence exhaustion renews the session instead of wrapping.","category":"recovery","expected":true},
+      {"id":"O1-C35-DUPLICATE","subvectorId":"DUPLICATE_SEQ_HANDLING","statement":"A duplicate sequence is handled idempotently.","category":"wire_behavior","expected":true},
+      {"id":"O1-C35-GAP","subvectorId":"SEQ_GAP_HANDLING","statement":"A sequence gap is detected and recovered without out-of-order acceptance.","category":"recovery","expected":true}
+    ],
+    "O1-C36": [
+      {"id":"O1-C36-WSS-LIFECYCLE","subvectorId":"WSS_PRIMARY_LIFECYCLE","statement":"The WSS primary binding completes the required connection and message lifecycle.","category":"wire_behavior","expected":true},
+      {"id":"O1-C36-HTTP-SSE-LIFECYCLE","subvectorId":"STREAMABLE_HTTP_SSE_LIFECYCLE","statement":"The Streamable HTTP/SSE binding completes create, events, and messages lifecycle.","category":"wire_behavior","expected":true},
+      {"id":"O1-C36-JOURNAL-PARITY","subvectorId":"BINDING_JOURNAL_PARITY","statement":"Both bindings produce identical journal outcomes.","category":"transport_parity","expected":true},
+      {"id":"O1-C36-RESUME-PARITY","subvectorId":"BINDING_RESUME_PARITY","statement":"Both bindings produce identical resume outcomes.","category":"transport_parity","expected":true},
+      {"id":"O1-C36-OPENING-ERRORS","subvectorId":"OPENING_ERROR_MATRIX","statement":"Both bindings enforce the exact opening-error matrix.","category":"recovery","expected":true},
+      {"id":"O1-C36-PROXY-BUFFERING","subvectorId":"PROXY_BUFFERING_VECTOR","statement":"The Streamable HTTP/SSE path survives the specified proxy-buffering vector.","category":"timing","expected":true}
+    ],
+    "O1-C37": [
+      {"id":"O1-C37-REVIT-EXITED-RESUME","subvectorId":"REVIT_EXITED_REVOKES_RESUME","statement":"revit_exited revokes the session resume token.","category":"authorization","expected":true},
+      {"id":"O1-C37-REVIT-EXITED-DISPATCH","subvectorId":"REVIT_EXITED_PREVENTS_DISPATCH","statement":"revit_exited prevents new dispatch.","category":"safety","expected":true},
+      {"id":"O1-C37-REVIT-EXITED-INDETERMINATE","subvectorId":"REVIT_EXITED_PRESERVES_INDETERMINATE","statement":"revit_exited preserves a possibly dispatched mutation as indeterminate.","category":"journal_truth","expected":true},
+      {"id":"O1-C37-BRIDGE-SHUTDOWN-RESUME","subvectorId":"BRIDGE_SHUTDOWN_REVOKES_RESUME","statement":"bridge_shutdown revokes the session resume token.","category":"authorization","expected":true},
+      {"id":"O1-C37-BRIDGE-SHUTDOWN-DISPATCH","subvectorId":"BRIDGE_SHUTDOWN_PREVENTS_DISPATCH","statement":"bridge_shutdown prevents new dispatch.","category":"safety","expected":true},
+      {"id":"O1-C37-BRIDGE-SHUTDOWN-INDETERMINATE","subvectorId":"BRIDGE_SHUTDOWN_PRESERVES_INDETERMINATE","statement":"bridge_shutdown preserves a possibly dispatched mutation as indeterminate.","category":"journal_truth","expected":true},
+      {"id":"O1-C37-SESSION-REPLACED-RESUME","subvectorId":"SESSION_REPLACED_REVOKES_RESUME","statement":"session_replaced revokes the session resume token.","category":"authorization","expected":true},
+      {"id":"O1-C37-SESSION-REPLACED-DISPATCH","subvectorId":"SESSION_REPLACED_PREVENTS_DISPATCH","statement":"session_replaced prevents new dispatch.","category":"safety","expected":true},
+      {"id":"O1-C37-SESSION-REPLACED-INDETERMINATE","subvectorId":"SESSION_REPLACED_PRESERVES_INDETERMINATE","statement":"session_replaced preserves a possibly dispatched mutation as indeterminate.","category":"journal_truth","expected":true},
+      {"id":"O1-C37-OPERATOR-REQUESTED-RESUME","subvectorId":"OPERATOR_REQUESTED_REVOKES_RESUME","statement":"operator_requested revokes the session resume token.","category":"authorization","expected":true},
+      {"id":"O1-C37-OPERATOR-REQUESTED-DISPATCH","subvectorId":"OPERATOR_REQUESTED_PREVENTS_DISPATCH","statement":"operator_requested prevents new dispatch.","category":"safety","expected":true},
+      {"id":"O1-C37-OPERATOR-REQUESTED-INDETERMINATE","subvectorId":"OPERATOR_REQUESTED_PRESERVES_INDETERMINATE","statement":"operator_requested preserves a possibly dispatched mutation as indeterminate.","category":"journal_truth","expected":true}
+    ],
+    "O1-C38": [
+      {"id":"O1-C38-VALID-GUARDED-REASON","subvectorId":"VALID_GUARDED_REASON_REQUIRED","statement":"status guarded is accepted only with a valid guarded_reason.","category":"schema","expected":true},
+      {"id":"O1-C38-MISSING-GUARDED-REASON","subvectorId":"MISSING_GUARDED_REASON_REJECTED","statement":"A guarded result without guarded_reason is rejected.","category":"schema","expected":true},
+      {"id":"O1-C38-FIRST-DELIVERY-STOPS","subvectorId":"FIRST_DELIVERY_STOPS_ON_GUARDED","statement":"A first-delivery atomic false batch stops on the guarded step.","category":"execution_count","expected":true},
+      {"id":"O1-C38-SUCCESSORS-NOT-STARTED","subvectorId":"GUARDED_SUCCESSORS_NOT_STARTED","statement":"Every successor after the guarded step is marked not_started and does not execute.","category":"journal_truth","expected":true}
+    ],
+    "O1-C39": [
+      {"id":"O1-C39-REPLAY-ONLY","subvectorId":"PAYLOAD_OMITTED_REPLAY_ONLY","statement":"payload_omitted true is accepted only on replay.","category":"safety","expected":true},
+      {"id":"O1-C39-NONREPLAY-REJECTED","subvectorId":"PAYLOAD_OMITTED_NONREPLAY_REJECTED","statement":"payload_omitted true on a non-replay result is rejected.","category":"schema","expected":true},
+      {"id":"O1-C39-DIGEST-REQUIRED","subvectorId":"PAYLOAD_OMITTED_DIGEST_REQUIRED","statement":"payload_omitted true requires the retained result digest.","category":"schema","expected":true},
+      {"id":"O1-C39-RESULT-ABSENT","subvectorId":"PAYLOAD_OMITTED_RESULT_ABSENT","statement":"payload_omitted true forbids an inline result payload.","category":"schema","expected":true},
+      {"id":"O1-C39-AUDITED-READ-RECOVERY","subvectorId":"PAYLOAD_OMITTED_AUDITED_READ_RECOVERY","statement":"Omitted payload recovery uses an audited correlated read rather than a guessed mutation result.","category":"recovery","expected":true}
+    ],
+    "O1-C40": [
+      {"id":"O1-C40-RAW-PATH-REJECTED","subvectorId":"RAW_PATH_REJECTED","statement":"An undeclared raw artifact path is rejected.","category":"safety","expected":true},
+      {"id":"O1-C40-LOCAL-PATH-REJECTED","subvectorId":"LOCAL_PATH_NOT_EXPOSED","statement":"A workstation-local path is never exposed in the sanitized result.","category":"safety","expected":true},
+      {"id":"O1-C40-TRAVERSAL-REJECTED","subvectorId":"TRAVERSAL_PATH_REJECTED","statement":"A traversal path is rejected.","category":"safety","expected":true},
+      {"id":"O1-C40-REPARSE-REJECTED","subvectorId":"REPARSE_PATH_REJECTED","statement":"A symlink, junction, or reparse artifact path is rejected.","category":"safety","expected":true},
+      {"id":"O1-C40-ARTIFACT-ID-MAPPING","subvectorId":"MULTIFILE_ARTIFACT_ID_MAPPING","statement":"Every sanitized output member maps to one stable unique artifact_id.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C40-ARTIFACT-INDEX-MAPPING","subvectorId":"MULTIFILE_ARTIFACT_INDEX_MAPPING","statement":"artifact_index values are deterministic, zero-based, contiguous, and input ordered.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C40-INDEPENDENT-STREAMS","subvectorId":"INDEPENDENT_ARTIFACT_CHUNK_STREAMS","statement":"Every file uses an independent artifact chunk stream with independent indexing.","category":"wire_behavior","expected":true},
+      {"id":"O1-C40-DESCRIPTOR-VERIFIED","subvectorId":"ARTIFACT_DESCRIPTOR_VERIFIED","statement":"Every terminal artifact descriptor matches its mapped stream identity and metadata.","category":"schema","expected":true},
+      {"id":"O1-C40-DIGEST-VERIFIED","subvectorId":"ARTIFACT_DIGEST_VERIFIED","statement":"Every reconstructed artifact stream matches its descriptor digest.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C40-SIZE-VERIFIED","subvectorId":"ARTIFACT_SIZE_VERIFIED","statement":"Every reconstructed artifact stream matches its descriptor size and combined limits.","category":"artifact_integrity","expected":true},
+      {"id":"O1-C40-RETRANSMISSION-IDENTITY","subvectorId":"ARTIFACT_RETRANSMISSION_IDENTITY","statement":"Retransmission and replay preserve artifact ids, indexes, descriptors, stream ids, and bytes exactly.","category":"wire_behavior","expected":true},
+      {"id":"O1-C40-ALL-OR-NOTHING","subvectorId":"INVALID_MEMBER_ALL_OR_NOTHING","statement":"One invalid member rejects the entire multi-file conversion before any sibling chunk is emitted.","category":"safety","expected":true},
+      {"id":"O1-C40-NO-NORTH-CLAIM","subvectorId":"NO_NORTH_CLIENT_CLAIM","statement":"RBP artifact evidence makes no client upload, resource, display, download, or north-client conformance claim.","category":"safety","expected":true}
+    ]
+  }
+}

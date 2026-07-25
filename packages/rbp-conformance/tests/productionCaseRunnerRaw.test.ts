@@ -1,0 +1,142 @@
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+import { describe, expect, it } from "vitest";
+
+import { canonicalManifest } from "../src/manifest.js";
+import { RAW_PRODUCTION_ORACLES } from "../src/productionCaseOraclesRaw.js";
+import { executeRawProductionCaseBothBindings } from "../src/productionCaseRunnerRaw.js";
+import { RAW_PRODUCTION_FRAME_FACTS } from "../src/productionCaseSeedsRaw.js";
+import type { ExecutionPlan, ProcessObservationRecord } from "../src/types.js";
+import {
+  createCurrentProductionPlan,
+  withProductionRuntimeLaunchEpoch,
+} from "./helpers.js";
+
+const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const repoRoot = path.resolve(packageRoot, "..", "..");
+
+function productionPlan(caseId = "O1-C30"): ExecutionPlan {
+  return createCurrentProductionPlan(
+    repoRoot,
+    `raw-runner-${caseId.toLowerCase()}`,
+  );
+}
+
+function stoppedLifecycleAt(stepId: string): (observation: ProcessObservationRecord) => boolean {
+  return (observation) => {
+    if (observation.kind !== "process_lifecycle") return false;
+    const payload = observation.payload as Record<string, unknown>;
+    return payload.phase === "stopped" &&
+      payload.action === "stop_case_stack" &&
+      payload.processRole === "canonical_component" &&
+      payload.stepId === stepId;
+  };
+}
+
+describe("raw production case runner", () => {
+  it.each(["O1-C25", "O1-C34"] as const)(
+    "executes %s on both authenticated product bindings with exact parent-owned identity oracles",
+    async (caseId) => {
+      const plan = productionPlan(caseId);
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
+        repoRoot,
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId,
+        }),
+      );
+      expect(executions.map(({ binding }) => binding)).toEqual([
+        "wss",
+        "streamable_http_sse",
+      ]);
+      const assertions = canonicalManifest.requiredAssertions[caseId]!;
+      for (const execution of executions) {
+        for (const assertion of assertions) {
+          const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id);
+          expect(oracle, assertion.id).toBeDefined();
+          const passed = oracle!({
+            caseId,
+            binding: execution.binding,
+            assertion,
+            observations: execution.evidence.observations,
+          });
+          expect(passed, `${assertion.id}/${execution.binding}`).toBe(true);
+        }
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt(`${caseId.toLowerCase()}.resource-baseline-stop`),
+        )).toHaveLength(3);
+        const stops = execution.evidence.observations.filter(
+          stoppedLifecycleAt(`${caseId.toLowerCase()}.stack-stop`),
+        );
+        expect(stops).toHaveLength(3);
+        for (const stop of stops) {
+          expect(stop.payload).toMatchObject({
+            orphanProcessCount: 0,
+            survivingPids: [],
+          });
+        }
+        expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
+          /"(?:actual|passed|verdict)"\s*:/u,
+        );
+      }
+    },
+    180_000,
+  );
+
+  it(
+    "executes C30 on both current-stack raw bindings and retains the exact raw frame evidence",
+    async () => {
+      const plan = productionPlan();
+      const executions = await withProductionRuntimeLaunchEpoch(
+        plan,
+        repoRoot,
+        () => executeRawProductionCaseBothBindings({
+          plan,
+          repoRoot,
+          caseId: "O1-C30",
+        }),
+      );
+      expect(executions.map(({ binding }) => binding)).toEqual([
+        "wss",
+        "streamable_http_sse",
+      ]);
+      const expectedStepIds = [...RAW_PRODUCTION_FRAME_FACTS.values()]
+        .filter(({ caseId }) => caseId === "O1-C30")
+        .map(({ stepId }) => stepId)
+        .sort();
+      const assertions = canonicalManifest.requiredAssertions["O1-C30"]!;
+      for (const execution of executions) {
+        const rawStepIds = execution.evidence.observations
+          .filter(({ kind }) => kind === "wire_event")
+          .map(({ payload }) => payload as Record<string, unknown>)
+          .filter(({ direction }) => direction === "parent_to_gateway")
+          .map(({ stepId }) => String(stepId))
+          .sort();
+        expect(rawStepIds).toEqual(expectedStepIds);
+        for (const assertion of assertions) {
+          const oracle = RAW_PRODUCTION_ORACLES.get(assertion.id);
+          expect(oracle, assertion.id).toBeDefined();
+          expect(oracle!({
+            caseId: "O1-C30",
+            binding: execution.binding,
+            assertion,
+            observations: execution.evidence.observations,
+          }), `${assertion.id}/${execution.binding}`).toBe(true);
+        }
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt("o1-c30.resource-baseline-stop"),
+        )).toHaveLength(3);
+        expect(execution.evidence.observations.filter(
+          stoppedLifecycleAt("o1-c30.stack-stop"),
+        )).toHaveLength(3);
+        expect(JSON.stringify(execution.evidence.observations)).not.toMatch(
+          /"(?:actual|passed|verdict)"\s*:/u,
+        );
+      }
+    },
+    180_000,
+  );
+});

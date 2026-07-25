@@ -6,6 +6,7 @@ import {
   type Server,
   type Socket,
 } from "node:net";
+import { performance } from "node:perf_hooks";
 
 import {
   ABSOLUTE_MAX_REQUEST_PAYLOAD_BYTES,
@@ -564,6 +565,17 @@ function sha256(value: Buffer): string {
   return `sha256:${createHash("sha256").update(value).digest("hex")}`;
 }
 
+const MAX_DOCUMENT_CONTEXT_EVIDENCE_EVENTS = 256;
+const MAX_SCENARIO_ARTIFACT_BYTES = 16 * 1024 * 1024;
+const MAX_SCENARIO_BYTES_PER_FILE = 4 * 1024 * 1024;
+
+interface DocumentContextEvidenceEvent {
+  readonly sequence: number;
+  readonly kind: "cache_initialized" | "application_event_cache_update" | "cache_read";
+  readonly revision: number;
+  readonly atMonotonicMs: number;
+}
+
 export class AddinLoopbackFixture {
   readonly #options: Required<
     Pick<
@@ -587,6 +599,12 @@ export class AddinLoopbackFixture {
   #executionSequence = 0;
   #activeTask: MutableTaskInfo | null = null;
   #documentContext: DocumentContextSnapshot;
+  #documentContextEvidenceSequence = 0;
+  #documentContextCacheUpdateCount = 0;
+  #documentContextCacheReadCount = 0;
+  #documentContextPollRequestCount = 0;
+  #lastDocumentContextMonotonicMs = -1;
+  readonly #documentContextEvidenceTimeline: DocumentContextEvidenceEvent[] = [];
   #crashed = false;
 
   public constructor(options: FixtureOptions = {}) {
@@ -604,6 +622,7 @@ export class AddinLoopbackFixture {
     this.#validator = new LoopbackContractValidator(this.#options.maxRequestPayloadBytes);
     this.#documentContext = structuredClone(options.documentContext ?? DEFAULT_DOCUMENT_CONTEXT);
     this.#validateDocumentContext(this.#documentContext);
+    this.#recordDocumentContextEvidence("cache_initialized");
     this.#registerDefaultHandlers();
   }
 
@@ -654,6 +673,24 @@ export class AddinLoopbackFixture {
       pendingStalls: [...this.#stallLatches]
         .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
         .map(([requestId, queue]) => ({ requestId, count: queue.length })),
+      documentContextEvidence: {
+        evidenceVersion: 1,
+        clock: "process_monotonic_ms",
+        capacity: MAX_DOCUMENT_CONTEXT_EVIDENCE_EVENTS,
+        totalEventCount: this.#documentContextEvidenceSequence,
+        droppedEventCount: Math.max(
+          0,
+          this.#documentContextEvidenceSequence - this.#documentContextEvidenceTimeline.length,
+        ),
+        currentRevision: this.#documentContext.revision,
+        applicationEventCacheUpdateCount: this.#documentContextCacheUpdateCount,
+        cacheReadCount: this.#documentContextCacheReadCount,
+        pollRequestCount: this.#documentContextPollRequestCount,
+        // This fixture models the add-in application-event cache contract.
+        // A non-zero value would invalidate C23 rather than being inferred away.
+        externalEventRaiseCount: 0,
+        timeline: structuredClone(this.#documentContextEvidenceTimeline),
+      },
       openSocketCount: this.#sockets.size,
       crashed: this.#crashed,
     };
@@ -710,6 +747,8 @@ export class AddinLoopbackFixture {
     };
     this.#validateDocumentContext(candidate);
     this.#documentContext = candidate;
+    this.#documentContextCacheUpdateCount += 1;
+    this.#recordDocumentContextEvidence("application_event_cache_update");
     return structuredClone(candidate);
   }
 
@@ -763,9 +802,14 @@ export class AddinLoopbackFixture {
       state: "completed",
       result: { success: true, executionOrdinal: context.executionOrdinal },
     }));
-    this.registerHandler("fixture_multi_file_output", "read_only", () => ({
+    this.registerHandler("fixture_multi_file_output", "read_only", (params) => ({
       state: "completed",
-      result: { success: true, files: this.#multiFileArtifacts() as unknown as JsonValue },
+      result: {
+        success: true,
+        fixtureArtifactProgress: true,
+        artifactScenario: typeof params.scenario === "string" ? params.scenario : "default",
+        files: this.#multiFileArtifacts(params) as unknown as JsonValue,
+      },
     }));
     this.registerHandler("send_code_to_revit", "model_transaction", (params) => ({
       state: "completed",
@@ -787,21 +831,150 @@ export class AddinLoopbackFixture {
     }
   }
 
-  #multiFileArtifacts(): MultiFileArtifact[] {
-    return [
-      ["fixture-report.json", "application/json", Buffer.from('{"fixture":true}\n', "utf8")],
-      ["fixture-evidence.txt", "text/plain", Buffer.from("revAgent fixture evidence\n", "utf8")],
-    ].map(([fileName, contentType, content], artifactIndex) => {
-      const bytes = content as Buffer;
-      return {
+  #multiFileArtifacts(params: JsonObject): MultiFileArtifact[] | JsonObject[] {
+    const allowed = new Set(["scenario", "fileCount", "bytesPerFile", "path", "contentType"]);
+    const unknown = Object.keys(params).find((key) => !allowed.has(key));
+    if (unknown !== undefined) throw new Error(`Unknown fixture multi-file scenario field: ${unknown}`);
+    const scenario = params.scenario ?? "default";
+    if (
+      typeof scenario !== "string" ||
+      ![
+        "default",
+        "valid_multifile",
+        "raw_path",
+        "local_path",
+        "traversal_path",
+        "reparse_path",
+        "invalid_member",
+      ].includes(scenario)
+    ) {
+      throw new Error("fixture multi-file scenario is not supported");
+    }
+    const path = params.path;
+    if (path !== undefined && (typeof path !== "string" || path.length < 1 || path.length > 4_096)) {
+      throw new RangeError("fixture scenario path must contain from 1 through 4096 characters");
+    }
+    const contentType = params.contentType ?? "application/octet-stream";
+    if (typeof contentType !== "string" || contentType.length < 1 || contentType.length > 255) {
+      throw new RangeError("fixture scenario contentType must contain from 1 through 255 characters");
+    }
+    if (
+      scenario === "raw_path" ||
+      scenario === "local_path" ||
+      scenario === "traversal_path" ||
+      scenario === "reparse_path"
+    ) {
+      if (params.fileCount !== undefined || params.bytesPerFile !== undefined) {
+        throw new Error(`${scenario} does not accept fileCount or bytesPerFile`);
+      }
+      const selectedPath = path ?? (
+        scenario === "traversal_path"
+          ? "..\\outside-fixture-artifact.bin"
+          : scenario === "raw_path"
+            ? "C:\\revagent-fixture-private\\raw-artifact.bin"
+            : null
+      );
+      if (selectedPath === null) {
+        throw new Error(`${scenario} requires an explicit bounded path`);
+      }
+      return [{ path: selectedPath, contentType }];
+    }
+    if (path !== undefined) throw new Error(`${scenario} does not accept path`);
+    if (scenario === "invalid_member") {
+      if (params.fileCount !== undefined || params.bytesPerFile !== undefined) {
+        throw new Error("invalid_member does not accept fileCount or bytesPerFile");
+      }
+      const valid = this.#artifact("fixture-valid-sibling.bin", contentType, Buffer.from("valid sibling\n"), 0);
+      return [
+        valid as unknown as JsonObject,
+        {
+          artifactIndex: 1,
+          fileName: "../invalid-member.bin",
+          contentType,
+          sizeBytes: 1,
+          sha256: sha256(Buffer.from("x")),
+          contentBase64: "eA==",
+        },
+      ];
+    }
+    if (scenario === "default") {
+      if (params.fileCount !== undefined || params.bytesPerFile !== undefined || params.contentType !== undefined) {
+        throw new Error("default fixture multi-file output does not accept scenario sizing fields");
+      }
+      return [
+        this.#artifact("fixture-report.json", "application/json", Buffer.from('{"fixture":true}\n', "utf8"), 0),
+        this.#artifact("fixture-evidence.txt", "text/plain", Buffer.from("revAgent fixture evidence\n", "utf8"), 1),
+      ];
+    }
+    const fileCount = params.fileCount ?? 2;
+    const bytesPerFile = params.bytesPerFile ?? (1024 * 1024 + 1);
+    if (!Number.isSafeInteger(fileCount) || Number(fileCount) < 1 || Number(fileCount) > 16) {
+      throw new RangeError("fixture scenario fileCount must be an integer from 1 through 16");
+    }
+    if (
+      !Number.isSafeInteger(bytesPerFile) ||
+      Number(bytesPerFile) < 1 ||
+      Number(bytesPerFile) > MAX_SCENARIO_BYTES_PER_FILE
+    ) {
+      throw new RangeError(
+        `fixture scenario bytesPerFile must be an integer from 1 through ${MAX_SCENARIO_BYTES_PER_FILE}`,
+      );
+    }
+    if (Number(fileCount) * Number(bytesPerFile) > MAX_SCENARIO_ARTIFACT_BYTES) {
+      throw new RangeError(`fixture scenario artifact bytes exceed ${MAX_SCENARIO_ARTIFACT_BYTES}`);
+    }
+    return Array.from({ length: Number(fileCount) }, (_, artifactIndex) => {
+      const bytes = Buffer.alloc(Number(bytesPerFile), (artifactIndex + 1) & 0xff);
+      return this.#artifact(
+        `fixture-${artifactIndex.toString().padStart(2, "0")}.bin`,
+        contentType,
+        bytes,
         artifactIndex,
-        fileName: fileName as string,
-        contentType: contentType as string,
-        sizeBytes: bytes.byteLength,
-        sha256: sha256(bytes),
-        contentBase64: bytes.toString("base64"),
-      };
+      );
     });
+  }
+
+  #artifact(
+    fileName: string,
+    contentType: string,
+    bytes: Buffer,
+    artifactIndex: number,
+  ): MultiFileArtifact {
+    return {
+      artifactIndex,
+      fileName,
+      contentType,
+      sizeBytes: bytes.byteLength,
+      sha256: sha256(bytes),
+      contentBase64: bytes.toString("base64"),
+    };
+  }
+
+  #recordDocumentContextEvidence(
+    kind: DocumentContextEvidenceEvent["kind"],
+  ): void {
+    const sampled = performance.now();
+    const atMonotonicMs = Math.max(sampled, this.#lastDocumentContextMonotonicMs + 0.001);
+    this.#lastDocumentContextMonotonicMs = atMonotonicMs;
+    this.#documentContextEvidenceSequence += 1;
+    this.#documentContextEvidenceTimeline.push({
+      sequence: this.#documentContextEvidenceSequence,
+      kind,
+      revision: this.#documentContext.revision,
+      atMonotonicMs,
+    });
+    if (this.#documentContextEvidenceTimeline.length > MAX_DOCUMENT_CONTEXT_EVIDENCE_EVENTS) {
+      this.#documentContextEvidenceTimeline.splice(
+        0,
+        this.#documentContextEvidenceTimeline.length - MAX_DOCUMENT_CONTEXT_EVIDENCE_EVENTS,
+      );
+    }
+  }
+
+  #recordDocumentContextRead(): void {
+    this.#documentContextCacheReadCount += 1;
+    this.#documentContextPollRequestCount += 1;
+    this.#recordDocumentContextEvidence("cache_read");
   }
 
   #accept(socket: Socket): void {
@@ -1004,6 +1177,7 @@ export class AddinLoopbackFixture {
       };
     }
     if (method === "get_document_context") {
+      this.#recordDocumentContextRead();
       return {
         executionOrdinal: ordinal,
         response: {

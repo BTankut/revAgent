@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v1/run-report.schema.json",
+  "title": "RBP conformance run report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "manifest", "run", "source", "components", "cases", "timing", "leaks", "resources", "artifacts"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "rbp-conformance-run/v1" },
+    "manifest": { "$ref": "common.schema.json#/definitions/manifestIdentity" },
+    "run": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runId", "sequence", "status", "seed", "startedAt", "finishedAt", "durationMs", "exitCode"],
+      "properties": {
+        "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+        "sequence": { "type": "integer", "minimum": 1, "maximum": 3 },
+        "status": { "enum": ["initialized", "running", "passed", "failed", "error"] },
+        "seed": { "type": "string", "minLength": 1 },
+        "startedAt": { "type": ["string", "null"], "format": "date-time" },
+        "finishedAt": { "type": ["string", "null"], "format": "date-time" },
+        "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+        "exitCode": { "type": ["integer", "null"] }
+      }
+    },
+    "source": { "$ref": "common.schema.json#/definitions/sourceIdentity" },
+    "components": { "type": "array", "minItems": 3, "maxItems": 3, "items": { "$ref": "common.schema.json#/definitions/componentEvidence" } },
+    "cases": { "type": "array", "minItems": 40, "maxItems": 40, "items": { "$ref": "common.schema.json#/definitions/caseResult" } },
+    "timing": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["suiteDurationMs", "setupDurationMs", "teardownDurationMs"],
+      "properties": {
+        "suiteDurationMs": { "type": ["integer", "null"], "minimum": 0, "maximum": 600000 },
+        "setupDurationMs": { "type": ["integer", "null"], "minimum": 0 },
+        "teardownDurationMs": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "leaks": { "$ref": "common.schema.json#/definitions/leakCounters" },
+    "resources": { "$ref": "common.schema.json#/definitions/resourceProfile" },
+    "artifacts": { "type": "array", "items": { "$ref": "common.schema.json#/definitions/artifact" } }
+  }
+}

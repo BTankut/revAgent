@@ -1,0 +1,31 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v1/execution-plan.schema.json",
+  "title": "RBP conformance execution plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "manifest", "runId", "sequence", "source", "components"],
+  "properties": {
+    "schemaVersion": { "type": "string", "const": "rbp-conformance-execution-plan/v1" },
+    "manifest": { "$ref": "common.schema.json#/definitions/manifestIdentity" },
+    "runId": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$" },
+    "sequence": { "type": "integer", "minimum": 1, "maximum": 3 },
+    "source": { "$ref": "common.schema.json#/definitions/sourceIdentity" },
+    "components": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "interfaceVersion", "expectedIdentity", "command"],
+        "properties": {
+          "id": { "enum": ["gateway_stub", "bridge_simulator", "addin_loopback_fixture"] },
+          "interfaceVersion": { "type": "string", "minLength": 1 },
+          "expectedIdentity": { "$ref": "common.schema.json#/definitions/componentIdentity" },
+          "command": { "$ref": "common.schema.json#/definitions/command" }
+        }
+      }
+    }
+  }
+}

@@ -19,7 +19,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "npm run build --workspace @revagent/protocol && tsc -p tsconfig.json",
+    "build": "npm run build --workspace @revagent/protocol && npm run build:self",
+    "build:self": "node ../../node_modules/typescript/lib/tsc.js -p tsconfig.json",
     "lint": "eslint src tests",
     "prepack": "npm run build",
     "start": "node dist/cli.js",

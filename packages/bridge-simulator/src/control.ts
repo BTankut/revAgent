@@ -1,4 +1,5 @@
 import { Buffer } from "node:buffer";
+import { createHash } from "node:crypto";
 import { join } from "node:path";
 import type { Readable, Writable } from "node:stream";
 
@@ -12,7 +13,14 @@ import type {
   InvokeBatchEnvelope,
   InvokeEnvelope,
   MutationHold,
+  PartialEnvelope,
+  RbpEnvelope,
   SessionUnregister,
+} from "@revagent/protocol";
+import {
+  RBP_MAX_DECODED_CHUNK_BYTES,
+  reconnectBackoffLimitMs,
+  validateRbpEnvelope,
 } from "@revagent/protocol";
 
 import { ArtifactSpool, DeterministicUuid7Source } from "./artifacts.js";
@@ -20,6 +28,7 @@ import {
   BridgeSimulator,
   InjectedBridgeCrash,
   type BridgeCrashPoint,
+  type BridgeInvocationOutcome,
   type RegisteredBridgeSession,
 } from "./bridgeSimulator.js";
 import { DurableBridgeJournal, type JournalDurabilityProfile } from "./journal.js";
@@ -30,10 +39,13 @@ import {
 } from "./loopback.js";
 import { BridgeGatewayPeer } from "./peer.js";
 import {
+  GatewayTransportError,
   HttpSseGatewayBinding,
   WssGatewayBinding,
   openPrimaryThenFallback,
   type GatewayBinding,
+  type LoopbackTestTlsTrust,
+  type LoopbackTestTlsTrustEvidence,
 } from "./transport.js";
 
 export const BRIDGE_CONTROL_VERSION = 1;
@@ -46,16 +58,24 @@ export const BRIDGE_CONTROL_ACTIONS = [
   "session_register",
   "session_resume",
   "session_unregister",
+  "prime_sequence_for_conformance",
+  "send_heartbeat_for_conformance",
+  "renew_exhausted_session",
   "tick",
   "poll_document_context",
   "flush_outbound",
   "invoke_local",
+  "read_journal_record_for_conformance",
   "record_verification_attempt",
   "record_late_evidence",
   "resolve_hold",
   "clearance_for_hold",
   "inject_crash",
   "restart_simulator",
+  "configure_reconnect_conformance",
+  "advance_reconnect_conformance_clock",
+  "send_chunk_conformance",
+  "snapshot_soak_status",
   "snapshot_evidence",
   "shutdown",
 ] as const;
@@ -63,6 +83,8 @@ export const BRIDGE_CONTROL_ACTIONS = [
 const MAX_ACTIVE_EVIDENCE_SNAPSHOTS = 4;
 const ROWS_PER_PAGE = 8;
 const EVENTS_PER_PAGE = 16;
+const ARTIFACT_CARRIERS_PER_PAGE = 1;
+const MAX_CONFORMANCE_JOURNAL_RECORD_BYTES = 48 * 1024;
 
 interface EvidenceCursor {
   invocationOffset: number;
@@ -70,6 +92,7 @@ interface EvidenceCursor {
   durabilityOffset: number;
   sessionOffset: number;
   sequenceOffset: number;
+  artifactCarrierOffset: number;
 }
 
 interface BridgeEvidenceSnapshot {
@@ -81,12 +104,54 @@ interface BridgeEvidenceSnapshot {
   readonly durabilityEvents: readonly JsonObject[];
   readonly sessions: readonly JsonObject[];
   readonly sequences: readonly JsonObject[];
+  readonly artifactSpool: JsonObject;
   readonly discovery: JsonObject | null;
   readonly peer: JsonObject | null;
+  readonly reconnectConformance: JsonObject | null;
   readonly crash: JsonObject;
   readonly transport: JsonObject;
   readonly openLoopbackClientCount: number;
   readonly journalClosed: boolean;
+}
+
+interface PendingReconnectSample {
+  readonly jitterUnit: number;
+  clockBeforeSleepMs: number | null;
+  clockAfterSleepMs: number | null;
+  delayMs: number | null;
+}
+
+interface ReconnectAttemptEvidence {
+  readonly attemptIndex: number;
+  readonly jitterUnit: number;
+  readonly backoffLimitMs: number;
+  readonly delayMs: number;
+  readonly clockBeforeSleepMs: number;
+  readonly clockAfterSleepMs: number;
+  readonly outcome: "opening_failed" | "connected";
+  readonly faultClass: string | null;
+  readonly errorMessage: string | null;
+  readonly connectionId: string | null;
+}
+
+interface ReconnectSteadyEvidence {
+  readonly clockMs: number;
+  readonly steadyDurationMs: number;
+  readonly livenessBeforeTick: string;
+  readonly livenessAfterTick: string;
+  readonly reconnectAttemptIndexBefore: number;
+  readonly reconnectAttemptIndexAfter: number;
+  readonly reset: boolean;
+  readonly lastHeartbeatAckAtMs: number;
+}
+
+interface ReconnectConformanceState {
+  readonly jitterUnits: readonly number[];
+  consumedSampleCount: number;
+  pendingSample: PendingReconnectSample | null;
+  readonly attempts: ReconnectAttemptEvidence[];
+  successfulReconnectAtMs: number | null;
+  readonly steadyObservations: ReconnectSteadyEvidence[];
 }
 
 interface ControlSuccess extends JsonObject {
@@ -225,11 +290,33 @@ function booleanValue(value: unknown, label: string): boolean {
   return value;
 }
 
-function loopbackEndpointPolicy(value: unknown): "loopback_test_readiness" {
-  if (value !== "loopback_test_readiness") {
-    throw new Error("endpointPolicy must equal loopback_test_readiness when supplied");
+function loopbackEndpointPolicy(value: unknown): "loopback_test_readiness" | "loopback_test_tls" {
+  if (value !== "loopback_test_readiness" && value !== "loopback_test_tls") {
+    throw new Error(
+      "endpointPolicy must equal loopback_test_readiness or loopback_test_tls when supplied",
+    );
   }
   return value;
+}
+
+function loopbackTestTlsTrust(value: unknown): LoopbackTestTlsTrust {
+  if (!isObject(value)) throw new Error("tlsTrust must be an object");
+  exactKeys(value, [
+    "caCertificatePath",
+    "caCertificateSha256",
+    "serverCertificateSha256",
+  ]);
+  return {
+    caCertificatePath: boundedString(value.caCertificatePath, "tlsTrust.caCertificatePath", 4_096),
+    caCertificateSha256: sha256Digest(
+      value.caCertificateSha256,
+      "tlsTrust.caCertificateSha256",
+    ),
+    serverCertificateSha256: sha256Digest(
+      value.serverCertificateSha256,
+      "tlsTrust.serverCertificateSha256",
+    ),
+  };
 }
 
 function stringArray(value: unknown, label: string): string[] {
@@ -282,6 +369,349 @@ function failure(id: string | null, code: string, message: string): ControlFailu
   };
 }
 
+function sha256Bytes(bytes: Uint8Array): `sha256:${string}` {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+const CHUNK_CONFORMANCE_VECTORS = [
+  "base64_alphabet",
+  "base64_padding",
+  "stream_identity",
+  "stream_indexing",
+  "decoded_limit",
+  "reconstruction_size",
+  "content_digest",
+] as const;
+
+type ChunkConformanceVector = (typeof CHUNK_CONFORMANCE_VECTORS)[number];
+
+interface ChunkConformancePlan {
+  readonly prefixFrames: readonly RbpEnvelope[];
+  readonly targetFrame: unknown;
+  readonly requirements: JsonObject;
+}
+
+function chunkConformanceVector(value: unknown): ChunkConformanceVector {
+  if (
+    typeof value !== "string" ||
+    !(CHUNK_CONFORMANCE_VECTORS as readonly string[]).includes(value)
+  ) {
+    throw new Error("vector must be a supported O1-C32 chunk conformance vector");
+  }
+  return value as ChunkConformanceVector;
+}
+
+function chunkEnvelope(input: {
+  readonly id: string;
+  readonly ts: string;
+  readonly rsid: string;
+  readonly seq: number;
+  readonly ack: number;
+  readonly type: "partial" | "result";
+  readonly payload: Record<string, unknown>;
+}): Record<string, unknown> {
+  return {
+    v: 1,
+    type: input.type,
+    id: input.id,
+    ts: input.ts,
+    rsid: input.rsid,
+    seq: input.seq,
+    ack: input.ack,
+    payload: input.payload,
+  };
+}
+
+function chunkConformancePlan(input: {
+  readonly vector: ChunkConformanceVector;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly firstSeq: number;
+  readonly ack: number;
+  readonly id: () => string;
+  readonly ts: string;
+}): ChunkConformancePlan {
+  const bytes = Buffer.from("raw-chunk", "utf8");
+  const validData = bytes.toString("base64");
+  const actualSha256 = sha256Bytes(bytes);
+  const commonChunk = {
+    kind: "chunk",
+    invocation_id: input.invocationId,
+    stream_id: "result",
+    chunk_index: 0,
+    encoding: "base64",
+    content_type: "application/octet-stream",
+    data: validData,
+  };
+  const envelope = (
+    type: "partial" | "result",
+    payload: Record<string, unknown>,
+    sequenceOffset = 0,
+  ): Record<string, unknown> => chunkEnvelope({
+    id: input.id(),
+    ts: input.ts,
+    rsid: input.rsid,
+    seq: input.firstSeq + sequenceOffset,
+    ack: input.ack,
+    type,
+    payload,
+  });
+  const commonRequirements = {
+    chunkIndexes: [] as number[],
+    missingIdentifiers: [] as string[],
+    encodedData: null as string | null,
+    encodedDataBytes: null as number | null,
+    encodedDataSha256: null as string | null,
+    base64Canonical: null as boolean | null,
+    decodedBytes: null as number | null,
+    reconstructedBytes: null as number | null,
+    declaredTotalSize: null as number | null,
+    actualSha256: null as string | null,
+    declaredSha256: null as string | null,
+  };
+  if (input.vector === "base64_alphabet" || input.vector === "base64_padding") {
+    const data = input.vector === "base64_alphabet" ? "AA-_" : "A===";
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, data }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        encodedData: data,
+        encodedDataBytes: Buffer.byteLength(data, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(data, "utf8")),
+        base64Canonical: false,
+      },
+    };
+  }
+  if (input.vector === "stream_identity") {
+    const artifactId = input.id();
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", {
+        ...commonChunk,
+        stream_id: `artifact:${artifactId}`,
+        // artifact_id and artifact_index are deliberately absent. The
+        // omissions themselves are the conformance fixture; no production
+        // data is consulted.
+      }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        missingIdentifiers: ["artifact_id", "artifact_index"],
+        encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+        base64Canonical: true,
+        decodedBytes: bytes.byteLength,
+      },
+    };
+  }
+  if (input.vector === "stream_indexing") {
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, chunk_index: 1 }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [1],
+        encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+        base64Canonical: true,
+        decodedBytes: bytes.byteLength,
+      },
+    };
+  }
+  if (input.vector === "decoded_limit") {
+    const data = Buffer.alloc(RBP_MAX_DECODED_CHUNK_BYTES + 1).toString("base64");
+    return {
+      prefixFrames: [],
+      targetFrame: envelope("partial", { ...commonChunk, data }),
+      requirements: {
+        ...commonRequirements,
+        chunkIndexes: [0],
+        encodedDataBytes: Buffer.byteLength(data, "utf8"),
+        encodedDataSha256: sha256Bytes(Buffer.from(data, "utf8")),
+        base64Canonical: true,
+        decodedBytes: RBP_MAX_DECODED_CHUNK_BYTES + 1,
+      },
+    };
+  }
+  const prefix = envelope("partial", commonChunk) as unknown as PartialEnvelope;
+  if (!validateRbpEnvelope(prefix)) {
+    throw new Error("internal O1-C32 valid prefix failed RBP validation");
+  }
+  const declaredSha256 = input.vector === "content_digest"
+    ? `sha256:${"9".repeat(64)}`
+    : actualSha256;
+  const declaredTotalSize = input.vector === "reconstruction_size"
+    ? bytes.byteLength + 1
+    : bytes.byteLength;
+  return {
+    prefixFrames: [prefix],
+    targetFrame: envelope("result", {
+      kind: "invocation",
+      invocation_id: input.invocationId,
+      status: "completed",
+      replayed: false,
+      metrics: {
+        execute_ms: 1,
+        request_bytes: 64,
+        response_bytes: 64,
+        framing: "length-prefixed",
+      },
+      chunked: true,
+      stream_id: "result",
+      content_type: "application/octet-stream",
+      total_chunks: 1,
+      total_size: declaredTotalSize,
+      sha256: declaredSha256,
+    }, 1),
+    requirements: {
+      ...commonRequirements,
+      chunkIndexes: [0],
+      encodedDataBytes: Buffer.byteLength(validData, "utf8"),
+      encodedDataSha256: sha256Bytes(Buffer.from(validData, "utf8")),
+      base64Canonical: true,
+      decodedBytes: bytes.byteLength,
+      reconstructedBytes: bytes.byteLength,
+      declaredTotalSize,
+      actualSha256,
+      declaredSha256,
+    },
+  };
+}
+
+function chunkConformanceFrameEvidence(frame: unknown): JsonObject {
+  if (!isObject(frame)) throw new Error("internal O1-C32 frame must be an object");
+  const serialized = Buffer.from(JSON.stringify(frame), "utf8");
+  const payload = isObject(frame.payload) ? frame.payload : {};
+  return {
+    type: typeof frame.type === "string" ? frame.type : null,
+    seq: Number.isSafeInteger(frame.seq) ? Number(frame.seq) : null,
+    ack: Number.isSafeInteger(frame.ack) ? Number(frame.ack) : null,
+    payloadKind: typeof payload.kind === "string" ? payload.kind : null,
+    streamId: typeof payload.stream_id === "string" ? payload.stream_id : null,
+    chunkIndex: Number.isSafeInteger(payload.chunk_index) ? Number(payload.chunk_index) : null,
+    serializedBytes: serialized.byteLength,
+    serializedSha256: sha256Bytes(serialized),
+  };
+}
+
+function sanitizedResultExposureCounts(value: FixtureJsonValue): {
+  rawPathFieldCount: number;
+  localPathStringCount: number;
+} {
+  let rawPathFieldCount = 0;
+  let localPathStringCount = 0;
+  const visit = (candidate: FixtureJsonValue): void => {
+    if (typeof candidate === "string") {
+      if (
+        /^[A-Za-z]:[\\/]/u.test(candidate) ||
+        candidate.startsWith("/") ||
+        candidate.includes("../") ||
+        candidate.includes("..\\")
+      ) {
+        localPathStringCount += 1;
+      }
+      return;
+    }
+    if (Array.isArray(candidate)) {
+      candidate.forEach(visit);
+      return;
+    }
+    if (candidate === null || typeof candidate !== "object") return;
+    for (const [key, entry] of Object.entries(candidate)) {
+      if (/(?:^|_)(?:raw_)?path(?:$|_)/iu.test(key)) rawPathFieldCount += 1;
+      visit(entry);
+    }
+  };
+  visit(value);
+  return { rawPathFieldCount, localPathStringCount };
+}
+
+function artifactInvocationEvidence(outcome: BridgeInvocationOutcome): FixtureJsonValue {
+  const common = {
+    schemaVersion: "bridge-artifact-invocation-evidence/v1",
+    outcomeKind: outcome.kind,
+    replayed: outcome.replayed,
+    addinContacted: outcome.addinContacted,
+  };
+  if (outcome.kind !== "result") {
+    return outcome.kind === "error"
+      ? {
+          ...common,
+          faultClass: outcome.faultClass,
+          retryable: outcome.retryable,
+          outcome: outcome.outcome,
+          verificationRequired: outcome.verificationRequired,
+          messageBytes: Buffer.byteLength(outcome.message, "utf8"),
+          messageSha256: sha256Bytes(Buffer.from(outcome.message, "utf8")),
+          message: outcome.message.slice(0, 240),
+          resultDigest: outcome.resultDigest,
+        }
+      : {
+          ...common,
+          ack: outcome.kind === "transport_duplicate" ? outcome.ack : null,
+        };
+  }
+
+  const carrier = outcome.artifactCarrier;
+  const partials = carrier?.partials ?? outcome.partials;
+  const partialEvidence = partials.map((partial) => {
+    const bytes = Buffer.from(partial.data, "base64");
+    if (bytes.toString("base64") !== partial.data) {
+      throw new Error("artifact evidence encountered non-canonical Base64");
+    }
+    return {
+      invocationId: partial.invocation_id,
+      streamId: partial.stream_id,
+      artifactId: partial.artifact_id ?? null,
+      artifactIndex: partial.artifact_index ?? null,
+      chunkIndex: partial.chunk_index,
+      encoding: partial.encoding,
+      contentType: partial.content_type,
+      decodedBytes: bytes.byteLength,
+      decodedSha256: sha256Bytes(bytes),
+    };
+  });
+  const descriptors = carrier?.descriptors.map((descriptor) => ({
+    artifactId: descriptor.artifact_id,
+    artifactIndex: descriptor.artifact_index,
+    streamId: descriptor.stream_id,
+    filename: descriptor.filename,
+    contentType: descriptor.content_type,
+    totalChunks: descriptor.total_chunks,
+    totalSize: descriptor.total_size,
+    sha256: descriptor.sha256,
+  })) ?? [];
+  const references = carrier?.result.artifacts.map((reference) => ({
+    artifactId: reference.artifact_id,
+    artifactIndex: reference.artifact_index,
+  })) ?? [];
+  const sanitizedResult = { files: references };
+  const exposure = sanitizedResultExposureCounts(sanitizedResult);
+  return {
+    ...common,
+    status: outcome.status,
+    payloadOmitted: outcome.payloadOmitted,
+    resultDigest: outcome.resultDigest,
+    carrier: carrier === null
+      ? null
+      : {
+          kind: carrier.kind,
+          rsid: carrier.rsid,
+          invocationId: carrier.invocationId,
+          chunkBytes: carrier.chunkBytes,
+          retainedFileCount: carrier.retainedFiles.length,
+          references,
+          descriptors,
+          partials: partialEvidence,
+          descriptorDigest: sha256Bytes(Buffer.from(JSON.stringify(descriptors), "utf8")),
+          partialDigest: sha256Bytes(Buffer.from(JSON.stringify(partialEvidence), "utf8")),
+        },
+    sanitizedResult: { ...sanitizedResult, ...exposure },
+  };
+}
+
 function zeroCursor(): EvidenceCursor {
   return {
     invocationOffset: 0,
@@ -289,6 +719,7 @@ function zeroCursor(): EvidenceCursor {
     durabilityOffset: 0,
     sessionOffset: 0,
     sequenceOffset: 0,
+    artifactCarrierOffset: 0,
   };
 }
 
@@ -300,6 +731,7 @@ function parseCursor(value: unknown): EvidenceCursor {
     "durabilityOffset",
     "sessionOffset",
     "sequenceOffset",
+    "artifactCarrierOffset",
   ] as const;
   exactKeys(value, keys);
   return {
@@ -308,16 +740,22 @@ function parseCursor(value: unknown): EvidenceCursor {
     durabilityOffset: safeInteger(value.durabilityOffset, "cursor.durabilityOffset"),
     sessionOffset: safeInteger(value.sessionOffset, "cursor.sessionOffset"),
     sequenceOffset: safeInteger(value.sequenceOffset, "cursor.sequenceOffset"),
+    artifactCarrierOffset: safeInteger(value.artifactCarrierOffset, "cursor.artifactCarrierOffset"),
   };
 }
 
 function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, cursor: EvidenceCursor): JsonObject {
+  const artifactCarriers = snapshot.artifactSpool.carriers;
+  if (!Array.isArray(artifactCarriers) || artifactCarriers.some((carrier) => !isObject(carrier))) {
+    throw new Error("artifact spool evidence carriers must be objects");
+  }
   for (const [offset, length, label] of [
     [cursor.invocationOffset, snapshot.invocations.length, "invocationOffset"],
     [cursor.holdOffset, snapshot.holds.length, "holdOffset"],
     [cursor.durabilityOffset, snapshot.durabilityEvents.length, "durabilityOffset"],
     [cursor.sessionOffset, snapshot.sessions.length, "sessionOffset"],
     [cursor.sequenceOffset, snapshot.sequences.length, "sequenceOffset"],
+    [cursor.artifactCarrierOffset, artifactCarriers.length, "artifactCarrierOffset"],
   ] as const) {
     if (offset > length) throw new Error(`cursor.${label} exceeds snapshot length`);
   }
@@ -329,19 +767,25 @@ function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, curs
   );
   const sessions = snapshot.sessions.slice(cursor.sessionOffset, cursor.sessionOffset + ROWS_PER_PAGE);
   const sequences = snapshot.sequences.slice(cursor.sequenceOffset, cursor.sequenceOffset + ROWS_PER_PAGE);
+  const artifactCarrierPage = artifactCarriers.slice(
+    cursor.artifactCarrierOffset,
+    cursor.artifactCarrierOffset + ARTIFACT_CARRIERS_PER_PAGE,
+  );
   const nextCursor: EvidenceCursor = {
     invocationOffset: cursor.invocationOffset + invocations.length,
     holdOffset: cursor.holdOffset + holds.length,
     durabilityOffset: cursor.durabilityOffset + durabilityEvents.length,
     sessionOffset: cursor.sessionOffset + sessions.length,
     sequenceOffset: cursor.sequenceOffset + sequences.length,
+    artifactCarrierOffset: cursor.artifactCarrierOffset + artifactCarrierPage.length,
   };
   const complete =
     nextCursor.invocationOffset === snapshot.invocations.length &&
     nextCursor.holdOffset === snapshot.holds.length &&
     nextCursor.durabilityOffset === snapshot.durabilityEvents.length &&
     nextCursor.sessionOffset === snapshot.sessions.length &&
-    nextCursor.sequenceOffset === snapshot.sequences.length;
+    nextCursor.sequenceOffset === snapshot.sequences.length &&
+    nextCursor.artifactCarrierOffset === artifactCarriers.length;
   return {
     snapshotId,
     evidenceVersion: snapshot.evidenceVersion,
@@ -352,8 +796,15 @@ function evidencePage(snapshotId: string, snapshot: BridgeEvidenceSnapshot, curs
     durabilityEvents: durabilityEvents as unknown as FixtureJsonValue,
     sessions: sessions as unknown as FixtureJsonValue,
     sequences: sequences as unknown as FixtureJsonValue,
+    artifactSpool: {
+      ...snapshot.artifactSpool,
+      carrierOffset: cursor.artifactCarrierOffset,
+      carrierPageCount: artifactCarrierPage.length,
+      carriers: artifactCarrierPage as unknown as FixtureJsonValue,
+    },
     discovery: snapshot.discovery,
     peer: snapshot.peer,
+    reconnectConformance: snapshot.reconnectConformance,
     crash: snapshot.crash,
     transport: snapshot.transport,
     openLoopbackClientCount: snapshot.openLoopbackClientCount,
@@ -386,6 +837,8 @@ export class BridgeDaemonRuntime {
   #nextCrashPoint: BridgeCrashPoint | null = null;
   #crashedAt: BridgeCrashPoint | null = null;
   #journalClosed = false;
+  #transportTrustEvidence: LoopbackTestTlsTrustEvidence | null = null;
+  #reconnectConformance: ReconnectConformanceState | null = null;
 
   public constructor(stateRoot: string) {
     this.#journalPath = join(stateRoot, "bridge.db");
@@ -414,6 +867,12 @@ export class BridgeDaemonRuntime {
         return { value: await this.#resume(record), shutdown: false };
       case "session_unregister":
         return { value: await this.#unregister(record), shutdown: false };
+      case "prime_sequence_for_conformance":
+        return { value: this.#primeSequenceForConformance(record), shutdown: false };
+      case "send_heartbeat_for_conformance":
+        return { value: await this.#sendHeartbeatForConformance(record), shutdown: false };
+      case "renew_exhausted_session":
+        return { value: await this.#renewExhaustedSession(record), shutdown: false };
       case "tick":
         return { value: await this.#tick(record), shutdown: false };
       case "poll_document_context":
@@ -422,6 +881,8 @@ export class BridgeDaemonRuntime {
         return { value: await this.#flush(record), shutdown: false };
       case "invoke_local":
         return { value: await this.#invoke(record), shutdown: false };
+      case "read_journal_record_for_conformance":
+        return { value: this.#readJournalRecordForConformance(record), shutdown: false };
       case "record_verification_attempt":
         return { value: this.#recordVerificationAttempt(record), shutdown: false };
       case "record_late_evidence":
@@ -434,6 +895,15 @@ export class BridgeDaemonRuntime {
         return { value: this.#injectCrash(record), shutdown: false };
       case "restart_simulator":
         return { value: await this.#restart(record), shutdown: false };
+      case "configure_reconnect_conformance":
+        return { value: this.#configureReconnectConformance(record), shutdown: false };
+      case "advance_reconnect_conformance_clock":
+        return { value: await this.#advanceReconnectConformanceClock(record), shutdown: false };
+      case "send_chunk_conformance":
+        return { value: await this.#sendChunkConformance(record), shutdown: false };
+      case "snapshot_soak_status":
+        exactKeys(record, ["controlVersion", "id", "action"]);
+        return { value: this.snapshotSoakStatus(), shutdown: false };
       case "snapshot_evidence":
         throw new Error("snapshot_evidence is handled by the JSONL controller");
       case "shutdown": {
@@ -507,6 +977,7 @@ export class BridgeDaemonRuntime {
           acceptedInbound: state.acceptedInbound.map((entry) => ({ ...entry })),
         };
       }),
+      artifactSpool: this.#simulator.artifactSpoolEvidence() as unknown as JsonObject,
       discovery: this.#discoveryEvidence === null ? null : this.#sanitizeDiscovery(this.#discoveryEvidence),
       peer: peerSnapshot === null
         ? null
@@ -514,15 +985,34 @@ export class BridgeDaemonRuntime {
             ...peerSnapshot,
             runLoopError: this.#runLoopError,
           } as unknown as JsonObject,
+      reconnectConformance: this.#reconnectConformanceEvidence(),
       crash: { crashed: this.#crashedAt !== null, point: this.#crashedAt },
       transport: {
         kind: this.#binding?.kind ?? null,
         open: this.#binding?.connectionId !== null && this.#binding !== null,
         connectionId: this.#binding?.connectionId ?? null,
         runLoopActive: peerSnapshot?.runLoopActive ?? false,
+        testTlsTrust: this.#transportTrustEvidence === null
+          ? null
+          : { ...this.#transportTrustEvidence },
       },
       openLoopbackClientCount: this.#probes.filter((probe) => !probe.client.closed).length,
       journalClosed: this.#journalClosed,
+    };
+  }
+
+  public snapshotSoakStatus(): JsonObject {
+    this.#assertJournalOpen();
+    const peerSnapshot = this.#peer?.snapshot(this.#clockMs) ?? null;
+    return {
+      schemaVersion: "bridge-simulator-soak-status/v1",
+      journalPendingCount: this.#journal.pendingInvocationCount(),
+      peer: peerSnapshot === null
+        ? null
+        : {
+            ...peerSnapshot,
+            runLoopError: this.#runLoopError,
+          } as unknown as JsonObject,
     };
   }
 
@@ -631,6 +1121,252 @@ export class BridgeDaemonRuntime {
     };
   }
 
+  #configureReconnectConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(
+      record,
+      ["controlVersion", "id", "action", "mode", "jitterUnits"],
+    );
+    if (record.mode !== "deterministic_virtual_clock") {
+      throw new Error("reconnect conformance mode must equal deterministic_virtual_clock");
+    }
+    if (this.#binding !== null || this.#peer !== null) {
+      throw new Error("reconnect conformance must be configured before transport open");
+    }
+    if (this.#reconnectConformance !== null) {
+      throw new Error("reconnect conformance is already configured");
+    }
+    if (
+      !Array.isArray(record.jitterUnits) ||
+      record.jitterUnits.length < 1 ||
+      record.jitterUnits.length > 32
+    ) {
+      throw new Error("jitterUnits must contain from 1 through 32 deterministic samples");
+    }
+    const jitterUnits = record.jitterUnits.map((value, index) => {
+      if (typeof value !== "number" || !Number.isFinite(value) || value < 0 || value >= 1) {
+        throw new Error(`jitterUnits[${index}] must be a finite number in [0, 1)`);
+      }
+      return value;
+    });
+    this.#reconnectConformance = {
+      jitterUnits,
+      consumedSampleCount: 0,
+      pendingSample: null,
+      attempts: [],
+      successfulReconnectAtMs: null,
+      steadyObservations: [],
+    };
+    return {
+      configured: true,
+      mode: "deterministic_virtual_clock",
+      configuredSampleCount: jitterUnits.length,
+      clockMs: this.#clockMs,
+    };
+  }
+
+  #nextReconnectConformanceJitter(): number {
+    const state = this.#reconnectConformance;
+    if (state === null) return Math.random();
+    if (state.pendingSample !== null) {
+      throw new Error("previous reconnect jitter sample has not reached the sleep boundary");
+    }
+    const jitterUnit = state.jitterUnits[state.consumedSampleCount];
+    if (jitterUnit === undefined) {
+      throw new Error("deterministic reconnect jitter samples are exhausted");
+    }
+    state.consumedSampleCount += 1;
+    state.pendingSample = {
+      jitterUnit,
+      clockBeforeSleepMs: null,
+      clockAfterSleepMs: null,
+      delayMs: null,
+    };
+    return jitterUnit;
+  }
+
+  async #sleepReconnectConformanceDelay(delayMs: number): Promise<void> {
+    const state = this.#reconnectConformance;
+    if (state === null) {
+      await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
+      return;
+    }
+    if (!Number.isSafeInteger(delayMs) || delayMs < 0 || delayMs > 60_000) {
+      throw new Error("reconnect conformance delay is outside the canonical 0..60000 ms bound");
+    }
+    const pending = state.pendingSample;
+    if (pending === null || pending.delayMs !== null) {
+      throw new Error("reconnect conformance sleep lacks one fresh jitter sample");
+    }
+    const clockAfterSleepMs = this.#clockMs + delayMs;
+    if (!Number.isSafeInteger(clockAfterSleepMs)) {
+      throw new Error("reconnect conformance virtual clock overflow");
+    }
+    pending.clockBeforeSleepMs = this.#clockMs;
+    pending.clockAfterSleepMs = clockAfterSleepMs;
+    pending.delayMs = delayMs;
+    this.#clockMs = clockAfterSleepMs;
+    await Promise.resolve();
+  }
+
+  #takeReconnectConformanceAttempt(
+    attemptIndex: number,
+    delayMs: number,
+  ): Omit<ReconnectAttemptEvidence, "outcome" | "faultClass" | "errorMessage" | "connectionId"> {
+    const state = this.#reconnectConformance;
+    if (state === null) {
+      throw new Error("reconnect conformance attempt was requested without configuration");
+    }
+    const pending = state.pendingSample;
+    if (
+      pending === null ||
+      pending.delayMs !== delayMs ||
+      pending.clockBeforeSleepMs === null ||
+      pending.clockAfterSleepMs === null
+    ) {
+      throw new Error("reconnect conformance attempt does not match its jitter/sleep evidence");
+    }
+    if (
+      !Number.isSafeInteger(attemptIndex) ||
+      attemptIndex < 0 ||
+      attemptIndex !== state.attempts.length
+    ) {
+      throw new Error("reconnect conformance attempt index is not zero-based and contiguous");
+    }
+    state.pendingSample = null;
+    return {
+      attemptIndex,
+      jitterUnit: pending.jitterUnit,
+      backoffLimitMs: reconnectBackoffLimitMs(attemptIndex),
+      delayMs,
+      clockBeforeSleepMs: pending.clockBeforeSleepMs,
+      clockAfterSleepMs: pending.clockAfterSleepMs,
+    };
+  }
+
+  #recordReconnectConformanceAttempt(
+    attempt: ReconnectAttemptEvidence,
+  ): void {
+    const state = this.#reconnectConformance;
+    if (state === null || attempt.attemptIndex !== state.attempts.length) {
+      throw new Error("reconnect conformance attempt cannot be recorded out of order");
+    }
+    state.attempts.push(attempt);
+    if (attempt.outcome === "connected") {
+      if (state.successfulReconnectAtMs !== null) {
+        throw new Error("reconnect conformance recorded more than one successful reconnect");
+      }
+      state.successfulReconnectAtMs = this.#clockMs;
+    }
+  }
+
+  async #awaitReconnectConformanceHeartbeatAck(
+    peer: BridgeGatewayPeer,
+    expectedAckAtMs: number,
+  ): Promise<void> {
+    const deadline = Date.now() + 5_000;
+    while (peer.snapshot(this.#clockMs).lastHeartbeatAckAtMs < expectedAckAtMs) {
+      if (this.#runLoopError !== null) {
+        throw new Error(`Gateway run loop failed while awaiting heartbeat_ack: ${this.#runLoopError}`);
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`heartbeat_ack did not arrive for virtual clock ${expectedAckAtMs}`);
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 2));
+    }
+  }
+
+  async #advanceReconnectConformanceClock(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(
+      record,
+      ["controlVersion", "id", "action", "advanceByMs", "heartbeatStepMs"],
+    );
+    const state = this.#reconnectConformance;
+    if (state === null || state.successfulReconnectAtMs === null) {
+      throw new Error("reconnect conformance clock requires one successful reconnect");
+    }
+    const advanceByMs = safeInteger(record.advanceByMs, "advanceByMs", 1, 120_000);
+    const heartbeatStepMs = safeInteger(record.heartbeatStepMs, "heartbeatStepMs", 1, 30_000);
+    const peer = this.#requirePeer();
+    if (!peer.snapshot(this.#clockMs).runLoopActive) {
+      throw new Error("reconnect conformance clock requires the live Gateway run loop");
+    }
+    const targetClockMs = this.#clockMs + advanceByMs;
+    if (
+      !Number.isSafeInteger(targetClockMs) ||
+      targetClockMs - state.successfulReconnectAtMs > 120_000
+    ) {
+      throw new Error("reconnect conformance steady clock may advance only through 120000 ms");
+    }
+    const observations: ReconnectSteadyEvidence[] = [];
+    while (this.#clockMs < targetClockMs) {
+      this.#clockMs += Math.min(heartbeatStepMs, targetClockMs - this.#clockMs);
+      const before = peer.snapshot(this.#clockMs);
+      const livenessBeforeTick = peer.livenessAt(this.#clockMs);
+      const liveness = await peer.tick(this.#clockMs);
+      let after = peer.snapshot(this.#clockMs);
+      if (
+        after.lastHeartbeatSentAtMs > before.lastHeartbeatSentAtMs &&
+        after.lastHeartbeatAckAtMs < after.lastHeartbeatSentAtMs
+      ) {
+        await this.#awaitReconnectConformanceHeartbeatAck(
+          peer,
+          after.lastHeartbeatSentAtMs,
+        );
+        after = peer.snapshot(this.#clockMs);
+      }
+      const livenessAfterTick = peer.livenessAt(this.#clockMs);
+      if (
+        livenessBeforeTick !== "steady" ||
+        liveness !== "steady" ||
+        livenessAfterTick !== "steady"
+      ) {
+        throw new Error("reconnect conformance steady clock observed non-steady liveness");
+      }
+      const evidence: ReconnectSteadyEvidence = {
+        clockMs: this.#clockMs,
+        steadyDurationMs: this.#clockMs - state.successfulReconnectAtMs,
+        livenessBeforeTick,
+        livenessAfterTick,
+        reconnectAttemptIndexBefore: before.reconnectAttemptIndex,
+        reconnectAttemptIndexAfter: after.reconnectAttemptIndex,
+        reset: before.reconnectAttemptIndex > 0 && after.reconnectAttemptIndex === 0,
+        lastHeartbeatAckAtMs: after.lastHeartbeatAckAtMs,
+      };
+      state.steadyObservations.push(evidence);
+      observations.push(evidence);
+    }
+    return {
+      advanced: true,
+      mode: "deterministic_virtual_clock",
+      advanceByMs,
+      clockMs: this.#clockMs,
+      successfulReconnectAtMs: state.successfulReconnectAtMs,
+      steadyDurationMs: this.#clockMs - state.successfulReconnectAtMs,
+      observations: observations as unknown as FixtureJsonValue,
+      peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue,
+    };
+  }
+
+  #reconnectConformanceEvidence(): JsonObject | null {
+    const state = this.#reconnectConformance;
+    if (state === null) return null;
+    return {
+      schemaVersion: "rbp-reconnect-conformance/v1",
+      mode: "deterministic_virtual_clock",
+      clockMs: this.#clockMs,
+      configuredSampleCount: state.jitterUnits.length,
+      consumedSampleCount: state.consumedSampleCount,
+      pendingSample: state.pendingSample === null ? null : { ...state.pendingSample },
+      attempts: state.attempts.map((attempt) => ({ ...attempt })) as unknown as FixtureJsonValue,
+      successfulReconnectAtMs: state.successfulReconnectAtMs,
+      steadyObservations: state.steadyObservations.map(
+        (observation) => ({ ...observation }),
+      ) as unknown as FixtureJsonValue,
+    };
+  }
+
   async #openTransport(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "kind", "deviceToken", "hello"], [
@@ -638,6 +1374,8 @@ export class BridgeDaemonRuntime {
       "fallbackUrl",
       "fallbackProvisioned",
       "endpointPolicy",
+      "tlsTrust",
+      "clockStartMs",
     ]);
     if (this.#binding !== null || this.#peer !== null) throw new Error("transport is already open");
     const kind = record.kind;
@@ -645,9 +1383,15 @@ export class BridgeDaemonRuntime {
       throw new Error("kind must be wss, streamable_http_sse, or primary_then_fallback");
     }
     const deviceToken = boundedString(record.deviceToken, "deviceToken", 8_192);
+    if (record.clockStartMs !== undefined) {
+      this.#clockMs = safeInteger(record.clockStartMs, "clockStartMs");
+    }
     const endpointPolicy = record.endpointPolicy === undefined
       ? undefined
       : loopbackEndpointPolicy(record.endpointPolicy);
+    const tlsTrust = record.tlsTrust === undefined
+      ? undefined
+      : loopbackTestTlsTrust(record.tlsTrust);
     const helloInput = record.hello;
     if (!isObject(helloInput)) throw new Error("hello must be an object");
     exactKeys(helloInput, ["id", "ts", "bridgeVersion", "deviceId", "hostname", "os"], ["fingerprint"]);
@@ -671,7 +1415,11 @@ export class BridgeDaemonRuntime {
       }
       wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
     } else if (kind === "streamable_http_sse") {
-      if (record.wssUrl !== undefined || record.fallbackProvisioned !== undefined) {
+      if (
+        record.wssUrl !== undefined ||
+        record.fallbackProvisioned !== undefined ||
+        record.tlsTrust !== undefined
+      ) {
         throw new Error("streamable_http_sse does not accept WSS selection fields");
       }
       fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
@@ -679,6 +1427,12 @@ export class BridgeDaemonRuntime {
       wssUrl = boundedString(record.wssUrl, "wssUrl", 2_048);
       fallbackUrl = boundedString(record.fallbackUrl, "fallbackUrl", 2_048);
       fallbackProvisioned = booleanValue(record.fallbackProvisioned, "fallbackProvisioned");
+    }
+    if (endpointPolicy === "loopback_test_tls" && (kind !== "wss" || tlsTrust === undefined)) {
+      throw new Error("loopback_test_tls requires kind=wss and explicit tlsTrust");
+    }
+    if (tlsTrust !== undefined && (kind !== "wss" || endpointPolicy !== "loopback_test_tls")) {
+      throw new Error("tlsTrust is accepted only by kind=wss with endpointPolicy=loopback_test_tls");
     }
 
     let transportOpenAttempt = 0;
@@ -698,6 +1452,7 @@ export class BridgeDaemonRuntime {
             baseUrl: wssUrl,
             deviceToken,
             ...(endpointPolicy === undefined ? {} : { endpointPolicy }),
+            ...(tlsTrust === undefined ? {} : { testTlsTrust: tlsTrust }),
           });
           created.push(binding);
           return { binding, helloAck: await binding.open(attemptHello) };
@@ -742,11 +1497,50 @@ export class BridgeDaemonRuntime {
     try {
       peer = new BridgeGatewayPeer(this.#simulator, selected.binding, selected.helloAck, {
         nowMs: () => this.#clockMs,
-        reconnect: async () => {
-          const reconnected = await openConfiguredTransport();
-          this.#binding = reconnected.binding;
-          return reconnected;
+        takeInboundCrashPoint: () => {
+          const point = this.#nextCrashPoint;
+          this.#nextCrashPoint = null;
+          return point;
         },
+        reconnect: async ({ attemptIndex, delayMs }) => {
+          const evidence = this.#reconnectConformance === null
+            ? null
+            : this.#takeReconnectConformanceAttempt(attemptIndex, delayMs);
+          try {
+            const reconnected = await openConfiguredTransport();
+            if (evidence !== null) {
+              this.#recordReconnectConformanceAttempt({
+                ...evidence,
+                outcome: "connected",
+                faultClass: null,
+                errorMessage: null,
+                connectionId: reconnected.helloAck.payload.connection_id,
+              });
+            }
+            this.#binding = reconnected.binding;
+            return reconnected;
+          } catch (error) {
+            if (evidence !== null) {
+              this.#recordReconnectConformanceAttempt({
+                ...evidence,
+                outcome: "opening_failed",
+                faultClass: error instanceof GatewayTransportError ? error.faultClass : null,
+                errorMessage: (error instanceof Error ? error.message : String(error))
+                  .replace(/[\r\n]+/gu, " ")
+                  .slice(0, 300),
+                connectionId: null,
+              });
+            }
+            throw error;
+          }
+        },
+        ...(this.#reconnectConformance === null
+          ? {}
+          : {
+              reconnectJitter: () => this.#nextReconnectConformanceJitter(),
+              sleep: async (delayMs: number) =>
+                await this.#sleepReconnectConformanceDelay(delayMs),
+            }),
       });
       await peer.resumeAll();
     } catch (error) {
@@ -759,11 +1553,17 @@ export class BridgeDaemonRuntime {
     }
     this.#binding = selected.binding;
     this.#peer = peer;
+    this.#transportTrustEvidence = selected.binding instanceof WssGatewayBinding
+      ? selected.binding.testTlsTrustEvidence
+      : null;
     return {
       requestedKind: kind,
       selectedKind: selected.binding.kind,
       connectionId: selected.helloAck.payload.connection_id,
       helloAck: selected.helloAck as unknown as FixtureJsonValue,
+      testTlsTrust: this.#transportTrustEvidence === null
+        ? null
+        : { ...this.#transportTrustEvidence },
     };
   }
 
@@ -776,6 +1576,7 @@ export class BridgeDaemonRuntime {
     this.#runLoopAbort = abort;
     this.#runLoopError = null;
     this.#runLoop = peer.run(abort.signal).catch((error: unknown) => {
+      if (error instanceof InjectedBridgeCrash) this.#crashedAt = error.point;
       this.#runLoopError = error instanceof Error ? error.message.slice(0, 600) : String(error).slice(0, 600);
     });
     return { started: true, runLoopActive: peer.snapshot(this.#clockMs).runLoopActive };
@@ -799,6 +1600,100 @@ export class BridgeDaemonRuntime {
     return { sent: true, requestId, localSessionKey: probe.localSessionKey };
   }
 
+  async #sendChunkConformance(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, [
+      "controlVersion",
+      "id",
+      "action",
+      "vector",
+      "rsid",
+      "invocationId",
+    ]);
+    const vector = chunkConformanceVector(record.vector);
+    const rsid = boundedId(record.rsid, "rsid");
+    const invocationId = boundedId(record.invocationId, "invocationId");
+    const binding = this.#binding;
+    const peer = this.#requirePeer();
+    if (binding === null || binding.connectionId === null) {
+      throw new Error("chunk conformance requires the current steady Gateway binding");
+    }
+    const connectionId = binding.connectionId;
+    if (binding.sendChunkConformanceFrame === undefined) {
+      throw new Error("current Gateway binding lacks the chunk conformance simulator seam");
+    }
+    const localSession = this.#simulator.registeredSessions().find(
+      (candidate) => candidate.rsid === rsid,
+    );
+    if (localSession === undefined) {
+      throw new Error("chunk conformance rsid is not a registered Bridge simulator session");
+    }
+    const peerSnapshot = peer.snapshot(this.#clockMs);
+    const peerSession = peerSnapshot.sessions.find((candidate) => candidate.rsid === rsid);
+    if (
+      peerSnapshot.bindingKind !== binding.kind ||
+      peerSnapshot.connectionId !== binding.connectionId ||
+      peerSnapshot.runLoopActive !== true ||
+      peerSession?.phase !== "registered" ||
+      peerSession.dispatchAllowed !== true
+    ) {
+      throw new Error("chunk conformance requires the registered Bridge peer on the current binding");
+    }
+    const invocation = this.#journal.listInvocations().find(
+      (candidate) =>
+        candidate.binding.rsid === rsid &&
+        candidate.binding.invocationId === invocationId,
+    );
+    if (invocation?.state !== "executing") {
+      throw new Error("chunk conformance requires the exact active stalled invocation");
+    }
+    const sequence = this.#journal.loadSequence(rsid);
+    if (sequence.lastRxSeq < 1) {
+      throw new Error("chunk conformance requires the Bridge to accept the active Gateway invocation first");
+    }
+    if (sequence.nextTxSeq === null) {
+      throw new Error("chunk conformance cannot use an exhausted Bridge sequence");
+    }
+    const plan = chunkConformancePlan({
+      vector,
+      rsid,
+      invocationId,
+      firstSeq: sequence.nextTxSeq,
+      ack: sequence.lastRxSeq,
+      id: () => this.#ids.next(),
+      ts: new Date(this.#clockMs).toISOString(),
+    });
+    for (const prefixFrame of plan.prefixFrames) {
+      await binding.send(prefixFrame);
+    }
+    const fault = await binding.sendChunkConformanceFrame(plan.targetFrame);
+    const frames = [...plan.prefixFrames, plan.targetFrame].map(chunkConformanceFrameEvidence);
+    return {
+      schemaVersion: "bridge-chunk-conformance-evidence/v1",
+      vector,
+      rsid,
+      invocationId,
+      bridgeSession: {
+        localRegistered: true,
+        localSessionKey: localSession.probe.localSessionKey,
+        peerPhase: peerSession.phase,
+        peerDispatchAllowed: peerSession.dispatchAllowed,
+        invocationState: invocation.state,
+      },
+      transport: {
+        kind: binding.kind,
+        connectionId,
+      },
+      sequenceBefore: {
+        nextTxSeq: sequence.nextTxSeq,
+        lastRxSeq: sequence.lastRxSeq,
+      },
+      requirements: plan.requirements,
+      frames: frames as unknown as FixtureJsonValue,
+      fault: fault as unknown as FixtureJsonValue,
+    };
+  }
+
   async #resume(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "rsid"]);
@@ -816,13 +1711,60 @@ export class BridgeDaemonRuntime {
     return { sent: true, rsid, reason, journalDecisions: decisions as unknown as FixtureJsonValue };
   }
 
+  #primeSequenceForConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid", "mode"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    if (record.mode !== "outbound_near_exhaustion") {
+      throw new Error("prime_sequence_for_conformance mode is invalid");
+    }
+    const state = this.#simulator.primeSequenceForConformance(
+      rsid,
+      "outbound_near_exhaustion",
+    );
+    return {
+      rsid,
+      mode: "outbound_near_exhaustion",
+      nextTxSeq: state.nextTxSeq,
+      highestTxSeq: state.highestTxSeq,
+      lastPeerAck: state.lastPeerAck,
+      outboxCount: state.outbox.length,
+    };
+  }
+
+  async #sendHeartbeatForConformance(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action"]);
+    await this.#requirePeer().sendHeartbeat();
+    return { sent: true, kind: "heartbeat" };
+  }
+
+  async #renewExhaustedSession(record: JsonObject): Promise<FixtureJsonValue> {
+    this.#assertOperational();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    const requestId = await this.#requirePeer().renewExhaustedSession(rsid);
+    return {
+      sent: true,
+      reason: "sequence_exhaustion",
+      oldRsid: rsid,
+      requestId,
+    };
+  }
+
   async #tick(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "nowMs"]);
     this.#clockMs = safeInteger(record.nowMs, "nowMs");
     const peer = this.#requirePeer();
+    const livenessBeforeActions = peer.livenessAt(this.#clockMs);
     const liveness = await peer.tick(this.#clockMs);
-    return { nowMs: this.#clockMs, liveness, peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue };
+    return {
+      nowMs: this.#clockMs,
+      livenessBeforeActions,
+      liveness,
+      peer: peer.snapshot(this.#clockMs) as unknown as FixtureJsonValue,
+    };
   }
 
   async #pollContext(record: JsonObject): Promise<FixtureJsonValue> {
@@ -847,8 +1789,14 @@ export class BridgeDaemonRuntime {
 
   async #invoke(record: JsonObject): Promise<FixtureJsonValue> {
     this.#assertOperational();
-    exactKeys(record, ["controlVersion", "id", "action", "envelope"], ["crashAt"]);
+    exactKeys(record, ["controlVersion", "id", "action", "envelope"], ["crashAt", "responseMode"]);
     if (!isObject(record.envelope)) throw new Error("envelope must be an object");
+    if (
+      record.responseMode !== undefined &&
+      record.responseMode !== "artifact_evidence"
+    ) {
+      throw new Error("invoke_local responseMode is not supported");
+    }
     const inlineCrash = record.crashAt === undefined ? null : crashPoint(record.crashAt);
     if (inlineCrash !== null && this.#nextCrashPoint !== null) {
       throw new Error("crashAt cannot be combined with a queued inject_crash point");
@@ -870,12 +1818,50 @@ export class BridgeDaemonRuntime {
       } else {
         throw new Error("invoke_local envelope.type must be invoke or invoke_batch");
       }
+      if (record.responseMode === "artifact_evidence") {
+        if ("batchId" in outcome) {
+          throw new Error("artifact_evidence response mode requires one invoke envelope");
+        }
+        return {
+          crashed: false,
+          outcome: artifactInvocationEvidence(outcome),
+        };
+      }
       return { crashed: false, outcome: outcome as unknown as FixtureJsonValue };
     } catch (error) {
       if (!(error instanceof InjectedBridgeCrash)) throw error;
       this.#crashedAt = error.point;
       return { crashed: true, point: error.point };
     }
+  }
+
+  #readJournalRecordForConformance(record: JsonObject): FixtureJsonValue {
+    this.#assertJournalOpen();
+    exactKeys(record, ["controlVersion", "id", "action", "rsid", "invocationId"]);
+    const rsid = boundedId(record.rsid, "rsid");
+    const invocationId = uuidV7(record.invocationId, "invocationId");
+    const journalRecord = this.#journal.getInvocation(rsid, invocationId);
+    if (journalRecord === null) {
+      throw new Error("Exact durable invocation journal record was not found");
+    }
+    if (
+      journalRecord.binding.rsid !== rsid ||
+      journalRecord.binding.invocationId !== invocationId
+    ) {
+      throw new Error("Exact durable invocation journal selector mismatch");
+    }
+    const journalRecordBytes = Buffer.byteLength(JSON.stringify(journalRecord), "utf8");
+    if (journalRecordBytes > MAX_CONFORMANCE_JOURNAL_RECORD_BYTES) {
+      throw new Error(
+        `Exact durable invocation journal record exceeds ${MAX_CONFORMANCE_JOURNAL_RECORD_BYTES} bytes`,
+      );
+    }
+    return {
+      rsid,
+      invocationId,
+      journalRecordBytes,
+      journalRecord: journalRecord as unknown as FixtureJsonValue,
+    };
   }
 
   #recordVerificationAttempt(record: JsonObject): FixtureJsonValue {
@@ -892,7 +1878,7 @@ export class BridgeDaemonRuntime {
       "atMs",
     ]);
     const hold = this.#journal.recordVerificationAttempt({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       verificationInvocationId: uuidV7(record.verificationInvocationId, "verificationInvocationId"),
       evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
@@ -916,7 +1902,7 @@ export class BridgeDaemonRuntime {
       "atMs",
     ]);
     const hold = this.#journal.recordLateEvidence({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       originInvocationId: uuidV7(record.originInvocationId, "originInvocationId"),
       evidenceDigest: sha256Digest(record.evidenceDigest, "evidenceDigest"),
@@ -952,7 +1938,7 @@ export class BridgeDaemonRuntime {
       throw new Error("late_terminal requires verificationInvocationId=null");
     }
     const hold = this.#journal.resolveHold({
-      rsid: uuidV7(record.rsid, "rsid"),
+      rsid: boundedId(record.rsid, "rsid"),
       holdId: verificationHoldId(record.holdId, "holdId"),
       basis,
       verificationInvocationId: verificationInvocationId === null
@@ -975,7 +1961,7 @@ export class BridgeDaemonRuntime {
     this.#assertOperational();
     exactKeys(record, ["controlVersion", "id", "action", "rsid", "holdId"]);
     const clearance = this.#journal.clearanceForHold(
-      uuidV7(record.rsid, "rsid"),
+      boundedId(record.rsid, "rsid"),
       verificationHoldId(record.holdId, "holdId"),
     );
     return { clearance: clearance as unknown as FixtureJsonValue };
@@ -1093,6 +2079,7 @@ export class BridgeDaemonRuntime {
     }
     this.#peer = null;
     this.#binding = null;
+    this.#transportTrustEvidence = null;
   }
 
   #sanitizeDiscovery(evidence: DiscoveryEvidence): JsonObject {
@@ -1123,9 +2110,16 @@ const EXCLUSIVE_CONTROL_ACTIONS = new Set<string>([
   "session_register",
   "session_resume",
   "session_unregister",
+  "prime_sequence_for_conformance",
+  "send_heartbeat_for_conformance",
+  "renew_exhausted_session",
   "tick",
   "inject_crash",
   "restart_simulator",
+  "configure_reconnect_conformance",
+  "advance_reconnect_conformance_clock",
+  "send_chunk_conformance",
+  "snapshot_soak_status",
   "snapshot_evidence",
   "shutdown",
 ]);

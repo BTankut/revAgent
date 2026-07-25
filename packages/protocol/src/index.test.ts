@@ -15,6 +15,7 @@ import {
   RBP_MAX_INLINE_RESULT_BYTES,
   RBP_MAX_INVOCATION_PARAMS_BYTES,
   RBP_PROTOCOL_VERSION,
+  RBP_SPEC_VERSION,
   RbpFrameError,
   reconnectBackoffLimitMs,
   reconnectFullJitterDelayMs,
@@ -199,6 +200,11 @@ function expectFrameError(
 }
 
 describe("RBP/1 envelope and payload schemas", () => {
+  it("publishes the canonical v1.0 specification identity", () => {
+    expect(RBP_PROTOCOL_VERSION).toBe(1);
+    expect(RBP_SPEC_VERSION).toBe("1.0");
+  });
+
   it("has a positive payload vector for every message type", () => {
     const expectedTypes = [
       "cancel",
@@ -250,6 +256,38 @@ describe("RBP/1 envelope and payload schemas", () => {
 
     invoke.seq = 9_007_199_254_740_992;
     expect(validateRbpEnvelope(invoke)).toBe(false);
+  });
+
+  it("reports the most specific bounded validation error at the wire boundary", () => {
+    const unsafeSequence = clone(positiveByName.get("invoke"));
+    const emptyBatch = clone(positiveByName.get("invoke_batch"));
+    expect(unsafeSequence).toBeDefined();
+    expect(emptyBatch).toBeDefined();
+    if (unsafeSequence === undefined || emptyBatch === undefined) return;
+
+    unsafeSequence.seq = 9_007_199_254_740_992;
+    expect(() => parseRbpFrame(wireEncoder.encode(JSON.stringify(unsafeSequence)))).toThrow(
+      /RBP envelope validation failed at \/seq \(maximum; .*9007199254740991/iu,
+    );
+
+    (emptyBatch.payload as Record<string, unknown>).steps = [];
+    try {
+      parseRbpFrame(wireEncoder.encode(JSON.stringify(emptyBatch)));
+      throw new Error("empty batch unexpectedly passed");
+    } catch (error) {
+      expect(error).toBeInstanceOf(RbpFrameError);
+      expect(error).toMatchObject({
+        code: "invalid_envelope",
+        message: expect.stringMatching(/\/payload\/steps \(minItems; .*fewer than 1/iu),
+        validationErrors: expect.arrayContaining([
+          expect.objectContaining({
+            instancePath: "/payload/steps",
+            keyword: "minItems",
+          }),
+        ]),
+      });
+      expect((error as Error).message.length).toBeLessThanOrEqual(512);
+    }
   });
 
   it("allows additive fields while preserving control-field prohibitions", () => {

@@ -2,6 +2,7 @@ import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 
 import {
+  RBP_MAX_SAFE_SEQUENCE,
   acceptInboundData,
   applyCumulativeAck,
   canonicalizeJson,
@@ -16,6 +17,7 @@ import {
   queueOutboundData,
   reconnectFullJitterDelayMs,
   retransmitOutbox,
+  sequenceRenewalStatus,
   shouldResetReconnectBackoff,
   validateRbpEnvelope,
   type CancelEnvelope,
@@ -33,6 +35,7 @@ import {
   type Partial as RbpPartial,
   type RbpEnvelope,
   type RecoveryClearance,
+  type RbpSequenceState,
   type SessionRegister,
   type SessionUnregister,
   type TerminalJournalOutcome,
@@ -48,6 +51,7 @@ import type {
   ArtifactInput,
   ChunkedResultCarrier,
   DurableResultCarrier,
+  SanitizedArtifactSpoolEvidence,
 } from "./artifacts.js";
 import type {
   AcceptInboundBatchDecision,
@@ -766,6 +770,13 @@ export class BridgeSimulator {
     return this.#journal;
   }
 
+  public artifactSpoolEvidence(): SanitizedArtifactSpoolEvidence {
+    const carriers = this.#journal.retainedDeliveryCarrierJsons().map((carrierJson) =>
+      JSON.parse(carrierJson) as DurableResultCarrier
+    );
+    return this.#spool.inspectRetained(carriers);
+  }
+
   public applyNegotiatedLimits(limits: BridgeNegotiatedLimits): void {
     const values = [limits.maxParamsBytes, limits.maxResultBytes, limits.maxPartialBytes];
     if (values.some((value) => !Number.isSafeInteger(value) || value < 1)) {
@@ -1271,6 +1282,71 @@ export class BridgeSimulator {
     return this.#sessions.get(rsid) ?? null;
   }
 
+  /**
+   * Strict test-control seam for exercising the real RBP/1 exhaustion path
+   * without attempting trillions of preceding frames. It changes only the
+   * durable sender counter after proving that the one-frame window is empty.
+   */
+  public primeSequenceForConformance(
+    rsid: string,
+    mode: "outbound_near_exhaustion",
+  ): RbpSequenceState {
+    if (mode !== "outbound_near_exhaustion") {
+      throw new Error(`unsupported sequence conformance mode: ${String(mode)}`);
+    }
+    if (this.#sessions.get(rsid) === undefined) throw new Error(`unknown rsid: ${rsid}`);
+    if (this.#journal.getPendingSessionUnregister(rsid) !== null) {
+      throw new Error("sequence conformance prime requires an active session");
+    }
+    if (this.#journal.pendingDurableDeliveryDraftCount(rsid) !== 0) {
+      throw new Error("sequence conformance prime requires no durable delivery drafts");
+    }
+    const current = this.#journal.loadSequence(rsid);
+    if (current.outbox.length !== 0) {
+      throw new Error("sequence conformance prime requires an empty outbound window");
+    }
+    if (current.nextTxSeq === null) {
+      throw new Error("sequence conformance prime cannot replace an exhausted sequence");
+    }
+    const primed: RbpSequenceState = {
+      ...current,
+      nextTxSeq: RBP_MAX_SAFE_SEQUENCE,
+      highestTxSeq: RBP_MAX_SAFE_SEQUENCE - 1,
+      lastPeerAck: RBP_MAX_SAFE_SEQUENCE - 1,
+      outbox: [],
+    };
+    this.#journal.saveSequence(primed);
+    return structuredClone(primed);
+  }
+
+  /**
+   * Retires the superseded local authority after the Gateway has issued the
+   * replacement rsid. The shared probe remains open because the replacement
+   * session owns the same add-in transport.
+   */
+  public retireSequenceRenewedSession(oldRsid: string, newRsid: string): void {
+    if (oldRsid === newRsid) throw new Error("sequence renewal must allocate a new rsid");
+    const oldSession = this.#sessions.get(oldRsid);
+    const newSession = this.#sessions.get(newRsid);
+    if (oldSession === undefined || newSession === undefined) {
+      throw new Error("sequence renewal requires both old and replacement sessions");
+    }
+    if (
+      oldSession.probe.localSessionKey !== newSession.probe.localSessionKey ||
+      oldSession.probe !== newSession.probe
+    ) {
+      throw new Error("sequence renewal replacement does not own the same local session");
+    }
+    const oldSequence = this.#journal.loadSequence(oldRsid);
+    if (sequenceRenewalStatus(oldSequence) !== "ready_for_new_rsid") {
+      throw new Error("sequence renewal requires an exhausted and fully drained old rsid");
+    }
+    if (this.#journal.pendingDurableDeliveryDraftCount(oldRsid) !== 0) {
+      throw new Error("sequence renewal cannot retire pending durable deliveries");
+    }
+    this.#sessions.delete(oldRsid);
+  }
+
   public updateResumeExpiry(rsid: string, resumeExpiresAt: string): RegisteredBridgeSession {
     const current = this.#sessions.get(rsid);
     if (current === undefined) throw new Error(`unknown rsid: ${rsid}`);
@@ -1355,7 +1431,7 @@ export class BridgeSimulator {
       return knownError("protocol", "invalid invoke envelope");
     }
     const session = this.#sessions.get(envelope.rsid);
-    if (session === undefined) return knownError("protocol", "invoke targets an unregistered rsid");
+    if (session === undefined) return knownError("auth", "invoke targets an unregistered rsid");
     const sequence = acceptInboundData(
       this.#journal.loadSequence(envelope.rsid),
       envelope as unknown as DataEnvelopeSnapshot,
@@ -2232,8 +2308,10 @@ export class BridgeSimulator {
         }
         crashAfterDurableStep =
           options.crashAt === "after_non_atomic_step_terminal_before_batch_terminal" &&
-          outcome.kind === "error" &&
-          outcome.effectState !== undefined;
+          (
+            outcome.kind === "error" ||
+            (outcome.kind === "result" && outcome.status !== "completed")
+          );
         if (outcome.kind === "error" || (outcome.kind === "result" && outcome.status !== "completed")) stop = true;
       } catch (error) {
         const currentAfterError = this.#journal.getInvocation(envelope.rsid, step.invocation_id);

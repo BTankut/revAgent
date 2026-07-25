@@ -174,6 +174,13 @@ describe("long-lived Bridge JSONL daemon", () => {
       stateRoot,
       preserveState: true,
       stateRootSource: "argument",
+      transportTrust: {
+        loopbackTestTlsPolicy: "loopback_test_tls",
+        caIdentity: "absolute_path_and_exact_byte_sha256",
+        serverIdentity: "leaf_der_sha256",
+        numericLoopbackOnly: true,
+        rejectUnauthorized: true,
+      },
     });
     expect(ready.actions).toEqual([
       "discover_fixture",
@@ -183,19 +190,38 @@ describe("long-lived Bridge JSONL daemon", () => {
       "session_register",
       "session_resume",
       "session_unregister",
+      "prime_sequence_for_conformance",
+      "send_heartbeat_for_conformance",
+      "renew_exhausted_session",
       "tick",
       "poll_document_context",
       "flush_outbound",
       "invoke_local",
+      "read_journal_record_for_conformance",
       "record_verification_attempt",
       "record_late_evidence",
       "resolve_hold",
       "clearance_for_hold",
       "inject_crash",
       "restart_simulator",
+      "configure_reconnect_conformance",
+      "advance_reconnect_conformance_clock",
+      "send_chunk_conformance",
+      "snapshot_soak_status",
       "snapshot_evidence",
       "shutdown",
     ]);
+
+    await expect(bridgeChannel.send(control("soak-status", "snapshot_soak_status")))
+      .resolves.toMatchObject({
+        id: "soak-status",
+        ok: true,
+        result: {
+          schemaVersion: "bridge-simulator-soak-status/v1",
+          journalPendingCount: 0,
+          peer: null,
+        },
+      });
 
     bridge.stdin.write(
       '{"controlVersion":1,"id":"duplicate","action":"snapshot_evidence","action":"shutdown"}\n',
@@ -223,7 +249,7 @@ describe("long-lived Bridge JSONL daemon", () => {
       ok: false,
       error: {
         code: "invalid_control_request",
-        message: "endpointPolicy must equal loopback_test_readiness when supplied",
+        message: "endpointPolicy must equal loopback_test_readiness or loopback_test_tls when supplied",
       },
     });
 

@@ -142,6 +142,27 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   leaks an add-in-local path. A malformed atomic committed carrier is indeterminate, not repaired by
   inference. This is a protocol clarification required by executable W1 evidence, not a relaxation of the
   batch or conformance gates.
+- **RES-27 (2026-07-25 R-F review) — Windows CI rematerializes the protected HEAD bytes after checkout.**
+  The M1 source-identity gate raw-hashes every tracked file and intentionally ignores Git clean filters.
+  A reused self-hosted Windows worktree can therefore remain physically CRLF even after a new
+  `eol=lf` rule makes Git's normalized status clean. Both existing Windows jobs in `.github/workflows/ci.yml`
+  stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd` immediately after checkout,
+  refresh tracked index stat data with `git add --update`, and fail unless both the staged index and
+  worktree remain equal to HEAD. This overwrites all tracked paths with the exact protected blob bytes
+  before any test executes. This is a bounded M1
+  source-integrity correction to RES-24; it does not add a job, alter a release workflow, or weaken the
+  exact-byte gate.
+- **RES-28 (2026-07-25 R-F/operator closing review) — M1 semantic freeze and the `rbp/v1.0.0` tag
+  closure are separate gates.** One complete green Section 21 suite on the exact current PR candidate,
+  its protected check rollup, the remaining Section 22 M1 evidence, and protected tree-equal
+  squash merge are sufficient to freeze RBP/1 and close M1. Barış Tankut is the add-in implementation
+  owner and accepts the batchable-command restrictions and atomic rollback evidence. The tag MUST NOT
+  be created by the M1 merge. It requires a separate retained three-run aggregate, a real one-hour
+  reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE proxy-interoperability evidence, and protected-tag
+  identity validation. Tag-evidence work may run in parallel with M2/M3; its
+  absence or incompleteness does not block their start. A substantive semantic
+  or safety finding still follows R-F and the affected gate remains red.
+  M2/M3 execution still requires its separately authorized operator kickoff.
 
 ---
 
@@ -272,6 +293,58 @@ cutover.
   access to `bt@192.168.90.154` and execute every server-side action it can safely perform, retaining command
   output as evidence. Only account authorization, physical/network work, decisions, and user communications
   remain operator-owned.
+- **R-H Evidence ceiling.** For every milestone, the required evidence is exactly the evidence named by its
+  authoritative plan/gate definition. The implementing assistant MUST NOT unilaterally add, strengthen,
+  multiply, or make blocking any evidence run or repetition beyond what that
+  authoritative gate requires, including commit-by-commit three-run aggregates
+  or soak tests. Required current-head CI and other runs already named by the
+  gate remain required. If additional gate evidence appears necessary, the assistant MUST first present
+  the proposed evidence, rationale, cost, and affected gate in an R-G operator task card and wait for explicit
+  operator authorization. Routine diagnostics and already-produced supplementary evidence may be retained
+  and reported, but remain non-blocking and MUST NOT redefine the gate.
+
+### 8.1 2026-07-23 operator execution checkpoint
+
+This checkpoint controls the current implementation assistant without
+rewriting the work-package architecture:
+
+1. When M1 is ready, open the freeze PR as **draft** and stop after presenting
+   the gate-demo evidence, final v0.9→v1.0 diff summary, and complete
+   conformance result. Do not ready or merge the PR and do not create
+   `rbp/v1.0.0`. No later milestone begins before explicit operator-channel
+   closing approval.
+2. After that approval, this assistant works only in WP2/M2 on
+   `codex/wp2-*` branches. It does not edit `packages/bridge/**` or
+   `src/revit-plugin/**`. Any `packages/protocol/**` change first requires the
+   dated R-F amendment procedure.
+3. WP3 remains the architectural owner of M3 bridge/add-in/installer work, but
+   M3 execution belongs to a separate assistant. The current assistant does
+   not continue, ready, or merge M3 work.
+4. Pre-checkpoint M2 planning is retained on hold in draft PR
+   [#288](https://github.com/BTankut/revAgent/pull/288). Its proposed M2
+   amendment collides with the already authoritative nested-batch `RES-26`;
+   after M1 approval WP2 must resolve that collision through a newly numbered,
+   dated R-F amendment, never by silently replacing either record.
+5. Pre-checkpoint M3 planning is retained as the frozen handoff draft PR
+   [#289](https://github.com/BTankut/revAgent/pull/289). It is evidence of
+   handoff state, not permission to advance M3.
+
+### 8.2 2026-07-25 M1 closing approval
+
+This checkpoint supersedes §8.1 only for M1 closing and the next-lane start:
+
+1. `M1 KAPANIŞ: ONAY`. Barış Tankut is the add-in implementation owner and
+   accepts the batchable-command restrictions and atomic rollback evidence.
+2. Draft PR [#290](https://github.com/BTankut/revAgent/pull/290) is authorized
+   to become ready, pass the protected required gates, and squash merge to
+   `main`. That protected merge freezes the RBP/1 contract and closes M1.
+3. Do not create `rbp/v1.0.0` during this close. RES-28's separate,
+   non-blocking tag-evidence lane may proceed in parallel with M2/M3 only after
+   its own authorized task.
+4. The current assistant stops after the protected merge and closeout report.
+   Neither M2 nor M3 starts from this approval; each requires a separate,
+   authorized kickoff. The §8.1 package/assistant lane boundaries remain in
+   force.
 
 ## 9. Week 1 (starts tomorrow)
 

@@ -11,7 +11,7 @@ The stub provides:
 - WSS-primary upgrade semantics and the exact HTTP create/SSE events/HTTP
   messages fallback lifecycle;
 - static, revocable test-device identities with derived tenant/user/seat
-  bindings;
+  bindings and explicit rejection of bridge-claimed principal/seat fields;
 - durable session, sequence, acknowledgement, outbox, resume, in-flight,
   recovery-hold, chunk, and artifact-carrier state;
 - authoritative per-`rsid` invocation window enforcement;
@@ -41,13 +41,14 @@ advertised URLs to `wss://` and `https://`.
 
 The normative pre-negotiation `hello` and `hello_ack` omit top-level `v`; all
 later messages require the selected version. Both bindings call the corrected
-`@revagent/protocol` parser/validator at the raw frame boundary. This M1 stub
-implements and advertises only the RBP/1 bootstrap wire. RBP/1 is the explicit
-compatibility-window exception until RBP/2 exists. A v2-only opening remains
-fail-closed with `4426`/HTTP `426` and a pointer whose supported range is
-exactly `1..1`; the stub never pretends that changing only the version integer
-implements RBP/2. `--supported-protocols` is retained for harness identity but
-accepts only `1` until a real RBP/2 adapter and vectors exist.
+`@revagent/protocol` parser/validator at the raw frame boundary. The default
+remains the explicit RBP/1 bootstrap exception. A configured `2,1` window
+activates the real additive RBP/2 compatibility adapter: raw UTF-8, duplicate
+key, byte-limit, schema, and semantic checks still run at the boundary; the
+outer v2 wire version is normalized to canonical RBP/1 before journal,
+sequencing, digest, or persistence work and restored only on outbound copies.
+RBP/2 and RBP/1 openings are therefore negotiated and served concurrently,
+while unsupported, non-contiguous, or wider windows fail before readiness.
 
 The exact fallback endpoints are:
 
@@ -90,8 +91,11 @@ test-harness overrides. Unknown or duplicate options fail before readiness.
 The readiness record identifies the component, configured protocol window,
 control-contract version, deterministic-clock mode, control authentication
 header, endpoints, PID, and supported shutdown signals. It never contains the
-device credential or control token. Durable snapshots likewise retain token
-digests and derived identity only, never raw credentials.
+device credential or control token. Durable session snapshots likewise retain
+token digests and derived identity only, never raw credentials. The runtime
+`authorizationAudit` snapshot surface is versioned and capped at 256 entries; it records
+only operation/decision/reason, hashed connection/device identities, and the
+names (never values) of rejected claimed-identity fields.
 Signal handlers remain installed across repeated or mixed SIGINT/SIGTERM bursts
 until the one shared shutdown promise settles; every programmatic close caller
 receives that same completion or rejection.

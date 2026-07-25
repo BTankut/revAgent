@@ -171,6 +171,7 @@ export class MemoryTransport implements TestTransportConnection {
     readonly connectionId: string,
     readonly binding: "wss" | "http_sse",
     readonly device: TestTransportConnection["device"],
+    readonly offeredProtocols: readonly number[] = [1],
   ) {}
 
   async sendSerialized(serialized: string): Promise<void> {

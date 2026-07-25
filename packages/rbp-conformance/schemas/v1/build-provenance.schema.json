@@ -1,0 +1,91 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://revagent.app/schemas/rbp-conformance/v1/build-provenance.schema.json",
+  "title": "RBP production component build provenance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "buildContractVersion",
+    "componentId",
+    "source",
+    "entrypoint",
+    "compileInputs",
+    "buildGeneratorDependencies",
+    "runtimeArtifacts",
+    "runtimeDependencies",
+    "harness",
+    "toolchain"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "type": "string",
+      "const": "rbp-production-build-provenance/v3"
+    },
+    "buildContractVersion": {
+      "type": "string",
+      "const": "rbp-production-typescript-build/v3"
+    },
+    "componentId": {
+      "enum": [
+        "gateway_stub",
+        "bridge_simulator",
+        "addin_loopback_fixture"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "commitSha",
+        "treeSha"
+      ],
+      "properties": {
+        "commitSha": {
+          "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/gitSha"
+        },
+        "treeSha": {
+          "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/gitSha"
+        }
+      }
+    },
+    "entrypoint": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileRecord"
+    },
+    "compileInputs": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileSet"
+    },
+    "buildGeneratorDependencies": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/installedBuildGeneratorDependencyClosure"
+    },
+    "runtimeArtifacts": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileSet"
+    },
+    "runtimeDependencies": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/installedRuntimeDependencyClosure"
+    },
+    "harness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entrypoint",
+        "runtimeArtifacts",
+        "runtimeDependencies"
+      ],
+      "properties": {
+        "entrypoint": {
+          "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileRecord"
+        },
+        "runtimeArtifacts": {
+          "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/provenanceFileSet"
+        },
+        "runtimeDependencies": {
+          "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/installedRuntimeDependencyClosure"
+        }
+      }
+    },
+    "toolchain": {
+      "$ref": "https://revagent.app/schemas/rbp-conformance/v1/common.schema.json#/definitions/productionToolchainIdentity"
+    }
+  }
+}

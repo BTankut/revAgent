@@ -48,6 +48,26 @@ describe("connection and session lifecycle FSM", () => {
     });
   });
 
+  it("retains a negotiated positive protocol version without hard-coding RBP/1", () => {
+    let state = createConnectionLifecycle();
+    state = applyConnection(state, { type: "start" });
+    state = applyConnection(state, { type: "transport_opened" });
+    state = applyConnection(state, { type: "authentication_accepted" });
+    expect(applyConnection(state, {
+      type: "hello_accepted",
+      selectedProtocol: 2,
+      grantedCapabilities: [],
+    })).toMatchObject({
+      phase: "steady",
+      selectedProtocol: 2,
+    });
+    expect(transitionConnection(state, {
+      type: "hello_accepted",
+      selectedProtocol: 0,
+      grantedCapabilities: [],
+    })).toMatchObject({ kind: "invalid_transition" });
+  });
+
   it("applies canonical heartbeat degraded and disconnected thresholds", () => {
     const steady = openSteady();
     expect(

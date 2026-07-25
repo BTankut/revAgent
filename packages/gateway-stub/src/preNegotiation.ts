@@ -1,10 +1,12 @@
 import {
   parseRbpFrame,
+  rbpEnvelopeErrors,
   RbpFrameError,
   validateRbpEnvelope,
 } from "@revagent/protocol";
 
 import type { HelloAckEnvelope, HelloEnvelope } from "./types.js";
+import { assertImplementedProtocolVersion } from "./versionAdapter.js";
 
 export function parseHelloFrame(frame: Uint8Array): HelloEnvelope {
   try {
@@ -49,14 +51,24 @@ export function parseHelloFrame(frame: Uint8Array): HelloEnvelope {
     validationPayload.min_protocol = 1;
     validationPayload.max_protocol = 1;
     if (!validateRbpEnvelope(validationCopy as unknown as HelloEnvelope)) {
-      throw error;
+      throw new RbpFrameError(
+        "invalid_envelope",
+        "invalid hello schema",
+        { validationErrors: [...rbpEnvelopeErrors()] },
+      );
     }
     return record as unknown as HelloEnvelope;
   }
 }
 
 export function serializeHelloAck(envelope: HelloAckEnvelope): string {
-  if (envelope.type !== "hello_ack" || !validateRbpEnvelope(envelope)) {
+  if (envelope.type !== "hello_ack") {
+    throw new TypeError("invalid hello_ack envelope");
+  }
+  assertImplementedProtocolVersion(envelope.payload.protocol);
+  const validationCopy = structuredClone(envelope);
+  validationCopy.payload.protocol = 1;
+  if (!validateRbpEnvelope(validationCopy)) {
     throw new TypeError("invalid hello_ack envelope");
   }
   return JSON.stringify(envelope);

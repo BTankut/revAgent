@@ -146,8 +146,10 @@ export {
 } from "./streamAssembler.js";
 export { validateRbpEnvelope, rbpEnvelopeErrors } from "./validateEnvelope.js";
 
+/** Numeric major carried by negotiated RBP/1 data envelopes. */
 export const RBP_PROTOCOL_VERSION = 1 as const;
-export const RBP_SPEC_DRAFT_VERSION = "1.0-rc.1" as const;
+/** Canonical O1 specification identity; freeze acceptance is recorded separately. */
+export const RBP_SPEC_VERSION = "1.0" as const;
 
 export function makeIdempotencyKey(rsid: string, invocationId: string): string {
   if (rsid.length === 0 || invocationId.length === 0) {

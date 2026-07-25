@@ -54,6 +54,11 @@ export interface DurabilityEvent {
   readonly atMs: number;
 }
 
+export type SequenceBoundaryDurabilityAction =
+  | "sequence_duplicate_observed"
+  | "sequence_gap_observed"
+  | "sequence_renewal_completed";
+
 export type AcceptInvocationResult =
   | { readonly kind: "accepted"; readonly record: InvocationJournalRecord }
   | { readonly kind: "blocked"; readonly holds: readonly MutationHold[] }
@@ -201,6 +206,15 @@ function deliveryCarrierFromDraft(draftJson: string): { readonly identity: strin
   };
 }
 
+function retainedCarrierIdentity(carrier: unknown): string | null {
+  if (
+    typeof carrier !== "object" || carrier === null ||
+    !("rsid" in carrier) || typeof carrier.rsid !== "string" ||
+    !("invocationId" in carrier) || typeof carrier.invocationId !== "string"
+  ) return null;
+  return makeIdempotencyKey(carrier.rsid, carrier.invocationId);
+}
+
 function assertSafeTime(value: number, name: string): void {
   if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`${name} must be non-negative`);
 }
@@ -292,6 +306,16 @@ export class DurableBridgeJournal {
     });
   }
 
+  public pendingInvocationCount(): number {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM invocation_journal
+       WHERE state IN ('received','executing','indeterminate')`,
+    ).get() as { readonly count: number };
+    return row.count;
+  }
+
   public listHolds(): readonly MutationHold[] {
     return this.#loadLedger().holds;
   }
@@ -301,6 +325,21 @@ export class DurableBridgeJournal {
     return this.#db
       .prepare("SELECT sequence, action, subject, at_ms AS atMs FROM durability_events ORDER BY sequence")
       .all() as DurabilityEvent[];
+  }
+
+  public recordSequenceBoundaryEvent(
+    action: SequenceBoundaryDurabilityAction,
+    subject: string,
+    atMs = Date.now(),
+  ): void {
+    if (
+      subject.length < 1 ||
+      subject.length > 512 ||
+      /[\r\n\u0000]/u.test(subject)
+    ) {
+      throw new Error("sequence boundary event subject must be bounded and single-line");
+    }
+    this.#durable(action, subject, atMs, () => undefined);
   }
 
   public getPendingSessionUnregister(rsid: string): PendingSessionUnregister | null {
@@ -1441,10 +1480,14 @@ export class DurableBridgeJournal {
 
   public retainedDeliveryCarrierJsons(): readonly string[] {
     this.#assertOpen();
-    const retained = new Set<string>();
+    const retained = new Map<string, string>();
+    const retainCarrierJson = (carrierJson: string, label: string): void => {
+      const identity = retainedCarrierIdentity(parseJson<unknown>(carrierJson, label));
+      retained.set(identity ?? `unidentified:${carrierJson}`, carrierJson);
+    };
     const outbox = this.#db.prepare("SELECT carrier_json AS carrierJson FROM artifact_outbox")
       .all() as Array<{ readonly carrierJson: string }>;
-    outbox.forEach((row) => retained.add(row.carrierJson));
+    outbox.forEach((row) => retainCarrierJson(row.carrierJson, "artifact outbox carrier"));
     const terminalDrafts = this.#db.prepare(
       `SELECT d.draft_json AS draftJson
        FROM artifact_delivery_plan p
@@ -1453,26 +1496,34 @@ export class DurableBridgeJournal {
     ).all() as Array<{ readonly draftJson: string }>;
     for (const row of terminalDrafts) {
       const carrier = deliveryCarrierFromDraft(row.draftJson);
-      if (carrier !== null) retained.add(carrier.carrierJson);
+      if (carrier !== null) retained.set(carrier.identity, carrier.carrierJson);
     }
     const expiry = this.#db.prepare("SELECT carrier_json AS carrierJson FROM artifact_cleanup_queue")
       .all() as Array<{ readonly carrierJson: string }>;
-    expiry.forEach((row) => retained.add(row.carrierJson));
-    const abandoned = new Set(
-      this.listInvocations()
-        .filter((record) => record.abandoned)
-        .map((record) => makeIdempotencyKey(record.binding.rsid, record.binding.invocationId)),
-    );
-    for (const carrierJson of [...retained]) {
-      const carrier = parseJson<unknown>(carrierJson, "retained delivery carrier");
-      if (
-        typeof carrier === "object" && carrier !== null &&
-        "rsid" in carrier && typeof carrier.rsid === "string" &&
-        "invocationId" in carrier && typeof carrier.invocationId === "string" &&
-        abandoned.has(makeIdempotencyKey(carrier.rsid, carrier.invocationId))
-      ) retained.delete(carrierJson);
+    expiry.forEach((row) => retainCarrierJson(row.carrierJson, "artifact expiry carrier"));
+    for (const record of this.listInvocations()) {
+      const identity = makeIdempotencyKey(record.binding.rsid, record.binding.invocationId);
+      const disposition = this.durableDeliveryDisposition(
+        record.binding.rsid,
+        record.binding.invocationId,
+      );
+      if (record.abandoned || disposition === "acked" || disposition === "expired") {
+        retained.delete(identity);
+        continue;
+      }
+      if (retained.has(identity)) continue;
+      for (const terminal of [record.terminalOutcome, record.lateTerminalOutcome]) {
+        if (!terminal?.payloadRetained || typeof terminal.payload !== "object" || terminal.payload === null) continue;
+        const payload = terminal.payload as Record<string, unknown>;
+        for (const key of ["artifact_carrier", "result_carrier"] as const) {
+          const carrier = payload[key];
+          if (retainedCarrierIdentity(carrier) === identity) {
+            retained.set(identity, JSON.stringify(carrier));
+          }
+        }
+      }
     }
-    return [...retained];
+    return [...retained.values()];
   }
 
   public acceptBatchBinding(input: {

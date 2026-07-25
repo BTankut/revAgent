@@ -1,8 +1,12 @@
 import { Buffer } from "node:buffer";
+import { createHash, X509Certificate } from "node:crypto";
 import { once } from "node:events";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer as createHttpServer, type Server as HttpServer } from "node:http";
 import { createServer as createHttpsServer } from "node:https";
 import { createServer as createNetServer, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
 import {
   FrameDecoder,
@@ -84,6 +88,20 @@ function goodbye(): RbpEnvelope {
   };
 }
 
+function sha256(value: string | Uint8Array): string {
+  return `sha256:${createHash("sha256").update(value).digest("hex")}`;
+}
+
+function testTlsTrust(root: string, certificate: string) {
+  const caCertificatePath = join(root, "gateway-test-ca.pem");
+  writeFileSync(caCertificatePath, certificate, { encoding: "utf8", flag: "wx" });
+  return {
+    caCertificatePath,
+    caCertificateSha256: sha256(certificate),
+    serverCertificateSha256: sha256(new X509Certificate(certificate).raw),
+  };
+}
+
 async function closeHttpServer(server: HttpServer): Promise<void> {
   await new Promise<void>((resolve, reject) => {
     server.close((error) => error === undefined ? resolve() : reject(error));
@@ -92,6 +110,157 @@ async function closeHttpServer(server: HttpServer): Promise<void> {
 }
 
 describe("strict Gateway transport boundaries", () => {
+  it("connects real WSS on numeric loopback only through an exact CA and leaf pin", async () => {
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const root = mkdtempSync(join(tmpdir(), "bridge-wss-trust-"));
+    const trust = testTlsTrust(root, identity.certificate);
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    websocketServer.on("connection", (socket, request) => {
+      expect(request.headers.authorization).toBe("Bearer device-token");
+      socket.once("message", () => socket.send(JSON.stringify(helloAck("loopback-tls"))));
+    });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new WssGatewayBinding({
+      baseUrl: `wss://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_tls",
+      testTlsTrust: trust,
+    });
+    try {
+      expect(binding.testTlsTrustEvidence).toEqual(trust);
+      await expect(binding.open(hello())).resolves.toMatchObject({
+        payload: { connection_id: "loopback-tls" },
+      });
+    } finally {
+      await binding.close();
+      websocketServer.close();
+      await closeHttpServer(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the wrong explicit CA and classifies the failure as terminal trust", async () => {
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const wrongCa = createTestTlsIdentity("127.0.0.1");
+    const root = mkdtempSync(join(tmpdir(), "bridge-wss-wrong-ca-"));
+    const trust = {
+      ...testTlsTrust(root, wrongCa.certificate),
+      serverCertificateSha256: sha256(new X509Certificate(identity.certificate).raw),
+    };
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new WssGatewayBinding({
+      baseUrl: `wss://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_tls",
+      testTlsTrust: trust,
+    });
+    try {
+      await expect(binding.open(hello())).rejects.toMatchObject({ faultClass: "trust" });
+    } finally {
+      await binding.close();
+      websocketServer.close();
+      await closeHttpServer(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a valid CA with the wrong current-stack leaf pin", async () => {
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const otherIdentity = createTestTlsIdentity("127.0.0.1");
+    const root = mkdtempSync(join(tmpdir(), "bridge-wss-wrong-leaf-"));
+    const trust = {
+      ...testTlsTrust(root, identity.certificate),
+      serverCertificateSha256: sha256(new X509Certificate(otherIdentity.certificate).raw),
+    };
+    const server = createHttpsServer({
+      cert: identity.certificate,
+      key: identity.privateKey,
+    });
+    const websocketServer = new WebSocketServer({ server });
+    server.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const port = (server.address() as AddressInfo).port;
+    const binding = new WssGatewayBinding({
+      baseUrl: `wss://127.0.0.1:${port}/bridge/v1`,
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_tls",
+      testTlsTrust: trust,
+    });
+    try {
+      await expect(binding.open(hello())).rejects.toMatchObject({ faultClass: "trust" });
+    } finally {
+      await binding.close();
+      websocketServer.close();
+      await closeHttpServer(server);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects LAN and hostname targets before reading a loopback test TLS trust file", () => {
+    const missingTrust = {
+      caCertificatePath: join(tmpdir(), "must-not-be-read.pem"),
+      caCertificateSha256: `sha256:${"0".repeat(64)}`,
+      serverCertificateSha256: `sha256:${"0".repeat(64)}`,
+    };
+    for (const host of ["192.168.90.154", "localhost"]) {
+      expect(() => new WssGatewayBinding({
+        baseUrl: `wss://${host}:443/bridge/v1`,
+        deviceToken: "device-token",
+        endpointPolicy: "loopback_test_tls",
+        testTlsTrust: missingTrust,
+      })).toThrow(/numeric loopback/u);
+    }
+  });
+
+  it("cannot reuse the loopback TLS trust object as a production, cleartext, HTTP, or factory bypass", () => {
+    const identity = createTestTlsIdentity("127.0.0.1");
+    const root = mkdtempSync(join(tmpdir(), "bridge-wss-no-bypass-"));
+    const trust = testTlsTrust(root, identity.certificate);
+    try {
+      expect(() => new WssGatewayBinding({
+        baseUrl: "wss://gateway.revagent.test/bridge/v1",
+        deviceToken: "device-token",
+        testTlsTrust: trust,
+      })).toThrow(/accepted only by loopback_test_tls WSS/u);
+      expect(() => new WssGatewayBinding({
+        baseUrl: "ws://127.0.0.1:8443/bridge/v1",
+        deviceToken: "device-token",
+        endpointPolicy: "loopback_test_readiness",
+        testTlsTrust: trust,
+      })).toThrow(/accepted only by loopback_test_tls WSS/u);
+      expect(() => new HttpSseGatewayBinding({
+        baseUrl: "http://127.0.0.1:8443/bridge/v1/http/connections",
+        deviceToken: "device-token",
+        endpointPolicy: "loopback_test_readiness",
+        testTlsTrust: trust,
+      })).toThrow(/restricted to the numeric-loopback WSS binding/u);
+      expect(() => new WssGatewayBinding({
+        baseUrl: "wss://127.0.0.1:8443/bridge/v1",
+        deviceToken: "device-token",
+        endpointPolicy: "loopback_test_tls",
+        testTlsTrust: trust,
+        webSocketFactory: () => {
+          throw new Error("must not be called");
+        },
+      })).toThrow(/cannot be combined with a WebSocket factory/u);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("completes a real trusted TLS WebSocket hello and data handshake", async () => {
     const identity = createTestTlsIdentity(TEST_TLS_HOSTNAME);
     const server = createHttpsServer({

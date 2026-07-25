@@ -119,6 +119,24 @@ export interface FixtureEvidenceSnapshot {
     readonly requestId: string;
     readonly count: number;
   }[];
+  readonly documentContextEvidence: {
+    readonly evidenceVersion: 1;
+    readonly clock: "process_monotonic_ms";
+    readonly capacity: number;
+    readonly totalEventCount: number;
+    readonly droppedEventCount: number;
+    readonly currentRevision: number;
+    readonly applicationEventCacheUpdateCount: number;
+    readonly cacheReadCount: number;
+    readonly pollRequestCount: number;
+    readonly externalEventRaiseCount: number;
+    readonly timeline: readonly {
+      readonly sequence: number;
+      readonly kind: "cache_initialized" | "application_event_cache_update" | "cache_read";
+      readonly revision: number;
+      readonly atMonotonicMs: number;
+    }[];
+  };
   readonly openSocketCount: number;
   readonly crashed: boolean;
 }

@@ -8,6 +8,7 @@ import {
   canonicalizeJson,
   createSessionLifecycle,
   rbpEnvelopeErrors,
+  sequenceRenewalStatus,
   transitionSession,
   validateRbpEnvelope,
   type BatchStepResult,
@@ -31,6 +32,7 @@ import type { DurableResultCarrier } from "./artifacts.js";
 import type {
   BridgeSimulator,
   BridgeBatchOutcome,
+  BridgeCrashPoint,
   BridgeInvocationOutcome,
 } from "./bridgeSimulator.js";
 import type { ProbedAddinSession } from "./loopback.js";
@@ -38,12 +40,16 @@ import { GatewayTransportError, type GatewayBinding } from "./transport.js";
 
 export const BRIDGE_OUTBOUND_HIGH_WATER_BYTES = 8 * 1024 * 1024;
 export const BRIDGE_DOCUMENT_CONTEXT_POLL_MS = 15_000;
+const MAX_DELIVERY_PROGRESS_RECORDS = 128;
+const MAX_SEQUENCE_TRANSPORT_EVENTS = 64;
+const MAX_SEQUENCE_RENEWAL_EVENTS = 16;
 
 export type BridgePeerLiveness = "steady" | "degraded" | "disconnected";
 
 interface PendingRegistration {
   readonly probe: ProbedAddinSession;
   readonly registration: SessionRegister;
+  readonly renewalOldRsid: string | null;
 }
 
 interface QueuedDataDraft {
@@ -65,6 +71,39 @@ interface BatchReplyContext {
   readonly steps: readonly InvocationReplyContext[];
 }
 
+interface MutableDeliveryProgress {
+  rsid: string;
+  invocationId: string;
+  chunkFramesSent: number;
+  artifactChunkFramesSent: number;
+  resultChunkFramesSent: number;
+  progressFramesSent: number;
+  terminalFramesSent: number;
+  lastSentSeq: number;
+}
+
+interface SequenceTransportEvent {
+  readonly ordinal: number;
+  readonly observedAtMs: number;
+  readonly rsid: string;
+  readonly kind: "duplicate" | "gap";
+  readonly receivedSeq: number;
+  readonly expectedSeq: number | null;
+  readonly accepted: false;
+}
+
+interface SequenceRenewalEvent {
+  readonly ordinal: number;
+  readonly observedAtMs: number;
+  readonly reason: "sequence_exhaustion";
+  readonly oldRsid: string;
+  readonly newRsid: string;
+  readonly oldHighestTxSeq: number;
+  readonly oldLastPeerAck: number;
+  readonly oldOutboxCount: 0;
+  readonly newInitialNextTxSeq: 1;
+}
+
 export interface BridgeGatewayPeerOptions {
   readonly heartbeatIntervalMs?: number;
   readonly nowMs?: () => number;
@@ -74,7 +113,12 @@ export interface BridgeGatewayPeerOptions {
     readonly delayMs: number;
   }) => Promise<{ readonly binding: GatewayBinding; readonly helloAck: HelloAckEnvelope }>;
   readonly reconnectJitter?: () => number;
-  readonly sleep?: (delayMs: number) => Promise<void>;
+  readonly sleep?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  /**
+   * Conformance-only one-shot crash selector. Production callers omit it; the
+   * daemon control surface uses it to exercise the real inbound Gateway path.
+   */
+  readonly takeInboundCrashPoint?: () => BridgeCrashPoint | null;
   /** Unit-fixture escape hatch only. Production bindings must prove authority with resume_ack. */
   readonly unsafeAssumeCurrentBindingForTests?: boolean;
 }
@@ -99,10 +143,67 @@ export interface BridgeGatewayPeerSnapshot {
   readonly grantedCapabilities: readonly string[];
   readonly retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null;
   readonly reconnectDelayFloorMs: number;
+  readonly backpressure: {
+    readonly evidenceVersion: 1;
+    readonly source: "transport.bufferedAmount";
+    readonly highWaterBytes: number;
+    readonly currentBufferedAmount: number;
+    readonly maxObservedBufferedAmount: number;
+    readonly sampleCount: number;
+    readonly blockedPumpCount: number;
+    readonly active: boolean;
+    readonly controlFramesSentWhileBackpressured: number;
+  };
+  readonly deliveryProgress: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalRecordCount: number;
+    readonly droppedRecordCount: number;
+    readonly records: readonly {
+      readonly rsid: string;
+      readonly invocationId: string;
+      readonly chunkFramesSent: number;
+      readonly artifactChunkFramesSent: number;
+      readonly resultChunkFramesSent: number;
+      readonly progressFramesSent: number;
+      readonly terminalFramesSent: number;
+      readonly lastSentSeq: number;
+    }[];
+  };
+  readonly sequenceTransportEvents: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalEventCount: number;
+    readonly droppedEventCount: number;
+    readonly records: readonly SequenceTransportEvent[];
+  };
+  readonly sequenceRenewalEvents: {
+    readonly evidenceVersion: 1;
+    readonly capacity: number;
+    readonly totalEventCount: number;
+    readonly droppedEventCount: number;
+    readonly records: readonly SequenceRenewalEvent[];
+  };
 }
 
 function defaultId(): string {
   return `0197a3c2-0000-7000-8000-${randomBytes(6).toString("hex")}`;
+}
+
+async function sleepUntil(delayMs: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return;
+  await new Promise<void>((resolve) => {
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", finish);
+      resolve();
+    };
+    const timer = setTimeout(finish, delayMs);
+    signal.addEventListener("abort", finish, { once: true });
+  });
 }
 
 function transitionOrThrow(
@@ -221,7 +322,15 @@ function invocationDrafts(
 ): QueuedDataDraft[] {
   const drafts: QueuedDataDraft[] = [];
   if (outcome.kind === "result") {
-    for (const partial of outcome.partials) {
+    const progressRequested =
+      typeof outcome.result === "object" &&
+      outcome.result !== null &&
+      !Array.isArray(outcome.result) &&
+      (outcome.result as Record<string, unknown>).fixtureArtifactProgress === true;
+    const totalChunks = outcome.partials.length;
+    let chunksSent = 0;
+    for (let index = 0; index < outcome.partials.length; index += 1) {
+      const partial = outcome.partials[index] as (typeof outcome.partials)[number];
       drafts.push({
         type: "partial",
         id: id(),
@@ -229,6 +338,27 @@ function invocationDrafts(
         payload: partial as unknown as JsonValue,
         deliveryCarrier: null,
       });
+      chunksSent += 1;
+      const next = outcome.partials[index + 1];
+      if (progressRequested && (next === undefined || next.stream_id !== partial.stream_id)) {
+        drafts.push({
+          type: "partial",
+          id: id(),
+          ts: ts(),
+          payload: {
+            kind: "progress",
+            invocation_id: invocation.invocationId,
+            progress: {
+              elapsed_ms: 0,
+              note: "bridge_chunk_delivery",
+              chunks_sent: chunksSent,
+              total_chunks: totalChunks,
+              stream_id: partial.stream_id,
+            },
+          },
+          deliveryCarrier: null,
+        });
+      }
     }
     drafts.push({
       type: "result",
@@ -428,7 +558,9 @@ export class BridgeGatewayPeer {
   readonly #id: () => string;
   readonly #reconnect: BridgeGatewayPeerOptions["reconnect"];
   readonly #reconnectJitter: () => number;
-  readonly #sleep: (delayMs: number) => Promise<void>;
+  readonly #sleep: NonNullable<BridgeGatewayPeerOptions["sleep"]>;
+  readonly #closeAbort = new AbortController();
+  readonly #takeInboundCrashPoint: BridgeGatewayPeerOptions["takeInboundCrashPoint"];
   readonly #sessions = new Map<string, SessionLifecycleState>();
   readonly #pendingRegistrations = new Map<string, PendingRegistration>();
   readonly #pendingResumes = new Set<string>();
@@ -439,6 +571,7 @@ export class BridgeGatewayPeer {
   readonly #lastContextPollAt = new Map<string, number>();
   readonly #queuedData = new Map<string, QueuedDataDraft[]>();
   readonly #sentSeq = new Map<string, number>();
+  readonly #deliveryProgress = new Map<string, MutableDeliveryProgress>();
   readonly #resumeRetransmit = new Set<string>();
   readonly #inboundTasks = new Set<Promise<void>>();
   readonly #pumpChains = new Map<string, Promise<void>>();
@@ -459,6 +592,16 @@ export class BridgeGatewayPeer {
   #grantedCapabilities = new Set<string>();
   #retrySuppressedFault: "auth" | "version" | "trust" | "protocol" | null = null;
   #reconnectDelayFloorMs = 0;
+  #maxObservedBufferedAmount = 0;
+  #bufferedAmountSampleCount = 0;
+  #backpressureBlockedPumpCount = 0;
+  #controlFramesSentWhileBackpressured = 0;
+  #deliveryProgressTotalRecordCount = 0;
+  #deliveryProgressDroppedRecordCount = 0;
+  readonly #sequenceTransportEvents: SequenceTransportEvent[] = [];
+  #sequenceTransportEventCount = 0;
+  readonly #sequenceRenewalEvents: SequenceRenewalEvent[] = [];
+  #sequenceRenewalEventCount = 0;
   #inboundError: unknown = null;
   #asyncTransportFailure: GatewayTransportError | null = null;
   #runLoopActive = false;
@@ -480,9 +623,8 @@ export class BridgeGatewayPeer {
     this.#id = options.idFactory ?? defaultId;
     this.#reconnect = options.reconnect;
     this.#reconnectJitter = options.reconnectJitter ?? Math.random;
-    this.#sleep = options.sleep ?? (async (delayMs) => await new Promise<void>((resolve) => {
-      setTimeout(resolve, delayMs);
-    }));
+    this.#sleep = options.sleep ?? sleepUntil;
+    this.#takeInboundCrashPoint = options.takeInboundCrashPoint;
     const now = this.#nowMs();
     this.#connectedAtMs = now;
     this.#lastHeartbeatSentAtMs = now;
@@ -520,10 +662,11 @@ export class BridgeGatewayPeer {
   }
 
   public snapshot(nowMs = this.#nowMs()): BridgeGatewayPeerSnapshot {
+    const bufferedAmount = this.#sampleBufferedAmount(this.#binding);
     return {
       bindingKind: this.#binding.kind,
       connectionId: this.#binding.connectionId,
-      bufferedAmount: this.#binding.bufferedAmount,
+      bufferedAmount,
       liveness: this.livenessAt(nowMs),
       lastHeartbeatAckAtMs: this.#lastHeartbeatAckAtMs,
       lastHeartbeatSentAtMs: this.#lastHeartbeatSentAtMs,
@@ -541,6 +684,44 @@ export class BridgeGatewayPeer {
       grantedCapabilities: [...this.#grantedCapabilities].sort(),
       retrySuppressedFault: this.#retrySuppressedFault,
       reconnectDelayFloorMs: this.#reconnectDelayFloorMs,
+      backpressure: {
+        evidenceVersion: 1,
+        source: "transport.bufferedAmount",
+        highWaterBytes: BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
+        currentBufferedAmount: bufferedAmount,
+        maxObservedBufferedAmount: this.#maxObservedBufferedAmount,
+        sampleCount: this.#bufferedAmountSampleCount,
+        blockedPumpCount: this.#backpressureBlockedPumpCount,
+        active: bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
+        controlFramesSentWhileBackpressured: this.#controlFramesSentWhileBackpressured,
+      },
+      deliveryProgress: {
+        evidenceVersion: 1,
+        capacity: MAX_DELIVERY_PROGRESS_RECORDS,
+        totalRecordCount: this.#deliveryProgressTotalRecordCount,
+        droppedRecordCount: this.#deliveryProgressDroppedRecordCount,
+        records: [...this.#deliveryProgress.values()].map((entry) => ({ ...entry })),
+      },
+      sequenceTransportEvents: {
+        evidenceVersion: 1,
+        capacity: MAX_SEQUENCE_TRANSPORT_EVENTS,
+        totalEventCount: this.#sequenceTransportEventCount,
+        droppedEventCount: Math.max(
+          0,
+          this.#sequenceTransportEventCount - this.#sequenceTransportEvents.length,
+        ),
+        records: this.#sequenceTransportEvents.map((entry) => ({ ...entry })),
+      },
+      sequenceRenewalEvents: {
+        evidenceVersion: 1,
+        capacity: MAX_SEQUENCE_RENEWAL_EVENTS,
+        totalEventCount: this.#sequenceRenewalEventCount,
+        droppedEventCount: Math.max(
+          0,
+          this.#sequenceRenewalEventCount - this.#sequenceRenewalEvents.length,
+        ),
+        records: this.#sequenceRenewalEvents.map((entry) => ({ ...entry })),
+      },
     };
   }
 
@@ -607,20 +788,66 @@ export class BridgeGatewayPeer {
     readonly probe: ProbedAddinSession;
     readonly registration: SessionRegister;
   }): Promise<string> {
+    return await this.#beginRegistration(input, null);
+  }
+
+  public async renewExhaustedSession(rsid: string): Promise<string> {
     this.#assertOpen();
+    const session = this.#simulator.getSession(rsid);
+    const lifecycle = this.#sessions.get(rsid);
+    if (
+      session === null ||
+      lifecycle?.phase !== "registered" ||
+      lifecycle.dispatchAllowed !== true
+    ) {
+      throw new Error(`session ${rsid} is not eligible for sequence renewal`);
+    }
+    if (sequenceRenewalStatus(this.#simulator.journal.loadSequence(rsid)) !== "ready_for_new_rsid") {
+      throw new Error("sequence renewal requires a fully drained exhausted sender");
+    }
+    if (
+      (this.#queuedData.get(rsid)?.length ?? 0) !== 0 ||
+      this.#simulator.journal.pendingDurableDeliveryDraftCount(rsid) !== 0
+    ) {
+      throw new Error("sequence renewal requires no queued application data");
+    }
+    return await this.#beginRegistration({
+      probe: session.probe,
+      registration: session.registration,
+    }, rsid);
+  }
+
+  async #beginRegistration(
+    input: {
+      readonly probe: ProbedAddinSession;
+      readonly registration: SessionRegister;
+    },
+    renewalOldRsid: string | null,
+  ): Promise<string> {
+    this.#assertOpen();
+    if (renewalOldRsid !== null && this.#pendingRegistrations.size !== 0) {
+      throw new Error("sequence renewal requires no other pending registration");
+    }
     const id = this.#id();
     let lifecycle = createSessionLifecycle(input.probe.localSessionKey);
     lifecycle = transitionOrThrow(lifecycle, { type: "register_requested" });
-    this.#pendingRegistrations.set(id, input);
+    this.#pendingRegistrations.set(id, { ...input, renewalOldRsid });
     this.#sessions.set(input.probe.localSessionKey, lifecycle);
     this.#armSessionSyncDeadline();
-    await this.#sendControl({
-      v: 1,
-      type: "session_register",
-      id,
-      ts: this.#nowIso(),
-      payload: input.registration,
-    });
+    try {
+      await this.#sendControl({
+        v: 1,
+        type: "session_register",
+        id,
+        ts: this.#nowIso(),
+        payload: input.registration,
+      });
+    } catch (error) {
+      this.#pendingRegistrations.delete(id);
+      this.#sessions.delete(input.probe.localSessionKey);
+      this.#clearSessionSyncDeadlineIfCorrelated();
+      throw error;
+    }
     return id;
   }
 
@@ -1018,11 +1245,18 @@ export class BridgeGatewayPeer {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeAbort.abort();
     await this.#binding.close();
     this.#simulator.close();
   }
 
   public async shutdown(): Promise<void> {
+    if (this.#closed) return;
+    // Shutdown is terminal before the unregister handoff starts. A retryable
+    // unregister send must leave its durable tombstone for the next process,
+    // never enter the normal reconnect/backoff path while this process exits.
+    this.#closed = true;
+    this.#closeAbort.abort();
     for (const session of [...this.#simulator.registeredSessions()]) {
       try {
         await this.unregisterSession(session.rsid, "bridge_shutdown");
@@ -1030,7 +1264,8 @@ export class BridgeGatewayPeer {
         this.#simulator.unregisterSession(session.rsid, "bridge_shutdown");
       }
     }
-    await this.close();
+    await this.#binding.close();
+    this.#simulator.close();
   }
 
   async #handleRegistered(envelope: SessionRegisteredEnvelope): Promise<void> {
@@ -1058,6 +1293,31 @@ export class BridgeGatewayPeer {
       session.rsid,
       transitionOrThrow(previous, { type: "registered", rsid: session.rsid }),
     );
+    if (pending.renewalOldRsid !== null) {
+      const oldRsid = pending.renewalOldRsid;
+      const oldSequence = this.#simulator.journal.loadSequence(oldRsid);
+      const newSequence = this.#simulator.journal.loadSequence(session.rsid);
+      if (
+        oldSequence.outbox.length !== 0 ||
+        newSequence.nextTxSeq !== 1 ||
+        newSequence.highestTxSeq !== 0
+      ) {
+        throw new Error("sequence renewal boundary state is not exact");
+      }
+      this.#simulator.retireSequenceRenewedSession(oldRsid, session.rsid);
+      this.#forgetFinalizedSession(oldRsid);
+      this.#recordSequenceRenewalEvent({
+        ordinal: this.#sequenceRenewalEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        reason: "sequence_exhaustion",
+        oldRsid,
+        newRsid: session.rsid,
+        oldHighestTxSeq: oldSequence.highestTxSeq,
+        oldLastPeerAck: oldSequence.lastPeerAck,
+        oldOutboxCount: 0,
+        newInitialNextTxSeq: 1,
+      });
+    }
     this.#clearSessionSyncDeadlineIfCorrelated();
     await this.pollDocumentContext(session.rsid, true);
   }
@@ -1164,7 +1424,11 @@ export class BridgeGatewayPeer {
         return;
       }
     }
-    const outcome = await this.#simulator.invoke(envelope);
+    const crashAt = this.#takeInboundCrashPoint?.() ?? null;
+    const outcome = await this.#simulator.invoke(
+      envelope,
+      crashAt === null ? {} : { crashAt },
+    );
     if (
       this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
       this.#simulator.getSession(envelope.rsid) === null
@@ -1206,7 +1470,11 @@ export class BridgeGatewayPeer {
         return;
       }
     }
-    const outcome = await this.#simulator.invokeBatch(envelope);
+    const crashAt = this.#takeInboundCrashPoint?.() ?? null;
+    const outcome = await this.#simulator.invokeBatch(
+      envelope,
+      crashAt === null ? {} : { crashAt },
+    );
     if (
       this.#sessions.get(envelope.rsid)?.phase === "unregistered" ||
       this.#simulator.getSession(envelope.rsid) === null
@@ -1231,16 +1499,67 @@ export class BridgeGatewayPeer {
       this.#simulator.journal.loadSequence(envelope.rsid),
       envelope as unknown as DataEnvelopeSnapshot,
     );
-    if (accepted.kind === "protocol_fault" || accepted.kind === "gap") {
+    if (accepted.kind === "gap") {
+      this.#recordSequenceTransportEvent({
+        ordinal: this.#sequenceTransportEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        rsid: envelope.rsid,
+        kind: "gap",
+        receivedSeq: accepted.receivedSeq,
+        expectedSeq: accepted.expectedSeq,
+        accepted: false,
+      });
+      throw new Error(`${label} sequence rejected: ${accepted.kind}`);
+    }
+    if (accepted.kind === "protocol_fault") {
       throw new Error(`${label} sequence rejected: ${accepted.kind}`);
     }
     if (accepted.kind === "duplicate") {
+      this.#recordSequenceTransportEvent({
+        ordinal: this.#sequenceTransportEventCount + 1,
+        observedAtMs: this.#nowMs(),
+        rsid: envelope.rsid,
+        kind: "duplicate",
+        receivedSeq: envelope.seq,
+        expectedSeq: null,
+        accepted: false,
+      });
       this.#simulator.persistInboundDuplicate(
         envelope as unknown as DataEnvelopeSnapshot,
       );
       this.#applyInboundAck(envelope);
     }
     return accepted.kind;
+  }
+
+  #recordSequenceTransportEvent(event: SequenceTransportEvent): void {
+    this.#simulator.journal.recordSequenceBoundaryEvent(
+      event.kind === "duplicate"
+        ? "sequence_duplicate_observed"
+        : "sequence_gap_observed",
+      event.kind === "duplicate"
+        ? `${event.rsid}/${event.receivedSeq}`
+        : `${event.rsid}/${event.expectedSeq ?? "none"}/${event.receivedSeq}`,
+      event.observedAtMs,
+    );
+    this.#sequenceTransportEventCount += 1;
+    this.#sequenceTransportEvents.push(event);
+    if (this.#sequenceTransportEvents.length > MAX_SEQUENCE_TRANSPORT_EVENTS) {
+      this.#sequenceTransportEvents.shift();
+    }
+  }
+
+  #recordSequenceRenewalEvent(event: SequenceRenewalEvent): void {
+    this.#simulator.journal.recordSequenceBoundaryEvent(
+      "sequence_renewal_completed",
+      `${event.oldRsid}/${event.newRsid}/${event.oldHighestTxSeq}/${event.oldLastPeerAck}`,
+      event.observedAtMs,
+    );
+    this.#sequenceRenewalEventCount += 1;
+    this.#sequenceRenewalEvents.push(event);
+    if (this.#sequenceRenewalEvents.length > MAX_SEQUENCE_RENEWAL_EVENTS) {
+      this.#sequenceRenewalEvents.shift();
+    }
   }
 
   #applyInboundAck(envelope: { readonly rsid: string; readonly ack?: number }): void {
@@ -1341,10 +1660,11 @@ export class BridgeGatewayPeer {
   async #pumpSession(rsid: string): Promise<void> {
     const lifecycle = this.#sessions.get(rsid);
     const binding = this.#binding;
-    if (
-      this.#closed || lifecycle?.dispatchAllowed !== true ||
-      binding.bufferedAmount > BRIDGE_OUTBOUND_HIGH_WATER_BYTES
-    ) return;
+    if (this.#closed || lifecycle?.dispatchAllowed !== true) return;
+    if (this.#sampleBufferedAmount(binding) > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#backpressureBlockedPumpCount += 1;
+      return;
+    }
     const sequence = this.#simulator.journal.loadSequence(rsid);
     const retained = sequence.outbox[0];
     if (retained !== undefined) {
@@ -1353,7 +1673,7 @@ export class BridgeGatewayPeer {
         ? this.#simulator.retransmit(rsid, this.#nowIso())[0] ?? retained.envelope
         : retained.envelope;
       this.#assertOutboundEnvelopeCapabilities(envelope);
-      await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+      if (!await this.#sendData(binding, envelope as unknown as RbpEnvelope)) return;
       if (
         binding !== this.#binding ||
         this.#sessions.get(rsid)?.phase === "unregistered" ||
@@ -1389,7 +1709,7 @@ export class BridgeGatewayPeer {
       );
     }
     this.#assertOutboundEnvelopeCapabilities(envelope);
-    await this.#sendData(binding, envelope as unknown as RbpEnvelope);
+    if (!await this.#sendData(binding, envelope as unknown as RbpEnvelope)) return;
     if (
       binding !== this.#binding ||
       this.#sessions.get(rsid)?.phase === "unregistered" ||
@@ -1398,9 +1718,16 @@ export class BridgeGatewayPeer {
     this.#sentSeq.set(rsid, envelope.seq);
   }
 
-  async #sendData(binding: GatewayBinding, envelope: RbpEnvelope): Promise<void> {
+  async #sendData(binding: GatewayBinding, envelope: RbpEnvelope): Promise<boolean> {
+    if (this.#sampleBufferedAmount(binding) > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#backpressureBlockedPumpCount += 1;
+      return false;
+    }
     try {
       await binding.send(envelope);
+      this.#sampleBufferedAmount(binding);
+      this.#recordOutboundData(envelope);
+      return true;
     } catch (error) {
       if (error instanceof GatewayTransportError && error.faultClass === "retryable_network") {
         try {
@@ -1410,6 +1737,61 @@ export class BridgeGatewayPeer {
         }
       }
       throw error;
+    }
+  }
+
+  #sampleBufferedAmount(binding: GatewayBinding): number {
+    const sampled = binding.bufferedAmount;
+    if (!Number.isSafeInteger(sampled) || sampled < 0) {
+      throw new Error("transport bufferedAmount must be a non-negative safe integer");
+    }
+    this.#bufferedAmountSampleCount += 1;
+    this.#maxObservedBufferedAmount = Math.max(this.#maxObservedBufferedAmount, sampled);
+    return sampled;
+  }
+
+  #recordOutboundData(envelope: RbpEnvelope): void {
+    if (envelope.type !== "partial" && envelope.type !== "result") return;
+    const payload = envelope.payload;
+    if (payload.kind !== "progress" && payload.kind !== "chunk" && payload.kind !== "invocation") return;
+    const invocationId = payload.invocation_id;
+    const key = `${envelope.rsid}\u0000${invocationId}`;
+    let progress = this.#deliveryProgress.get(key);
+    if (progress === undefined) {
+      if (this.#deliveryProgress.size >= MAX_DELIVERY_PROGRESS_RECORDS) {
+        const oldest = this.#deliveryProgress.keys().next().value as string | undefined;
+        if (oldest !== undefined) {
+          this.#deliveryProgress.delete(oldest);
+          this.#deliveryProgressDroppedRecordCount += 1;
+        }
+      }
+      this.#deliveryProgressTotalRecordCount += 1;
+      progress = {
+        rsid: envelope.rsid,
+        invocationId,
+        chunkFramesSent: 0,
+        artifactChunkFramesSent: 0,
+        resultChunkFramesSent: 0,
+        progressFramesSent: 0,
+        terminalFramesSent: 0,
+        lastSentSeq: envelope.seq,
+      };
+      this.#deliveryProgress.set(key, progress);
+    }
+    progress.lastSentSeq = envelope.seq;
+    if (envelope.type === "result") {
+      progress.terminalFramesSent += 1;
+      return;
+    }
+    if (payload.kind === "progress") {
+      progress.progressFramesSent += 1;
+      return;
+    }
+    progress.chunkFramesSent += 1;
+    if (payload.stream_id === "result") {
+      progress.resultChunkFramesSent += 1;
+    } else {
+      progress.artifactChunkFramesSent += 1;
     }
   }
 
@@ -1524,13 +1906,18 @@ export class BridgeGatewayPeer {
       );
       this.#reconnectDelayFloorMs = 0;
       this.#reconnectAttemptIndex += 1;
-      await this.#sleep(delayMs);
+      await this.#sleep(delayMs, this.#closeAbort.signal);
       if (this.#closed) return false;
       let nextBinding: GatewayBinding | null = null;
       try {
         const next = await this.#reconnect?.({ attemptIndex, delayMs });
         if (next === undefined) return false;
         nextBinding = next.binding;
+        if (this.#closed) {
+          await nextBinding.close();
+          nextBinding = null;
+          return false;
+        }
         if (next.binding.connectionId !== next.helloAck.payload.connection_id) {
           await next.binding.close();
           nextBinding = null;
@@ -1638,7 +2025,12 @@ export class BridgeGatewayPeer {
     if (!validateRbpEnvelope(envelope)) {
       throw new Error(`invalid outbound control envelope ${envelopeType}`);
     }
+    const bufferedBefore = this.#sampleBufferedAmount(this.#binding);
     await this.#binding.send(envelope);
+    this.#sampleBufferedAmount(this.#binding);
+    if (bufferedBefore > BRIDGE_OUTBOUND_HIGH_WATER_BYTES) {
+      this.#controlFramesSentWhileBackpressured += 1;
+    }
   }
 
   #nowIso(): string {

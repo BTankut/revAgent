@@ -83,6 +83,246 @@ evidenced; this work is not assigned to the pilot user.
 
 ## Amendments
 
+### 2026-07-23 — R-F: production conformance provenance must cover every application-controlled executable byte
+
+The M1 freeze-identity audit found that the v1 build sidecar bound tracked
+compile inputs and emitted component `dist` files but did not bind the selected
+runtime Node executable, the controller in `packages/rbp-conformance/dist`,
+installed runtime dependencies/native add-ons, optional-peer presence, the
+complete TypeScript compiler package behind the `tsc.js` shim, or the npm
+launcher/package that performed the build. Canonical commands were also
+trusted from the plan without re-derivation, and inherited Node/module
+resolution environment variables could change executable behavior after the
+single run-entry verification. These were provenance gaps, so no run produced
+under that contract could by itself close M1.
+
+The replacement `rbp-production-build-provenance/v3` /
+`rbp-production-typescript-build/v3` contract fails closed over the exact
+build and runtime Node files plus version/platform/architecture/modules
+ABI/N-API facts; complete npm and TypeScript package trees; the selected Git
+binary/version; the canonical Windows PowerShell sampler binary/version;
+component, protocol, and conformance-controller outputs; and
+the physical installed package copies actually selected for Gateway, Bridge,
+add-in fixture, runner, and protocol generation. The bound runtime Node now
+performs real CommonJS, ESM, and package-manifest resolution probes; the
+selected path must equal the captured physical package root. Workspace
+targets, distinct nested copies, native `.node` files, installed optional
+peers, and absent optional peers are explicit records instead of inferred
+from a convenient root install.
+
+Canonical preparation is a direct invocation of the reviewed Node executable,
+not `npm run`, a lifecycle shell, or a bin shim. That Node rebuilds protocol
+and the conformance controller, then the freshly built controller runs a real
+in-memory `better-sqlite3` open/query/close smoke under the selected runtime
+Node before component cleaning and again after the fixed non-recursive,
+direct-Node TypeScript DAG. Every child is bracketed by toolchain
+revalidation. After each DAG step, every previously completed upstream output
+is rehashed and the controller/protocol harness must remain unchanged.
+There is no outer native smoke under a possibly divergent incidental Node.
+
+Production plans re-derive exact canonical command descriptors and sanitize
+Node/module-resolution environment variables. Every run and plan-bound
+validator/aggregator performs the full source, toolchain, sidecar, command,
+controller, and current-Node gate. The cheaper runtime launch guard rechecks
+the executable candidate closure immediately before each spawn, after
+readiness, after supervised shutdown (including failed-start cleanup), and
+after each soak churn cycle. Full compiler/npm provenance remains a
+prepare/run/validation-boundary gate; the launch guard rechecks the bytes that
+can execute in the candidate run. Windows system DLLs, kernel-level hardlink
+races, and an already-running same-user process that can actively mutate and
+restore writable build/dependency files during a guarded generator/compiler
+subprocess remain outside this application provenance boundary; canonical
+evidence requires those other writers to be quiesced.
+
+This dated R-F entry closes the identified contract/design gap only. It does
+not declare the O1 spec frozen, does not validate a candidate run, and does not
+satisfy O1-T6/O1-T8. M1 still requires a clean protected candidate, fresh
+canonical preparation, three consecutive complete runs, the full one-hour
+soak, validators, tree-identity proof, and the separately governed tag.
+
+### 2026-07-23 — R-F: canonical evidence launch begins before Node loads JavaScript
+
+The M1 closing audit found two remaining bootstrap gaps in the v3 provenance
+path. An in-process environment guard runs only after Node has already applied
+`NODE_OPTIONS`; it therefore cannot prove that injected preload code did not
+execute. The outer protocol/controller bootstrap also used the installed
+TypeScript and `json-schema-to-typescript` generator stack before the freshly
+built controller could capture or verify those bytes. Finally, the outer
+wrapper selected Git but did not pass that exact resolved executable to the
+inner preparation command.
+
+Implementation clarification from the same closing audit: canonical Windows
+evidence begins with one fixed, compressed `-EncodedCommand` under the exact
+SystemRoot Windows PowerShell with `-NoProfile` and `-NonInteractive`; it does
+not execute the mutable worktree `invoke-production.ps1`. Canonical
+`-EncodedArguments` bind the explicit clean candidate commit/tree, role, root,
+and child arguments. Production entry also does not execute the mutable
+worktree renderer or run Node/Git to derive that command or the candidate
+identity. An independently protected authority supplies the exact eight host
+arguments and retains their whole `EncodedArguments`, `EncodedCommand`,
+bootstrap-template, and payload SHA-256 values, expected commit/tree,
+generation timestamp, and authority label outside the checkout and evidence
+artifact root. Before launch, the authority executor requires strict UTF-16LE
+round-trip and ordinal equality to the one canonical single-string CLIXML
+document; arbitrary serialized object graphs are not deserialized or searched
+for a decoy payload. The expected commit/tree are approved literals at this
+boundary, not the output of a pre-bootstrap Git probe. The tracked renderer
+produces review-only candidates and cannot confer authority.
+
+The same R-F clarification also makes the payload-bound repository root the
+only permitted Node child working directory. The launcher does not inherit the
+authority executor's ambient directory, the retained authority record exposes
+that bound working directory, and the child attestation rejects a working
+directory other than the approved repository root before controller import.
+
+The fixed bootstrap authenticates and locks the exact
+Program Files Git binary, reads the constant launcher path as raw bytes from
+the expected commit with `git cat-file`, recomputes the Git blob object id and
+SHA-256, strict-decodes it, and executes that blob as a scriptblock in the same
+PowerShell process. Caller-provided commit/tree identities prove consistency,
+not publisher approval; candidate approval remains a separate protected
+release-policy input.
+
+The launcher removes the exact Node and `ws` resolution-control variables
+before starting the authenticated Program Files Node and is required for every
+production prepare and the sole PASS-capable final invocation. Standalone run,
+aggregate, and validator invocations remain launcher-bound diagnostics;
+standalone aggregate is write-free and non-authoritative. The launcher verifies
+and holds read locks on the complete initial JavaScript import closure plus the
+bootstrap pin, then sends those captured bytes over a separate
+current-user/PID-bound pipe. A static `node -e` loader installs synchronous
+hooks over that in-memory map before the CLI bootstrap or prepare wrapper is
+imported. The child re-renders and verifies both encoded PowerShell arguments,
+the fixed outer command, compressed template, launcher blob identity, initial
+loader, exact argv, and full source anchor in the receipt. The existing
+in-process environment guards remain defense in depth; direct Node or direct
+`-File` invocation is not canonical evidence.
+
+Before any protocol generator, clean, or TypeScript child runs, the outer
+preparation wrapper captures the complete physical TypeScript package and the
+actual installed transitive package closure rooted at the protocol package's
+`json-schema-to-typescript` dependency. It rehashes that identity immediately
+before and after every generator/clean/compiler child and before entering the
+inner CLI. The wrapper rejects caller-provided `--git-executable`; the
+launcher and source anchor independently authenticate the fixed Program Files
+Git path and append that exact absolute path to the inner CLI exactly once. A changed bootstrap
+dependency, compiler implementation, resolution path, injected preloader, or
+Git substitution fails closed.
+
+This amendment closes the launch/bootstrap contract gap only. No canonical
+three-run or soak evidence was produced by this change, and it does not declare
+O1 v1.0 frozen, M1 passed, the freeze PR ready, or a tag authorized.
+
+### 2026-07-23 — R-F: authoritative runtime integrity is bounded by a run-scoped epoch
+
+The M1 closing run exposed that repeating the complete static source,
+provenance, toolchain, output, and installed-dependency byte walk at every
+component lifecycle boundary consumed most of each case runtime. The measured
+full suite could not satisfy the O1-T6 ten-minute non-soak gate, and the same
+multi-second check after each of 720 soak cycles could not preserve the
+canonical five-second cadence.
+
+Each authoritative conformance run and reconnect soak therefore owns one
+non-nestable runtime-integrity epoch. The runner performs the complete existing
+byte/provenance verification immediately before opening the epoch and again
+only after every supervised component has stopped. Every component launch,
+readiness, failed-start cleanup, shutdown, and soak-cycle boundary still checks
+that it is operating under the exact epoch plan bytes and physical repository
+root; a different plan/root or a concurrent/nested epoch fails closed. Closing
+verification failure changes the retained run/soak verdict to error/failed and
+can never produce the sole authoritative PASS.
+
+Any supervised case-execution exception is promoted to the run's
+infrastructure failure before representative component binding or run-level
+artifact retention. The error report retains the case's
+`supervised_case_error` and the thrown diagnostic includes the exact case id
+and original message; a secondary missing-lifecycle/component-log error may
+not mask it.
+
+The same fail-closed run isolated an intermittent C27 setup race: session
+registration became visible before the Bridge's initial outbound window was
+acknowledged, so opening-fault injection and disconnect could overlap that
+delivery. C27 now explicitly invokes its existing Bridge `flush_outbound`
+path through the already canonical `drive_bridge_outbound` parent decorator:
+the parent advances the virtual clock, observes heartbeat acknowledgement,
+flushes outbound work, and then waits for an empty durable outbox before fault
+injection. The raw-case runner shares that narrowly extracted decorator with
+the middle-case runner; it does not inherit the middle runner's dispatch or
+raw-frame behavior. This adds no new test-only action and does not alter the
+reconnect/backoff oracle.
+
+This is an amortization amendment, not a reduction of the declared application
+provenance anchor. Persistent input or dependency mutation remains detected by
+the closing full check. The already documented exclusion for an active
+same-user writer capable of mutating and restoring anchored bytes entirely
+inside a subprocess/run window remains unchanged and requires operator
+quiescence during canonical evidence production. No protocol wire rule,
+component contract, accepted threat boundary, or freeze/tag authorization is
+changed by this amendment.
+
+### 2026-07-23 — Operator checkpoint: M1 draft-only stop and assistant lane assignment
+
+Source: operator instruction from Barış Tankut, 2026-07-23. When the M1
+candidate is ready, its freeze PR is opened as **draft only**. It is not
+readied, merged, or tagged. The assistant presents the M1 gate report with the
+gate-demo evidence, final v0.9→v1.0 diff summary, and complete conformance
+suite result, then stops. No later milestone starts until the operator-channel
+closing review explicitly approves continuation.
+
+This is also a persistent execution-lane boundary for the current assistant.
+After that approval, the assistant may work only in WP2/M2 on
+`codex/wp2-*` branches. It must not edit `packages/bridge/**` or
+`src/revit-plugin/**`; a `packages/protocol/**` change requires the dated R-F
+amendment procedure before implementation. M3 is handed to a separate
+assistant. This assignment does **not** change the architecture or ownership
+map: WP3 remains the authoritative owner of M3 bridge/add-in/installer work.
+
+M2 planning that began before the checkpoint is retained in draft PR
+[#288](https://github.com/BTankut/revAgent/pull/288) and remains on hold.
+Its proposed M2 amendment reused `RES-26`, which is already the authoritative
+nested-batch amendment on `main`; that identifier/content collision is
+unresolved. It must not be repaired by silently replacing either decision.
+After M1 closing approval, WP2 must reconcile it through a newly numbered,
+dated R-F amendment before the draft can advance. M3 planning is frozen for
+handoff in draft PR [#289](https://github.com/BTankut/revAgent/pull/289);
+the current assistant will not continue, ready, or merge it.
+
+### 2026-07-23 — R-F: M1 executable candidate and evidence-record identities are separate
+
+An M1 freeze-identity audit found a circular requirement: the previous wording
+required the evidence-closing documentation, three real conformance runs,
+one-hour soak, protected squash merge, and annotated tag to resolve to one
+tree. Retained evidence cannot be written before it exists, writing it changes
+the tracked documentation tree, and a protected squash changes commit identity
+even when it preserves every candidate byte.
+
+For O1-T8, one clean executable source commit/tree now binds the fresh build,
+all three consecutive real runs, the full one-hour soak, and their exact
+component hashes. The tree already contains the intended final protocol
+constant, version/freeze metadata, schemas, generated files, dependency
+inputs, source, tests, fixtures, conformance harness, and build/runtime
+configuration. Candidate metadata is under test and does not alone declare M1
+passed.
+
+The executable PR still follows the protected ready/gates/squash path; there is
+no direct `main` push. The resulting protected candidate commit is acceptable
+only when its complete Git tree is byte-identical to the tested source tree.
+The source and protected commit SHAs may differ because of squash, but their
+tree SHAs may not. A dirty source, executable-input change, generated-file
+drift, changed component hash, or source/protected tree mismatch fails closed
+and requires a new candidate, fresh build, three new consecutive runs, and a
+new full one-hour soak.
+
+After the retained evidence independently validates, the annotated
+`rbp/v1.0.0` tag targets the exact protected candidate commit. A later
+evidence-record-only protected PR may record immutable hashes, links, states,
+and the tag in the ledger; that documentation commit is not the candidate or
+tag target and may not change executable inputs, normative protocol content,
+version metadata, or the tag target. This amendment supersedes the earlier
+single-tree/evidence-closing-commit interpretation without weakening M1
+evidence, freeze, protected-branch, or rerun requirements. The operational
+identity checks are in `docs/plan/M1_O1_FREEZE_EVIDENCE.md`.
+
 ### 2026-07-22 — R-F: Phase-1 external client path (RES-23)
 
 The operator selected the existing authorized ChatGPT/Codex Desktop client and made DP-6 inapplicable to
@@ -117,6 +357,69 @@ before assimilation. A post-dispatch violation preserves the known effect as ter
 malformed/contradictory committed carriers fail closed as indeterminate. This amendment closes a carrier
 contract hole; it does not weaken any batch, rollback, journal, or conformance assertion. The normative
 amendment is RES-26 in `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-25 — R-F: Windows CI rematerializes protected source bytes (RES-27)
+
+M1 gate evidence on the reused self-hosted Windows runner showed that
+`.gitattributes` alone does not rewrite tracked files whose blob ids did not
+change. Git reported the checkout as clean through LF normalization while the
+raw worktree bytes remained CRLF, so the fail-closed source-identity check
+correctly rejected the candidate.
+
+RES-27 requires both existing Windows jobs in `.github/workflows/ci.yml` to
+stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd`
+immediately after checkout. Unlike `checkout-index --force`, which still
+treated the normalized CRLF worktree as unchanged in the reproduced reuse
+case, the archive contains the exact protected blobs and overwrites every
+tracked path byte for byte. `git add --update` then refreshes tracked index stat
+data, and separate cached/worktree `git diff --quiet` checks fail unless the
+index and worktree still equal HEAD. The amendment is limited to deterministic
+checkout bytes: no job, release path, source-identity exception, or PASS
+condition is added or relaxed.
+
+### 2026-07-25 — R-F: M1 semantic freeze and tag closure are decoupled (RES-28)
+
+Source: operator closing instruction from Barış Tankut, 2026-07-25.
+
+- `M1 KAPANIŞ: ONAY`.
+- Add-in implementation owner: Barış Tankut.
+- Owner acceptance: the batchable-command restrictions and atomic rollback
+  evidence are accepted.
+- Draft PR [#290](https://github.com/BTankut/revAgent/pull/290) is authorized
+  to become ready and, after the protected required gates are green, squash
+  merge to `main`. The protected tree-equal merge freezes RBP/1 and closes M1.
+- `rbp/v1.0.0` is not authorized by that merge and MUST NOT be created now.
+  Tag creation requires a separately validated retained three-run aggregate,
+  a real one-hour reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE
+  proxy-interoperability evidence, and protected-tag identity.
+- Missing or incomplete tag evidence is non-blocking for M1 and may be produced
+  in parallel with M2/M3. It does not block M2/M3 start. A substantive
+  semantic or safety finding still follows R-F/versioning and leaves the gate
+  it affects red. M2/M3 kickoff remains subject to a separate authorized
+  operator instruction.
+
+This amendment supersedes the 2026-07-23 entries only where they classify the
+three-run aggregate, one-hour soak, proxy-interoperability evidence, or tag as
+prerequisites for M1 protected merge or M2/M3 build entry. Their fail-closed
+provenance, exact-byte identity, report-validation, protected-branch, and
+versioning controls remain in force. The normative resolution is RES-28 in
+`docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-25 — R-H: milestone evidence is bounded by the authoritative gate
+
+Source: operator instruction from Barış Tankut, 2026-07-25. For every
+milestone, required evidence is limited to the evidence explicitly named by
+the authoritative plan/gate definition. The implementing assistant may not
+promote extra runs, soak tests, demonstrations, repetitions, or other
+diagnostics beyond the governing gate into a blocking requirement or delay a
+milestone on that basis. Required current-head CI and other runs already named
+by the gate remain required. Any proposed
+additional gate evidence must first be submitted for explicit operator
+authorization through an R-G operator task card, including rationale, cost,
+and affected gate. Until approved, supplementary evidence remains
+non-blocking. This rule does not weaken evidence already named by a governing
+gate; it prevents assistant-created escalation. The permanent normative
+wording is R-H in `docs/implementation-plan/00-INDEX.md` §8.
 
 ### 2026-07-22 — R-G: mandatory operator task cards
 

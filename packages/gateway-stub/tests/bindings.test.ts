@@ -205,11 +205,11 @@ async function nextSseEnvelope(response: IncomingMessage): Promise<RbpEnvelope> 
   throw new Error("secure SSE stream ended before an RBP envelope");
 }
 
-async function websocketPeer(handle: GatewayStubHandle): Promise<Peer> {
+async function websocketPeer(handle: GatewayStubHandle, protocol = 1): Promise<Peer> {
   const socket = new WebSocket(handle.wsUrl, {
     headers: {
       authorization: `Bearer ${TOKEN}`,
-      "x-rbp-versions": "1",
+      "x-rbp-versions": protocol === 1 ? "1" : "2,1",
     },
   });
   await new Promise<void>((resolve, reject) => {
@@ -230,7 +230,10 @@ async function websocketPeer(handle: GatewayStubHandle): Promise<Peer> {
     if (available !== undefined) return available;
     return new Promise<RbpEnvelope>((resolve) => waiters.push(resolve));
   };
-  socket.send(JSON.stringify(hello()));
+  const opening = hello();
+  opening.payload.min_protocol = protocol;
+  opening.payload.max_protocol = protocol;
+  socket.send(JSON.stringify(opening));
   const helloAck = await next();
   return {
     helloAck,
@@ -251,16 +254,19 @@ async function websocketPeer(handle: GatewayStubHandle): Promise<Peer> {
   };
 }
 
-async function ssePeer(handle: GatewayStubHandle): Promise<Peer> {
+async function ssePeer(handle: GatewayStubHandle, protocol = 1): Promise<Peer> {
+  const opening = hello();
+  opening.payload.min_protocol = protocol;
+  opening.payload.max_protocol = protocol;
   const created = await fetch(handle.httpConnectionUrl, {
     method: "POST",
     headers: {
       accept: "application/json",
       authorization: `Bearer ${TOKEN}`,
       "content-type": "application/json",
-      "x-rbp-versions": "1",
+      "x-rbp-versions": protocol === 1 ? "1" : "2,1",
     },
-    body: JSON.stringify(hello()),
+    body: JSON.stringify(opening),
   });
   expect(created.status).toBe(201);
   const helloAck = await created.json() as RbpEnvelope;
@@ -360,10 +366,128 @@ for (const [binding, connect] of [
         await peer.close();
       }
     });
+
+    it("runs the negotiated RBP/2 compatibility data path while retaining canonical RBP/1 state", async () => {
+      const handle = await start(
+        `binding-v2-${binding.toLowerCase().replaceAll("/", "-")}`,
+        { supportedProtocols: [2, 1] },
+      );
+      const peer = await connect(handle, 2);
+      try {
+        expect(peer.helloAck).toMatchObject({
+          type: "hello_ack",
+          payload: { protocol: 2 },
+        });
+        expect("v" in peer.helloAck).toBe(false);
+
+        const register = {
+          ...controlEnvelope("session_register", sessionRegister(), 410),
+          v: 2,
+        } as unknown as RbpEnvelope;
+        await peer.send(register);
+        const registered = await peer.next() as Extract<RbpEnvelope, { type: "session_registered" }>;
+        expect(registered).toMatchObject({ v: 2, type: "session_registered" });
+        const rsid = registered.payload.rsid;
+        const invocationId = uuid7(binding === "WSS" ? 411 : 412);
+
+        const canonicalDispatch = await handle.core.dispatchInvoke({
+          rsid,
+          payload: readInvoke(invocationId),
+        });
+        expect(canonicalDispatch).toMatchObject({ v: 1, type: "invoke" });
+        expect(handle.core.snapshot().sessions[rsid]!.sequence.outbox[0]!.envelope)
+          .toMatchObject({ v: 1, type: "invoke" });
+        expect(await peer.next()).toMatchObject({
+          v: 2,
+          type: "invoke",
+          payload: { invocation_id: invocationId },
+        });
+
+        const result = {
+          ...resultEnvelope(rsid, invocationId),
+          v: 2,
+        } as unknown as RbpEnvelope;
+        await peer.send(result);
+        await waitFor(() => handle.core.snapshot().sessions[rsid]?.inFlight === null);
+        expect(handle.core.snapshot().sessions[rsid]!.terminalOutcomes[invocationId])
+          .toMatchObject({ classification: "result" });
+      } finally {
+        await peer.close();
+      }
+    });
   });
 }
 
 describe("opening and proxy fault controls", () => {
+  it("rejects bridge-claimed seat and user authority on authenticated WSS paths without retaining values", async () => {
+    const handle = await start("authorization-audit-server-path");
+    const spoofVectors = [
+      {
+        field: "seat_id",
+        secret: "server-path-attacker-seat",
+        payload: {
+          ...sessionRegister(),
+          seat_id: "server-path-attacker-seat",
+        },
+      },
+      {
+        field: "user_hint.user_id",
+        secret: "server-path-attacker-user",
+        payload: {
+          ...sessionRegister(),
+          user_hint: {
+            ...sessionRegister().user_hint,
+            user_id: "server-path-attacker-user",
+          },
+        },
+      },
+    ] as const;
+
+    for (const [index, vector] of spoofVectors.entries()) {
+      const socket = await openRawWebSocket(handle);
+      try {
+        socket.send(JSON.stringify(hello(340 + index * 2)));
+        await nextRawMessage(socket);
+        const fault = nextRawMessage(socket);
+        const closed = nextClose(socket);
+        socket.send(JSON.stringify(controlEnvelope(
+          "session_register",
+          vector.payload,
+          341 + index * 2,
+        )));
+        await expect(fault).resolves.toMatchObject({
+          type: "error",
+          payload: {
+            fault_class: "auth",
+            message: "session registration contains bridge-claimed principal or seat authority",
+          },
+        });
+        await expect(closed).resolves.toMatchObject({ code: 4403 });
+      } finally {
+        if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+      }
+    }
+
+    const snapshot = handle.core.snapshot().authorizationAudit;
+    expect(snapshot).toMatchObject({
+      evidenceVersion: 1,
+      capacity: 256,
+      totalEventCount: 4,
+      droppedEventCount: 0,
+      secretsRedacted: true,
+    });
+    expect(snapshot.entries.filter((entry) => entry.decision === "rejected")).toEqual(
+      spoofVectors.map((vector) => expect.objectContaining({
+        operation: "session_register",
+        reason: "claimed_identity",
+        claimedIdentityFields: [vector.field],
+      })),
+    );
+    const serialized = JSON.stringify(snapshot);
+    for (const vector of spoofVectors) expect(serialized).not.toContain(vector.secret);
+    expect(serialized).not.toContain(TOKEN);
+  });
+
   it("returns one shared close promise to every concurrent caller, including rejection", async () => {
     const successful = await start("shared-close-success");
     const first = successful.close();
@@ -1255,11 +1379,6 @@ describe("opening and proxy fault controls", () => {
       max_protocol: 1,
       manifest_url: "/bridge/update/manifest",
     });
-    await expect(startGatewayStub({
-      statePath: await statePath("fake-rbp2-adapter"),
-      tokenTable,
-      supportedProtocols: [2, 1],
-    })).rejects.toThrow(/only RBP\/1/u);
   });
 
   it("requires the exact JSON media type on fallback request bodies", async () => {

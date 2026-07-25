@@ -285,6 +285,13 @@ async function daemon(args: readonly string[]): Promise<void> {
     maxControlLineBytes: MAX_BRIDGE_CONTROL_LINE_BYTES,
     pid: process.pid,
     actions: BRIDGE_CONTROL_ACTIONS,
+    transportTrust: {
+      loopbackTestTlsPolicy: "loopback_test_tls",
+      caIdentity: "absolute_path_and_exact_byte_sha256",
+      serverIdentity: "leaf_der_sha256",
+      numericLoopbackOnly: true,
+      rejectUnauthorized: true,
+    },
     stateRoot: state.root,
     preserveState: state.preserveState,
     stateRootSource: state.source,

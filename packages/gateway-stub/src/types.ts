@@ -241,10 +241,34 @@ export interface SessionSnapshot extends Omit<PersistedSession, "resumeToken"> {
   resumeTokenRedacted: true;
 }
 
+export interface AuthorizationAuditEntry {
+  sequence: number;
+  atMs: number;
+  operation: "hello" | "session_register" | "session_resume" | "session_unregister" | "heartbeat" | "bridge_data";
+  decision: "allowed" | "rejected";
+  reason:
+    | "enrollment_bound"
+    | "claimed_identity"
+    | "machine_fingerprint_mismatch"
+    | "connection_or_session_authority"
+    | "credential_or_seat_status";
+  connectionIdDigest: `sha256:${string}`;
+  deviceIdDigest: `sha256:${string}`;
+  claimedIdentityFields: string[];
+}
+
 export interface GatewayStubSnapshot {
   schemaVersion: 1;
   sessions: Record<string, SessionSnapshot>;
   mutationHolds: MutationHoldLedger;
+  authorizationAudit: {
+    evidenceVersion: 1;
+    capacity: number;
+    totalEventCount: number;
+    droppedEventCount: number;
+    secretsRedacted: true;
+    entries: AuthorizationAuditEntry[];
+  };
   runtime: {
     openConnections: number;
     connectionPhases: Record<string, ConnectionPhase>;
@@ -322,6 +346,7 @@ export interface TestTransportConnection {
   readonly connectionId: string;
   readonly binding: BindingKind;
   readonly device: AuthenticatedDevice;
+  readonly offeredProtocols: readonly number[];
   selectedProtocol: number;
   active: boolean;
   sendSerialized(serialized: string): Promise<void>;

@@ -26,7 +26,11 @@ import {
   BridgeGatewayPeer as RuntimeBridgeGatewayPeer,
   type BridgeGatewayPeerOptions,
 } from "../src/peer.js";
-import { GatewayTransportError, type GatewayBinding } from "../src/transport.js";
+import {
+  GatewayTransportError,
+  HttpSseGatewayBinding,
+  type GatewayBinding,
+} from "../src/transport.js";
 import {
   mutationInvoke,
   atomicBatch,
@@ -245,6 +249,43 @@ function logicalRedelivery<T extends InvokeEnvelope | InvokeBatchEnvelope>(
 }
 
 describe("BridgeGatewayPeer executable lifecycle", () => {
+  it("consumes a queued crash only on the real inbound batch dispatch path", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "inbound-crash");
+    const batch = atomicBatch(rsid, 1);
+    let crashSelections = 0;
+    const peer = new BridgeGatewayPeer(
+      simulator,
+      binding,
+      helloAck("inbound-crash"),
+      {
+        idFactory: uuid,
+        takeInboundCrashPoint: () => {
+          crashSelections += 1;
+          return "after_executing_before_addin_write";
+        },
+      },
+    );
+
+    await expect(peer.handleInbound(batch)).rejects.toMatchObject({
+      point: "after_executing_before_addin_write",
+    });
+    expect(crashSelections).toBe(1);
+    expect(journal.getBatchCoordination(batch.payload.batch_id)).toMatchObject({
+      state: "dispatched",
+    });
+    expect(fixture.getExecutionCount(batch.payload.batch_id)).toBe(0);
+    expect(binding.sent).toEqual([]);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("requires resume_ack before a preattached durable session can heartbeat or dispatch on a fresh binding", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -1023,6 +1064,156 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     root.cleanup();
   });
 
+  it("never reconnects after terminal shutdown begins", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new ControllableBinding(
+      "wss",
+      "shutdown-terminal-0",
+      async (envelope) => {
+        if (envelope.type === "session_unregister") {
+          throw new GatewayTransportError("injected shutdown handoff loss", {
+            faultClass: "retryable_network",
+          });
+        }
+      },
+    );
+    let reconnectAttempts = 0;
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("shutdown-terminal-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => {
+        reconnectAttempts += 1;
+        const replacement = new RecordingBinding("wss", "shutdown-terminal-1");
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-terminal-1"),
+        };
+      },
+    });
+
+    await peer.shutdown();
+
+    expect(reconnectAttempts).toBe(0);
+    expect(binding.closeCount).toBeGreaterThanOrEqual(1);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("cancels an active reconnect delay when terminal shutdown begins", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "shutdown-sleep-0");
+    binding.messageError = new GatewayTransportError("injected stream loss", {
+      faultClass: "retryable_network",
+    });
+    let sleepStartedResolve!: () => void;
+    const sleepStarted = new Promise<void>((resolve) => {
+      sleepStartedResolve = resolve;
+    });
+    let reconnectAttempts = 0;
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("shutdown-sleep-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0.999,
+      sleep: async (_delayMs, signal) => {
+        sleepStartedResolve();
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) {
+            resolve();
+            return;
+          }
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+      },
+      reconnect: async () => {
+        reconnectAttempts += 1;
+        const replacement = new RecordingBinding("wss", "shutdown-sleep-1");
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-sleep-1"),
+        };
+      },
+    });
+
+    const run = peer.run();
+    await sleepStarted;
+    await peer.shutdown();
+    await run;
+
+    expect(reconnectAttempts).toBe(0);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("closes a replacement binding opened after terminal shutdown wins the race", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const initial = new RecordingBinding("wss", "shutdown-open-0");
+    initial.messageError = new GatewayTransportError("injected stream loss", {
+      faultClass: "retryable_network",
+    });
+    const replacement = new RecordingBinding("wss", "shutdown-open-1");
+    let reconnectStartedResolve!: () => void;
+    const reconnectStarted = new Promise<void>((resolve) => {
+      reconnectStartedResolve = resolve;
+    });
+    let releaseReconnect!: () => void;
+    const reconnectRelease = new Promise<void>((resolve) => {
+      releaseReconnect = resolve;
+    });
+    const peer = new BridgeGatewayPeer(simulator, initial, helloAck("shutdown-open-0"), {
+      idFactory: uuid,
+      reconnectJitter: () => 0,
+      sleep: async () => undefined,
+      reconnect: async () => {
+        reconnectStartedResolve();
+        await reconnectRelease;
+        return {
+          binding: replacement,
+          helloAck: helloAck("shutdown-open-1"),
+        };
+      },
+    });
+
+    const run = peer.run();
+    await reconnectStarted;
+    await peer.shutdown();
+    releaseReconnect();
+    await run;
+
+    expect(replacement.closeCount).toBe(1);
+    expect(peer.snapshot().closed).toBe(true);
+    expect(journal.getPendingSessionUnregister(rsid)).toMatchObject({
+      rsid,
+      reason: "bridge_shutdown",
+    });
+
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
   it("replays an orphaned unregister tombstone after journal reopen without resuming", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
@@ -1625,6 +1816,16 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     expect(binding.sent).toEqual([]);
     await peer.sendHeartbeat();
     expect(binding.sent.map((entry) => entry.type)).toEqual(["heartbeat"]);
+    expect(peer.snapshot().backpressure).toMatchObject({
+      source: "transport.bufferedAmount",
+      highWaterBytes: BRIDGE_OUTBOUND_HIGH_WATER_BYTES,
+      currentBufferedAmount: BRIDGE_OUTBOUND_HIGH_WATER_BYTES + 1,
+      active: true,
+      controlFramesSentWhileBackpressured: 1,
+    });
+    expect(peer.snapshot().backpressure.blockedPumpCount).toBeGreaterThan(0);
+    expect(peer.snapshot().backpressure.maxObservedBufferedAmount)
+      .toBe(BRIDGE_OUTBOUND_HIGH_WATER_BYTES + 1);
     binding.bufferedAmount = 0;
     await peer.flushOutbound(rsid);
     await peer.flushOutbound(rsid);
@@ -1638,8 +1839,315 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
       seq: 3,
       payload: { chunked: true, stream_id: "result", total_chunks: 2 },
     });
+    expect(peer.snapshot().deliveryProgress.records).toContainEqual(expect.objectContaining({
+      rsid,
+      invocationId: expect.any(String),
+      chunkFramesSent: 2,
+      resultChunkFramesSent: 2,
+      artifactChunkFramesSent: 0,
+      terminalFramesSent: 1,
+    }));
     await peer.handleInbound(heartbeatAck([{ rsid, seq: 3 }]));
     expect(journal.loadSequence(rsid).outbox).toEqual([]);
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("samples real HTTP/SSE unaccepted bytes and blocks the peer data pump above high water", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    let fetchCall = 0;
+    const messageResolvers: Array<(response: Response) => void> = [];
+    const fetchMock: typeof fetch = async () => {
+      fetchCall += 1;
+      if (fetchCall === 1) {
+        return new Response(JSON.stringify(helloAck("actual-http-backpressure")), {
+          status: 201,
+          headers: { "RBP-Connection-Id": "actual-http-backpressure" },
+        });
+      }
+      if (fetchCall === 2) {
+        return new Response(new ReadableStream<Uint8Array>(), {
+          status: 200,
+          headers: { "Content-Type": "text/event-stream" },
+        });
+      }
+      return await new Promise<Response>((resolve) => messageResolvers.push(resolve));
+    };
+    const binding = new HttpSseGatewayBinding({
+      baseUrl: "http://127.0.0.1:32767/bridge/v1/http/connections",
+      deviceToken: "device-token",
+      endpointPolicy: "loopback_test_readiness",
+      fetchTimeoutMs: 30_000,
+      fetch: fetchMock,
+    });
+    const ack = await binding.open({
+      type: "hello",
+      id: uuid(),
+      ts: "2026-07-22T00:00:00.000Z",
+      payload: {
+        min_protocol: 1,
+        max_protocol: 1,
+        capabilities: [
+          "journal_v1",
+          "chunked_results",
+          "artifact_result_v1",
+          "transport_streamable_http",
+        ],
+        bridge_version: "bridge-test",
+        device_id: "device-01",
+        machine: { hostname: "WS01", os: "Windows 11" },
+        addin_versions: ["fixture"],
+      },
+    });
+    const largeBase64 = "A".repeat(1_000_000);
+    const fillerSends = Array.from({ length: 9 }, (_unused, index) =>
+      binding.send({
+        v: 1,
+        type: "partial",
+        id: uuid(),
+        rsid: uuid(),
+        seq: index + 1,
+        ts: "2026-07-22T00:00:01.000Z",
+        payload: {
+          kind: "chunk",
+          invocation_id: uuid(),
+          stream_id: "result",
+          chunk_index: 0,
+          encoding: "base64",
+          content_type: "application/octet-stream",
+          data: largeBase64,
+        },
+      })
+    );
+    await vi.waitFor(() => {
+      expect(messageResolvers).toHaveLength(9);
+      expect(binding.bufferedAmount).toBeGreaterThan(BRIDGE_OUTBOUND_HIGH_WATER_BYTES);
+    });
+
+    const peer = new BridgeGatewayPeer(simulator, binding, ack, { idFactory: uuid });
+    await peer.handleInbound(readInvoke({ rsid, seq: 1, method: "fixture_counter" }));
+    expect(peer.snapshot().queuedDataCount).toBeGreaterThan(0);
+    expect(peer.snapshot().backpressure).toMatchObject({
+      evidenceVersion: 1,
+      source: "transport.bufferedAmount",
+      active: true,
+      currentBufferedAmount: binding.bufferedAmount,
+    });
+    expect(peer.snapshot().backpressure.blockedPumpCount).toBeGreaterThan(0);
+
+    for (const resolve of messageResolvers) resolve(new Response(null, { status: 202 }));
+    await Promise.all(fillerSends);
+    expect(binding.bufferedAmount).toBe(0);
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("emits correlated artifact progress and exposes only sanitized retained-carrier evidence", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const invocation = readInvoke({
+      rsid,
+      seq: 1,
+      method: "fixture_multi_file_output",
+    });
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "artifact-progress");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("artifact-progress"), {
+      idFactory: uuid,
+    });
+
+    await peer.handleInbound(invocation);
+    for (let index = 0; index < 4; index += 1) {
+      const sent = binding.sent.at(-1);
+      if (sent === undefined || !("seq" in sent) || typeof sent.seq !== "number") {
+        throw new Error("expected artifact data frame");
+      }
+      await peer.handleInbound(heartbeatAck([{ rsid, seq: sent.seq }]));
+    }
+
+    expect(binding.sent.map((entry) =>
+      entry.type === "partial" ? `${entry.type}:${entry.payload.kind}` : entry.type
+    )).toEqual([
+      "partial:chunk",
+      "partial:progress",
+      "partial:chunk",
+      "partial:progress",
+      "result",
+    ]);
+    for (const progress of binding.sent.filter(
+      (entry): entry is Extract<RbpEnvelope, { type: "partial" }> =>
+        entry.type === "partial" && entry.payload.kind === "progress",
+    )) {
+      expect(progress).toMatchObject({
+        rsid,
+        payload: {
+          invocation_id: invocation.payload.invocation_id,
+          progress: {
+            note: "bridge_chunk_delivery",
+            total_chunks: 2,
+          },
+        },
+      });
+    }
+    const peerEvidence = peer.snapshot().deliveryProgress;
+    expect(peerEvidence).toMatchObject({
+      evidenceVersion: 1,
+      capacity: 128,
+      totalRecordCount: 1,
+      droppedRecordCount: 0,
+    });
+    expect(peerEvidence.records).toEqual([expect.objectContaining({
+      rsid,
+      invocationId: invocation.payload.invocation_id,
+      chunkFramesSent: 2,
+      artifactChunkFramesSent: 2,
+      resultChunkFramesSent: 0,
+      progressFramesSent: 2,
+      terminalFramesSent: 1,
+    })]);
+    const spoolEvidence = simulator.artifactSpoolEvidence();
+    expect(spoolEvidence).toMatchObject({
+      rootPathRedacted: true,
+      rawPathExposed: false,
+      carrierCount: 1,
+      retainedFileCount: 2,
+      totalChunks: 2,
+      carriers: [{
+        rsid,
+        invocationId: invocation.payload.invocation_id,
+        kind: "artifacts",
+        streamCount: 2,
+      }],
+    });
+    expect(JSON.stringify(spoolEvidence)).not.toContain(root.path);
+    expect(JSON.stringify(spoolEvidence)).not.toContain("retainedDirectory");
+    expect(JSON.stringify(spoolEvidence)).not.toContain("retainedFiles");
+
+    const terminal = binding.sent.at(-1);
+    if (terminal === undefined || !("seq" in terminal) || typeof terminal.seq !== "number") {
+      throw new Error("expected terminal artifact result");
+    }
+    await peer.handleInbound(heartbeatAck([{ rsid, seq: terminal.seq }]));
+    expect(simulator.artifactSpoolEvidence().carrierCount).toBe(0);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("keeps distinct raw, local, and traversal source paths out of transport and spool evidence", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "artifact-path-redaction");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("artifact-path-redaction"), {
+      idFactory: uuid,
+    });
+    const vectors = [
+      {
+        scenario: "raw_path",
+        secretPath: "C:\\revagent-fixture-private\\raw-artifact.bin",
+        params: { scenario: "raw_path" },
+      },
+      {
+        scenario: "local_path",
+        secretPath: "C:\\private-workstation\\local-artifact-secret.bin",
+        params: {
+          scenario: "local_path",
+          path: "C:\\private-workstation\\local-artifact-secret.bin",
+        },
+      },
+      {
+        scenario: "traversal_path",
+        secretPath: "..\\private-traversal-secret.bin",
+        params: {
+          scenario: "traversal_path",
+          path: "..\\private-traversal-secret.bin",
+        },
+      },
+    ] as const;
+
+    for (const [index, vector] of vectors.entries()) {
+      const before = binding.sent.length;
+      await peer.handleInbound(readInvoke({
+        rsid,
+        seq: index + 1,
+        method: "fixture_multi_file_output",
+        params: vector.params,
+      }));
+      expect(binding.sent).toHaveLength(before + 1);
+      const terminal = binding.sent.at(-1);
+      expect(terminal).toMatchObject({
+        type: "error",
+        payload: {
+          fault_class: "parameter",
+          message: "declared artifact source could not be captured",
+        },
+      });
+      if (terminal === undefined || !("seq" in terminal) || typeof terminal.seq !== "number") {
+        throw new Error(`expected ${vector.scenario} terminal error`);
+      }
+      expect(JSON.stringify(terminal)).not.toContain(vector.secretPath);
+      await peer.handleInbound(heartbeatAck([{ rsid, seq: terminal.seq }]));
+    }
+
+    const serializedWire = JSON.stringify(binding.sent);
+    for (const vector of vectors) expect(serializedWire).not.toContain(vector.secretPath);
+    const spoolEvidence = simulator.artifactSpoolEvidence();
+    expect(spoolEvidence).toMatchObject({
+      evidenceVersion: 1,
+      carrierCount: 0,
+      retainedFileCount: 0,
+      rawPathExposed: false,
+    });
+    const serializedEvidence = JSON.stringify(spoolEvidence);
+    expect(serializedEvidence).not.toContain(root.path);
+    for (const vector of vectors) expect(serializedEvidence).not.toContain(vector.secretPath);
+
+    await peer.close();
+    journal.close();
+    await fixture.stop();
+    root.cleanup();
+  });
+
+  it("bounds per-invocation delivery progress evidence with explicit drop accounting", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    const rsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({ fixture, root: root.path, rsid });
+    const binding = new RecordingBinding("wss", "bounded-delivery-progress");
+    const peer = new BridgeGatewayPeer(simulator, binding, helloAck("bounded-delivery-progress"), {
+      idFactory: uuid,
+    });
+
+    for (let seq = 1; seq <= 129; seq += 1) {
+      const invocation = readInvoke({ rsid, seq, method: "fixture_counter" });
+      await peer.handleInbound(invocation);
+      const terminal = binding.sent.at(-1);
+      if (terminal === undefined || !("seq" in terminal) || typeof terminal.seq !== "number") {
+        throw new Error("expected terminal result");
+      }
+      await peer.handleInbound(heartbeatAck([{ rsid, seq: terminal.seq }]));
+    }
+    const evidence = peer.snapshot().deliveryProgress;
+    expect(evidence).toMatchObject({
+      evidenceVersion: 1,
+      capacity: 128,
+      totalRecordCount: 129,
+      droppedRecordCount: 1,
+    });
+    expect(evidence.records).toHaveLength(128);
+
     await peer.close();
     journal.close();
     await fixture.stop();

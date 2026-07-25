@@ -118,6 +118,36 @@ describe("BridgeSimulator with the real add-in loopback fixture", () => {
     root.cleanup();
   });
 
+  it("classifies an invoke for a real but locally unregistered rsid as authorization and never contacts the add-in", async () => {
+    const root = temporaryRoot();
+    const fixture = new AddinLoopbackFixture();
+    fixtures.push(fixture);
+    await fixture.start();
+    const registeredRsid = uuid();
+    const foreignRsid = uuid();
+    const { simulator, journal } = await simulatorForFixture({
+      fixture,
+      root: root.path,
+      rsid: registeredRsid,
+    });
+    const envelope = readInvoke({ rsid: foreignRsid, seq: 1 });
+
+    await expect(simulator.invoke(envelope)).resolves.toMatchObject({
+      kind: "error",
+      faultClass: "auth",
+      message: "invoke targets an unregistered rsid",
+      outcome: "known",
+      replayed: false,
+      addinContacted: false,
+    });
+    expect(journal.listInvocations()).toEqual([]);
+    expect(fixture.getExecutionCount(envelope.payload.invocation_id)).toBe(0);
+
+    simulator.close();
+    journal.close();
+    root.cleanup();
+  });
+
   it("rejects an explicit mismatched params_digest before journaling or add-in dispatch while consuming seq", async () => {
     const root = temporaryRoot();
     const fixture = new AddinLoopbackFixture();
