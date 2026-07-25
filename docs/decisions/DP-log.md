@@ -371,9 +371,11 @@ stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd`
 immediately after checkout. Unlike `checkout-index --force`, which still
 treated the normalized CRLF worktree as unchanged in the reproduced reuse
 case, the archive contains the exact protected blobs and overwrites every
-tracked path byte for byte. The amendment is limited to deterministic checkout
-bytes: no job, release path, source-identity exception, or PASS condition is
-added or relaxed.
+tracked path byte for byte. `git add --update` then refreshes tracked index stat
+data, and separate cached/worktree `git diff --quiet` checks fail unless the
+index and worktree still equal HEAD. The amendment is limited to deterministic
+checkout bytes: no job, release path, source-identity exception, or PASS
+condition is added or relaxed.
 
 ### 2026-07-22 — R-G: mandatory operator task cards
 

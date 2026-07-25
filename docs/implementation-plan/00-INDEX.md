@@ -147,8 +147,9 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   A reused self-hosted Windows worktree can therefore remain physically CRLF even after a new
   `eol=lf` rule makes Git's normalized status clean. Both existing Windows jobs in `.github/workflows/ci.yml`
   stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd` immediately after checkout,
-  so all tracked paths are overwritten with the exact protected blob bytes before any test executes.
-  This is a bounded M1
+  refresh tracked index stat data with `git add --update`, and fail unless both the staged index and
+  worktree remain equal to HEAD. This overwrites all tracked paths with the exact protected blob bytes
+  before any test executes. This is a bounded M1
   source-integrity correction to RES-24; it does not add a job, alter a release workflow, or weaken the
   exact-byte gate.
 
