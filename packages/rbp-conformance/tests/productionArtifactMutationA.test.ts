@@ -1,5 +1,6 @@
 import { appendFileSync } from "node:fs";
 import path from "node:path";
+import { setImmediate as yieldToWorkerControlPlane } from "node:timers/promises";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -39,7 +40,8 @@ describe("production artifact mutation shard A", { timeout: 45_000 }, () => {
       relative: "packages/protocol/node_modules/ajv/dist/runtime.js",
       expected: /runtime dependency closure|runtime dependencies/u,
     },
-  ])("invalidates a plan when $label bytes change", ({ relative, expected }) => {
+  ])("invalidates a plan when $label bytes change", async ({ relative, expected }) => {
+    await yieldToWorkerControlPlane();
     const value = productionProvenanceFixture();
     createFixtureSidecars(value);
     const plan = buildFixturePlan(value);
