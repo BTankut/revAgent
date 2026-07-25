@@ -29,7 +29,7 @@ transport, journal, add-in, installer, or pilot gates have passed.
 | RES-26 / O1 Appendix A.2/A.4 | Nested batch delivery is descriptor-gated `inline_only`; per-step and aggregate limits are enforced before atomic commit, and no nested chunk/artifact carrier is invented. | P-ADDIN-3, P3-T5/P3-T6 |
 | RES-6 / P-SEQ-2 | Cutover preserves the protected bootstrap/prestage/trusted-key rollback anchors byte-identically through Retire. | P-INST-3, P3-T10, installer/uninstaller matrix |
 | RES-9 / P-CD-3 | Bridge CD uses a dedicated workflow and does not modify the frozen NAS signed-release workflow. | P3-T12 |
-| 2026-07-25 operator handoff | `installer/lib/RevAgent.DistributionIntegrity.psm1` is a read-only compatibility oracle. WP3 ports its XML-key/RS256 contract into `RevAgent.Contracts` and uses a dedicated Bridge signer; the frozen installer module is not edited. | P-UPD-1, P3-T1/P3-T12 |
+| 2026-07-25 operator handoff | `installer/lib/RevAgent.DistributionIntegrity.psm1` is a read-only compatibility oracle. WP3 ports its XML-key/RS256 contract, including the nine-field signature projection that omits `signature`, into `RevAgent.Contracts` and uses a dedicated Bridge signer; the frozen installer module is not edited. | P-UPD-1, P3-T1/P3-T12 |
 | R-B / M1 gate | Planning and local/draft preparation may proceed, but no M3 implementation PR merges before O1 v1.0/M1 freeze. | Work-breakdown preface, total/dependency note, risk R7 |
 | R-D / P8-T8 freeze gate | Add-in adaptation is later, bounded, checkbox-attested, labeled, review-gated, and recorded before any frozen path changes. | Migration-freeze subsection and P3-T6 |
 
