@@ -405,6 +405,34 @@ provenance, exact-byte identity, report-validation, protected-branch, and
 versioning controls remain in force. The normative resolution is RES-28 in
 `docs/implementation-plan/00-INDEX.md`.
 
+### 2026-07-25 — R-F: M2 external-client discovery and dispatch alignment (RES-29)
+
+Source: authorized WP2/M2 kickoff from Barış Tankut, 2026-07-25.
+
+RES-23 removes the Phase-1 Gateway-owned agentic loop and Gateway LLM/provider
+credential path, but it does not remove the M2 discovery contract. M2 therefore
+keeps the north MCP Streamable HTTP + OAuth seam, Tool Registry, byte-stable
+capability index, deferred schemas through `tool_search`/`tool_schema`, a small
+pinned callable set, registry-governed executor dispatch to bridge/internal
+executors, and docs-MCP internalization. The existing ChatGPT/Codex Desktop
+client owns conversation state, model calls, planning, and the loop. Mode B is
+limited to non-executable interface stubs; O2 remains deferred.
+
+Implementation review also showed that deleting the M0 legacy bundle without a
+replacement would leave no production loading path for the 35 runtime and five
+docs handlers. M2 packages immutable, content-hashed handler modules from exact
+frozen sources without moving or editing them, and consumes the frozen RBP/1
+contract without changing `packages/protocol/**`. The dedicated Gateway CI
+lane is the M2 code gate; the bounded RES-24 `ci.yml` exception is not
+extended. M4 remains a separate external-client vertical slice and is not
+entered without operator-channel M2 closure approval.
+
+This amendment corrects the parked PR #288 wording that had deferred all Mode A
+behavior and omitted the required Phase-1 Mode B stubs. It does not reintroduce
+the in-house loop, Gateway provider/context code, or a Gateway LLM key, and it
+does not reopen D1-D12. The normative amendment is RES-29 in
+`docs/implementation-plan/00-INDEX.md`.
+
 ### 2026-07-25 — R-H: milestone evidence is bounded by the authoritative gate
 
 Source: operator instruction from Barış Tankut, 2026-07-25. For every
@@ -420,7 +448,6 @@ and affected gate. Until approved, supplementary evidence remains
 non-blocking. This rule does not weaken evidence already named by a governing
 gate; it prevents assistant-created escalation. The permanent normative
 wording is R-H in `docs/implementation-plan/00-INDEX.md` §8.
-
 ### 2026-07-22 — R-G: mandatory operator task cards
 
 Source: operator instruction from Barış Tankut, 2026-07-22. Every implementation report that leaves an
