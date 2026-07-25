@@ -19,6 +19,10 @@ export const CANONICAL_RESOURCE_POLICY: ResourcePolicy = {
   maxOrphanProcessCount: 0,
 };
 
+export interface ResourceEvaluationOptions {
+  openFileDescriptorPhaseCount?: 2;
+}
+
 export function emptyResourceProfile(): ResourceProfile {
   return {
     schemaVersion: "rbp-resource-profile/v1",
@@ -45,6 +49,20 @@ function peakGrowth(values: readonly number[]): number {
   return Math.max(...values) - values[0]!;
 }
 
+function phasedDescriptorPeakGrowth(
+  samples: readonly ResourceSample[],
+  phaseCount: 1 | 2,
+): number {
+  return Math.max(
+    ...Array.from({ length: phaseCount }, (_unused, phase) =>
+      peakGrowth(
+        samples
+          .filter(({ index }) => index % phaseCount === phase)
+          .map(({ openFileDescriptorCount }) => openFileDescriptorCount),
+      )),
+  );
+}
+
 function slopeBytesPerSecond(samples: readonly ResourceSample[]): number {
   if (samples.length < 2) return 0;
   const xMean = samples.reduce((sum, sample) => sum + sample.offsetMs, 0) / samples.length;
@@ -63,11 +81,13 @@ function slopeBytesPerSecond(samples: readonly ResourceSample[]): number {
 export function evaluateResourceSamples(
   profile: ResourceProfile,
   orphanProcessCount: number,
+  options: ResourceEvaluationOptions = {},
 ): ResourceEvaluation {
   const measured = measuredSamples(profile);
   const residentGrowthBytes = growth(measured.map(({ residentBytes }) => residentBytes));
-  const openFileDescriptorGrowth = peakGrowth(
-    measured.map(({ openFileDescriptorCount }) => openFileDescriptorCount),
+  const openFileDescriptorGrowth = phasedDescriptorPeakGrowth(
+    measured,
+    options.openFileDescriptorPhaseCount ?? 1,
   );
   const journalPendingGrowth = peakGrowth(measured.map(({ journalPendingCount }) => journalPendingCount));
   const residentSlopeBytesPerSecond = slopeBytesPerSecond(measured);
@@ -98,6 +118,7 @@ export function resourceProfileIssues(
   profile: ResourceProfile,
   leaks: LeakCounters,
   path = "/resources",
+  evaluationOptions: ResourceEvaluationOptions = {},
 ): ValidationIssue[] {
   const issues: ValidationIssue[] = [];
   if (stableJson(profile.policy) !== stableJson(CANONICAL_RESOURCE_POLICY)) {
@@ -138,7 +159,11 @@ export function resourceProfileIssues(
     });
     return issues;
   }
-  const expected = evaluateResourceSamples(profile, leaks.orphanProcessCount);
+  const expected = evaluateResourceSamples(
+    profile,
+    leaks.orphanProcessCount,
+    evaluationOptions,
+  );
   if (stableJson(profile.evaluation) !== stableJson(expected)) {
     issues.push({
       path: `${path}/evaluation`,

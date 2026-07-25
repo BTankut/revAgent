@@ -30,6 +30,36 @@ describe("measured resource policy", () => {
     };
     expect(leaks.residentBytesDelta).toBeGreaterThan(0);
     expect(resourceProfileIssues(value, leaks)).toEqual([]);
+
+    value.samples = value.samples.map((sample) => ({
+      ...sample,
+      openFileDescriptorCount: sample.index % 2 === 0 ? 1_425 : 1_427,
+    }));
+    const singleSeries = evaluateResourceSamples(value, 0);
+    expect(singleSeries).toMatchObject({
+      openFileDescriptorGrowth: 2,
+      passed: false,
+    });
+    const phaseStable = evaluateResourceSamples(
+      value,
+      0,
+      { openFileDescriptorPhaseCount: 2 },
+    );
+    expect(phaseStable).toMatchObject({
+      openFileDescriptorGrowth: 0,
+      passed: true,
+    });
+
+    value.samples[4]!.openFileDescriptorCount += 1;
+    const samePhaseLeak = evaluateResourceSamples(
+      value,
+      0,
+      { openFileDescriptorPhaseCount: 2 },
+    );
+    expect(samePhaseLeak).toMatchObject({
+      openFileDescriptorGrowth: 1,
+      passed: false,
+    });
   });
 
   it("rejects sustained RSS slope above the canonical bound", () => {

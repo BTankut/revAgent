@@ -10,6 +10,7 @@ export { aggregateReportToJUnitXml, createJUnitMapping, renderJUnitXml, runRepor
 export { createThreeRunAggregate, renderAggregateSummary } from "./aggregate.js";
 export { classifyRunStatus } from "./runClassification.js";
 export { CANONICAL_RESOURCE_POLICY, emptyResourceProfile, evaluateResourceSamples, resourceProfileIssues } from "./resourceMetrics.js";
+export type { ResourceEvaluationOptions } from "./resourceMetrics.js";
 export { assertPassingSoakReport, evaluatePassingSoak, validateSoakReport } from "./soak.js";
 export { runReconnectSoak } from "./soakRunner.js";
 export type { ReconnectSoakRunInput, SoakCycleObservation } from "./soakRunner.js";

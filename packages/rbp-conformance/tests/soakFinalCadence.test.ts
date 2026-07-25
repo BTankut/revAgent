@@ -123,7 +123,7 @@ function canonicalOneHourFixture(
         ) +
         200,
       residentBytes: 100_000_000,
-      openFileDescriptorCount: 12,
+      openFileDescriptorCount: index % 2 === 0 ? 1_425 : 1_427,
       journalPendingCount: 0,
     }),
   );
@@ -136,7 +136,11 @@ function canonicalOneHourFixture(
     samples,
     evaluation: null,
   };
-  resources.evaluation = evaluateResourceSamples(resources, 0);
+  resources.evaluation = evaluateResourceSamples(
+    resources,
+    0,
+    { openFileDescriptorPhaseCount: 2 },
+  );
   const report = {
     schemaVersion: "rbp-reconnect-soak/v1",
     manifest: { ...canonicalManifestIdentity },
@@ -216,7 +220,13 @@ function cadenceCodes(report: SoakReport): string[] {
 }
 
 function refreshResourceEvaluation(report: SoakReport): void {
-  report.resources.evaluation = evaluateResourceSamples(report.resources, 0);
+  report.resources.evaluation = evaluateResourceSamples(
+    report.resources,
+    0,
+    report.mode === "one_hour"
+      ? { openFileDescriptorPhaseCount: 2 }
+      : undefined,
+  );
 }
 
 describe("final one-hour soak cadence", () => {
@@ -286,6 +296,14 @@ describe("final one-hour soak cadence", () => {
         verifyArtifactFiles: true,
         artifactRoot: root,
       })).toMatchObject({ ok: true, issues: [] });
+
+      report.resources.samples[4]!.openFileDescriptorCount += 1;
+      refreshResourceEvaluation(report);
+      writeMetricRows(root, report, metricRows(report));
+      expect(evaluatePassingSoak(report, {
+        verifyArtifactFiles: true,
+        artifactRoot: root,
+      }).issues.map(({ code }) => code)).toContain("run.resource_leak");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

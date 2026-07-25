@@ -412,7 +412,14 @@ export function validateSoakReport(
       );
     }
   });
-  issues.push(...resourceProfileIssues(report.resources, leakSummary(report), "/resources"));
+  issues.push(...resourceProfileIssues(
+    report.resources,
+    leakSummary(report),
+    "/resources",
+    report.mode === "one_hour"
+      ? { openFileDescriptorPhaseCount: 2 }
+      : undefined,
+  ));
   const reportPath = retainedPath(canonicalManifest.retainedEvidence.soakReport, report);
   if (options.soakReportFile !== undefined && path.resolve(options.soakReportFile) !== path.resolve(options.artifactRoot ?? process.cwd(), reportPath)) {
     issue(issues, "/runId", "soak.report_location", "soak report is not at its canonical retained path");

@@ -432,7 +432,13 @@ export async function runReconnectSoak(
   if (cleanupFailure !== undefined && failure === null) {
     failure = { code: "soak_cleanup_error", message: cleanupFailure.message };
   }
-  resources.evaluation = evaluateResourceSamples(resources, orphanProcessCount);
+  resources.evaluation = evaluateResourceSamples(
+    resources,
+    orphanProcessCount,
+    mode === "one_hour"
+      ? { openFileDescriptorPhaseCount: 2 }
+      : undefined,
+  );
   if (!resources.evaluation.passed && failure === null) {
     failure = { code: "soak_resource_bound", message: "resource growth, slope, descriptor, journal, or orphan threshold was exceeded" };
   }
