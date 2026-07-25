@@ -49,6 +49,33 @@ function binding(input: {
 }
 
 describe("DurableBridgeJournal", () => {
+  it("counts only non-terminal invocation states for bounded soak observation", () => {
+    const journal = new DurableBridgeJournal(":memory:");
+    const rsid = uuid();
+    const pending = binding({ rsid, mutating: false });
+    const cancelled = binding({ rsid, mutating: false });
+
+    expect(journal.pendingInvocationCount()).toBe(0);
+    journal.acceptInvocation(pending, "pending");
+    journal.acceptInvocation(cancelled, "cancelled");
+    expect(journal.pendingInvocationCount()).toBe(2);
+
+    journal.recordTerminal(rsid, cancelled.invocationId, {
+      status: "cancelled",
+      payloadRetained: true,
+      payload: { cancelled: true },
+    });
+    expect(journal.pendingInvocationCount()).toBe(1);
+
+    journal.recordTerminal(rsid, pending.invocationId, {
+      status: "completed",
+      payloadRetained: true,
+      payload: { completed: true },
+    });
+    expect(journal.pendingInvocationCount()).toBe(0);
+    journal.close();
+  });
+
   it("atomically persists inbound sequence, work, and invocation acceptance across reopen", () => {
     const root = temporaryRoot();
     const path = join(root.path, "journal.db");

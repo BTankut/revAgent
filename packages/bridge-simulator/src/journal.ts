@@ -306,6 +306,16 @@ export class DurableBridgeJournal {
     });
   }
 
+  public pendingInvocationCount(): number {
+    this.#assertOpen();
+    const row = this.#db.prepare(
+      `SELECT COUNT(*) AS count
+       FROM invocation_journal
+       WHERE state IN ('received','executing','indeterminate')`,
+    ).get() as { readonly count: number };
+    return row.count;
+  }
+
   public listHolds(): readonly MutationHold[] {
     return this.#loadLedger().holds;
   }

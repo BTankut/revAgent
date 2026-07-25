@@ -1006,10 +1006,7 @@ export class BridgeDaemonRuntime {
     const peerSnapshot = this.#peer?.snapshot(this.#clockMs) ?? null;
     return {
       schemaVersion: "bridge-simulator-soak-status/v1",
-      journalPendingCount: this.#journal.listInvocations().filter((record) =>
-        record.state !== "completed" &&
-        record.state !== "failed" &&
-        record.state !== "guarded").length,
+      journalPendingCount: this.#journal.pendingInvocationCount(),
       peer: peerSnapshot === null
         ? null
         : {

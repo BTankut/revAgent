@@ -114,6 +114,14 @@ descriptor content-type text is capped at 128 characters with its full digest
 and truncation flag retained. Shutdown closes transports, loopback clients, the
 run loop, and SQLite, then reports the corresponding zero-leak counters.
 
+`snapshot_soak_status` is the bounded, read-only liveness surface used by the
+long-running soak observer. Its result uses
+`schemaVersion: "bridge-simulator-soak-status/v1"`, reports
+`journalPendingCount` for the non-terminal `received`, `executing`, and
+`indeterminate` journal states, and returns the compact `peer` snapshot (or
+`null`). It performs a direct journal count and does not create or retain an
+evidence-snapshot lease.
+
 The reconnect conformance controls are an explicit test-only clock/RNG seam.
 `configure_reconnect_conformance` is accepted exactly once and only before
 `open_transport`; its mode must be `deterministic_virtual_clock` and every
