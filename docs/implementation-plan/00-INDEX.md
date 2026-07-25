@@ -146,8 +146,9 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   The M1 source-identity gate raw-hashes every tracked file and intentionally ignores Git clean filters.
   A reused self-hosted Windows worktree can therefore remain physically CRLF even after a new
   `eol=lf` rule makes Git's normalized status clean. Both existing Windows jobs in `.github/workflows/ci.yml`
-  run `git -c core.autocrlf=false checkout-index --force --all` immediately after checkout so all tracked
-  paths are rewritten from the checked-out index before any test executes. This is a bounded M1
+  stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd` immediately after checkout,
+  so all tracked paths are overwritten with the exact protected blob bytes before any test executes.
+  This is a bounded M1
   source-integrity correction to RES-24; it does not add a job, alter a release workflow, or weaken the
   exact-byte gate.
 

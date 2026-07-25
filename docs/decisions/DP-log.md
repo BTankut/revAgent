@@ -366,12 +366,14 @@ change. Git reported the checkout as clean through LF normalization while the
 raw worktree bytes remained CRLF, so the fail-closed source-identity check
 correctly rejected the candidate.
 
-RES-27 requires both existing Windows jobs in `.github/workflows/ci.yml` to run
-`git -c core.autocrlf=false checkout-index --force --all` immediately after
-checkout. This forces every tracked path to be materialized from the protected
-index under the repository's LF policy before tests begin. The amendment is
-limited to deterministic checkout bytes: no job, release path, source-identity
-exception, or PASS condition is added or relaxed.
+RES-27 requires both existing Windows jobs in `.github/workflows/ci.yml` to
+stream `git archive --format=tar HEAD` directly into `tar -xf -` under `cmd`
+immediately after checkout. Unlike `checkout-index --force`, which still
+treated the normalized CRLF worktree as unchanged in the reproduced reuse
+case, the archive contains the exact protected blobs and overwrites every
+tracked path byte for byte. The amendment is limited to deterministic checkout
+bytes: no job, release path, source-identity exception, or PASS condition is
+added or relaxed.
 
 ### 2026-07-22 — R-G: mandatory operator task cards
 
