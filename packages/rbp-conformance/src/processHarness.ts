@@ -24,6 +24,7 @@ function readinessExitError(
 ): Error {
   const stderrLines = transcript
     .filter((entry) => entry.stream === "stderr")
+    .slice(-8)
     .map((entry) => entry.line);
   if (trailingStderr.length > 0) {
     try {
@@ -499,10 +500,8 @@ export class StrictReadyProcess {
         child.kill("SIGTERM");
       }, options.command.readiness.timeoutMs);
       child.once("error", reject);
-      child.once("close", (code, signal) => {
-        if (!settled) {
-          reject(readinessExitError(options.componentId, code, signal, transcript));
-        }
+      child.once("exit", (code, signal) => {
+        if (!settled) reject(new Error(`${options.componentId} exited before readiness (${String(code ?? signal)})`));
       });
       child.stdout.on("data", (chunk: Buffer) => {
         buffer = Buffer.concat([buffer, chunk]);
