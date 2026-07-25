@@ -37,7 +37,7 @@ the freeze verdict:
 | Engineering gate | `pwsh -File scripts/test-ci.ps1`: PASS | Protected PR checks still run on the final pushed commit |
 | Windows non-Revit gate | Windows PowerShell 5.1 `scripts/test-all.ps1`: PASS | Protected PR checks still run on the final pushed commit |
 | Windows protected-script matrix | 11/11 named PS5 installer/updater/security scripts: PASS | None locally; protected PR remains authoritative |
-| Workspace/package gate | Generated diff clean; protocol 303/303; add-in fixture 55/55; Gateway stub 78/78; Bridge simulator 211/211; conformance harness 59 files and 365/365 tests across 5/5 serial shards: PASS | GitHub `gateway-gates` supplies the exact Node 20 runner |
+| Workspace/package gate | Generated diff clean; protocol 303/303; add-in fixture 55/55; Gateway stub 78/78; Bridge simulator 211/211; conformance harness 59 files and 365/365 tests across 5/5 serial shards: PASS | GitHub `gateway-gates` pins install, native rebuild, and test execution to the protected `Program Files` Node 22.15+ identity |
 | Bridge determinism/package boundary | Three independent deterministic runs, 211/211 tests each, `failed=0`; package dry-run: PASS | Linux workflow reruns on the protected PR |
 | Source-byte attestation | Clean detached raw worktree; every tracked file byte-hashed to protected HEAD with zero mismatches | Repeat against the final documentation-complete candidate commit |
 

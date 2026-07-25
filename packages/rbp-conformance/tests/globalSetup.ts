@@ -134,6 +134,8 @@ export default function setup(): void {
     "1",
     "--repo-root",
     repoRoot,
+    "--node-executable",
+    process.execPath,
   ];
   const result = spawnSync(
     powershell,
