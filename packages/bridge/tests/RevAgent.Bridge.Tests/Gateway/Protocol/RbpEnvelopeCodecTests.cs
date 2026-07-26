@@ -159,10 +159,9 @@ public sealed class RbpEnvelopeCodecTests
         string rawNumber,
         bool accepted)
     {
-        byte[] bytes = ReplaceRawNumber(
-            RbpFixtureReader.CreatePositiveEnvelope("invoke"),
-            "seq",
-            rawNumber);
+        JsonObject envelope = RbpFixtureReader.CreatePositiveEnvelope("invoke");
+        envelope["seq"] = 2;
+        byte[] bytes = ReplaceRawNumber(envelope, "seq", rawNumber);
 
         if (accepted)
         {

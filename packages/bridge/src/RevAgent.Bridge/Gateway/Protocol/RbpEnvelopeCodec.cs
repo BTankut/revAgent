@@ -224,16 +224,16 @@ internal static class RbpEnvelopeCodec
         string type = RequiredString(
             root,
             "type",
-            "/",
+            string.Empty,
             1,
             int.MaxValue);
-        string id = RequiredString(root, "id", "/", 1, 36);
+        string id = RequiredString(root, "id", string.Empty, 1, 36);
         if (!UuidV7Pattern.IsMatch(id))
         {
             throw InvalidEnvelope("/id", "RBP id must be a lower-case UUIDv7.");
         }
 
-        string timestamp = RequiredString(root, "ts", "/", 1, 256);
+        string timestamp = RequiredString(root, "ts", string.Empty, 1, 256);
         if (!IsRfc3339Timestamp(timestamp))
         {
             throw InvalidEnvelope("/ts", "RBP ts must be an RFC 3339 date-time.");
