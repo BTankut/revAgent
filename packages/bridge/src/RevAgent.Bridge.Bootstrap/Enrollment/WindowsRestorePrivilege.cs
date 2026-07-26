@@ -132,13 +132,13 @@ internal sealed class WindowsBridgeRestorePrivilege : IBridgeRestorePrivilege
         finally
         {
             Marshal.SetLastPInvokeError(0);
-            if (!AdjustTokenPrivileges(
+            if (!RestoreTokenPrivileges(
                     token,
                     disableAllPrivileges: false,
                     ref previous,
                     bufferLength: 0,
-                    out _,
-                    out _))
+                    previousState: IntPtr.Zero,
+                    returnLength: IntPtr.Zero))
             {
                 throw new BridgeCredentialStoreException(
                     BridgeCredentialStoreErrorCode.AccessControlFailure,
@@ -241,4 +241,17 @@ internal sealed class WindowsBridgeRestorePrivilege : IBridgeRestorePrivilege
         int bufferLength,
         out TokenPrivileges previousState,
         out int returnLength);
+
+    [DllImport(
+        "advapi32.dll",
+        EntryPoint = "AdjustTokenPrivileges",
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RestoreTokenPrivileges(
+        SafeAccessTokenHandle token,
+        [MarshalAs(UnmanagedType.Bool)] bool disableAllPrivileges,
+        ref TokenPrivileges newState,
+        int bufferLength,
+        IntPtr previousState,
+        IntPtr returnLength);
 }

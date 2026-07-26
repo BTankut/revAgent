@@ -56,11 +56,13 @@ internal sealed class BridgeCredentialFileSystem :
     private const uint InvalidFileAttributes = 0xFFFFFFFF;
     private const int ErrorFileNotFound = 2;
     private const int ErrorPathNotFound = 3;
+    private const int ErrorHandleEof = 38;
 
     public BridgePathEntryKind Classify(string path)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);
-        string fullPath = Path.GetFullPath(path);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path);
         if (!OperatingSystem.IsWindows())
         {
             return ClassifyPortable(fullPath);
@@ -161,7 +163,9 @@ internal sealed class BridgeCredentialFileSystem :
     public IDisposable PinDirectory(string directoryPath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(directoryPath);
-        string fullPath = Path.GetFullPath(directoryPath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(
+                directoryPath);
         if (!OperatingSystem.IsWindows())
         {
             return new PortableDirectoryPin(fullPath);
@@ -176,7 +180,8 @@ internal sealed class BridgeCredentialFileSystem :
     public BridgeFileIdentity GetFileIdentity(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        string fullPath = Path.GetFullPath(filePath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(filePath);
         if (!OperatingSystem.IsWindows())
         {
             return GetPortableIdentity(fullPath);
@@ -192,7 +197,8 @@ internal sealed class BridgeCredentialFileSystem :
     public IBridgeFilePin PinFile(string filePath)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(filePath);
-        string fullPath = Path.GetFullPath(filePath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(filePath);
         if (!OperatingSystem.IsWindows())
         {
             return new PortableFilePin(fullPath);
@@ -214,7 +220,8 @@ internal sealed class BridgeCredentialFileSystem :
             throw new ArgumentOutOfRangeException(nameof(maximumBytes));
         }
 
-        string fullPath = Path.GetFullPath(filePath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(filePath);
         if (!OperatingSystem.IsWindows())
         {
             return ReadBoundedPortable(fullPath, maximumBytes);
@@ -329,7 +336,8 @@ internal sealed class BridgeCredentialFileSystem :
 
     private static void VerifyPortableAncestors(string path)
     {
-        string fullPath = Path.GetFullPath(path);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path);
         string root = Path.GetPathRoot(fullPath) ??
             throw new InvalidDataException(
                 "The bridge credential path has no filesystem root.");
@@ -364,7 +372,8 @@ internal sealed class BridgeCredentialFileSystem :
         bool finalIsDirectory,
         bool GenericReadRequested)
     {
-        string fullPath = Path.GetFullPath(path);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path);
         string root = Path.GetPathRoot(fullPath) ??
             throw new InvalidDataException(
                 "The bridge credential path has no filesystem root.");
@@ -467,7 +476,78 @@ internal sealed class BridgeCredentialFileSystem :
                 "A bridge credential file must not have hard links.");
         }
 
+        if (!isDirectory)
+        {
+            try
+            {
+                VerifyNoAlternateDataStreamsWindows(path);
+            }
+            catch
+            {
+                handle.Dispose();
+                throw;
+            }
+        }
+
         return handle;
+    }
+
+    private static void VerifyNoAlternateDataStreamsWindows(string filePath)
+    {
+        IntPtr search = FindFirstStream(
+            filePath,
+            StreamInfoLevels.FindStreamInfoStandard,
+            out Win32FindStreamData streamData,
+            flags: 0);
+        if (search == new IntPtr(-1))
+        {
+            int error = Marshal.GetLastPInvokeError();
+            if (error == ErrorHandleEof)
+            {
+                return;
+            }
+
+            throw new IOException(
+                "The bridge credential named-stream inventory could not be " +
+                "read.",
+                new Win32Exception(error));
+        }
+
+        try
+        {
+            while (true)
+            {
+                if (!string.Equals(
+                        streamData.StreamName,
+                        "::$DATA",
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidDataException(
+                        "A bridge credential file must not contain alternate " +
+                        "data streams.");
+                }
+
+                if (FindNextStream(search, out streamData))
+                {
+                    continue;
+                }
+
+                int error = Marshal.GetLastPInvokeError();
+                if (error != ErrorHandleEof)
+                {
+                    throw new IOException(
+                        "The bridge credential named-stream inventory changed " +
+                        "while it was read.",
+                        new Win32Exception(error));
+                }
+
+                return;
+            }
+        }
+        finally
+        {
+            _ = FindClose(search);
+        }
     }
 
     private static BridgeFileIdentity GetIdentity(SafeFileHandle handle)
@@ -602,6 +682,20 @@ internal sealed class BridgeCredentialFileSystem :
         internal uint FileIndexLow;
     }
 
+    private enum StreamInfoLevels
+    {
+        FindStreamInfoStandard,
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct Win32FindStreamData
+    {
+        internal long StreamSize;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 296)]
+        internal string? StreamName;
+    }
+
     [DllImport(
         "kernel32.dll",
         EntryPoint = "CreateFileW",
@@ -630,4 +724,29 @@ internal sealed class BridgeCredentialFileSystem :
     private static extern bool GetFileInformationByHandle(
         SafeFileHandle file,
         out ByHandleFileInformation fileInformation);
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "FindFirstStreamW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    private static extern IntPtr FindFirstStream(
+        string fileName,
+        StreamInfoLevels infoLevel,
+        out Win32FindStreamData findStreamData,
+        uint flags);
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "FindNextStreamW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FindNextStream(
+        IntPtr findStream,
+        out Win32FindStreamData findStreamData);
+
+    [DllImport("kernel32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool FindClose(IntPtr findFile);
 }

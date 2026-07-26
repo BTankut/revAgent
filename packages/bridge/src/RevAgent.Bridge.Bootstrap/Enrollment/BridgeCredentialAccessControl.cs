@@ -283,7 +283,9 @@ internal sealed class WindowsBridgeCredentialAccessControl :
     [SupportedOSPlatform("windows")]
     private void EnsureProtectedDirectoryWindows(string directoryPath)
     {
-        string fullPath = Path.GetFullPath(directoryPath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(
+                directoryPath);
         BridgePathEntryKind kind = _fileSystem.Classify(fullPath);
         if (kind == BridgePathEntryKind.File)
         {
@@ -334,7 +336,8 @@ internal sealed class WindowsBridgeCredentialAccessControl :
     [SupportedOSPlatform("windows")]
     private void ProtectFileWindows(string filePath)
     {
-        string fullPath = Path.GetFullPath(filePath);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(filePath);
         if (_fileSystem.Classify(fullPath) != BridgePathEntryKind.File)
         {
             throw new FileNotFoundException(
@@ -504,7 +507,8 @@ internal sealed class WindowsBridgeCredentialAccessControl :
     [SupportedOSPlatform("windows")]
     private void VerifyNonReparsePathWindows(string path)
     {
-        string fullPath = Path.GetFullPath(path);
+        string fullPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(path);
         BridgePathEntryKind kind = _fileSystem.Classify(fullPath);
         if (kind == BridgePathEntryKind.Directory)
         {
