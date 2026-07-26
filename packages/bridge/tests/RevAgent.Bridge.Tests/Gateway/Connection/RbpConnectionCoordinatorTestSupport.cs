@@ -1,0 +1,556 @@
+using System.Collections.Concurrent;
+using System.Diagnostics;
+using System.Text.Json;
+using System.Threading.Channels;
+using RevAgent.Bridge.Gateway.Connection;
+using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Tests.Gateway.Storage;
+
+namespace RevAgent.Bridge.Tests.Gateway.Connection;
+
+public sealed partial class RbpConnectionCoordinatorTests
+{
+    private static RbpConnectionCoordinator Coordinator(
+        IRbpConnectionCycleFactory factory,
+        RbpJournalStore store,
+        IRbpLocalSessionCatalog catalog,
+        ManualCoordinatorClock clock,
+        IRbpInboundDataJournal? inbound = null,
+        IRbpRandomSource? random = null,
+        TimeSpan? closeTimeout = null) =>
+        new(
+            factory,
+            store,
+            catalog,
+            new RbpConnectionCoordinatorOptions(
+                new Uri("wss://gateway.revagent.app/bridge/v1"),
+                new RbpHelloProfile(
+                    "0.1.0",
+                    "WS01",
+                    "Windows 11",
+                    new[] { "2026.07.26.0" }),
+                CloseTimeout: closeTimeout),
+            inbound,
+            clock,
+            random ?? new FixedRandomSource(0));
+
+    private static RbpJournalStore OpenStore(
+        RbpJournalTestDirectory directory,
+        ManualCoordinatorClock clock) =>
+        RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            new RbpJournalOpenOptions(
+                NowMilliseconds:
+                    () => clock.UtcNow.ToUnixTimeMilliseconds()));
+
+    private static RbpSessionRegistration Registration(
+        RbpLocalSessionSnapshot local,
+        string rsid) =>
+        new(
+            rsid,
+            local.LocalSessionKey,
+            local.RegistrationPayload,
+            "resume-token-" + rsid,
+            DateTimeOffset.Parse("2026-07-27T10:00:00.000Z"),
+            Array.Empty<string>());
+
+    private static RbpLocalSessionSnapshot LocalSession(
+        int port,
+        int processId)
+    {
+        string localKey = $"port:{port}:pid:{processId}:started:100";
+        return new RbpLocalSessionSnapshot(
+            localKey,
+            Json(
+                $$"""
+                {
+                  "local_session_key":"{{localKey}}",
+                  "user_hint":{"name":"BT"},
+                  "machine":{
+                    "hostname":"WS01",
+                    "fingerprint":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                  },
+                  "revit":{
+                    "version":"2024",
+                    "build":"24.1",
+                    "pid":{{processId}}
+                  },
+                  "addin_version":"2026.07.26.0",
+                  "result_contract_version":2,
+                  "session_capabilities":[],
+                  "bridge_version":"0.1.0",
+                  "documents":[],
+                  "port":{{port}}
+                }
+                """),
+            port,
+            Json("""{"active_task":null,"addin_reachable":true}"""));
+    }
+
+    private static RbpEnvelope DataEnvelope(
+        string type,
+        string id,
+        string rsid,
+        long sequence,
+        JsonElement payload) =>
+        new(
+            1,
+            type,
+            id,
+            "2026-07-26T10:00:00.000Z",
+            payload,
+            RbpEnvelopeScope.Data,
+            rsid,
+            sequence,
+            Acknowledgement: null,
+            Hello: null,
+            HelloAck: null,
+            RbpEnvelopeDisposition.Known,
+            RbpEnvelope.FreezeAdditionalProperties(
+                new Dictionary<string, JsonElement>()));
+
+    private static JsonElement Json(string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+
+    private static string Id(int suffix) =>
+        $"019f9add-7a83-7d11-a6a9-d2f8108c{suffix:0000}";
+
+    private static async Task EventuallyAsync(
+        Func<bool> predicate,
+        int attempts = 400)
+    {
+        for (int attempt = 0; attempt < attempts; attempt++)
+        {
+            if (predicate())
+            {
+                return;
+            }
+
+            await Task.Delay(5);
+        }
+
+        Assert.Fail("The deterministic coordinator condition was not met.");
+    }
+
+    private static async Task EventuallyAsync(
+        Func<Task<bool>> predicate,
+        int attempts = 400)
+    {
+        for (int attempt = 0; attempt < attempts; attempt++)
+        {
+            if (await predicate())
+            {
+                return;
+            }
+
+            await Task.Delay(5);
+        }
+
+        Assert.Fail("The deterministic coordinator condition was not met.");
+    }
+
+    private sealed class MutableSessionCatalog : IRbpLocalSessionCatalog
+    {
+        private readonly object _sync = new();
+        private RbpLocalSessionSnapshot[] _sessions;
+
+        internal MutableSessionCatalog(
+            params RbpLocalSessionSnapshot[] sessions)
+        {
+            _sessions = sessions;
+        }
+
+        public Task<IReadOnlyList<RbpLocalSessionSnapshot>> ReadAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_sync)
+            {
+                return Task.FromResult<IReadOnlyList<
+                    RbpLocalSessionSnapshot>>(
+                    Array.AsReadOnly(_sessions.ToArray()));
+            }
+        }
+
+        internal void Replace(params RbpLocalSessionSnapshot[] sessions)
+        {
+            lock (_sync)
+            {
+                _sessions = sessions;
+            }
+        }
+    }
+
+    private sealed class RecordingInboundJournal : IRbpInboundDataJournal
+    {
+        private int _count;
+
+        internal int Count => Volatile.Read(ref _count);
+
+        public RbpInboundJournalReceipt Journal(
+            RbpJournalWriteContext context,
+            RbpDataEnvelopeSnapshot envelope)
+        {
+            _ = context;
+            Interlocked.Increment(ref _count);
+            return new RbpInboundJournalReceipt(
+                envelope.Id,
+                """{"journal":"test"}""");
+        }
+    }
+
+    private sealed class FixedRandomSource : IRbpRandomSource
+    {
+        private readonly double _sample;
+
+        internal FixedRandomSource(double sample)
+        {
+            _sample = sample;
+        }
+
+        public void Fill(Span<byte> destination)
+        {
+            destination.Clear();
+        }
+
+        public double NextUnitInterval() => _sample;
+    }
+
+    private sealed class ManualCoordinatorClock : IRbpCoordinatorClock
+    {
+        private readonly object _sync = new();
+        private readonly List<ScheduledDelay> _delays = new();
+        private DateTimeOffset _utcNow =
+            DateTimeOffset.Parse("2026-07-26T10:00:00.000Z");
+        private long _monotonicMilliseconds;
+
+        public DateTimeOffset UtcNow
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _utcNow;
+                }
+            }
+        }
+
+        public long MonotonicMilliseconds
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _monotonicMilliseconds;
+                }
+            }
+        }
+
+        public Task DelayAsync(
+            TimeSpan delay,
+            CancellationToken cancellationToken = default)
+        {
+            if (delay <= TimeSpan.Zero)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return Task.CompletedTask;
+            }
+
+            lock (_sync)
+            {
+                var completion = new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                var scheduled = new ScheduledDelay(
+                    checked(
+                        _monotonicMilliseconds +
+                        (long)Math.Ceiling(delay.TotalMilliseconds)),
+                    completion);
+                _delays.Add(scheduled);
+                if (cancellationToken.CanBeCanceled)
+                {
+                    _ = cancellationToken.Register(
+                        () => completion.TrySetCanceled(cancellationToken));
+                }
+
+                return completion.Task;
+            }
+        }
+
+        internal void Advance(TimeSpan amount)
+        {
+            TaskCompletionSource[] ready;
+            lock (_sync)
+            {
+                long milliseconds =
+                    checked((long)Math.Round(amount.TotalMilliseconds));
+                _monotonicMilliseconds =
+                    checked(_monotonicMilliseconds + milliseconds);
+                _utcNow = _utcNow.AddMilliseconds(milliseconds);
+                ready = _delays
+                    .Where(item =>
+                        item.DueMilliseconds <= _monotonicMilliseconds)
+                    .Select(item => item.Completion)
+                    .ToArray();
+                _delays.RemoveAll(item =>
+                    item.DueMilliseconds <= _monotonicMilliseconds);
+            }
+
+            foreach (TaskCompletionSource completion in ready)
+            {
+                completion.TrySetResult();
+            }
+        }
+
+        internal bool HasDelayDueIn(TimeSpan delay)
+        {
+            lock (_sync)
+            {
+                long due = checked(
+                    _monotonicMilliseconds +
+                    (long)Math.Ceiling(delay.TotalMilliseconds));
+                return _delays.Any(item => item.DueMilliseconds == due);
+            }
+        }
+
+        private sealed record ScheduledDelay(
+            long DueMilliseconds,
+            TaskCompletionSource Completion);
+    }
+
+    private sealed class FakeConnectionCycleFactory :
+        IRbpConnectionCycleFactory
+    {
+        private readonly object _sync = new();
+        private readonly Queue<FakeConnectionCycle> _cycles;
+        private int _openCount;
+
+        internal FakeConnectionCycleFactory(
+            params FakeConnectionCycle[] cycles)
+        {
+            _cycles = new Queue<FakeConnectionCycle>(cycles);
+        }
+
+        internal int OpenCount => Volatile.Read(ref _openCount);
+
+        public Task<IRbpConnectionCycle> OpenAsync(
+            Uri endpoint,
+            RbpHelloProfile profile,
+            CancellationToken cancellationToken = default)
+        {
+            _ = endpoint;
+            _ = profile;
+            cancellationToken.ThrowIfCancellationRequested();
+            lock (_sync)
+            {
+                Interlocked.Increment(ref _openCount);
+                if (_cycles.Count == 0)
+                {
+                    throw new IOException(
+                        "No scripted Gateway connection remains.");
+                }
+
+                return Task.FromResult<IRbpConnectionCycle>(
+                    _cycles.Dequeue());
+            }
+        }
+    }
+
+    private sealed class FakeConnectionCycle : IRbpConnectionCycle
+    {
+        private readonly Channel<RbpEnvelope> _inbound =
+            Channel.CreateUnbounded<RbpEnvelope>();
+        private readonly Func<RbpEnvelope, RbpEnvelope?> _responder;
+        private readonly bool _hangCloseAndDispose;
+        private int _closeCount;
+
+        internal FakeConnectionCycle(
+            Func<RbpEnvelope, RbpEnvelope?> responder,
+            bool hangCloseAndDispose = false)
+        {
+            _responder = responder;
+            _hangCloseAndDispose = hangCloseAndDispose;
+        }
+
+        public RbpHelloAckPayload Acknowledgement { get; } =
+            new(
+                1,
+                "conn-test",
+                Array.Empty<string>(),
+                15_000,
+                new RbpHelloLimits(
+                    4 * 1024 * 1024,
+                    32 * 1024 * 1024,
+                    1024 * 1024),
+                new RbpHelloManifest(
+                    "0.1.0",
+                    "/bridge/update/manifest"));
+
+        internal ConcurrentQueue<RbpEnvelope> Sent { get; } = new();
+
+        internal int CloseCount => Volatile.Read(ref _closeCount);
+
+        internal Action<RbpEnvelope>? AfterResponse { get; set; }
+
+        public Task SendAsync(
+            RbpEnvelope envelope,
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Sent.Enqueue(envelope);
+            RbpEnvelope? response = _responder(envelope);
+            if (response is not null)
+            {
+                Deliver(response);
+            }
+
+            AfterResponse?.Invoke(envelope);
+            return Task.CompletedTask;
+        }
+
+        public async Task<RbpEnvelope> ReceiveAsync(
+            CancellationToken cancellationToken = default) =>
+            await _inbound.Reader.ReadAsync(cancellationToken);
+
+        public Task CloseAsync(
+            CancellationToken cancellationToken = default)
+        {
+            Interlocked.Increment(ref _closeCount);
+            if (_hangCloseAndDispose)
+            {
+                return new TaskCompletionSource(
+                    TaskCreationOptions.RunContinuationsAsynchronously).Task;
+            }
+
+            _inbound.Writer.TryComplete();
+            return Task.CompletedTask;
+        }
+
+        public ValueTask DisposeAsync()
+        {
+            if (_hangCloseAndDispose)
+            {
+                return new ValueTask(
+                    new TaskCompletionSource(
+                        TaskCreationOptions.RunContinuationsAsynchronously)
+                        .Task);
+            }
+
+            _inbound.Writer.TryComplete();
+            return ValueTask.CompletedTask;
+        }
+
+        internal void Deliver(RbpEnvelope envelope)
+        {
+            if (!_inbound.Writer.TryWrite(envelope))
+            {
+                throw new InvalidOperationException(
+                    "The scripted connection no longer accepts frames.");
+            }
+        }
+
+        internal void Fail(Exception exception)
+        {
+            _inbound.Writer.TryComplete(exception);
+        }
+    }
+
+    private sealed class ScriptedGatewayResponder
+    {
+        private readonly ManualCoordinatorClock _clock;
+
+        internal ScriptedGatewayResponder(ManualCoordinatorClock clock)
+        {
+            _clock = clock;
+        }
+
+        internal RbpEnvelope? Respond(RbpEnvelope envelope)
+        {
+            return envelope.Type switch
+            {
+                "session_register" =>
+                    SessionRegistered(envelope.Payload),
+                "session_resume" => ResumeAck(envelope.Payload),
+                "heartbeat" => HeartbeatAck(envelope.Payload),
+                _ => null,
+            };
+        }
+
+        private RbpEnvelope SessionRegistered(JsonElement request)
+        {
+            int port = request.GetProperty("port").GetInt32();
+            return Control(
+                "session_registered",
+                Json(
+                    $$"""
+                    {
+                      "rsid":"rs-{{port}}",
+                      "resume_token":"resume-token-rs-{{port}}",
+                      "resume_expires_at":"2026-07-27T10:00:00.000Z",
+                      "principal":{
+                        "tenant_id":"tenant",
+                        "user_id":"user"
+                      },
+                      "seat":{"granted":true,"seat_id":"seat"},
+                      "granted_session_capabilities":[]
+                    }
+                    """));
+        }
+
+        private RbpEnvelope ResumeAck(JsonElement request) =>
+            Control(
+                "resume_ack",
+                Json(
+                    $$"""
+                    {
+                      "rsid":"{{request.GetProperty("rsid").GetString()}}",
+                      "last_rx_seq":0,
+                      "resume_expires_at":"2026-07-27T10:00:00.000Z"
+                    }
+                    """));
+
+        private RbpEnvelope HeartbeatAck(JsonElement request)
+        {
+            object[] acknowledgements = request
+                .GetProperty("acks")
+                .EnumerateArray()
+                .Select(item => (object)new Dictionary<string, object?>
+                {
+                    ["rsid"] = item.GetProperty("rsid").GetString(),
+                    ["seq"] = 0,
+                })
+                .ToArray();
+            return Control(
+                "heartbeat_ack",
+                JsonSerializer.SerializeToElement(
+                    new Dictionary<string, object?>
+                    {
+                        ["server_time"] = _clock.UtcNow.ToString("O"),
+                        ["acks"] = acknowledgements,
+                    }));
+        }
+
+        private RbpEnvelope Control(
+            string type,
+            JsonElement payload) =>
+            new(
+                1,
+                type,
+                Id(type.GetHashCode(StringComparison.Ordinal) & 9999),
+                _clock.UtcNow.ToString("O"),
+                payload,
+                RbpEnvelopeScope.Control,
+                Rsid: null,
+                Sequence: null,
+                Acknowledgement: null,
+                Hello: null,
+                HelloAck: null,
+                RbpEnvelopeDisposition.Known,
+                RbpEnvelope.FreezeAdditionalProperties(
+                    new Dictionary<string, JsonElement>()));
+    }
+}

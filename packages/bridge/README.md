@@ -248,3 +248,27 @@ Production enrollment remains deliberately fail-closed until P3-T8 supplies
 the credential-store adapter. This slice does not prove reconnect scheduling,
 session registration/resume, heartbeat liveness, journal replay, fallback
 parity, corporate proxy interception, sleep/wake recovery, or a 24-hour soak.
+
+P3-T4d composes the WSS handshake, pure reducer, and durable store without
+adding a second transport or an invocation executor. A connection generation
+is activated in the store before its receive loop starts. Resume keeps a
+session non-dispatchable until `resume_ack` is durably applied; the receive
+loop also waits for registration/resume application before exposing a
+following data frame. Accepted inbound data is acknowledged only after an
+injected invocation-journal seam marks the exact envelope id and immutable
+digest in the same SQLite transaction. The production default for that seam is
+fail-closed until P3-T5 installs the invocation journal.
+
+Heartbeat flights capture one immutable active-rsid and pending-unregister
+fence before transport send. Only the exact current generation may apply the
+returned cumulative acknowledgements or confirm tombstones. The coordinator
+closes and replaces WSS after a monotonic wake gap; it never switches an active
+binding in place. Deterministic tests cover two sessions, immediate
+post-registration data ordering, resume/outbox identity across reconnect,
+old-generation fence rejection, unregister confirmation ordering, wake
+replacement, the 120-second steady reset boundary, and bounded shutdown with
+no owned background task. This is local fake-binding evidence; the unchanged
+WSS stub remains lower-layer binding/handshake evidence and is not a
+coordinator integration claim. Neither surface proves Streamable HTTP/SSE
+parity, proxy-lab, live Revit, enrollment, invocation execution, or 24-hour
+soak behavior.
