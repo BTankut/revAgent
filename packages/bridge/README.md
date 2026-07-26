@@ -155,3 +155,14 @@ verify the state-root owner/DACL and reject pre-created reparse paths before
 this location is production-safe. This slice does not prove either of those
 properties, production secret protection, Gateway interoperability, T5
 invocation semantics, or a live transport.
+
+P3-T5a adds only the additive SQLite authorities required before invocation
+execution can be implemented: one canonical-key invocation table and a
+separate mutation-recovery hold table. Database constraints bind
+`idempotency_key` to `rsid + "/" + invocation_id`, pair batch id/index fields,
+keep reads scope-free, require every indeterminate mutation to reference a
+hold, prevent two uncleared rows for the same exact scope, and keep terminal
+and late-terminal carriers digest-bound. Cross-scope conflict evaluation,
+canonical JSON validation, state transitions, clearance acceptance, dispatch,
+redelivery, retention/pruning, batches, and cancellation are intentionally not
+claimed by this schema-only slice; they remain later P3-T5 behavior.

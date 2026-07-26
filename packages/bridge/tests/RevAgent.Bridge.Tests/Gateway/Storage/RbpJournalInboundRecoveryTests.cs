@@ -181,9 +181,9 @@ public sealed class RbpJournalInboundRecoveryTests
         using var directory = new RbpJournalTestDirectory();
         var faults = new ArmedJournalFaultInjector();
         var migration = new RbpJournalMigration(
-            2,
-            "P3-T5",
-            "test_atomic_handoff_v2",
+            3,
+            "test",
+            "test_atomic_handoff_v3",
             """
             CREATE TABLE test_invocation(
               invocation_id TEXT PRIMARY KEY,

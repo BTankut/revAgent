@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 1;
+    internal const int CurrentVersion = 2;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -104,16 +104,217 @@ internal static class RbpJournalSchema
         ) STRICT;
         """;
 
+    private const string InvocationJournalSchema = """
+        CREATE TABLE rbp_verification_holds(
+          verification_hold_id TEXT PRIMARY KEY,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          scope_kind TEXT NOT NULL CHECK(scope_kind IN ('session','document')),
+          document_id TEXT,
+          scope_jcs TEXT NOT NULL,
+          ordered_origin_idempotency_keys_json TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN (
+            'active','evidence_recorded','resolved_pending_bridge','cleared'
+          )),
+          verification_invocation_id TEXT,
+          evidence_digest TEXT,
+          resolution_id TEXT,
+          resolution_basis TEXT CHECK(
+            resolution_basis IS NULL OR
+            resolution_basis IN ('verification_read','late_terminal')
+          ),
+          resolution_decision TEXT CHECK(
+            resolution_decision IS NULL OR
+            resolution_decision IN (
+              'non_execution_proven','postcondition_verified'
+            )
+          ),
+          audit_id TEXT,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
+          cleared_at_ms INTEGER,
+          CHECK(
+            length(verification_hold_id)=67 AND
+            substr(verification_hold_id,1,3)='vh:' AND
+            substr(verification_hold_id,4) NOT GLOB '*[^0-9a-f]*'
+          ),
+          CHECK(length(scope_jcs)>0),
+          CHECK(length(ordered_origin_idempotency_keys_json)>0),
+          CHECK(
+            (scope_kind='session' AND document_id IS NULL) OR
+            (scope_kind='document' AND
+             document_id IS NOT NULL AND
+             length(document_id) BETWEEN 1 AND 4096)
+          ),
+          CHECK(
+            (evidence_digest IS NULL) OR
+            (length(evidence_digest)=71 AND
+             substr(evidence_digest,1,7)='sha256:' AND
+             substr(evidence_digest,8) NOT GLOB '*[^0-9a-f]*')
+          ),
+          CHECK(
+            (state='active' AND
+             resolution_id IS NULL AND
+             resolution_basis IS NULL AND
+             resolution_decision IS NULL AND
+             audit_id IS NULL AND
+             cleared_at_ms IS NULL) OR
+            (state='evidence_recorded' AND
+             evidence_digest IS NOT NULL AND
+             resolution_id IS NULL AND
+             resolution_basis IS NULL AND
+             resolution_decision IS NULL AND
+             audit_id IS NULL AND
+             cleared_at_ms IS NULL) OR
+            (state='resolved_pending_bridge' AND
+             evidence_digest IS NOT NULL AND
+             resolution_id IS NOT NULL AND
+             resolution_basis IS NOT NULL AND
+             resolution_decision IS NOT NULL AND
+             audit_id IS NOT NULL AND
+             cleared_at_ms IS NULL) OR
+            (state='cleared' AND
+             evidence_digest IS NOT NULL AND
+             resolution_id IS NOT NULL AND
+             resolution_basis IS NOT NULL AND
+             resolution_decision IS NOT NULL AND
+             audit_id IS NOT NULL AND
+             cleared_at_ms IS NOT NULL AND
+             cleared_at_ms >= created_at_ms)
+          )
+        ) STRICT;
+
+        CREATE UNIQUE INDEX ux_rbp_verification_holds_uncleared_scope
+          ON rbp_verification_holds(rsid,scope_jcs)
+          WHERE state<>'cleared';
+
+        CREATE INDEX ix_rbp_verification_holds_conflict
+          ON rbp_verification_holds(rsid,state,scope_kind,document_id);
+
+        CREATE TABLE rbp_invocations(
+          idempotency_key TEXT PRIMARY KEY,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          invocation_id TEXT NOT NULL,
+          batch_id TEXT,
+          batch_index INTEGER,
+          method TEXT NOT NULL,
+          mutating INTEGER NOT NULL CHECK(mutating IN (0,1)),
+          mutation_scope_jcs TEXT,
+          params_digest TEXT NOT NULL,
+          policy_jcs TEXT NOT NULL,
+          recovery_clearances_jcs TEXT NOT NULL,
+          state TEXT NOT NULL CHECK(state IN (
+            'received','executing','completed','failed',
+            'guarded','cancelled','indeterminate'
+          )),
+          terminal_outcome_json TEXT,
+          result_digest TEXT,
+          verification_hold_id TEXT
+            REFERENCES rbp_verification_holds(verification_hold_id)
+            ON DELETE RESTRICT,
+          verification_correlation_json TEXT,
+          late_terminal_outcome_json TEXT,
+          late_result_digest TEXT,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          started_at_ms INTEGER,
+          finished_at_ms INTEGER,
+          UNIQUE(rsid,invocation_id),
+          CHECK(length(idempotency_key) BETWEEN 38 AND 293),
+          CHECK(idempotency_key=rsid || '/' || invocation_id),
+          CHECK(length(invocation_id)=36),
+          CHECK(
+            (batch_id IS NULL AND batch_index IS NULL) OR
+            (batch_id IS NOT NULL AND
+             length(batch_id)=36 AND
+             batch_index IS NOT NULL AND
+             batch_index >= 0 AND
+             batch_index <= 9007199254740991)
+          ),
+          CHECK(length(method) BETWEEN 1 AND 4096),
+          CHECK(
+            (mutating=0 AND mutation_scope_jcs IS NULL) OR
+            (mutating=1 AND
+             mutation_scope_jcs IS NOT NULL AND
+             length(mutation_scope_jcs)>0)
+          ),
+          CHECK(
+            length(params_digest)=71 AND
+            substr(params_digest,1,7)='sha256:' AND
+            substr(params_digest,8) NOT GLOB '*[^0-9a-f]*'
+          ),
+          CHECK(length(policy_jcs)>0),
+          CHECK(length(recovery_clearances_jcs)>0),
+          CHECK(
+            (state='received' AND
+             started_at_ms IS NULL AND
+             finished_at_ms IS NULL AND
+             terminal_outcome_json IS NULL AND
+             result_digest IS NULL) OR
+            (state='executing' AND
+             started_at_ms IS NOT NULL AND
+             started_at_ms >= created_at_ms AND
+             finished_at_ms IS NULL AND
+             terminal_outcome_json IS NULL AND
+             result_digest IS NULL) OR
+            (state IN (
+               'completed','failed','guarded','cancelled','indeterminate'
+             ) AND
+             finished_at_ms IS NOT NULL AND
+             finished_at_ms >= created_at_ms AND
+             (started_at_ms IS NULL OR
+              finished_at_ms >= started_at_ms) AND
+             terminal_outcome_json IS NOT NULL AND
+             result_digest IS NOT NULL AND
+             length(terminal_outcome_json)>0 AND
+             length(result_digest)=71 AND
+             substr(result_digest,1,7)='sha256:' AND
+             substr(result_digest,8) NOT GLOB '*[^0-9a-f]*')
+          ),
+          CHECK(
+            (late_terminal_outcome_json IS NULL AND
+             late_result_digest IS NULL) OR
+            (state='indeterminate' AND
+             late_terminal_outcome_json IS NOT NULL AND
+             length(late_terminal_outcome_json)>0 AND
+             late_result_digest IS NOT NULL AND
+             length(late_result_digest)=71 AND
+             substr(late_result_digest,1,7)='sha256:' AND
+             substr(late_result_digest,8) NOT GLOB '*[^0-9a-f]*')
+          ),
+          CHECK(
+            state<>'indeterminate' OR
+            (mutating=1 AND verification_hold_id IS NOT NULL)
+          )
+        ) STRICT;
+
+        CREATE INDEX ix_rbp_invocations_session_state
+          ON rbp_invocations(rsid,state,created_at_ms);
+
+        CREATE INDEX ix_rbp_invocations_batch
+          ON rbp_invocations(rsid,batch_id,batch_index)
+          WHERE batch_id IS NOT NULL;
+        """;
+
     internal static RbpJournalMigration BaseMigration { get; } = new(
-        CurrentVersion,
+        1,
         "P3-T4",
         "rbp_transport_state_v1",
         TransportLifecycleSchema);
 
+    internal static RbpJournalMigration InvocationJournalMigration { get; } =
+        new(
+            CurrentVersion,
+            "P3-T5",
+            "rbp_invocation_journal_v1",
+            InvocationJournalSchema);
+
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
     {
-        var migrations = new List<RbpJournalMigration> { BaseMigration };
+        var migrations = new List<RbpJournalMigration>
+        {
+            BaseMigration,
+            InvocationJournalMigration,
+        };
         if (additional is not null)
         {
             migrations.AddRange(additional);
