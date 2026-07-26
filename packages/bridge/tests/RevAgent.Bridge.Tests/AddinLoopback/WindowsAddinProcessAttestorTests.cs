@@ -1,5 +1,7 @@
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using RevAgent.Bridge.AddinLoopback;
 
 namespace RevAgent.Bridge.Tests.AddinLoopback;
@@ -306,6 +308,47 @@ public sealed class WindowsAddinProcessAttestorTests
     }
 
     [Fact]
+    public async Task ConnectionOwnerResolver_ReturnsSeparateListenerProcessId()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        using Process listenerProcess =
+            StartSeparateLoopbackListenerProcess();
+        try
+        {
+            string? portText = await listenerProcess.StandardOutput
+                .ReadLineAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(
+                int.TryParse(portText, out int serverPort),
+                "The separate listener did not publish its bound port.");
+
+            using var client = new TcpClient(AddressFamily.InterNetwork);
+            await client.ConnectAsync(IPAddress.Loopback, serverPort);
+            string? accepted = await listenerProcess.StandardOutput
+                .ReadLineAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("accepted", accepted);
+
+            AddinConnectedPeer peer =
+                AddinConnectedPeer.FromConnectedClient(client);
+            int ownerProcessId =
+                new WindowsTcpConnectionOwnerResolver()
+                    .ResolveOwnerProcessId(peer);
+
+            Assert.Equal(listenerProcess.Id, ownerProcessId);
+            Assert.NotEqual(Environment.ProcessId, ownerProcessId);
+        }
+        finally
+        {
+            await StopSeparateLoopbackListenerProcessAsync(listenerProcess);
+        }
+    }
+
+    [Fact]
     public async Task ConnectionOwnerResolver_RejectsSameListenerWithWrongClientTuple()
     {
         if (!OperatingSystem.IsWindows())
@@ -380,6 +423,89 @@ public sealed class WindowsAddinProcessAttestorTests
         new(
             new IPEndPoint(IPAddress.Loopback, 50001),
             new IPEndPoint(IPAddress.Loopback, 8181));
+
+    private static Process StartSeparateLoopbackListenerProcess()
+    {
+        string powershellPath = Path.Combine(
+            Environment.SystemDirectory,
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
+        Assert.True(
+            File.Exists(powershellPath),
+            $"Trusted Windows PowerShell was not found: {powershellPath}");
+        const string script =
+            """
+            $ErrorActionPreference = 'Stop'
+            $listener = [Net.Sockets.TcpListener]::new(
+                [Net.IPAddress]::Loopback,
+                0)
+            try {
+                $listener.Start()
+                [Console]::Out.WriteLine(
+                    ([Net.IPEndPoint]$listener.LocalEndpoint).Port)
+                [Console]::Out.Flush()
+                $client = $listener.AcceptTcpClient()
+                try {
+                    [Console]::Out.WriteLine('accepted')
+                    [Console]::Out.Flush()
+                    [Console]::In.ReadLine() | Out-Null
+                }
+                finally {
+                    $client.Dispose()
+                }
+            }
+            finally {
+                $listener.Stop()
+            }
+            """;
+        string encodedCommand = Convert.ToBase64String(
+            Encoding.Unicode.GetBytes(script));
+        var process = new Process
+        {
+            StartInfo = new ProcessStartInfo
+            {
+                FileName = powershellPath,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardInput = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+            },
+            EnableRaisingEvents = true,
+        };
+        process.StartInfo.ArgumentList.Add("-NoLogo");
+        process.StartInfo.ArgumentList.Add("-NoProfile");
+        process.StartInfo.ArgumentList.Add("-NonInteractive");
+        process.StartInfo.ArgumentList.Add("-EncodedCommand");
+        process.StartInfo.ArgumentList.Add(encodedCommand);
+        Assert.True(process.Start());
+        process.StandardInput.AutoFlush = true;
+        return process;
+    }
+
+    private static async Task StopSeparateLoopbackListenerProcessAsync(
+        Process process)
+    {
+        try
+        {
+            if (!process.HasExited)
+            {
+                await process.StandardInput.WriteLineAsync("exit");
+                await process.WaitForExitAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+        catch
+        {
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+                await process.WaitForExitAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(5));
+            }
+        }
+    }
 
     private static WindowsProcessSnapshot Snapshot(string imagePath) =>
         new(ProcessId, StartTimeFileTimeUtc, imagePath);

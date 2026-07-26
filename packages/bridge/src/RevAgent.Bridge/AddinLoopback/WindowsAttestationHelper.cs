@@ -1,15 +1,13 @@
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using RevAgent.Bridge.Bootstrap;
 
 namespace RevAgent.Bridge.AddinLoopback;
-
-internal sealed record ResolvedAttestationHelperExecutable(
-    string ExecutablePath,
-    string WorkingDirectory);
 
 internal sealed record AttestationHelperProcessResult(
     int ExitCode,
@@ -40,21 +38,40 @@ internal interface IAttestationHelperProcess : IDisposable
     Task TerminateAsync();
 }
 
+internal sealed class AttestationHelperProcessHealth
+{
+    private int _poisoned;
+
+    internal bool IsPoisoned =>
+        Volatile.Read(ref _poisoned) != 0;
+
+    internal void Poison()
+    {
+        Interlocked.Exchange(ref _poisoned, 1);
+    }
+}
+
 internal sealed class ProcessWindowsAddinProcessAttestor
     : IAddinProcessAttestor
 {
     private const int MaxIpcBytes = 8192;
     private static readonly SemaphoreSlim HelperGate =
         new(initialCount: 1, maxCount: 1);
+    private static readonly AttestationHelperProcessHealth ProcessHealth =
+        new();
     private readonly IAttestationHelperExecutableResolver _executableResolver;
     private readonly IAttestationHelperProcessLauncher _processLauncher;
     private readonly Func<string> _nonceFactory;
+    private readonly AttestationHelperProcessHealth _health;
+    private readonly TimeSpan _cleanupObservationTimeout;
 
     internal ProcessWindowsAddinProcessAttestor()
         : this(
             new AttestationHelperExecutableResolver(),
             new SystemAttestationHelperProcessLauncher(),
-            CreateNonce)
+            CreateNonce,
+            ProcessHealth,
+            TimeSpan.FromSeconds(2))
     {
     }
 
@@ -62,6 +79,35 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         IAttestationHelperExecutableResolver executableResolver,
         IAttestationHelperProcessLauncher processLauncher,
         Func<string> nonceFactory)
+        : this(
+            executableResolver,
+            processLauncher,
+            nonceFactory,
+            new AttestationHelperProcessHealth(),
+            TimeSpan.FromSeconds(2))
+    {
+    }
+
+    internal ProcessWindowsAddinProcessAttestor(
+        IAttestationHelperExecutableResolver executableResolver,
+        IAttestationHelperProcessLauncher processLauncher,
+        Func<string> nonceFactory,
+        AttestationHelperProcessHealth health)
+        : this(
+            executableResolver,
+            processLauncher,
+            nonceFactory,
+            health,
+            TimeSpan.FromSeconds(2))
+    {
+    }
+
+    internal ProcessWindowsAddinProcessAttestor(
+        IAttestationHelperExecutableResolver executableResolver,
+        IAttestationHelperProcessLauncher processLauncher,
+        Func<string> nonceFactory,
+        AttestationHelperProcessHealth health,
+        TimeSpan cleanupObservationTimeout)
     {
         _executableResolver = executableResolver ??
             throw new ArgumentNullException(nameof(executableResolver));
@@ -69,6 +115,15 @@ internal sealed class ProcessWindowsAddinProcessAttestor
             throw new ArgumentNullException(nameof(processLauncher));
         _nonceFactory = nonceFactory ??
             throw new ArgumentNullException(nameof(nonceFactory));
+        _health = health ??
+            throw new ArgumentNullException(nameof(health));
+        if (cleanupObservationTimeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(cleanupObservationTimeout));
+        }
+
+        _cleanupObservationTimeout = cleanupObservationTimeout;
     }
 
     public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
@@ -109,6 +164,7 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         Func<AttestationHelperResponse, T> resultFactory,
         CancellationToken cancellationToken)
     {
+        EnsureHealthy();
         byte[] requestBytes =
             AttestationHelperProtocol.SerializeRequest(request);
         if (requestBytes.Length > MaxIpcBytes)
@@ -120,11 +176,12 @@ internal sealed class ProcessWindowsAddinProcessAttestor
 
         await HelperGate.WaitAsync(cancellationToken).ConfigureAwait(false);
         IAttestationHelperProcess? process = null;
+        ResolvedAttestationHelperExecutable? executable = null;
         Task<AttestationHelperProcessResult>? exchange = null;
         try
         {
-            ResolvedAttestationHelperExecutable executable =
-                _executableResolver.Resolve();
+            EnsureHealthy();
+            executable = _executableResolver.Resolve();
             process = _processLauncher.Start(executable);
             exchange = process.ExchangeAsync(
                 requestBytes,
@@ -156,22 +213,29 @@ internal sealed class ProcessWindowsAddinProcessAttestor
                 response.Nonce);
             return resultFactory(response);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException exception)
             when (cancellationToken.IsCancellationRequested)
         {
             if (process != null)
             {
-                await TerminateAndObserveAsync(process, exchange)
+                await TerminateAndObserveOrPoisonAsync(
+                        process,
+                        exchange,
+                        exception)
                     .ConfigureAwait(false);
             }
 
             throw;
         }
-        catch (AddinProcessAttestationException)
+        catch (AddinProcessAttestationException exception)
         {
-            if (process != null)
+            if (process != null &&
+                !_health.IsPoisoned)
             {
-                await TerminateAndObserveAsync(process, exchange)
+                await TerminateAndObserveOrPoisonAsync(
+                        process,
+                        exchange,
+                        exception)
                     .ConfigureAwait(false);
             }
 
@@ -181,7 +245,10 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         {
             if (process != null)
             {
-                await TerminateAndObserveAsync(process, exchange)
+                await TerminateAndObserveOrPoisonAsync(
+                        process,
+                        exchange,
+                        exception)
                     .ConfigureAwait(false);
             }
 
@@ -193,11 +260,34 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         finally
         {
             process?.Dispose();
+            executable?.Dispose();
             HelperGate.Release();
         }
     }
 
-    private static async Task TerminateAndObserveAsync(
+    private async Task TerminateAndObserveOrPoisonAsync(
+        IAttestationHelperProcess process,
+        Task? exchange,
+        Exception originalFailure)
+    {
+        try
+        {
+            await TerminateAndObserveAsync(process, exchange)
+                .ConfigureAwait(false);
+        }
+        catch (Exception cleanupFailure)
+        {
+            _health.Poison();
+            throw Failure(
+                "addin_process_attestation_helper_restart_required",
+                "The attestation helper exit could not be verified; the Bridge Worker must restart.",
+                new AggregateException(
+                    originalFailure,
+                    cleanupFailure));
+        }
+    }
+
+    private async Task TerminateAndObserveAsync(
         IAttestationHelperProcess process,
         Task? exchange)
     {
@@ -210,13 +300,29 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         try
         {
             await exchange
-                .WaitAsync(TimeSpan.FromSeconds(2))
+                .WaitAsync(_cleanupObservationTimeout)
                 .ConfigureAwait(false);
+        }
+        catch (TimeoutException exception)
+        {
+            throw new IOException(
+                "The terminated attestation helper pipe did not close.",
+                exception);
         }
         catch
         {
-            // A timed-out helper is terminated and its late pipe/process
-            // failure is observed so the next request can use a fresh helper.
+            // A verified-terminated helper normally faults its pipe exchange.
+            // Observing that terminal failure is sufficient for cleanup.
+        }
+    }
+
+    private void EnsureHealthy()
+    {
+        if (_health.IsPoisoned)
+        {
+            throw Failure(
+                "addin_process_attestation_helper_restart_required",
+                "The attestation helper is poisoned; the Bridge Worker must restart.");
         }
     }
 
@@ -236,6 +342,42 @@ internal sealed class ProcessWindowsAddinProcessAttestor
 internal sealed class AttestationHelperExecutableResolver
     : IAttestationHelperExecutableResolver
 {
+    private readonly Func<string?> _processPath;
+    private readonly Func<string> _workingDirectory;
+    private readonly Func<BridgeInstallLayout> _installLayout;
+    private readonly Func<string> _programFilesRoot;
+    private readonly IAttestationHelperPathAuthority _pathAuthority;
+
+    internal AttestationHelperExecutableResolver()
+        : this(
+            () => Environment.ProcessPath,
+            () => AppContext.BaseDirectory,
+            () => BridgeInstallLayout.Canonical,
+            () => Environment.GetFolderPath(
+                Environment.SpecialFolder.ProgramFiles),
+            new WindowsAttestationHelperPathAuthority())
+    {
+    }
+
+    internal AttestationHelperExecutableResolver(
+        Func<string?> processPath,
+        Func<string> workingDirectory,
+        Func<BridgeInstallLayout> installLayout,
+        Func<string> programFilesRoot,
+        IAttestationHelperPathAuthority pathAuthority)
+    {
+        _processPath = processPath ??
+            throw new ArgumentNullException(nameof(processPath));
+        _workingDirectory = workingDirectory ??
+            throw new ArgumentNullException(nameof(workingDirectory));
+        _installLayout = installLayout ??
+            throw new ArgumentNullException(nameof(installLayout));
+        _programFilesRoot = programFilesRoot ??
+            throw new ArgumentNullException(nameof(programFilesRoot));
+        _pathAuthority = pathAuthority ??
+            throw new ArgumentNullException(nameof(pathAuthority));
+    }
+
     public ResolvedAttestationHelperExecutable Resolve()
     {
         if (!OperatingSystem.IsWindows())
@@ -244,59 +386,96 @@ internal sealed class AttestationHelperExecutableResolver
                 "The attestation helper is Windows-only.");
         }
 
-        string? rawProcessPath = Environment.ProcessPath;
+        string? rawProcessPath = _processPath();
+        string workingDirectory = _workingDirectory();
+        string programFilesRoot = _programFilesRoot();
         if (string.IsNullOrWhiteSpace(rawProcessPath) ||
-            !Path.IsPathFullyQualified(rawProcessPath))
+            string.IsNullOrWhiteSpace(workingDirectory) ||
+            string.IsNullOrWhiteSpace(programFilesRoot))
         {
             throw new InvalidOperationException(
                 "The current Bridge worker executable path is unavailable.");
         }
 
-        string processPath = Path.GetFullPath(rawProcessPath);
-        string workingDirectory = Path.TrimEndingDirectorySeparator(
-            Path.GetFullPath(AppContext.BaseDirectory));
-        if (!string.Equals(
-                Path.GetDirectoryName(processPath),
-                workingDirectory,
-                StringComparison.OrdinalIgnoreCase) ||
-            !string.Equals(
-                Path.GetFileName(processPath),
-                "revagent-bridge.exe",
-                StringComparison.OrdinalIgnoreCase) ||
-            !File.Exists(processPath) ||
-            !Directory.Exists(workingDirectory))
-        {
+        BridgeInstallLayout layout = _installLayout() ??
             throw new InvalidOperationException(
-                "The attestation helper must be the current self-contained Bridge worker.");
-        }
-
-        if ((File.GetAttributes(processPath) & FileAttributes.ReparsePoint) != 0 ||
-            (File.GetAttributes(workingDirectory) & FileAttributes.ReparsePoint) != 0)
-        {
-            throw new InvalidOperationException(
-                "The attestation helper path must not traverse a reparse point.");
-        }
-
-        using (File.Open(
-            processPath,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read | FileShare.Delete))
-        {
-            // Pin the exact resolved worker as readable immediately before
-            // Process.Start; the host already constrains this version path.
-        }
-
-        return new ResolvedAttestationHelperExecutable(
-            processPath,
-            workingDirectory);
+                "The canonical Bridge install layout is unavailable.");
+        return _pathAuthority.OpenTrustedExecutable(
+            rawProcessPath,
+            workingDirectory,
+            layout.VersionsRoot,
+            programFilesRoot);
     }
 }
 
 internal sealed class SystemAttestationHelperProcessLauncher
     : IAttestationHelperProcessLauncher
 {
+    private static readonly string[] AllowedEnvironmentVariables =
+    [
+        "SystemRoot",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "DOTNET_BUNDLE_EXTRACT_BASE_DIR",
+    ];
+    private readonly IAttestationHelperChildImageVerifier _imageVerifier;
+    private readonly IAttestationHelperJobFactory _jobFactory;
+
+    internal SystemAttestationHelperProcessLauncher()
+        : this(
+            new WindowsAttestationHelperChildImageVerifier(),
+            new WindowsAttestationHelperJobFactory())
+    {
+    }
+
+    internal SystemAttestationHelperProcessLauncher(
+        IAttestationHelperChildImageVerifier imageVerifier,
+        IAttestationHelperJobFactory jobFactory)
+    {
+        _imageVerifier = imageVerifier ??
+            throw new ArgumentNullException(nameof(imageVerifier));
+        _jobFactory = jobFactory ??
+            throw new ArgumentNullException(nameof(jobFactory));
+    }
+
     public IAttestationHelperProcess Start(
+        ResolvedAttestationHelperExecutable executable)
+    {
+        ArgumentNullException.ThrowIfNull(executable);
+        ProcessStartInfo startInfo = CreateStartInfo(executable);
+        var process = new Process
+        {
+            StartInfo = startInfo,
+            EnableRaisingEvents = true,
+        };
+        IAttestationHelperJob? job = null;
+        try
+        {
+            job = _jobFactory.Create();
+            if (!process.Start())
+            {
+                throw new InvalidOperationException(
+                    "The isolated attestation helper did not start.");
+            }
+
+            job.Assign(process);
+            _imageVerifier.Verify(process, executable);
+            var result =
+                new SystemAttestationHelperProcess(process, job);
+            job = null;
+            return result;
+        }
+        catch
+        {
+            job?.Dispose();
+            TryKillAndWait(process);
+            process.Dispose();
+            throw;
+        }
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(
         ResolvedAttestationHelperExecutable executable)
     {
         ArgumentNullException.ThrowIfNull(executable);
@@ -312,26 +491,37 @@ internal sealed class SystemAttestationHelperProcessLauncher
         };
         startInfo.ArgumentList.Add(
             AttestationHelperProtocol.InternalCommand);
-
-        var process = new Process
+        startInfo.Environment.Clear();
+        foreach (string variableName in AllowedEnvironmentVariables)
         {
-            StartInfo = startInfo,
-            EnableRaisingEvents = true,
-        };
+            string? value =
+                Environment.GetEnvironmentVariable(variableName);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                startInfo.Environment[variableName] = value;
+            }
+        }
+
+        return startInfo;
+    }
+
+    private static void TryKillAndWait(Process process)
+    {
         try
         {
-            if (!process.Start())
+            if (process.Id != 0 && !process.HasExited)
             {
-                throw new InvalidOperationException(
-                    "The isolated attestation helper did not start.");
+                process.Kill(entireProcessTree: true);
+                process.WaitForExit(milliseconds: 2000);
             }
-
-            return new SystemAttestationHelperProcess(process);
         }
-        catch
+        catch (InvalidOperationException)
         {
-            process.Dispose();
-            throw;
+            // Process.Start did not succeed or the child exited concurrently.
+        }
+        catch (Win32Exception)
+        {
+            // The launch failure remains authoritative.
         }
     }
 }
@@ -340,12 +530,17 @@ internal sealed class SystemAttestationHelperProcess
     : IAttestationHelperProcess
 {
     private readonly Process _process;
+    private readonly IAttestationHelperJob _job;
     private int _disposed;
 
-    internal SystemAttestationHelperProcess(Process process)
+    internal SystemAttestationHelperProcess(
+        Process process,
+        IAttestationHelperJob job)
     {
         _process = process ??
             throw new ArgumentNullException(nameof(process));
+        _job = job ??
+            throw new ArgumentNullException(nameof(job));
     }
 
     public int Id => _process.Id;
@@ -392,14 +587,19 @@ internal sealed class SystemAttestationHelperProcess
         {
             if (!_process.HasExited)
             {
-                _process.Kill(entireProcessTree: true);
+                _job.Terminate();
             }
 
             await _process.WaitForExitAsync(CancellationToken.None)
                 .WaitAsync(TimeSpan.FromSeconds(2))
                 .ConfigureAwait(false);
+            if (!_process.HasExited)
+            {
+                throw new TimeoutException(
+                    "The attestation helper process exit was not observed.");
+            }
         }
-        catch (InvalidOperationException)
+        catch (InvalidOperationException) when (_process.HasExited)
         {
             // The process exited between HasExited and Kill.
         }
@@ -409,6 +609,7 @@ internal sealed class SystemAttestationHelperProcess
     {
         if (Interlocked.Exchange(ref _disposed, 1) == 0)
         {
+            _job.Dispose();
             _process.Dispose();
         }
     }
@@ -783,8 +984,8 @@ internal static class AttestationHelperProtocol
     {
         ValidateRequest(request);
         return new AddinConnectedPeer(
-            ParseLoopback(request.ServerAddress, request.ServerPort),
-            ParseLoopback(request.ClientAddress, request.ClientPort));
+            ParseLoopback(request.ClientAddress, request.ClientPort),
+            ParseLoopback(request.ServerAddress, request.ServerPort));
     }
 
     internal static AddinProcessAttestation ExpectedAttestation(
@@ -853,13 +1054,26 @@ internal static class AttestationHelperProtocol
 
 internal static class WindowsAttestationHelperServer
 {
-    internal static async Task<int> RunAsync()
+    internal static Task<int> RunAsync() =>
+        RunAsync(
+            Console.OpenStandardInput(),
+            Console.OpenStandardOutput(),
+            WindowsAddinProcessAttestor.CreateNativeInProcess);
+
+    internal static async Task<int> RunAsync(
+        Stream input,
+        Stream output,
+        Func<IAddinProcessAttestor> attestorFactory)
     {
+        ArgumentNullException.ThrowIfNull(input);
+        ArgumentNullException.ThrowIfNull(output);
+        ArgumentNullException.ThrowIfNull(attestorFactory);
+
         AttestationHelperRequest request;
         try
         {
             byte[] requestBytes = await ReadBoundedToEndAsync(
-                Console.OpenStandardInput(),
+                input,
                 AttestationHelperProtocol.MaxIpcBytes)
                 .ConfigureAwait(false);
             request = AttestationHelperProtocol.ParseRequest(requestBytes);
@@ -874,8 +1088,7 @@ internal static class WindowsAttestationHelperServer
         {
             AddinConnectedPeer peer =
                 AttestationHelperProtocol.ToPeer(request);
-            WindowsAddinProcessAttestor attestor =
-                WindowsAddinProcessAttestor.CreateNativeInProcess();
+            IAddinProcessAttestor attestor = attestorFactory();
             if (AttestationHelperProtocol.IsAttestOperation(request))
             {
                 AddinProcessAttestation attestation =
@@ -914,7 +1127,6 @@ internal static class WindowsAttestationHelperServer
 
         byte[] responseBytes =
             AttestationHelperProtocol.SerializeResponse(response);
-        Stream output = Console.OpenStandardOutput();
         await output.WriteAsync(responseBytes).ConfigureAwait(false);
         await output.FlushAsync().ConfigureAwait(false);
         return 0;
