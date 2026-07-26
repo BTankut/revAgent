@@ -335,7 +335,9 @@ public sealed class BridgeConfigurationLoaderTests
     [Theory]
     [InlineData(0, 8085, 1000, 2, "config_addin_port_invalid")]
     [InlineData(8086, 8085, 1000, 2, "config_addin_port_range_invalid")]
-    [InlineData(8000, 8100, 1000, 2, "config_addin_port_range_too_large")]
+    [InlineData(8000, 8100, 1000, 2, "config_addin_scan_range_invalid")]
+    [InlineData(8080, 8084, 1000, 2, "config_addin_scan_range_invalid")]
+    [InlineData(8181, 8181, 1000, 2, "config_addin_scan_range_invalid")]
     [InlineData(8080, 8085, 0, 2, "config_log_max_bytes_invalid")]
     [InlineData(8080, 8085, 1000, 0, "config_log_retained_files_invalid")]
     public void Load_InvalidBounds_FailsClosed(
@@ -365,6 +367,47 @@ public sealed class BridgeConfigurationLoaderTests
             () => BridgeConfigurationLoader.Load(file.Path, EmptyEnvironment()));
 
         Assert.Equal(expectedErrorCode, exception.ErrorCode);
+    }
+
+    [Theory]
+    [InlineData("0")]
+    [InlineData("65536")]
+    public void Load_OutOfRangeExplicitAddinPort_FailsClosed(string port)
+    {
+        using var file = TemporaryConfig.Create(ValidConfiguration);
+        var environment = new Dictionary<string, string?>
+        {
+            [BridgeConfigurationLoader.AddinPortEnvironmentVariable] = port,
+        };
+
+        var exception = Assert.Throws<BridgeConfigurationException>(
+            () => BridgeConfigurationLoader.Load(file.Path, environment));
+
+        Assert.Equal("config_addin_port_invalid", exception.ErrorCode);
+    }
+
+    [Fact]
+    public void Load_ExplicitPortDoesNotMaskNonCanonicalFileScanRange()
+    {
+        using var file = TemporaryConfig.Create(
+            ValidConfiguration
+                .Replace(
+                    "\"scanStartPort\": 8080",
+                    "\"scanStartPort\": 8181",
+                    StringComparison.Ordinal)
+                .Replace(
+                    "\"scanEndPort\": 8085",
+                    "\"scanEndPort\": 8181",
+                    StringComparison.Ordinal));
+        var environment = new Dictionary<string, string?>
+        {
+            [BridgeConfigurationLoader.AddinPortEnvironmentVariable] = "8181",
+        };
+
+        var exception = Assert.Throws<BridgeConfigurationException>(
+            () => BridgeConfigurationLoader.Load(file.Path, environment));
+
+        Assert.Equal("config_addin_scan_range_invalid", exception.ErrorCode);
     }
 
     [Theory]

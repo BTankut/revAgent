@@ -13,7 +13,8 @@ Windows service skeleton:
 - the frozen RBP/1 display and document-context mapping boundary; and
 - the detached RS256 distribution-signature verification contract;
 - the stable Windows service Host and supervised Worker split;
-- strict `bridge-config.json` plus allowlisted environment overrides;
+- strict `bridge-config.json` with the frozen 8080-8085 add-in discovery range
+  plus an allowlisted `REVAGENT_BRIDGE_ADDIN_PORT` single-port override;
 - structured rolling JSON-file logging and lifecycle Event Log integration;
 - public Host CLI routing for `install`, `uninstall`, `run --console`, and
   `doctor`; and

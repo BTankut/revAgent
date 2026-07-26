@@ -13,7 +13,8 @@ internal static class BridgeConfigurationLoader
     private const string EnvironmentPrefix = "REVAGENT_BRIDGE_";
     private const int SupportedSchemaVersion = 1;
     private const int MaximumConfigBytes = 1024 * 1024;
-    private const int MaximumAddinScanPortCount = 64;
+    private const int AddinScanStartPort = 8080;
+    private const int AddinScanEndPort = 8085;
 
     private static readonly IReadOnlyDictionary<string, string> AllowedEnvironmentVariables =
         new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -133,6 +134,7 @@ internal static class BridgeConfigurationLoader
         var scanEndPort = RequireInt32(addin, "scanEndPort", "$.addin");
         var maxFileBytes = RequireInt64(logging, "maxFileBytes", "$.logging");
         var retainedFileCount = RequireInt32(logging, "retainedFileCount", "$.logging");
+        ValidateConfiguredAddinScanRange(scanStartPort, scanEndPort);
 
         var environmentValues = ValidateAndNormalizeEnvironment(environment);
         var sources = CreateFileSources();
@@ -154,6 +156,7 @@ internal static class BridgeConfigurationLoader
             var port = ParseEnvironmentInt32(
                 AddinPortEnvironmentVariable,
                 addinPortOverride);
+            ValidateExplicitAddinPort(port);
             scanStartPort = port;
             scanEndPort = port;
             sources["addin.scanStartPort"] = EnvironmentSource(AddinPortEnvironmentVariable);
@@ -183,7 +186,6 @@ internal static class BridgeConfigurationLoader
         }
 
         var gatewayUri = ValidateGatewayUri(gatewayUriText);
-        ValidateAddinPorts(scanStartPort, scanEndPort);
         ValidateLogging(maxFileBytes, retainedFileCount);
 
         return new ResolvedBridgeConfiguration(
@@ -325,7 +327,9 @@ internal static class BridgeConfigurationLoader
         return uri;
     }
 
-    private static void ValidateAddinPorts(int scanStartPort, int scanEndPort)
+    private static void ValidateConfiguredAddinScanRange(
+        int scanStartPort,
+        int scanEndPort)
     {
         if (scanStartPort is < 1 or > 65535 ||
             scanEndPort is < 1 or > 65535)
@@ -342,12 +346,24 @@ internal static class BridgeConfigurationLoader
                 "addin.scanStartPort must not exceed addin.scanEndPort.");
         }
 
-        var portCount = (long)scanEndPort - scanStartPort + 1;
-        if (portCount > MaximumAddinScanPortCount)
+        if (scanStartPort != AddinScanStartPort ||
+            scanEndPort != AddinScanEndPort)
         {
             throw Error(
-                "config_addin_port_range_too_large",
-                $"The add-in scan range may contain at most {MaximumAddinScanPortCount} ports.");
+                "config_addin_scan_range_invalid",
+                $"File-configured add-in discovery must use the frozen " +
+                $"{AddinScanStartPort}-{AddinScanEndPort} scan range; use " +
+                $"{AddinPortEnvironmentVariable} for one explicit port.");
+        }
+    }
+
+    private static void ValidateExplicitAddinPort(int port)
+    {
+        if (port is < 1 or > 65535)
+        {
+            throw Error(
+                "config_addin_port_invalid",
+                "The explicit add-in port must be between 1 and 65535.");
         }
     }
 

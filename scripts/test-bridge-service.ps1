@@ -98,7 +98,9 @@ function Invoke-BoundedHiddenProcess {
         [Parameter(Mandatory = $true)]
         [int]$TimeoutSeconds,
 
-        [string]$ClearEnvironmentPrefix = ""
+        [string]$ClearEnvironmentPrefix = "",
+
+        [hashtable]$EnvironmentOverrides = @{}
     )
 
     $process = $null
@@ -118,6 +120,10 @@ function Invoke-BoundedHiddenProcess {
                     [void]$startInfo.EnvironmentVariables.Remove([string]$key)
                 }
             }
+        }
+        foreach ($key in $EnvironmentOverrides.Keys) {
+            $startInfo.EnvironmentVariables[[string]$key] =
+                [string]$EnvironmentOverrides[$key]
         }
 
         $process = [System.Diagnostics.Process]::new()
@@ -400,8 +406,8 @@ try {
             uri = "wss://localhost:$gatewayPort/bridge/v1"
         }
         addin = [ordered]@{
-            scanStartPort = $addinPort
-            scanEndPort = $addinPort
+            scanStartPort = 8080
+            scanEndPort = 8085
         }
         logging = [ordered]@{
             maxFileBytes = 65536
@@ -419,7 +425,10 @@ try {
         -Arguments @("__doctor", "--config", $configurationPath) `
         -WorkingDirectory $workerPublishDirectory `
         -TimeoutSeconds $SmokeTimeoutSeconds `
-        -ClearEnvironmentPrefix "REVAGENT_BRIDGE_"
+        -ClearEnvironmentPrefix "REVAGENT_BRIDGE_" `
+        -EnvironmentOverrides @{
+            REVAGENT_BRIDGE_ADDIN_PORT = [string]$addinPort
+        }
 
     if ($doctorResult.TimedOut) {
         throw "Bridge worker doctor exceeded the bounded smoke timeout."
@@ -475,6 +484,26 @@ try {
         -InputObject $addinHealth `
         -Name "shapeVerified" `
         -ObjectPath '$.addin'
+    $addinScanStartPort = Get-RequiredJsonProperty `
+        -InputObject $addinHealth `
+        -Name "scanStartPort" `
+        -ObjectPath '$.addin'
+    $addinScanEndPort = Get-RequiredJsonProperty `
+        -InputObject $addinHealth `
+        -Name "scanEndPort" `
+        -ObjectPath '$.addin'
+    $addinReachablePorts = @(
+        Get-RequiredJsonProperty `
+            -InputObject $addinHealth `
+            -Name "reachablePorts" `
+            -ObjectPath '$.addin'
+    )
+    $addinProbes = @(
+        Get-RequiredJsonProperty `
+            -InputObject $addinHealth `
+            -Name "probes" `
+            -ObjectPath '$.addin'
+    )
 
     if (-not [string]::Equals(
             [string]$doctorSchemaVersion,
@@ -490,6 +519,30 @@ try {
     }
     if ($addinShapeVerified -isnot [bool] -or $addinShapeVerified) {
         throw "A bare TCP listener must not be reported as a shape-verified add-in endpoint."
+    }
+    if ([int]$addinScanStartPort -ne $addinPort -or
+        [int]$addinScanEndPort -ne $addinPort) {
+        throw "Bridge worker doctor did not honor the explicit add-in port override."
+    }
+    if ($addinReachablePorts.Count -ne 1 -or
+        [int]$addinReachablePorts[0] -ne $addinPort) {
+        throw "Bridge worker doctor did not report only the explicit reachable add-in port."
+    }
+    if ($addinProbes.Count -ne 1) {
+        throw "Bridge worker doctor did not perform exactly one explicit add-in port probe."
+    }
+    $addinProbePort = Get-RequiredJsonProperty `
+        -InputObject $addinProbes[0] `
+        -Name "port" `
+        -ObjectPath '$.addin.probes[0]'
+    $addinProbeReachable = Get-RequiredJsonProperty `
+        -InputObject $addinProbes[0] `
+        -Name "tcpReachable" `
+        -ObjectPath '$.addin.probes[0]'
+    if ([int]$addinProbePort -ne $addinPort -or
+        $addinProbeReachable -isnot [bool] -or
+        -not $addinProbeReachable) {
+        throw "Bridge worker doctor did not reach the explicit add-in listener."
     }
 }
 finally {
