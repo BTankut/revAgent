@@ -184,6 +184,20 @@ internal static class Rfc8785Json
             return;
         }
 
+        if (value.ValueKind == JsonValueKind.Number)
+        {
+            if (!value.TryGetDouble(out double number) ||
+                !double.IsFinite(number))
+            {
+                throw new RbpFrameException(
+                    RbpFrameErrorCode.InvalidEnvelope,
+                    "RFC 8785 JSON numbers must be finite IEEE 754 values.",
+                    string.IsNullOrEmpty(path) ? "/" : path);
+            }
+
+            return;
+        }
+
         if (value.ValueKind != JsonValueKind.Array)
         {
             return;

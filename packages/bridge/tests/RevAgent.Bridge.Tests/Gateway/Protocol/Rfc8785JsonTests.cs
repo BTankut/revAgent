@@ -51,7 +51,7 @@ public sealed class Rfc8785JsonTests
     }
 
     [Fact]
-    public void BatchProjectionExcludesRawParamsAndUnknownFieldsButBindsSemantics()
+    public void BatchProjectionExcludesRawParamsAndUnknownFields()
     {
         using JsonDocument fixture =
             RbpFixtureReader.Load("batch-digest.json");
@@ -87,6 +87,64 @@ public sealed class Rfc8785JsonTests
 
         firstStep["method"] = "inspect_sheet_text";
         Assert.NotEqual(baseline, MakeBatchDigest(fullPayload));
+    }
+
+    [Fact]
+    public void BatchProjectionBindsAtomicPolicyScopeClearanceAndStepOmission()
+    {
+        using JsonDocument fixture =
+            RbpFixtureReader.Load("batch-digest.json");
+        JsonObject baselinePayload = JsonNode.Parse(
+            fixture.RootElement
+                .GetProperty("vectors")[0]
+                .GetProperty("input")
+                .GetRawText())?.AsObject() ??
+            throw new InvalidDataException("Batch vector is not an object.");
+        JsonObject firstStep =
+            baselinePayload["steps"]?[0]?.AsObject() ??
+            throw new InvalidDataException("Batch vector step is missing.");
+        JsonObject secondStep =
+            JsonNode.Parse(firstStep.ToJsonString())?.AsObject() ??
+            throw new InvalidDataException("Batch vector step is invalid.");
+        secondStep["invocation_id"] =
+            "0197a3c2-0000-7000-8000-000000000022";
+        secondStep["method"] = "inspect_sheet_text";
+        JsonArray steps = baselinePayload["steps"]?.AsArray() ??
+                          throw new InvalidDataException(
+                              "Batch vector steps are missing.");
+        steps.Add(secondStep);
+        string baseline = MakeBatchDigest(baselinePayload);
+
+        AssertDigestChanges(
+            baselinePayload,
+            baseline,
+            payload => payload["atomic"] = true);
+        AssertDigestChanges(
+            baselinePayload,
+            baseline,
+            payload => payload["steps"]![0]!["policy"]!["decision"] =
+                "changed");
+        AssertDigestChanges(
+            baselinePayload,
+            baseline,
+            payload => payload["steps"]![0]!["mutation_scope"] =
+                new JsonObject
+                {
+                    ["kind"] = "session",
+                });
+        AssertDigestChanges(
+            baselinePayload,
+            baseline,
+            payload => payload["recovery_clearances"] =
+                new JsonArray(
+                    new JsonObject
+                    {
+                        ["hold_id"] = "vh:test",
+                    }));
+        AssertDigestChanges(
+            baselinePayload,
+            baseline,
+            payload => payload["steps"]!.AsArray().RemoveAt(1));
     }
 
     [Fact]
@@ -167,6 +225,21 @@ public sealed class Rfc8785JsonTests
             () => JsonDocument.Parse("""{"bad":Infinity}"""));
     }
 
+    [Theory]
+    [InlineData("""{"bad":1e400}""")]
+    [InlineData("""{"bad":-1e400}""")]
+    public void JsonValidNonFiniteNumbersFailBeforeCanonicalization(
+        string json)
+    {
+        using JsonDocument document = JsonDocument.Parse(json);
+
+        RbpFrameException exception = Assert.Throws<RbpFrameException>(
+            () => Rfc8785Json.Canonicalize(document.RootElement));
+
+        Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
+        Assert.Equal("/bad", exception.Path);
+    }
+
     [Fact]
     public void DirectCanonicalizationRejectsDuplicateKeysAtAnyDepth()
     {
@@ -219,5 +292,17 @@ public sealed class Rfc8785JsonTests
             JsonDocument.Parse(payload.ToJsonString());
         return Rfc8785Json.MakeBatchDigest(
             RbpBatchDigestInput.Parse(document.RootElement));
+    }
+
+    private static void AssertDigestChanges(
+        JsonObject baselinePayload,
+        string baselineDigest,
+        Action<JsonObject> mutate)
+    {
+        JsonObject changed =
+            JsonNode.Parse(baselinePayload.ToJsonString())?.AsObject() ??
+            throw new InvalidDataException("Batch vector is not an object.");
+        mutate(changed);
+        Assert.NotEqual(baselineDigest, MakeBatchDigest(changed));
     }
 }
