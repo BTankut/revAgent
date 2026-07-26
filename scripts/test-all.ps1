@@ -48,6 +48,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-os-path-security.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-distribution-integrity.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-bridge-contracts.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-bridge-service.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-license-seat.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-source-free-migration.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-desktop-launcher-cleanup.ps1") -RepoRoot $RepoRoot

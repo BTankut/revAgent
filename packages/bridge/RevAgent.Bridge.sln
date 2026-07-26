@@ -8,6 +8,12 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Contracts", "src\R
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Contracts.Tests", "tests\RevAgent.Contracts.Tests\RevAgent.Contracts.Tests.csproj", "{5C3470EF-A605-46B2-92E9-927F168E7F38}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Bootstrap", "src\RevAgent.Bridge.Bootstrap\RevAgent.Bridge.Bootstrap.csproj", "{ED0B98D5-03ED-4031-9F75-5F002A964BB2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Host", "src\RevAgent.Bridge.Host\RevAgent.Bridge.Host.csproj", "{9C5A3310-602F-405F-82E4-FC8F77DC587A}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Tests", "tests\RevAgent.Bridge.Tests\RevAgent.Bridge.Tests.csproj", "{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -26,5 +32,17 @@ Global
 		{5C3470EF-A605-46B2-92E9-927F168E7F38}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5C3470EF-A605-46B2-92E9-927F168E7F38}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5C3470EF-A605-46B2-92E9-927F168E7F38}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ED0B98D5-03ED-4031-9F75-5F002A964BB2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ED0B98D5-03ED-4031-9F75-5F002A964BB2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ED0B98D5-03ED-4031-9F75-5F002A964BB2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ED0B98D5-03ED-4031-9F75-5F002A964BB2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{9C5A3310-602F-405F-82E4-FC8F77DC587A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{9C5A3310-602F-405F-82E4-FC8F77DC587A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{9C5A3310-602F-405F-82E4-FC8F77DC587A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{9C5A3310-602F-405F-82E4-FC8F77DC587A}.Release|Any CPU.Build.0 = Release|Any CPU
+		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
