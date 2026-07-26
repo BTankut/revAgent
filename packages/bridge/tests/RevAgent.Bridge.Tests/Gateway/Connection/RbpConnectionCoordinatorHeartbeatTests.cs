@@ -136,12 +136,15 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(
             1,
             cycle.Sent.Count(item => item.Type == "heartbeat"));
-        clock.Advance(TimeSpan.FromSeconds(25));
+        clock.Advance(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, faults.HitCount);
         Assert.Equal(1, factory.OpenCount);
         Assert.Equal(0, cycle.CloseCount);
         Assert.Equal(
             1,
             cycle.Sent.Count(item => item.Type == "heartbeat"));
+        clock.Advance(TimeSpan.FromSeconds(15));
+        Assert.Equal(1, factory.OpenCount);
 
         faults.Release();
         await EventuallyAsync(
@@ -255,6 +258,375 @@ public sealed partial class RbpConnectionCoordinatorTests
         await EventuallyAsync(
             async () => await store.GetStoredSessionAsync("rs-8080") is null);
         Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task TimedOutSendCannotBlockReplacementAndLateFaultIsObserved()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var lateSend = NewSignal();
+        var first = new FakeConnectionCycle(
+            responder.Respond,
+            sendBehavior: (_, envelope, _) =>
+                envelope.Type == "heartbeat"
+                    ? lateSend.Task
+                    : Task.CompletedTask);
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(
+            () => first.Sent.Count(item => item.Type == "heartbeat") == 1);
+        clock.Advance(TimeSpan.FromSeconds(10));
+        await EventuallyAsync(() => factory.OpenCount == 2);
+
+        lateSend.TrySetException(new IOException("late transport fault"));
+        await Task.Delay(25);
+        Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
+        Assert.True(first.CloseCount > 0);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task ReentrantAckCannotLeaveSendPendingPastLivenessWindow()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        var stalledSend = NewSignal();
+        var first = new FakeConnectionCycle(
+            responder.Respond,
+            sendBehavior: (cycle, envelope, _) =>
+            {
+                DeliverResponse(cycle, responder, envelope);
+                return envelope.Type == "heartbeat"
+                    ? stalledSend.Task
+                    : Task.CompletedTask;
+            });
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            closeTimeout: TimeSpan.FromMilliseconds(20));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().HasActiveConnection);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await EventuallyAsync(
+                () => first.Sent.Count(
+                    item => item.Type == "heartbeat") == 1);
+            await Task.Delay(25);
+
+            clock.Advance(TimeSpan.FromSeconds(65));
+            await EventuallyAsync(() => factory.OpenCount == 2);
+            Assert.True(first.CloseCount > 0);
+            Assert.Equal(
+                2,
+                coordinator.GetSnapshot().ConnectionGeneration);
+        }
+        finally
+        {
+            stalledSend.TrySetException(
+                new IOException("late re-entrant send fault"));
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+    }
+
+    [Fact]
+    public async Task ConsumedAckAppliesOnceBeforeLateSendFailureReconnects()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store =
+            OpenStore(directory, clock, faults);
+        var responder = new ScriptedGatewayResponder(clock);
+        var finishSend = NewSignal();
+        var first = new FakeConnectionCycle(
+            responder.Respond,
+            sendBehavior: async (cycle, envelope, _) =>
+            {
+                DeliverResponse(cycle, responder, envelope);
+                if (envelope.Type == "heartbeat")
+                {
+                    await finishSend.Task;
+                }
+            });
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection);
+        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+
+        finishSend.TrySetException(
+            new IOException("send failed after heartbeat_ack"));
+        await Task.Delay(25);
+        Assert.Equal(1, factory.OpenCount);
+        Assert.Equal(0, first.CloseCount);
+        Assert.Equal(1, faults.HitCount);
+
+        faults.Release();
+        await EventuallyAsync(() => factory.OpenCount == 2);
+        Assert.True(first.CloseCount > 0);
+        Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task ServiceStopIsBoundedWhileAckApplicationIsBlocked()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store =
+            OpenStore(directory, clock, faults);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            closeTimeout: TimeSpan.FromMilliseconds(20));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().HasActiveConnection);
+            faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1));
+            Assert.False(coordinator.GetSnapshot().HasActiveConnection);
+            Assert.Equal(
+                RbpConnectionPhase.Shutdown,
+                coordinator.GetSnapshot().Lifecycle.Phase);
+        }
+        finally
+        {
+            stop.Cancel();
+            faults.Release();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().OwnedBackgroundTaskCount == 0);
+    }
+
+    [Fact]
+    public async Task StalledAckApplicationCannotOutliveLivenessWindow()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new BlockingJournalFaultInjector();
+        await using RbpJournalStore store =
+            OpenStore(directory, clock, faults);
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(responder.Respond);
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock,
+            closeTimeout: TimeSpan.FromMilliseconds(20));
+        using var stop = new CancellationTokenSource();
+        Task run = coordinator.RunAsync(stop.Token);
+
+        try
+        {
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().HasActiveConnection);
+            faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+            clock.Advance(TimeSpan.FromSeconds(15));
+            await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+
+            clock.Advance(TimeSpan.FromSeconds(65));
+            await EventuallyAsync(() => factory.OpenCount == 2);
+            Assert.True(first.CloseCount > 0);
+            Assert.Equal(
+                2,
+                coordinator.GetSnapshot().ConnectionGeneration);
+
+            faults.Release();
+            await EventuallyAsync(
+                () => coordinator.GetSnapshot().HasActiveConnection);
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            faults.Release();
+            stop.Cancel();
+            await run.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().OwnedBackgroundTaskCount == 0);
+    }
+
+    [Fact]
+    public async Task MalformedAckFailsClosedAndNextGenerationCanHeartbeat()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var responder = new ScriptedGatewayResponder(clock);
+        RbpEnvelope? MalformedFirstAck(RbpEnvelope envelope)
+        {
+            RbpEnvelope? response = responder.Respond(envelope);
+            return envelope.Type == "heartbeat" && response is not null
+                ? response with
+                {
+                    Payload = Json("""{"acks":[]}"""),
+                }
+                : response;
+        }
+
+        var first = new FakeConnectionCycle(MalformedFirstAck);
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => factory.OpenCount == 2);
+        Assert.True(first.CloseCount > 0);
+
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(
+            () => second.Sent.Count(item => item.Type == "heartbeat") == 1);
+        await EventuallyAsync(
+            () => clock.HasDelayDueIn(TimeSpan.FromSeconds(15)));
+        Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task PostCommitFenceRereadCompletesWithoutReconnect()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new ArmedJournalFaultInjector();
+        await using RbpJournalStore store =
+            OpenStore(directory, clock, faults);
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(cycle);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection);
+        faults.Arm(RbpJournalFaultPoint.AfterCommitBeforeReturn);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(
+            () => clock.HasDelayDueIn(TimeSpan.FromSeconds(15)));
+
+        Assert.Equal(1, factory.OpenCount);
+        Assert.Equal(0, cycle.CloseCount);
+        Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(
+            () => cycle.Sent.Count(item => item.Type == "heartbeat") == 2);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
+    public async Task JournalApplyFailureCannotReuseFailedHeartbeatBinding()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        var faults = new ArmedJournalFaultInjector();
+        await using RbpJournalStore store =
+            OpenStore(directory, clock, faults);
+        var responder = new ScriptedGatewayResponder(clock);
+        var first = new FakeConnectionCycle(responder.Respond);
+        var second = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(first, second);
+        var coordinator = Coordinator(
+            factory,
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        await EventuallyAsync(
+            () => coordinator.GetSnapshot().HasActiveConnection);
+        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+        clock.Advance(TimeSpan.FromSeconds(15));
+        await EventuallyAsync(() => factory.OpenCount == 2);
+
+        Assert.Equal(
+            1,
+            first.Sent.Count(item => item.Type == "heartbeat"));
+        Assert.True(first.CloseCount > 0);
+        Assert.Equal(2, coordinator.GetSnapshot().ConnectionGeneration);
+        Assert.DoesNotContain(
+            second.Sent,
+            item => item.Type == "heartbeat");
+
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));
     }

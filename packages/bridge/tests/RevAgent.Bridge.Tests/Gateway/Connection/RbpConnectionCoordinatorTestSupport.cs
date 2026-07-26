@@ -230,6 +230,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private RbpJournalFaultPoint? _armed;
         private TaskCompletionSource _entered = NewCompletion();
         private TaskCompletionSource _release = NewCompletion();
+        private int _hitCount;
 
         internal Task Entered
         {
@@ -241,6 +242,8 @@ public sealed partial class RbpConnectionCoordinatorTests
                 }
             }
         }
+
+        internal int HitCount => Volatile.Read(ref _hitCount);
 
         internal void Arm(RbpJournalFaultPoint point)
         {
@@ -288,6 +291,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 return;
             }
 
+            Interlocked.Increment(ref _hitCount);
             entered.TrySetResult();
             release.GetAwaiter().GetResult();
         }
