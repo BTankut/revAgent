@@ -1,4 +1,3 @@
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Net;
 using System.Security.Cryptography;
@@ -241,6 +240,14 @@ internal sealed class ProcessWindowsAddinProcessAttestor
 
             throw;
         }
+        catch (AttestationHelperLaunchCleanupException exception)
+        {
+            _health.Poison();
+            throw Failure(
+                "addin_process_attestation_helper_restart_required",
+                "The attestation helper launch cleanup could not be verified; the Bridge Worker must restart.",
+                exception.InnerException ?? exception);
+        }
         catch (Exception exception)
         {
             if (process != null)
@@ -421,22 +428,38 @@ internal sealed class SystemAttestationHelperProcessLauncher
     ];
     private readonly IAttestationHelperChildImageVerifier _imageVerifier;
     private readonly IAttestationHelperJobFactory _jobFactory;
+    private readonly IAttestationHelperNativeProcessFactory
+        _nativeProcessFactory;
 
     internal SystemAttestationHelperProcessLauncher()
         : this(
             new WindowsAttestationHelperChildImageVerifier(),
-            new WindowsAttestationHelperJobFactory())
+            new WindowsAttestationHelperJobFactory(),
+            new WindowsAttestationHelperNativeProcessFactory())
     {
     }
 
     internal SystemAttestationHelperProcessLauncher(
         IAttestationHelperChildImageVerifier imageVerifier,
         IAttestationHelperJobFactory jobFactory)
+        : this(
+            imageVerifier,
+            jobFactory,
+            new WindowsAttestationHelperNativeProcessFactory())
+    {
+    }
+
+    internal SystemAttestationHelperProcessLauncher(
+        IAttestationHelperChildImageVerifier imageVerifier,
+        IAttestationHelperJobFactory jobFactory,
+        IAttestationHelperNativeProcessFactory nativeProcessFactory)
     {
         _imageVerifier = imageVerifier ??
             throw new ArgumentNullException(nameof(imageVerifier));
         _jobFactory = jobFactory ??
             throw new ArgumentNullException(nameof(jobFactory));
+        _nativeProcessFactory = nativeProcessFactory ??
+            throw new ArgumentNullException(nameof(nativeProcessFactory));
     }
 
     public IAttestationHelperProcess Start(
@@ -444,34 +467,43 @@ internal sealed class SystemAttestationHelperProcessLauncher
     {
         ArgumentNullException.ThrowIfNull(executable);
         ProcessStartInfo startInfo = CreateStartInfo(executable);
-        var process = new Process
-        {
-            StartInfo = startInfo,
-            EnableRaisingEvents = true,
-        };
         IAttestationHelperJob? job = null;
+        IAttestationHelperNativeProcess? process = null;
         try
         {
             job = _jobFactory.Create();
-            if (!process.Start())
-            {
-                throw new InvalidOperationException(
-                    "The isolated attestation helper did not start.");
-            }
-
-            job.Assign(process);
-            _imageVerifier.Verify(process, executable);
+            process = _nativeProcessFactory.StartSuspended(
+                startInfo,
+                job);
+            _imageVerifier.Verify(process.Process, executable);
+            process.Resume();
             var result =
                 new SystemAttestationHelperProcess(process, job);
+            process = null;
             job = null;
             return result;
         }
-        catch
+        catch (Exception launchFailure)
+        {
+            if (process != null &&
+                job != null)
+            {
+                IReadOnlyList<Exception> cleanupFailures =
+                    CleanupStartedProcess(process, job);
+                if (cleanupFailures.Count != 0)
+                {
+                    throw new AttestationHelperLaunchCleanupException(
+                        launchFailure,
+                        cleanupFailures);
+                }
+            }
+
+            throw;
+        }
+        finally
         {
             job?.Dispose();
-            TryKillAndWait(process);
-            process.Dispose();
-            throw;
+            process?.Dispose();
         }
     }
 
@@ -505,36 +537,56 @@ internal sealed class SystemAttestationHelperProcessLauncher
         return startInfo;
     }
 
-    private static void TryKillAndWait(Process process)
+    private static IReadOnlyList<Exception> CleanupStartedProcess(
+        IAttestationHelperNativeProcess process,
+        IAttestationHelperJob job)
     {
+        var failures = new List<Exception>();
         try
         {
-            if (process.Id != 0 && !process.HasExited)
+            job.Terminate();
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        try
+        {
+            if (!process.WaitForExit(TimeSpan.FromSeconds(2)))
             {
-                process.Kill(entireProcessTree: true);
-                process.WaitForExit(milliseconds: 2000);
+                failures.Add(
+                    new TimeoutException(
+                        "The suspended attestation helper did not terminate."));
             }
         }
-        catch (InvalidOperationException)
+        catch (Exception exception)
         {
-            // Process.Start did not succeed or the child exited concurrently.
+            failures.Add(exception);
         }
-        catch (Win32Exception)
+
+        try
         {
-            // The launch failure remains authoritative.
+            job.VerifyEmpty(TimeSpan.FromSeconds(2));
         }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        return failures;
     }
 }
 
 internal sealed class SystemAttestationHelperProcess
     : IAttestationHelperProcess
 {
-    private readonly Process _process;
+    private readonly IAttestationHelperNativeProcess _process;
     private readonly IAttestationHelperJob _job;
     private int _disposed;
 
     internal SystemAttestationHelperProcess(
-        Process process,
+        IAttestationHelperNativeProcess process,
         IAttestationHelperJob job)
     {
         _process = process ??
@@ -543,7 +595,7 @@ internal sealed class SystemAttestationHelperProcess
             throw new ArgumentNullException(nameof(job));
     }
 
-    public int Id => _process.Id;
+    public int Id => _process.Process.Id;
 
     public async Task<AttestationHelperProcessResult> ExchangeAsync(
         byte[] request,
@@ -556,21 +608,22 @@ internal sealed class SystemAttestationHelperProcess
         }
 
         Task<BoundedBytes> stdout = ReadBoundedAsync(
-            _process.StandardOutput.BaseStream,
+            _process.StandardOutput,
             maxOutputBytes);
         Task<BoundedBytes> stderr = ReadBoundedAsync(
-            _process.StandardError.BaseStream,
+            _process.StandardError,
             maxOutputBytes);
-        await _process.StandardInput.BaseStream
+        await _process.StandardInput
             .WriteAsync(request)
             .ConfigureAwait(false);
-        await _process.StandardInput.BaseStream
+        await _process.StandardInput
             .FlushAsync()
             .ConfigureAwait(false);
         _process.StandardInput.Close();
 
-        await _process.WaitForExitAsync(CancellationToken.None)
+        await _process.WaitForExitAsync()
             .ConfigureAwait(false);
+        _job.VerifyEmpty(TimeSpan.FromSeconds(2));
         BoundedBytes standardOutput = await stdout.ConfigureAwait(false);
         BoundedBytes standardError = await stderr.ConfigureAwait(false);
         return new AttestationHelperProcessResult(
@@ -583,26 +636,22 @@ internal sealed class SystemAttestationHelperProcess
 
     public async Task TerminateAsync()
     {
-        try
+        if (!_process.HasExited ||
+            !_job.IsEmpty)
         {
-            if (!_process.HasExited)
-            {
-                _job.Terminate();
-            }
+            _job.Terminate();
+        }
 
-            await _process.WaitForExitAsync(CancellationToken.None)
-                .WaitAsync(TimeSpan.FromSeconds(2))
-                .ConfigureAwait(false);
-            if (!_process.HasExited)
-            {
-                throw new TimeoutException(
-                    "The attestation helper process exit was not observed.");
-            }
-        }
-        catch (InvalidOperationException) when (_process.HasExited)
+        await _process.WaitForExitAsync()
+            .WaitAsync(TimeSpan.FromSeconds(2))
+            .ConfigureAwait(false);
+        if (!_process.HasExited)
         {
-            // The process exited between HasExited and Kill.
+            throw new TimeoutException(
+                "The attestation helper process exit was not observed.");
         }
+
+        _job.VerifyEmpty(TimeSpan.FromSeconds(2));
     }
 
     public void Dispose()

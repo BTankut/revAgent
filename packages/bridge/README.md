@@ -199,11 +199,12 @@ below Program Files must be non-reparse, admin-owned, and non-admin-writable;
 a no-delete-share executable handle and volume/file identity remain pinned
 through child launch verification. The helper receives only an allowlisted
 environment over bounded redirected pipes and is assigned to a
-kill-on-job-close Windows Job Object. Requests and responses carry a per-call
-256-bit nonce. Deadline cancellation must verify helper exit before permitting
-healthy reuse; an unconfirmed kill or pipe close poisons process-wide
-attestation, rejects later launches, and requires the supervised Worker to
-restart.
+kill-on-job-close Windows Job Object atomically at process creation, before its
+suspended primary thread is resumed. Requests and responses carry a per-call
+256-bit nonce. Deadline cancellation must verify both the root helper exit and
+an empty Job Object before permitting healthy reuse; an unconfirmed kill,
+remaining descendant, or pipe close poisons process-wide attestation, rejects
+later launches, and requires the supervised Worker to restart.
 
 WinVerifyTrust holds a read-only, non-delete-share file handle while the
 provider state is open. Every signer exposed by that validated provider state

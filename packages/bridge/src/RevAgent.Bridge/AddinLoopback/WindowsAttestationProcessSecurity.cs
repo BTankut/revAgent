@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
+using System.IO.Pipes;
 using System.Runtime.InteropServices;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace RevAgent.Bridge.AddinLoopback;
@@ -565,11 +568,702 @@ internal sealed class WindowsAttestationHelperChildImageVerifier
         ref uint size);
 }
 
+internal sealed class AttestationHelperLaunchCleanupException
+    : Exception
+{
+    internal AttestationHelperLaunchCleanupException(
+        Exception launchFailure,
+        IReadOnlyList<Exception> cleanupFailures)
+        : base(
+            "The attestation helper launch failed and cleanup could not be verified.",
+            new AggregateException(
+                new[] { launchFailure }
+                    .Concat(cleanupFailures)))
+    {
+        ArgumentNullException.ThrowIfNull(launchFailure);
+        ArgumentNullException.ThrowIfNull(cleanupFailures);
+        if (cleanupFailures.Count == 0)
+        {
+            throw new ArgumentException(
+                "At least one cleanup failure is required.",
+                nameof(cleanupFailures));
+        }
+    }
+}
+
+internal interface IAttestationHelperNativeProcessFactory
+{
+    IAttestationHelperNativeProcess StartSuspended(
+        ProcessStartInfo startInfo,
+        IAttestationHelperJob job);
+}
+
+internal interface IAttestationHelperNativeProcess : IDisposable
+{
+    Process Process { get; }
+
+    Stream StandardInput { get; }
+
+    Stream StandardOutput { get; }
+
+    Stream StandardError { get; }
+
+    bool HasExited { get; }
+
+    int ExitCode { get; }
+
+    void Resume();
+
+    bool WaitForExit(TimeSpan timeout);
+
+    Task WaitForExitAsync();
+}
+
+internal sealed class WindowsAttestationHelperNativeProcessFactory
+    : IAttestationHelperNativeProcessFactory
+{
+    private const uint CreateSuspended = 0x00000004;
+    private const uint CreateUnicodeEnvironment = 0x00000400;
+    private const uint ExtendedStartupInfoPresent = 0x00080000;
+    private const uint CreateNoWindow = 0x08000000;
+    private const uint StartfUseStdHandles = 0x00000100;
+    private const uint WaitObject0 = 0x00000000;
+    private const uint WaitTimeout = 0x00000102;
+    private const uint WaitFailed = 0xFFFFFFFF;
+    private static readonly nuint ProcThreadAttributeHandleList = 0x00020002;
+    private static readonly nuint ProcThreadAttributeJobList = 0x0002000D;
+
+    public IAttestationHelperNativeProcess StartSuspended(
+        ProcessStartInfo startInfo,
+        IAttestationHelperJob job)
+    {
+        ArgumentNullException.ThrowIfNull(startInfo);
+        ArgumentNullException.ThrowIfNull(job);
+        ValidateStartInfo(startInfo);
+
+        AnonymousPipeServerStream? standardInput = null;
+        AnonymousPipeServerStream? standardOutput = null;
+        AnonymousPipeServerStream? standardError = null;
+        SafeFileHandle? processHandle = null;
+        SafeFileHandle? threadHandle = null;
+        Process? process = null;
+        bool childCreated = false;
+        try
+        {
+            standardInput = new AnonymousPipeServerStream(
+                PipeDirection.Out,
+                HandleInheritability.Inheritable);
+            standardOutput = new AnonymousPipeServerStream(
+                PipeDirection.In,
+                HandleInheritability.Inheritable);
+            standardError = new AnonymousPipeServerStream(
+                PipeDirection.In,
+                HandleInheritability.Inheritable);
+            IntPtr childStandardInput =
+                ParsePipeHandle(standardInput.GetClientHandleAsString());
+            IntPtr childStandardOutput =
+                ParsePipeHandle(standardOutput.GetClientHandleAsString());
+            IntPtr childStandardError =
+                ParsePipeHandle(standardError.GetClientHandleAsString());
+            using var attributes = new ProcessThreadAttributeList(
+                [
+                    childStandardInput,
+                    childStandardOutput,
+                    childStandardError,
+                ],
+                job.NativeHandle);
+            var startupInfo = new StartupInfoEx
+            {
+                StartupInfo = new StartupInfo
+                {
+                    Size = checked((uint)Marshal.SizeOf<StartupInfoEx>()),
+                    Flags = StartfUseStdHandles,
+                    StandardInput = childStandardInput,
+                    StandardOutput = childStandardOutput,
+                    StandardError = childStandardError,
+                },
+                AttributeList = attributes.Pointer,
+            };
+            using var environment =
+                new UnicodeEnvironmentBlock(startInfo.Environment);
+            var commandLine = new StringBuilder(
+                BuildCommandLine(startInfo));
+            if (!CreateProcess(
+                    startInfo.FileName,
+                    commandLine,
+                    IntPtr.Zero,
+                    IntPtr.Zero,
+                    inheritHandles: true,
+                    CreateSuspended |
+                    CreateUnicodeEnvironment |
+                    ExtendedStartupInfoPresent |
+                    CreateNoWindow,
+                    environment.Pointer,
+                    startInfo.WorkingDirectory,
+                    ref startupInfo,
+                    out ProcessInformation information))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            childCreated = true;
+            processHandle = new SafeFileHandle(
+                information.Process,
+                ownsHandle: true);
+            threadHandle = new SafeFileHandle(
+                information.Thread,
+                ownsHandle: true);
+            standardInput.DisposeLocalCopyOfClientHandle();
+            standardOutput.DisposeLocalCopyOfClientHandle();
+            standardError.DisposeLocalCopyOfClientHandle();
+
+            process = Process.GetProcessById(
+                checked((int)information.ProcessId));
+            _ = process.SafeHandle;
+            var result = new SystemAttestationHelperNativeProcess(
+                process,
+                standardInput,
+                standardOutput,
+                standardError,
+                threadHandle);
+            process = null;
+            standardInput = null;
+            standardOutput = null;
+            standardError = null;
+            threadHandle = null;
+            return result;
+        }
+        catch (Exception launchFailure)
+        {
+            if (childCreated)
+            {
+                IReadOnlyList<Exception> cleanupFailures =
+                    CleanupCreatedProcess(
+                        job,
+                        processHandle);
+                if (cleanupFailures.Count != 0)
+                {
+                    throw new AttestationHelperLaunchCleanupException(
+                        launchFailure,
+                        cleanupFailures);
+                }
+            }
+
+            throw;
+        }
+        finally
+        {
+            process?.Dispose();
+            processHandle?.Dispose();
+            threadHandle?.Dispose();
+            standardInput?.Dispose();
+            standardOutput?.Dispose();
+            standardError?.Dispose();
+        }
+    }
+
+    private static IReadOnlyList<Exception> CleanupCreatedProcess(
+        IAttestationHelperJob job,
+        SafeFileHandle? processHandle)
+    {
+        var failures = new List<Exception>();
+        try
+        {
+            job.Terminate();
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        if (processHandle == null ||
+            processHandle.IsInvalid ||
+            processHandle.IsClosed)
+        {
+            failures.Add(
+                new InvalidOperationException(
+                    "The suspended helper process handle is unavailable."));
+        }
+        else
+        {
+            uint waitResult = WaitForSingleObject(
+                processHandle,
+                milliseconds: 2000);
+            if (waitResult == WaitTimeout)
+            {
+                failures.Add(
+                    new TimeoutException(
+                        "The suspended helper process did not terminate."));
+            }
+            else if (waitResult == WaitFailed)
+            {
+                failures.Add(
+                    new Win32Exception(Marshal.GetLastWin32Error()));
+            }
+            else if (waitResult != WaitObject0)
+            {
+                failures.Add(
+                    new InvalidOperationException(
+                        "The suspended helper process returned an unexpected wait result."));
+            }
+        }
+
+        try
+        {
+            job.VerifyEmpty(TimeSpan.FromSeconds(2));
+        }
+        catch (Exception exception)
+        {
+            failures.Add(exception);
+        }
+
+        return failures;
+    }
+
+    private static void ValidateStartInfo(ProcessStartInfo startInfo)
+    {
+        if (startInfo.UseShellExecute ||
+            !startInfo.RedirectStandardInput ||
+            !startInfo.RedirectStandardOutput ||
+            !startInfo.RedirectStandardError ||
+            string.IsNullOrWhiteSpace(startInfo.FileName) ||
+            !Path.IsPathFullyQualified(startInfo.FileName) ||
+            string.IsNullOrWhiteSpace(startInfo.WorkingDirectory) ||
+            !Path.IsPathFullyQualified(startInfo.WorkingDirectory) ||
+            !string.IsNullOrEmpty(startInfo.Arguments))
+        {
+            throw new InvalidOperationException(
+                "The native attestation helper start contract is invalid.");
+        }
+    }
+
+    private static IntPtr ParsePipeHandle(string value)
+    {
+        if (!long.TryParse(
+                value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out long handleValue) ||
+            handleValue == 0)
+        {
+            throw new InvalidOperationException(
+                "The attestation helper pipe handle is invalid.");
+        }
+
+        return new IntPtr(handleValue);
+    }
+
+    private static string BuildCommandLine(
+        ProcessStartInfo startInfo)
+    {
+        var commandLine = new StringBuilder(
+            QuoteCommandLineArgument(startInfo.FileName));
+        foreach (string argument in startInfo.ArgumentList)
+        {
+            commandLine.Append(' ');
+            commandLine.Append(QuoteCommandLineArgument(argument));
+        }
+
+        return commandLine.ToString();
+    }
+
+    private static string QuoteCommandLineArgument(string value)
+    {
+        ArgumentNullException.ThrowIfNull(value);
+        if (value.Length != 0 &&
+            !value.Any(character =>
+                char.IsWhiteSpace(character) ||
+                character == '"'))
+        {
+            return value;
+        }
+
+        var quoted = new StringBuilder(value.Length + 2);
+        quoted.Append('"');
+        int backslashCount = 0;
+        foreach (char character in value)
+        {
+            if (character == '\\')
+            {
+                backslashCount++;
+                continue;
+            }
+
+            if (character == '"')
+            {
+                quoted.Append('\\', backslashCount * 2 + 1);
+                quoted.Append('"');
+                backslashCount = 0;
+                continue;
+            }
+
+            quoted.Append('\\', backslashCount);
+            quoted.Append(character);
+            backslashCount = 0;
+        }
+
+        quoted.Append('\\', backslashCount * 2);
+        quoted.Append('"');
+        return quoted.ToString();
+    }
+
+    private sealed class UnicodeEnvironmentBlock : IDisposable
+    {
+        private IntPtr _pointer;
+
+        internal UnicodeEnvironmentBlock(
+            IDictionary<string, string?> environment)
+        {
+            ArgumentNullException.ThrowIfNull(environment);
+            var entries = new List<string>();
+            foreach ((string key, string? value) in environment
+                         .OrderBy(
+                             pair => pair.Key,
+                             StringComparer.OrdinalIgnoreCase))
+            {
+                if (string.IsNullOrWhiteSpace(key) ||
+                    key.Contains('=') ||
+                    key.Contains('\0') ||
+                    value == null ||
+                    value.Contains('\0'))
+                {
+                    throw new InvalidOperationException(
+                        "The attestation helper environment is invalid.");
+                }
+
+                entries.Add($"{key}={value}");
+            }
+
+            string block = string.Join('\0', entries) + "\0\0";
+            _pointer = Marshal.StringToHGlobalUni(block);
+        }
+
+        internal IntPtr Pointer => _pointer;
+
+        public void Dispose()
+        {
+            IntPtr pointer = Interlocked.Exchange(
+                ref _pointer,
+                IntPtr.Zero);
+            if (pointer != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(pointer);
+            }
+        }
+    }
+
+    private sealed class ProcessThreadAttributeList : IDisposable
+    {
+        private IntPtr _pointer;
+        private IntPtr _handleList;
+        private IntPtr _jobList;
+        private bool _initialized;
+
+        internal ProcessThreadAttributeList(
+            IReadOnlyList<IntPtr> inheritedHandles,
+            IntPtr jobHandle)
+        {
+            if (inheritedHandles.Count == 0 ||
+                inheritedHandles.Any(handle => handle == IntPtr.Zero) ||
+                jobHandle == IntPtr.Zero)
+            {
+                throw new ArgumentException(
+                    "The process attribute handles are incomplete.");
+            }
+
+            nuint bytes = 0;
+            _ = InitializeProcThreadAttributeList(
+                IntPtr.Zero,
+                attributeCount: 2,
+                flags: 0,
+                ref bytes);
+            if (bytes == 0)
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            _pointer = Marshal.AllocHGlobal(checked((nint)bytes));
+            try
+            {
+                if (!InitializeProcThreadAttributeList(
+                        _pointer,
+                        attributeCount: 2,
+                        flags: 0,
+                        ref bytes))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+
+                _initialized = true;
+                _handleList = Marshal.AllocHGlobal(
+                    inheritedHandles.Count * IntPtr.Size);
+                for (int index = 0;
+                     index < inheritedHandles.Count;
+                     index++)
+                {
+                    Marshal.WriteIntPtr(
+                        _handleList,
+                        index * IntPtr.Size,
+                        inheritedHandles[index]);
+                }
+
+                if (!UpdateProcThreadAttribute(
+                        _pointer,
+                        flags: 0,
+                        ProcThreadAttributeHandleList,
+                        _handleList,
+                        checked((nuint)(
+                            inheritedHandles.Count *
+                            IntPtr.Size)),
+                        IntPtr.Zero,
+                        IntPtr.Zero))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+
+                _jobList = Marshal.AllocHGlobal(IntPtr.Size);
+                Marshal.WriteIntPtr(_jobList, jobHandle);
+                if (!UpdateProcThreadAttribute(
+                        _pointer,
+                        flags: 0,
+                        ProcThreadAttributeJobList,
+                        _jobList,
+                        checked((nuint)IntPtr.Size),
+                        IntPtr.Zero,
+                        IntPtr.Zero))
+                {
+                    throw new Win32Exception(Marshal.GetLastWin32Error());
+                }
+            }
+            catch
+            {
+                Dispose();
+                throw;
+            }
+        }
+
+        internal IntPtr Pointer => _pointer;
+
+        public void Dispose()
+        {
+            IntPtr pointer = Interlocked.Exchange(
+                ref _pointer,
+                IntPtr.Zero);
+            if (pointer != IntPtr.Zero)
+            {
+                if (_initialized)
+                {
+                    DeleteProcThreadAttributeList(pointer);
+                    _initialized = false;
+                }
+
+                Marshal.FreeHGlobal(pointer);
+            }
+
+            IntPtr handleList = Interlocked.Exchange(
+                ref _handleList,
+                IntPtr.Zero);
+            if (handleList != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(handleList);
+            }
+
+            IntPtr jobList = Interlocked.Exchange(
+                ref _jobList,
+                IntPtr.Zero);
+            if (jobList != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(jobList);
+            }
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct StartupInfo
+    {
+        internal uint Size;
+        internal string? Reserved;
+        internal string? Desktop;
+        internal string? Title;
+        internal uint X;
+        internal uint Y;
+        internal uint XSize;
+        internal uint YSize;
+        internal uint XCountChars;
+        internal uint YCountChars;
+        internal uint FillAttribute;
+        internal uint Flags;
+        internal short ShowWindow;
+        internal short Reserved2;
+        internal IntPtr Reserved2Pointer;
+        internal IntPtr StandardInput;
+        internal IntPtr StandardOutput;
+        internal IntPtr StandardError;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct StartupInfoEx
+    {
+        internal StartupInfo StartupInfo;
+        internal IntPtr AttributeList;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct ProcessInformation
+    {
+        internal IntPtr Process;
+        internal IntPtr Thread;
+        internal uint ProcessId;
+        internal uint ThreadId;
+    }
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "CreateProcessW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateProcess(
+        string applicationName,
+        StringBuilder commandLine,
+        IntPtr processAttributes,
+        IntPtr threadAttributes,
+        [MarshalAs(UnmanagedType.Bool)] bool inheritHandles,
+        uint creationFlags,
+        IntPtr environment,
+        string currentDirectory,
+        ref StartupInfoEx startupInfo,
+        out ProcessInformation processInformation);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool InitializeProcThreadAttributeList(
+        IntPtr attributeList,
+        int attributeCount,
+        uint flags,
+        ref nuint size);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool UpdateProcThreadAttribute(
+        IntPtr attributeList,
+        uint flags,
+        nuint attribute,
+        IntPtr value,
+        nuint size,
+        IntPtr previousValue,
+        IntPtr returnSize);
+
+    [DllImport("kernel32.dll")]
+    private static extern void DeleteProcThreadAttributeList(
+        IntPtr attributeList);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint WaitForSingleObject(
+        SafeFileHandle handle,
+        uint milliseconds);
+}
+
+internal sealed class SystemAttestationHelperNativeProcess
+    : IAttestationHelperNativeProcess
+{
+    private readonly SafeFileHandle _primaryThread;
+    private int _resumed;
+    private int _disposed;
+
+    internal SystemAttestationHelperNativeProcess(
+        Process process,
+        Stream standardInput,
+        Stream standardOutput,
+        Stream standardError,
+        SafeFileHandle primaryThread)
+    {
+        Process = process ??
+            throw new ArgumentNullException(nameof(process));
+        StandardInput = standardInput ??
+            throw new ArgumentNullException(nameof(standardInput));
+        StandardOutput = standardOutput ??
+            throw new ArgumentNullException(nameof(standardOutput));
+        StandardError = standardError ??
+            throw new ArgumentNullException(nameof(standardError));
+        _primaryThread = primaryThread ??
+            throw new ArgumentNullException(nameof(primaryThread));
+    }
+
+    public Process Process { get; }
+
+    public Stream StandardInput { get; }
+
+    public Stream StandardOutput { get; }
+
+    public Stream StandardError { get; }
+
+    public bool HasExited => Process.HasExited;
+
+    public int ExitCode => Process.ExitCode;
+
+    public void Resume()
+    {
+        if (Interlocked.Exchange(ref _resumed, 1) != 0)
+        {
+            throw new InvalidOperationException(
+                "The attestation helper primary thread was already resumed.");
+        }
+
+        uint previousSuspendCount = ResumeThread(_primaryThread);
+        if (previousSuspendCount == uint.MaxValue)
+        {
+            throw new Win32Exception(Marshal.GetLastWin32Error());
+        }
+
+        _primaryThread.Dispose();
+    }
+
+    public bool WaitForExit(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero ||
+            timeout.TotalMilliseconds > int.MaxValue)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        return Process.WaitForExit(
+            checked((int)Math.Ceiling(timeout.TotalMilliseconds)));
+    }
+
+    public Task WaitForExitAsync() =>
+        Process.WaitForExitAsync(CancellationToken.None);
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _primaryThread.Dispose();
+        StandardInput.Dispose();
+        StandardOutput.Dispose();
+        StandardError.Dispose();
+        Process.Dispose();
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern uint ResumeThread(
+        SafeFileHandle thread);
+}
+
 internal interface IAttestationHelperJob : IDisposable
 {
+    IntPtr NativeHandle { get; }
+
+    bool IsEmpty { get; }
+
     void Assign(Process process);
 
     void Terminate();
+
+    void VerifyEmpty(TimeSpan timeout);
 }
 
 internal interface IAttestationHelperJobFactory
@@ -588,6 +1282,7 @@ internal sealed class WindowsAttestationHelperJob
     : IAttestationHelperJob
 {
     private const uint JobObjectLimitKillOnJobClose = 0x00002000;
+    private const int JobObjectBasicAccountingInformationClass = 1;
     private const int JobObjectExtendedLimitInformationClass = 9;
     private readonly SafeJobHandle _handle;
 
@@ -631,6 +1326,10 @@ internal sealed class WindowsAttestationHelperJob
         }
     }
 
+    public IntPtr NativeHandle => _handle.DangerousGetHandle();
+
+    public bool IsEmpty => ReadActiveProcessCount() == 0;
+
     public void Assign(Process process)
     {
         ArgumentNullException.ThrowIfNull(process);
@@ -648,9 +1347,55 @@ internal sealed class WindowsAttestationHelperJob
         }
     }
 
+    public void VerifyEmpty(TimeSpan timeout)
+    {
+        if (timeout <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(timeout));
+        }
+
+        Stopwatch stopwatch = Stopwatch.StartNew();
+        while (ReadActiveProcessCount() != 0)
+        {
+            if (stopwatch.Elapsed >= timeout)
+            {
+                throw new TimeoutException(
+                    "The attestation helper Job Object did not become empty.");
+            }
+
+            Thread.Sleep(millisecondsTimeout: 10);
+        }
+    }
+
     public void Dispose()
     {
         _handle.Dispose();
+    }
+
+    private uint ReadActiveProcessCount()
+    {
+        int length = Marshal.SizeOf<JobObjectBasicAccountingInformation>();
+        IntPtr pointer = Marshal.AllocHGlobal(length);
+        try
+        {
+            if (!QueryInformationJobObject(
+                    _handle,
+                    JobObjectBasicAccountingInformationClass,
+                    pointer,
+                    checked((uint)length),
+                    out _))
+            {
+                throw new Win32Exception(Marshal.GetLastWin32Error());
+            }
+
+            return Marshal.PtrToStructure<
+                JobObjectBasicAccountingInformation>(pointer)
+                .ActiveProcesses;
+        }
+        finally
+        {
+            Marshal.FreeHGlobal(pointer);
+        }
     }
 
     [StructLayout(LayoutKind.Sequential)]
@@ -689,6 +1434,19 @@ internal sealed class WindowsAttestationHelperJob
         internal UIntPtr PeakJobMemoryUsed;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct JobObjectBasicAccountingInformation
+    {
+        internal long TotalUserTime;
+        internal long TotalKernelTime;
+        internal long ThisPeriodTotalUserTime;
+        internal long ThisPeriodTotalKernelTime;
+        internal uint TotalPageFaultCount;
+        internal uint TotalProcesses;
+        internal uint ActiveProcesses;
+        internal uint TotalTerminatedProcesses;
+    }
+
     private sealed class SafeJobHandle
         : SafeHandleZeroOrMinusOneIsInvalid
     {
@@ -717,6 +1475,15 @@ internal sealed class WindowsAttestationHelperJob
         int informationClass,
         IntPtr information,
         uint informationLength);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool QueryInformationJobObject(
+        SafeJobHandle job,
+        int informationClass,
+        IntPtr information,
+        uint informationLength,
+        out uint returnLength);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]

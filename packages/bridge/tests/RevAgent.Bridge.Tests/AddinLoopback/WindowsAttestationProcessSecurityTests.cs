@@ -420,6 +420,121 @@ public sealed class WindowsAttestationProcessSecurityTests
         }
     }
 
+    [Fact]
+    public async Task NativeFactoryAtomicallyContainsImmediateGrandchild()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        ProcessStartInfo startInfo =
+            CreateImmediateGrandchildStartInfo();
+        using var job = new WindowsAttestationHelperJob();
+        using IAttestationHelperNativeProcess native =
+            new WindowsAttestationHelperNativeProcessFactory()
+                .StartSuspended(startInfo, job);
+        using var helper =
+            new SystemAttestationHelperProcess(native, job);
+        Process? grandchild = null;
+        try
+        {
+            native.Resume();
+            using var output = new StreamReader(
+                native.StandardOutput,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true,
+                leaveOpen: true);
+            string? childProcessIdText =
+                await output.ReadLineAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(
+                int.TryParse(
+                    childProcessIdText,
+                    out int childProcessId));
+            grandchild = Process.GetProcessById(childProcessId);
+            await native.WaitForExitAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.True(native.HasExited);
+            Assert.False(grandchild.HasExited);
+            Assert.False(job.IsEmpty);
+
+            await helper.TerminateAsync();
+            await grandchild.WaitForExitAsync()
+                .WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(grandchild.HasExited);
+            Assert.True(job.IsEmpty);
+        }
+        finally
+        {
+            grandchild?.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task NativeFactoryUsesOnlyProvidedEnvironmentBlock()
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return;
+        }
+
+        const string sentinel =
+            "REVAGENT_NATIVE_HELPER_SECRET_SENTINEL";
+        string? previous =
+            Environment.GetEnvironmentVariable(sentinel);
+        Environment.SetEnvironmentVariable(sentinel, "must-not-leak");
+        try
+        {
+            ProcessStartInfo startInfo = CreatePowerShellStartInfo(
+                $$"""
+                if ([string]::IsNullOrEmpty($env:{{sentinel}})) {
+                    [Console]::Out.WriteLine('absent')
+                }
+                else {
+                    [Console]::Out.WriteLine('leaked')
+                }
+                [Console]::Out.Flush()
+                """);
+            startInfo.Environment.Clear();
+            foreach (string variableName in new[] { "SystemRoot", "WINDIR" })
+            {
+                string? value =
+                    Environment.GetEnvironmentVariable(variableName);
+                if (!string.IsNullOrWhiteSpace(value))
+                {
+                    startInfo.Environment[variableName] = value;
+                }
+            }
+
+            using var job = new WindowsAttestationHelperJob();
+            using IAttestationHelperNativeProcess native =
+                new WindowsAttestationHelperNativeProcessFactory()
+                    .StartSuspended(startInfo, job);
+            native.Resume();
+            using var output = new StreamReader(
+                native.StandardOutput,
+                Encoding.UTF8,
+                detectEncodingFromByteOrderMarks: true,
+                bufferSize: 1024,
+                leaveOpen: true);
+
+            Assert.Equal(
+                "absent",
+                await output.ReadLineAsync()
+                    .WaitAsync(TimeSpan.FromSeconds(10)));
+            await native.WaitForExitAsync()
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            job.VerifyEmpty(TimeSpan.FromSeconds(2));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable(sentinel, previous);
+        }
+    }
+
     private static WindowsAttestationHelperPathAuthority Authority(
         StubFileTrustInspector files,
         DriveType driveType = DriveType.Fixed,
@@ -497,6 +612,67 @@ public sealed class WindowsAttestationProcessSecurityTests
         Assert.True(process.Start());
         process.StandardInput.AutoFlush = true;
         return process;
+    }
+
+    private static ProcessStartInfo CreateImmediateGrandchildStartInfo()
+    {
+        string powershellPath = Path.Combine(
+            Environment.SystemDirectory,
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
+        Assert.True(File.Exists(powershellPath));
+        const string grandchildScript =
+            "Start-Sleep -Seconds 300";
+        string grandchildEncoded = Convert.ToBase64String(
+            Encoding.Unicode.GetBytes(grandchildScript));
+        string helperScript =
+            $$"""
+            $ErrorActionPreference = 'Stop'
+            $child = Start-Process `
+                -FilePath '{{powershellPath}}' `
+                -ArgumentList @(
+                    '-NoLogo',
+                    '-NoProfile',
+                    '-NonInteractive',
+                    '-EncodedCommand',
+                    '{{grandchildEncoded}}') `
+                -WindowStyle Hidden `
+                -PassThru
+            [Console]::Out.WriteLine($child.Id)
+            [Console]::Out.Flush()
+            """;
+        return CreatePowerShellStartInfo(helperScript);
+    }
+
+    private static ProcessStartInfo CreatePowerShellStartInfo(
+        string script)
+    {
+        string powershellPath = Path.Combine(
+            Environment.SystemDirectory,
+            "WindowsPowerShell",
+            "v1.0",
+            "powershell.exe");
+        Assert.True(File.Exists(powershellPath));
+        string encodedHelper = Convert.ToBase64String(
+            Encoding.Unicode.GetBytes(script));
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = powershellPath,
+            WorkingDirectory =
+                Path.GetDirectoryName(powershellPath)!,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        startInfo.ArgumentList.Add("-NoLogo");
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(encodedHelper);
+        return startInfo;
     }
 
     private static void TryKillProcessTree(Process process)

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.Net;
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
@@ -55,6 +56,21 @@ public sealed class WindowsAttestationHelperTests
             new Win32Exception(
                 error: 5,
                 "Injected helper termination failure."));
+
+    [Fact]
+    public Task LaunchCleanupTimeoutPoisonsProcessAndPreventsSecondStart() =>
+        AssertLaunchCleanupFailurePoisonsProcessAsync(
+            terminationFailure: null,
+            new TimeoutException(
+                "Injected Job Object empty timeout."));
+
+    [Fact]
+    public Task LaunchCleanupWin32FailurePoisonsProcessAndPreventsSecondStart() =>
+        AssertLaunchCleanupFailurePoisonsProcessAsync(
+            new Win32Exception(
+                error: 5,
+                "Injected Job Object termination failure."),
+            emptyVerificationFailure: null);
 
     [Fact]
     public async Task UnobservedLiveHelperPoisonsProcessAndPreventsSecondStart()
@@ -376,6 +392,63 @@ public sealed class WindowsAttestationHelperTests
         Assert.Equal(1, freshLauncher.StartCount);
     }
 
+    private static async Task
+        AssertLaunchCleanupFailurePoisonsProcessAsync(
+            Exception? terminationFailure,
+            Exception? emptyVerificationFailure)
+    {
+        var health = new AttestationHelperProcessHealth();
+        var nativeFactory = new FakeNativeProcessFactory();
+        var job = new ConfigurableAttestationHelperJob(
+            terminationFailure,
+            emptyVerificationFailure);
+        var launcher = new SystemAttestationHelperProcessLauncher(
+            new ThrowingChildImageVerifier(),
+            new FixedAttestationHelperJobFactory(job),
+            nativeFactory);
+        var attestor = new ProcessWindowsAddinProcessAttestor(
+            new FixedExecutableResolver(),
+            launcher,
+            () => Nonce,
+            health);
+
+        AddinProcessAttestationException failure =
+            await Assert.ThrowsAsync<AddinProcessAttestationException>(
+                () => attestor.AttestBeforeDispatchAsync(
+                    Peer(),
+                    default));
+
+        Assert.Equal(
+            "addin_process_attestation_helper_restart_required",
+            failure.Code);
+        Assert.InRange(failure.Message.Length, 1, 512);
+        AggregateException aggregate =
+            Assert.IsType<AggregateException>(
+                failure.InnerException);
+        Assert.Contains(
+            aggregate.InnerExceptions,
+            exception => exception is InvalidDataException);
+        Type cleanupFailureType =
+            (terminationFailure ??
+             emptyVerificationFailure ??
+             throw new InvalidOperationException()).GetType();
+        Assert.Contains(
+            aggregate.InnerExceptions,
+            exception => exception.GetType() == cleanupFailureType);
+        Assert.True(health.IsPoisoned);
+        Assert.Equal(1, nativeFactory.StartCount);
+
+        AddinProcessAttestationException poisoned =
+            await Assert.ThrowsAsync<AddinProcessAttestationException>(
+                () => attestor.AttestBeforeDispatchAsync(
+                    Peer(),
+                    default));
+        Assert.Equal(
+            "addin_process_attestation_helper_restart_required",
+            poisoned.Code);
+        Assert.Equal(1, nativeFactory.StartCount);
+    }
+
     private static AddinConnectedPeer Peer() =>
         new(
             new IPEndPoint(IPAddress.Loopback, 50001),
@@ -474,6 +547,126 @@ public sealed class WindowsAttestationHelperTests
         {
             PinWasHeldAtStart = !_pathPin.Disposed;
             return _inner.Start(executable);
+        }
+    }
+
+    private sealed class ThrowingChildImageVerifier
+        : IAttestationHelperChildImageVerifier
+    {
+        public void Verify(
+            Process process,
+            ResolvedAttestationHelperExecutable expected)
+        {
+            throw new InvalidDataException(
+                "Injected suspended child image verification failure.");
+        }
+    }
+
+    private sealed class FixedAttestationHelperJobFactory
+        : IAttestationHelperJobFactory
+    {
+        private readonly IAttestationHelperJob _job;
+
+        internal FixedAttestationHelperJobFactory(
+            IAttestationHelperJob job)
+        {
+            _job = job;
+        }
+
+        public IAttestationHelperJob Create() => _job;
+    }
+
+    private sealed class ConfigurableAttestationHelperJob
+        : IAttestationHelperJob
+    {
+        private readonly Exception? _terminationFailure;
+        private readonly Exception? _emptyVerificationFailure;
+
+        internal ConfigurableAttestationHelperJob(
+            Exception? terminationFailure,
+            Exception? emptyVerificationFailure)
+        {
+            _terminationFailure = terminationFailure;
+            _emptyVerificationFailure = emptyVerificationFailure;
+        }
+
+        public IntPtr NativeHandle => new(1);
+
+        public bool IsEmpty => false;
+
+        public void Assign(Process process)
+        {
+        }
+
+        public void Terminate()
+        {
+            if (_terminationFailure != null)
+            {
+                throw _terminationFailure;
+            }
+        }
+
+        public void VerifyEmpty(TimeSpan timeout)
+        {
+            if (_emptyVerificationFailure != null)
+            {
+                throw _emptyVerificationFailure;
+            }
+        }
+
+        public void Dispose()
+        {
+        }
+    }
+
+    private sealed class FakeNativeProcessFactory
+        : IAttestationHelperNativeProcessFactory
+    {
+        internal int StartCount { get; private set; }
+
+        public IAttestationHelperNativeProcess StartSuspended(
+            ProcessStartInfo startInfo,
+            IAttestationHelperJob job)
+        {
+            StartCount++;
+            return new FakeNativeProcess();
+        }
+    }
+
+    private sealed class FakeNativeProcess
+        : IAttestationHelperNativeProcess
+    {
+        private readonly Process _process =
+            Process.GetCurrentProcess();
+
+        public Process Process => _process;
+
+        public Stream StandardInput { get; } = new MemoryStream();
+
+        public Stream StandardOutput { get; } = new MemoryStream();
+
+        public Stream StandardError { get; } = new MemoryStream();
+
+        public bool HasExited => false;
+
+        public int ExitCode => 0;
+
+        public void Resume()
+        {
+            throw new InvalidOperationException(
+                "Image verification must fail before resume.");
+        }
+
+        public bool WaitForExit(TimeSpan timeout) => true;
+
+        public Task WaitForExitAsync() => Task.CompletedTask;
+
+        public void Dispose()
+        {
+            StandardInput.Dispose();
+            StandardOutput.Dispose();
+            StandardError.Dispose();
+            _process.Dispose();
         }
     }
 
