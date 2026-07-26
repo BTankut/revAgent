@@ -60,6 +60,36 @@ namespace RevAgent.Contracts.Tests.AddinLoopback
         }
 
         [Fact]
+        public void OrdinaryResultNumbersKeepLegacyDoubleExponentSemantics()
+        {
+            byte[] payload = Encoding.UTF8.GetBytes(
+                "{\"jsonrpc\":\"2.0\",\"id\":\"wide-number\",\"result\":{\"resultContractVersion\":2,\"large\":1e100,\"small\":1e-100,\"fraction\":1.25}}");
+
+            AddinJsonRpcResponse response =
+                AddinJsonRpcCodec.ParseResponse(payload, "wide-number");
+
+            Assert.Equal(JTokenType.Float, response.Result!["large"]!.Type);
+            Assert.Equal(1e100, response.Result["large"]!.Value<double>());
+            Assert.Equal(1e-100, response.Result["small"]!.Value<double>());
+            Assert.Equal(1.25d, response.Result["fraction"]!.Value<double>());
+        }
+
+        [Fact]
+        public void RejectsContractIntegerRoundedByBinaryFloatingPoint()
+        {
+            byte[] payload = Encoding.UTF8.GetBytes(
+                "{\"jsonrpc\":\"2.0\",\"id\":\"rounded\",\"result\":{\"resultContractVersion\":2.00000000000000001}}");
+
+            AddinJsonRpcProtocolException error =
+                Assert.Throws<AddinJsonRpcProtocolException>(
+                    () => AddinJsonRpcCodec.ParseResponse(
+                        payload,
+                        "rounded"));
+
+            Assert.Equal("unsupported_result_contract_version", error.Code);
+        }
+
+        [Fact]
         public void ParsesCorrelatedStandardError()
         {
             byte[] payload = Encoding.UTF8.GetBytes(

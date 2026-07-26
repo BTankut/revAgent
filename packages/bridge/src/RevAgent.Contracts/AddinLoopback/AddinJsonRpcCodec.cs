@@ -134,7 +134,7 @@ namespace RevAgent.Contracts.AddinLoopback
 
                 JToken? contractVersion = result["resultContractVersion"];
                 long contractVersionValue;
-                if (JsonIntegerValue.TryReadInt64(
+                if (JsonIntegerValue.TryReadExactInt64(
                         contractVersion,
                         out contractVersionValue) != JsonIntegerReadResult.Success ||
                     contractVersionValue != ResultContractVersion)
@@ -144,7 +144,8 @@ namespace RevAgent.Contracts.AddinLoopback
                         "A JSON-RPC success result must carry resultContractVersion 2.");
                 }
 
-                result = (JObject)result.DeepClone();
+                result =
+                    StrictJson.DeepClonePreservingNumberLexemes(result);
             }
             else
             {
@@ -200,7 +201,7 @@ namespace RevAgent.Contracts.AddinLoopback
             JToken codeToken = error["code"]!;
             long codeValue;
             JsonIntegerReadResult codeReadResult =
-                JsonIntegerValue.TryReadInt64(codeToken, out codeValue);
+                JsonIntegerValue.TryReadExactInt64(codeToken, out codeValue);
             if (codeReadResult == JsonIntegerReadResult.NotInteger)
             {
                 throw ProtocolError(
@@ -228,7 +229,7 @@ namespace RevAgent.Contracts.AddinLoopback
 
             JToken? data = error.Property("data", StringComparison.Ordinal) == null
                 ? null
-                : error["data"]!.DeepClone();
+                : StrictJson.DeepClonePreservingNumberLexemes(error["data"]!);
             return new AddinJsonRpcError((int)codeValue, message, data);
         }
 

@@ -464,7 +464,7 @@ namespace RevAgent.Contracts.Rbp
             var token = parent[name];
             long value;
             JsonIntegerReadResult readResult =
-                JsonIntegerValue.TryReadInt64(token, out value);
+                JsonIntegerValue.TryReadExactInt64(token, out value);
             if (readResult == JsonIntegerReadResult.NotInteger)
             {
                 throw Invalid(path + "." + name + " must be an integer");
