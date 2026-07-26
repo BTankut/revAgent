@@ -29,6 +29,19 @@
         "resolved": "2.8.2",
         "contentHash": "vm1tbfXhFmjFMUmS4M0J0ASXz3/U5XvXBa6DOQUL3fEz4Vt6YPhv+ESCarx6M6D+9kJkJYZKCNvJMas1+nVfmQ=="
       },
+      "es6numberserializer": {
+        "type": "Transitive",
+        "resolved": "1.0.0",
+        "contentHash": "+PtPayBof2su9cmSsw/PIGY5d4DfT1to6+EZXYqztxkcgWoiM6pWQGW6YEjT91W16AcpwvsR0RBRKuPwUZ3Nog=="
+      },
+      "jsoncanonicalizer": {
+        "type": "Transitive",
+        "resolved": "1.0.0",
+        "contentHash": "NVJ+/qBOLe0BHyFIDx6v9zFC4TLgfnBpX0OIvqkBWoPjssNar3dBlTtaHy8XXQ0YEkgvYxpdL/U7zCARpJl2uQ==",
+        "dependencies": {
+          "es6numberserializer": "1.0.0"
+        }
+      },
       "Microsoft.CodeCoverage": {
         "type": "Transitive",
         "resolved": "17.14.1",
@@ -415,7 +428,8 @@
         "dependencies": {
           "Microsoft.Extensions.Hosting": "[8.0.1, )",
           "RevAgent.Bridge.Bootstrap": "[1.0.0, )",
-          "RevAgent.Contracts": "[1.0.0, )"
+          "RevAgent.Contracts": "[1.0.0, )",
+          "jsoncanonicalizer": "[1.0.0, )"
         }
       },
       "revagent-bridge-host": {
