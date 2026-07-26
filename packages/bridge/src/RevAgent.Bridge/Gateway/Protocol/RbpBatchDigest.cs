@@ -48,6 +48,13 @@ internal sealed record RbpBatchDigestInput(
 
         JsonElement steps = Required(payload, "steps", "/");
         RequireKind(steps, JsonValueKind.Array, "/steps");
+        if (steps.GetArrayLength() == 0)
+        {
+            throw Invalid(
+                "/steps",
+                "steps must contain at least one batch step.");
+        }
+
         var parsedSteps = new List<RbpBatchDigestStep>();
         int index = 0;
         foreach (JsonElement step in steps.EnumerateArray())
@@ -98,12 +105,12 @@ internal sealed record RbpBatchDigestInput(
 
         JsonElement timeout = Required(payload, "timeout_ms", "/");
         if (!TryReadJsonInteger(timeout, out long timeoutMilliseconds) ||
-            timeoutMilliseconds < 0 ||
+            timeoutMilliseconds < 1 ||
             timeoutMilliseconds > RbpProtocolLimits.MaximumSafeInteger)
         {
             throw Invalid(
                 "/timeout_ms",
-                "timeout_ms must be a non-negative JSON-safe integer.");
+                "timeout_ms must be a positive JSON-safe integer.");
         }
 
         return new RbpBatchDigestInput(

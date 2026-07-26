@@ -244,6 +244,49 @@ public sealed class Rfc8785JsonTests
         Assert.Equal("/steps/0/params/same", exception.Path);
     }
 
+    [Fact]
+    public void FrozenBatchCardinalityAndTimeoutBoundsFailClosed()
+    {
+        using JsonDocument fixture =
+            RbpFixtureReader.Load("batch-digest.json");
+        JsonObject baseline = JsonNode.Parse(
+            fixture.RootElement
+                .GetProperty("vectors")[0]
+                .GetProperty("input")
+                .GetRawText())?.AsObject() ??
+            throw new InvalidDataException("Batch vector is not an object.");
+
+        JsonObject emptySteps =
+            JsonNode.Parse(baseline.ToJsonString())?.AsObject() ??
+            throw new InvalidDataException("Batch vector is not an object.");
+        emptySteps["steps"] = new JsonArray();
+        using JsonDocument emptyStepsDocument =
+            JsonDocument.Parse(emptySteps.ToJsonString());
+        RbpFrameException emptyStepsException =
+            Assert.Throws<RbpFrameException>(
+                () => RbpBatchDigestInput.Parse(
+                    emptyStepsDocument.RootElement));
+        Assert.Equal(
+            RbpFrameErrorCode.InvalidEnvelope,
+            emptyStepsException.Code);
+        Assert.Equal("/steps", emptyStepsException.Path);
+
+        JsonObject zeroTimeout =
+            JsonNode.Parse(baseline.ToJsonString())?.AsObject() ??
+            throw new InvalidDataException("Batch vector is not an object.");
+        zeroTimeout["timeout_ms"] = 0;
+        using JsonDocument zeroTimeoutDocument =
+            JsonDocument.Parse(zeroTimeout.ToJsonString());
+        RbpFrameException zeroTimeoutException =
+            Assert.Throws<RbpFrameException>(
+                () => RbpBatchDigestInput.Parse(
+                    zeroTimeoutDocument.RootElement));
+        Assert.Equal(
+            RbpFrameErrorCode.InvalidEnvelope,
+            zeroTimeoutException.Code);
+        Assert.Equal("/timeout_ms", zeroTimeoutException.Path);
+    }
+
     private static string MakeBatchDigest(JsonObject payload)
     {
         using JsonDocument document =
