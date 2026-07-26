@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "nodeRequestProducer": {
+    "sourcePath": "installer/runtime-mcp-server/src/utils/SocketClient.ts",
+    "sourceBlob": "ce63fc6b879d919c18f3562a3333d030ad5ae9a4",
+    "executablePath": "installer/runtime-mcp-server/build/utils/SocketClient.js",
+    "executableBlob": "f6b15b7ea2659fbf83b1263d5dbbf6959202ec79",
+    "entryPoint": "RevitClientConnection.writeCommand"
+  },
+  "addinResponseProducer": {
+    "sourcePath": "packages/addin-loopback-fixture/src/framing.ts",
+    "sourceBlob": "64e22d48a825674621fff7577e71faf2f81d6a91",
+    "executablePath": "packages/addin-loopback-fixture/dist/framing.js",
+    "executableBlob": "ec323f9d36517f37ea062d5920a27f38577a2d16",
+    "entryPoint": "encodeJsonFrame"
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "frozenAtCommit": "b3cca906ec90d0068df489407d3e0ce7254a308e",
+  "frozenSources": {
+    "packages/protocol/schemas/rbp/v1/common.schema.json": "96661956099d8b06fa2180c5141f83569c867e04",
+    "packages/protocol/schemas/rbp/v1/payloads.schema.json": "d4c7213e454a3723e60f25bfe099b1c7740b7795",
+    "packages/protocol/schemas/rbp/v1/envelope.schema.json": "82fbf0ca40fc19c2727fa78e0991f3d62fdc7f84",
+    "packages/protocol/schemas/addin-loopback/v1/common.schema.json": "10be559ddd50912758fc6d24a5b40c7ef08d9a43",
+    "packages/protocol/schemas/addin-loopback/v1/json-rpc-response.schema.json": "4d3ef40f391ddaa80bfb62b1cbb48ccdefaa4ec6",
+    "packages/protocol/schemas/addin-loopback/v1/get-document-context.schema.json": "4f5704222c37377dfa4080c7e0d2f7669902c09d",
+    "packages/protocol/schemas/addin-loopback/v1/mcp-status.schema.json": "2cfd4563c19c9db62fc39d80996f312485d39acf",
+    "packages/protocol/schemas/addin-loopback/v1/execute-batch.schema.json": "dedf3c25b5f92d00bb94076c91fbfdce802c4800",
+    "installer/lib/RevAgent.DistributionIntegrity.psm1": "2943f1b642af915d627761bb14ae4364de253ba6"
+  },
+  "referenceSources": {
+    "scripts/test-distribution-integrity.ps1": "1ae202aeaabf75e75ecb63f317dd429944fd2907",
+    "installer/runtime-mcp-server/src/utils/SocketClient.ts": "ce63fc6b879d919c18f3562a3333d030ad5ae9a4",
+    "src/revit-plugin/revAgentPlugin/Core/SocketService.cs": "a7ef4b6bc687cfb92f30fbcbc2adaeeb2bc394ed",
+    "packages/addin-loopback-fixture/src/framing.ts": "64e22d48a825674621fff7577e71faf2f81d6a91",
+    "packages/addin-loopback-fixture/src/strictJson.ts": "643654b355841ca94fd7cb51f287339c64cafd21",
+    "packages/bridge-simulator/src/loopback.ts": "a904d13214a8a0ff36441a3e7bdeb34cac3cd683",
+    "packages/bridge-simulator/src/bridgeSimulator.ts": "7ddb6e251f33c4cdebe15fb86c19cb3a680a26f4"
+  }
+}

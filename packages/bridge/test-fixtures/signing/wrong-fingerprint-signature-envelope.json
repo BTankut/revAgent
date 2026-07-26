@@ -1,0 +1,12 @@
+{
+    "schemaVersion":  1,
+    "app":  "revAgent",
+    "signedObject":  "release-manifest",
+    "algorithm":  "RS256",
+    "keyId":  "p3-t1-oracle-key",
+    "publicKeyFingerprint":  "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "canonicalization":  "RFC8785-JCS-SHA256-v1",
+    "contentSha256":  "C93A25A5A44680F57E17688838D6F1C16798FBBB8D4A132ABCE800741CC9758C",
+    "createdAtUtc":  "2026-07-26T00:00:00.0000000Z",
+    "signature":  "pTg+PAKOdo6AuPHm+JhtkuZOuVOLrCskoqKW7t6LV7GQg7JPWdO4A8vXCSq2MnuZvoe79pEWtpGQ6TG3/+CJyGHmaUNTswvAQeIlBZM/KcvmQ//mx9glntUrYn7PkarsPUT9jG0ClM/7ZX4e6ASxQJZfB4cUATUDuubadMc74ZU="
+}

@@ -1,0 +1,12 @@
+{
+    "schemaVersion":  1,
+    "app":  "revAgent",
+    "signedObject":  "release-manifest",
+    "algorithm":  "RS256",
+    "keyId":  "missing-key",
+    "publicKeyFingerprint":  "12B62AB62329AC78CA58434958FEBA082912783070AA25F3B6D5F2FFB29500DC",
+    "canonicalization":  "RFC8785-JCS-SHA256-v1",
+    "contentSha256":  "C93A25A5A44680F57E17688838D6F1C16798FBBB8D4A132ABCE800741CC9758C",
+    "createdAtUtc":  "2026-07-26T00:00:00.0000000Z",
+    "signature":  "Qet4YeDPVnuvCNVrcC8+/dbqVnViyX40CJ/SNXnVDuLm8DwGm9PikK0CB2GtOUAx9mV3oQ9Uvx7QnLNfgbEZhCcWJ6gzBcMp1LgOuyPfNV4gcKScDkxTEJsPGAqGggp7GBHAiZJxs6GBDDfIumm9F2ZVFTpV9KoH6YyRm34+ohk="
+}
