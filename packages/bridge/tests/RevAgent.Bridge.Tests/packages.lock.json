@@ -427,6 +427,11 @@
           "System.Collections.Immutable": "8.0.0"
         }
       },
+      "System.Security.Cryptography.ProtectedData": {
+        "type": "Transitive",
+        "resolved": "8.0.0",
+        "contentHash": "+TUFINV2q2ifyXauQXRwy4CiBhqvDEDZeVJU7qfxya4aRYOKzVBpN+4acx25VcPB9ywUN6C0n8drWl110PhZEg=="
+      },
       "System.ServiceProcess.ServiceController": {
         "type": "Transitive",
         "resolved": "8.0.1",
@@ -495,7 +500,10 @@
         }
       },
       "revagent.bridge.bootstrap": {
-        "type": "Project"
+        "type": "Project",
+        "dependencies": {
+          "System.Security.Cryptography.ProtectedData": "[8.0.0, )"
+        }
       },
       "revagent.contracts": {
         "type": "Project",
