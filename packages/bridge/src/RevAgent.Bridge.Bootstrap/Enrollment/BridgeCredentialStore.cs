@@ -1,6 +1,7 @@
+using System.Buffers;
+using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 
 namespace RevAgent.Bridge.Bootstrap.Enrollment;
 
@@ -27,14 +28,12 @@ internal interface IBridgeCredentialMutator
 internal sealed class BridgeCredentialReader : IBridgeCredentialReader
 {
     private readonly BridgeCredentialPersistence _persistence;
-    private readonly IBridgeEnrollmentLock _enrollmentLock;
     private readonly object _gate = new();
 
     internal BridgeCredentialReader(
         BridgeInstallLayout layout,
         IBridgeCredentialProtector protector,
-        IBridgeCredentialAccessControl accessControl,
-        IBridgeEnrollmentLock? enrollmentLock = null)
+        IBridgeCredentialAccessControl accessControl)
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(protector);
@@ -43,11 +42,6 @@ internal sealed class BridgeCredentialReader : IBridgeCredentialReader
             layout,
             protector,
             accessControl);
-        _enrollmentLock =
-            enrollmentLock ??
-            new BridgeEnrollmentFileLock(
-                layout.EnrollmentLockPath,
-                accessControl);
     }
 
     internal static BridgeCredentialReader CreateProduction(
@@ -72,14 +66,6 @@ internal sealed class BridgeCredentialReader : IBridgeCredentialReader
     {
         lock (_gate)
         {
-            BridgeCredentialEntryState entries =
-                _persistence.ClassifyCredentialEntries();
-            if (!entries.IdentityExists && !entries.DeviceCredentialExists)
-            {
-                return null;
-            }
-
-            using IDisposable lease = _enrollmentLock.AcquireExisting();
             return _persistence.LoadRuntimeState();
         }
     }
@@ -140,19 +126,33 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
         lock (_gate)
         {
             using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.RecoverAtomicResidue();
             BridgeCredentialEntryState entries =
                 _persistence.ClassifyCredentialEntries();
             if (entries.IdentityExists)
             {
-                return _persistence.ReadMachineIdentity();
+                BridgeMachineIdentity identity =
+                    _persistence.ReadMachineIdentity();
+                try
+                {
+                    _persistence.EnsureMachineFingerprint(identity);
+                    return identity;
+                }
+                catch
+                {
+                    identity.Dispose();
+                    throw;
+                }
             }
 
-            if (entries.DeviceCredentialExists)
+            if (entries.FingerprintExists ||
+                entries.DeviceCredentialExists)
             {
                 throw new BridgeCredentialStoreException(
                     BridgeCredentialStoreErrorCode.InvalidState,
-                    "A device credential exists without its durable machine " +
-                    "identity. Explicit reset-both repair is required.");
+                    "Fingerprint or device-credential state exists without " +
+                    "its durable machine identity. Explicit reset-both " +
+                    "repair is required.");
             }
 
             return CreateAndPersistIdentity();
@@ -169,13 +169,16 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
         lock (_gate)
         {
             using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.RecoverAtomicResidue();
             using BridgeMachineIdentity identity =
                 ReadRequiredIdentity(expectedMachineFingerprint);
             if (_persistence.ClassifyCredentialEntries()
                 .DeviceCredentialExists)
             {
-                _ = _persistence.ReadDeviceCredential(
-                    identity.MachineFingerprint);
+                BridgeDeviceCredential existing =
+                    _persistence.ReadDeviceCredential(
+                        identity.MachineFingerprint);
+                existing.Dispose();
             }
 
             return _persistence.WriteDeviceCredential(
@@ -194,6 +197,7 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
         lock (_gate)
         {
             using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.RecoverAtomicResidue();
             using BridgeMachineIdentity identity =
                 ReadRequiredIdentity(expectedMachineFingerprint);
             if (_persistence.ClassifyCredentialEntries()
@@ -201,8 +205,10 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
             {
                 try
                 {
-                    _ = _persistence.ReadDeviceCredential(
-                        identity.MachineFingerprint);
+                    BridgeDeviceCredential existing =
+                        _persistence.ReadDeviceCredential(
+                            identity.MachineFingerprint);
+                    existing.Dispose();
                 }
                 catch (BridgeCredentialStoreException exception)
                     when (exception.ErrorCode is
@@ -233,6 +239,7 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
         lock (_gate)
         {
             using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.RecoverAtomicResidue();
             _persistence.QuarantineAllCredentialState();
             return CreateAndPersistIdentity();
         }
@@ -253,6 +260,16 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
 
         BridgeMachineIdentity identity =
             _persistence.ReadMachineIdentity();
+        try
+        {
+            _persistence.EnsureMachineFingerprint(identity);
+        }
+        catch
+        {
+            identity.Dispose();
+            throw;
+        }
+
         if (string.Equals(
                 identity.MachineFingerprint,
                 expectedMachineFingerprint,
@@ -308,6 +325,7 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
 
 internal readonly record struct BridgeCredentialEntryState(
     bool IdentityExists,
+    bool FingerprintExists,
     bool DeviceCredentialExists);
 
 internal sealed class BridgeCredentialPersistence
@@ -315,14 +333,6 @@ internal sealed class BridgeCredentialPersistence
     private const int SchemaVersion = 1;
     private const int MaximumProtectedFileBytes = 128 * 1024;
     private const int MaximumPlaintextBytes = 64 * 1024;
-
-    private static readonly JsonSerializerOptions SerializerOptions = new()
-    {
-        PropertyNameCaseInsensitive = false,
-        UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow,
-        WriteIndented = false,
-        MaxDepth = 16,
-    };
 
     private readonly BridgeInstallLayout _layout;
     private readonly IBridgeCredentialProtector _protector;
@@ -346,9 +356,12 @@ internal sealed class BridgeCredentialPersistence
     {
         BridgePathEntryKind identity =
             _accessControl.ClassifyPath(_layout.MachineIdentityPath);
+        BridgePathEntryKind fingerprint =
+            _accessControl.ClassifyPath(_layout.MachineFingerprintPath);
         BridgePathEntryKind credential =
             _accessControl.ClassifyPath(_layout.DeviceCredentialPath);
         if (identity == BridgePathEntryKind.Directory ||
+            fingerprint == BridgePathEntryKind.Directory ||
             credential == BridgePathEntryKind.Directory)
         {
             throw InvalidState(
@@ -357,109 +370,494 @@ internal sealed class BridgeCredentialPersistence
 
         return new BridgeCredentialEntryState(
             identity == BridgePathEntryKind.File,
+            fingerprint == BridgePathEntryKind.File,
             credential == BridgePathEntryKind.File);
     }
 
-    internal BridgeRuntimeCredentialState LoadRuntimeState()
+    internal void RecoverAtomicResidue()
     {
+        _atomicWriter.RecoverResidue(_layout.MachineIdentityPath);
+        _atomicWriter.RecoverResidue(_layout.MachineFingerprintPath);
+        _atomicWriter.RecoverResidue(_layout.DeviceCredentialPath);
+    }
+
+    internal void EnsureNoAtomicResidue()
+    {
+        if (_atomicWriter.HasResidue(_layout.MachineIdentityPath) ||
+            _atomicWriter.HasResidue(_layout.MachineFingerprintPath) ||
+            _atomicWriter.HasResidue(_layout.DeviceCredentialPath))
+        {
+            throw InvalidState(
+                "The bridge credential store contains unfinished atomic " +
+                "write residue. Runtime access is blocked until the " +
+                "bootstrap mutator reconciles it.");
+        }
+    }
+
+    internal BridgeRuntimeCredentialState? LoadRuntimeState()
+    {
+        EnsureNoAtomicResidue();
         BridgeCredentialEntryState entries = ClassifyCredentialEntries();
-        if (!entries.IdentityExists && !entries.DeviceCredentialExists)
+        if (!entries.IdentityExists &&
+            !entries.FingerprintExists &&
+            !entries.DeviceCredentialExists)
         {
-            throw InvalidState(
-                "The bridge credential state changed while its existing " +
-                "enrollment lock was acquired.");
+            return null;
         }
 
-        if (!entries.IdentityExists)
+        if (!entries.IdentityExists || !entries.FingerprintExists)
         {
             throw InvalidState(
-                "A device credential exists without its durable machine " +
-                "identity.");
+                "Runtime credential state requires both the durable machine " +
+                "identity and its non-secret fingerprint metadata.");
         }
 
-        using BridgeMachineIdentity identity = ReadMachineIdentity();
-        BridgeDeviceCredential? credential = entries.DeviceCredentialExists
-            ? ReadDeviceCredential(identity.MachineFingerprint)
-            : null;
-        return new BridgeRuntimeCredentialState(
-            identity.MachineFingerprint,
-            credential);
+        BridgeFileIdentity identityFileIdentity =
+            _accessControl.GetProtectedFileIdentity(
+                _layout.MachineIdentityPath);
+        RuntimeMachineIdentityRead identityRead =
+            ReadRuntimeMachineFingerprint();
+        RuntimeDeviceCredentialRead? credentialRead =
+            entries.DeviceCredentialExists
+                ? ReadRuntimeDeviceCredential(identityRead.MachineFingerprint)
+                : null;
+        try
+        {
+            EnsureNoAtomicResidue();
+            BridgeCredentialEntryState finalEntries =
+                ClassifyCredentialEntries();
+            if (entries != finalEntries ||
+                _accessControl.GetProtectedFileIdentity(
+                    _layout.MachineIdentityPath) !=
+                identityFileIdentity ||
+                _accessControl.GetProtectedFileIdentity(
+                    _layout.MachineFingerprintPath) !=
+                identityRead.FileIdentity ||
+                (credentialRead is not null &&
+                 _accessControl.GetProtectedFileIdentity(
+                     _layout.DeviceCredentialPath) !=
+                 credentialRead.Value.FileIdentity))
+            {
+                throw InvalidState(
+                    "The bridge credential state changed during its " +
+                    "lock-free runtime read.");
+            }
+
+            return new BridgeRuntimeCredentialState(
+                identityRead.MachineFingerprint,
+                credentialRead?.Credential);
+        }
+        catch
+        {
+            credentialRead?.Credential.Dispose();
+            throw;
+        }
     }
 
     internal BridgeMachineIdentity ReadMachineIdentity()
     {
-        PersistedMachineIdentity persisted =
-            ReadProtectedJson<PersistedMachineIdentity>(
+        MachineIdentityPayload payload =
+            ReadProtectedPayload(
                 _layout.MachineIdentityPath,
-                "machine identity");
-        if (persisted.SchemaVersion != SchemaVersion ||
-            !string.Equals(
-                persisted.FingerprintPolicy,
-                BridgeMachineFingerprintPolicy.Name,
-                StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(persisted.FingerprintSeed))
-        {
+                "machine identity",
+                plaintext => ParseMachineIdentity(plaintext.Span),
+                out _);
+        return payload.Identity ??
             throw InvalidState(
-                "The protected bridge machine identity is not a supported " +
-                "schema.");
-        }
+                "The protected bridge machine identity seed was not " +
+                "materialized for the bootstrap mutator.");
+    }
 
-        byte[] seed = DecodeBase64(
-            persisted.FingerprintSeed,
-            "The protected bridge machine identity seed is invalid.");
+    private RuntimeMachineIdentityRead ReadRuntimeMachineFingerprint()
+    {
+        byte[]? metadata = null;
         try
         {
-            if (seed.Length != BridgeMachineFingerprintPolicy.SeedSizeBytes)
-            {
-                throw InvalidState(
-                    "The protected bridge machine identity seed has an " +
-                    "invalid length.");
-            }
-
-            return new BridgeMachineIdentity(seed);
+            _accessControl.VerifyProtectedDirectory(
+                _layout.CredentialDirectory);
+            BridgeProtectedFileRead read =
+                _accessControl.ReadProtectedFile(
+                    _layout.MachineFingerprintPath,
+                    maximumBytes: 4 * 1024);
+            metadata = read.Content;
+            RejectDuplicateJsonProperties(metadata);
+            return new RuntimeMachineIdentityRead(
+                ParseMachineFingerprintMetadata(metadata),
+                read.Identity);
+        }
+        catch (BridgeCredentialStoreException)
+        {
+            throw;
+        }
+        catch (Exception exception)
+            when (exception is IOException or
+                  UnauthorizedAccessException or
+                  JsonException or
+                  FormatException or
+                  ArgumentException)
+        {
+            throw new BridgeCredentialStoreException(
+                BridgeCredentialStoreErrorCode.ReadFailure,
+                "The protected non-secret bridge machine fingerprint " +
+                "metadata could not be read.",
+                exception);
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(seed);
+            if (metadata is not null)
+            {
+                CryptographicOperations.ZeroMemory(metadata);
+            }
         }
     }
 
-    internal BridgeDeviceCredential ReadDeviceCredential(
-        string machineFingerprint)
+    private static MachineIdentityPayload ParseMachineIdentity(
+        ReadOnlySpan<byte> json)
     {
-        PersistedDeviceCredential persisted =
-            ReadProtectedJson<PersistedDeviceCredential>(
-                _layout.DeviceCredentialPath,
-                "device credential");
-        if (persisted.SchemaVersion != SchemaVersion ||
-            !string.Equals(
-                persisted.FingerprintPolicy,
-                BridgeMachineFingerprintPolicy.Name,
-                StringComparison.Ordinal) ||
-            !string.Equals(
-                persisted.MachineFingerprint,
-                machineFingerprint,
-                StringComparison.Ordinal) ||
-            string.IsNullOrWhiteSpace(persisted.DeviceId) ||
-            string.IsNullOrWhiteSpace(persisted.DeviceToken) ||
-            !DateTimeOffset.TryParseExact(
-                persisted.IssuedAtUtc,
-                "O",
-                System.Globalization.CultureInfo.InvariantCulture,
-                System.Globalization.DateTimeStyles.RoundtripKind,
-                out DateTimeOffset issuedAtUtc))
-        {
-            throw InvalidState(
-                "The protected bridge device credential is invalid or bound " +
-                "to a different machine identity.");
-        }
-
+        Span<byte> encodedSeed = stackalloc byte[44];
+        Span<byte> decodedSeed =
+            stackalloc byte[BridgeMachineFingerprintPolicy.SeedSizeBytes];
         try
         {
-            return new BridgeDeviceCredential(
-                persisted.DeviceId,
-                new BridgeSecretString(persisted.DeviceToken),
-                issuedAtUtc);
+            var reader = NewStrictJsonReader(json);
+            RequireStartObject(
+                ref reader,
+                "bridge machine identity");
+            int? schemaVersion = null;
+            string? fingerprintPolicy = null;
+            string? machineFingerprint = null;
+            bool seedPresent = false;
+            while (reader.Read() &&
+                   reader.TokenType != JsonTokenType.EndObject)
+            {
+                string propertyName =
+                    ReadPropertyName(
+                        ref reader,
+                        "bridge machine identity");
+                ReadPropertyValue(
+                    ref reader,
+                    "bridge machine identity");
+                switch (propertyName)
+                {
+                    case "schema_version":
+                        schemaVersion = ReadInt32(
+                            ref reader,
+                            "bridge machine identity schema version");
+                        break;
+                    case "fingerprint_policy":
+                        fingerprintPolicy = ReadRequiredString(
+                            ref reader,
+                            "fingerprint policy");
+                        break;
+                    case "machine_fingerprint":
+                        machineFingerprint = ReadRequiredString(
+                            ref reader,
+                            "machine fingerprint");
+                        break;
+                    case "fingerprint_seed":
+                        if (reader.TokenType != JsonTokenType.String ||
+                            reader.ValueIsEscaped ||
+                            reader.HasValueSequence ||
+                            reader.ValueSpan.Length != encodedSeed.Length)
+                        {
+                            throw new JsonException(
+                                "The bridge machine identity seed encoding " +
+                                "is invalid.");
+                        }
+
+                        reader.ValueSpan.CopyTo(encodedSeed);
+                        seedPresent = true;
+                        break;
+                    default:
+                        throw new JsonException(
+                            "The bridge machine identity contains an unknown " +
+                            "property.");
+                }
+            }
+
+            RequireEndOfObjectAndDocument(
+                ref reader,
+                "bridge machine identity");
+            if (schemaVersion != SchemaVersion ||
+                !string.Equals(
+                    fingerprintPolicy,
+                    BridgeMachineFingerprintPolicy.Name,
+                    StringComparison.Ordinal) ||
+                !seedPresent ||
+                !IsCanonicalFingerprint(machineFingerprint))
+            {
+                throw new JsonException(
+                    "The bridge machine identity schema is invalid.");
+            }
+
+            OperationStatus decodeStatus = Base64.DecodeFromUtf8(
+                encodedSeed,
+                decodedSeed,
+                out int consumed,
+                out int written);
+            if (decodeStatus != OperationStatus.Done ||
+                consumed != encodedSeed.Length ||
+                written != decodedSeed.Length)
+            {
+                throw new JsonException(
+                    "The bridge machine identity seed is not canonical " +
+                    "base64.");
+            }
+
+            var identity = new BridgeMachineIdentity(decodedSeed);
+            if (!string.Equals(
+                    identity.MachineFingerprint,
+                    machineFingerprint,
+                    StringComparison.Ordinal))
+            {
+                identity.Dispose();
+                throw new JsonException(
+                    "The bridge machine identity fingerprint does not match " +
+                    "its seed.");
+            }
+
+            return new MachineIdentityPayload(
+                machineFingerprint!,
+                identity);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encodedSeed);
+            CryptographicOperations.ZeroMemory(decodedSeed);
+        }
+    }
+
+    private static string ParseMachineFingerprintMetadata(
+        ReadOnlySpan<byte> json)
+    {
+        var reader = NewStrictJsonReader(json);
+        RequireStartObject(
+            ref reader,
+            "bridge machine fingerprint metadata");
+        int? schemaVersion = null;
+        string? fingerprintPolicy = null;
+        string? machineFingerprint = null;
+        while (reader.Read() &&
+               reader.TokenType != JsonTokenType.EndObject)
+        {
+            string propertyName =
+                ReadPropertyName(
+                    ref reader,
+                    "bridge machine fingerprint metadata");
+            ReadPropertyValue(
+                ref reader,
+                "bridge machine fingerprint metadata");
+            switch (propertyName)
+            {
+                case "schema_version":
+                    schemaVersion = ReadInt32(
+                        ref reader,
+                        "bridge machine fingerprint schema version");
+                    break;
+                case "fingerprint_policy":
+                    fingerprintPolicy = ReadRequiredString(
+                        ref reader,
+                        "fingerprint policy");
+                    break;
+                case "machine_fingerprint":
+                    machineFingerprint = ReadRequiredString(
+                        ref reader,
+                        "machine fingerprint");
+                    break;
+                default:
+                    throw new JsonException(
+                        "The bridge machine fingerprint metadata contains " +
+                        "an unknown property.");
+            }
+        }
+
+        RequireEndOfObjectAndDocument(
+            ref reader,
+            "bridge machine fingerprint metadata");
+        if (schemaVersion != SchemaVersion ||
+            !string.Equals(
+                fingerprintPolicy,
+                BridgeMachineFingerprintPolicy.Name,
+                StringComparison.Ordinal) ||
+            !IsCanonicalFingerprint(machineFingerprint))
+        {
+            throw new JsonException(
+                "The bridge machine fingerprint metadata schema is invalid.");
+        }
+
+        return machineFingerprint!;
+    }
+
+    private static string ReadRequiredString(
+        ref Utf8JsonReader reader,
+        string fieldName)
+    {
+        if (reader.TokenType != JsonTokenType.String)
+        {
+            throw new JsonException(
+                $"The bridge machine identity {fieldName} must be a string.");
+        }
+
+        return reader.GetString() ??
+            throw new JsonException(
+                $"The bridge machine identity {fieldName} is null.");
+    }
+
+    private static bool IsCanonicalFingerprint(string? value)
+    {
+        const string prefix = "sha256:";
+        if (value is null ||
+            value.Length != prefix.Length + 64 ||
+            !value.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        return value.AsSpan(prefix.Length).IndexOfAnyExcept(
+            "0123456789abcdef") < 0;
+    }
+
+    internal BridgeDeviceCredential ReadDeviceCredential(
+        string machineFingerprint) =>
+        ReadDeviceCredentialCore(machineFingerprint, out _);
+
+    private RuntimeDeviceCredentialRead ReadRuntimeDeviceCredential(
+        string machineFingerprint)
+    {
+        BridgeDeviceCredential credential =
+            ReadDeviceCredentialCore(
+                machineFingerprint,
+                out BridgeFileIdentity fileIdentity);
+        return new RuntimeDeviceCredentialRead(credential, fileIdentity);
+    }
+
+    private BridgeDeviceCredential ReadDeviceCredentialCore(
+        string machineFingerprint,
+        out BridgeFileIdentity fileIdentity)
+    {
+        return ReadProtectedPayload(
+                _layout.DeviceCredentialPath,
+                "device credential",
+                plaintext => ParseDeviceCredential(
+                    plaintext.Span,
+                    machineFingerprint),
+                out fileIdentity);
+    }
+
+    private static BridgeDeviceCredential ParseDeviceCredential(
+        ReadOnlySpan<byte> json,
+        string expectedMachineFingerprint)
+    {
+        byte[]? tokenBytes = null;
+        try
+        {
+            var reader = NewStrictJsonReader(json);
+            RequireStartObject(ref reader, "bridge device credential");
+            int? schemaVersion = null;
+            string? fingerprintPolicy = null;
+            string? machineFingerprint = null;
+            string? deviceId = null;
+            string? issuedAtText = null;
+            int tokenLength = 0;
+            while (reader.Read() &&
+                   reader.TokenType != JsonTokenType.EndObject)
+            {
+                string propertyName =
+                    ReadPropertyName(
+                        ref reader,
+                        "bridge device credential");
+                ReadPropertyValue(
+                    ref reader,
+                    "bridge device credential");
+                switch (propertyName)
+                {
+                    case "schema_version":
+                        schemaVersion = ReadInt32(
+                            ref reader,
+                            "bridge device credential schema version");
+                        break;
+                    case "fingerprint_policy":
+                        fingerprintPolicy = ReadRequiredString(
+                            ref reader,
+                            "fingerprint policy");
+                        break;
+                    case "machine_fingerprint":
+                        machineFingerprint = ReadRequiredString(
+                            ref reader,
+                            "machine fingerprint");
+                        break;
+                    case "device_id":
+                        deviceId = ReadRequiredString(
+                            ref reader,
+                            "device id");
+                        break;
+                    case "device_token":
+                        if (reader.TokenType != JsonTokenType.String ||
+                            reader.HasValueSequence)
+                        {
+                            throw new JsonException(
+                                "The bridge device token must be a bounded " +
+                                "JSON string.");
+                        }
+
+                        tokenBytes = new byte[
+                            Math.Max(reader.ValueSpan.Length, 1)];
+                        tokenLength = reader.CopyString(tokenBytes);
+                        break;
+                    case "issued_at_utc":
+                        issuedAtText = ReadRequiredString(
+                            ref reader,
+                            "issue time");
+                        break;
+                    default:
+                        throw new JsonException(
+                            "The bridge device credential contains an unknown " +
+                            "property.");
+                }
+            }
+
+            RequireEndOfObjectAndDocument(
+                ref reader,
+                "bridge device credential");
+            if (schemaVersion != SchemaVersion ||
+                !string.Equals(
+                    fingerprintPolicy,
+                    BridgeMachineFingerprintPolicy.Name,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    machineFingerprint,
+                    expectedMachineFingerprint,
+                    StringComparison.Ordinal) ||
+                string.IsNullOrWhiteSpace(deviceId) ||
+                tokenBytes is null ||
+                !DateTimeOffset.TryParseExact(
+                    issuedAtText,
+                    "O",
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    System.Globalization.DateTimeStyles.RoundtripKind,
+                    out DateTimeOffset issuedAtUtc))
+            {
+                throw new JsonException(
+                    "The bridge device credential is invalid or bound to a " +
+                    "different machine identity.");
+            }
+
+            BridgeSecretString? token = null;
+            try
+            {
+                token = new BridgeSecretString(
+                    tokenBytes.AsSpan(0, tokenLength));
+                var credential = new BridgeDeviceCredential(
+                    deviceId,
+                    token,
+                    issuedAtUtc);
+                token = null;
+                return credential;
+            }
+            finally
+            {
+                token?.Dispose();
+            }
         }
         catch (ArgumentException exception)
         {
@@ -469,25 +867,92 @@ internal sealed class BridgeCredentialPersistence
                 "bounds.",
                 exception);
         }
+        finally
+        {
+            if (tokenBytes is not null)
+            {
+                CryptographicOperations.ZeroMemory(tokenBytes);
+            }
+        }
     }
 
     internal BridgeAtomicWriteResult WriteMachineIdentity(
         BridgeMachineIdentity identity)
     {
         byte[] seed = identity.CopySeed();
+        byte[]? plaintext = null;
         try
         {
-            var persisted = new PersistedMachineIdentity
-            {
-                SchemaVersion = SchemaVersion,
-                FingerprintPolicy = BridgeMachineFingerprintPolicy.Name,
-                FingerprintSeed = Convert.ToBase64String(seed),
-            };
-            return WriteProtectedJson(_layout.MachineIdentityPath, persisted);
+            plaintext = SerializeMachineIdentity(identity, seed);
+            _ = WriteProtectedPayload(
+                _layout.MachineIdentityPath,
+                plaintext);
+            return WriteMachineFingerprint(identity.MachineFingerprint);
         }
         finally
         {
             CryptographicOperations.ZeroMemory(seed);
+            if (plaintext is not null)
+            {
+                CryptographicOperations.ZeroMemory(plaintext);
+            }
+        }
+    }
+
+    internal void EnsureMachineFingerprint(BridgeMachineIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        BridgePathEntryKind kind =
+            _accessControl.ClassifyPath(_layout.MachineFingerprintPath);
+        if (kind == BridgePathEntryKind.Missing)
+        {
+            _ = WriteMachineFingerprint(identity.MachineFingerprint);
+            return;
+        }
+
+        if (kind != BridgePathEntryKind.File)
+        {
+            throw InvalidState(
+                "The bridge machine fingerprint metadata path is not a " +
+                "regular file.");
+        }
+
+        RuntimeMachineIdentityRead metadata =
+            ReadRuntimeMachineFingerprint();
+        if (!string.Equals(
+                metadata.MachineFingerprint,
+                identity.MachineFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw InvalidState(
+                "The bridge machine fingerprint metadata does not match " +
+                "the durable identity seed.");
+        }
+    }
+
+    private BridgeAtomicWriteResult WriteMachineFingerprint(
+        string machineFingerprint)
+    {
+        byte[] metadata = SerializeMachineFingerprint(machineFingerprint);
+        try
+        {
+            BridgeAtomicWriteResult result = _atomicWriter.Write(
+                _layout.MachineFingerprintPath,
+                metadata);
+            if (result.Outcome != BridgeAtomicWriteOutcome.Committed)
+            {
+                throw new BridgeCredentialStoreException(
+                    BridgeCredentialStoreErrorCode.AtomicWriteFailure,
+                    "The bridge machine fingerprint writer returned a " +
+                    "non-committed result without a recovery exception.",
+                    atomicWriteOutcome: result.Outcome);
+            }
+
+            return result;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(metadata);
         }
     }
 
@@ -495,18 +960,23 @@ internal sealed class BridgeCredentialPersistence
         string machineFingerprint,
         BridgeDeviceCredential credential)
     {
-        var persisted = new PersistedDeviceCredential
+        byte[]? plaintext = null;
+        try
         {
-            SchemaVersion = SchemaVersion,
-            FingerprintPolicy = BridgeMachineFingerprintPolicy.Name,
-            MachineFingerprint = machineFingerprint,
-            DeviceId = credential.DeviceId,
-            DeviceToken = credential.DeviceToken.Reveal(),
-            IssuedAtUtc = credential.IssuedAtUtc.ToString("O"),
-        };
-        return WriteProtectedJson(
-            _layout.DeviceCredentialPath,
-            persisted);
+            plaintext = SerializeDeviceCredential(
+                machineFingerprint,
+                credential);
+            return WriteProtectedPayload(
+                _layout.DeviceCredentialPath,
+                plaintext);
+        }
+        finally
+        {
+            if (plaintext is not null)
+            {
+                CryptographicOperations.ZeroMemory(plaintext);
+            }
+        }
     }
 
     internal void QuarantineDeviceCredential()
@@ -523,6 +993,13 @@ internal sealed class BridgeCredentialPersistence
         if (entries.DeviceCredentialExists)
         {
             Quarantine(_layout.DeviceCredentialPath, "device");
+        }
+
+        if (entries.FingerprintExists)
+        {
+            Quarantine(
+                _layout.MachineFingerprintPath,
+                "machine fingerprint metadata");
         }
 
         if (entries.IdentityExists)
@@ -552,10 +1029,15 @@ internal sealed class BridgeCredentialPersistence
         }
     }
 
-    private T ReadProtectedJson<T>(string filePath, string stateName)
+    private T ReadProtectedPayload<T>(
+        string filePath,
+        string stateName,
+        Func<ReadOnlyMemory<byte>, T> parser,
+        out BridgeFileIdentity fileIdentity)
     {
         byte[]? protectedBytes = null;
         byte[]? plaintext = null;
+        fileIdentity = default;
         try
         {
             string directoryPath =
@@ -567,6 +1049,7 @@ internal sealed class BridgeCredentialPersistence
                 _accessControl.ReadProtectedFile(
                     filePath,
                     MaximumProtectedFileBytes);
+            fileIdentity = read.Identity;
             protectedBytes = read.Content;
             plaintext =
                 _protector.Unprotect(protectedBytes) ??
@@ -579,11 +1062,7 @@ internal sealed class BridgeCredentialPersistence
             }
 
             RejectDuplicateJsonProperties(plaintext);
-            return JsonSerializer.Deserialize<T>(
-                       plaintext,
-                       SerializerOptions) ??
-                   throw InvalidState(
-                       $"The protected bridge {stateName} is empty.");
+            return parser(plaintext);
         }
         catch (BridgeCredentialStoreException)
         {
@@ -616,17 +1095,13 @@ internal sealed class BridgeCredentialPersistence
         }
     }
 
-    private BridgeAtomicWriteResult WriteProtectedJson<T>(
+    private BridgeAtomicWriteResult WriteProtectedPayload(
         string filePath,
-        T state)
+        byte[] plaintext)
     {
-        byte[]? plaintext = null;
         byte[]? protectedBytes = null;
         try
         {
-            plaintext = JsonSerializer.SerializeToUtf8Bytes(
-                state,
-                SerializerOptions);
             if (plaintext.Length is <= 0 or > MaximumPlaintextBytes)
             {
                 throw InvalidState(
@@ -670,15 +1145,229 @@ internal sealed class BridgeCredentialPersistence
         }
         finally
         {
-            if (plaintext is not null)
-            {
-                CryptographicOperations.ZeroMemory(plaintext);
-            }
-
             if (protectedBytes is not null)
             {
                 CryptographicOperations.ZeroMemory(protectedBytes);
             }
+        }
+    }
+
+    private static byte[] SerializeMachineIdentity(
+        BridgeMachineIdentity identity,
+        ReadOnlySpan<byte> seed)
+    {
+        Span<byte> encodedSeed = stackalloc byte[44];
+        try
+        {
+            OperationStatus status = Base64.EncodeToUtf8(
+                seed,
+                encodedSeed,
+                out int consumed,
+                out int written);
+            if (status != OperationStatus.Done ||
+                consumed != seed.Length ||
+                written != encodedSeed.Length)
+            {
+                throw InvalidState(
+                    "The bridge machine identity seed could not be encoded.");
+            }
+
+            using var stream = new MemoryStream(capacity: 512);
+            using (var writer = new Utf8JsonWriter(
+                       stream,
+                       new JsonWriterOptions
+                       {
+                           Indented = false,
+                           SkipValidation = false,
+                       }))
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("schema_version", SchemaVersion);
+                writer.WriteString(
+                    "fingerprint_policy",
+                    BridgeMachineFingerprintPolicy.Name);
+                writer.WriteString(
+                    "machine_fingerprint",
+                    identity.MachineFingerprint);
+                writer.WriteString("fingerprint_seed", encodedSeed);
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+
+            return CopyAndClearStream(stream);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(encodedSeed);
+        }
+    }
+
+    private static byte[] SerializeMachineFingerprint(
+        string machineFingerprint)
+    {
+        if (!IsCanonicalFingerprint(machineFingerprint))
+        {
+            throw InvalidState(
+                "The bridge machine fingerprint is not canonical.");
+        }
+
+        using var stream = new MemoryStream(capacity: 256);
+        using (var writer = new Utf8JsonWriter(
+                   stream,
+                   new JsonWriterOptions
+                   {
+                       Indented = false,
+                       SkipValidation = false,
+                   }))
+        {
+            writer.WriteStartObject();
+            writer.WriteNumber("schema_version", SchemaVersion);
+            writer.WriteString(
+                "fingerprint_policy",
+                BridgeMachineFingerprintPolicy.Name);
+            writer.WriteString(
+                "machine_fingerprint",
+                machineFingerprint);
+            writer.WriteEndObject();
+            writer.Flush();
+        }
+
+        return CopyAndClearStream(stream);
+    }
+
+    private static byte[] SerializeDeviceCredential(
+        string machineFingerprint,
+        BridgeDeviceCredential credential)
+    {
+        byte[] tokenBytes = credential.DeviceToken.CopyUtf8Bytes();
+        try
+        {
+            using var stream = new MemoryStream(
+                capacity: Math.Min(
+                    tokenBytes.Length + 512,
+                    MaximumPlaintextBytes));
+            using (var writer = new Utf8JsonWriter(
+                       stream,
+                       new JsonWriterOptions
+                       {
+                           Indented = false,
+                           SkipValidation = false,
+                       }))
+            {
+                writer.WriteStartObject();
+                writer.WriteNumber("schema_version", SchemaVersion);
+                writer.WriteString(
+                    "fingerprint_policy",
+                    BridgeMachineFingerprintPolicy.Name);
+                writer.WriteString(
+                    "machine_fingerprint",
+                    machineFingerprint);
+                writer.WriteString("device_id", credential.DeviceId);
+                writer.WriteString("device_token", tokenBytes);
+                writer.WriteString(
+                    "issued_at_utc",
+                    credential.IssuedAtUtc.ToString("O"));
+                writer.WriteEndObject();
+                writer.Flush();
+            }
+
+            return CopyAndClearStream(stream);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(tokenBytes);
+        }
+    }
+
+    private static byte[] CopyAndClearStream(MemoryStream stream)
+    {
+        int length = checked((int)stream.Length);
+        byte[] backingBuffer = stream.GetBuffer();
+        try
+        {
+            var result = new byte[length];
+            backingBuffer.AsSpan(0, length).CopyTo(result);
+            return result;
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(
+                backingBuffer.AsSpan(0, length));
+        }
+    }
+
+    private static Utf8JsonReader NewStrictJsonReader(
+        ReadOnlySpan<byte> json) =>
+        new(
+            json,
+            new JsonReaderOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 16,
+            });
+
+    private static void RequireStartObject(
+        ref Utf8JsonReader reader,
+        string stateName)
+    {
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
+        {
+            throw new JsonException(
+                $"The {stateName} must be a JSON object.");
+        }
+    }
+
+    private static string ReadPropertyName(
+        ref Utf8JsonReader reader,
+        string stateName)
+    {
+        if (reader.TokenType != JsonTokenType.PropertyName)
+        {
+            throw new JsonException(
+                $"The {stateName} property is invalid.");
+        }
+
+        return reader.GetString() ??
+            throw new JsonException(
+                $"The {stateName} property name is null.");
+    }
+
+    private static void ReadPropertyValue(
+        ref Utf8JsonReader reader,
+        string stateName)
+    {
+        if (!reader.Read())
+        {
+            throw new JsonException(
+                $"The {stateName} property has no value.");
+        }
+    }
+
+    private static int ReadInt32(
+        ref Utf8JsonReader reader,
+        string fieldName)
+    {
+        if (reader.TokenType != JsonTokenType.Number ||
+            !reader.TryGetInt32(out int value))
+        {
+            throw new JsonException(
+                $"The {fieldName} must be a 32-bit integer.");
+        }
+
+        return value;
+    }
+
+    private static void RequireEndOfObjectAndDocument(
+        ref Utf8JsonReader reader,
+        string stateName)
+    {
+        if (reader.TokenType != JsonTokenType.EndObject ||
+            reader.Read())
+        {
+            throw new JsonException(
+                $"The {stateName} JSON document is incomplete or contains " +
+                "trailing data.");
         }
     }
 
@@ -739,55 +1428,20 @@ internal sealed class BridgeCredentialPersistence
         }
     }
 
-    private static byte[] DecodeBase64(string value, string errorMessage)
-    {
-        try
-        {
-            return Convert.FromBase64String(value);
-        }
-        catch (FormatException exception)
-        {
-            throw new BridgeCredentialStoreException(
-                BridgeCredentialStoreErrorCode.InvalidState,
-                errorMessage,
-                exception);
-        }
-    }
-
     private static BridgeCredentialStoreException InvalidState(
         string message) =>
         new(BridgeCredentialStoreErrorCode.InvalidState, message);
 
-    private sealed class PersistedMachineIdentity
-    {
-        [JsonPropertyName("schema_version")]
-        public required int SchemaVersion { get; init; }
+    private readonly record struct MachineIdentityPayload(
+        string MachineFingerprint,
+        BridgeMachineIdentity? Identity);
 
-        [JsonPropertyName("fingerprint_policy")]
-        public required string FingerprintPolicy { get; init; }
+    private readonly record struct RuntimeMachineIdentityRead(
+        string MachineFingerprint,
+        BridgeFileIdentity FileIdentity);
 
-        [JsonPropertyName("fingerprint_seed")]
-        public required string FingerprintSeed { get; init; }
-    }
+    private readonly record struct RuntimeDeviceCredentialRead(
+        BridgeDeviceCredential Credential,
+        BridgeFileIdentity FileIdentity);
 
-    private sealed class PersistedDeviceCredential
-    {
-        [JsonPropertyName("schema_version")]
-        public required int SchemaVersion { get; init; }
-
-        [JsonPropertyName("fingerprint_policy")]
-        public required string FingerprintPolicy { get; init; }
-
-        [JsonPropertyName("machine_fingerprint")]
-        public required string MachineFingerprint { get; init; }
-
-        [JsonPropertyName("device_id")]
-        public required string DeviceId { get; init; }
-
-        [JsonPropertyName("device_token")]
-        public required string DeviceToken { get; init; }
-
-        [JsonPropertyName("issued_at_utc")]
-        public required string IssuedAtUtc { get; init; }
-    }
 }

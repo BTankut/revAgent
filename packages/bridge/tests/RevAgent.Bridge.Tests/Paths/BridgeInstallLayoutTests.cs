@@ -62,6 +62,12 @@ public sealed class BridgeInstallLayoutTests
             Path.Combine(
                 stateRoot,
                 "credentials",
+                "machine-fingerprint.json"),
+            layout.MachineFingerprintPath);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
                 "device-credential.dpapi"),
             layout.DeviceCredentialPath);
         Assert.Equal(

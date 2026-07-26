@@ -49,6 +49,9 @@ internal sealed record BridgeInstallLayout(string InstallRoot, string StateRoot)
     internal string MachineIdentityPath =>
         Path.Combine(CredentialDirectory, "machine-identity.dpapi");
 
+    internal string MachineFingerprintPath =>
+        Path.Combine(CredentialDirectory, "machine-fingerprint.json");
+
     internal string DeviceCredentialPath =>
         Path.Combine(CredentialDirectory, "device-credential.dpapi");
 

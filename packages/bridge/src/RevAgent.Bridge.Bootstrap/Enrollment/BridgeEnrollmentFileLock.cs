@@ -2,8 +2,6 @@ namespace RevAgent.Bridge.Bootstrap.Enrollment;
 
 internal interface IBridgeEnrollmentLock
 {
-    IDisposable AcquireExisting();
-
     IDisposable AcquireForMutation();
 }
 
@@ -18,17 +16,15 @@ internal sealed class BridgeEnrollmentFileLock : IBridgeEnrollmentLock
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(lockPath);
         ArgumentNullException.ThrowIfNull(accessControl);
-        _lockPath = Path.GetFullPath(lockPath);
+        _lockPath =
+            BridgeCredentialPathPolicy.NormalizeLocalFileSystemPath(lockPath);
         _accessControl = accessControl;
     }
 
-    public IDisposable AcquireExisting() =>
-        Acquire(createIfMissing: false);
-
     public IDisposable AcquireForMutation() =>
-        Acquire(createIfMissing: true);
+        Acquire();
 
-    private IDisposable Acquire(bool createIfMissing)
+    private IDisposable Acquire()
     {
         string directoryPath =
             Path.GetDirectoryName(_lockPath) ??
@@ -41,12 +37,22 @@ internal sealed class BridgeEnrollmentFileLock : IBridgeEnrollmentLock
                 _accessControl.ClassifyPath(directoryPath);
             if (directoryKind == BridgePathEntryKind.Directory)
             {
-                _accessControl.VerifyProtectedDirectory(directoryPath);
+                try
+                {
+                    _accessControl.VerifyProtectedDirectory(directoryPath);
+                }
+                catch (BridgeCredentialStoreException exception)
+                    when (exception.ErrorCode ==
+                          BridgeCredentialStoreErrorCode.AccessControlFailure)
+                {
+                    _accessControl.EnsureProtectedDirectory(directoryPath);
+                    _accessControl.VerifyProtectedDirectory(directoryPath);
+                }
             }
-            else if (directoryKind == BridgePathEntryKind.Missing &&
-                     createIfMissing)
+            else if (directoryKind == BridgePathEntryKind.Missing)
             {
                 _accessControl.EnsureProtectedDirectory(directoryPath);
+                _accessControl.VerifyProtectedDirectory(directoryPath);
             }
             else
             {
@@ -65,25 +71,11 @@ internal sealed class BridgeEnrollmentFileLock : IBridgeEnrollmentLock
                     _accessControl.ClassifyPath(_lockPath);
                 if (lockKind == BridgePathEntryKind.File)
                 {
-                    _accessControl.VerifyProtectedFile(_lockPath);
+                    RepairAndVerifyExistingLock();
                 }
-                else if (lockKind == BridgePathEntryKind.Missing &&
-                         createIfMissing)
+                else if (lockKind == BridgePathEntryKind.Missing)
                 {
-                    using (var initialize = new FileStream(
-                               _lockPath,
-                               FileMode.CreateNew,
-                               FileAccess.ReadWrite,
-                               FileShare.ReadWrite | FileShare.Delete,
-                               bufferSize: 1,
-                               FileOptions.WriteThrough))
-                    {
-                        initialize.Flush(flushToDisk: true);
-                    }
-
-                    _accessControl.VerifyNonReparsePath(_lockPath);
-                    _accessControl.ProtectFile(_lockPath);
-                    _accessControl.VerifyProtectedFile(_lockPath);
+                    CreateProtectedLock();
                 }
                 else
                 {
@@ -128,6 +120,69 @@ internal sealed class BridgeEnrollmentFileLock : IBridgeEnrollmentLock
                 BridgeCredentialStoreErrorCode.LockUnavailable,
                 "The bridge enrollment credential lock is unavailable.",
                 exception);
+        }
+    }
+
+    private void RepairAndVerifyExistingLock()
+    {
+        try
+        {
+            _accessControl.VerifyProtectedFile(_lockPath);
+        }
+        catch (BridgeCredentialStoreException)
+        {
+            _accessControl.VerifyNonReparsePath(_lockPath);
+            if (_accessControl.ClassifyPath(_lockPath) !=
+                BridgePathEntryKind.File)
+            {
+                throw;
+            }
+
+            _accessControl.ProtectFile(_lockPath);
+            _accessControl.VerifyProtectedFile(_lockPath);
+        }
+    }
+
+    private void CreateProtectedLock()
+    {
+        try
+        {
+            using (var initialize = new FileStream(
+                       _lockPath,
+                       FileMode.CreateNew,
+                       FileAccess.ReadWrite,
+                       FileShare.ReadWrite | FileShare.Delete,
+                       bufferSize: 1,
+                       FileOptions.WriteThrough))
+            {
+                initialize.Flush(flushToDisk: true);
+            }
+
+            _accessControl.VerifyNonReparsePath(_lockPath);
+            _accessControl.ProtectFile(_lockPath);
+            _accessControl.VerifyProtectedFile(_lockPath);
+        }
+        catch
+        {
+            TryDeleteUnprotectedBootstrapLock();
+            throw;
+        }
+    }
+
+    private void TryDeleteUnprotectedBootstrapLock()
+    {
+        try
+        {
+            _accessControl.VerifyNonReparsePath(_lockPath);
+            if (_accessControl.ClassifyPath(_lockPath) ==
+                BridgePathEntryKind.File)
+            {
+                File.Delete(_lockPath);
+            }
+        }
+        catch
+        {
+            // A later mutation attempt repairs a regular residue in place.
         }
     }
 

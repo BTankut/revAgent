@@ -23,6 +23,7 @@ public sealed class BridgeCredentialStoreTests
         Assert.False(Directory.Exists(fixture.Layout.CredentialDirectory));
         Assert.False(File.Exists(fixture.Layout.EnrollmentLockPath));
         Assert.False(File.Exists(fixture.Layout.MachineIdentityPath));
+        Assert.False(File.Exists(fixture.Layout.MachineFingerprintPath));
         Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
         Assert.Equal(0, fixture.RandomCalls);
     }
@@ -39,21 +40,71 @@ public sealed class BridgeCredentialStoreTests
     }
 
     [Fact]
-    public void ExistingStateWithoutLock_RuntimeFailsWithoutRepairingLock()
+    public void ExistingStateWithoutLock_RuntimeReadsWithoutRepairingLock()
     {
         using var fixture = CredentialFixture.Create();
         using BridgeMachineIdentity identity =
             fixture.Mutator.GetOrCreateMachineIdentity();
         File.Delete(fixture.Layout.EnrollmentLockPath);
 
-        BridgeCredentialStoreException exception =
-            Assert.Throws<BridgeCredentialStoreException>(
-                () => fixture.Reader.Load());
+        BridgeRuntimeCredentialState state =
+            Assert.IsType<BridgeRuntimeCredentialState>(
+                fixture.Reader.Load());
 
-        Assert.Equal(
-            BridgeCredentialStoreErrorCode.LockUnavailable,
-            exception.ErrorCode);
+        Assert.Equal(identity.MachineFingerprint, state.MachineFingerprint);
         Assert.False(File.Exists(fixture.Layout.EnrollmentLockPath));
+    }
+
+    [Fact]
+    public void LockAclFailure_CleansBootstrapResidueAndAllowsRetry()
+    {
+        using var fixture = CredentialFixture.Create();
+        fixture.AccessControl.FailNextFinalProtectPath =
+            fixture.Layout.EnrollmentLockPath;
+        fixture.AccessControl.FailNextProtectLeavesUnprotected = true;
+
+        Assert.Throws<BridgeCredentialStoreException>(
+            () => fixture.Mutator.GetOrCreateMachineIdentity());
+
+        Assert.False(File.Exists(fixture.Layout.EnrollmentLockPath));
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        Assert.True(File.Exists(fixture.Layout.EnrollmentLockPath));
+        Assert.True(File.Exists(fixture.Layout.MachineIdentityPath));
+    }
+
+    [Fact]
+    public void ExistingUnprotectedLock_IsRepairedUnderProtectedParent()
+    {
+        using var fixture = CredentialFixture.Create();
+        _ = Directory.CreateDirectory(fixture.Layout.CredentialDirectory);
+        File.WriteAllBytes(fixture.Layout.EnrollmentLockPath, []);
+        fixture.AccessControl.MarkUnprotected(
+            fixture.Layout.EnrollmentLockPath);
+
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        fixture.AccessControl.VerifyProtectedFile(
+            fixture.Layout.EnrollmentLockPath);
+        Assert.True(File.Exists(fixture.Layout.MachineIdentityPath));
+    }
+
+    [Fact]
+    public void ExistingUnprotectedCredentialDirectory_IsRepairedByMutator()
+    {
+        using var fixture = CredentialFixture.Create();
+        _ = Directory.CreateDirectory(fixture.Layout.CredentialDirectory);
+        fixture.AccessControl.MarkDirectoryUnprotected(
+            fixture.Layout.CredentialDirectory);
+
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        fixture.AccessControl.VerifyProtectedDirectory(
+            fixture.Layout.CredentialDirectory);
+        Assert.True(File.Exists(fixture.Layout.MachineIdentityPath));
     }
 
     [Fact]
@@ -69,7 +120,35 @@ public sealed class BridgeCredentialStoreTests
         Assert.Equal(1, fixture.RandomCalls);
         Assert.True(File.Exists(fixture.Layout.EnrollmentLockPath));
         Assert.True(File.Exists(fixture.Layout.MachineIdentityPath));
+        Assert.True(File.Exists(fixture.Layout.MachineFingerprintPath));
         Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
+    }
+
+    [Fact]
+    public void MissingFingerprintMetadata_IsRepairedOnlyByBootstrapMutator()
+    {
+        using var fixture = CredentialFixture.Create();
+        string expectedFingerprint;
+        using (BridgeMachineIdentity identity =
+               fixture.Mutator.GetOrCreateMachineIdentity())
+        {
+            expectedFingerprint = identity.MachineFingerprint;
+        }
+
+        File.Delete(fixture.Layout.MachineFingerprintPath);
+
+        Assert.Throws<BridgeCredentialStoreException>(
+            () => fixture.Reader.Load());
+        Assert.False(File.Exists(fixture.Layout.MachineFingerprintPath));
+
+        using BridgeMachineIdentity repaired =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        Assert.Equal(expectedFingerprint, repaired.MachineFingerprint);
+        Assert.True(File.Exists(fixture.Layout.MachineFingerprintPath));
+        Assert.Equal(
+            expectedFingerprint,
+            fixture.Reader.Load()!.MachineFingerprint);
     }
 
     [Fact]
@@ -98,6 +177,85 @@ public sealed class BridgeCredentialStoreTests
             typeof(BridgeMachineIdentity).Name,
             state.GetType().GetProperties()
                 .Select(property => property.PropertyType.Name));
+    }
+
+    [Fact]
+    public void RuntimeReader_DoesNotUseEnrollmentLockOrMutationCapability()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        _ = fixture.Mutator.SaveDeviceCredential(
+            identity.MachineFingerprint,
+            NewCredential(FirstDeviceToken, "device-42"));
+        File.Delete(fixture.Layout.EnrollmentLockPath);
+        fixture.AccessControl.ResetMutationCounts();
+
+        BridgeRuntimeCredentialState state = fixture.Reader.Load()!;
+
+        Assert.True(state.IsEnrolled);
+        Assert.Equal(0, fixture.AccessControl.EnsureProtectedDirectoryCalls);
+        Assert.Equal(0, fixture.AccessControl.ProtectFileCalls);
+        Assert.False(File.Exists(fixture.Layout.EnrollmentLockPath));
+        Assert.DoesNotContain(
+            typeof(BridgeCredentialReader)
+                .GetFields(
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic),
+            field => field.FieldType == typeof(IBridgeEnrollmentLock));
+    }
+
+    [Fact]
+    public void RuntimeReader_DoesNotDecodeOrMaterializeIdentitySeed()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        byte[] protectedBytes =
+            File.ReadAllBytes(fixture.Layout.MachineIdentityPath);
+        byte[] plaintext = XorCredentialProtector.Transform(protectedBytes);
+        try
+        {
+            string json = Encoding.UTF8.GetString(plaintext);
+            int valueStart = json.IndexOf(
+                "\"fingerprint_seed\":\"",
+                StringComparison.Ordinal);
+            Assert.True(valueStart >= 0);
+            valueStart += "\"fingerprint_seed\":\"".Length;
+            string invalidSeed = new('!', 44);
+            string modified =
+                json[..valueStart] +
+                invalidSeed +
+                json[(valueStart + 44)..];
+            byte[] modifiedPlaintext = Encoding.UTF8.GetBytes(modified);
+            try
+            {
+                File.WriteAllBytes(
+                    fixture.Layout.MachineIdentityPath,
+                    XorCredentialProtector.Transform(modifiedPlaintext));
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(modifiedPlaintext);
+            }
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(protectedBytes);
+            CryptographicOperations.ZeroMemory(plaintext);
+        }
+
+        fixture.Protector.ResetCounts();
+        BridgeRuntimeCredentialState state = fixture.Reader.Load()!;
+        Assert.Equal(0, fixture.Protector.UnprotectCalls);
+        BridgeCredentialStoreException mutationException =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.GetOrCreateMachineIdentity());
+
+        Assert.Equal(identity.MachineFingerprint, state.MachineFingerprint);
+        Assert.Equal(
+            BridgeCredentialStoreErrorCode.ReadFailure,
+            mutationException.ErrorCode);
     }
 
     [Fact]
@@ -160,6 +318,305 @@ public sealed class BridgeCredentialStoreTests
         Assert.Equal(
             BridgeAtomicWriteOutcome.Indeterminate,
             exception.AtomicWriteOutcome);
+    }
+
+    [Fact]
+    public void FreshTargetIndeterminate_PersistsIntentAcrossRestart()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        fixture.AccessControl.FailReadsForPath =
+            fixture.Layout.DeviceCredentialPath;
+        fixture.AccessControl.FailReadsAfterSuccessfulCount = 0;
+
+        BridgeCredentialStoreException indeterminate =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(FirstDeviceToken, "device-42")));
+        string intentPath =
+            fixture.Layout.DeviceCredentialPath +
+            ".revagent-write.intent";
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Indeterminate,
+            indeterminate.AtomicWriteOutcome);
+        Assert.True(File.Exists(intentPath));
+        Assert.Throws<BridgeCredentialStoreException>(
+            () => fixture.Reader.Load());
+
+        fixture.AccessControl.FailReadsForPath = null;
+        var restartedMutator = new BridgeCredentialMutator(
+            fixture.Layout,
+            fixture.Protector,
+            fixture.AccessControl,
+            randomBytes: RandomNumberGenerator.GetBytes);
+        BridgeCredentialStoreException recovered =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => restartedMutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recovered.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            recovered.RecoveredPriorWriteOutcome);
+        Assert.False(File.Exists(intentPath));
+        Assert.Equal(
+            FirstDeviceToken,
+            fixture.Reader.Load()!.DeviceCredential!.DeviceToken.Reveal());
+    }
+
+    [Fact]
+    public void PreflightFailure_IsExplicitlyNotCommitted()
+    {
+        using var fixture = CredentialFixture.Create();
+        var writer = new AtomicCredentialFileWriter(fixture.AccessControl);
+        fixture.AccessControl.FailNextClassifyPath =
+            fixture.Layout.CredentialDirectory;
+
+        BridgeCredentialStoreException exception =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => writer.Write(
+                    fixture.Layout.DeviceCredentialPath,
+                    [1, 2, 3]));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            exception.AtomicWriteOutcome);
+        Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
+    }
+
+    [Fact]
+    public void InvalidAtomicPayload_IsExplicitlyNotCommitted()
+    {
+        using var fixture = CredentialFixture.Create();
+        var writer = new AtomicCredentialFileWriter(fixture.AccessControl);
+
+        BridgeCredentialStoreException exception =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => writer.Write(
+                    fixture.Layout.DeviceCredentialPath,
+                    []));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            exception.AtomicWriteOutcome);
+    }
+
+    [Fact]
+    public void ExistingTargetIdentityProbeFailure_IsNotCommitted()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        byte[] before =
+            File.ReadAllBytes(fixture.Layout.MachineIdentityPath);
+        fixture.AccessControl.FailReadsForPath =
+            fixture.Layout.MachineIdentityPath;
+        fixture.AccessControl.FailReadsAfterSuccessfulCount = 0;
+        var writer = new AtomicCredentialFileWriter(fixture.AccessControl);
+
+        BridgeCredentialStoreException exception =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => writer.Write(
+                    fixture.Layout.MachineIdentityPath,
+                    [9, 8, 7]));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            exception.AtomicWriteOutcome);
+        Assert.Equal(
+            before,
+            File.ReadAllBytes(fixture.Layout.MachineIdentityPath));
+    }
+
+    [Fact]
+    public void CommittedBackupCleanupFailure_IsSurfacedAndRecoverable()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        _ = fixture.Mutator.SaveDeviceCredential(
+            identity.MachineFingerprint,
+            NewCredential(FirstDeviceToken, "device-42"));
+        string backupPath =
+            fixture.Layout.DeviceCredentialPath +
+            ".revagent-write.bak";
+        fixture.AccessControl.FailNextVerifyProtectedPath = backupPath;
+
+        BridgeCredentialStoreException exception =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            exception.AtomicWriteOutcome);
+        Assert.True(File.Exists(backupPath));
+        Assert.Throws<BridgeCredentialStoreException>(
+            () => fixture.Reader.Load());
+
+        BridgeCredentialStoreException recoveredCommit =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+        BridgeAtomicWriteResult retry =
+            fixture.Mutator.SaveDeviceCredential(
+                identity.MachineFingerprint,
+                NewCredential(RotatedDeviceToken, "device-42"));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveredCommit.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            recoveredCommit.RecoveredPriorWriteOutcome);
+        Assert.Equal(BridgeAtomicWriteOutcome.Committed, retry.Outcome);
+        Assert.False(File.Exists(backupPath));
+        Assert.Equal(
+            RotatedDeviceToken,
+            fixture.Reader.Load()!.DeviceCredential!.DeviceToken.Reveal());
+    }
+
+    [Fact]
+    public void RepeatedPriorCleanupFailure_DoesNotBecomeCurrentCommitOutcome()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        _ = fixture.Mutator.SaveDeviceCredential(
+            identity.MachineFingerprint,
+            NewCredential(FirstDeviceToken, "device-42"));
+        string backupPath =
+            fixture.Layout.DeviceCredentialPath +
+            ".revagent-write.bak";
+        fixture.AccessControl.FailNextVerifyProtectedPath = backupPath;
+        BridgeCredentialStoreException committed =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            committed.AtomicWriteOutcome);
+
+        fixture.AccessControl.FailNextVerifyProtectedPath = backupPath;
+        BridgeCredentialStoreException recoveryFailure =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveryFailure.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            recoveryFailure.RecoveredPriorWriteOutcome);
+        Assert.True(File.Exists(backupPath));
+
+        BridgeCredentialStoreException recovered =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.SaveDeviceCredential(
+                    identity.MachineFingerprint,
+                    NewCredential(RotatedDeviceToken, "device-42")));
+        using BridgeRuntimeCredentialState state = fixture.Reader.Load()!;
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recovered.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.Committed,
+            recovered.RecoveredPriorWriteOutcome);
+        Assert.False(File.Exists(backupPath));
+        Assert.Equal(
+            RotatedDeviceToken,
+            state.DeviceCredential!.DeviceToken.Reveal());
+    }
+
+    [Fact]
+    public void RuntimeReader_RejectsResidueWithoutCleaningIt()
+    {
+        using var fixture = CredentialFixture.Create();
+        using BridgeMachineIdentity identity =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+        string temporaryPath =
+            fixture.Layout.MachineIdentityPath +
+            ".revagent-write.tmp";
+        File.Copy(fixture.Layout.MachineIdentityPath, temporaryPath);
+        fixture.AccessControl.MarkUnprotected(temporaryPath);
+        fixture.AccessControl.ResetMutationCounts();
+
+        BridgeCredentialStoreException exception =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Reader.Load());
+
+        Assert.Equal(
+            BridgeCredentialStoreErrorCode.InvalidState,
+            exception.ErrorCode);
+        Assert.True(File.Exists(temporaryPath));
+        Assert.Equal(0, fixture.AccessControl.ProtectFileCalls);
+
+        BridgeCredentialStoreException recoveredResidue =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.GetOrCreateMachineIdentity());
+        using BridgeMachineIdentity recovered =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveredResidue.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveredResidue.RecoveredPriorWriteOutcome);
+        Assert.Equal(
+            identity.MachineFingerprint,
+            recovered.MachineFingerprint);
+        Assert.False(File.Exists(temporaryPath));
+    }
+
+    [Fact]
+    public void BootstrapMutator_RestoresMissingTargetFromBackupResidue()
+    {
+        using var fixture = CredentialFixture.Create();
+        string expectedFingerprint;
+        using (BridgeMachineIdentity identity =
+               fixture.Mutator.GetOrCreateMachineIdentity())
+        {
+            expectedFingerprint = identity.MachineFingerprint;
+        }
+
+        string backupPath =
+            fixture.Layout.MachineIdentityPath +
+            ".revagent-write.bak";
+        File.Move(fixture.Layout.MachineIdentityPath, backupPath);
+
+        Assert.Throws<BridgeCredentialStoreException>(
+            () => fixture.Reader.Load());
+
+        BridgeCredentialStoreException recoveredResidue =
+            Assert.Throws<BridgeCredentialStoreException>(
+                () => fixture.Mutator.GetOrCreateMachineIdentity());
+        using BridgeMachineIdentity recovered =
+            fixture.Mutator.GetOrCreateMachineIdentity();
+
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveredResidue.AtomicWriteOutcome);
+        Assert.Equal(
+            BridgeAtomicWriteOutcome.NotCommitted,
+            recoveredResidue.RecoveredPriorWriteOutcome);
+        Assert.Equal(
+            expectedFingerprint,
+            recovered.MachineFingerprint);
+        Assert.True(File.Exists(fixture.Layout.MachineIdentityPath));
+        Assert.False(File.Exists(backupPath));
     }
 
     [Fact]
@@ -257,41 +714,43 @@ public sealed class BridgeCredentialStoreTests
         Assert.Single(
             Directory.EnumerateFiles(
                 fixture.Layout.CredentialDirectory,
+                "machine-fingerprint.json.quarantine-*"));
+        Assert.Single(
+            Directory.EnumerateFiles(
+                fixture.Layout.CredentialDirectory,
                 "device-credential.dpapi.quarantine-*"));
     }
 
     [Fact]
-    public void DuplicateJsonProperty_IsRejected()
+    public void DuplicateFingerprintMetadataProperty_IsRejected()
     {
         using var fixture = CredentialFixture.Create();
         using BridgeMachineIdentity identity =
             fixture.Mutator.GetOrCreateMachineIdentity();
-        byte[] protectedBytes =
-            File.ReadAllBytes(fixture.Layout.MachineIdentityPath);
-        byte[] plaintext = XorCredentialProtector.Transform(protectedBytes);
+        byte[] metadata =
+            File.ReadAllBytes(fixture.Layout.MachineFingerprintPath);
         try
         {
-            string json = Encoding.UTF8.GetString(plaintext);
+            string json = Encoding.UTF8.GetString(metadata);
             string duplicated = json.Replace(
                 "\"schema_version\":1",
                 "\"schema_version\":1,\"schema_version\":1",
                 StringComparison.Ordinal);
-            byte[] duplicatePlaintext = Encoding.UTF8.GetBytes(duplicated);
+            byte[] duplicateMetadata = Encoding.UTF8.GetBytes(duplicated);
             try
             {
                 File.WriteAllBytes(
-                    fixture.Layout.MachineIdentityPath,
-                    XorCredentialProtector.Transform(duplicatePlaintext));
+                    fixture.Layout.MachineFingerprintPath,
+                    duplicateMetadata);
             }
             finally
             {
-                CryptographicOperations.ZeroMemory(duplicatePlaintext);
+                CryptographicOperations.ZeroMemory(duplicateMetadata);
             }
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(protectedBytes);
-            CryptographicOperations.ZeroMemory(plaintext);
+            CryptographicOperations.ZeroMemory(metadata);
         }
 
         BridgeCredentialStoreException exception =
@@ -323,14 +782,14 @@ public sealed class BridgeCredentialStoreTests
                 Path.Combine(rootPath, "install"),
                 Path.Combine(rootPath, "state"));
             AccessControl = accessControl;
-            var protector = new XorCredentialProtector();
+            Protector = new XorCredentialProtector();
             Reader = new BridgeCredentialReader(
                 Layout,
-                protector,
+                Protector,
                 accessControl);
             Mutator = new BridgeCredentialMutator(
                 Layout,
-                protector,
+                Protector,
                 accessControl,
                 randomBytes: count =>
                 {
@@ -347,6 +806,8 @@ public sealed class BridgeCredentialStoreTests
         internal BridgeInstallLayout Layout { get; }
 
         internal RecordingAccessControl AccessControl { get; }
+
+        internal XorCredentialProtector Protector { get; }
 
         internal BridgeCredentialReader Reader { get; }
 
@@ -380,10 +841,27 @@ public sealed class BridgeCredentialStoreTests
     private sealed class XorCredentialProtector :
         IBridgeCredentialProtector
     {
-        public byte[] Protect(byte[] plaintext) => Transform(plaintext);
+        internal int ProtectCalls { get; private set; }
 
-        public byte[] Unprotect(byte[] protectedBytes) =>
-            Transform(protectedBytes);
+        internal int UnprotectCalls { get; private set; }
+
+        public byte[] Protect(byte[] plaintext)
+        {
+            ProtectCalls++;
+            return Transform(plaintext);
+        }
+
+        public byte[] Unprotect(byte[] protectedBytes)
+        {
+            UnprotectCalls++;
+            return Transform(protectedBytes);
+        }
+
+        internal void ResetCounts()
+        {
+            ProtectCalls = 0;
+            UnprotectCalls = 0;
+        }
 
         internal static byte[] Transform(byte[] source)
         {
@@ -402,22 +880,52 @@ public sealed class BridgeCredentialStoreTests
     {
         private readonly IBridgeCredentialFileSystem _fileSystem =
             new BridgeCredentialFileSystem();
+        private readonly HashSet<string> _unprotectedPaths =
+            new(StringComparer.OrdinalIgnoreCase);
+        private readonly HashSet<string> _unprotectedDirectories =
+            new(StringComparer.OrdinalIgnoreCase);
 
         internal bool FailNextTemporaryProtect { get; set; }
 
         internal string? FailNextFinalProtectPath { get; set; }
 
+        internal bool FailNextProtectLeavesUnprotected { get; set; }
+
         internal string? FailReadsForPath { get; set; }
 
         internal int FailReadsAfterSuccessfulCount { get; set; }
 
+        internal string? FailNextClassifyPath { get; set; }
+
+        internal string? FailNextVerifyProtectedPath { get; set; }
+
+        internal int EnsureProtectedDirectoryCalls { get; private set; }
+
+        internal int ProtectFileCalls { get; private set; }
+
         private int MatchingReadCount { get; set; }
 
-        public void EnsureProtectedDirectory(string directoryPath) =>
+        public void EnsureProtectedDirectory(string directoryPath)
+        {
+            EnsureProtectedDirectoryCalls++;
             _ = Directory.CreateDirectory(directoryPath);
+            _ = _unprotectedDirectories.Remove(directoryPath);
+        }
 
-        public BridgePathEntryKind ClassifyPath(string path) =>
-            _fileSystem.Classify(path);
+        public BridgePathEntryKind ClassifyPath(string path)
+        {
+            if (FailNextClassifyPath is not null &&
+                string.Equals(
+                    path,
+                    FailNextClassifyPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                FailNextClassifyPath = null;
+                throw AccessFailure();
+            }
+
+            return _fileSystem.Classify(path);
+        }
 
         public IDisposable PinProtectedDirectory(string directoryPath) =>
             _fileSystem.PinDirectory(directoryPath);
@@ -448,10 +956,12 @@ public sealed class BridgeCredentialStoreTests
 
         public void ProtectFile(string filePath)
         {
+            ProtectFileCalls++;
             if (FailNextTemporaryProtect &&
                 filePath.EndsWith(".tmp", StringComparison.Ordinal))
             {
                 FailNextTemporaryProtect = false;
+                _ = _unprotectedPaths.Add(filePath);
                 throw AccessFailure();
             }
 
@@ -462,12 +972,25 @@ public sealed class BridgeCredentialStoreTests
                     StringComparison.OrdinalIgnoreCase))
             {
                 FailNextFinalProtectPath = null;
+                if (FailNextProtectLeavesUnprotected)
+                {
+                    FailNextProtectLeavesUnprotected = false;
+                    _ = _unprotectedPaths.Add(filePath);
+                }
+
                 throw AccessFailure();
             }
+
+            _ = _unprotectedPaths.Remove(filePath);
         }
 
         public void VerifyProtectedDirectory(string directoryPath)
         {
+            if (_unprotectedDirectories.Contains(directoryPath))
+            {
+                throw AccessFailure();
+            }
+
             if (_fileSystem.Classify(directoryPath) !=
                 BridgePathEntryKind.Directory)
             {
@@ -477,6 +1000,21 @@ public sealed class BridgeCredentialStoreTests
 
         public void VerifyProtectedFile(string filePath)
         {
+            if (FailNextVerifyProtectedPath is not null &&
+                string.Equals(
+                    filePath,
+                    FailNextVerifyProtectedPath,
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                FailNextVerifyProtectedPath = null;
+                throw AccessFailure();
+            }
+
+            if (_unprotectedPaths.Contains(filePath))
+            {
+                throw AccessFailure();
+            }
+
             if (_fileSystem.Classify(filePath) !=
                 BridgePathEntryKind.File)
             {
@@ -512,5 +1050,17 @@ public sealed class BridgeCredentialStoreTests
             new(
                 BridgeCredentialStoreErrorCode.AccessControlFailure,
                 "Injected ACL or pinned-read failure.");
+
+        internal void ResetMutationCounts()
+        {
+            EnsureProtectedDirectoryCalls = 0;
+            ProtectFileCalls = 0;
+        }
+
+        internal void MarkUnprotected(string path) =>
+            _ = _unprotectedPaths.Add(path);
+
+        internal void MarkDirectoryUnprotected(string path) =>
+            _ = _unprotectedDirectories.Add(path);
     }
 }
