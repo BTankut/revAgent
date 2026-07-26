@@ -304,15 +304,26 @@ internal static class RbpConnectionReducer
 
         if (sessionEvent.Type == RbpSessionEventType.Unregister)
         {
-            return sessionEvent.UnregisterReason is { } reason
-                ? TransitionedSession(state with
-                {
-                    Phase = RbpSessionPhase.Unregistered,
-                    ResumeAllowed = false,
-                    DispatchAllowed = false,
-                    UnregisterReason = reason,
-                })
-                : InvalidSession(state, sessionEvent);
+            if (sessionEvent.UnregisterReason is not { } reason ||
+                !Enum.IsDefined(typeof(RbpSessionUnregisterReason), reason))
+            {
+                return InvalidSession(state, sessionEvent);
+            }
+
+            if (state.Phase == RbpSessionPhase.Unregistered)
+            {
+                return state.UnregisterReason == reason
+                    ? TransitionedSession(state)
+                    : InvalidSession(state, sessionEvent);
+            }
+
+            return TransitionedSession(state with
+            {
+                Phase = RbpSessionPhase.Unregistered,
+                ResumeAllowed = false,
+                DispatchAllowed = false,
+                UnregisterReason = reason,
+            });
         }
 
         switch (sessionEvent.Type)
@@ -339,13 +350,28 @@ internal static class RbpConnectionReducer
                     })
                     : InvalidSession(state, sessionEvent);
             case RbpSessionEventType.ConnectionLost:
-                return state.Phase == RbpSessionPhase.Registered
-                    ? TransitionedSession(state with
-                    {
-                        Phase = RbpSessionPhase.Disconnected,
-                        DispatchAllowed = false,
-                    })
-                    : InvalidSession(state, sessionEvent);
+                return state.Phase switch
+                {
+                    RbpSessionPhase.Registering =>
+                        TransitionedSession(state with
+                        {
+                            Rsid = null,
+                            Phase = RbpSessionPhase.Discovered,
+                            ResumeAllowed = false,
+                            DispatchAllowed = false,
+                        }),
+                    RbpSessionPhase.Registered or
+                        RbpSessionPhase.Resuming =>
+                        TransitionedSession(state with
+                        {
+                            Phase = RbpSessionPhase.Disconnected,
+                            DispatchAllowed = false,
+                        }),
+                    RbpSessionPhase.Disconnected or
+                        RbpSessionPhase.ReEnrolling =>
+                        TransitionedSession(state),
+                    _ => InvalidSession(state, sessionEvent),
+                };
             case RbpSessionEventType.ResumeRequested:
                 return state.Phase == RbpSessionPhase.Disconnected &&
                        state.ResumeAllowed
@@ -356,7 +382,13 @@ internal static class RbpConnectionReducer
                     })
                     : InvalidSession(state, sessionEvent);
             case RbpSessionEventType.Resumed:
-                return state.Phase == RbpSessionPhase.Resuming
+                return state.Phase == RbpSessionPhase.Resuming &&
+                       state.ResumeAllowed &&
+                       !string.IsNullOrEmpty(state.Rsid) &&
+                       string.Equals(
+                           state.Rsid,
+                           sessionEvent.Rsid,
+                           StringComparison.Ordinal)
                     ? TransitionedSession(state with
                     {
                         Phase = RbpSessionPhase.Registered,
@@ -486,7 +518,8 @@ internal static class RbpConnectionReducer
                 RbpConnectionPhase.Degraded or
                 RbpConnectionPhase.Resuming or
                 RbpConnectionPhase.ReEnrolling) ||
-            connectionEvent.GoodbyeReason is not { } reason)
+            connectionEvent.GoodbyeReason is not { } reason ||
+            !Enum.IsDefined(typeof(RbpGoodbyeReason), reason))
         {
             return Invalid(state, connectionEvent);
         }
@@ -497,11 +530,14 @@ internal static class RbpConnectionReducer
             RbpGoodbyeReason.AuthRevoked =>
                 Transitioned(
                     PauseRetry(state, RbpRetryPauseReason.AuthRevoked)),
-            _ => Transitioned(
+            RbpGoodbyeReason.Update or
+                RbpGoodbyeReason.ServerDraining or
+                RbpGoodbyeReason.ProtocolError => Transitioned(
                 ScheduleBackoff(
                     state,
                     connectionEvent.ContinuousSteadyMilliseconds ?? 0,
                     connectionEvent.RetryAfterMilliseconds ?? 0)),
+            _ => Invalid(state, connectionEvent),
         };
     }
 

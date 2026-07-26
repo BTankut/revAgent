@@ -257,6 +257,23 @@ public sealed class RbpConnectionReducerTests
     }
 
     [Fact]
+    public void UndefinedGoodbyeReasonIsRejected()
+    {
+        RbpConnectionLifecycleState state = OpenSteady();
+        RbpConnectionTransition transition =
+            RbpConnectionReducer.TransitionConnection(
+                state,
+                new RbpConnectionEvent(
+                    RbpConnectionEventType.Goodbye,
+                    GoodbyeReason: (RbpGoodbyeReason)int.MaxValue));
+
+        Assert.Equal(
+            RbpTransitionKind.InvalidTransition,
+            transition.Kind);
+        Assert.Same(state, transition.State);
+    }
+
+    [Fact]
     public void SessionRegistersResumesAndReEnrolls()
     {
         RbpSessionLifecycleState session =
@@ -295,6 +312,113 @@ public sealed class RbpConnectionReducerTests
         Assert.True(session.DispatchAllowed);
     }
 
+    [Fact]
+    public void ConnectionLossDuringRegistrationReturnsToRetryableDiscovery()
+    {
+        RbpSessionLifecycleState session =
+            RbpConnectionReducer.CreateSessionLifecycle("local");
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.RegisterRequested));
+
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ConnectionLost));
+
+        Assert.Equal(RbpSessionPhase.Discovered, session.Phase);
+        Assert.Null(session.Rsid);
+        Assert.False(session.ResumeAllowed);
+        Assert.False(session.DispatchAllowed);
+
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.RegisterRequested));
+        session = ApplySession(
+            session,
+            new RbpSessionEvent(
+                RbpSessionEventType.Registered,
+                Rsid: "rs-a"));
+
+        Assert.Equal(RbpSessionPhase.Registered, session.Phase);
+        Assert.True(session.DispatchAllowed);
+    }
+
+    [Fact]
+    public void ConnectionLossDuringResumeReturnsToRetryableDisconnect()
+    {
+        RbpSessionLifecycleState session = BeginResume();
+
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ConnectionLost));
+
+        Assert.Equal(RbpSessionPhase.Disconnected, session.Phase);
+        Assert.Equal("rs-a", session.Rsid);
+        Assert.True(session.ResumeAllowed);
+        Assert.False(session.DispatchAllowed);
+
+        RbpSessionLifecycleState duplicateLoss = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ConnectionLost));
+        Assert.Same(session, duplicateLoss);
+
+        session = ApplySession(
+            duplicateLoss,
+            SessionEvent(RbpSessionEventType.ResumeRequested));
+        session = ApplySession(
+            session,
+            new RbpSessionEvent(
+                RbpSessionEventType.Resumed,
+                Rsid: "rs-a"));
+
+        Assert.Equal(RbpSessionPhase.Registered, session.Phase);
+        Assert.True(session.DispatchAllowed);
+    }
+
+    [Fact]
+    public void ConnectionLossDuringReEnrollmentKeepsRegistrationRetryable()
+    {
+        RbpSessionLifecycleState session = BeginResume();
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ResumeRejected));
+
+        RbpSessionLifecycleState afterLoss = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ConnectionLost));
+
+        Assert.Same(session, afterLoss);
+        Assert.Equal(RbpSessionPhase.ReEnrolling, afterLoss.Phase);
+        Assert.False(afterLoss.DispatchAllowed);
+        Assert.Equal(
+            RbpSessionPhase.Registering,
+            ApplySession(
+                    afterLoss,
+                    SessionEvent(RbpSessionEventType.RegisterRequested))
+                .Phase);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("rs-b")]
+    public void ResumeAckRequiresThePendingRsid(string? acknowledgedRsid)
+    {
+        RbpSessionLifecycleState session = BeginResume();
+
+        RbpSessionTransition transition =
+            RbpConnectionReducer.TransitionSession(
+                session,
+                new RbpSessionEvent(
+                    RbpSessionEventType.Resumed,
+                    Rsid: acknowledgedRsid));
+
+        Assert.Equal(
+            RbpTransitionKind.InvalidTransition,
+            transition.Kind);
+        Assert.Same(session, transition.State);
+        Assert.False(transition.State.DispatchAllowed);
+    }
+
     [Theory]
     [InlineData((int)RbpSessionUnregisterReason.RevitExited)]
     [InlineData((int)RbpSessionUnregisterReason.BridgeShutdown)]
@@ -323,6 +447,54 @@ public sealed class RbpConnectionReducerTests
         Assert.False(session.ResumeAllowed);
         Assert.False(session.DispatchAllowed);
         Assert.Equal(reason, session.UnregisterReason);
+    }
+
+    [Fact]
+    public void UnregisterReplayRequiresTheExactDefinedReason()
+    {
+        RbpSessionLifecycleState registered = OpenRegisteredSession();
+        RbpSessionLifecycleState unregistered = ApplySession(
+            registered,
+            new RbpSessionEvent(
+                RbpSessionEventType.Unregister,
+                UnregisterReason:
+                    RbpSessionUnregisterReason.RevitExited));
+
+        RbpSessionTransition exactReplay =
+            RbpConnectionReducer.TransitionSession(
+                unregistered,
+                new RbpSessionEvent(
+                    RbpSessionEventType.Unregister,
+                    UnregisterReason:
+                        RbpSessionUnregisterReason.RevitExited));
+        Assert.Equal(
+            RbpTransitionKind.Transitioned,
+            exactReplay.Kind);
+        Assert.Same(unregistered, exactReplay.State);
+
+        RbpSessionTransition conflictingReplay =
+            RbpConnectionReducer.TransitionSession(
+                unregistered,
+                new RbpSessionEvent(
+                    RbpSessionEventType.Unregister,
+                    UnregisterReason:
+                        RbpSessionUnregisterReason.OperatorRequested));
+        Assert.Equal(
+            RbpTransitionKind.InvalidTransition,
+            conflictingReplay.Kind);
+        Assert.Same(unregistered, conflictingReplay.State);
+
+        RbpSessionTransition undefinedReason =
+            RbpConnectionReducer.TransitionSession(
+                registered,
+                new RbpSessionEvent(
+                    RbpSessionEventType.Unregister,
+                    UnregisterReason:
+                        (RbpSessionUnregisterReason)int.MaxValue));
+        Assert.Equal(
+            RbpTransitionKind.InvalidTransition,
+            undefinedReason.Kind);
+        Assert.Same(registered, undefinedReason.State);
     }
 
     private static RbpConnectionLifecycleState OpenSteady()
@@ -369,6 +541,31 @@ public sealed class RbpConnectionReducerTests
             RbpConnectionReducer.TransitionSession(state, sessionEvent);
         Assert.Equal(RbpTransitionKind.Transitioned, result.Kind);
         return result.State;
+    }
+
+    private static RbpSessionLifecycleState OpenRegisteredSession()
+    {
+        RbpSessionLifecycleState session =
+            RbpConnectionReducer.CreateSessionLifecycle("local");
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.RegisterRequested));
+        return ApplySession(
+            session,
+            new RbpSessionEvent(
+                RbpSessionEventType.Registered,
+                Rsid: "rs-a"));
+    }
+
+    private static RbpSessionLifecycleState BeginResume()
+    {
+        RbpSessionLifecycleState session = OpenRegisteredSession();
+        session = ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ConnectionLost));
+        return ApplySession(
+            session,
+            SessionEvent(RbpSessionEventType.ResumeRequested));
     }
 
     private static RbpConnectionEvent Event(
