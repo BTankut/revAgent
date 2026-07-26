@@ -105,29 +105,6 @@ internal static class Rfc8785Json
         return Sha256Digest(material.RootElement);
     }
 
-    internal static string ImmutableEnvelopeDigest(
-        RbpDataEnvelopeSnapshot envelope)
-    {
-        ArgumentNullException.ThrowIfNull(envelope);
-
-        using var stream = new MemoryStream();
-        using (var writer = new Utf8JsonWriter(stream))
-        {
-            writer.WriteStartObject();
-            writer.WriteString("id", envelope.Id);
-            writer.WritePropertyName("payload");
-            envelope.Payload.WriteTo(writer);
-            writer.WriteString("rsid", envelope.Rsid);
-            writer.WriteNumber("seq", envelope.Sequence);
-            writer.WriteString("type", envelope.Type);
-            writer.WriteNumber("v", envelope.Version);
-            writer.WriteEndObject();
-        }
-
-        using JsonDocument material = JsonDocument.Parse(stream.ToArray());
-        return Sha256Digest(material.RootElement);
-    }
-
     internal static void EnsureUniqueObjectKeys(JsonElement value)
     {
         RejectDuplicateKeys(value, path: string.Empty);

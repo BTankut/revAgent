@@ -9,7 +9,7 @@ internal static class RbpReconnectBackoff
 
     internal static int LimitMilliseconds(long attemptIndex)
     {
-        if (attemptIndex is < 0 or > RbpEnvelopeCodec.MaximumSafeInteger)
+        if (attemptIndex is < 0 or > RbpProtocolLimits.MaximumSafeInteger)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(attemptIndex),

@@ -99,7 +99,7 @@ internal sealed record RbpBatchDigestInput(
         JsonElement timeout = Required(payload, "timeout_ms", "/");
         if (!TryReadJsonInteger(timeout, out long timeoutMilliseconds) ||
             timeoutMilliseconds < 0 ||
-            timeoutMilliseconds > RbpEnvelopeCodec.MaximumSafeInteger)
+            timeoutMilliseconds > RbpProtocolLimits.MaximumSafeInteger)
         {
             throw Invalid(
                 "/timeout_ms",
