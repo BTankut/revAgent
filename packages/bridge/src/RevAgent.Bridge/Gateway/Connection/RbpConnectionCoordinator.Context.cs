@@ -27,7 +27,9 @@ internal sealed partial class RbpConnectionCoordinator
 
     private sealed record HeartbeatFlight(
         RbpHeartbeatFence Fence,
-        TaskCompletionSource Completion);
+        Task Deadline,
+        TaskCompletionSource Observed,
+        TaskCompletionSource Applied);
 
     private sealed record FailureTransition(
         RbpOpeningFailureClass Class,
@@ -109,6 +111,7 @@ internal sealed partial class RbpConnectionCoordinator
         private PendingControl? _pendingRegistration;
         private string? _pendingRegistrationLocalKey;
         private HeartbeatFlight? _heartbeatFlight;
+        private bool _heartbeatFlightConsumed;
         private Task? _receiveTask;
         private Task? _heartbeatTask;
         private long _steadyStartedMilliseconds = -1;
@@ -567,8 +570,12 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
-        internal Task InstallHeartbeatFlight(RbpHeartbeatFence fence)
+        internal HeartbeatFlight InstallHeartbeatFlight(
+            RbpHeartbeatFence fence,
+            Task deadline)
         {
+            ArgumentNullException.ThrowIfNull(fence);
+            ArgumentNullException.ThrowIfNull(deadline);
             lock (_sync)
             {
                 if (_heartbeatFlight is not null)
@@ -578,9 +585,14 @@ internal sealed partial class RbpConnectionCoordinator
                         "RBP heartbeats must remain globally single-flight.");
                 }
 
-                var completion = NewCompletion();
-                _heartbeatFlight = new HeartbeatFlight(fence, completion);
-                return completion.Task;
+                var flight = new HeartbeatFlight(
+                    fence,
+                    deadline,
+                    NewCompletion(),
+                    NewCompletion());
+                _heartbeatFlight = flight;
+                _heartbeatFlightConsumed = false;
+                return flight;
             }
         }
 
@@ -588,21 +600,82 @@ internal sealed partial class RbpConnectionCoordinator
         {
             lock (_sync)
             {
-                HeartbeatFlight? flight = _heartbeatFlight;
-                _heartbeatFlight = null;
+                if (_heartbeatFlight is not { } flight ||
+                    _heartbeatFlightConsumed)
+                {
+                    return null;
+                }
+
+                _heartbeatFlightConsumed = true;
                 return flight;
             }
         }
 
-        internal void RollbackHeartbeatFlight(RbpHeartbeatFence fence)
+        internal void MarkHeartbeatObserved(HeartbeatFlight flight)
         {
             lock (_sync)
             {
-                if (_heartbeatFlight is { } flight &&
-                    ReferenceEquals(flight.Fence, fence))
+                if (!ReferenceEquals(_heartbeatFlight, flight) ||
+                    !_heartbeatFlightConsumed)
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "Only the consumed current heartbeat flight may be " +
+                        "marked observed.");
+                }
+
+                flight.Observed.TrySetResult();
+            }
+        }
+
+        internal void CompleteHeartbeatFlight(HeartbeatFlight flight)
+        {
+            lock (_sync)
+            {
+                if (!ReferenceEquals(_heartbeatFlight, flight) ||
+                    !_heartbeatFlightConsumed)
+                {
+                    throw new RbpCoordinatorException(
+                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
+                        "Only the consumed current heartbeat flight may be " +
+                        "completed.");
+                }
+
+                _heartbeatFlight = null;
+                _heartbeatFlightConsumed = false;
+                flight.Applied.TrySetResult();
+            }
+        }
+
+        internal void FailHeartbeatFlight(
+            HeartbeatFlight flight,
+            Exception exception)
+        {
+            ArgumentNullException.ThrowIfNull(exception);
+            lock (_sync)
+            {
+                if (ReferenceEquals(_heartbeatFlight, flight))
                 {
                     _heartbeatFlight = null;
-                    flight.Completion.TrySetCanceled(Token);
+                    _heartbeatFlightConsumed = false;
+                }
+
+                flight.Observed.TrySetException(exception);
+                flight.Applied.TrySetException(exception);
+            }
+        }
+
+        internal void RollbackHeartbeatFlight(HeartbeatFlight flight)
+        {
+            lock (_sync)
+            {
+                if (ReferenceEquals(_heartbeatFlight, flight) &&
+                    !_heartbeatFlightConsumed)
+                {
+                    _heartbeatFlight = null;
+                    _heartbeatFlightConsumed = false;
+                    flight.Observed.TrySetCanceled(Token);
+                    flight.Applied.TrySetCanceled(Token);
                 }
             }
         }
@@ -623,7 +696,13 @@ internal sealed partial class RbpConnectionCoordinator
                     RejectApplication(pending, exception, Token);
                 }
 
-                _heartbeatFlight?.Completion.TrySetException(exception);
+                if (_heartbeatFlight is { } heartbeatFlight)
+                {
+                    _heartbeatFlight = null;
+                    _heartbeatFlightConsumed = false;
+                    heartbeatFlight.Observed.TrySetException(exception);
+                    heartbeatFlight.Applied.TrySetException(exception);
+                }
             }
         }
 

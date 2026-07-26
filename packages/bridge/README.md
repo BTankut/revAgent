@@ -260,15 +260,20 @@ digest in the same SQLite transaction. The production default for that seam is
 fail-closed until P3-T5 installs the invocation journal.
 
 Heartbeat flights capture one immutable active-rsid and pending-unregister
-fence before transport send. Only the exact current generation may apply the
-returned cumulative acknowledgements or confirm tombstones. The coordinator
-closes and replaces WSS after a monotonic wake gap; it never switches an active
-binding in place. Deterministic tests cover two sessions, immediate
-post-registration data ordering, resume/outbox identity across reconnect,
-old-generation fence rejection, unregister confirmation ordering, wake
-replacement, the 120-second steady reset boundary, and bounded shutdown with
-no owned background task. This is local fake-binding evidence; the unchanged
-WSS stub remains lower-layer binding/handshake evidence and is not a
-coordinator integration claim. Neither surface proves Streamable HTTP/SSE
-parity, proxy-lab, live Revit, enrollment, invocation execution, or 24-hour
-soak behavior.
+fence plus the acknowledgement deadline before transport send. Synchronous
+acknowledgement observation cancels that deadline independently from durable
+fence application; the consumed flight remains globally single-flight until
+application and unregister cleanup finish. Only the exact current generation
+may apply the returned cumulative acknowledgements or confirm tombstones. The
+coordinator closes and replaces WSS after a monotonic wake gap; it never
+switches an active binding in place. Deterministic tests cover two sessions,
+immediate post-registration data ordering, resume/outbox identity across
+reconnect, old-generation fence rejection, blocked-send deadline enforcement,
+re-entrant acknowledgement, slow durable application, unsolicited/duplicate
+acknowledgement rejection, failed-send rollback, unregister confirmation
+ordering, wake replacement, the 120-second steady reset boundary, and bounded
+shutdown with no owned background task. This is local fake-binding evidence;
+the unchanged WSS stub remains lower-layer binding/handshake evidence and is
+not a coordinator integration claim. Neither surface proves Streamable
+HTTP/SSE parity, proxy-lab, live Revit, enrollment, invocation execution, or
+24-hour soak behavior.

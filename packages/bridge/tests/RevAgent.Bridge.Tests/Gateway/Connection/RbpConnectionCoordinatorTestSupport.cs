@@ -37,13 +37,15 @@ public sealed partial class RbpConnectionCoordinatorTests
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,
-        ManualCoordinatorClock clock) =>
+        ManualCoordinatorClock clock,
+        IRbpJournalFaultInjector? faultInjector = null) =>
         RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
             new RbpJournalOpenOptions(
                 NowMilliseconds:
-                    () => clock.UtcNow.ToUnixTimeMilliseconds()));
+                    () => clock.UtcNow.ToUnixTimeMilliseconds(),
+                FaultInjector: faultInjector));
 
     private static RbpSessionRegistration Registration(
         RbpLocalSessionSnapshot local,
@@ -221,6 +223,79 @@ public sealed partial class RbpConnectionCoordinatorTests
         public double NextUnitInterval() => _sample;
     }
 
+    private sealed class BlockingJournalFaultInjector :
+        IRbpJournalFaultInjector
+    {
+        private readonly object _sync = new();
+        private RbpJournalFaultPoint? _armed;
+        private TaskCompletionSource _entered = NewCompletion();
+        private TaskCompletionSource _release = NewCompletion();
+
+        internal Task Entered
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _entered.Task;
+                }
+            }
+        }
+
+        internal void Arm(RbpJournalFaultPoint point)
+        {
+            lock (_sync)
+            {
+                if (_armed is not null)
+                {
+                    throw new InvalidOperationException(
+                        "A journal fault is already armed.");
+                }
+
+                _entered = NewCompletion();
+                _release = NewCompletion();
+                _armed = point;
+            }
+        }
+
+        internal void Release()
+        {
+            TaskCompletionSource release;
+            lock (_sync)
+            {
+                release = _release;
+            }
+
+            release.TrySetResult();
+        }
+
+        public void Hit(RbpJournalFaultPoint point)
+        {
+            TaskCompletionSource? entered = null;
+            Task? release = null;
+            lock (_sync)
+            {
+                if (_armed == point)
+                {
+                    _armed = null;
+                    entered = _entered;
+                    release = _release.Task;
+                }
+            }
+
+            if (entered is null || release is null)
+            {
+                return;
+            }
+
+            entered.TrySetResult();
+            release.GetAwaiter().GetResult();
+        }
+
+        private static TaskCompletionSource NewCompletion() =>
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+    }
+
     private sealed class ManualCoordinatorClock : IRbpCoordinatorClock
     {
         private readonly object _sync = new();
@@ -366,14 +441,22 @@ public sealed partial class RbpConnectionCoordinatorTests
             Channel.CreateUnbounded<RbpEnvelope>();
         private readonly Func<RbpEnvelope, RbpEnvelope?> _responder;
         private readonly bool _hangCloseAndDispose;
+        private readonly bool _leaveInboundOpenAfterClose;
+        private readonly Func<FakeConnectionCycle, RbpEnvelope,
+            CancellationToken, Task>? _sendBehavior;
         private int _closeCount;
 
         internal FakeConnectionCycle(
             Func<RbpEnvelope, RbpEnvelope?> responder,
-            bool hangCloseAndDispose = false)
+            bool hangCloseAndDispose = false,
+            bool leaveInboundOpenAfterClose = false,
+            Func<FakeConnectionCycle, RbpEnvelope, CancellationToken, Task>?
+                sendBehavior = null)
         {
             _responder = responder;
             _hangCloseAndDispose = hangCloseAndDispose;
+            _leaveInboundOpenAfterClose = leaveInboundOpenAfterClose;
+            _sendBehavior = sendBehavior;
         }
 
         public RbpHelloAckPayload Acknowledgement { get; } =
@@ -402,6 +485,11 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             cancellationToken.ThrowIfCancellationRequested();
             Sent.Enqueue(envelope);
+            if (_sendBehavior is not null)
+            {
+                return _sendBehavior(this, envelope, cancellationToken);
+            }
+
             RbpEnvelope? response = _responder(envelope);
             if (response is not null)
             {
@@ -426,7 +514,11 @@ public sealed partial class RbpConnectionCoordinatorTests
                     TaskCreationOptions.RunContinuationsAsynchronously).Task;
             }
 
-            _inbound.Writer.TryComplete();
+            if (!_leaveInboundOpenAfterClose)
+            {
+                _inbound.Writer.TryComplete();
+            }
+
             return Task.CompletedTask;
         }
 
@@ -440,7 +532,11 @@ public sealed partial class RbpConnectionCoordinatorTests
                         .Task);
             }
 
-            _inbound.Writer.TryComplete();
+            if (!_leaveInboundOpenAfterClose)
+            {
+                _inbound.Writer.TryComplete();
+            }
+
             return ValueTask.CompletedTask;
         }
 

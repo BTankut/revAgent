@@ -190,45 +190,81 @@ internal sealed partial class RbpConnectionCoordinator
             activeRsids,
             acknowledgements,
             tombstones);
-        Task heartbeatAcknowledged = context.InstallHeartbeatFlight(fence);
-
         JsonElement payload = CreateHeartbeatPayload(
             sessions,
             acknowledgements);
-        try
-        {
-            await context.Cycle.SendAsync(
-                    CreateControlEnvelope("heartbeat", payload),
-                    context.Token)
-                .ConfigureAwait(false);
-        }
-        catch
-        {
-            context.RollbackHeartbeatFlight(fence);
-            throw;
-        }
-
         using var deadlineCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(context.Token);
         Task deadline = _clock.DelayAsync(
             _options.EffectiveHeartbeatAcknowledgementTimeout,
             deadlineCancellation.Token);
-        Task completed = await Task.WhenAny(
-                heartbeatAcknowledged,
-                deadline)
-            .ConfigureAwait(false);
-        if (ReferenceEquals(completed, deadline))
+        HeartbeatFlight flight =
+            context.InstallHeartbeatFlight(fence, deadline);
+
+        Task send;
+        try
         {
-            context.RollbackHeartbeatFlight(fence);
-            context.Token.ThrowIfCancellationRequested();
-            throw new RbpCoordinatorException(
-                RbpCoordinatorErrorCode.HeartbeatTimeout,
-                "The Gateway did not acknowledge the heartbeat within " +
-                "10 seconds.");
+            send = context.Cycle.SendAsync(
+                CreateControlEnvelope("heartbeat", payload),
+                context.Token);
+        }
+        catch
+        {
+            context.RollbackHeartbeatFlight(flight);
+            throw;
         }
 
-        deadlineCancellation.Cancel();
-        await heartbeatAcknowledged.ConfigureAwait(false);
+        bool sendCompleted = false;
+        bool acknowledgementObserved = false;
+        while (!sendCompleted || !acknowledgementObserved)
+        {
+            var pending = new List<Task>(3);
+            if (!sendCompleted)
+            {
+                pending.Add(send);
+            }
+
+            if (!acknowledgementObserved)
+            {
+                pending.Add(flight.Observed.Task);
+                pending.Add(flight.Deadline);
+            }
+
+            Task completed = await Task.WhenAny(pending)
+                .ConfigureAwait(false);
+            if (ReferenceEquals(completed, flight.Deadline))
+            {
+                context.RollbackHeartbeatFlight(flight);
+                context.Token.ThrowIfCancellationRequested();
+                throw new RbpCoordinatorException(
+                    RbpCoordinatorErrorCode.HeartbeatTimeout,
+                    "The Gateway did not acknowledge the heartbeat within " +
+                    "10 seconds.");
+            }
+
+            if (ReferenceEquals(completed, send))
+            {
+                try
+                {
+                    await send.ConfigureAwait(false);
+                    sendCompleted = true;
+                }
+                catch
+                {
+                    context.RollbackHeartbeatFlight(flight);
+                    throw;
+                }
+            }
+
+            if (ReferenceEquals(completed, flight.Observed.Task))
+            {
+                await flight.Observed.Task.ConfigureAwait(false);
+                acknowledgementObserved = true;
+                deadlineCancellation.Cancel();
+            }
+        }
+
+        await flight.Applied.Task.ConfigureAwait(false);
     }
 
     private async Task ApplyHeartbeatAcknowledgementAsync(
@@ -249,14 +285,15 @@ internal sealed partial class RbpConnectionCoordinator
                 "state.");
         }
 
-        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements =
-            ParseHeartbeatAcknowledgements(envelope);
-        RbpHeartbeatFence fence = flight.Fence with
-        {
-            Acknowledgements = acknowledgements,
-        };
         try
         {
+            IReadOnlyList<RbpSessionAcknowledgement> acknowledgements =
+                ParseHeartbeatAcknowledgements(envelope);
+            context.MarkHeartbeatObserved(flight);
+            RbpHeartbeatFence fence = flight.Fence with
+            {
+                Acknowledgements = acknowledgements,
+            };
             RbpHeartbeatFenceResult applied =
                 await _journal.ApplyHeartbeatFenceAcknowledgementAsync(
                         fence,
@@ -271,11 +308,11 @@ internal sealed partial class RbpConnectionCoordinator
                     .ConfigureAwait(false);
             }
 
-            flight.Completion.TrySetResult();
+            context.CompleteHeartbeatFlight(flight);
         }
         catch (Exception exception)
         {
-            flight.Completion.TrySetException(exception);
+            context.FailHeartbeatFlight(flight, exception);
             throw;
         }
     }
