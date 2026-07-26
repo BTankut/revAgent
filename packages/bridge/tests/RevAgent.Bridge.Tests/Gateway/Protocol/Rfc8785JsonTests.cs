@@ -148,6 +148,76 @@ public sealed class Rfc8785JsonTests
     }
 
     [Fact]
+    public void ImmutableEnvelopeDigestExcludesOnlyAcknowledgementAndTimestamp()
+    {
+        using JsonDocument firstPayload =
+            JsonDocument.Parse("""{"b":1,"a":2}""");
+        var original = new RbpDataEnvelopeSnapshot(
+            "invoke",
+            "0197a3c2-0000-7000-8000-000000000001",
+            "rs_fixture",
+            4,
+            firstPayload.RootElement.Clone(),
+            Acknowledgement: 2,
+            Timestamp: "2026-07-22T12:00:00Z");
+        string digest = Rfc8785Json.ImmutableEnvelopeDigest(original);
+        RbpDataEnvelopeSnapshot refreshed = original.Snapshot(
+            acknowledgement: 3,
+            replaceAcknowledgement: true,
+            timestamp: "2026-07-22T12:01:00Z",
+            replaceTimestamp: true);
+
+        Assert.Equal(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(refreshed));
+
+        using JsonDocument changedPayload =
+            JsonDocument.Parse("""{"b":1,"a":3}""");
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Payload = changedPayload.RootElement.Clone(),
+                }));
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Sequence = 5,
+                }));
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Type = "result",
+                }));
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Id = "0197a3c2-0000-7000-8000-000000000002",
+                }));
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Rsid = "rs_other",
+                }));
+        Assert.NotEqual(
+            digest,
+            Rfc8785Json.ImmutableEnvelopeDigest(
+                original with
+                {
+                    Version = 2,
+                }));
+    }
+
+    [Fact]
     public void InvalidUnicodeAndNonJsonNumbersFailClosed()
     {
         using JsonDocument unpairedSurrogate =

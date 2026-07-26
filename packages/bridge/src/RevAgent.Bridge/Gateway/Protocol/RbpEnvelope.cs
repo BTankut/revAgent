@@ -44,3 +44,31 @@ internal sealed record RbpEnvelope(
             new Dictionary<string, JsonElement>(values, StringComparer.Ordinal));
     }
 }
+
+internal sealed record RbpDataEnvelopeSnapshot(
+    string Type,
+    string Id,
+    string Rsid,
+    long Sequence,
+    JsonElement Payload,
+    long? Acknowledgement = null,
+    string? Timestamp = null,
+    int Version = 1)
+{
+    internal RbpDataEnvelopeSnapshot Snapshot(
+        long? acknowledgement = null,
+        bool replaceAcknowledgement = false,
+        string? timestamp = null,
+        bool replaceTimestamp = false)
+    {
+        return new RbpDataEnvelopeSnapshot(
+            Type,
+            Id,
+            Rsid,
+            Sequence,
+            Payload.Clone(),
+            replaceAcknowledgement ? acknowledgement : Acknowledgement,
+            replaceTimestamp ? timestamp : Timestamp,
+            Version);
+    }
+}
