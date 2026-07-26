@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
+using System.Linq;
 using System.Text;
 using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
@@ -90,7 +91,8 @@ namespace RevAgent.Contracts.AddinLoopback
                     ex);
             }
 
-            ValidateLexicalExtensions(json);
+            IReadOnlyList<string> numberLexemes =
+                ValidateLexicalExtensions(json);
             ValidateTokenStream(json);
 
             try
@@ -112,6 +114,7 @@ namespace RevAgent.Contracts.AddinLoopback
                         "An add-in loopback JSON frame must contain one object.");
                 }
 
+                AttachNumberLexemes(result, numberLexemes);
                 return result;
             }
             catch (StrictJsonException)
@@ -127,8 +130,40 @@ namespace RevAgent.Contracts.AddinLoopback
             }
         }
 
-        private static void ValidateLexicalExtensions(string json)
+        internal static T DeepClonePreservingNumberLexemes<T>(T source)
+            where T : JToken
         {
+            if (source == null)
+            {
+                throw new ArgumentNullException(nameof(source));
+            }
+
+            var clone = (T)source.DeepClone();
+            JToken[] sourceNumbers = NumericTokens(source).ToArray();
+            JToken[] clonedNumbers = NumericTokens(clone).ToArray();
+            if (sourceNumbers.Length != clonedNumbers.Length)
+            {
+                throw new InvalidOperationException(
+                    "A strict JSON clone changed the numeric token sequence.");
+            }
+
+            for (int index = 0; index < sourceNumbers.Length; index++)
+            {
+                StrictJsonNumberLexeme? annotation =
+                    sourceNumbers[index].Annotation<StrictJsonNumberLexeme>();
+                if (annotation != null)
+                {
+                    clonedNumbers[index].AddAnnotation(annotation);
+                }
+            }
+
+            return clone;
+        }
+
+        private static IReadOnlyList<string> ValidateLexicalExtensions(
+            string json)
+        {
+            var numberLexemes = new List<string>();
             bool inString = false;
             bool escaped = false;
 
@@ -216,7 +251,9 @@ namespace RevAgent.Contracts.AddinLoopback
 
                 if (IsNumberStart(current))
                 {
-                    i = ValidateRfc8259Number(json, i) - 1;
+                    int numberEnd = ValidateRfc8259Number(json, i);
+                    numberLexemes.Add(json.Substring(i, numberEnd - i));
+                    i = numberEnd - 1;
                     continue;
                 }
 
@@ -242,6 +279,8 @@ namespace RevAgent.Contracts.AddinLoopback
             {
                 throw InvalidJsonEscape();
             }
+
+            return numberLexemes;
         }
 
         private static int ValidateRfc8259Number(string json, int start)
@@ -538,6 +577,48 @@ namespace RevAgent.Contracts.AddinLoopback
             return value == ' ' || value == '\t' || value == '\r' || value == '\n';
         }
 
+        private static void AttachNumberLexemes(
+            JToken root,
+            IReadOnlyList<string> numberLexemes)
+        {
+            JToken[] numericTokens = NumericTokens(root).ToArray();
+            if (numericTokens.Length != numberLexemes.Count)
+            {
+                throw new StrictJsonException(
+                    "invalid_json",
+                    "The parsed numeric token sequence did not match the JSON text.");
+            }
+
+            for (int index = 0; index < numericTokens.Length; index++)
+            {
+                numericTokens[index].AddAnnotation(
+                    new StrictJsonNumberLexeme(numberLexemes[index]));
+            }
+        }
+
+        private static IEnumerable<JToken> NumericTokens(JToken root)
+        {
+            if (root.Type == JTokenType.Integer ||
+                root.Type == JTokenType.Float)
+            {
+                yield return root;
+            }
+
+            if (root is not JContainer container)
+            {
+                yield break;
+            }
+
+            foreach (JToken token in container.Descendants())
+            {
+                if (token.Type == JTokenType.Integer ||
+                    token.Type == JTokenType.Float)
+                {
+                    yield return token;
+                }
+            }
+        }
+
         private sealed class ObjectPropertySet
         {
             public ObjectPropertySet(bool isObject)
@@ -550,5 +631,15 @@ namespace RevAgent.Contracts.AddinLoopback
 
             public HashSet<string> Properties { get; }
         }
+    }
+
+    internal sealed class StrictJsonNumberLexeme
+    {
+        internal StrictJsonNumberLexeme(string text)
+        {
+            Text = text;
+        }
+
+        internal string Text { get; }
     }
 }

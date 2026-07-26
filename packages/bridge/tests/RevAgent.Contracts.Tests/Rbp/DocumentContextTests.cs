@@ -222,6 +222,7 @@ namespace RevAgent.Contracts.Tests.Rbp
         [Theory]
         [InlineData("\"resultContractVersion\": 2", "\"resultContractVersion\": 2.1", "resultContractVersion")]
         [InlineData("\"revision\": 7", "\"revision\": 7.1", "revision")]
+        [InlineData("\"revision\": 7", "\"revision\": 7.00000000000000001", "revision")]
         public void RejectsFractionalSchemaIntegers(
             string original,
             string replacement,
