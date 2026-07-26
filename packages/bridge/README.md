@@ -6,8 +6,9 @@ so the same additive framing and contract code can later be referenced by the
 existing .NET Framework add-in under the bounded P3-T6 migration-freeze
 exception.
 
-The current P3-T1/P3-T2/P3-T3a slices contain the contract primitives, the
-bounded Windows service skeleton, and the strict one-call add-in transport:
+The current P3-T1/P3-T2/P3-T3a/P3-T4a reducer slices contain the contract
+primitives, the bounded Windows service skeleton, the strict one-call add-in
+transport, and transport-independent RBP state:
 
 - the existing add-in TCP length-prefix and strict JSON-RPC contract;
 - the frozen RBP/1 display and document-context mapping boundary; and
@@ -29,7 +30,16 @@ bounded Windows service skeleton, and the strict one-call add-in transport:
   cancellation is honored before dispatch, while a possibly-dispatched call
   remains observed until its bounded deadline for later journal evidence;
   worker shutdown has a separate token that closes transport at any phase
-  without erasing dispatch uncertainty.
+  without erasing dispatch uncertainty;
+- a strict UTF-8 RBP/1 outer-envelope codec that rejects BOMs, binary frames,
+  duplicate keys, trailing JSON, unsafe sequence integers, invalid
+  pre-/post-negotiation forms, and frozen byte-limit violations;
+- RFC 8785 canonical JSON plus frozen parameter, batch, and immutable data
+  envelope digests (where `ack` and `ts` are the only mutable retransmission
+  fields); and
+- pure per-`rsid` sequence/ack/dispatch-window reducers and
+  connection/session lifecycle reducers, including frozen heartbeat and
+  full-jitter retry rules.
 
 It does not yet provide add-in discovery/session routing, the Gateway
 transport, journal, enrollment, workstation installer payload, or update
@@ -91,3 +101,18 @@ does not claim that fault-injection proof.
 Frozen-shape discovery, two-session routing, and fixture-backed traffic
 evidence land in the following P3-T3 slices; live Revit command evidence
 remains blocked until the P3-T6 adapted add-in is installed.
+
+The P3-T4a codec and reducer tests consume the frozen RBP envelope,
+parameter-digest, batch-digest, frame-limit, and reconnect vectors with pinned
+source hashes. They prove only the local .NET codec,
+canonicalization/digest behavior, UUIDv7 generation, and pure
+sequence/ack/dispatch-window and connection/session lifecycle transitions. The
+envelope fixture coverage intentionally proves all positive outer shapes plus
+the structural, hello/hello-ack, and session-authority negative subset;
+message-specific invocation/result/batch semantics remain owned by the frozen
+protocol validators and later execution slices.
+
+This evidence does not prove a WSS or Streamable HTTP/SSE binding, TLS or
+device-token authentication, a live Gateway handshake, durable sequence or
+session persistence, Gateway session registration/resume, T5 journal
+ordering/redelivery, reconnect I/O, or production Gateway interoperability.
