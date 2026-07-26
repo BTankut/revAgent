@@ -392,9 +392,10 @@ internal sealed class WindowsAuthenticodeTrustVerifier
     public void Verify(string imagePath)
     {
         IntPtr stateData = IntPtr.Zero;
+        int trustResult;
         try
         {
-            int trustResult = _native.Invoke(
+            trustResult = _native.Invoke(
                 imagePath,
                 WinTrustUiNone,
                 WinTrustRevokeWholeChain,
@@ -402,19 +403,8 @@ internal sealed class WindowsAuthenticodeTrustVerifier
                 WinTrustRevocationCheckChainExcludeRoot |
                     WinTrustCacheOnlyUrlRetrieval,
                 ref stateData);
-            if (trustResult != 0)
-            {
-                throw new AddinProcessAttestationException(
-                    "revit_process_image_signature_untrusted",
-                    "Windows did not validate the Revit executable Authenticode signature.",
-                    new InvalidOperationException(
-                        "WinVerifyTrust HRESULT: 0x" +
-                        trustResult.ToString(
-                            "X8",
-                            CultureInfo.InvariantCulture)));
-            }
         }
-        finally
+        catch
         {
             if (stateData != IntPtr.Zero)
             {
@@ -424,11 +414,66 @@ internal sealed class WindowsAuthenticodeTrustVerifier
                     WinTrustRevokeWholeChain,
                     WinTrustStateActionClose,
                     WinTrustRevocationCheckChainExcludeRoot |
-                        WinTrustCacheOnlyUrlRetrieval,
+                    WinTrustCacheOnlyUrlRetrieval,
                     ref stateData);
             }
+
+            throw;
+        }
+
+        int closeResult = 0;
+        if (stateData != IntPtr.Zero)
+        {
+            closeResult = _native.Invoke(
+                imagePath,
+                WinTrustUiNone,
+                WinTrustRevokeWholeChain,
+                WinTrustStateActionClose,
+                WinTrustRevocationCheckChainExcludeRoot |
+                    WinTrustCacheOnlyUrlRetrieval,
+                ref stateData);
+        }
+
+        if (trustResult != 0)
+        {
+            Exception inner = HResultFailure(
+                "WinVerifyTrust verification",
+                trustResult);
+            if (closeResult != 0)
+            {
+                inner = new AggregateException(
+                    inner,
+                    HResultFailure(
+                        "WinVerifyTrust provider-state close",
+                        closeResult));
+            }
+
+            throw new AddinProcessAttestationException(
+                "revit_process_image_signature_untrusted",
+                "Windows did not validate the Revit executable Authenticode signature.",
+                inner);
+        }
+
+        if (closeResult != 0)
+        {
+            throw new AddinProcessAttestationException(
+                "revit_process_image_trust_cleanup_failed",
+                "Windows could not close the Revit executable trust provider state.",
+                HResultFailure(
+                    "WinVerifyTrust provider-state close",
+                    closeResult));
         }
     }
+
+    private static Exception HResultFailure(
+        string operation,
+        int result) =>
+        new InvalidOperationException(
+            operation +
+            " HRESULT: 0x" +
+            result.ToString(
+                "X8",
+                CultureInfo.InvariantCulture));
 }
 
 internal sealed class WindowsPublisherReader : IWindowsPublisherReader

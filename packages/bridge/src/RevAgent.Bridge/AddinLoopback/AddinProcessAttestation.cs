@@ -72,6 +72,88 @@ internal sealed class AddinProcessAttestationException : Exception
     internal string Code { get; }
 }
 
+internal sealed class ExpectedAddinProcessAttestor : IAddinProcessAttestor
+{
+    private readonly IAddinProcessAttestor _inner;
+
+    internal ExpectedAddinProcessAttestor(
+        IAddinProcessAttestor inner,
+        AddinProcessAttestation expected)
+    {
+        _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+        Expected = expected ?? throw new ArgumentNullException(nameof(expected));
+        if (Expected.Identity.ProcessId <= 0 ||
+            Expected.Identity.StartTimeFileTimeUtc <= 0 ||
+            string.IsNullOrWhiteSpace(Expected.RevitVersion) ||
+            string.IsNullOrWhiteSpace(Expected.ImagePath))
+        {
+            throw new ArgumentException(
+                "The expected add-in process attestation is incomplete.",
+                nameof(expected));
+        }
+    }
+
+    internal AddinProcessAttestation Expected { get; }
+
+    public async Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+        AddinConnectedPeer peer,
+        CancellationToken cancellationToken)
+    {
+        AddinProcessAttestation actual =
+            await _inner.AttestBeforeDispatchAsync(
+                peer,
+                cancellationToken).ConfigureAwait(false);
+        EnsureExpected(actual);
+        return actual;
+    }
+
+    public Task VerifyAfterResponseAsync(
+        AddinConnectedPeer peer,
+        AddinProcessAttestation attestation,
+        CancellationToken cancellationToken)
+    {
+        EnsureExpected(attestation);
+        return _inner.VerifyAfterResponseAsync(
+            peer,
+            attestation,
+            cancellationToken);
+    }
+
+    private void EnsureExpected(AddinProcessAttestation actual)
+    {
+        if (actual == null ||
+            actual.Identity != Expected.Identity ||
+            !string.Equals(
+                actual.RevitVersion,
+                Expected.RevitVersion,
+                StringComparison.Ordinal) ||
+            !PathEquals(actual.ImagePath, Expected.ImagePath))
+        {
+            throw new AddinProcessAttestationException(
+                "addin_process_identity_mismatch",
+                "The connected add-in endpoint is no longer owned by the expected Revit process.");
+        }
+    }
+
+    private static bool PathEquals(string left, string right)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(left),
+                Path.GetFullPath(right),
+                StringComparison.OrdinalIgnoreCase);
+        }
+        catch (Exception exception) when (
+            exception is ArgumentException ||
+            exception is NotSupportedException ||
+            exception is PathTooLongException)
+        {
+            return false;
+        }
+    }
+}
+
 internal sealed record WindowsProcessSnapshot(
     int ProcessId,
     long StartTimeFileTimeUtc,
@@ -144,7 +226,7 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
         try
         {
             return await RunSerializedAsync(
-                () => AttestBeforeDispatch(peer),
+                () => AttestBeforeDispatch(peer, cancellationToken),
                 cancellationToken).ConfigureAwait(false);
         }
         catch (Exception exception) when (
@@ -170,7 +252,7 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
             await RunSerializedAsync(
                 () =>
                 {
-                    VerifyAfterResponse(attestation);
+                    VerifyAfterResponse(attestation, cancellationToken);
                     return true;
                 },
                 cancellationToken).ConfigureAwait(false);
@@ -187,8 +269,10 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
     }
 
     private AddinProcessAttestation AttestBeforeDispatch(
-        AddinConnectedPeer peer)
+        AddinConnectedPeer peer,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         if (!_isWindows())
         {
             throw Failure(
@@ -205,7 +289,9 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
         }
 
         int ownerProcessId = ResolveConnectionOwner(peer);
+        cancellationToken.ThrowIfCancellationRequested();
         WindowsProcessSnapshot before = Capture(ownerProcessId);
+        cancellationToken.ThrowIfCancellationRequested();
         string programFilesRoot = ResolveProgramFilesRoot();
         string revitVersion = ResolveExpectedRevitVersion(
             programFilesRoot,
@@ -222,11 +308,17 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
 
         try
         {
+            cancellationToken.ThrowIfCancellationRequested();
             _imageTrustVerifier.Verify(
                 expectedImagePath,
                 programFilesRoot);
+            cancellationToken.ThrowIfCancellationRequested();
         }
         catch (AddinProcessAttestationException)
+        {
+            throw;
+        }
+        catch (OperationCanceledException)
         {
             throw;
         }
@@ -245,7 +337,9 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
                 "The TCP listener owner changed during attestation.");
         }
 
+        cancellationToken.ThrowIfCancellationRequested();
         WindowsProcessSnapshot after = Capture(ownerProcessId);
+        cancellationToken.ThrowIfCancellationRequested();
         if (before.StartTimeFileTimeUtc != after.StartTimeFileTimeUtc ||
             !PathEquals(before.ImagePath, after.ImagePath))
         {
@@ -263,10 +357,13 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
     }
 
     private void VerifyAfterResponse(
-        AddinProcessAttestation attestation)
+        AddinProcessAttestation attestation,
+        CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
         WindowsProcessSnapshot after = Capture(
             attestation.Identity.ProcessId);
+        cancellationToken.ThrowIfCancellationRequested();
         if (after.StartTimeFileTimeUtc !=
                 attestation.Identity.StartTimeFileTimeUtc ||
             !PathEquals(after.ImagePath, attestation.ImagePath))
@@ -428,10 +525,11 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
     {
         await AttestationWorkerGate.WaitAsync(cancellationToken)
             .ConfigureAwait(false);
-        Task<T> worker = Task.Run(work, CancellationToken.None);
+        Task<T>? worker = null;
         bool releaseSynchronously = false;
         try
         {
+            worker = Task.Run(work, CancellationToken.None);
             T result = await worker.WaitAsync(cancellationToken)
                 .ConfigureAwait(false);
             releaseSynchronously = true;
@@ -439,7 +537,11 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
         }
         finally
         {
-            if (releaseSynchronously || worker.IsCompleted)
+            if (worker == null)
+            {
+                AttestationWorkerGate.Release();
+            }
+            else if (releaseSynchronously || worker.IsCompleted)
             {
                 _ = ObserveFailure(worker);
                 AttestationWorkerGate.Release();

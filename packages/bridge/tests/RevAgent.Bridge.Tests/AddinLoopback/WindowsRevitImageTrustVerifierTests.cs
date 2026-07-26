@@ -174,6 +174,25 @@ public sealed class WindowsRevitImageTrustVerifierTests
             native.Calls[1].StateAction);
     }
 
+    [Fact]
+    public void Authenticode_FailsClosedWhenProviderStateCannotClose()
+    {
+        var native = new RecordingWinTrustNative(
+            verifyResult: 0,
+            closeResult: unchecked((int)0x80004005));
+        var verifier = new WindowsAuthenticodeTrustVerifier(native);
+
+        AddinProcessAttestationException error =
+            Assert.Throws<AddinProcessAttestationException>(
+                () => verifier.Verify(
+                    @"C:\Program Files\Autodesk\Revit 2026\Revit.exe"));
+
+        Assert.Equal(
+            "revit_process_image_trust_cleanup_failed",
+            error.Code);
+        Assert.Equal(2, native.Calls.Count);
+    }
+
     private static WindowsRevitImageTrustVerifier Verifier(
         StubFileTrustInspector files) =>
         new(
@@ -275,10 +294,14 @@ public sealed class WindowsRevitImageTrustVerifierTests
     private sealed class RecordingWinTrustNative : IWinTrustNative
     {
         private readonly int _verifyResult;
+        private readonly int _closeResult;
 
-        internal RecordingWinTrustNative(int verifyResult)
+        internal RecordingWinTrustNative(
+            int verifyResult,
+            int closeResult = 0)
         {
             _verifyResult = verifyResult;
+            _closeResult = closeResult;
         }
 
         internal List<WinTrustCall> Calls { get; } = new();
@@ -306,7 +329,7 @@ public sealed class WindowsRevitImageTrustVerifierTests
             }
 
             stateData = IntPtr.Zero;
-            return 0;
+            return _closeResult;
         }
     }
 

@@ -141,8 +141,10 @@ public sealed class WindowsAddinProcessAttestorTests
         var processSnapshots = new QueueProcessSnapshotProvider(
             Snapshot(imagePath),
             Snapshot(imagePath));
+        var connectionOwner =
+            new StubConnectionOwnerResolver(ProcessId);
         var attestor = CreateAttestor(
-            new StubConnectionOwnerResolver(ProcessId),
+            connectionOwner,
             processSnapshots,
             imageTrust,
             trustedRoot);
@@ -168,6 +170,73 @@ public sealed class WindowsAddinProcessAttestorTests
 
         release.Set();
         await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.Equal(1, connectionOwner.ResolveCount);
+        Assert.Equal(1, processSnapshots.CaptureCount);
+    }
+
+    [Fact]
+    public async Task ExpectedAttestorAcceptsThePinnedProcessIdentity()
+    {
+        string imagePath = ExpectedImagePath(TrustedRoot());
+        var expected = new AddinProcessAttestation(
+            new AddinProcessIdentity(
+                ProcessId,
+                StartTimeFileTimeUtc),
+            "2026",
+            imagePath);
+        var inner = new StubProcessAttestor(expected);
+        var attestor = new ExpectedAddinProcessAttestor(
+            inner,
+            expected);
+
+        AddinProcessAttestation actual =
+            await attestor.AttestBeforeDispatchAsync(
+                ConnectedPeer(),
+                default);
+        await attestor.VerifyAfterResponseAsync(
+            ConnectedPeer(),
+            actual,
+            default);
+
+        Assert.Same(expected, actual);
+        Assert.Equal(1, inner.AttestCount);
+        Assert.Equal(1, inner.VerifyCount);
+    }
+
+    [Theory]
+    [InlineData(ProcessId + 1, StartTimeFileTimeUtc)]
+    [InlineData(ProcessId, StartTimeFileTimeUtc + 1)]
+    public async Task ExpectedAttestorRejectsProcessTakeoverBeforeDispatch(
+        int actualProcessId,
+        long actualStartTimeFileTimeUtc)
+    {
+        string imagePath = ExpectedImagePath(TrustedRoot());
+        var expected = new AddinProcessAttestation(
+            new AddinProcessIdentity(
+                ProcessId,
+                StartTimeFileTimeUtc),
+            "2026",
+            imagePath);
+        var actual = expected with
+        {
+            Identity = new AddinProcessIdentity(
+                actualProcessId,
+                actualStartTimeFileTimeUtc),
+        };
+        var inner = new StubProcessAttestor(actual);
+        var attestor = new ExpectedAddinProcessAttestor(
+            inner,
+            expected);
+
+        AddinProcessAttestationException error =
+            await Assert.ThrowsAsync<AddinProcessAttestationException>(
+                () => attestor.AttestBeforeDispatchAsync(
+                    ConnectedPeer(),
+                    default));
+
+        Assert.Equal("addin_process_identity_mismatch", error.Code);
+        Assert.Equal(1, inner.AttestCount);
+        Assert.Equal(0, inner.VerifyCount);
     }
 
     [Fact]
@@ -405,6 +474,40 @@ public sealed class WindowsAddinProcessAttestorTests
             Interlocked.Increment(ref _invocationCount);
             Started.Set();
             _release.Wait();
+        }
+    }
+
+    private sealed class StubProcessAttestor : IAddinProcessAttestor
+    {
+        private readonly AddinProcessAttestation _attestation;
+
+        internal StubProcessAttestor(
+            AddinProcessAttestation attestation)
+        {
+            _attestation = attestation;
+        }
+
+        internal int AttestCount { get; private set; }
+
+        internal int VerifyCount { get; private set; }
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            AttestCount++;
+            return Task.FromResult(_attestation);
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            VerifyCount++;
+            return Task.CompletedTask;
         }
     }
 }

@@ -11,6 +11,7 @@ internal sealed class WindowsTcpConnectionOwnerResolver
     private const uint ErrorInsufficientBuffer = 122;
     private const int AddressFamilyInterNetwork = 2;
     private const int TcpTableOwnerPidAll = 5;
+    private const uint TcpStateEstablished = 5;
 
     public int ResolveOwnerProcessId(AddinConnectedPeer peer)
     {
@@ -91,7 +92,8 @@ internal sealed class WindowsTcpConnectionOwnerResolver
             MibTcpRowOwnerPid row =
                 Marshal.PtrToStructure<MibTcpRowOwnerPid>(rowPointer);
             rowPointer = IntPtr.Add(rowPointer, rowSize);
-            if (ConvertPort(row.LocalPort) != peer.ServerEndPoint.Port ||
+            if (row.State != TcpStateEstablished ||
+                ConvertPort(row.LocalPort) != peer.ServerEndPoint.Port ||
                 !ConvertAddress(row.LocalAddress).Equals(
                     peer.ServerEndPoint.Address) ||
                 ConvertPort(row.RemotePort) != peer.ClientEndPoint.Port ||
@@ -183,12 +185,15 @@ internal sealed class WindowsProcessSnapshotProvider
     : IWindowsProcessSnapshotProvider
 {
     private const uint ProcessQueryLimitedInformation = 0x1000;
-    private const uint StillActive = 259;
+    private const uint Synchronize = 0x00100000;
+    private const uint WaitObject0 = 0x00000000;
+    private const uint WaitTimeout = 0x00000102;
+    private const uint WaitFailed = 0xFFFFFFFF;
 
     public WindowsProcessSnapshot Capture(int processId)
     {
         IntPtr processHandle = OpenProcess(
-            ProcessQueryLimitedInformation,
+            ProcessQueryLimitedInformation | Synchronize,
             inheritHandle: false,
             processId);
         if (processHandle == IntPtr.Zero)
@@ -205,21 +210,13 @@ internal sealed class WindowsProcessSnapshotProvider
             if (!GetProcessTimes(
                     processHandle,
                     out FileTime creationTime,
-                    out FileTime exitTime,
+                    out _,
                     out _,
                     out _))
             {
                 throw NativeFailure(
                     "revit_process_identity_unavailable",
                     "Windows could not read the reported Revit process start time.");
-            }
-
-            if (exitTime.HighDateTime != 0 ||
-                exitTime.LowDateTime != 0)
-            {
-                throw new AddinProcessAttestationException(
-                    "revit_process_not_alive",
-                    "The reported Revit process has exited.");
             }
 
             long startTimeFileTimeUtc =
@@ -261,19 +258,31 @@ internal sealed class WindowsProcessSnapshotProvider
 
     private static void EnsureProcessAlive(IntPtr processHandle)
     {
-        if (!GetExitCodeProcess(processHandle, out uint exitCode))
+        uint waitResult = WaitForSingleObject(
+            processHandle,
+            milliseconds: 0);
+        if (waitResult == WaitTimeout)
+        {
+            return;
+        }
+
+        if (waitResult == WaitObject0)
+        {
+            throw new AddinProcessAttestationException(
+                "revit_process_not_alive",
+                "The reported Revit process has exited.");
+        }
+
+        if (waitResult == WaitFailed)
         {
             throw NativeFailure(
                 "revit_process_liveness_unavailable",
                 "Windows could not attest the reported Revit process liveness.");
         }
 
-        if (exitCode != StillActive)
-        {
-            throw new AddinProcessAttestationException(
-                "revit_process_not_alive",
-                "The reported Revit process has exited.");
-        }
+        throw new AddinProcessAttestationException(
+            "revit_process_liveness_invalid",
+            "Windows returned an unexpected process liveness state.");
     }
 
     private static AddinProcessAttestationException NativeFailure(
@@ -318,10 +327,9 @@ internal sealed class WindowsProcessSnapshotProvider
         ref uint size);
 
     [DllImport("kernel32.dll", SetLastError = true)]
-    [return: MarshalAs(UnmanagedType.Bool)]
-    private static extern bool GetExitCodeProcess(
+    private static extern uint WaitForSingleObject(
         IntPtr processHandle,
-        out uint exitCode);
+        uint milliseconds);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
