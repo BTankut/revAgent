@@ -6,7 +6,8 @@ so the same additive framing and contract code can later be referenced by the
 existing .NET Framework add-in under the bounded P3-T6 migration-freeze
 exception.
 
-The current P3-T1/P3-T2/P3-T3a/P3-T4a/P3-T4b/P3-T5a slices contain the
+The current P3-T1/P3-T2/P3-T3a/P3-T4a/P3-T4b/P3-T4c/P3-T4d/P3-T5a slices
+contain the
 contract primitives, the bounded Windows service skeleton, the strict one-call
 add-in transport, transport-independent RBP state, and a durable RBP journal
 authority:
@@ -46,12 +47,19 @@ authority:
   additive migrations, exact outbox/receipt replay, protected resume tokens,
   durable unregister tombstones, and deterministic reopen recovery, plus the
   additive canonical-key invocation and mutation-recovery hold tables needed
-  before invocation execution can be implemented.
+  before invocation execution can be implemented; and
+- the primary WSS `/bridge/v1` binding, device-bearer upgrade, strict
+  RBP/1 `hello`/`hello_ack`, bounded text-message framing, DNS-only endpoints,
+  system proxy/machine trust, and fail-closed enrollment seam; and
+- one WSS connection lifecycle owner with durable generation activation before
+  receive, exact register/resume/unregister recovery, ascending outbox replay,
+  globally single-flight heartbeat fences, full-jitter reconnect, and
+  monotonic sleep/wake replacement.
 
-It does not yet provide add-in discovery/session routing, the Gateway
-transport, invocation dispatch/execution, enrollment, workstation installer
-payload, or update behavior. Those land through separate WP3 PRs in the order
-fixed by
+It does not yet provide add-in discovery/session routing, the Streamable
+HTTP/SSE fallback, invocation dispatch/execution, Gateway-backed enrollment,
+production resume-token protection, workstation installer payload, or update
+behavior. Those land through separate WP3 PRs in the order fixed by
 `docs/implementation-plan/03-bridge-addin-installer.md`.
 
 Run the complete P3-T1 contract gate from the repository root:
@@ -222,3 +230,21 @@ Worker under the canonical protected version layout, invoke
 structured failure for an absent tuple, prove a real separate-process listener
 PID for the positive tuple seam, and prove cancellation removes the helper and
 its descendants before a fresh supervised Worker recovers.
+
+P3-T4c opens only `wss://<DNS>/bridge/v1`, preserves the platform system proxy
+and machine certificate trust, disables framework keepalive in favor of RBP
+heartbeats, and serializes outbound WebSocket writes. Opening failures classify
+the frozen auth/version/trust/protocol/retryable outcomes; accepted
+`Retry-After` values are bounded to 15 minutes and retained as an absolute
+not-before time. Close codes `4401`, `4403`, and `4426` pause unchanged retry,
+and the `4426` reason accepts only the frozen same-origin update-manifest
+pointer shape.
+
+The real-TLS tests launch the unchanged Gateway stub, use an exact-certificate
+validator only inside the test socket factory, and prove an authenticated
+`hello`/`hello_ack`, 401 refusal without token disclosure, 426 pause,
+retryable 429 metadata, and system-trust refusal of the self-signed fixture.
+Production enrollment remains deliberately fail-closed until P3-T8 supplies
+the credential-store adapter. This slice does not prove reconnect scheduling,
+session registration/resume, heartbeat liveness, journal replay, fallback
+parity, corporate proxy interception, sleep/wake recovery, or a 24-hour soak.
