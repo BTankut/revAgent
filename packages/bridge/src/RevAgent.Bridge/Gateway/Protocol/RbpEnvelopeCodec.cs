@@ -13,17 +13,17 @@ internal static class RbpEnvelopeCodec
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
     private static readonly Regex UuidV7Pattern = new(
-        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\\z",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex CapabilityPattern = new(
-        "^[a-z][a-z0-9_]{0,127}$",
+        "^[a-z][a-z0-9_]{0,127}\\z",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex Sha256Pattern = new(
-        "^sha256:[0-9a-f]{64}$",
+        "^sha256:[0-9a-f]{64}\\z",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly Regex Rfc3339Pattern = new(
         "^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:" +
-        "[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})$",
+        "[0-9]{2}(?:\\.[0-9]+)?(?:[Zz]|[+-][0-9]{2}:[0-9]{2})\\z",
         RegexOptions.CultureInvariant | RegexOptions.NonBacktracking);
     private static readonly HashSet<string> PreNegotiationTypes =
         new(StringComparer.Ordinal)
@@ -160,6 +160,7 @@ internal static class RbpEnvelopeCodec
 
             RbpEnvelope envelope = ParseEnvelope(root);
             EnforceFrameLimits(frame.Length, envelope);
+            RbpPayloadValidator.ValidateKnown(root, envelope);
             return envelope;
         }
     }
@@ -462,28 +463,7 @@ internal static class RbpEnvelopeCodec
 
     private static bool TryReadJsonInteger(JsonElement value, out long integer)
     {
-        integer = 0;
-        if (value.ValueKind != JsonValueKind.Number)
-        {
-            return false;
-        }
-
-        if (value.TryGetInt64(out integer))
-        {
-            return true;
-        }
-
-        if (!value.TryGetDouble(out double number) ||
-            !double.IsFinite(number) ||
-            Math.Truncate(number) != number ||
-            number < long.MinValue ||
-            number >= 9_223_372_036_854_775_808d)
-        {
-            return false;
-        }
-
-        integer = (long)number;
-        return true;
+        return RbpJsonNumber.TryReadExactInt64(value, out integer);
     }
 
     private static RbpHelloPayload ParseHello(JsonElement payload)

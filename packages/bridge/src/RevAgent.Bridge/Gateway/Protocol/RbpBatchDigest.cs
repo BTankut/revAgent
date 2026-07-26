@@ -168,28 +168,7 @@ internal sealed record RbpBatchDigestInput(
         JsonElement value,
         out long integer)
     {
-        integer = 0;
-        if (value.ValueKind != JsonValueKind.Number)
-        {
-            return false;
-        }
-
-        if (value.TryGetInt64(out integer))
-        {
-            return true;
-        }
-
-        if (!value.TryGetDouble(out double number) ||
-            !double.IsFinite(number) ||
-            Math.Truncate(number) != number ||
-            number < long.MinValue ||
-            number >= 9_223_372_036_854_775_808d)
-        {
-            return false;
-        }
-
-        integer = (long)number;
-        return true;
+        return RbpJsonNumber.TryReadExactInt64(value, out integer);
     }
 
     private static void RequireKind(

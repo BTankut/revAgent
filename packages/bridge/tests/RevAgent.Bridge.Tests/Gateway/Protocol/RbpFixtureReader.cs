@@ -31,6 +31,20 @@ internal static class RbpFixtureReader
             MaterializePositiveNode(vector).ToJsonString(CompactJson));
     }
 
+    internal static JsonObject CreatePositiveEnvelope(string name)
+    {
+        using JsonDocument fixture = Load("envelopes.json");
+        JsonElement vector = fixture.RootElement
+            .GetProperty("positive")
+            .EnumerateArray()
+            .Single(
+                candidate => string.Equals(
+                    candidate.GetProperty("name").GetString(),
+                    name,
+                    StringComparison.Ordinal));
+        return MaterializePositiveNode(vector);
+    }
+
     internal static byte[] MaterializeNegative(
         JsonElement fixtureRoot,
         JsonElement vector)

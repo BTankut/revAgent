@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -7,25 +8,6 @@ namespace RevAgent.Bridge.Tests.Gateway.Protocol;
 
 public sealed class RbpEnvelopeCodecTests
 {
-    private static readonly HashSet<string> StructuralNegativeVectors =
-        new(StringComparer.Ordinal)
-        {
-            "hello_rejects_negotiated_version",
-            "hello_ack_rejects_negotiated_version",
-            "hello_ack_rejects_nonstandard_heartbeat_interval",
-            "post_negotiation_control_requires_version",
-            "post_negotiation_control_rejects_other_version",
-            "post_negotiation_data_requires_version",
-            "post_negotiation_data_rejects_other_version",
-            "control_rejects_rsid",
-            "control_rejects_seq",
-            "control_rejects_ack",
-            "data_requires_rsid",
-            "data_requires_seq",
-            "unsafe_seq",
-            "session_register_authority_spoof",
-        };
-
     [Fact]
     public void EveryFrozenPositiveEnvelopeHasAValidV1OuterShape()
     {
@@ -62,7 +44,7 @@ public sealed class RbpEnvelopeCodecTests
     }
 
     [Fact]
-    public void FrozenStructuralAndHandshakeNegativesFailClosed()
+    public void EveryFrozenNegativeEnvelopeFailsClosed()
     {
         using JsonDocument fixture =
             RbpFixtureReader.Load("envelopes.json");
@@ -71,14 +53,6 @@ public sealed class RbpEnvelopeCodecTests
                      .GetProperty("negative")
                      .EnumerateArray())
         {
-            string name =
-                vector.GetProperty("name").GetString() ??
-                throw new InvalidDataException("Vector name is null.");
-            if (!StructuralNegativeVectors.Contains(name))
-            {
-                continue;
-            }
-
             RbpFrameException exception = Assert.Throws<RbpFrameException>(
                 () => RbpEnvelopeCodec.Decode(
                     RbpFixtureReader.MaterializeNegative(
@@ -88,7 +62,7 @@ public sealed class RbpEnvelopeCodecTests
             count++;
         }
 
-        Assert.Equal(StructuralNegativeVectors.Count, count);
+        Assert.Equal(66, count);
     }
 
     [Fact]
@@ -157,10 +131,8 @@ public sealed class RbpEnvelopeCodecTests
         long sequence,
         bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "invoke",
-            new JsonObject(),
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("invoke");
         envelope["seq"] = sequence;
         byte[] bytes = RbpFixtureReader.Serialize(envelope);
 
@@ -177,17 +149,79 @@ public sealed class RbpEnvelopeCodecTests
         }
     }
 
+    [Theory]
+    [InlineData("1", true)]
+    [InlineData("1.0", true)]
+    [InlineData("10e-1", true)]
+    [InlineData("1.0000000000000000001", false)]
+    [InlineData("0.9999999999999999999", false)]
+    public void SequenceRequiresAnExactIntegerLexeme(
+        string rawNumber,
+        bool accepted)
+    {
+        byte[] bytes = ReplaceRawNumber(
+            RbpFixtureReader.CreatePositiveEnvelope("invoke"),
+            "seq",
+            rawNumber);
+
+        if (accepted)
+        {
+            Assert.Equal(1, RbpEnvelopeCodec.Decode(bytes).Sequence);
+            return;
+        }
+
+        RbpFrameException exception = Assert.Throws<RbpFrameException>(
+            () => RbpEnvelopeCodec.Decode(bytes));
+        Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
+        Assert.Equal("/seq", exception.Path);
+    }
+
+    [Theory]
+    [InlineData("1e-324")]
+    [InlineData("-1e-324")]
+    public void AcknowledgementRejectsUnderflowedFractions(string rawNumber)
+    {
+        byte[] bytes = ReplaceRawNumber(
+            RbpFixtureReader.CreatePositiveEnvelope("invoke"),
+            "ack",
+            rawNumber);
+
+        RbpFrameException exception = Assert.Throws<RbpFrameException>(
+            () => RbpEnvelopeCodec.Decode(bytes));
+        Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
+        Assert.Equal("/ack", exception.Path);
+    }
+
+    [Theory]
+    [InlineData("120000.0000000000001")]
+    [InlineData("1e-324")]
+    public void FrozenPayloadIntegersRejectRoundedFractions(
+        string rawNumber)
+    {
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("invoke_batch");
+        byte[] bytes = ReplaceRawNumber(
+            envelope,
+            envelope["payload"]!.AsObject(),
+            "timeout_ms",
+            rawNumber);
+
+        RbpFrameException exception = Assert.Throws<RbpFrameException>(
+            () => RbpEnvelopeCodec.Decode(bytes));
+        Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
+        Assert.Equal("/payload/timeout_ms", exception.Path);
+    }
+
     [Fact]
     public void UnknownTopLevelFieldsAreRetainedWithoutChangingTheTypedShape()
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "heartbeat",
-            new JsonObject(),
-            data: false);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("heartbeat");
         envelope["future_extension"] = new JsonObject
         {
             ["enabled"] = true,
         };
+        envelope["payload"]!["future_payload_extension"] = "retained";
 
         RbpEnvelope decoded = RbpEnvelopeCodec.Decode(
             RbpFixtureReader.Serialize(envelope));
@@ -195,6 +229,11 @@ public sealed class RbpEnvelopeCodecTests
         JsonElement extension =
             Assert.Contains("future_extension", decoded.AdditionalProperties);
         Assert.True(extension.GetProperty("enabled").GetBoolean());
+        Assert.Equal(
+            "retained",
+            decoded.Payload
+                .GetProperty("future_payload_extension")
+                .GetString());
     }
 
     [Fact]
@@ -268,10 +307,8 @@ public sealed class RbpEnvelopeCodecTests
         string timestamp,
         bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "heartbeat",
-            new JsonObject(),
-            data: false);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("heartbeat");
         envelope["ts"] = timestamp;
         byte[] bytes = RbpFixtureReader.Serialize(envelope);
 
@@ -288,6 +325,57 @@ public sealed class RbpEnvelopeCodecTests
             Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
             Assert.Equal("/ts", exception.Path);
         }
+    }
+
+    [Fact]
+    public void FrozenPatternsRejectTrailingLineFeedAcrossRuntimes()
+    {
+        JsonObject id =
+            RbpFixtureReader.CreatePositiveEnvelope("heartbeat");
+        id["id"] = "0197a3c2-0000-7000-8000-000000000001\n";
+        AssertInvalidEnvelope(id, "/id");
+
+        JsonObject timestamp =
+            RbpFixtureReader.CreatePositiveEnvelope("heartbeat");
+        timestamp["ts"] = "2026-07-22T12:34:56Z\n";
+        AssertInvalidEnvelope(timestamp, "/ts");
+
+        JsonObject capability =
+            RbpFixtureReader.CreatePositiveEnvelope("hello");
+        capability["payload"]!["capabilities"]![0] = "journal_v1\n";
+        AssertInvalidEnvelope(capability, "/payload/capabilities");
+
+        JsonObject fingerprint =
+            RbpFixtureReader.CreatePositiveEnvelope("hello");
+        fingerprint["payload"]!["machine"]!["fingerprint"] =
+            "sha256:" + new string('a', 64) + "\n";
+        AssertInvalidEnvelope(
+            fingerprint,
+            "/payload/machine/fingerprint");
+    }
+
+    [Fact]
+    public void EmbeddedFrozenSchemasMatchCanonicalProtocolBytes()
+    {
+        string root = RbpFixtureReader.FindRepositoryRoot();
+        foreach ((string name, string embeddedDigest) in
+                 RbpPayloadValidator.FrozenSchemaDigests)
+        {
+            string path = Path.Combine(
+                root,
+                "packages",
+                "protocol",
+                "schemas",
+                "rbp",
+                "v1",
+                name);
+            string canonicalDigest = Convert.ToHexString(
+                    SHA256.HashData(File.ReadAllBytes(path)))
+                .ToLowerInvariant();
+            Assert.Equal(canonicalDigest, embeddedDigest);
+        }
+
+        Assert.Equal(3, RbpPayloadValidator.FrozenSchemaDigests.Count);
     }
 
     [Fact]
@@ -377,13 +465,7 @@ public sealed class RbpEnvelopeCodecTests
     private static byte[] ValidHeartbeat()
     {
         return RbpFixtureReader.Serialize(
-            RbpFixtureReader.CreateEnvelope(
-                "heartbeat",
-                new JsonObject
-                {
-                    ["sent_at"] = "2026-07-22T12:00:00Z",
-                },
-                data: false));
+            RbpFixtureReader.CreatePositiveEnvelope("heartbeat"));
     }
 
     private static void AssertLimitVector(
@@ -401,13 +483,10 @@ public sealed class RbpEnvelopeCodecTests
 
     private static void AssertParameterSize(int rawBytes, bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "invoke",
-            new JsonObject
-            {
-                ["params"] = new string('a', rawBytes - 2),
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("invoke");
+        envelope["payload"]!["params"] =
+            new string('a', rawBytes - 2);
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -416,14 +495,10 @@ public sealed class RbpEnvelopeCodecTests
 
     private static void AssertResultSize(int rawBytes, bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "result",
-            new JsonObject
-            {
-                ["kind"] = "invocation",
-                ["result"] = new string('a', rawBytes - 2),
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("invocation_result");
+        envelope["payload"]!["result"] =
+            new string('a', rawBytes - 2);
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -434,15 +509,17 @@ public sealed class RbpEnvelopeCodecTests
         int declaredBytes,
         bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "result",
-            new JsonObject
-            {
-                ["kind"] = "invocation",
-                ["chunked"] = true,
-                ["total_size"] = declaredBytes,
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("invocation_result");
+        JsonObject payload = envelope["payload"]!.AsObject();
+        payload.Remove("result");
+        payload["chunked"] = true;
+        payload["stream_id"] = "result";
+        payload["content_type"] = "application/json";
+        payload["total_chunks"] = 1;
+        payload["total_size"] = declaredBytes;
+        payload["sha256"] =
+            "sha256:" + new string('a', 64);
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -453,24 +530,13 @@ public sealed class RbpEnvelopeCodecTests
         int aggregateBytes,
         bool accepted)
     {
-        const int structuredResultBytes = 2;
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "result",
-            new JsonObject
-            {
-                ["kind"] = "invocation",
-                ["result"] = new JsonObject(),
-                ["chunked"] = true,
-                ["artifacts"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["total_size"] =
-                            aggregateBytes - structuredResultBytes,
-                    },
-                },
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("artifact_result");
+        JsonObject payload = envelope["payload"]!.AsObject();
+        int structuredResultBytes = Encoding.UTF8.GetByteCount(
+            payload["result"]!.ToJsonString());
+        payload["artifacts"]![0]!["total_size"] =
+            aggregateBytes - structuredResultBytes;
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -479,26 +545,26 @@ public sealed class RbpEnvelopeCodecTests
 
     private static void AssertArtifactCount(int count, bool accepted)
     {
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("artifact_result");
+        JsonObject template =
+            envelope["payload"]!["artifacts"]![0]!.AsObject();
         var artifacts = new JsonArray();
         for (int index = 0; index < count; index++)
         {
-            artifacts.Add(
-                new JsonObject
-                {
-                    ["total_size"] = 0,
-                });
+            string suffix = index.ToString("x12");
+            string artifactId =
+                "0197a3c2-0000-7000-8000-" + suffix;
+            JsonObject descriptor =
+                JsonNode.Parse(template.ToJsonString())!.AsObject();
+            descriptor["artifact_id"] = artifactId;
+            descriptor["artifact_index"] = index;
+            descriptor["stream_id"] = "artifact:" + artifactId;
+            descriptor["total_size"] = 0;
+            artifacts.Add(descriptor);
         }
 
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "result",
-            new JsonObject
-            {
-                ["kind"] = "invocation",
-                ["result"] = new JsonObject(),
-                ["chunked"] = true,
-                ["artifacts"] = artifacts,
-            },
-            data: true);
+        envelope["payload"]!["artifacts"] = artifacts;
         byte[] bytes = RbpFixtureReader.Serialize(envelope);
         if (accepted)
         {
@@ -521,22 +587,10 @@ public sealed class RbpEnvelopeCodecTests
         bool accepted,
         string expectedPath = "/payload/result")
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "result",
-            new JsonObject
-            {
-                ["kind"] = "invocation",
-                ["result"] = new JsonObject(),
-                ["chunked"] = true,
-                ["artifacts"] = new JsonArray
-                {
-                    new JsonObject
-                    {
-                        ["total_size"] = declaredBytes,
-                    },
-                },
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("artifact_result");
+        envelope["payload"]!["artifacts"]![0]!["total_size"] =
+            declaredBytes;
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -547,15 +601,10 @@ public sealed class RbpEnvelopeCodecTests
         int decodedBytes,
         bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            "partial",
-            new JsonObject
-            {
-                ["kind"] = "chunk",
-                ["data"] = Convert.ToBase64String(
-                    new byte[decodedBytes]),
-            },
-            data: true);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope("partial_chunk");
+        envelope["payload"]!["data"] =
+            Convert.ToBase64String(new byte[decodedBytes]);
         AssertDecodeOutcome(
             RbpFixtureReader.Serialize(envelope),
             accepted,
@@ -568,13 +617,12 @@ public sealed class RbpEnvelopeCodecTests
         int rawBytes,
         bool accepted)
     {
-        JsonObject envelope = RbpFixtureReader.CreateEnvelope(
-            type,
-            new JsonObject
-            {
-                ["padding"] = string.Empty,
-            },
-            data);
+        JsonObject envelope =
+            RbpFixtureReader.CreatePositiveEnvelope(
+                type == "heartbeat"
+                    ? "heartbeat"
+                    : "doc_context_update");
+        envelope["payload"]!["padding"] = string.Empty;
         int baseLength = RbpFixtureReader.Serialize(envelope).Length;
         envelope["payload"]!["padding"] =
             new string('a', rawBytes - baseLength);
@@ -601,5 +649,46 @@ public sealed class RbpEnvelopeCodecTests
         Assert.NotNull(exception.ActualBytes);
         Assert.NotNull(exception.LimitBytes);
         Assert.True(exception.ActualBytes > exception.LimitBytes);
+    }
+
+    private static byte[] ReplaceRawNumber(
+        JsonObject envelope,
+        string propertyName,
+        string rawNumber)
+    {
+        return ReplaceRawNumber(
+            envelope,
+            envelope,
+            propertyName,
+            rawNumber);
+    }
+
+    private static byte[] ReplaceRawNumber(
+        JsonObject envelope,
+        JsonObject owner,
+        string propertyName,
+        string rawNumber)
+    {
+        string json = Encoding.UTF8.GetString(
+            RbpFixtureReader.Serialize(envelope));
+        string marker = $"\"{propertyName}\":" +
+                        owner[propertyName]!.ToJsonString();
+        string replaced = json.Replace(
+            marker,
+            $"\"{propertyName}\":{rawNumber}",
+            StringComparison.Ordinal);
+        Assert.NotEqual(json, replaced);
+        return Encoding.UTF8.GetBytes(replaced);
+    }
+
+    private static void AssertInvalidEnvelope(
+        JsonObject envelope,
+        string expectedPath)
+    {
+        RbpFrameException exception = Assert.Throws<RbpFrameException>(
+            () => RbpEnvelopeCodec.Decode(
+                RbpFixtureReader.Serialize(envelope)));
+        Assert.Equal(RbpFrameErrorCode.InvalidEnvelope, exception.Code);
+        Assert.Equal(expectedPath, exception.Path);
     }
 }

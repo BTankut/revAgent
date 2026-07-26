@@ -28,4 +28,19 @@
     <ProjectReference Include="..\RevAgent.Bridge.Bootstrap\RevAgent.Bridge.Bootstrap.csproj" />
     <ProjectReference Include="..\RevAgent.Contracts\RevAgent.Contracts.csproj" />
   </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource
+      Include="..\..\..\protocol\schemas\rbp\v1\common.schema.json"
+      Link="ProtocolSchemas\common.schema.json"
+      LogicalName="RevAgent.Bridge.ProtocolSchemas.common.schema.json" />
+    <EmbeddedResource
+      Include="..\..\..\protocol\schemas\rbp\v1\envelope.schema.json"
+      Link="ProtocolSchemas\envelope.schema.json"
+      LogicalName="RevAgent.Bridge.ProtocolSchemas.envelope.schema.json" />
+    <EmbeddedResource
+      Include="..\..\..\protocol\schemas\rbp\v1\payloads.schema.json"
+      Link="ProtocolSchemas\payloads.schema.json"
+      LogicalName="RevAgent.Bridge.ProtocolSchemas.payloads.schema.json" />
+  </ItemGroup>
 </Project>
