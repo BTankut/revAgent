@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -28,8 +29,12 @@ internal sealed class BridgeMachineIdentity : IDisposable
     private byte[]? _seed;
 
     internal BridgeMachineIdentity(byte[] seed)
+        : this(seed.AsSpan())
     {
-        ArgumentNullException.ThrowIfNull(seed);
+    }
+
+    internal BridgeMachineIdentity(ReadOnlySpan<byte> seed)
+    {
         if (seed.Length != BridgeMachineFingerprintPolicy.SeedSizeBytes)
         {
             throw new ArgumentException(
@@ -38,7 +43,7 @@ internal sealed class BridgeMachineIdentity : IDisposable
                 nameof(seed));
         }
 
-        _seed = (byte[])seed.Clone();
+        _seed = seed.ToArray();
         MachineFingerprint = BridgeMachineFingerprintPolicy.Derive(_seed);
     }
 
@@ -66,35 +71,134 @@ internal sealed class BridgeMachineIdentity : IDisposable
         $"MachineFingerprint = {MachineFingerprint} }}";
 }
 
-internal sealed class BridgeSecretString
+internal sealed class BridgeSecretString : IDisposable
 {
     private const int MinimumUtf8Bytes = 32;
     private const int MaximumUtf8Bytes = 16 * 1024;
-    private readonly string _value;
+    private static readonly UTF8Encoding StrictUtf8 =
+        new(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true);
+    private byte[]? _utf8Value;
 
     internal BridgeSecretString(string value)
     {
         ArgumentNullException.ThrowIfNull(value);
-        int byteCount = Encoding.UTF8.GetByteCount(value);
-        if (string.IsNullOrWhiteSpace(value) ||
-            byteCount < MinimumUtf8Bytes ||
-            byteCount > MaximumUtf8Bytes)
+        if (string.IsNullOrWhiteSpace(value))
         {
-            throw new ArgumentException(
-                "The device token must be a bounded opaque secret of at least " +
-                "256 bits.",
-                nameof(value));
+            throw InvalidSecret(nameof(value));
         }
 
-        _value = value;
+        _utf8Value = StrictUtf8.GetBytes(value);
+        try
+        {
+            ValidateLength(_utf8Value.Length, nameof(value));
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(_utf8Value);
+            _utf8Value = null;
+            throw;
+        }
     }
 
-    internal string Reveal() => _value;
+    internal BridgeSecretString(ReadOnlySpan<byte> utf8Value)
+    {
+        ValidateLength(utf8Value.Length, nameof(utf8Value));
+        ValidateUtf8Content(utf8Value, nameof(utf8Value));
+        _utf8Value = utf8Value.ToArray();
+    }
+
+    ~BridgeSecretString()
+    {
+        DisposeCore();
+    }
+
+    internal string Reveal()
+    {
+        byte[] value = _utf8Value ??
+            throw new ObjectDisposedException(nameof(BridgeSecretString));
+        return StrictUtf8.GetString(value);
+    }
+
+    internal byte[] CopyUtf8Bytes()
+    {
+        byte[] value = _utf8Value ??
+            throw new ObjectDisposedException(nameof(BridgeSecretString));
+        return (byte[])value.Clone();
+    }
+
+    internal BridgeSecretString Clone()
+    {
+        byte[] copy = CopyUtf8Bytes();
+        try
+        {
+            return new BridgeSecretString(copy);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(copy);
+        }
+    }
+
+    public void Dispose()
+    {
+        DisposeCore();
+        GC.SuppressFinalize(this);
+    }
 
     public override string ToString() => "[redacted]";
+
+    private void DisposeCore()
+    {
+        byte[]? value = Interlocked.Exchange(ref _utf8Value, null);
+        if (value is not null)
+        {
+            CryptographicOperations.ZeroMemory(value);
+        }
+    }
+
+    private static void ValidateLength(int byteCount, string parameterName)
+    {
+        if (byteCount < MinimumUtf8Bytes ||
+            byteCount > MaximumUtf8Bytes)
+        {
+            throw InvalidSecret(parameterName);
+        }
+    }
+
+    private static void ValidateUtf8Content(
+        ReadOnlySpan<byte> utf8Value,
+        string parameterName)
+    {
+        bool hasNonWhitespace = false;
+        while (!utf8Value.IsEmpty)
+        {
+            OperationStatus status = Rune.DecodeFromUtf8(
+                utf8Value,
+                out Rune rune,
+                out int consumed);
+            if (status != OperationStatus.Done || consumed <= 0)
+            {
+                throw InvalidSecret(parameterName);
+            }
+
+            hasNonWhitespace |= !Rune.IsWhiteSpace(rune);
+            utf8Value = utf8Value[consumed..];
+        }
+
+        if (!hasNonWhitespace)
+        {
+            throw InvalidSecret(parameterName);
+        }
+    }
+
+    private static ArgumentException InvalidSecret(string parameterName) =>
+        new(
+            "The device token must be a bounded opaque secret of at least " +
+            "256 bits.",
+            parameterName);
 }
 
-internal sealed class BridgeDeviceCredential
+internal sealed class BridgeDeviceCredential : IDisposable
 {
     internal BridgeDeviceCredential(
         string deviceId,
@@ -129,12 +233,14 @@ internal sealed class BridgeDeviceCredential
 
     internal DateTimeOffset IssuedAtUtc { get; }
 
+    public void Dispose() => DeviceToken.Dispose();
+
     public override string ToString() =>
         $"BridgeDeviceCredential {{ DeviceId = {DeviceId}, " +
         $"DeviceToken = [redacted], IssuedAtUtc = {IssuedAtUtc:O} }}";
 }
 
-internal sealed class BridgeRuntimeCredentialState
+internal sealed class BridgeRuntimeCredentialState : IDisposable
 {
     internal BridgeRuntimeCredentialState(
         string machineFingerprint,
@@ -150,6 +256,8 @@ internal sealed class BridgeRuntimeCredentialState
     internal BridgeDeviceCredential? DeviceCredential { get; }
 
     internal bool IsEnrolled => DeviceCredential is not null;
+
+    public void Dispose() => DeviceCredential?.Dispose();
 
     public override string ToString() =>
         $"BridgeRuntimeCredentialState {{ MachineFingerprint = " +

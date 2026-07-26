@@ -70,4 +70,24 @@ public sealed class BridgeCredentialModelsTests
         Assert.Throws<ArgumentException>(
             () => new BridgeSecretString("too-short"));
     }
+
+    [Fact]
+    public void DeviceToken_DisposeZeroesOwnedUtf8Storage()
+    {
+        const string token =
+            "device-token-owned-zeroable-storage-0123456789-ABCDEF";
+        var secret = new BridgeSecretString(token);
+        byte[] ownedStorage = Assert.IsType<byte[]>(
+            typeof(BridgeSecretString)
+                .GetField(
+                    "_utf8Value",
+                    System.Reflection.BindingFlags.Instance |
+                    System.Reflection.BindingFlags.NonPublic)!
+                .GetValue(secret));
+
+        secret.Dispose();
+
+        Assert.All(ownedStorage, value => Assert.Equal(0, value));
+        Assert.Throws<ObjectDisposedException>(() => secret.Reveal());
+    }
 }
