@@ -147,7 +147,7 @@
       "payloads": [
         {
           "path": "installer/revit-plugin/revAgentPlugin/revAgentPlugin.dll",
-          "sha256": "3ad838831f0cf5affc33378c50b7bc4345928d1a3e3fd6b1195ec890e3771078",
+          "sha256": "299b9fc1d00bc15f9e8c8471bf38dd913a3ad37a72ef7166ca0cd2f9d62db546",
           "sizeBytes": 121344
         }
       ]
@@ -170,7 +170,7 @@
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/AddinJsonRpcCodec.cs",
-          "gitBlobSha": "1dea7b9930cecece2ceaf1a11c03c0c673e4eda1"
+          "gitBlobSha": "363c8a4bbc322cc6985df8488fc8c5290c60078a"
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/AddinJsonRpcModels.cs",
@@ -179,6 +179,14 @@
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/AddinJsonRpcProtocolException.cs",
           "gitBlobSha": "5cbe6a2e4e2a34eb5b55befc9055ec4f5867f3fb"
+        },
+        {
+          "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/AddinStatusModels.cs",
+          "gitBlobSha": "5028e78af08ac5550f666b0db6124eb36e2c5ed5"
+        },
+        {
+          "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/AddinStatusParser.cs",
+          "gitBlobSha": "b068766e1ebf574887a0869e75fa223aa20d17f3"
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/FrameCodecException.cs",
@@ -202,7 +210,7 @@
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/StrictJson.cs",
-          "gitBlobSha": "bd6f7807efdd64d2b467c68b872b3db077933121"
+          "gitBlobSha": "b2d323f5e5e1f771f0b235c1cc42c1f6a46ffddf"
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/AddinLoopback/StrictJsonException.cs",
@@ -210,11 +218,11 @@
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/JsonIntegerValue.cs",
-          "gitBlobSha": "ad0a3e86437349f2d7b2a17e4da78c62ba80c631"
+          "gitBlobSha": "fb0e89af96f006374616700925341831b3919076"
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/Rbp/AddinDocumentContextParser.cs",
-          "gitBlobSha": "df0aa129eb26a5cd850cf773a1348b0f3aedc6c6"
+          "gitBlobSha": "dec055836de16641e43048b24a7a629b0aa1d39b"
         },
         {
           "path": "packages/bridge/src/RevAgent.Contracts/Rbp/DisplayParameterMapper.cs",
@@ -264,8 +272,8 @@
       "payloads": [
         {
           "path": "installer/revit-plugin/revAgentPlugin/RevAgent.Contracts.dll",
-          "sha256": "5f50e4fd0dd18ce3d1a257ffe1a429fafb4d597a7f1c8b8336be83c1636de28f",
-          "sizeBytes": 67584
+          "sha256": "1bf39c7003bb122263fd28dcb8096f70aea586685a75f86ee9fda2d8b4ec895d",
+          "sizeBytes": 96768
         }
       ]
     },
@@ -511,12 +519,12 @@
       "payloads": [
         {
           "path": "installer/command-payload/revAgentCommandSet.dll",
-          "sha256": "f2b0c02c3a76aff877708cf6455bb7934db26eb5f7bf694a4089539fcce90d12",
+          "sha256": "d4a1668b0747ef1f1faedff22f0d13904a268e850147b90b13f7bb76b110c5b9",
           "sizeBytes": 507392
         },
         {
           "path": "installer/revit-plugin/revAgentPlugin/Commands/revAgentCommandSet/2022/revAgentCommandSet.dll",
-          "sha256": "f2b0c02c3a76aff877708cf6455bb7934db26eb5f7bf694a4089539fcce90d12",
+          "sha256": "d4a1668b0747ef1f1faedff22f0d13904a268e850147b90b13f7bb76b110c5b9",
           "sizeBytes": 507392
         }
       ]
