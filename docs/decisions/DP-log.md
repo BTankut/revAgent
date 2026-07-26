@@ -457,3 +457,43 @@ Server-side work that is safely executable through the available `bt@192.168.90.
 the implementing assistant, with retained command output. Only account authorization, physical/network
 work, decisions, and user communications remain operator-owned. The permanent normative wording is R-G in
 `docs/implementation-plan/00-INDEX.md` §8.
+
+### 2026-07-26 — R-F/R-H: RES-28 waits for a trustworthy runner window
+
+Source: Barış Tankut's conditional RES-28 tag-close authorization on
+2026-07-26 and the shared-runner observations retained during that execution
+attempt.
+
+- The only authorized tag target remains commit
+  `b3cca906ec90d0068df489407d3e0ce7254a308e`, tree
+  `e2cf3849e24c1c5b7e5061d35af74ea48a5f77f7`. Later M2/M3 merges do not
+  change that identity.
+- The authority set `rbp-v1.0-b3cca906ec90-s13` was prepared and locked, but
+  neither the supplemental three-times 365-test run nor the canonical
+  aggregate/one-hour-soak command was started. Both fresh evidence roots and
+  the local/remote `rbp/v1.0.0` tag remained absent.
+- The shared Windows runner remained occupied by higher-priority M2/M3 PR,
+  review, post-merge CI, signed-CD, and local test work. Two independent M3
+  Gateway jobs produced the same Vitest 3.2.7 worker RPC
+  `Timeout calling "onTaskUpdate"` after 56 passing shard-2 tests and no
+  assertion failure. The same PR SHA's immediate retry passed shard 2 as
+  61/61 and completed all five shards. Candidate/PR/merge conformance, Vitest,
+  runner, and lock inputs were byte-identical.
+- The repeated red signature correlates with concurrent Node/Python/.NET or
+  local `test-ci.ps1` process churn. It is classified as a runner/Vitest IPC
+  false-red risk, not as a demonstrated protocol failure. Starting RES-28 in
+  the same window would violate the explicit M2/M3 priority rule and would not
+  produce trustworthy tag evidence.
+- R-H is unchanged: these observations are scheduling/root-cause evidence,
+  not an additional tag gate. The required evidence remains exactly the
+  retained three-run aggregate, real one-hour soak, and WSS plus Streamable
+  HTTP/SSE proxy/interoperability parity named by RES-28 and Section 22.
+- Resume only in a roughly four-hour quiet window with no queued/active
+  M2/M3/CI/CD work, three consecutive 50-second runner-idle observations, and
+  no Vitest/conformance, `test-ci`, or .NET test/build workload. A same-signature
+  failure in that clean window is red and is not blindly rerun; a newly
+  arriving priority workload is recorded as a scheduling collision and the
+  attempt is rescheduled.
+
+Therefore `rbp/v1.0.0` remains unauthorized and absent. This entry records an
+open, non-blocking RES-28 execution finding; it does not block or alter M2/M3.

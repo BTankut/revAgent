@@ -188,6 +188,59 @@ M1/M2/M3. Smoke mode or an accelerated clock cannot satisfy it.
 | Cleanup | Zero pending journal state and orphan processes; bounded fd/memory profile | Not available | `deferred_non_blocking` |
 | Retained report | Canonical soak JSON plus hashed metrics JSONL bound to the executable candidate commit/tree | Not available | `deferred_non_blocking` |
 
+## RES-28 tag-close execution status — 2026-07-26
+
+Barış Tankut conditionally authorized this separate tag-close lane on
+2026-07-26: produce the three defined evidence classes against the M1
+candidate, and create the signed tag only if all three validate. The execution
+identity is fixed independently of later `main` progress:
+
+- candidate commit:
+  `b3cca906ec90d0068df489407d3e0ce7254a308e`;
+- candidate tree:
+  `e2cf3849e24c1c5b7e5061d35af74ea48a5f77f7`;
+- prepared authority set: `rbp-v1.0-b3cca906ec90-s13`;
+- authority-lock SHA-256:
+  `fb7e43638a9379cb407798b9645c3fe489f55904eeec0793bd433357df6c4df3`;
+- authority-runner SHA-256:
+  `567079ff43e114070390638f2d4831cde5740d3bcca68c00141fd521e5fb7180`.
+
+No RES-28 test, canonical retained run, or soak command was started during this
+attempt. Both fresh evidence roots remained absent, so no partial output is
+being promoted as retained evidence. Local and remote `rbp/v1.0.0` also
+remained absent.
+
+The shared Windows runner was continuously occupied by higher-priority M2/M3
+PR, review, post-merge CI, and signed-CD work. During that window two
+independent M3 Gateway jobs ended in the same Vitest 3.2.7 worker/parent RPC
+error, `Timeout calling "onTaskUpdate"`, after shard 2 had passed 56 tests with
+no assertion failure. The same PR SHA passed shard 2 as 61/61 and all five
+shards on its immediately retried run. The candidate, that PR head, and its
+protected merge have byte-identical `packages/rbp-conformance`, Vitest
+configuration, test runner, and package lock inputs. Process correlation found
+the red runs overlapped additional Node/Python/.NET or local `test-ci.ps1`
+work, while the green retry did not. This is therefore classified as a
+shared-runner/Vitest IPC false-red risk, not a demonstrated RBP semantic
+failure.
+
+Under R-H, those scheduling diagnostics do not add a fourth tag gate and do
+not replace any required evidence. Under the operator's M2/M3 priority rule,
+starting the roughly four-hour RES-28 sequence in that environment would make
+its result untrustworthy and delay critical-path work. Execution is deferred
+until a reserved quiet window has:
+
+1. no queued or active M2/M3/CI/CD work;
+2. three consecutive 50-second observations of the runner online and idle;
+3. no Vitest/conformance, `test-ci`, or .NET test/build workload; and
+4. enough uninterrupted time for the operator-directed 365-test suite three
+   times, the canonical three-run aggregate, and the real one-hour soak.
+
+If the same RPC signature occurs after those preconditions hold, it is an
+evidence-set red and MUST NOT be blindly rerun. If a new priority job or local
+test starts during the sequence, the collision must be retained as scheduling
+evidence and the RES-28 attempt rescheduled rather than represented as a
+product verdict.
+
 ## Section 22 evidence matrix
 
 | Section 22 requirement | Acceptance evidence | Current evidence | State |
