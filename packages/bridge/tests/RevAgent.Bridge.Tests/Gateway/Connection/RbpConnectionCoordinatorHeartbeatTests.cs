@@ -228,8 +228,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             {
                 if (envelope.Type == "heartbeat")
                 {
-                    return Task.FromException(
-                        new IOException("heartbeat send failed"));
+                    throw new IOException("heartbeat send failed");
                 }
 
                 DeliverResponse(cycle, responder, envelope);
@@ -253,6 +252,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(
             RbpUnregisterPhase.Pending,
             (await store.GetUnregisterTombstoneAsync("rs-8080"))!.Phase);
+        Assert.False(
+            clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(10)));
 
         clock.Advance(TimeSpan.FromSeconds(15));
         await EventuallyAsync(
@@ -437,6 +438,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             faults.Arm(RbpJournalFaultPoint.BeforeCommit);
             clock.Advance(TimeSpan.FromSeconds(15));
             await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
+            await EventuallyAsync(
+                () => clock.HasDelayDueIn(TimeSpan.FromSeconds(65)));
 
             var stopwatch = System.Diagnostics.Stopwatch.StartNew();
             stop.Cancel();
@@ -448,6 +451,8 @@ public sealed partial class RbpConnectionCoordinatorTests
                 coordinator.GetSnapshot().Lifecycle.Phase);
             Assert.Equal(1, factory.OpenCount);
             Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
+            Assert.False(
+                clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(65)));
 
             RbpCoordinatorException restart =
                 await Assert.ThrowsAsync<RbpCoordinatorException>(
@@ -613,6 +618,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.Equal(1, factory.OpenCount);
         Assert.Equal(0, cycle.CloseCount);
         Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
+        Assert.False(
+            clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(10)));
+        Assert.False(
+            clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(65)));
         clock.Advance(TimeSpan.FromSeconds(15));
         await EventuallyAsync(
             () => cycle.Sent.Count(item => item.Type == "heartbeat") == 2);
@@ -655,6 +664,8 @@ public sealed partial class RbpConnectionCoordinatorTests
         Assert.DoesNotContain(
             second.Sent,
             item => item.Type == "heartbeat");
+        Assert.False(
+            clock.HasOutstandingDelayDueIn(TimeSpan.FromSeconds(65)));
 
         stop.Cancel();
         await run.WaitAsync(TimeSpan.FromSeconds(2));

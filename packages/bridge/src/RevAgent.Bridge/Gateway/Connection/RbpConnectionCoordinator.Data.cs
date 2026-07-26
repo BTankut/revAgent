@@ -196,158 +196,167 @@ internal sealed partial class RbpConnectionCoordinator
             acknowledgements);
         using var deadlineCancellation =
             CancellationTokenSource.CreateLinkedTokenSource(context.Token);
-        Task deadline = _clock.DelayAsync(
-            _options.EffectiveHeartbeatAcknowledgementTimeout,
-            deadlineCancellation.Token);
-        HeartbeatFlight flight =
-            context.InstallHeartbeatFlight(fence, deadline);
-
-        Task send;
-        Exception? sendFailure = null;
-        bool sendCompleted = false;
         try
         {
-            send = context.Cycle.SendAsync(
-                CreateControlEnvelope("heartbeat", payload),
-                context.Token);
-        }
-        catch (Exception exception)
-        {
-            if (context.TryRollbackHeartbeatFlight(flight))
+            Task deadline = _clock.DelayAsync(
+                _options.EffectiveHeartbeatAcknowledgementTimeout,
+                deadlineCancellation.Token);
+            HeartbeatFlight flight =
+                context.InstallHeartbeatFlight(fence, deadline);
+
+            Task send;
+            Exception? sendFailure = null;
+            bool sendCompleted = false;
+            try
             {
-                throw;
+                send = context.Cycle.SendAsync(
+                    CreateControlEnvelope("heartbeat", payload),
+                    context.Token);
+            }
+            catch (Exception exception)
+            {
+                if (context.TryRollbackHeartbeatFlight(flight))
+                {
+                    throw;
+                }
+
+                send = Task.CompletedTask;
+                sendCompleted = true;
+                sendFailure = exception;
             }
 
-            send = Task.CompletedTask;
-            sendCompleted = true;
-            sendFailure = exception;
-        }
-
-        bool acknowledgementObserved = false;
-        bool applicationCompleted = false;
-        using var applicationCancellation =
-            CancellationTokenSource.CreateLinkedTokenSource(context.Token);
-        Task? applicationDeadline = null;
-        try
-        {
-            while (!sendCompleted ||
-                   !acknowledgementObserved ||
-                   !applicationCompleted)
+            bool acknowledgementObserved = false;
+            bool applicationCompleted = false;
+            using var applicationCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(context.Token);
+            Task? applicationDeadline = null;
+            try
             {
-                var pending = new List<Task>(4);
-                if (!sendCompleted)
+                while (!sendCompleted ||
+                       !acknowledgementObserved ||
+                       !applicationCompleted)
                 {
-                    pending.Add(send);
-                }
-
-                if (!acknowledgementObserved)
-                {
-                    pending.Add(flight.Observed.Task);
-                    pending.Add(flight.Deadline);
-                }
-                else
-                {
-                    if (!applicationCompleted)
+                    var pending = new List<Task>(4);
+                    if (!sendCompleted)
                     {
-                        pending.Add(flight.Applied.Task);
+                        pending.Add(send);
                     }
 
-                    pending.Add(applicationDeadline ??
-                        throw new InvalidOperationException(
-                            "An observed heartbeat must own an application " +
-                            "deadline."));
-                }
+                    if (!acknowledgementObserved)
+                    {
+                        pending.Add(flight.Observed.Task);
+                        pending.Add(flight.Deadline);
+                    }
+                    else
+                    {
+                        if (!applicationCompleted)
+                        {
+                            pending.Add(flight.Applied.Task);
+                        }
 
-                Task completed = await Task.WhenAny(pending)
-                    .WaitAsync(context.Token)
-                    .ConfigureAwait(false);
-                if (ReferenceEquals(completed, flight.Deadline))
-                {
-                    if (context.TryRollbackHeartbeatFlight(flight))
+                        pending.Add(applicationDeadline ??
+                            throw new InvalidOperationException(
+                                "An observed heartbeat must own an application " +
+                                "deadline."));
+                    }
+
+                    Task completed = await Task.WhenAny(pending)
+                        .WaitAsync(context.Token)
+                        .ConfigureAwait(false);
+                    if (ReferenceEquals(completed, flight.Deadline))
+                    {
+                        if (context.TryRollbackHeartbeatFlight(flight))
+                        {
+                            ObserveLateFault(send);
+                            context.Token.ThrowIfCancellationRequested();
+                            throw new RbpCoordinatorException(
+                                RbpCoordinatorErrorCode.HeartbeatTimeout,
+                                "The Gateway did not acknowledge the heartbeat " +
+                                "within 10 seconds.");
+                        }
+
+                        await flight.Observed.Task.ConfigureAwait(false);
+                        acknowledgementObserved = true;
+                        deadlineCancellation.Cancel();
+                        applicationDeadline ??= _clock.DelayAsync(
+                            _options.EffectiveHeartbeatCompletionTimeout,
+                            applicationCancellation.Token);
+                    }
+
+                    if (ReferenceEquals(completed, send))
+                    {
+                        try
+                        {
+                            await send.ConfigureAwait(false);
+                            sendCompleted = true;
+                        }
+                        catch (Exception exception)
+                        {
+                            sendCompleted = true;
+                            if (context.TryRollbackHeartbeatFlight(flight))
+                            {
+                                throw;
+                            }
+
+                            sendFailure = exception;
+                        }
+                    }
+
+                    if (ReferenceEquals(completed, flight.Observed.Task))
+                    {
+                        await flight.Observed.Task.ConfigureAwait(false);
+                        acknowledgementObserved = true;
+                        deadlineCancellation.Cancel();
+                        applicationDeadline ??= _clock.DelayAsync(
+                            _options.EffectiveHeartbeatCompletionTimeout,
+                            applicationCancellation.Token);
+                    }
+
+                    if (ReferenceEquals(completed, flight.Applied.Task))
+                    {
+                        await flight.Applied.Task.ConfigureAwait(false);
+                        applicationCompleted = true;
+                    }
+
+                    if (ReferenceEquals(completed, applicationDeadline))
                     {
                         ObserveLateFault(send);
                         context.Token.ThrowIfCancellationRequested();
                         throw new RbpCoordinatorException(
-                            RbpCoordinatorErrorCode.HeartbeatTimeout,
-                            "The Gateway did not acknowledge the heartbeat " +
-                            "within 10 seconds.");
+                            RbpCoordinatorErrorCode.HeartbeatApplicationTimeout,
+                            "The observed heartbeat acknowledgement did not " +
+                            "finish transport send and durable application " +
+                            "before the connection liveness window elapsed.");
                     }
-
-                    await flight.Observed.Task.ConfigureAwait(false);
-                    acknowledgementObserved = true;
-                    deadlineCancellation.Cancel();
-                    applicationDeadline ??= _clock.DelayAsync(
-                        _options.EffectiveHeartbeatCompletionTimeout,
-                        applicationCancellation.Token);
-                }
-
-                if (ReferenceEquals(completed, send))
-                {
-                    try
-                    {
-                        await send.ConfigureAwait(false);
-                        sendCompleted = true;
-                    }
-                    catch (Exception exception)
-                    {
-                        sendCompleted = true;
-                        if (context.TryRollbackHeartbeatFlight(flight))
-                        {
-                            throw;
-                        }
-
-                        sendFailure = exception;
-                    }
-                }
-
-                if (ReferenceEquals(completed, flight.Observed.Task))
-                {
-                    await flight.Observed.Task.ConfigureAwait(false);
-                    acknowledgementObserved = true;
-                    deadlineCancellation.Cancel();
-                    applicationDeadline ??= _clock.DelayAsync(
-                        _options.EffectiveHeartbeatCompletionTimeout,
-                        applicationCancellation.Token);
-                }
-
-                if (ReferenceEquals(completed, flight.Applied.Task))
-                {
-                    await flight.Applied.Task.ConfigureAwait(false);
-                    applicationCompleted = true;
-                }
-
-                if (ReferenceEquals(completed, applicationDeadline))
-                {
-                    ObserveLateFault(send);
-                    context.Token.ThrowIfCancellationRequested();
-                    throw new RbpCoordinatorException(
-                        RbpCoordinatorErrorCode.HeartbeatApplicationTimeout,
-                        "The observed heartbeat acknowledgement did not " +
-                        "finish transport send and durable application " +
-                        "before the connection liveness window elapsed.");
                 }
             }
+            catch (OperationCanceledException)
+                when (context.Token.IsCancellationRequested)
+            {
+                _ = context.TryRollbackHeartbeatFlight(flight);
+                ObserveLateFault(send);
+                throw;
+            }
+            catch
+            {
+                ObserveLateFault(send);
+                throw;
+            }
+            finally
+            {
+                applicationCancellation.Cancel();
+            }
 
-            applicationCancellation.Cancel();
+            if (sendFailure is not null)
+            {
+                ExceptionDispatchInfo.Capture(sendFailure).Throw();
+                throw new InvalidOperationException(
+                    "ExceptionDispatchInfo.Throw unexpectedly returned.");
+            }
         }
-        catch (OperationCanceledException)
-            when (context.Token.IsCancellationRequested)
+        finally
         {
-            _ = context.TryRollbackHeartbeatFlight(flight);
-            ObserveLateFault(send);
-            throw;
-        }
-        catch
-        {
-            ObserveLateFault(send);
-            throw;
-        }
-
-        if (sendFailure is not null)
-        {
-            ExceptionDispatchInfo.Capture(sendFailure).Throw();
-            throw new InvalidOperationException(
-                "ExceptionDispatchInfo.Throw unexpectedly returned.");
+            deadlineCancellation.Cancel();
         }
     }
 
