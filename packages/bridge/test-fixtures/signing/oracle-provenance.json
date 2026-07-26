@@ -1,0 +1,9 @@
+{
+    "schemaVersion":  1,
+    "generatedBy":  "Windows PowerShell 5.1.26100.8894",
+    "modulePath":  "installer/lib/RevAgent.DistributionIntegrity.psm1",
+    "moduleBlob":  "2943f1b642af915d627761bb14ae4364de253ba6",
+    "testPath":  "scripts/test-distribution-integrity.ps1",
+    "testBlob":  "1ae202aeaabf75e75ecb63f317dd429944fd2907",
+    "privateKeyPersisted":  false
+}

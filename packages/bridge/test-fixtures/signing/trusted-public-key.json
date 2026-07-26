@@ -1,0 +1,10 @@
+{
+    "schemaVersion":  1,
+    "keys":  [
+                 {
+                     "keyId":  "p3-t1-oracle-key",
+                     "publicKeyXml":  "\u003cRSAKeyValue\u003e\u003cModulus\u003ez7EoEwERtyhBRxTsJg+cjgWmx9dG/NdLqEiVFwWUzTjC7JY5rjFUefa9S4mTvPEPRH8Nhxmec47CUex2BcBI5mp2QXzN3lzyYEbkXr1DpZitH5sXRYBu+4hYxH+8lfQg9qzPeWfqfUlGI28//+px3NssN8xrVUfUyd9041BUvck=\u003c/Modulus\u003e\u003cExponent\u003eAQAB\u003c/Exponent\u003e\u003c/RSAKeyValue\u003e",
+                     "publicKeyFingerprint":  "12B62AB62329AC78CA58434958FEBA082912783070AA25F3B6D5F2FFB29500DC"
+                 }
+             ]
+}

@@ -25,3 +25,4 @@ packages/protocol/src/generated/** text eol=lf
 packages/**/*.cs text eol=lf
 packages/**/*.csproj text eol=lf
 packages/**/*.sln text eol=lf
+packages/bridge/test-fixtures/**/*.bin -text

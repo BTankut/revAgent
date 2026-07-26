@@ -1,0 +1,333 @@
+{
+  "schemaVersion": 1,
+  "display": {
+    "rbpEnvelope": {
+      "v": 1,
+      "type": "invoke",
+      "id": "0197a3c2-0000-7000-8000-000000000010",
+      "rsid": "rs_7f3a",
+      "seq": 1,
+      "ack": 0,
+      "ts": "2026-07-26T00:00:00.000Z",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000011",
+        "method": "inspect_schedules",
+        "params": {
+          "value": 1
+        },
+        "timeout_ms": 120000,
+        "mutating": false,
+        "mutation_scope": null,
+        "policy": {
+          "class": "auto",
+          "decision": "auto",
+          "confirmation_id": null
+        },
+        "verification": null,
+        "recovery_clearances": [],
+        "display": {
+          "task_name": "Inspect schedules",
+          "wrapper_action": "inspect",
+          "logical_tool_name": "core.schedule.inspect",
+          "parent_task_name": null,
+          "parent_task_id": null,
+          "suppress_task_status_window": false,
+          "future_display_field": "accepted-but-not-forwarded"
+        }
+      }
+    },
+    "functionalParams": {
+      "value": 1,
+      "taskName": "untrusted",
+      "wrapperAction": "untrusted",
+      "logicalToolName": "untrusted",
+      "parentTaskName": "untrusted",
+      "parentTaskId": "untrusted",
+      "suppressTaskStatusWindow": true,
+      "futureDisplayField": "functional-value"
+    },
+    "expectedAddinParams": {
+      "value": 1,
+      "futureDisplayField": "functional-value",
+      "taskName": "Inspect schedules",
+      "wrapperAction": "inspect",
+      "logicalToolName": "core.schedule.inspect",
+      "parentTaskName": null,
+      "parentTaskId": null,
+      "suppressTaskStatusWindow": false
+    }
+  },
+  "displayOmitted": {
+    "rbpEnvelope": {
+      "v": 1,
+      "type": "invoke",
+      "id": "0197a3c2-0000-7000-8000-000000000012",
+      "rsid": "rs_7f3a",
+      "seq": 2,
+      "ack": 0,
+      "ts": "2026-07-26T00:00:00.500Z",
+      "payload": {
+        "invocation_id": "0197a3c2-0000-7000-8000-000000000013",
+        "method": "inspect_schedules",
+        "params": {
+          "value": 2
+        },
+        "timeout_ms": 120000,
+        "mutating": false,
+        "mutation_scope": null,
+        "policy": {
+          "class": "auto",
+          "decision": "auto",
+          "confirmation_id": null
+        },
+        "verification": null,
+        "recovery_clearances": [],
+        "display": {
+          "future_display_field": "accepted-but-not-forwarded"
+        }
+      }
+    },
+    "functionalParams": {
+      "value": 2,
+      "futureFunctional": true,
+      "taskName": "untrusted",
+      "wrapperAction": "untrusted",
+      "logicalToolName": "untrusted",
+      "parentTaskName": "untrusted",
+      "parentTaskId": "untrusted",
+      "suppressTaskStatusWindow": true
+    },
+    "expectedAddinParams": {
+      "value": 2,
+      "futureFunctional": true
+    }
+  },
+  "documentContexts": [
+    {
+      "name": "ready-active",
+      "addinResponse": {
+        "jsonrpc": "2.0",
+        "id": "doc-context-ready",
+        "result": {
+          "resultContractVersion": 2,
+          "documentContextContractVersion": 1,
+          "capturedAtUtc": "2026-07-26T00:00:00.000Z",
+          "revision": 7,
+          "cacheState": "ready",
+          "unavailableReason": null,
+          "documents": [
+            {
+              "documentId": "doc-01",
+              "title": "Fixture Model",
+              "pathDigest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "isWorkshared": true,
+              "isActive": true
+            }
+          ],
+          "activeDocumentId": "doc-01",
+          "activeView": {
+            "documentId": "doc-01",
+            "id": "1001",
+            "name": "Mechanical Plan",
+            "type": "FloorPlan",
+            "level": null
+          },
+          "disciplineHint": "mechanical"
+        }
+      },
+      "rbpEnvelope": {
+        "v": 1,
+        "type": "doc_context_update",
+        "id": "0197a3c2-0000-7000-8000-000000000020",
+        "rsid": "rs_7f3a",
+        "seq": 1,
+        "ack": 0,
+        "ts": "2026-07-26T00:00:01.000Z",
+        "payload": {
+          "documents": [
+            {
+              "document_id": "doc-01",
+              "title": "Fixture Model",
+              "path_digest": "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+              "is_workshared": true,
+              "is_active": true
+            }
+          ],
+          "active_document": "doc-01",
+          "active_view": {
+            "id": "1001",
+            "name": "Mechanical Plan",
+            "type": "FloorPlan",
+            "level": null
+          },
+          "discipline_hint": "mechanical"
+        }
+      }
+    },
+    {
+      "name": "ready-empty",
+      "addinResponse": {
+        "jsonrpc": "2.0",
+        "id": "doc-context-empty",
+        "result": {
+          "resultContractVersion": 2,
+          "documentContextContractVersion": 1,
+          "capturedAtUtc": "2026-07-26T00:00:02.000Z",
+          "revision": 8,
+          "cacheState": "ready",
+          "unavailableReason": null,
+          "documents": [],
+          "activeDocumentId": null,
+          "activeView": null,
+          "disciplineHint": null
+        }
+      },
+      "rbpEnvelope": {
+        "v": 1,
+        "type": "doc_context_update",
+        "id": "0197a3c2-0000-7000-8000-000000000021",
+        "rsid": "rs_7f3a",
+        "seq": 2,
+        "ack": 0,
+        "ts": "2026-07-26T00:00:02.000Z",
+        "payload": {
+          "documents": [],
+          "active_document": null,
+          "active_view": null
+        }
+      }
+    },
+    {
+      "name": "warming",
+      "addinResponse": {
+        "jsonrpc": "2.0",
+        "id": "doc-context-warming",
+        "result": {
+          "resultContractVersion": 2,
+          "documentContextContractVersion": 1,
+          "capturedAtUtc": "2026-07-26T00:00:03.000Z",
+          "revision": 0,
+          "cacheState": "warming",
+          "unavailableReason": "initial snapshot pending",
+          "documents": [],
+          "activeDocumentId": null,
+          "activeView": null,
+          "disciplineHint": null
+        }
+      },
+      "rbpEnvelope": {
+        "v": 1,
+        "type": "doc_context_update",
+        "id": "0197a3c2-0000-7000-8000-000000000022",
+        "rsid": "rs_7f3a",
+        "seq": 3,
+        "ack": 0,
+        "ts": "2026-07-26T00:00:03.000Z",
+        "payload": {
+          "documents": [],
+          "active_document": null,
+          "active_view": null
+        }
+      }
+    }
+  ],
+  "negativeRbpEnvelopes": [
+    {
+      "name": "missing-active-view",
+      "envelope": {
+        "v": 1,
+        "type": "doc_context_update",
+        "id": "0197a3c2-0000-7000-8000-000000000030",
+        "rsid": "rs_7f3a",
+        "seq": 4,
+        "ack": 0,
+        "ts": "2026-07-26T00:00:04.000Z",
+        "payload": {
+          "documents": [],
+          "active_document": null
+        }
+      }
+    },
+    {
+      "name": "two-active-documents",
+      "envelope": {
+        "v": 1,
+        "type": "doc_context_update",
+        "id": "0197a3c2-0000-7000-8000-000000000031",
+        "rsid": "rs_7f3a",
+        "seq": 5,
+        "ack": 0,
+        "ts": "2026-07-26T00:00:05.000Z",
+        "payload": {
+          "documents": [
+            {
+              "document_id": "doc-01",
+              "title": "Fixture Model A",
+              "path_digest": null,
+              "is_workshared": false,
+              "is_active": true
+            },
+            {
+              "document_id": "doc-02",
+              "title": "Fixture Model B",
+              "path_digest": null,
+              "is_workshared": false,
+              "is_active": true
+            }
+          ],
+          "active_document": "doc-01",
+          "active_view": null
+        }
+      }
+    }
+  ],
+  "negativeAddinResponses": [
+    {
+      "name": "raw-path-extra-field",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "doc-context-negative-1",
+        "result": {
+          "resultContractVersion": 2,
+          "documentContextContractVersion": 1,
+          "capturedAtUtc": "2026-07-26T00:00:00.000Z",
+          "revision": 1,
+          "cacheState": "ready",
+          "unavailableReason": null,
+          "documents": [],
+          "activeDocumentId": null,
+          "activeView": null,
+          "disciplineHint": null,
+          "rawPath": "C:\\secret\\model.rvt"
+        }
+      }
+    },
+    {
+      "name": "warming-carries-document",
+      "response": {
+        "jsonrpc": "2.0",
+        "id": "doc-context-negative-2",
+        "result": {
+          "resultContractVersion": 2,
+          "documentContextContractVersion": 1,
+          "capturedAtUtc": "2026-07-26T00:00:00.000Z",
+          "revision": 1,
+          "cacheState": "warming",
+          "unavailableReason": "not ready",
+          "documents": [
+            {
+              "documentId": "doc-01",
+              "title": "Should not exist",
+              "pathDigest": null,
+              "isWorkshared": false,
+              "isActive": false
+            }
+          ],
+          "activeDocumentId": null,
+          "activeView": null,
+          "disciplineHint": null
+        }
+      }
+    }
+  ]
+}
