@@ -708,7 +708,7 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
-        internal async Task AwaitOwnedTasksAsync(TimeSpan timeout)
+        internal async Task<bool> AwaitOwnedTasksAsync(TimeSpan timeout)
         {
             if (timeout <= TimeSpan.Zero)
             {
@@ -726,7 +726,7 @@ internal sealed partial class RbpConnectionCoordinator
 
             if (tasks.Length == 0)
             {
-                return;
+                return true;
             }
 
             Task all = Task.WhenAll(tasks);
@@ -737,7 +737,7 @@ internal sealed partial class RbpConnectionCoordinator
             if (!ReferenceEquals(completed, all))
             {
                 ObserveLateFault(all);
-                return;
+                return false;
             }
 
             try
@@ -753,6 +753,8 @@ internal sealed partial class RbpConnectionCoordinator
                 // The owning run path already observed the first terminal
                 // task. Awaiting here prevents orphaned task exceptions.
             }
+
+            return true;
         }
 
         public void Dispose()

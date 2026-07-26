@@ -39,6 +39,11 @@ public sealed class RbpCoordinatorPrimitiveTests
                     .HeartbeatDisconnectedAfterMilliseconds),
             options.EffectiveWakeGapThreshold);
         Assert.Equal(
+            TimeSpan.FromMilliseconds(
+                RbpConnectionReducer
+                    .HeartbeatDisconnectedAfterMilliseconds),
+            options.EffectiveHeartbeatCompletionTimeout);
+        Assert.Equal(
             TimeSpan.FromSeconds(2),
             options.EffectiveCloseTimeout);
     }

@@ -269,8 +269,13 @@ the durable handler finishes exactly once before that send fault owns
 reconnect. Service cancellation interrupts sender waits, bounds owned-task
 drain, and disposes each connection context's linked cancellation authority.
 An observed acknowledgement whose transport send or durable handler never
-returns is fenced by the canonical 65-second disconnected-liveness window
-before the binding is replaced.
+returns is fenced by the canonical 65-second disconnected-liveness window.
+That completion fence has a distinct frozen coordinator option from monotonic
+wake-gap detection even though both use the same RBP/1 65-second value.
+Replacement is allowed only after both connection-owned loops drain. If either
+loop ignores cancellation past the bounded close deadline, the coordinator
+poisons its connection authority and requires a Bridge process restart instead
+of opening a new generation beside the stale handler.
 Only the exact current generation may apply the returned cumulative
 acknowledgements or confirm tombstones. The coordinator closes and replaces
 WSS after a monotonic wake gap; it never switches an active binding in place.

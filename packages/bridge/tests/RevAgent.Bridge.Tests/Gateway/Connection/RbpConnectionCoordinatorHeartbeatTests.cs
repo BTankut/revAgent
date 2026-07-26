@@ -339,7 +339,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             await EventuallyAsync(
                 () => first.Sent.Count(
                     item => item.Type == "heartbeat") == 1);
-            await Task.Delay(25);
+            await EventuallyAsync(
+                () => clock.HasDelayDueIn(TimeSpan.FromSeconds(65)));
 
             clock.Advance(TimeSpan.FromSeconds(65));
             await EventuallyAsync(() => factory.OpenCount == 2);
@@ -457,7 +458,7 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
-    public async Task StalledAckApplicationCannotOutliveLivenessWindow()
+    public async Task NonDrainingAckApplicationPoisonsAuthority()
     {
         using var directory = new RbpJournalTestDirectory();
         var clock = new ManualCoordinatorClock();
@@ -486,23 +487,39 @@ public sealed partial class RbpConnectionCoordinatorTests
             await faults.Entered.WaitAsync(TimeSpan.FromSeconds(2));
 
             clock.Advance(TimeSpan.FromSeconds(65));
-            await EventuallyAsync(() => factory.OpenCount == 2);
-            Assert.True(first.CloseCount > 0);
+            RbpCoordinatorException failure =
+                await Assert.ThrowsAsync<RbpCoordinatorException>(
+                    () => run.WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.Equal(
-                2,
-                coordinator.GetSnapshot().ConnectionGeneration);
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                failure.ErrorCode);
+            Assert.True(first.CloseCount > 0);
+            Assert.Equal(1, factory.OpenCount);
+            Assert.Empty(second.Sent);
+            Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
 
-            faults.Release();
-            await EventuallyAsync(
-                () => coordinator.GetSnapshot().HasActiveConnection);
-            stop.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(2));
+            RbpCoordinatorException restart =
+                await Assert.ThrowsAsync<RbpCoordinatorException>(
+                    () => coordinator.RunAsync());
+            Assert.Equal(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                restart.ErrorCode);
+            Assert.Equal(1, factory.OpenCount);
         }
         finally
         {
             faults.Release();
             stop.Cancel();
-            await run.WaitAsync(TimeSpan.FromSeconds(2));
+            try
+            {
+                await run.WaitAsync(TimeSpan.FromSeconds(2));
+            }
+            catch (RbpCoordinatorException exception)
+                when (exception.ErrorCode ==
+                      RbpCoordinatorErrorCode
+                          .NonDrainingConnectionAuthority)
+            {
+            }
         }
 
         await EventuallyAsync(

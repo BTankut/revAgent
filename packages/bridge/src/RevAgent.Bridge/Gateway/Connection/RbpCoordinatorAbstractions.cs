@@ -91,6 +91,7 @@ internal sealed record RbpConnectionCoordinatorOptions(
     Uri Endpoint,
     RbpHelloProfile HelloProfile,
     TimeSpan? HeartbeatAcknowledgementTimeout = null,
+    TimeSpan? HeartbeatCompletionTimeout = null,
     TimeSpan? WakeGapThreshold = null,
     TimeSpan? CloseTimeout = null)
 {
@@ -99,6 +100,11 @@ internal sealed record RbpConnectionCoordinatorOptions(
 
     internal TimeSpan EffectiveWakeGapThreshold =>
         WakeGapThreshold ??
+        TimeSpan.FromMilliseconds(
+            RbpConnectionReducer.HeartbeatDisconnectedAfterMilliseconds);
+
+    internal TimeSpan EffectiveHeartbeatCompletionTimeout =>
+        HeartbeatCompletionTimeout ??
         TimeSpan.FromMilliseconds(
             RbpConnectionReducer.HeartbeatDisconnectedAfterMilliseconds);
 
@@ -116,6 +122,7 @@ internal enum RbpCoordinatorErrorCode
     InboundJournalUnavailable,
     HeartbeatTimeout,
     HeartbeatApplicationTimeout,
+    NonDrainingConnectionAuthority,
     SequenceFault,
 }
 

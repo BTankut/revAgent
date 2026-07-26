@@ -35,6 +35,7 @@ internal sealed partial class RbpConnectionCoordinator
     private ConnectionCycleContext? _active;
     private long _connectionGeneration;
     private int _runStarted;
+    private int _connectionAuthorityPoisoned;
     private int _ownedBackgroundTasks;
 
     internal RbpConnectionCoordinator(
@@ -108,6 +109,11 @@ internal sealed partial class RbpConnectionCoordinator
     internal async Task RunAsync(
         CancellationToken cancellationToken = default)
     {
+        if (Volatile.Read(ref _connectionAuthorityPoisoned) != 0)
+        {
+            throw NonDrainingConnectionAuthority();
+        }
+
         if (Interlocked.CompareExchange(ref _runStarted, 1, 0) != 0)
         {
             throw new RbpCoordinatorException(
@@ -145,6 +151,13 @@ internal sealed partial class RbpConnectionCoordinator
                             RetryAfterMilliseconds:
                                 goodbye.RetryAfterMilliseconds,
                             GoodbyeReason: goodbye.Reason));
+                }
+                catch (RbpCoordinatorException exception)
+                    when (exception.ErrorCode ==
+                          RbpCoordinatorErrorCode
+                              .NonDrainingConnectionAuthority)
+                {
+                    throw;
                 }
                 catch (Exception exception)
                 {
@@ -184,7 +197,7 @@ internal sealed partial class RbpConnectionCoordinator
                 active.Cancel();
                 await CloseCycleBoundedAsync(active.Cycle)
                     .ConfigureAwait(false);
-                await active.AwaitOwnedTasksAsync(
+                _ = await active.AwaitOwnedTasksAsync(
                         _options.EffectiveCloseTimeout)
                     .ConfigureAwait(false);
                 ClearActiveContext(active);
@@ -299,11 +312,21 @@ internal sealed partial class RbpConnectionCoordinator
 
                 context.Cancel();
                 await CloseCycleBoundedAsync(cycle).ConfigureAwait(false);
-                await context.AwaitOwnedTasksAsync(
+                bool ownedTasksDrained =
+                    await context.AwaitOwnedTasksAsync(
                         _options.EffectiveCloseTimeout)
                     .ConfigureAwait(false);
                 ClearActiveContext(context);
                 context.Dispose();
+
+                if (!ownedTasksDrained &&
+                    !serviceCancellationToken.IsCancellationRequested)
+                {
+                    Interlocked.Exchange(
+                        ref _connectionAuthorityPoisoned,
+                        1);
+                    throw NonDrainingConnectionAuthority();
+                }
             }
             else
             {
@@ -311,5 +334,13 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
     }
+
+    private static RbpCoordinatorException
+        NonDrainingConnectionAuthority() =>
+        new(
+            RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+            "An RBP connection-owned handler ignored cancellation and did " +
+            "not drain before the close deadline. Connection authority is " +
+            "poisoned; restart the Bridge process before reconnecting.");
 
 }

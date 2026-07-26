@@ -277,7 +277,7 @@ internal sealed partial class RbpConnectionCoordinator
                     acknowledgementObserved = true;
                     deadlineCancellation.Cancel();
                     applicationDeadline ??= _clock.DelayAsync(
-                        _options.EffectiveWakeGapThreshold,
+                        _options.EffectiveHeartbeatCompletionTimeout,
                         applicationCancellation.Token);
                 }
 
@@ -306,7 +306,7 @@ internal sealed partial class RbpConnectionCoordinator
                     acknowledgementObserved = true;
                     deadlineCancellation.Cancel();
                     applicationDeadline ??= _clock.DelayAsync(
-                        _options.EffectiveWakeGapThreshold,
+                        _options.EffectiveHeartbeatCompletionTimeout,
                         applicationCancellation.Token);
                 }
 

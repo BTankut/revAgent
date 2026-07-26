@@ -288,6 +288,10 @@ internal sealed partial class RbpConnectionCoordinator
                 TimeSpan.FromMilliseconds(
                     RbpConnectionReducer
                         .HeartbeatDisconnectedAfterMilliseconds) ||
+            options.EffectiveHeartbeatCompletionTimeout !=
+                TimeSpan.FromMilliseconds(
+                    RbpConnectionReducer
+                        .HeartbeatDisconnectedAfterMilliseconds) ||
             options.EffectiveCloseTimeout <= TimeSpan.Zero)
         {
             throw new ArgumentException(
