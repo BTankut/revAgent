@@ -182,6 +182,7 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
 {
     private static readonly SemaphoreSlim AttestationWorkerGate =
         new(initialCount: 1, maxCount: 1);
+    private readonly IAddinProcessAttestor? _isolatedHelper;
     private readonly IWindowsTcpConnectionOwnerResolver _connectionOwnerResolver;
     private readonly IWindowsProcessSnapshotProvider _processSnapshotProvider;
     private readonly IWindowsRevitImageTrustVerifier _imageTrustVerifier;
@@ -189,14 +190,31 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
     private readonly Func<bool> _isWindows;
 
     internal WindowsAddinProcessAttestor()
-        : this(
+        : this(new ProcessWindowsAddinProcessAttestor())
+    {
+    }
+
+    internal WindowsAddinProcessAttestor(
+        IAddinProcessAttestor isolatedHelper)
+    {
+        _isolatedHelper = isolatedHelper ??
+            throw new ArgumentNullException(nameof(isolatedHelper));
+        _connectionOwnerResolver = null!;
+        _processSnapshotProvider = null!;
+        _imageTrustVerifier = null!;
+        _programFilesPath = null!;
+        _isWindows = null!;
+    }
+
+    internal static WindowsAddinProcessAttestor CreateNativeInProcess()
+    {
+        return new WindowsAddinProcessAttestor(
             new WindowsTcpConnectionOwnerResolver(),
             new WindowsProcessSnapshotProvider(),
             new WindowsRevitImageTrustVerifier(),
             () => Environment.GetFolderPath(
                 Environment.SpecialFolder.ProgramFiles),
-            OperatingSystem.IsWindows)
-    {
+            OperatingSystem.IsWindows);
     }
 
     internal WindowsAddinProcessAttestor(
@@ -205,7 +223,25 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
         IWindowsRevitImageTrustVerifier imageTrustVerifier,
         Func<string> programFilesPath,
         Func<bool> isWindows)
+        : this(
+            connectionOwnerResolver,
+            processSnapshotProvider,
+            imageTrustVerifier,
+            programFilesPath,
+            isWindows,
+            isolatedHelper: null)
     {
+    }
+
+    private WindowsAddinProcessAttestor(
+        IWindowsTcpConnectionOwnerResolver connectionOwnerResolver,
+        IWindowsProcessSnapshotProvider processSnapshotProvider,
+        IWindowsRevitImageTrustVerifier imageTrustVerifier,
+        Func<string> programFilesPath,
+        Func<bool> isWindows,
+        IAddinProcessAttestor? isolatedHelper)
+    {
+        _isolatedHelper = isolatedHelper;
         _connectionOwnerResolver = connectionOwnerResolver ??
             throw new ArgumentNullException(nameof(connectionOwnerResolver));
         _processSnapshotProvider = processSnapshotProvider ??
@@ -223,6 +259,13 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(peer);
+        if (_isolatedHelper != null)
+        {
+            return await _isolatedHelper.AttestBeforeDispatchAsync(
+                peer,
+                cancellationToken).ConfigureAwait(false);
+        }
+
         try
         {
             return await RunSerializedAsync(
@@ -247,6 +290,15 @@ internal sealed class WindowsAddinProcessAttestor : IAddinProcessAttestor
     {
         ArgumentNullException.ThrowIfNull(peer);
         ArgumentNullException.ThrowIfNull(attestation);
+        if (_isolatedHelper != null)
+        {
+            await _isolatedHelper.VerifyAfterResponseAsync(
+                peer,
+                attestation,
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         try
         {
             await RunSerializedAsync(
