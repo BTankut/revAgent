@@ -5,6 +5,28 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSerialization
 {
+    internal static bool IsSha256Digest(string? value)
+    {
+        if (value is null ||
+            value.Length != 71 ||
+            !value.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        for (int index = 7; index < value.Length; index++)
+        {
+            char character = value[index];
+            if (!((character >= '0' && character <= '9') ||
+                  (character >= 'a' && character <= 'f')))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
     internal static (string Json, string Digest) CanonicalRegistration(
         JsonElement payload)
     {

@@ -131,6 +131,10 @@ writer lease and one private, non-pooled connection. Every mutation runs under
 the same non-awaiting `BEGIN IMMEDIATE` authority; later P3-T5 tables extend
 that exact migration and transaction chain so an invocation `received` row and
 its inbound receipt handoff can commit atomically.
+This PR family introduces the still-unshipped schema v1 in its compacted form;
+the protected first schema PR must contain that complete shape. After v1 lands,
+all schema changes require a new additive migration rather than a v1 digest
+rewrite.
 
 Inbound durability deliberately has two frontiers. `last_rx_seq` records
 contiguous envelopes accepted into full RFC 8785 canonical durable receipt
@@ -145,6 +149,9 @@ inside the same immediate transaction. Until that commits, recovery returns
 the exact retained envelope and neither resume nor heartbeat acknowledgement
 can suppress peer retransmission. At handoff, SQLite retains the immutable
 identity, digest, and bounded journal correlation but clears the full envelope.
+The correlation seam accepts only one bounded journal-record identifier and a
+lowercase SHA-256 digest; arbitrary context JSON, parameters, and paths cannot
+enter the compacted receipt row.
 `secure_delete=ON` plus a proven `wal_checkpoint(TRUNCATE)` removes the cleared
 plaintext from the database/WAL artifact set before the operation returns. A
 post-commit checkpoint whose result cannot be proven blocks that store instance

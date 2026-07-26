@@ -77,7 +77,8 @@ public sealed class RbpJournalUnregisterTests
                     incoming.Id,
                     Rfc8785Json.ImmutableEnvelopeDigest(incoming),
                     "inv-dead",
-                    """{"state":"received"}""",
+                    RbpJournalTestData.JournalRecordDigest(
+                        """{"state":"received"}"""),
                     RbpJournalTestData.Now.ToUnixTimeMilliseconds());
                 return true;
             });
@@ -233,7 +234,8 @@ public sealed class RbpJournalUnregisterTests
                     incoming.Id,
                     Rfc8785Json.ImmutableEnvelopeDigest(incoming),
                     "inv-backward-clock",
-                    """{"state":"received"}""",
+                    RbpJournalTestData.JournalRecordDigest(
+                        """{"state":"received"}"""),
                     clock);
                 return true;
             });

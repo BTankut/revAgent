@@ -22,7 +22,9 @@ internal static class RbpJournalSchema
           updated_at_ms INTEGER NOT NULL CHECK(updated_at_ms >= created_at_ms),
           CHECK(length(rsid) BETWEEN 1 AND 256),
           CHECK(length(local_session_key) BETWEEN 1 AND 512),
-          CHECK(length(registration_digest) = 71),
+          CHECK(length(registration_digest) = 71 AND
+                substr(registration_digest,1,7)='sha256:' AND
+                substr(registration_digest,8) NOT GLOB '*[^0-9a-f]*'),
           CHECK(length(resume_token_protected) > 0),
           CHECK(length(resume_token_protection) BETWEEN 1 AND 128)
         ) STRICT;
@@ -61,7 +63,9 @@ internal static class RbpJournalSchema
           UNIQUE(rsid,envelope_id),
           CHECK(length(envelope_id) BETWEEN 1 AND 128),
           CHECK(length(message_type) BETWEEN 1 AND 128),
-          CHECK(length(immutable_digest) = 71),
+          CHECK(length(immutable_digest) = 71 AND
+                substr(immutable_digest,1,7)='sha256:' AND
+                substr(immutable_digest,8) NOT GLOB '*[^0-9a-f]*'),
           CHECK(length(envelope_json) > 0)
         ) STRICT;
 
@@ -74,21 +78,31 @@ internal static class RbpJournalSchema
           envelope_json TEXT,
           handoff_state TEXT NOT NULL CHECK(handoff_state IN ('pending','journaled')),
           correlation_id TEXT,
-          context_json TEXT,
+          journal_record_digest TEXT,
           accepted_at_ms INTEGER NOT NULL CHECK(accepted_at_ms >= 0),
           journaled_at_ms INTEGER,
           PRIMARY KEY(rsid,seq),
           UNIQUE(rsid,envelope_id),
           CHECK(length(envelope_id) BETWEEN 1 AND 128),
           CHECK(length(message_type) BETWEEN 1 AND 128),
-          CHECK(length(immutable_digest) = 71),
+          CHECK(length(immutable_digest) = 71 AND
+                substr(immutable_digest,1,7)='sha256:' AND
+                substr(immutable_digest,8) NOT GLOB '*[^0-9a-f]*'),
           CHECK((handoff_state='pending' AND
                  envelope_json IS NOT NULL AND
                  length(envelope_json) > 0 AND
                  correlation_id IS NULL AND
-                 context_json IS NULL AND journaled_at_ms IS NULL) OR
-                (handoff_state='journaled' AND correlation_id IS NOT NULL AND
-                 context_json IS NOT NULL AND journaled_at_ms IS NOT NULL AND
+                 journal_record_digest IS NULL AND
+                 journaled_at_ms IS NULL) OR
+                (handoff_state='journaled' AND
+                 correlation_id IS NOT NULL AND
+                 length(correlation_id) BETWEEN 1 AND 256 AND
+                 journal_record_digest IS NOT NULL AND
+                 length(journal_record_digest) = 71 AND
+                 substr(journal_record_digest,1,7)='sha256:' AND
+                 substr(journal_record_digest,8)
+                   NOT GLOB '*[^0-9a-f]*' AND
+                 journaled_at_ms IS NOT NULL AND
                  envelope_json IS NULL))
         ) STRICT;
 

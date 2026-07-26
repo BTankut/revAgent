@@ -120,8 +120,10 @@ internal static class RbpJournalTestData
     internal static RbpJournalOpenOptions Options(
         ArmedJournalFaultInjector? faultInjector = null,
         IReadOnlyList<RbpJournalMigration>? migrations = null,
-        Func<long>? nowMilliseconds = null) =>
+        Func<long>? nowMilliseconds = null,
+        int busyTimeoutMilliseconds = 5_000) =>
         new(
+            BusyTimeoutMilliseconds: busyTimeoutMilliseconds,
             NowMilliseconds:
                 nowMilliseconds ??
                 (() => Now.ToUnixTimeMilliseconds()),
@@ -179,6 +181,9 @@ internal static class RbpJournalTestData
             acknowledgement,
             "2026-07-26T10:00:02.000Z");
     }
+
+    internal static string JournalRecordDigest(string json) =>
+        Rfc8785Json.Sha256Digest(Json(json));
 
     internal static JsonElement Json(string value)
     {

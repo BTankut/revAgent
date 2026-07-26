@@ -392,7 +392,17 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                        END)-1,
                        MAX(seq),
                        0
-                     ) AS contiguous_journaled_sequence
+                     ) AS contiguous_journaled_sequence,
+                     SUM(
+                       CASE
+                         WHEN length(immutable_digest)=71
+                          AND substr(immutable_digest,1,7)='sha256:'
+                          AND substr(immutable_digest,8)
+                            NOT GLOB '*[^0-9a-f]*'
+                         THEN 0
+                         ELSE 1
+                       END
+                     ) AS invalid_digest_count
               FROM rbp_inbound_receipts
               GROUP BY rsid
             ),
@@ -415,6 +425,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                       receipts.contiguous_journaled_sequence,
                       0
                     ) <> authority.last_journaled_rx_seq
+                 OR COALESCE(receipts.invalid_digest_count,0) <> 0
             ),
             orphan_receipts AS (
               SELECT receipts.rsid

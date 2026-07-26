@@ -37,14 +37,24 @@ internal sealed class RbpJournalWriteContext
         string expectedEnvelopeId,
         string expectedImmutableDigest,
         string correlationId,
-        string contextJson,
+        string journalRecordDigest,
         long journaledAtMilliseconds)
     {
-        RequireText(rsid, nameof(rsid));
-        RequireText(expectedEnvelopeId, nameof(expectedEnvelopeId));
-        RequireText(expectedImmutableDigest, nameof(expectedImmutableDigest));
-        RequireText(correlationId, nameof(correlationId));
-        RequireText(contextJson, nameof(contextJson));
+        RequireBoundedText(rsid, nameof(rsid), 256);
+        RequireBoundedText(
+            expectedEnvelopeId,
+            nameof(expectedEnvelopeId),
+            128);
+        RequireDigest(
+            expectedImmutableDigest,
+            nameof(expectedImmutableDigest));
+        RequireBoundedText(
+            correlationId,
+            nameof(correlationId),
+            256);
+        RequireDigest(
+            journalRecordDigest,
+            nameof(journalRecordDigest));
         if (sequence < 1 ||
             sequence > RbpSequenceReducer.MaximumSafeSequence)
         {
@@ -60,7 +70,7 @@ internal sealed class RbpJournalWriteContext
         using SqliteCommand read = CreateCommand(
             """
             SELECT envelope_id,immutable_digest,handoff_state,
-                   correlation_id,context_json,journaled_at_ms
+                   correlation_id,journal_record_digest,journaled_at_ms
             FROM rbp_inbound_receipts
             WHERE rsid=$rsid AND seq=$seq;
             """);
@@ -102,7 +112,7 @@ internal sealed class RbpJournalWriteContext
                     StringComparison.Ordinal) &&
                 string.Equals(
                     reader.GetString(4),
-                    contextJson,
+                    journalRecordDigest,
                     StringComparison.Ordinal);
             if (!exactReplay)
             {
@@ -124,12 +134,14 @@ internal sealed class RbpJournalWriteContext
             SET handoff_state='journaled',
                 envelope_json=NULL,
                 correlation_id=$correlation_id,
-                context_json=$context_json,
+                journal_record_digest=$journal_record_digest,
                 journaled_at_ms=MAX(accepted_at_ms,$journaled_at_ms)
             WHERE rsid=$rsid AND seq=$seq AND handoff_state='pending';
             """);
         update.Parameters.AddWithValue("$correlation_id", correlationId);
-        update.Parameters.AddWithValue("$context_json", contextJson);
+        update.Parameters.AddWithValue(
+            "$journal_record_digest",
+            journalRecordDigest);
         update.Parameters.AddWithValue(
             "$journaled_at_ms",
             journaledAtMilliseconds);
@@ -230,12 +242,26 @@ internal sealed class RbpJournalWriteContext
         }
     }
 
-    private static void RequireText(string value, string parameterName)
+    private static void RequireBoundedText(
+        string value,
+        string parameterName,
+        int maximumLength)
     {
-        if (string.IsNullOrWhiteSpace(value))
+        if (string.IsNullOrWhiteSpace(value) ||
+            value.Length > maximumLength)
         {
             throw new ArgumentException(
-                "Value must not be empty.",
+                "Value must be non-empty and within its storage limit.",
+                parameterName);
+        }
+    }
+
+    private static void RequireDigest(string value, string parameterName)
+    {
+        if (!RbpJournalSerialization.IsSha256Digest(value))
+        {
+            throw new ArgumentException(
+                "Value must be lowercase sha256:<64-hex>.",
                 parameterName);
         }
     }

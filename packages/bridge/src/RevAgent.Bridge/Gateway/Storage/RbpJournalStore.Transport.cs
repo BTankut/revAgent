@@ -627,45 +627,7 @@ internal sealed partial class RbpJournalStore
         string rsid)
     {
         using SqliteCommand command = context.CreateCommand(
-            """
-            SELECT COALESCE(
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq
-                       LIMIT 1
-                     ),
-                     0
-                   ),
-                   COALESCE(
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq DESC
-                       LIMIT 1
-                     ),
-                     0
-                   ),
-                   COALESCE(
-                     (
-                       SELECT seq-1
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid AND handoff_state='pending'
-                       ORDER BY seq
-                       LIMIT 1
-                     ),
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq DESC
-                       LIMIT 1
-                     ),
-                     0
-                   );
-            """);
+            RbpJournalSql.InboundBoundsByRsid);
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
         return MaterializeInboundSummary(reader);
@@ -677,45 +639,7 @@ internal sealed partial class RbpJournalStore
     {
         using SqliteCommand command = CreateCommand(
             connection,
-            """
-            SELECT COALESCE(
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq
-                       LIMIT 1
-                     ),
-                     0
-                   ),
-                   COALESCE(
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq DESC
-                       LIMIT 1
-                     ),
-                     0
-                   ),
-                   COALESCE(
-                     (
-                       SELECT seq-1
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid AND handoff_state='pending'
-                       ORDER BY seq
-                       LIMIT 1
-                     ),
-                     (
-                       SELECT seq
-                       FROM rbp_inbound_receipts
-                       WHERE rsid=$rsid
-                       ORDER BY seq DESC
-                       LIMIT 1
-                     ),
-                     0
-                   );
-            """);
+            RbpJournalSql.InboundBoundsByRsid);
         command.CommandTimeout = _commandTimeoutSeconds;
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
@@ -757,11 +681,7 @@ internal sealed partial class RbpJournalStore
         long sequence)
     {
         using SqliteCommand command = context.CreateCommand(
-            """
-            SELECT seq,immutable_digest
-            FROM rbp_inbound_receipts
-            WHERE rsid=$rsid AND seq=$seq;
-            """);
+            RbpJournalSql.InboundIdentityBySequence);
         command.Parameters.AddWithValue("$rsid", rsid);
         command.Parameters.AddWithValue("$seq", sequence);
         using SqliteDataReader reader = command.ExecuteReader();
@@ -775,11 +695,7 @@ internal sealed partial class RbpJournalStore
     {
         using SqliteCommand command = CreateCommand(
             connection,
-            """
-            SELECT seq,immutable_digest
-            FROM rbp_inbound_receipts
-            WHERE rsid=$rsid AND seq=$seq;
-            """);
+            RbpJournalSql.InboundIdentityBySequence);
         command.CommandTimeout = _commandTimeoutSeconds;
         command.Parameters.AddWithValue("$rsid", rsid);
         command.Parameters.AddWithValue("$seq", sequence);
@@ -799,8 +715,7 @@ internal sealed partial class RbpJournalStore
         long sequence = reader.GetInt64(0);
         string digest = reader.GetString(1);
         if (sequence != expectedSequence ||
-            digest.Length != 71 ||
-            !digest.StartsWith("sha256:", StringComparison.Ordinal))
+            !RbpJournalSerialization.IsSha256Digest(digest))
         {
             throw RbpJournalSerialization.Corrupt(
                 "The retained inbound receipt identity is invalid.");
