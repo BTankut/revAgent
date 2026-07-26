@@ -26,7 +26,7 @@ internal sealed class BridgeCredentialUnavailableException : Exception
     internal BridgeCredentialStoreErrorCode? StoreErrorCode { get; }
 }
 
-internal sealed class BridgeGatewayCredential
+internal sealed class BridgeGatewayCredential : IDisposable
 {
     internal BridgeGatewayCredential(
         string deviceId,
@@ -47,6 +47,8 @@ internal sealed class BridgeGatewayCredential
     internal BridgeSecretString DeviceToken { get; }
 
     internal string MachineFingerprint { get; }
+
+    public void Dispose() => DeviceToken.Dispose();
 
     public override string ToString() =>
         $"BridgeGatewayCredential {{ DeviceId = {DeviceId}, " +
@@ -76,10 +78,10 @@ internal sealed class BridgeDeviceCredentialProvider :
 
     public BridgeGatewayCredential GetRequired()
     {
-        BridgeRuntimeCredentialState? state;
+        BridgeRuntimeCredentialState? loadedState;
         try
         {
-            state = _reader.Load();
+            loadedState = _reader.Load();
         }
         catch (BridgeCredentialStoreException exception)
         {
@@ -91,15 +93,26 @@ internal sealed class BridgeDeviceCredentialProvider :
                 exception.ErrorCode);
         }
 
+        using BridgeRuntimeCredentialState? state = loadedState;
         BridgeDeviceCredential credential =
             state?.DeviceCredential ??
             throw new BridgeCredentialUnavailableException(
                 BridgeCredentialUnavailableErrorCode.NotEnrolled,
                 "The bridge has no enrolled device credential. Gateway " +
                 "authentication is blocked.");
-        return new BridgeGatewayCredential(
-            credential.DeviceId,
-            credential.DeviceToken,
-            state!.MachineFingerprint);
+        BridgeSecretString token = credential.DeviceToken.Clone();
+        try
+        {
+            var gatewayCredential = new BridgeGatewayCredential(
+                credential.DeviceId,
+                token,
+                state.MachineFingerprint);
+            token = null!;
+            return gatewayCredential;
+        }
+        finally
+        {
+            token?.Dispose();
+        }
     }
 }

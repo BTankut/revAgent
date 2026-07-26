@@ -74,17 +74,23 @@ public sealed class BridgeDeviceCredentialProviderTests
         var provider = new BridgeDeviceCredentialProvider(
             new StubReader(state));
 
-        BridgeGatewayCredential credential = provider.GetRequired();
+        using BridgeGatewayCredential credential = provider.GetRequired();
 
         Assert.Equal("device-9", credential.DeviceId);
         Assert.Equal(DeviceToken, credential.DeviceToken.Reveal());
         Assert.Equal(
             state.MachineFingerprint,
             credential.MachineFingerprint);
+        Assert.Throws<ObjectDisposedException>(
+            () => state.DeviceCredential!.DeviceToken.Reveal());
         Assert.DoesNotContain(
             DeviceToken,
             credential.ToString(),
             StringComparison.Ordinal);
+
+        credential.Dispose();
+        Assert.Throws<ObjectDisposedException>(
+            () => credential.DeviceToken.Reveal());
     }
 
     private sealed class StubReader : IBridgeCredentialReader
