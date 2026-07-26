@@ -420,8 +420,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             OpenStore(directory, clock, faults);
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
+        var factory = new FakeConnectionCycleFactory(cycle);
         var coordinator = Coordinator(
-            new FakeConnectionCycleFactory(cycle),
+            factory,
             store,
             new MutableSessionCatalog(),
             clock,
@@ -445,6 +446,17 @@ public sealed partial class RbpConnectionCoordinatorTests
             Assert.Equal(
                 RbpConnectionPhase.Shutdown,
                 coordinator.GetSnapshot().Lifecycle.Phase);
+            Assert.Equal(1, factory.OpenCount);
+            Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
+
+            RbpCoordinatorException restart =
+                await Assert.ThrowsAsync<RbpCoordinatorException>(
+                    () => coordinator.RunAsync());
+            Assert.Equal(
+                RbpCoordinatorErrorCode.NonDrainingConnectionAuthority,
+                restart.ErrorCode);
+            Assert.Equal(1, factory.OpenCount);
+            Assert.Equal(1, coordinator.GetSnapshot().ConnectionGeneration);
         }
         finally
         {

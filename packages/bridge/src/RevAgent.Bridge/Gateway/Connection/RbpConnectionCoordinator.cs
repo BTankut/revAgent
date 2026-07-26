@@ -197,9 +197,17 @@ internal sealed partial class RbpConnectionCoordinator
                 active.Cancel();
                 await CloseCycleBoundedAsync(active.Cycle)
                     .ConfigureAwait(false);
-                _ = await active.AwaitOwnedTasksAsync(
+                bool ownedTasksDrained =
+                    await active.AwaitOwnedTasksAsync(
                         _options.EffectiveCloseTimeout)
                     .ConfigureAwait(false);
+                if (!ownedTasksDrained)
+                {
+                    Interlocked.Exchange(
+                        ref _connectionAuthorityPoisoned,
+                        1);
+                }
+
                 ClearActiveContext(active);
                 active.Dispose();
             }
@@ -319,13 +327,15 @@ internal sealed partial class RbpConnectionCoordinator
                 ClearActiveContext(context);
                 context.Dispose();
 
-                if (!ownedTasksDrained &&
-                    !serviceCancellationToken.IsCancellationRequested)
+                if (!ownedTasksDrained)
                 {
                     Interlocked.Exchange(
                         ref _connectionAuthorityPoisoned,
                         1);
-                    throw NonDrainingConnectionAuthority();
+                    if (!serviceCancellationToken.IsCancellationRequested)
+                    {
+                        throw NonDrainingConnectionAuthority();
+                    }
                 }
             }
             else

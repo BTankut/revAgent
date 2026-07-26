@@ -275,7 +275,18 @@ wake-gap detection even though both use the same RBP/1 65-second value.
 Replacement is allowed only after both connection-owned loops drain. If either
 loop ignores cancellation past the bounded close deadline, the coordinator
 poisons its connection authority and requires a Bridge process restart instead
-of opening a new generation beside the stale handler.
+of opening a new generation beside the stale handler. Service cancellation may
+return after the bounded drain window, but it leaves that same poison set; the
+coordinator cannot be started again in-process.
+
+**P3-T4 host-wiring prerequisite card:** this slice does not yet claim that a
+service-stop poison terminates the Worker process. Before coordinator
+production wiring is accepted, the Worker host must treat non-draining
+connection authority as a must-exit condition, return a non-success worker exit
+state, and prove under a deterministic blocked-handler test that the supervisor
+starts no replacement generation in the old process. Until that wiring and
+test land, the evidence ceiling is coordinator fail-fast plus bounded service
+return, not process-exit enforcement.
 Only the exact current generation may apply the returned cumulative
 acknowledgements or confirm tombstones. The coordinator closes and replaces
 WSS after a monotonic wake gap; it never switches an active binding in place.
