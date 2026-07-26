@@ -229,10 +229,11 @@ public sealed class WindowsAttestationHelperTests
             byte[] request,
             int maxOutputBytes);
 
-        public void KillTree()
+        public Task TerminateAsync()
         {
             KillCount++;
             OnKilled();
+            return Task.CompletedTask;
         }
 
         public void Dispose()

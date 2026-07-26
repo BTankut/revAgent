@@ -37,7 +37,7 @@ internal interface IAttestationHelperProcess : IDisposable
         byte[] request,
         int maxOutputBytes);
 
-    void KillTree();
+    Task TerminateAsync();
 }
 
 internal sealed class ProcessWindowsAddinProcessAttestor
@@ -159,22 +159,32 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         catch (OperationCanceledException)
             when (cancellationToken.IsCancellationRequested)
         {
-            process?.KillTree();
-            if (exchange != null)
+            if (process != null)
             {
-                _ = ObserveFailureAsync(exchange);
+                await TerminateAndObserveAsync(process, exchange)
+                    .ConfigureAwait(false);
             }
 
             throw;
         }
         catch (AddinProcessAttestationException)
         {
-            process?.KillTree();
+            if (process != null)
+            {
+                await TerminateAndObserveAsync(process, exchange)
+                    .ConfigureAwait(false);
+            }
+
             throw;
         }
         catch (Exception exception)
         {
-            process?.KillTree();
+            if (process != null)
+            {
+                await TerminateAndObserveAsync(process, exchange)
+                    .ConfigureAwait(false);
+            }
+
             throw Failure(
                 "addin_process_attestation_helper_unavailable",
                 "The isolated attestation helper could not produce evidence.",
@@ -187,11 +197,21 @@ internal sealed class ProcessWindowsAddinProcessAttestor
         }
     }
 
-    private static async Task ObserveFailureAsync(Task exchange)
+    private static async Task TerminateAndObserveAsync(
+        IAttestationHelperProcess process,
+        Task? exchange)
     {
+        await process.TerminateAsync().ConfigureAwait(false);
+        if (exchange == null)
+        {
+            return;
+        }
+
         try
         {
-            await exchange.ConfigureAwait(false);
+            await exchange
+                .WaitAsync(TimeSpan.FromSeconds(2))
+                .ConfigureAwait(false);
         }
         catch
         {
@@ -366,7 +386,7 @@ internal sealed class SystemAttestationHelperProcess
             standardError.Truncated);
     }
 
-    public void KillTree()
+    public async Task TerminateAsync()
     {
         try
         {
@@ -374,6 +394,10 @@ internal sealed class SystemAttestationHelperProcess
             {
                 _process.Kill(entireProcessTree: true);
             }
+
+            await _process.WaitForExitAsync(CancellationToken.None)
+                .WaitAsync(TimeSpan.FromSeconds(2))
+                .ConfigureAwait(false);
         }
         catch (InvalidOperationException)
         {
