@@ -140,6 +140,7 @@ public sealed class WindowsAddinProcessAttestorTests
         var imageTrust = new BlockingImageTrustVerifier(release);
         var processSnapshots = new QueueProcessSnapshotProvider(
             Snapshot(imagePath),
+            Snapshot(imagePath),
             Snapshot(imagePath));
         var connectionOwner =
             new StubConnectionOwnerResolver(ProcessId);
@@ -169,9 +170,16 @@ public sealed class WindowsAddinProcessAttestorTests
         Assert.Equal(1, imageTrust.InvocationCount);
 
         release.Set();
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
-        Assert.Equal(1, connectionOwner.ResolveCount);
-        Assert.Equal(1, processSnapshots.CaptureCount);
+        using var recoveryDeadline =
+            new CancellationTokenSource(TimeSpan.FromSeconds(2));
+        AddinProcessAttestation recovered =
+            await attestor.AttestBeforeDispatchAsync(
+                ConnectedPeer(),
+                recoveryDeadline.Token);
+        Assert.Equal(ProcessId, recovered.Identity.ProcessId);
+        Assert.Equal(2, imageTrust.InvocationCount);
+        Assert.Equal(3, connectionOwner.ResolveCount);
+        Assert.Equal(3, processSnapshots.CaptureCount);
     }
 
     [Fact]
