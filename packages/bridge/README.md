@@ -182,3 +182,21 @@ and late-terminal carriers digest-bound. Cross-scope conflict evaluation,
 canonical JSON validation, state transitions, clearance acceptance, dispatch,
 redelivery, retention/pruning, batches, and cancellation are intentionally not
 claimed by this schema-only slice; they remain later P3-T5 behavior.
+
+The Windows add-in process-attestation slice binds an accepted connection's
+exact IPv4 loopback four-tuple to its owning PID, process start time, expected
+Program Files `Revit.exe`, protected path ACLs, and Authenticode evidence.
+Potentially blocking native inspection runs in a fresh copy of the trusted
+self-contained Worker over bounded redirected pipes. Requests and responses
+carry a per-call 256-bit nonce; deadline cancellation terminates that helper
+process before the serialized slot is released, so a later call starts a new
+helper rather than inheriting a stuck native thread.
+
+WinVerifyTrust holds a read-only, non-delete-share file handle while the
+provider state is open. Every signer exposed by that validated provider state
+must match the Autodesk publisher allowlist before the state is closed; a
+separate certificate re-read is not authoritative. Revocation retrieval is
+deliberately cache-only with chain checking excluding the root. Therefore this
+evidence can fail closed when suitable local revocation material is
+unavailable, but it does not claim fresh online revocation status or an
+external timestamp/revocation service check.
