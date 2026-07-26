@@ -263,16 +263,27 @@ Heartbeat flights capture one immutable active-rsid and pending-unregister
 fence plus the acknowledgement deadline before transport send. Synchronous
 acknowledgement observation cancels that deadline independently from durable
 fence application; the consumed flight remains globally single-flight until
-application and unregister cleanup finish. Only the exact current generation
-may apply the returned cumulative acknowledgements or confirm tombstones. The
-coordinator closes and replaces WSS after a monotonic wake gap; it never
-switches an active binding in place. Deterministic tests cover two sessions,
+application and unregister cleanup finish. A transport send fault can roll
+back only an unconsumed flight; after re-entrant acknowledgement consumption,
+the durable handler finishes exactly once before that send fault owns
+reconnect. Service cancellation interrupts sender waits, bounds owned-task
+drain, and disposes each connection context's linked cancellation authority.
+An observed acknowledgement whose transport send or durable handler never
+returns is fenced by the canonical 65-second disconnected-liveness window
+before the binding is replaced.
+Only the exact current generation may apply the returned cumulative
+acknowledgements or confirm tombstones. The coordinator closes and replaces
+WSS after a monotonic wake gap; it never switches an active binding in place.
+Deterministic tests cover two sessions,
 immediate post-registration data ordering, resume/outbox identity across
 reconnect, old-generation fence rejection, blocked-send deadline enforcement,
-re-entrant acknowledgement, slow durable application, unsolicited/duplicate
-acknowledgement rejection, failed-send rollback, unregister confirmation
-ordering, wake replacement, the 120-second steady reset boundary, and bounded
-shutdown with no owned background task. This is local fake-binding evidence;
+re-entrant acknowledgement, slow durable application, deadline/consume
+ordering, consumed-ACK application before a late send fault, malformed,
+unsolicited, and duplicate acknowledgement rejection, post-commit fence
+reread, failed-send rollback, unregister confirmation ordering, wake
+replacement, the 120-second steady reset boundary, and bounded shutdown,
+including cancellation while acknowledgement application is blocked. This is
+local fake-binding evidence;
 the unchanged WSS stub remains lower-layer binding/handshake evidence and is
 not a coordinator integration claim. Neither surface proves Streamable
 HTTP/SSE parity, proxy-lab, live Revit, enrollment, invocation execution, or

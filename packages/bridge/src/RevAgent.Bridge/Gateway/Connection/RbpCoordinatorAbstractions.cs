@@ -115,6 +115,7 @@ internal enum RbpCoordinatorErrorCode
     SessionAuthorityConflict,
     InboundJournalUnavailable,
     HeartbeatTimeout,
+    HeartbeatApplicationTimeout,
     SequenceFault,
 }
 

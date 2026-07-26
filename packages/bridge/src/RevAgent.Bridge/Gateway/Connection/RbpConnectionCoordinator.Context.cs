@@ -95,11 +95,12 @@ internal sealed partial class RbpConnectionCoordinator
         public override DateTimeOffset GetUtcNow() => _clock.UtcNow;
     }
 
-    private sealed class ConnectionCycleContext
+    private sealed class ConnectionCycleContext : IDisposable
     {
         private readonly object _sync = new();
         private readonly RbpConnectionCoordinator _owner;
         private readonly CancellationTokenSource _cancellation;
+        private readonly CancellationToken _token;
         private readonly Dictionary<string, BoundSession> _sessions =
             new(StringComparer.Ordinal);
         private readonly HashSet<string> _sentUnregister =
@@ -116,6 +117,7 @@ internal sealed partial class RbpConnectionCoordinator
         private Task? _heartbeatTask;
         private long _steadyStartedMilliseconds = -1;
         private Exception? _terminalFailure;
+        private int _disposed;
 
         internal ConnectionCycleContext(
             RbpConnectionCoordinator owner,
@@ -129,6 +131,7 @@ internal sealed partial class RbpConnectionCoordinator
             _cancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     serviceCancellationToken);
+            _token = _cancellation.Token;
         }
 
         internal IRbpConnectionCycle Cycle { get; }
@@ -146,7 +149,7 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
-        internal CancellationToken Token => _cancellation.Token;
+        internal CancellationToken Token => _token;
 
         internal Exception? TerminalFailure
         {
@@ -590,13 +593,15 @@ internal sealed partial class RbpConnectionCoordinator
                     deadline,
                     NewCompletion(),
                     NewCompletion());
+                ObserveLateFault(flight.Observed.Task);
+                ObserveLateFault(flight.Applied.Task);
                 _heartbeatFlight = flight;
                 _heartbeatFlightConsumed = false;
                 return flight;
             }
         }
 
-        internal HeartbeatFlight? ConsumeHeartbeatFlight()
+        internal HeartbeatFlight? ConsumeAndObserveHeartbeatFlight()
         {
             lock (_sync)
             {
@@ -607,24 +612,8 @@ internal sealed partial class RbpConnectionCoordinator
                 }
 
                 _heartbeatFlightConsumed = true;
-                return flight;
-            }
-        }
-
-        internal void MarkHeartbeatObserved(HeartbeatFlight flight)
-        {
-            lock (_sync)
-            {
-                if (!ReferenceEquals(_heartbeatFlight, flight) ||
-                    !_heartbeatFlightConsumed)
-                {
-                    throw new RbpCoordinatorException(
-                        RbpCoordinatorErrorCode.SessionAuthorityConflict,
-                        "Only the consumed current heartbeat flight may be " +
-                        "marked observed.");
-                }
-
                 flight.Observed.TrySetResult();
+                return flight;
             }
         }
 
@@ -665,7 +654,7 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
-        internal void RollbackHeartbeatFlight(HeartbeatFlight flight)
+        internal bool TryRollbackHeartbeatFlight(HeartbeatFlight flight)
         {
             lock (_sync)
             {
@@ -676,7 +665,10 @@ internal sealed partial class RbpConnectionCoordinator
                     _heartbeatFlightConsumed = false;
                     flight.Observed.TrySetCanceled(Token);
                     flight.Applied.TrySetCanceled(Token);
+                    return true;
                 }
+
+                return false;
             }
         }
 
@@ -696,7 +688,8 @@ internal sealed partial class RbpConnectionCoordinator
                     RejectApplication(pending, exception, Token);
                 }
 
-                if (_heartbeatFlight is { } heartbeatFlight)
+                if (_heartbeatFlight is { } heartbeatFlight &&
+                    !_heartbeatFlightConsumed)
                 {
                     _heartbeatFlight = null;
                     _heartbeatFlightConsumed = false;
@@ -708,14 +701,20 @@ internal sealed partial class RbpConnectionCoordinator
 
         internal void Cancel()
         {
-            if (!_cancellation.IsCancellationRequested)
+            if (Volatile.Read(ref _disposed) == 0 &&
+                !_cancellation.IsCancellationRequested)
             {
                 _cancellation.Cancel();
             }
         }
 
-        internal async Task AwaitOwnedTasksAsync()
+        internal async Task AwaitOwnedTasksAsync(TimeSpan timeout)
         {
+            if (timeout <= TimeSpan.Zero)
+            {
+                throw new ArgumentOutOfRangeException(nameof(timeout));
+            }
+
             Task[] tasks;
             lock (_sync)
             {
@@ -725,20 +724,51 @@ internal sealed partial class RbpConnectionCoordinator
                     .ToArray();
             }
 
-            foreach (Task task in tasks)
+            if (tasks.Length == 0)
+            {
+                return;
+            }
+
+            Task all = Task.WhenAll(tasks);
+            Task completed = await Task.WhenAny(
+                    all,
+                    Task.Delay(timeout))
+                .ConfigureAwait(false);
+            if (!ReferenceEquals(completed, all))
+            {
+                ObserveLateFault(all);
+                return;
+            }
+
+            try
+            {
+                await all.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (Token.IsCancellationRequested)
+            {
+            }
+            catch
+            {
+                // The owning run path already observed the first terminal
+                // task. Awaiting here prevents orphaned task exceptions.
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
             {
                 try
                 {
-                    await task.ConfigureAwait(false);
+                    if (!_cancellation.IsCancellationRequested)
+                    {
+                        _cancellation.Cancel();
+                    }
                 }
-                catch (OperationCanceledException)
-                    when (Token.IsCancellationRequested)
+                finally
                 {
-                }
-                catch
-                {
-                    // The owning run path already observed the first terminal
-                    // task. Awaiting here prevents orphaned task exceptions.
+                    _cancellation.Dispose();
                 }
             }
         }

@@ -184,7 +184,11 @@ internal sealed partial class RbpConnectionCoordinator
                 active.Cancel();
                 await CloseCycleBoundedAsync(active.Cycle)
                     .ConfigureAwait(false);
-                await active.AwaitOwnedTasksAsync().ConfigureAwait(false);
+                await active.AwaitOwnedTasksAsync(
+                        _options.EffectiveCloseTimeout)
+                    .ConfigureAwait(false);
+                ClearActiveContext(active);
+                active.Dispose();
             }
 
             if (_lifecycle.Phase != RbpConnectionPhase.Shutdown)
@@ -259,8 +263,9 @@ internal sealed partial class RbpConnectionCoordinator
                 .ConfigureAwait(false);
 
             Task completed = await Task.WhenAny(
-                    context.ReceiveTask,
-                    context.HeartbeatTask)
+                        context.ReceiveTask,
+                        context.HeartbeatTask)
+                    .WaitAsync(serviceCancellationToken)
                 .ConfigureAwait(false);
             await completed.ConfigureAwait(false);
         }
@@ -294,8 +299,11 @@ internal sealed partial class RbpConnectionCoordinator
 
                 context.Cancel();
                 await CloseCycleBoundedAsync(cycle).ConfigureAwait(false);
-                await context.AwaitOwnedTasksAsync().ConfigureAwait(false);
+                await context.AwaitOwnedTasksAsync(
+                        _options.EffectiveCloseTimeout)
+                    .ConfigureAwait(false);
                 ClearActiveContext(context);
+                context.Dispose();
             }
             else
             {
