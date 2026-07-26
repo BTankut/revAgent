@@ -457,3 +457,28 @@ Server-side work that is safely executable through the available `bt@192.168.90.
 the implementing assistant, with retained command output. Only account authorization, physical/network
 work, decisions, and user communications remain operator-owned. The permanent normative wording is R-G in
 `docs/implementation-plan/00-INDEX.md` §8.
+
+### 2026-07-26 — P3-T6 migration-freeze exception: add-in loopback intake hardening
+
+Source: WP3/M3 implementation handoff and RES-5. This dated R-F record authorizes
+only the first bounded P3-T6 adaptation: bind the existing add-in TCP listener to
+numeric loopback, consume the frozen shared add-in framing constants/header codec,
+serialize process-wide data-plane command intake, and remove the late
+`ExecuteCodeEventHandler.WaitForCompletion` reset that could erase an already
+signaled completion. Because a timed-out `ExternalEvent` is not cancelled, a
+timeout found anywhere in the command exception chain now quarantines all later
+non-status intake for the rest of the Revit process before the serialization gate
+is released. Quarantined requests receive deterministic JSON-RPC internal errors;
+only a Revit restart clears the quarantine. The cached `mcp_status` path remains
+outside the intake gate, and the pilot-era legacy framing detector remains present.
+
+The frozen-source exception is limited to `SocketService.cs`, the named
+dynamic-code event handler, and the add-in project reference to
+`RevAgent.Contracts`. Non-frozen delivery plumbing in
+`scripts/build-revit-plugin.ps1`, `scripts/RevitPayloadManifest.psm1`, the
+installer-side Contracts DLL/manifest, and static smoke coverage may change only
+to make that shared runtime dependency installable and freshness-checked. This
+slice does not change the 21 existing command contracts, the duct-routing engine,
+RevitMCPSDK types, port allocation, or the functional TCP framing. The remaining
+cached document-context and exact atomic `execute_batch` adaptations require their
+own bounded freeze-exception PRs and dated records.

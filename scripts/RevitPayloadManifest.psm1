@@ -63,6 +63,14 @@ function Get-RevitPayloadSourceGroups {
             )
         },
         [pscustomobject]@{
+            Name = "RevAgent.Contracts"
+            SourceRoot = "packages/bridge/src/RevAgent.Contracts"
+            InputExtensions = @(".cs", ".csproj")
+            PayloadPaths = @(
+                "installer/revit-plugin/revAgentPlugin/RevAgent.Contracts.dll"
+            )
+        },
+        [pscustomobject]@{
             Name = "revAgentCommandSet"
             SourceRoot = "src/revit-plugin/revAgentCommandSet"
             InputExtensions = @(".cs", ".csproj", ".xaml", ".json", ".resx")

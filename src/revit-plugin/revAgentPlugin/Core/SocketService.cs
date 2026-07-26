@@ -9,6 +9,7 @@ using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using RevitMCPSDK.API.Models.JsonRPC;
 using RevitMCPSDK.API.Interfaces;
+using RevAgent.Contracts.AddinLoopback;
 using RevAgentPlugin.Configuration;
 using RevAgentPlugin.Utils;
 
@@ -16,9 +17,9 @@ namespace RevAgentPlugin.Core
 {
     public class SocketService
     {
-        private const int SocketReadBufferBytes = 8192;
-        private const int DefaultMaxMessageBytes = 16 * 1024 * 1024;
-        private const int AbsoluteMaxMessageBytes = 128 * 1024 * 1024;
+        private const int SocketReadBufferBytes = AddinFrameLimits.SocketReadBufferBytes;
+        private const int DefaultMaxMessageBytes = AddinFrameLimits.DefaultMaxRequestPayloadBytes;
+        private const int AbsoluteMaxMessageBytes = AddinFrameLimits.AbsoluteMaxRequestPayloadBytes;
 
         private enum SocketMessageFraming
         {
@@ -47,6 +48,10 @@ namespace RevAgentPlugin.Core
         private ILogger _logger;
         private CommandExecutor _commandExecutor;
         private readonly int _maxMessageBytes = ResolveMaxMessageBytes();
+        private const string DataPlaneIntakeQuarantinedMessage =
+            "Data-plane intake is quarantined after a timed-out Revit ExternalEvent; restart Revit before sending another command.";
+        private readonly object _dataPlaneIntakeGate = new object();
+        private bool _dataPlaneIntakeQuarantined;
 
         public static SocketService Instance
         {
@@ -154,7 +159,7 @@ namespace RevAgentPlugin.Core
             {
                 try
                 {
-                    _listener = new TcpListener(IPAddress.Any, candidatePort);
+                    _listener = new TcpListener(IPAddress.Loopback, candidatePort);
                     _listener.Start();
                     _port = candidatePort;
                     _isRunning = true;
@@ -445,10 +450,8 @@ namespace RevAgentPlugin.Core
 
         private int ReadNetworkInt32(byte[] data, int offset)
         {
-            return (data[offset] << 24) |
-                   (data[offset + 1] << 16) |
-                   (data[offset + 2] << 8) |
-                   data[offset + 3];
+            uint payloadLength = LengthPrefixedFrameCodec.ReadPayloadLength(data, offset);
+            return payloadLength > int.MaxValue ? -1 : (int)payloadLength;
         }
 
         private void WriteResponse(NetworkStream stream, string response, bool lengthPrefixed)
@@ -457,10 +460,7 @@ namespace RevAgentPlugin.Core
             if (lengthPrefixed)
             {
                 byte[] header = new byte[4];
-                header[0] = (byte)((responseData.Length >> 24) & 0xFF);
-                header[1] = (byte)((responseData.Length >> 16) & 0xFF);
-                header[2] = (byte)((responseData.Length >> 8) & 0xFF);
-                header[3] = (byte)(responseData.Length & 0xFF);
+                LengthPrefixedFrameCodec.WritePayloadLength(header, 0, (uint)responseData.Length);
                 stream.Write(header, 0, header.Length);
             }
 
@@ -497,6 +497,7 @@ namespace RevAgentPlugin.Core
         private string ProcessJsonRPCRequest(string requestJson, SocketRequestMetrics metrics)
         {
             JsonRPCRequest request;
+            bool dataPlaneIntakeGateTaken = false;
 
             try
             {
@@ -523,6 +524,19 @@ namespace RevAgentPlugin.Core
                 {
                     object snapshot = McpTaskStatusService.Instance.GetSnapshot(_isRunning, _port);
                     return CreateSuccessResponse(request.Id, snapshot);
+                }
+
+                // Command wrappers and their ExternalEvent handlers are process-wide
+                // singletons. Keep status reads outside this gate, but serialize every
+                // data-plane request before touching mutable command parameters.
+                Monitor.Enter(_dataPlaneIntakeGate, ref dataPlaneIntakeGateTaken);
+
+                if (_dataPlaneIntakeQuarantined)
+                {
+                    return CreateErrorResponse(
+                        request.Id,
+                        JsonRPCErrorCodes.InternalError,
+                        DataPlaneIntakeQuarantinedMessage);
                 }
 
                 // Search for the command in the registry.
@@ -608,6 +622,15 @@ namespace RevAgentPlugin.Core
                 }
                 catch (Exception ex)
                 {
+                    if (ContainsTimeoutException(ex))
+                    {
+                        // ExternalEvent timeout does not cancel a pending or running Revit
+                        // handler. Quarantine before releasing the process-wide intake gate
+                        // so no later request can overwrite singleton handler parameters.
+                        _dataPlaneIntakeQuarantined = true;
+                        _logger?.Error(DataPlaneIntakeQuarantinedMessage);
+                    }
+
                     string response = CreateErrorResponse(request.Id, JsonRPCErrorCodes.InternalError, ex.Message);
                     if (metrics != null)
                     {
@@ -642,6 +665,40 @@ namespace RevAgentPlugin.Core
                     $"Internal error: {ex.Message}"
                 );
             }
+            finally
+            {
+                if (dataPlaneIntakeGateTaken)
+                {
+                    Monitor.Exit(_dataPlaneIntakeGate);
+                }
+            }
+        }
+
+        private static bool ContainsTimeoutException(Exception exception)
+        {
+            if (exception == null)
+            {
+                return false;
+            }
+
+            if (exception is TimeoutException)
+            {
+                return true;
+            }
+
+            AggregateException aggregateException = exception as AggregateException;
+            if (aggregateException != null)
+            {
+                foreach (Exception innerException in aggregateException.InnerExceptions)
+                {
+                    if (ContainsTimeoutException(innerException))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return ContainsTimeoutException(exception.InnerException);
         }
 
         private long GetResponseWireBytes(string response, string framing)

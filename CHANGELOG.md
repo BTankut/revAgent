@@ -4,6 +4,14 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Hardened the frozen Revit add-in loopback seam under the bounded WP3/M3
+  migration exception: the listener is numeric-loopback-only, shared
+  `RevAgent.Contracts` framing bytes replace duplicate codec logic, all
+  non-status command intake is process-wide single-flight, and a timed-out
+  ExternalEvent quarantines later data-plane requests until Revit restarts.
+  The dynamic-code completion event now resets before `Raise()` instead of
+  immediately before waiting. The 21 existing commands, duct-routing behavior,
+  port allocation, and functional TCP framing remain unchanged.
 - Fixed split-privilege Install/Repair reaching the final user phase without
   the protected `Run-revAgent-Update-Hidden.vbs` scheduled-audit launcher.
   After a successful machine update, the elevated phase now creates the
