@@ -33,14 +33,18 @@ internal sealed class BridgeCredentialStoreException : Exception
         BridgeCredentialStoreErrorCode errorCode,
         string message,
         Exception? innerException = null,
-        BridgeAtomicWriteOutcome? atomicWriteOutcome = null)
+        BridgeAtomicWriteOutcome? atomicWriteOutcome = null,
+        BridgeAtomicWriteOutcome? recoveredPriorWriteOutcome = null)
         : base(message, innerException)
     {
         ErrorCode = errorCode;
         AtomicWriteOutcome = atomicWriteOutcome;
+        RecoveredPriorWriteOutcome = recoveredPriorWriteOutcome;
     }
 
     internal BridgeCredentialStoreErrorCode ErrorCode { get; }
 
     internal BridgeAtomicWriteOutcome? AtomicWriteOutcome { get; }
+
+    internal BridgeAtomicWriteOutcome? RecoveredPriorWriteOutcome { get; }
 }
