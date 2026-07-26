@@ -2,8 +2,9 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
-using System.Security.Cryptography.X509Certificates;
 using System.Security.Principal;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace RevAgent.Bridge.AddinLoopback;
 
@@ -31,24 +32,25 @@ internal interface IWindowsFileTrustInspector
 
 internal interface IWindowsAuthenticodeTrustVerifier
 {
-    void Verify(string imagePath);
-}
-
-internal interface IWindowsPublisherReader
-{
-    string ReadPublisherName(string imagePath);
+    WindowsAuthenticodeEvidence Verify(string imagePath);
 }
 
 internal interface IWinTrustNative
 {
-    int Invoke(
+    WinTrustVerificationResult Verify(
         string imagePath,
         uint uiChoice,
         uint revocationChecks,
-        uint stateAction,
-        uint providerFlags,
-        ref IntPtr stateData);
+        uint providerFlags);
 }
+
+internal sealed record WindowsAuthenticodeEvidence(
+    IReadOnlyList<string> ValidatedPublisherNames);
+
+internal sealed record WinTrustVerificationResult(
+    int TrustResult,
+    int CloseResult,
+    IReadOnlyList<string> ValidatedPublisherNames);
 
 internal sealed class WindowsRevitImageTrustVerifier
     : IWindowsRevitImageTrustVerifier
@@ -86,14 +88,12 @@ internal sealed class WindowsRevitImageTrustVerifier
 
     private readonly IWindowsFileTrustInspector _fileInspector;
     private readonly IWindowsAuthenticodeTrustVerifier _authenticodeVerifier;
-    private readonly IWindowsPublisherReader _publisherReader;
     private readonly Func<bool> _isWindows;
 
     internal WindowsRevitImageTrustVerifier()
         : this(
             new WindowsFileTrustInspector(),
             new WindowsAuthenticodeTrustVerifier(new WinTrustNative()),
-            new WindowsPublisherReader(),
             OperatingSystem.IsWindows)
     {
     }
@@ -101,15 +101,12 @@ internal sealed class WindowsRevitImageTrustVerifier
     internal WindowsRevitImageTrustVerifier(
         IWindowsFileTrustInspector fileInspector,
         IWindowsAuthenticodeTrustVerifier authenticodeVerifier,
-        IWindowsPublisherReader publisherReader,
         Func<bool> isWindows)
     {
         _fileInspector = fileInspector ??
             throw new ArgumentNullException(nameof(fileInspector));
         _authenticodeVerifier = authenticodeVerifier ??
             throw new ArgumentNullException(nameof(authenticodeVerifier));
-        _publisherReader = publisherReader ??
-            throw new ArgumentNullException(nameof(publisherReader));
         _isWindows = isWindows ??
             throw new ArgumentNullException(nameof(isWindows));
     }
@@ -155,8 +152,9 @@ internal sealed class WindowsRevitImageTrustVerifier
         }
 
         VerifyPathChain(canonicalImagePath, canonicalRoot);
-        _authenticodeVerifier.Verify(canonicalImagePath);
-        VerifyPublisher(canonicalImagePath);
+        WindowsAuthenticodeEvidence signature =
+            _authenticodeVerifier.Verify(canonicalImagePath);
+        VerifyValidatedPublishers(signature);
     }
 
     private void VerifyPathChain(
@@ -279,26 +277,25 @@ internal sealed class WindowsRevitImageTrustVerifier
             root + Path.DirectorySeparatorChar,
             StringComparison.OrdinalIgnoreCase);
 
-    private void VerifyPublisher(string imagePath)
+    private static void VerifyValidatedPublishers(
+        WindowsAuthenticodeEvidence evidence)
     {
-        string publisherName;
-        try
-        {
-            publisherName = _publisherReader.ReadPublisherName(imagePath);
-        }
-        catch (Exception exception)
+        ArgumentNullException.ThrowIfNull(evidence);
+        if (evidence.ValidatedPublisherNames.Count == 0)
         {
             throw Failure(
                 "revit_process_image_signature_unavailable",
-                "The Revit executable signer certificate could not be read.",
-                exception);
+                "Windows returned no validated Revit executable signer.");
         }
 
-        if (!TrustedPublisherNames.Contains(publisherName))
+        if (evidence.ValidatedPublisherNames.Any(
+                publisherName =>
+                    string.IsNullOrWhiteSpace(publisherName) ||
+                    !TrustedPublisherNames.Contains(publisherName)))
         {
             throw Failure(
                 "revit_process_image_publisher_untrusted",
-                "The Revit executable signer is not the allowlisted Autodesk publisher.");
+                "Every Windows-validated Revit executable signer must be an allowlisted Autodesk publisher.");
         }
     }
 
@@ -377,8 +374,6 @@ internal sealed class WindowsAuthenticodeTrustVerifier
 {
     internal const uint WinTrustUiNone = 2;
     internal const uint WinTrustRevokeWholeChain = 1;
-    internal const uint WinTrustStateActionVerify = 1;
-    internal const uint WinTrustStateActionClose = 2;
     internal const uint WinTrustRevocationCheckChainExcludeRoot = 0x80;
     internal const uint WinTrustCacheOnlyUrlRetrieval = 0x1000;
 
@@ -389,63 +384,42 @@ internal sealed class WindowsAuthenticodeTrustVerifier
         _native = native ?? throw new ArgumentNullException(nameof(native));
     }
 
-    public void Verify(string imagePath)
+    public WindowsAuthenticodeEvidence Verify(string imagePath)
     {
-        IntPtr stateData = IntPtr.Zero;
-        int trustResult;
+        WinTrustVerificationResult result;
         try
         {
-            trustResult = _native.Invoke(
+            result = _native.Verify(
                 imagePath,
                 WinTrustUiNone,
                 WinTrustRevokeWholeChain,
-                WinTrustStateActionVerify,
                 WinTrustRevocationCheckChainExcludeRoot |
-                    WinTrustCacheOnlyUrlRetrieval,
-                ref stateData);
+                    WinTrustCacheOnlyUrlRetrieval);
         }
-        catch
+        catch (AddinProcessAttestationException)
         {
-            if (stateData != IntPtr.Zero)
-            {
-                _ = _native.Invoke(
-                    imagePath,
-                    WinTrustUiNone,
-                    WinTrustRevokeWholeChain,
-                    WinTrustStateActionClose,
-                    WinTrustRevocationCheckChainExcludeRoot |
-                    WinTrustCacheOnlyUrlRetrieval,
-                    ref stateData);
-            }
-
             throw;
         }
-
-        int closeResult = 0;
-        if (stateData != IntPtr.Zero)
+        catch (Exception exception)
         {
-            closeResult = _native.Invoke(
-                imagePath,
-                WinTrustUiNone,
-                WinTrustRevokeWholeChain,
-                WinTrustStateActionClose,
-                WinTrustRevocationCheckChainExcludeRoot |
-                    WinTrustCacheOnlyUrlRetrieval,
-                ref stateData);
+            throw new AddinProcessAttestationException(
+                "revit_process_image_signature_unavailable",
+                "Windows could not produce bounded Authenticode signer evidence.",
+                exception);
         }
 
-        if (trustResult != 0)
+        if (result.TrustResult != 0)
         {
             Exception inner = HResultFailure(
                 "WinVerifyTrust verification",
-                trustResult);
-            if (closeResult != 0)
+                result.TrustResult);
+            if (result.CloseResult != 0)
             {
                 inner = new AggregateException(
                     inner,
                     HResultFailure(
                         "WinVerifyTrust provider-state close",
-                        closeResult));
+                        result.CloseResult));
             }
 
             throw new AddinProcessAttestationException(
@@ -454,15 +428,25 @@ internal sealed class WindowsAuthenticodeTrustVerifier
                 inner);
         }
 
-        if (closeResult != 0)
+        if (result.CloseResult != 0)
         {
             throw new AddinProcessAttestationException(
                 "revit_process_image_trust_cleanup_failed",
                 "Windows could not close the Revit executable trust provider state.",
                 HResultFailure(
                     "WinVerifyTrust provider-state close",
-                    closeResult));
+                    result.CloseResult));
         }
+
+        if (result.ValidatedPublisherNames.Count == 0)
+        {
+            throw new AddinProcessAttestationException(
+                "revit_process_image_signature_unavailable",
+                "Windows validated the image but exposed no signer chain.");
+        }
+
+        return new WindowsAuthenticodeEvidence(
+            result.ValidatedPublisherNames);
     }
 
     private static Exception HResultFailure(
@@ -476,29 +460,98 @@ internal sealed class WindowsAuthenticodeTrustVerifier
                 CultureInfo.InvariantCulture));
 }
 
-internal sealed class WindowsPublisherReader : IWindowsPublisherReader
-{
-    [SupportedOSPlatform("windows")]
-    public string ReadPublisherName(string imagePath)
-    {
-        using X509Certificate certificate =
-            X509Certificate.CreateFromSignedFile(imagePath);
-        using var certificate2 = new X509Certificate2(certificate);
-        return certificate2.GetNameInfo(
-            X509NameType.SimpleName,
-            forIssuer: false);
-    }
-}
-
 internal sealed class WinTrustNative : IWinTrustNative
 {
+    private const uint WinTrustStateActionVerify = 1;
+    private const uint WinTrustStateActionClose = 2;
     private const uint WinTrustChoiceFile = 1;
+    private const uint CertNameSimpleDisplayType = 4;
+    private const int MaxValidatedSignerCount = 16;
+    private const int MaxPublisherNameCharacters = 512;
     private static readonly Guid GenericVerifyV2Action =
         new("00AAC56B-CD44-11d0-8CC2-00C04FC295EE");
 
     [SupportedOSPlatform("windows")]
-    public int Invoke(
+    public WinTrustVerificationResult Verify(
         string imagePath,
+        uint uiChoice,
+        uint revocationChecks,
+        uint providerFlags)
+    {
+        using SafeFileHandle imageHandle = File.OpenHandle(
+            imagePath,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            FileOptions.None);
+        IntPtr stateData = IntPtr.Zero;
+        int trustResult;
+        IReadOnlyList<string> publisherNames = Array.Empty<string>();
+        Exception? evidenceFailure = null;
+        try
+        {
+            trustResult = Invoke(
+                imagePath,
+                imageHandle,
+                uiChoice,
+                revocationChecks,
+                WinTrustStateActionVerify,
+                providerFlags,
+                ref stateData);
+            if (trustResult == 0)
+            {
+                publisherNames =
+                    ReadValidatedPublisherNames(stateData);
+            }
+        }
+        catch (Exception exception)
+        {
+            trustResult = 0;
+            evidenceFailure = exception;
+        }
+
+        int closeResult = 0;
+        Exception? closeFailure = null;
+        if (stateData != IntPtr.Zero)
+        {
+            try
+            {
+                closeResult = Invoke(
+                    imagePath,
+                    imageHandle,
+                    uiChoice,
+                    revocationChecks,
+                    WinTrustStateActionClose,
+                    providerFlags,
+                    ref stateData);
+            }
+            catch (Exception exception)
+            {
+                closeFailure = exception;
+            }
+        }
+
+        if (evidenceFailure != null)
+        {
+            throw closeFailure == null
+                ? evidenceFailure
+                : new AggregateException(evidenceFailure, closeFailure);
+        }
+
+        if (closeFailure != null)
+        {
+            throw closeFailure;
+        }
+
+        return new WinTrustVerificationResult(
+            trustResult,
+            closeResult,
+            publisherNames);
+    }
+
+    private static int Invoke(
+        string imagePath,
+        SafeFileHandle imageHandle,
         uint uiChoice,
         uint revocationChecks,
         uint stateAction,
@@ -509,26 +562,25 @@ internal sealed class WinTrustNative : IWinTrustNative
         {
             StructSize = checked((uint)Marshal.SizeOf<WinTrustFileInfo>()),
             FilePath = imagePath,
-            FileHandle = IntPtr.Zero,
+            FileHandle = imageHandle.DangerousGetHandle(),
             KnownSubject = IntPtr.Zero,
         };
         IntPtr fileInfoPointer = Marshal.AllocCoTaskMem(
             Marshal.SizeOf<WinTrustFileInfo>());
         Marshal.StructureToPtr(fileInfo, fileInfoPointer, false);
-        var trustData = new WinTrustData
-        {
-            StructSize = checked((uint)Marshal.SizeOf<WinTrustData>()),
-            UiChoice = uiChoice,
-            RevocationChecks = revocationChecks,
-            UnionChoice = WinTrustChoiceFile,
-            FileInfo = fileInfoPointer,
-            StateAction = stateAction,
-            StateData = stateData,
-            ProviderFlags = providerFlags,
-        };
-
         try
         {
+            var trustData = new WinTrustData
+            {
+                StructSize = checked((uint)Marshal.SizeOf<WinTrustData>()),
+                UiChoice = uiChoice,
+                RevocationChecks = revocationChecks,
+                UnionChoice = WinTrustChoiceFile,
+                FileInfo = fileInfoPointer,
+                StateAction = stateAction,
+                StateData = stateData,
+                ProviderFlags = providerFlags,
+            };
             Guid action = GenericVerifyV2Action;
             int result = WinVerifyTrust(
                 new IntPtr(-1),
@@ -542,6 +594,143 @@ internal sealed class WinTrustNative : IWinTrustNative
             Marshal.DestroyStructure<WinTrustFileInfo>(fileInfoPointer);
             Marshal.FreeCoTaskMem(fileInfoPointer);
         }
+    }
+
+    private static IReadOnlyList<string> ReadValidatedPublisherNames(
+        IntPtr stateData)
+    {
+        if (stateData == IntPtr.Zero)
+        {
+            throw new InvalidDataException(
+                "WinVerifyTrust returned no provider state.");
+        }
+
+        IntPtr providerData = WTHelperProvDataFromStateData(stateData);
+        if (providerData == IntPtr.Zero)
+        {
+            throw new InvalidDataException(
+                "WinVerifyTrust provider data is unavailable.");
+        }
+
+        var publishers = new List<string>();
+        for (uint signerIndex = 0;
+             signerIndex < MaxValidatedSignerCount;
+             signerIndex++)
+        {
+            IntPtr signerPointer = WTHelperGetProvSignerFromChain(
+                providerData,
+                signerIndex,
+                counterSigner: false,
+                counterSignerIndex: 0);
+            if (signerPointer == IntPtr.Zero)
+            {
+                break;
+            }
+
+            var signer =
+                Marshal.PtrToStructure<CryptProviderSignerPrefix>(
+                    signerPointer);
+            if (signer.StructSize <
+                    Marshal.SizeOf<CryptProviderSignerPrefix>() ||
+                signer.CertChainCount == 0 ||
+                signer.CertChain == IntPtr.Zero)
+            {
+                throw new InvalidDataException(
+                    "A validated WinTrust signer has no certificate chain.");
+            }
+
+            var certificate =
+                Marshal.PtrToStructure<CryptProviderCertificatePrefix>(
+                    signer.CertChain);
+            if (certificate.StructSize <
+                    Marshal.SizeOf<CryptProviderCertificatePrefix>() ||
+                certificate.CertificateContext == IntPtr.Zero)
+            {
+                throw new InvalidDataException(
+                    "A validated WinTrust signer has no leaf certificate.");
+            }
+
+            publishers.Add(
+                ReadCertificateSimpleName(
+                    certificate.CertificateContext));
+        }
+
+        if (publishers.Count == MaxValidatedSignerCount &&
+            WTHelperGetProvSignerFromChain(
+                providerData,
+                MaxValidatedSignerCount,
+                counterSigner: false,
+                counterSignerIndex: 0) != IntPtr.Zero)
+        {
+            throw new InvalidDataException(
+                "WinTrust returned more validated signers than the bounded policy accepts.");
+        }
+
+        return publishers;
+    }
+
+    private static string ReadCertificateSimpleName(
+        IntPtr certificateContext)
+    {
+        uint requiredCharacters = CertGetNameString(
+            certificateContext,
+            CertNameSimpleDisplayType,
+            flags: 0,
+            typeParameter: IntPtr.Zero,
+            name: null,
+            nameCapacity: 0);
+        if (requiredCharacters is <= 1 or > MaxPublisherNameCharacters)
+        {
+            throw new InvalidDataException(
+                "A validated signer publisher name is empty or unbounded.");
+        }
+
+        var name = new StringBuilder(
+            checked((int)requiredCharacters));
+        uint writtenCharacters = CertGetNameString(
+            certificateContext,
+            CertNameSimpleDisplayType,
+            flags: 0,
+            typeParameter: IntPtr.Zero,
+            name,
+            requiredCharacters);
+        if (writtenCharacters != requiredCharacters)
+        {
+            throw new InvalidDataException(
+                "A validated signer publisher name could not be read atomically.");
+        }
+
+        string publisher = name.ToString();
+        if (string.IsNullOrWhiteSpace(publisher))
+        {
+            throw new InvalidDataException(
+                "A validated signer publisher name is empty.");
+        }
+
+        return publisher;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativeFileTime
+    {
+        internal uint LowDateTime;
+        internal uint HighDateTime;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CryptProviderSignerPrefix
+    {
+        internal uint StructSize;
+        internal NativeFileTime VerifyAsOf;
+        internal uint CertChainCount;
+        internal IntPtr CertChain;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct CryptProviderCertificatePrefix
+    {
+        internal uint StructSize;
+        internal IntPtr CertificateContext;
     }
 
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
@@ -581,4 +770,32 @@ internal sealed class WinTrustNative : IWinTrustNative
         IntPtr windowHandle,
         ref Guid actionId,
         ref WinTrustData trustData);
+
+    [DllImport(
+        "wintrust.dll",
+        ExactSpelling = true)]
+    private static extern IntPtr WTHelperProvDataFromStateData(
+        IntPtr stateData);
+
+    [DllImport(
+        "wintrust.dll",
+        ExactSpelling = true)]
+    private static extern IntPtr WTHelperGetProvSignerFromChain(
+        IntPtr providerData,
+        uint signerIndex,
+        [MarshalAs(UnmanagedType.Bool)] bool counterSigner,
+        uint counterSignerIndex);
+
+    [DllImport(
+        "crypt32.dll",
+        EntryPoint = "CertGetNameStringW",
+        ExactSpelling = true,
+        CharSet = CharSet.Unicode)]
+    private static extern uint CertGetNameString(
+        IntPtr certificateContext,
+        uint nameType,
+        uint flags,
+        IntPtr typeParameter,
+        StringBuilder? name,
+        uint nameCapacity);
 }

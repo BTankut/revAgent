@@ -13,11 +13,9 @@ public sealed class WindowsRevitImageTrustVerifierTests
         (string root, string imagePath) = Paths();
         var files = new StubFileTrustInspector(root, imagePath);
         var authenticode = new RecordingAuthenticodeVerifier();
-        var publisher = new StubPublisherReader("Autodesk, Inc.");
         var verifier = new WindowsRevitImageTrustVerifier(
             files,
             authenticode,
-            publisher,
             () => true);
 
         verifier.Verify(imagePath, root);
@@ -32,7 +30,6 @@ public sealed class WindowsRevitImageTrustVerifierTests
             },
             files.AclReads);
         Assert.Equal(imagePath, authenticode.ImagePath);
-        Assert.Equal(imagePath, publisher.ImagePath);
     }
 
     [Fact]
@@ -106,8 +103,7 @@ public sealed class WindowsRevitImageTrustVerifierTests
         var files = new StubFileTrustInspector(root, imagePath);
         var verifier = new WindowsRevitImageTrustVerifier(
             files,
-            new RecordingAuthenticodeVerifier(),
-            new StubPublisherReader("Example Software LLC"),
+            new RecordingAuthenticodeVerifier("Example Software LLC"),
             () => true);
 
         AddinProcessAttestationException error =
@@ -118,41 +114,64 @@ public sealed class WindowsRevitImageTrustVerifierTests
     }
 
     [Fact]
-    public void Authenticode_UsesFrozenRevocationFlagsAndClosesProviderState()
+    public void Verify_RejectsMixedValidatedSigners()
     {
-        var native = new RecordingWinTrustNative(verifyResult: 0);
+        (string root, string imagePath) = Paths();
+        var files = new StubFileTrustInspector(root, imagePath);
+        var verifier = new WindowsRevitImageTrustVerifier(
+            files,
+            new RecordingAuthenticodeVerifier(
+                "Autodesk, Inc.",
+                "Example Software LLC"),
+            () => true);
+
+        AddinProcessAttestationException error =
+            Assert.Throws<AddinProcessAttestationException>(
+                () => verifier.Verify(imagePath, root));
+
+        Assert.Equal("revit_process_image_publisher_untrusted", error.Code);
+    }
+
+    [Fact]
+    public void Verify_AcceptsMultipleValidatedAllowlistedSigners()
+    {
+        (string root, string imagePath) = Paths();
+        var files = new StubFileTrustInspector(root, imagePath);
+        var verifier = new WindowsRevitImageTrustVerifier(
+            files,
+            new RecordingAuthenticodeVerifier(
+                "Autodesk, Inc.",
+                "Autodesk, Inc"),
+            () => true);
+
+        verifier.Verify(imagePath, root);
+    }
+
+    [Fact]
+    public void Authenticode_UsesFrozenCacheOnlyRevocationPolicy()
+    {
+        var native = new RecordingWinTrustNative(
+            verifyResult: 0,
+            validatedPublishers: ["Autodesk, Inc."]);
         var verifier = new WindowsAuthenticodeTrustVerifier(native);
 
-        verifier.Verify(@"C:\Program Files\Autodesk\Revit 2026\Revit.exe");
+        WindowsAuthenticodeEvidence evidence = verifier.Verify(
+            @"C:\Program Files\Autodesk\Revit 2026\Revit.exe");
 
-        Assert.Collection(
-            native.Calls,
-            verify =>
-            {
-                Assert.Equal(
-                    WindowsAuthenticodeTrustVerifier.WinTrustStateActionVerify,
-                    verify.StateAction);
-                Assert.Equal(
-                    WindowsAuthenticodeTrustVerifier.WinTrustUiNone,
-                    verify.UiChoice);
-                Assert.Equal(
-                    WindowsAuthenticodeTrustVerifier.WinTrustRevokeWholeChain,
-                    verify.RevocationChecks);
-                Assert.Equal(
-                    WindowsAuthenticodeTrustVerifier
-                        .WinTrustRevocationCheckChainExcludeRoot |
-                    WindowsAuthenticodeTrustVerifier
-                        .WinTrustCacheOnlyUrlRetrieval,
-                    verify.ProviderFlags);
-                Assert.Equal(IntPtr.Zero, verify.InputStateData);
-            },
-            close =>
-            {
-                Assert.Equal(
-                    WindowsAuthenticodeTrustVerifier.WinTrustStateActionClose,
-                    close.StateAction);
-                Assert.Equal(new IntPtr(1234), close.InputStateData);
-            });
+        WinTrustCall call = Assert.Single(native.Calls);
+        Assert.Equal(
+            WindowsAuthenticodeTrustVerifier.WinTrustUiNone,
+            call.UiChoice);
+        Assert.Equal(
+            WindowsAuthenticodeTrustVerifier.WinTrustRevokeWholeChain,
+            call.RevocationChecks);
+        Assert.Equal(
+            WindowsAuthenticodeTrustVerifier
+                .WinTrustRevocationCheckChainExcludeRoot |
+            WindowsAuthenticodeTrustVerifier
+                .WinTrustCacheOnlyUrlRetrieval,
+            call.ProviderFlags);
+        Assert.Equal(["Autodesk, Inc."], evidence.ValidatedPublisherNames);
     }
 
     [Fact]
@@ -168,10 +187,7 @@ public sealed class WindowsRevitImageTrustVerifierTests
                     @"C:\Program Files\Autodesk\Revit 2026\Revit.exe"));
 
         Assert.Equal("revit_process_image_signature_untrusted", error.Code);
-        Assert.Equal(2, native.Calls.Count);
-        Assert.Equal(
-            WindowsAuthenticodeTrustVerifier.WinTrustStateActionClose,
-            native.Calls[1].StateAction);
+        Assert.Single(native.Calls);
     }
 
     [Fact]
@@ -179,7 +195,8 @@ public sealed class WindowsRevitImageTrustVerifierTests
     {
         var native = new RecordingWinTrustNative(
             verifyResult: 0,
-            closeResult: unchecked((int)0x80004005));
+            closeResult: unchecked((int)0x80004005),
+            validatedPublishers: ["Autodesk, Inc."]);
         var verifier = new WindowsAuthenticodeTrustVerifier(native);
 
         AddinProcessAttestationException error =
@@ -190,7 +207,7 @@ public sealed class WindowsRevitImageTrustVerifierTests
         Assert.Equal(
             "revit_process_image_trust_cleanup_failed",
             error.Code);
-        Assert.Equal(2, native.Calls.Count);
+        Assert.Single(native.Calls);
     }
 
     private static WindowsRevitImageTrustVerifier Verifier(
@@ -198,7 +215,6 @@ public sealed class WindowsRevitImageTrustVerifierTests
         new(
             files,
             new RecordingAuthenticodeVerifier(),
-            new StubPublisherReader("Autodesk, Inc."),
             () => true);
 
     private static (string Root, string ImagePath) Paths()
@@ -265,29 +281,22 @@ public sealed class WindowsRevitImageTrustVerifierTests
     private sealed class RecordingAuthenticodeVerifier
         : IWindowsAuthenticodeTrustVerifier
     {
-        internal string? ImagePath { get; private set; }
+        private readonly IReadOnlyList<string> _publishers;
 
-        public void Verify(string imagePath)
+        internal RecordingAuthenticodeVerifier(
+            params string[] publishers)
         {
-            ImagePath = imagePath;
-        }
-    }
-
-    private sealed class StubPublisherReader : IWindowsPublisherReader
-    {
-        private readonly string _publisherName;
-
-        internal StubPublisherReader(string publisherName)
-        {
-            _publisherName = publisherName;
+            _publishers = publishers.Length == 0
+                ? ["Autodesk, Inc."]
+                : publishers;
         }
 
         internal string? ImagePath { get; private set; }
 
-        public string ReadPublisherName(string imagePath)
+        public WindowsAuthenticodeEvidence Verify(string imagePath)
         {
             ImagePath = imagePath;
-            return _publisherName;
+            return new WindowsAuthenticodeEvidence(_publishers);
         }
     }
 
@@ -295,48 +304,41 @@ public sealed class WindowsRevitImageTrustVerifierTests
     {
         private readonly int _verifyResult;
         private readonly int _closeResult;
+        private readonly IReadOnlyList<string> _validatedPublishers;
 
         internal RecordingWinTrustNative(
             int verifyResult,
-            int closeResult = 0)
+            int closeResult = 0,
+            IReadOnlyList<string>? validatedPublishers = null)
         {
             _verifyResult = verifyResult;
             _closeResult = closeResult;
+            _validatedPublishers =
+                validatedPublishers ?? Array.Empty<string>();
         }
 
         internal List<WinTrustCall> Calls { get; } = new();
 
-        public int Invoke(
+        public WinTrustVerificationResult Verify(
             string imagePath,
             uint uiChoice,
             uint revocationChecks,
-            uint stateAction,
-            uint providerFlags,
-            ref IntPtr stateData)
+            uint providerFlags)
         {
             Calls.Add(
                 new WinTrustCall(
                     uiChoice,
                     revocationChecks,
-                    stateAction,
-                    providerFlags,
-                    stateData));
-            if (stateAction ==
-                WindowsAuthenticodeTrustVerifier.WinTrustStateActionVerify)
-            {
-                stateData = new IntPtr(1234);
-                return _verifyResult;
-            }
-
-            stateData = IntPtr.Zero;
-            return _closeResult;
+                    providerFlags));
+            return new WinTrustVerificationResult(
+                _verifyResult,
+                _closeResult,
+                _validatedPublishers);
         }
     }
 
     private sealed record WinTrustCall(
         uint UiChoice,
         uint RevocationChecks,
-        uint StateAction,
-        uint ProviderFlags,
-        IntPtr InputStateData);
+        uint ProviderFlags);
 }
