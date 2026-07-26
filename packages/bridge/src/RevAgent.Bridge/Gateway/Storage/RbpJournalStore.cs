@@ -20,6 +20,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     private readonly int _commandTimeoutSeconds;
     private long _activeConnectionGeneration;
     private bool _closed;
+    private bool _sensitiveCompactionUnproven;
 
     private RbpJournalStore(
         string databasePath,
@@ -104,6 +105,8 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                 options.NowMilliseconds?.Invoke() ??
                     DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
             RunQuickCheck(connection);
+            ValidateInboundReceiptIntegrity(connection);
+            RunTruncateCheckpoint(connection);
 
             var store = new RbpJournalStore(
                 fullPath,
@@ -169,6 +172,25 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
                     exception);
             }
 
+            if (context.SensitiveCompactionPerformed)
+            {
+                try
+                {
+                    RunTruncateCheckpoint(_connection);
+                }
+                catch (Exception exception)
+                {
+                    _sensitiveCompactionUnproven = true;
+                    throw new RbpJournalException(
+                        RbpJournalErrorCode.PostCommitFailure,
+                        "The inbound invocation handoff committed, but " +
+                        "sensitive WAL compaction could not be proven. The " +
+                        "journal is blocked until restart recovery.",
+                        exception,
+                        durableStateObserved: true);
+                }
+            }
+
             try
             {
                 _faultInjector?.Hit(
@@ -223,10 +245,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             _closed = true;
             try
             {
-                using SqliteCommand checkpoint = CreateCommand(
-                    _connection,
-                    "PRAGMA wal_checkpoint(TRUNCATE);");
-                _ = checkpoint.ExecuteNonQuery();
+                RunTruncateCheckpoint(_connection);
             }
             finally
             {
@@ -271,6 +290,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
     {
         ExecuteNonQuery(connection, "PRAGMA foreign_keys=ON;");
         ExecuteNonQuery(connection, "PRAGMA trusted_schema=OFF;");
+        ExecuteNonQuery(connection, "PRAGMA secure_delete=ON;");
         ExecuteNonQuery(
             connection,
             "PRAGMA busy_timeout=" +
@@ -293,6 +313,8 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             ScalarInt32(connection, "PRAGMA foreign_keys;") == 1;
         bool trustedSchema =
             ScalarInt32(connection, "PRAGMA trusted_schema;") == 1;
+        bool secureDelete =
+            ScalarInt32(connection, "PRAGMA secure_delete;") == 1;
         int observedBusyTimeout =
             ScalarInt32(connection, "PRAGMA busy_timeout;");
         int observedAutoCheckpoint =
@@ -302,6 +324,7 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             synchronous,
             foreignKeys,
             trustedSchema,
+            secureDelete,
             observedBusyTimeout,
             observedAutoCheckpoint);
         if (!string.Equals(
@@ -311,13 +334,15 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             profile.Synchronous != 2 ||
             !profile.ForeignKeys ||
             profile.TrustedSchema ||
+            !profile.SecureDelete ||
             profile.BusyTimeoutMilliseconds != busyTimeoutMilliseconds ||
             profile.WalAutoCheckpointPages != WalAutoCheckpointPages)
         {
             throw new RbpJournalException(
                 RbpJournalErrorCode.InvalidDurabilityProfile,
                 "SQLite did not accept the required WAL/FULL, foreign-key, " +
-                "trusted-schema, busy-timeout, and checkpoint profile.");
+                "trusted-schema, secure-delete, busy-timeout, and checkpoint " +
+                "profile.");
         }
 
         return profile;
@@ -347,6 +372,93 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             throw new RbpJournalException(
                 RbpJournalErrorCode.IntegrityCheckFailed,
                 "SQLite quick_check did not return one authoritative result.");
+        }
+    }
+
+    private static void ValidateInboundReceiptIntegrity(
+        SqliteConnection connection)
+    {
+        using SqliteCommand command = CreateCommand(
+            connection,
+            """
+            WITH receipt_summary AS (
+              SELECT rsid,
+                     COUNT(*) AS receipt_count,
+                     MIN(seq) AS minimum_sequence,
+                     MAX(seq) AS maximum_sequence,
+                     COALESCE(
+                       MIN(CASE
+                         WHEN handoff_state='pending' THEN seq
+                       END)-1,
+                       MAX(seq),
+                       0
+                     ) AS contiguous_journaled_sequence
+              FROM rbp_inbound_receipts
+              GROUP BY rsid
+            ),
+            invalid_authority AS (
+              SELECT authority.rsid
+              FROM rbp_session_sequence AS authority
+              LEFT JOIN receipt_summary AS receipts
+                ON receipts.rsid=authority.rsid
+              WHERE COALESCE(receipts.receipt_count,0) <>
+                      authority.last_rx_seq
+                 OR (
+                      authority.last_rx_seq > 0
+                      AND (
+                        receipts.minimum_sequence <> 1
+                        OR receipts.maximum_sequence <>
+                           authority.last_rx_seq
+                      )
+                    )
+                 OR COALESCE(
+                      receipts.contiguous_journaled_sequence,
+                      0
+                    ) <> authority.last_journaled_rx_seq
+            ),
+            orphan_receipts AS (
+              SELECT receipts.rsid
+              FROM receipt_summary AS receipts
+              LEFT JOIN rbp_session_sequence AS authority
+                ON authority.rsid=receipts.rsid
+              WHERE authority.rsid IS NULL
+            )
+            SELECT rsid FROM invalid_authority
+            UNION ALL
+            SELECT rsid FROM orphan_receipts
+            LIMIT 1;
+            """);
+        object? invalidRsid = command.ExecuteScalar();
+        if (invalidRsid is not null and not DBNull)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "The inbound receipt history is not contiguous or " +
+                "disagrees with its durable receive frontiers.");
+        }
+    }
+
+    private static void RunTruncateCheckpoint(SqliteConnection connection)
+    {
+        using SqliteCommand command = CreateCommand(
+            connection,
+            "PRAGMA wal_checkpoint(TRUNCATE);");
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.PostCommitFailure,
+                "SQLite returned no WAL checkpoint result.");
+        }
+
+        int busy = reader.GetInt32(0);
+        int remainingFrames = reader.GetInt32(1);
+        _ = reader.GetInt32(2);
+        if (reader.Read() || busy != 0 || remainingFrames != 0)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.PostCommitFailure,
+                "SQLite could not truncate every WAL frame.");
         }
     }
 
@@ -751,6 +863,15 @@ internal sealed partial class RbpJournalStore : IAsyncDisposable
             throw new RbpJournalException(
                 RbpJournalErrorCode.StoreClosed,
                 "The RBP journal store is closed.");
+        }
+
+        if (_sensitiveCompactionUnproven)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.PostCommitFailure,
+                "The RBP journal is blocked until restart because sensitive " +
+                "WAL compaction could not be proven.",
+                durableStateObserved: true);
         }
     }
 

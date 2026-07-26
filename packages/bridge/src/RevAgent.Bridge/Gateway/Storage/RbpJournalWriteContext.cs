@@ -9,6 +9,8 @@ internal sealed class RbpJournalWriteContext
     private readonly SqliteTransaction _transaction;
     private readonly int _commandTimeoutSeconds;
 
+    internal bool SensitiveCompactionPerformed { get; private set; }
+
     internal RbpJournalWriteContext(
         SqliteConnection connection,
         SqliteTransaction transaction,
@@ -120,6 +122,7 @@ internal sealed class RbpJournalWriteContext
             """
             UPDATE rbp_inbound_receipts
             SET handoff_state='journaled',
+                envelope_json=NULL,
                 correlation_id=$correlation_id,
                 context_json=$context_json,
                 journaled_at_ms=MAX(accepted_at_ms,$journaled_at_ms)
@@ -139,6 +142,7 @@ internal sealed class RbpJournalWriteContext
                 "The inbound RBP journal handoff lost its pending receipt.");
         }
 
+        SensitiveCompactionPerformed = true;
         AdvanceJournaledFrontier(rsid, journaledAtMilliseconds);
     }
 

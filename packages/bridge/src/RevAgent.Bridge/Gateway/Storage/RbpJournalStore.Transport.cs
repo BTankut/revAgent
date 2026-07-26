@@ -221,6 +221,26 @@ internal sealed partial class RbpJournalStore
                         RequireActiveSession(context, incoming.Rsid);
                         LoadedSequence loaded =
                             LoadSequence(context, incoming.Rsid);
+                        RbpSequenceState reducerState = loaded.State;
+                        if (incoming.Sequence <=
+                            loaded.State.LastRxSequence)
+                        {
+                            RbpAcceptedInboundData? retained =
+                                FindInboundReceiptBySequence(
+                                    context,
+                                    incoming.Rsid,
+                                    incoming.Sequence);
+                            reducerState = loaded.State with
+                            {
+                                AcceptedInbound = retained is null
+                                    ? Array.AsReadOnly(
+                                        Array.Empty<
+                                            RbpAcceptedInboundData>())
+                                    : Array.AsReadOnly(
+                                        new[] { retained }),
+                            };
+                        }
+
                         long? existingSequence =
                             FindInboundSequenceByEnvelopeId(
                                 context,
@@ -237,7 +257,7 @@ internal sealed partial class RbpJournalStore
 
                         RbpInboundDataResult accepted =
                             RbpSequenceReducer.AcceptInboundData(
-                                loaded.State,
+                                reducerState,
                                 incoming);
                         if (accepted.Kind is
                             RbpInboundDataKind.Gap or
@@ -403,8 +423,10 @@ internal sealed partial class RbpJournalStore
                     }
 
                     RbpAcceptedInboundData? retained =
-                        loaded.State.AcceptedInbound.FirstOrDefault(
-                            item => item.Sequence == incoming.Sequence);
+                        FindInboundReceiptBySequence(
+                            connection,
+                            incoming.Rsid,
+                            incoming.Sequence);
                     if (retained is null)
                     {
                         throw original;
@@ -450,7 +472,7 @@ internal sealed partial class RbpJournalStore
         return LoadSequence(
             sequenceCommand,
             () => ReadOutbox(context, rsid),
-            () => ReadAcceptedInbound(context, rsid),
+            () => ReadInboundSummary(context, rsid),
             rsid);
     }
 
@@ -471,14 +493,14 @@ internal sealed partial class RbpJournalStore
         return LoadSequence(
             sequenceCommand,
             () => ReadOutbox(connection, rsid),
-            () => ReadAcceptedInbound(connection, rsid),
+            () => ReadInboundSummary(connection, rsid),
             rsid);
     }
 
     private static LoadedSequence LoadSequence(
         SqliteCommand sequenceCommand,
         Func<IReadOnlyList<RbpRetainedOutboundData>> readOutbox,
-        Func<LoadedInboundReceipts> readAcceptedInbound,
+        Func<LoadedInboundSummary> readInboundSummary,
         string rsid)
     {
         long? nextTx;
@@ -503,8 +525,8 @@ internal sealed partial class RbpJournalStore
         }
 
         IReadOnlyList<RbpRetainedOutboundData> outbox = readOutbox();
-        LoadedInboundReceipts inbound =
-            readAcceptedInbound();
+        LoadedInboundSummary inbound =
+            readInboundSummary();
         ValidateSequenceMaterial(
             rsid,
             nextTx,
@@ -513,8 +535,7 @@ internal sealed partial class RbpJournalStore
             lastJournaledRx,
             lastPeerAcknowledgement,
             outbox,
-            inbound.Accepted,
-            inbound.ContiguousJournaledSequence);
+            inbound);
         return new LoadedSequence(
             new RbpSequenceState(
                 rsid,
@@ -523,7 +544,8 @@ internal sealed partial class RbpJournalStore
                 lastRx,
                 lastPeerAcknowledgement,
                 outbox,
-                inbound.Accepted),
+                Array.AsReadOnly(
+                    Array.Empty<RbpAcceptedInboundData>())),
             lastJournaledRx);
     }
 
@@ -600,40 +622,104 @@ internal sealed partial class RbpJournalStore
         return values.AsReadOnly();
     }
 
-    private LoadedInboundReceipts ReadAcceptedInbound(
+    private static LoadedInboundSummary ReadInboundSummary(
         RbpJournalWriteContext context,
         string rsid)
     {
         using SqliteCommand command = context.CreateCommand(
             """
-            SELECT seq,envelope_id,message_type,immutable_digest,envelope_json,
-                   handoff_state
-            FROM rbp_inbound_receipts
-            WHERE rsid=$rsid
-            ORDER BY seq;
+            SELECT COALESCE(
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq
+                       LIMIT 1
+                     ),
+                     0
+                   ),
+                   COALESCE(
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq DESC
+                       LIMIT 1
+                     ),
+                     0
+                   ),
+                   COALESCE(
+                     (
+                       SELECT seq-1
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid AND handoff_state='pending'
+                       ORDER BY seq
+                       LIMIT 1
+                     ),
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq DESC
+                       LIMIT 1
+                     ),
+                     0
+                   );
             """);
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
-        return MaterializeAcceptedInbound(reader, rsid);
+        return MaterializeInboundSummary(reader);
     }
 
-    private LoadedInboundReceipts ReadAcceptedInbound(
+    private LoadedInboundSummary ReadInboundSummary(
         SqliteConnection connection,
         string rsid)
     {
         using SqliteCommand command = CreateCommand(
             connection,
             """
-            SELECT seq,envelope_id,message_type,immutable_digest,envelope_json,
-                   handoff_state
-            FROM rbp_inbound_receipts
-            WHERE rsid=$rsid
-            ORDER BY seq;
+            SELECT COALESCE(
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq
+                       LIMIT 1
+                     ),
+                     0
+                   ),
+                   COALESCE(
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq DESC
+                       LIMIT 1
+                     ),
+                     0
+                   ),
+                   COALESCE(
+                     (
+                       SELECT seq-1
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid AND handoff_state='pending'
+                       ORDER BY seq
+                       LIMIT 1
+                     ),
+                     (
+                       SELECT seq
+                       FROM rbp_inbound_receipts
+                       WHERE rsid=$rsid
+                       ORDER BY seq DESC
+                       LIMIT 1
+                     ),
+                     0
+                   );
             """);
         command.CommandTimeout = _commandTimeoutSeconds;
         command.Parameters.AddWithValue("$rsid", rsid);
         using SqliteDataReader reader = command.ExecuteReader();
-        return MaterializeAcceptedInbound(reader, rsid);
+        return MaterializeInboundSummary(reader);
     }
 
     private static long? FindInboundSequenceByEnvelopeId(
@@ -665,75 +751,90 @@ internal sealed partial class RbpJournalStore
         return sequence;
     }
 
-    private static LoadedInboundReceipts
-        MaterializeAcceptedInbound(
-            SqliteDataReader reader,
-            string rsid)
+    private static RbpAcceptedInboundData? FindInboundReceiptBySequence(
+        RbpJournalWriteContext context,
+        string rsid,
+        long sequence)
     {
-        var values = new List<RbpAcceptedInboundData>();
-        long contiguousJournaledSequence = 0;
-        bool journaledPrefixEnded = false;
-        while (reader.Read())
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT seq,immutable_digest
+            FROM rbp_inbound_receipts
+            WHERE rsid=$rsid AND seq=$seq;
+            """);
+        command.Parameters.AddWithValue("$rsid", rsid);
+        command.Parameters.AddWithValue("$seq", sequence);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleInboundReceipt(reader, sequence);
+    }
+
+    private RbpAcceptedInboundData? FindInboundReceiptBySequence(
+        SqliteConnection connection,
+        string rsid,
+        long sequence)
+    {
+        using SqliteCommand command = CreateCommand(
+            connection,
+            """
+            SELECT seq,immutable_digest
+            FROM rbp_inbound_receipts
+            WHERE rsid=$rsid AND seq=$seq;
+            """);
+        command.CommandTimeout = _commandTimeoutSeconds;
+        command.Parameters.AddWithValue("$rsid", rsid);
+        command.Parameters.AddWithValue("$seq", sequence);
+        using SqliteDataReader reader = command.ExecuteReader();
+        return MaterializeSingleInboundReceipt(reader, sequence);
+    }
+
+    private static RbpAcceptedInboundData? MaterializeSingleInboundReceipt(
+        SqliteDataReader reader,
+        long expectedSequence)
+    {
+        if (!reader.Read())
         {
-            long sequence = reader.GetInt64(0);
-            string envelopeId = reader.GetString(1);
-            string messageType = reader.GetString(2);
-            string digest = reader.GetString(3);
-            RbpDataEnvelopeSnapshot envelope =
-                RbpJournalSerialization.ParseEnvelope(
-                    reader.GetString(4),
-                    digest);
-            if (envelope.Sequence != sequence ||
-                !string.Equals(
-                    envelope.Rsid,
-                    rsid,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    envelope.Id,
-                    envelopeId,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    envelope.Type,
-                    messageType,
-                    StringComparison.Ordinal))
-            {
-                throw RbpJournalSerialization.Corrupt(
-                    "Inbound receipt columns disagree with the envelope.");
-            }
-
-            values.Add(new RbpAcceptedInboundData(sequence, digest));
-            string handoffState = reader.GetString(5);
-            if (!string.Equals(
-                    handoffState,
-                    "pending",
-                    StringComparison.Ordinal) &&
-                !string.Equals(
-                    handoffState,
-                    "journaled",
-                    StringComparison.Ordinal))
-            {
-                throw RbpJournalSerialization.Corrupt(
-                    "An inbound receipt has an invalid handoff state.");
-            }
-
-            if (!journaledPrefixEnded &&
-                sequence == contiguousJournaledSequence + 1 &&
-                string.Equals(
-                    handoffState,
-                    "journaled",
-                    StringComparison.Ordinal))
-            {
-                contiguousJournaledSequence = sequence;
-            }
-            else
-            {
-                journaledPrefixEnded = true;
-            }
+            return null;
         }
 
-        return new LoadedInboundReceipts(
-            values.AsReadOnly(),
-            contiguousJournaledSequence);
+        long sequence = reader.GetInt64(0);
+        string digest = reader.GetString(1);
+        if (sequence != expectedSequence ||
+            digest.Length != 71 ||
+            !digest.StartsWith("sha256:", StringComparison.Ordinal))
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "The retained inbound receipt identity is invalid.");
+        }
+
+        if (reader.Read())
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "An inbound sequence maps to multiple receipt rows.");
+        }
+
+        return new RbpAcceptedInboundData(sequence, digest);
+    }
+
+    private static LoadedInboundSummary MaterializeInboundSummary(
+        SqliteDataReader reader)
+    {
+        if (!reader.Read())
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "The inbound receipt summary returned no row.");
+        }
+
+        var summary = new LoadedInboundSummary(
+            reader.GetInt64(0),
+            reader.GetInt64(1),
+            reader.GetInt64(2));
+        if (reader.Read())
+        {
+            throw RbpJournalSerialization.Corrupt(
+                "The inbound receipt summary returned multiple rows.");
+        }
+
+        return summary;
     }
 
     private RbpRetainedOutboundData? FindOutboxByEnvelopeId(
@@ -878,8 +979,7 @@ internal sealed partial class RbpJournalStore
         long lastJournaledRx,
         long lastPeerAcknowledgement,
         IReadOnlyList<RbpRetainedOutboundData> outbox,
-        IReadOnlyList<RbpAcceptedInboundData> acceptedInbound,
-        long observedJournaledFrontier)
+        LoadedInboundSummary inbound)
     {
         bool validCounters =
             highestTx >= 0 &&
@@ -926,30 +1026,19 @@ internal sealed partial class RbpJournalStore
                 "outbound sequence.");
         }
 
-        long expectedInbound = 1;
-        foreach (RbpAcceptedInboundData accepted in acceptedInbound)
-        {
-            if (accepted.Sequence != expectedInbound)
-            {
-                throw RbpJournalSerialization.Corrupt(
-                    "The accepted inbound sequence is not contiguous.");
-            }
-
-            expectedInbound++;
-        }
-
-        if (acceptedInbound.Count != lastRx)
+        bool validInboundRange =
+            inbound.ContiguousJournaledSequence == lastJournaledRx &&
+            ((lastRx == 0 &&
+              inbound.MinimumSequence == 0 &&
+              inbound.MaximumSequence == 0) ||
+             (lastRx > 0 &&
+              inbound.MinimumSequence == 1 &&
+              inbound.MaximumSequence == lastRx));
+        if (!validInboundRange)
         {
             throw RbpJournalSerialization.Corrupt(
-                "The accepted inbound receipt count disagrees with the " +
-                "receive frontier.");
-        }
-
-        if (observedJournaledFrontier != lastJournaledRx)
-        {
-            throw RbpJournalSerialization.Corrupt(
-                "The stored journaled receive frontier does not match the " +
-                "contiguous invocation-handoff prefix.");
+                "The inbound receipt summary disagrees with the receive " +
+                "and contiguous invocation-handoff frontiers.");
         }
     }
 
@@ -1023,8 +1112,9 @@ internal sealed partial class RbpJournalStore
         RbpSequenceState State,
         long LastJournaledReceivedSequence);
 
-    private sealed record LoadedInboundReceipts(
-        IReadOnlyList<RbpAcceptedInboundData> Accepted,
+    private sealed record LoadedInboundSummary(
+        long MinimumSequence,
+        long MaximumSequence,
         long ContiguousJournaledSequence);
 
 }

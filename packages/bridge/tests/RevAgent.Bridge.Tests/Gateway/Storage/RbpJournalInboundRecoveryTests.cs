@@ -1,3 +1,4 @@
+using System.Text;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -525,6 +526,215 @@ public sealed class RbpJournalInboundRecoveryTests
                 .LastAcceptedSequence);
     }
 
+    [Fact]
+    public async Task JournalHandoffCompactsPlaintextFromEverySqliteArtifact()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        const string sentinel =
+            "receipt-plaintext-must-disappear-0197a3c2";
+        RbpDataEnvelopeSnapshot incoming =
+            RbpJournalTestData.Inbound(
+                "rs-test",
+                1,
+                "0197a3c2-0000-7000-8000-000000000181",
+                18) with
+            {
+                Payload = RbpJournalTestData.Json(
+                    $$"""{"sensitive":"{{sentinel}}"}"""),
+            };
+        string digest = Rfc8785Json.ImmutableEnvelopeDigest(incoming);
+
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        _ = await store.AcceptInboundDataAsync(incoming);
+        _ = await store.ExecuteImmediateAsync(
+            context =>
+            {
+                MarkInboundJournaled(
+                    context,
+                    incoming,
+                    "inv-compacted",
+                    """{"state":"received"}""");
+                return true;
+            });
+
+        long compactedRows = await store.ReadAsync(
+            connection =>
+            {
+                using Microsoft.Data.Sqlite.SqliteCommand command =
+                    connection.CreateCommand();
+                command.CommandText =
+                    """
+                    SELECT COUNT(*)
+                    FROM rbp_inbound_receipts
+                    WHERE rsid='rs-test'
+                      AND seq=1
+                      AND immutable_digest=$digest
+                      AND envelope_json IS NULL;
+                    """;
+                command.Parameters.AddWithValue("$digest", digest);
+                return Convert.ToInt64(command.ExecuteScalar());
+            });
+        Assert.Equal(1, compactedRows);
+
+        foreach (string path in Directory.GetFiles(
+                     directory.Path,
+                     "journal.db*",
+                     SearchOption.TopDirectoryOnly))
+        {
+            string artifact = Encoding.UTF8.GetString(
+                await ReadSharedFileAsync(path));
+            Assert.DoesNotContain(
+                sentinel,
+                artifact,
+                StringComparison.Ordinal);
+        }
+
+        RbpInboundDataResult duplicate =
+            await store.AcceptInboundDataAsync(incoming);
+        Assert.Equal(RbpInboundDataKind.Duplicate, duplicate.Kind);
+        Assert.Equal(1, duplicate.Acknowledgement);
+    }
+
+    [Fact]
+    public async Task LongJournaledHistoryLoadsAsBoundsNotEnvelopeMaterial()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        const int receiptCount = 10_000;
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+
+        _ = await store.ExecuteImmediateAsync(
+            context =>
+            {
+                using Microsoft.Data.Sqlite.SqliteCommand insert =
+                    context.CreateCommand(
+                        """
+                        WITH RECURSIVE receipt(seq) AS (
+                          VALUES(1)
+                          UNION ALL
+                          SELECT seq+1
+                          FROM receipt
+                          WHERE seq < $receipt_count
+                        )
+                        INSERT INTO rbp_inbound_receipts(
+                          rsid,seq,envelope_id,message_type,
+                          immutable_digest,envelope_json,handoff_state,
+                          correlation_id,context_json,accepted_at_ms,
+                          journaled_at_ms
+                        )
+                        SELECT
+                          'rs-test',
+                          seq,
+                          printf('bulk-envelope-%010d',seq),
+                          'invoke',
+                          'sha256:' || lower(hex(zeroblob(32))),
+                          NULL,
+                          'journaled',
+                          printf('bulk-invocation-%010d',seq),
+                          '{"state":"received"}',
+                          $now,
+                          $now
+                        FROM receipt;
+                        """);
+                insert.Parameters.AddWithValue(
+                    "$receipt_count",
+                    receiptCount);
+                insert.Parameters.AddWithValue(
+                    "$now",
+                    RbpJournalTestData.Now.ToUnixTimeMilliseconds());
+                Assert.Equal(receiptCount, insert.ExecuteNonQuery());
+
+                using Microsoft.Data.Sqlite.SqliteCommand update =
+                    context.CreateCommand(
+                        """
+                        UPDATE rbp_session_sequence
+                        SET last_rx_seq=$receipt_count,
+                            last_journaled_rx_seq=$receipt_count
+                        WHERE rsid='rs-test';
+                        """);
+                update.Parameters.AddWithValue(
+                    "$receipt_count",
+                    receiptCount);
+                Assert.Equal(1, update.ExecuteNonQuery());
+                return true;
+            });
+
+        RbpSequenceState state =
+            await store.LoadSequenceAsync("rs-test");
+        Assert.Equal(receiptCount, state.LastRxSequence);
+        Assert.Empty(state.AcceptedInbound);
+        RbpReceiveFrontier frontier =
+            await store.GetReceiveFrontierAsync("rs-test");
+        Assert.Equal(receiptCount, frontier.LastAcceptedSequence);
+        Assert.Equal(receiptCount, frontier.LastJournaledSequence);
+    }
+
+    [Fact]
+    public async Task ReopenRejectsAHoleInCompactedReceiptHistory()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using (RbpJournalStore store = RbpJournalStore.Open(
+                         directory.JournalPath,
+                         new TestResumeTokenProtector(),
+                         RbpJournalTestData.Options()))
+        {
+            _ = await store.PersistRegisteredSessionAsync(
+                RbpJournalTestData.Registration());
+            for (int sequence = 1; sequence <= 3; sequence++)
+            {
+                RbpDataEnvelopeSnapshot incoming =
+                    RbpJournalTestData.Inbound(
+                        "rs-test",
+                        sequence,
+                        $"0197a3c2-0000-7000-8000-{sequence:D12}",
+                        sequence);
+                _ = await store.AcceptInboundDataAsync(incoming);
+                _ = await store.ExecuteImmediateAsync(
+                    context =>
+                    {
+                        MarkInboundJournaled(
+                            context,
+                            incoming,
+                            $"inv-{sequence}",
+                            """{"state":"received"}""");
+                        return true;
+                    });
+            }
+
+            _ = await store.ExecuteImmediateAsync(
+                context =>
+                {
+                    using Microsoft.Data.Sqlite.SqliteCommand corrupt =
+                        context.CreateCommand(
+                            """
+                            DELETE FROM rbp_inbound_receipts
+                            WHERE rsid='rs-test' AND seq=2;
+                            """);
+                    Assert.Equal(1, corrupt.ExecuteNonQuery());
+                    return true;
+                });
+        }
+
+        RbpJournalException rejected =
+            Assert.Throws<RbpJournalException>(
+                () => RbpJournalStore.Open(
+                    directory.JournalPath,
+                    new TestResumeTokenProtector(),
+                    RbpJournalTestData.Options()));
+        Assert.Equal(
+            RbpJournalErrorCode.IntegrityCheckFailed,
+            rejected.ErrorCode);
+    }
+
     private static void InsertInvocation(
         RbpJournalWriteContext context,
         string invocationId)
@@ -569,5 +779,19 @@ public sealed class RbpJournalInboundRecoveryTests
                     "SELECT COUNT(*) FROM test_invocation;";
                 return Convert.ToInt64(command.ExecuteScalar());
             });
+    }
+
+    private static async Task<byte[]> ReadSharedFileAsync(string path)
+    {
+        await using var input = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.ReadWrite | FileShare.Delete,
+            bufferSize: 4_096,
+            useAsync: true);
+        using var output = new MemoryStream();
+        await input.CopyToAsync(output);
+        return output.ToArray();
     }
 }

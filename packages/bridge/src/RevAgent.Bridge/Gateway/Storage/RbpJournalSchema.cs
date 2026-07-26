@@ -71,7 +71,7 @@ internal static class RbpJournalSchema
           envelope_id TEXT NOT NULL,
           message_type TEXT NOT NULL,
           immutable_digest TEXT NOT NULL,
-          envelope_json TEXT NOT NULL,
+          envelope_json TEXT,
           handoff_state TEXT NOT NULL CHECK(handoff_state IN ('pending','journaled')),
           correlation_id TEXT,
           context_json TEXT,
@@ -82,11 +82,14 @@ internal static class RbpJournalSchema
           CHECK(length(envelope_id) BETWEEN 1 AND 128),
           CHECK(length(message_type) BETWEEN 1 AND 128),
           CHECK(length(immutable_digest) = 71),
-          CHECK(length(envelope_json) > 0),
-          CHECK((handoff_state='pending' AND correlation_id IS NULL AND
+          CHECK((handoff_state='pending' AND
+                 envelope_json IS NOT NULL AND
+                 length(envelope_json) > 0 AND
+                 correlation_id IS NULL AND
                  context_json IS NULL AND journaled_at_ms IS NULL) OR
                 (handoff_state='journaled' AND correlation_id IS NOT NULL AND
-                 context_json IS NOT NULL AND journaled_at_ms IS NOT NULL))
+                 context_json IS NOT NULL AND journaled_at_ms IS NOT NULL AND
+                 envelope_json IS NULL))
         ) STRICT;
 
         CREATE INDEX ix_rbp_inbound_pending

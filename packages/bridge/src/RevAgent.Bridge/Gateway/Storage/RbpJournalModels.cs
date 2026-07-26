@@ -93,6 +93,7 @@ internal sealed record RbpJournalDurabilityProfile(
     int Synchronous,
     bool ForeignKeys,
     bool TrustedSchema,
+    bool SecureDelete,
     int BusyTimeoutMilliseconds,
     int WalAutoCheckpointPages);
 

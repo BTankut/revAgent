@@ -133,14 +133,22 @@ that exact migration and transaction chain so an invocation `received` row and
 its inbound receipt handoff can commit atomically.
 
 Inbound durability deliberately has two frontiers. `last_rx_seq` records
-contiguous envelopes accepted into full RFC 8785 canonical durable receipt rows.
-`last_journaled_rx_seq` advances only across contiguous receipts handed to the
-invocation journal. Every authority read re-derives that contiguous prefix from
-the receipt rows before exposing it to resume or wire acknowledgement. The T5
-handoff seam must match the retained envelope id and immutable digest inside the
-same immediate transaction. Until that commits, recovery returns the exact
-retained envelope and neither resume nor heartbeat acknowledgement can suppress
-peer retransmission. A pending handoff also blocks unregister confirmation.
+contiguous envelopes accepted into full RFC 8785 canonical durable receipt
+rows. `last_journaled_rx_seq` advances only across contiguous receipts handed
+to the invocation journal. Hot-path authority reads validate the first/last
+receipt and contiguous journal prefix through primary-key and pending-receipt
+index probes; they do not parse or materialize journaled envelope history. A
+full count/range/frontier consistency scan runs once when the store opens.
+
+The T5 handoff seam must match the retained envelope id and immutable digest
+inside the same immediate transaction. Until that commits, recovery returns
+the exact retained envelope and neither resume nor heartbeat acknowledgement
+can suppress peer retransmission. At handoff, SQLite retains the immutable
+identity, digest, and bounded journal correlation but clears the full envelope.
+`secure_delete=ON` plus a proven `wal_checkpoint(TRUNCATE)` removes the cleared
+plaintext from the database/WAL artifact set before the operation returns. A
+post-commit checkpoint whose result cannot be proven blocks that store instance
+until restart recovery. A pending handoff also blocks unregister confirmation.
 
 Resume tokens enter SQLite only through an injected protected-token contract.
 Registration payloads recursively reject the reserved `resume_token` property;
@@ -148,8 +156,9 @@ no plaintext fallback and no production DPAPI provider exists in this slice.
 Lifecycle and migration update timestamps also clamp backward wall-clock
 corrections without weakening sequence authority. P3-T8 must supply the
 production protector before live enrollment/session work. The P3-T4b evidence
-is therefore local store, migration, post-commit fault-injection, and orderly
-reopen evidence only. Abrupt process-death/WAL recovery remains an explicit
+is therefore local store, migration, post-commit fault-injection, plaintext
+artifact compaction, long-history bounded-materialization, and orderly reopen
+evidence only. Abrupt process-death/WAL recovery remains an explicit
 P3-T5/P3-T13 crash-fixture gate. The P3-T9/M6 installer must also create and
 verify the state-root owner/DACL and reject pre-created reparse paths before
 this location is production-safe. This slice does not prove either of those
