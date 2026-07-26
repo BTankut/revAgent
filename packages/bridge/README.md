@@ -6,8 +6,8 @@ so the same additive framing and contract code can later be referenced by the
 existing .NET Framework add-in under the bounded P3-T6 migration-freeze
 exception.
 
-The current P3-T1/P3-T2 slices contain the contract primitives and the bounded
-Windows service skeleton:
+The current P3-T1/P3-T2/P3-T3a slices contain the contract primitives, the
+bounded Windows service skeleton, and the strict one-call add-in transport:
 
 - the existing add-in TCP length-prefix and strict JSON-RPC contract;
 - the frozen RBP/1 display and document-context mapping boundary; and
@@ -18,11 +18,22 @@ Windows service skeleton:
 - structured rolling JSON-file logging and lifecycle Event Log integration;
 - public Host CLI routing for `install`, `uninstall`, `run --console`, and
   `doctor`; and
-- win-x64 self-contained single-file publishing for both executables.
+- win-x64 self-contained single-file publishing for both executables;
+- numeric IP-loopback-only add-in targets with no hostname, wildcard, LAN, or
+  remote escape;
+- length-prefixed-only add-in calls with ordinal-exact invocation-id
+  correlation and per-call deadlines that start before request serialization
+  and prevent later dispatch or socket I/O once expired; and
+- transport evidence that distinguishes not-started, possibly-dispatched, and
+  response-observed failures without retrying an uncertain call; caller
+  cancellation is honored before dispatch, while a possibly-dispatched call
+  remains observed until its bounded deadline for later journal evidence;
+  worker shutdown has a separate token that closes transport at any phase
+  without erasing dispatch uncertainty.
 
-It does not yet provide the Gateway transport, add-in client, journal,
-enrollment, workstation installer payload, or update behavior. Those land
-through separate WP3 PRs in the order fixed by
+It does not yet provide add-in discovery/session routing, the Gateway
+transport, journal, enrollment, workstation installer payload, or update
+behavior. Those land through separate WP3 PRs in the order fixed by
 `docs/implementation-plan/03-bridge-addin-installer.md`.
 
 Run the complete P3-T1 contract gate from the repository root:
@@ -66,3 +77,17 @@ P3-T2's SCM and machine-lifecycle acceptance remains VM-only operator evidence:
 - verify lifecycle entries under the registered Windows Event Log source; and
 - drive enough structured logs to prove rotation and retention on the installed
   ProgramData path.
+
+The P3-T3a transport tests use a deterministic test-only TCP peer. They cover
+fragmented frames, exact response correlation, request/response bounds,
+pre-dispatch cancellation, post-dispatch outcome preservation, deadline
+expiry, worker shutdown, partial-response EOF, and connection failure. The
+production transport opens one short-lived loopback connection per call, sends
+no legacy JSON, performs no automatic retry, and never runs an `mcp_status`
+preflight.
+Deterministic mid-write process-kill and partial-write journal fault injection
+belongs to the later P3-T13 harness; this slice records the evidence fields but
+does not claim that fault-injection proof.
+Frozen-shape discovery, two-session routing, and fixture-backed traffic
+evidence land in the following P3-T3 slices; live Revit command evidence
+remains blocked until the P3-T6 adapted add-in is installed.
