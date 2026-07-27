@@ -47,6 +47,9 @@ public sealed class BridgeInstallLayoutTests
             layout.WorkerLogDirectory);
         Assert.NotEqual(layout.HostLogDirectory, layout.WorkerLogDirectory);
         Assert.Equal(
+            Path.Combine(stateRoot, "journal.db"),
+            layout.JournalPath);
+        Assert.Equal(
             Path.Combine(stateRoot, "bundle-extract"),
             layout.BundleExtractionRoot);
     }

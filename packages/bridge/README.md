@@ -6,9 +6,10 @@ so the same additive framing and contract code can later be referenced by the
 existing .NET Framework add-in under the bounded P3-T6 migration-freeze
 exception.
 
-The current P3-T1/P3-T2/P3-T3a/P3-T4a reducer slices contain the contract
-primitives, the bounded Windows service skeleton, the strict one-call add-in
-transport, and transport-independent RBP state:
+The current P3-T1/P3-T2/P3-T3a/P3-T4a/P3-T4b/P3-T5a slices contain the
+contract primitives, the bounded Windows service skeleton, the strict one-call
+add-in transport, transport-independent RBP state, and a durable RBP journal
+authority:
 
 - the existing add-in TCP length-prefix and strict JSON-RPC contract;
 - the frozen RBP/1 display and document-context mapping boundary; and
@@ -39,11 +40,18 @@ transport, and transport-independent RBP state:
   fields); and
 - pure per-`rsid` sequence/ack/dispatch-window reducers and
   connection/session lifecycle reducers, including frozen heartbeat and
-  full-jitter retry rules.
+  full-jitter retry rules; and
+- one machine-wide, single-writer SQLite journal authority at
+  `%ProgramData%\revAgent\bridge\journal.db`, with WAL/FULL durability, strict
+  additive migrations, exact outbox/receipt replay, protected resume tokens,
+  durable unregister tombstones, and deterministic reopen recovery, plus the
+  additive canonical-key invocation and mutation-recovery hold tables needed
+  before invocation execution can be implemented.
 
 It does not yet provide add-in discovery/session routing, the Gateway
-transport, journal, enrollment, workstation installer payload, or update
-behavior. Those land through separate WP3 PRs in the order fixed by
+transport, invocation dispatch/execution, enrollment, workstation installer
+payload, or update behavior. Those land through separate WP3 PRs in the order
+fixed by
 `docs/implementation-plan/03-bridge-addin-installer.md`.
 
 Run the complete P3-T1 contract gate from the repository root:
@@ -112,7 +120,65 @@ the structural, hello/hello-ack, and session-authority negative subset;
 message-specific invocation/result/batch semantics remain owned by the frozen
 protocol validators and later execution slices.
 
-This evidence does not prove a WSS or Streamable HTTP/SSE binding, TLS or
-device-token authentication, a live Gateway handshake, durable sequence or
+The P3-T4a evidence does not prove a WSS or Streamable HTTP/SSE binding, TLS
+or device-token authentication, a live Gateway handshake, durable sequence or
 session persistence, Gateway session registration/resume, T5 journal
 ordering/redelivery, reconnect I/O, or production Gateway interoperability.
+
+P3-T4b pins `Microsoft.Data.Sqlite` 8.0.29 and
+`SQLitePCLRaw.bundle_e_sqlite3` 2.1.12. The store holds one process-lifetime
+writer lease and one private, non-pooled connection. Every mutation runs under
+the same non-awaiting `BEGIN IMMEDIATE` authority; later P3-T5 tables extend
+that exact migration and transaction chain so an invocation `received` row and
+its inbound receipt handoff can commit atomically.
+This PR family introduces the still-unshipped schema v1 in its compacted form;
+the protected first schema PR must contain that complete shape. After v1 lands,
+all schema changes require a new additive migration rather than a v1 digest
+rewrite.
+
+Inbound durability deliberately has two frontiers. `last_rx_seq` records
+contiguous envelopes accepted into full RFC 8785 canonical durable receipt
+rows. `last_journaled_rx_seq` advances only across contiguous receipts handed
+to the invocation journal. Hot-path authority reads validate the first/last
+receipt and contiguous journal prefix through primary-key and pending-receipt
+index probes; they do not parse or materialize journaled envelope history. A
+full count/range/frontier consistency scan runs once when the store opens.
+
+The T5 handoff seam must match the retained envelope id and immutable digest
+inside the same immediate transaction. Until that commits, recovery returns
+the exact retained envelope and neither resume nor heartbeat acknowledgement
+can suppress peer retransmission. At handoff, SQLite retains the immutable
+identity, digest, and bounded journal correlation but clears the full envelope.
+The correlation seam accepts only one bounded journal-record identifier and a
+lowercase SHA-256 digest; arbitrary context JSON, parameters, and paths cannot
+enter the compacted receipt row.
+`secure_delete=ON` plus a proven `wal_checkpoint(TRUNCATE)` removes the cleared
+plaintext from the database/WAL artifact set before the operation returns. A
+post-commit checkpoint whose result cannot be proven blocks that store instance
+until restart recovery. A pending handoff also blocks unregister confirmation.
+
+Resume tokens enter SQLite only through an injected protected-token contract.
+Registration payloads recursively reject the reserved `resume_token` property;
+no plaintext fallback and no production DPAPI provider exists in this slice.
+Lifecycle and migration update timestamps also clamp backward wall-clock
+corrections without weakening sequence authority. P3-T8 must supply the
+production protector before live enrollment/session work. The P3-T4b evidence
+is therefore local store, migration, post-commit fault-injection, plaintext
+artifact compaction, long-history bounded-materialization, and orderly reopen
+evidence only. Abrupt process-death/WAL recovery remains an explicit
+P3-T5/P3-T13 crash-fixture gate. The P3-T9/M6 installer must also create and
+verify the state-root owner/DACL and reject pre-created reparse paths before
+this location is production-safe. This slice does not prove either of those
+properties, production secret protection, Gateway interoperability, T5
+invocation semantics, or a live transport.
+
+P3-T5a adds only the additive SQLite authorities required before invocation
+execution can be implemented: one canonical-key invocation table and a
+separate mutation-recovery hold table. Database constraints bind
+`idempotency_key` to `rsid + "/" + invocation_id`, pair batch id/index fields,
+keep reads scope-free, require every indeterminate mutation to reference a
+hold, prevent two uncleared rows for the same exact scope, and keep terminal
+and late-terminal carriers digest-bound. Cross-scope conflict evaluation,
+canonical JSON validation, state transitions, clearance acceptance, dispatch,
+redelivery, retention/pruning, batches, and cancellation are intentionally not
+claimed by this schema-only slice; they remain later P3-T5 behavior.

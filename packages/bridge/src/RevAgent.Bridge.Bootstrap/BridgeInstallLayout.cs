@@ -40,6 +40,9 @@ internal sealed record BridgeInstallLayout(string InstallRoot, string StateRoot)
     internal string WorkerLogDirectory =>
         Path.Combine(StateRoot, "logs", "worker");
 
+    internal string JournalPath =>
+        Path.Combine(StateRoot, "journal.db");
+
     internal string BundleExtractionRoot =>
         Path.Combine(StateRoot, "bundle-extract");
 }
