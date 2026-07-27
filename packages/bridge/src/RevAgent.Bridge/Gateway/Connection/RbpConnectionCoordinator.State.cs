@@ -312,13 +312,13 @@ internal sealed partial class RbpConnectionCoordinator
             acknowledgement.HeartbeatIntervalMilliseconds != 15_000 ||
             acknowledgement.Limits.MaximumParametersBytes <= 0 ||
             acknowledgement.Limits.MaximumParametersBytes >
-                RbpEnvelopeCodec.MaximumInvocationParametersBytes ||
+                RbpProtocolLimits.MaximumInvocationParametersBytes ||
             acknowledgement.Limits.MaximumResultBytes <= 0 ||
             acknowledgement.Limits.MaximumResultBytes >
-                RbpEnvelopeCodec.MaximumInlineResultBytes ||
+                RbpProtocolLimits.MaximumInlineResultBytes ||
             acknowledgement.Limits.MaximumPartialBytes <= 0 ||
             acknowledgement.Limits.MaximumPartialBytes >
-                RbpEnvelopeCodec.MaximumPartialBytes ||
+                RbpProtocolLimits.MaximumPartialBytes ||
             acknowledgement.GrantedCapabilities.Any(capability =>
                 !_options.HelloProfile.Capabilities.Contains(
                     capability,

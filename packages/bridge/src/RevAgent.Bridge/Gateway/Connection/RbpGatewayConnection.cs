@@ -30,7 +30,7 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
         ReadOnlyMemory<byte> frame,
         CancellationToken cancellationToken = default)
     {
-        if (frame.Length > RbpEnvelopeCodec.MaximumWireFrameBytes)
+        if (frame.Length > RbpProtocolLimits.MaximumWireFrameBytes)
         {
             throw new RbpGatewayTransportException(
                 RbpGatewayFailureKind.Protocol,
@@ -115,7 +115,7 @@ internal sealed class RbpGatewayConnection : IAsyncDisposable
                 }
 
                 if (stream.Length + result.Count >
-                    RbpEnvelopeCodec.MaximumWireFrameBytes)
+                    RbpProtocolLimits.MaximumWireFrameBytes)
                 {
                     _socket.Abort();
                     throw new RbpGatewayTransportException(
