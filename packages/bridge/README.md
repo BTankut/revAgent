@@ -182,3 +182,43 @@ and late-terminal carriers digest-bound. Cross-scope conflict evaluation,
 canonical JSON validation, state transitions, clearance acceptance, dispatch,
 redelivery, retention/pruning, batches, and cancellation are intentionally not
 claimed by this schema-only slice; they remain later P3-T5 behavior.
+
+The Windows add-in process-attestation primitive can bind an accepted
+connection's exact IPv4 loopback four-tuple to its owning PID, process start
+time, expected Program Files `Revit.exe`, protected path ACLs, and Authenticode
+evidence. This primitive is not yet wired into `AddinTcpTransport`, so this
+slice does not claim production transport enforcement and the P3-T3 gate
+remains red until a later small attested-transport PR lands. The evidence
+attests the owning `Revit.exe` process only; it does not identify or
+authenticate the loaded revAgent add-in DLL.
+
+Potentially blocking native inspection runs in a fresh copy of the
+self-contained Worker from the canonical fixed-local-volume
+`Program Files\revAgent\Bridge\versions\<version>` layout. The complete path
+below Program Files must be non-reparse, admin-owned, and non-admin-writable;
+a no-delete-share executable handle and volume/file identity remain pinned
+through child launch verification. The helper receives only an allowlisted
+environment over bounded redirected pipes and is assigned to a
+kill-on-job-close Windows Job Object atomically at process creation, before its
+suspended primary thread is resumed. Requests and responses carry a per-call
+256-bit nonce. Deadline cancellation must verify both the root helper exit and
+an empty Job Object before permitting healthy reuse; an unconfirmed kill,
+remaining descendant, or pipe close poisons process-wide attestation, rejects
+later launches, and requires the supervised Worker to restart.
+
+WinVerifyTrust holds a read-only, non-delete-share file handle while the
+provider state is open. Every signer exposed by that validated provider state
+must match the Autodesk publisher allowlist before the state is closed; a
+separate certificate re-read is not authoritative. Revocation retrieval is
+deliberately cache-only with chain checking excluding the root. Therefore this
+evidence can fail closed when suitable local revocation material is
+unavailable, but it does not claim fresh online revocation status or an
+external timestamp/revocation service check.
+
+Published-helper acceptance remains explicit Windows VM evidence rather than
+part of the current `--version` publish smoke: install the published single-file
+Worker under the canonical protected version layout, invoke
+`__attestation_helper` through bounded redirected pipes, prove nonce-correlated
+structured failure for an absent tuple, prove a real separate-process listener
+PID for the positive tuple seam, and prove cancellation removes the helper and
+its descendants before a fresh supervised Worker recovers.

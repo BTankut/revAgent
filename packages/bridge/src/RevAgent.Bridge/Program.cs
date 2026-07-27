@@ -3,6 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Configuration;
 using RevAgent.Bridge.Bootstrap.Diagnostics;
@@ -18,6 +19,12 @@ internal static class Program
 
     public static async Task<int> Main(string[] args)
     {
+        if (AttestationHelperProtocol.IsHelperCommand(args))
+        {
+            return await WindowsAttestationHelperServer.RunAsync()
+                .ConfigureAwait(false);
+        }
+
         WorkerCommand command;
         try
         {
