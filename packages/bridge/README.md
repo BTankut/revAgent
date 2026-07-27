@@ -6,7 +6,8 @@ so the same additive framing and contract code can later be referenced by the
 existing .NET Framework add-in under the bounded P3-T6 migration-freeze
 exception.
 
-The current P3-T1/P3-T2/P3-T3a/P3-T4a/P3-T4b/P3-T5a slices contain the
+The current P3-T1/P3-T2/P3-T3a/P3-T4a/P3-T4b/P3-T4c/P3-T4d/P3-T5a slices
+contain the
 contract primitives, the bounded Windows service skeleton, the strict one-call
 add-in transport, transport-independent RBP state, and a durable RBP journal
 authority:
@@ -46,12 +47,19 @@ authority:
   additive migrations, exact outbox/receipt replay, protected resume tokens,
   durable unregister tombstones, and deterministic reopen recovery, plus the
   additive canonical-key invocation and mutation-recovery hold tables needed
-  before invocation execution can be implemented.
+  before invocation execution can be implemented; and
+- the primary WSS `/bridge/v1` binding, device-bearer upgrade, strict
+  RBP/1 `hello`/`hello_ack`, bounded text-message framing, DNS-only endpoints,
+  system proxy/machine trust, and fail-closed enrollment seam; and
+- one WSS connection lifecycle owner with durable generation activation before
+  receive, exact register/resume/unregister recovery, ascending outbox replay,
+  globally single-flight heartbeat fences, full-jitter reconnect, and
+  monotonic sleep/wake replacement.
 
-It does not yet provide add-in discovery/session routing, the Gateway
-transport, invocation dispatch/execution, enrollment, workstation installer
-payload, or update behavior. Those land through separate WP3 PRs in the order
-fixed by
+It does not yet provide add-in discovery/session routing, the Streamable
+HTTP/SSE fallback, invocation dispatch/execution, Gateway-backed enrollment,
+production resume-token protection, workstation installer payload, or update
+behavior. Those land through separate WP3 PRs in the order fixed by
 `docs/implementation-plan/03-bridge-addin-installer.md`.
 
 Run the complete P3-T1 contract gate from the repository root:
@@ -222,3 +230,77 @@ Worker under the canonical protected version layout, invoke
 structured failure for an absent tuple, prove a real separate-process listener
 PID for the positive tuple seam, and prove cancellation removes the helper and
 its descendants before a fresh supervised Worker recovers.
+
+P3-T4c opens only `wss://<DNS>/bridge/v1`, preserves the platform system proxy
+and machine certificate trust, disables framework keepalive in favor of RBP
+heartbeats, and serializes outbound WebSocket writes. Opening failures classify
+the frozen auth/version/trust/protocol/retryable outcomes; accepted
+`Retry-After` values are bounded to 15 minutes and retained as an absolute
+not-before time. Close codes `4401`, `4403`, and `4426` pause unchanged retry,
+and the `4426` reason accepts only the frozen same-origin update-manifest
+pointer shape.
+
+The real-TLS tests launch the unchanged Gateway stub, use an exact-certificate
+validator only inside the test socket factory, and prove an authenticated
+`hello`/`hello_ack`, 401 refusal without token disclosure, 426 pause,
+retryable 429 metadata, and system-trust refusal of the self-signed fixture.
+Production enrollment remains deliberately fail-closed until P3-T8 supplies
+the credential-store adapter. This slice does not prove reconnect scheduling,
+session registration/resume, heartbeat liveness, journal replay, fallback
+parity, corporate proxy interception, sleep/wake recovery, or a 24-hour soak.
+
+P3-T4d composes the WSS handshake, pure reducer, and durable store without
+adding a second transport or an invocation executor. A connection generation
+is activated in the store before its receive loop starts. Resume keeps a
+session non-dispatchable until `resume_ack` is durably applied; the receive
+loop also waits for registration/resume application before exposing a
+following data frame. Accepted inbound data is acknowledged only after an
+injected invocation-journal seam marks the exact envelope id and immutable
+digest in the same SQLite transaction. The production default for that seam is
+fail-closed until P3-T5 installs the invocation journal.
+
+Heartbeat flights capture one immutable active-rsid and pending-unregister
+fence plus the acknowledgement deadline before transport send. Synchronous
+acknowledgement observation cancels that deadline independently from durable
+fence application; the consumed flight remains globally single-flight until
+application and unregister cleanup finish. A transport send fault can roll
+back only an unconsumed flight; after re-entrant acknowledgement consumption,
+the durable handler finishes exactly once before that send fault owns
+reconnect. Service cancellation interrupts sender waits, bounds owned-task
+drain, and disposes each connection context's linked cancellation authority.
+An observed acknowledgement whose transport send or durable handler never
+returns is fenced by the canonical 65-second disconnected-liveness window.
+That completion fence has a distinct frozen coordinator option from monotonic
+wake-gap detection even though both use the same RBP/1 65-second value.
+Replacement is allowed only after both connection-owned loops drain. If either
+loop ignores cancellation past the bounded close deadline, the coordinator
+poisons its connection authority and requires a Bridge process restart instead
+of opening a new generation beside the stale handler. Service cancellation may
+return after the bounded drain window, but it leaves that same poison set; the
+coordinator cannot be started again in-process.
+
+**P3-T4 host-wiring prerequisite card:** this slice does not yet claim that a
+service-stop poison terminates the Worker process. Before coordinator
+production wiring is accepted, the Worker host must treat non-draining
+connection authority as a must-exit condition, return a non-success worker exit
+state, and prove under a deterministic blocked-handler test that the supervisor
+starts no replacement generation in the old process. Until that wiring and
+test land, the evidence ceiling is coordinator fail-fast plus bounded service
+return, not process-exit enforcement.
+Only the exact current generation may apply the returned cumulative
+acknowledgements or confirm tombstones. The coordinator closes and replaces
+WSS after a monotonic wake gap; it never switches an active binding in place.
+Deterministic tests cover two sessions,
+immediate post-registration data ordering, resume/outbox identity across
+reconnect, old-generation fence rejection, blocked-send deadline enforcement,
+re-entrant acknowledgement, slow durable application, deadline/consume
+ordering, consumed-ACK application before a late send fault, malformed,
+unsolicited, and duplicate acknowledgement rejection, post-commit fence
+reread, failed-send rollback, unregister confirmation ordering, wake
+replacement, the 120-second steady reset boundary, and bounded shutdown,
+including cancellation while acknowledgement application is blocked. This is
+local fake-binding evidence;
+the unchanged WSS stub remains lower-layer binding/handshake evidence and is
+not a coordinator integration claim. Neither surface proves Streamable
+HTTP/SSE parity, proxy-lab, live Revit, enrollment, invocation execution, or
+24-hour soak behavior.

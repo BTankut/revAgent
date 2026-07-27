@@ -482,3 +482,22 @@ slice does not change the 21 existing command contracts, the duct-routing engine
 RevitMCPSDK types, port allocation, or the functional TCP framing. The remaining
 cached document-context and exact atomic `execute_batch` adaptations require their
 own bounded freeze-exception PRs and dated records.
+
+### 2026-07-27 — R-I: merge verification is mandatory before reporting a PR merged
+
+Source: operator instruction from Barış Tankut, 2026-07-27.
+
+During the M3 PR sequence, PR [#297](https://github.com/BTankut/revAgent/pull/297) was reported as merged
+after a `gh pr merge` invocation returned empty output. The merge had in fact been rejected by protected-branch
+rules because the head was `BEHIND` current `main`; the PR remained open and its six commits stayed unmerged.
+The mistake was caught only later, when the open-PR list was re-enumerated after another merge.
+
+R-I therefore requires that a PR be reported as merged only after `origin` confirms it: PR `state=MERGED`
+plus a merge commit SHA on the target branch, read back with `gh pr view <n> --json state,mergeCommit` or an
+equivalent API call. An empty or silent merge-command result is not evidence of success. Two protected-branch
+conditions are known to reject merges silently in this repository: a `BEHIND`/`blocked` head, and a required
+check (notably `Claude review gate`, whose workflow triggers only on `[opened, reopened, ready_for_review]`)
+being absent for the current head SHA after a force-push.
+
+This rule adds a verification duty only; it does not change any gate, required check, or merge authority.
+The permanent normative wording is R-I in `docs/implementation-plan/00-INDEX.md` §8.

@@ -319,6 +319,12 @@ cutover.
   the proposed evidence, rationale, cost, and affected gate in an R-G operator task card and wait for explicit
   operator authorization. Routine diagnostics and already-produced supplementary evidence may be retained
   and reported, but remain non-blocking and MUST NOT redefine the gate.
+- **R-I Merge verification.** A PR MAY be reported as merged only after `origin` actually shows it merged:
+  PR `state=MERGED` plus a merge commit SHA on the target branch. The merge command's empty or silent
+  output is NOT success — protected-branch rules (for example a `BEHIND`/`blocked` head, or a required
+  check missing for the current head SHA) can reject a merge without an error message. After every merge
+  attempt the assistant MUST verify with `gh pr view <n> --json state,mergeCommit` (or an equivalent API
+  read) before reporting, and MUST correct any earlier report proven wrong by that check.
 
 ### 8.1 2026-07-23 operator execution checkpoint
 

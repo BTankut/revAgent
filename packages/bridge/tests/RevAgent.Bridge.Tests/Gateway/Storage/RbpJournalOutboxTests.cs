@@ -166,6 +166,136 @@ public sealed class RbpJournalOutboxTests
     }
 
     [Fact]
+    public async Task InvalidAckSetCannotPartiallyPruneOrConfirmTombstone()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-a",
+                localSessionKey: "port:8080:pid:10",
+                resumeToken: "resume-a"));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-b",
+                localSessionKey: "port:8081:pid:11",
+                resumeToken: "resume-b"));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-dead",
+                localSessionKey: "port:8082:pid:12",
+                resumeToken: "resume-dead"));
+        _ = await store.QueueOutboundDataAsync(
+            "rs-a",
+            RbpJournalTestData.Outbound(
+                "0197a3c2-0000-7000-8000-000000000431",
+                1));
+        _ = await store.QueueOutboundDataAsync(
+            "rs-b",
+            RbpJournalTestData.Outbound(
+                "0197a3c2-0000-7000-8000-000000000432",
+                2));
+        _ = await store.RecordUnregisterIntentAsync(
+            "rs-dead",
+            RbpSessionUnregisterReason.RevitExited);
+        _ = await store.ActivateConnectionGenerationAsync(1);
+
+        RbpJournalException invalid =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.ApplyHeartbeatFenceAcknowledgementAsync(
+                    new RbpHeartbeatFence(
+                        1,
+                        new[] { "rs-a", "rs-b" },
+                        new[]
+                        {
+                            new RbpSessionAcknowledgement("rs-a", 1),
+                            new RbpSessionAcknowledgement("rs-b", 2),
+                        },
+                        new[] { "rs-dead" })));
+
+        Assert.Equal(
+            RbpJournalErrorCode.InvalidHeartbeatFence,
+            invalid.ErrorCode);
+        Assert.Equal(
+            RbpUnregisterPhase.Pending,
+            (await store.GetUnregisterTombstoneAsync("rs-dead"))!.Phase);
+        RbpJournalRecoveryPlan recovery =
+            await store.LoadRecoveryPlanAsync();
+        Assert.Equal(
+            new[] { "rs-a", "rs-b" },
+            recovery.ResumeCandidates
+                .Select(item => item.Session.Rsid)
+                .Order(StringComparer.Ordinal));
+        Assert.All(
+            recovery.ResumeCandidates,
+            item => Assert.Single(item.Outbox));
+        Assert.Equal(
+            "rs-dead",
+            Assert.Single(recovery.PendingUnregister).Rsid);
+    }
+
+    [Fact]
+    public async Task PostCommitHeartbeatFenceUsesExactDurableReread()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var faults = new ArmedJournalFaultInjector();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(faults));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-live",
+                localSessionKey: "port:8080:pid:10",
+                resumeToken: "resume-live"));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-dead",
+                localSessionKey: "port:8081:pid:11",
+                resumeToken: "resume-dead"));
+        _ = await store.QueueOutboundDataAsync(
+            "rs-live",
+            RbpJournalTestData.Outbound(
+                "0197a3c2-0000-7000-8000-000000000441",
+                41));
+        _ = await store.RecordUnregisterIntentAsync(
+            "rs-dead",
+            RbpSessionUnregisterReason.RevitExited);
+        _ = await store.ActivateConnectionGenerationAsync(1);
+
+        faults.Arm(RbpJournalFaultPoint.AfterCommitBeforeReturn);
+        RbpHeartbeatFenceResult recovered =
+            await store.ApplyHeartbeatFenceAcknowledgementAsync(
+                new RbpHeartbeatFence(
+                    1,
+                    new[] { "rs-live" },
+                    new[]
+                    {
+                        new RbpSessionAcknowledgement("rs-live", 1),
+                    },
+                    new[] { "rs-dead" }));
+
+        Assert.Equal(new[] { "rs-live" }, recovered.AcknowledgedRsids);
+        Assert.Equal(
+            new[] { "rs-dead" },
+            recovered.ConfirmedUnregisterRsids);
+        RbpJournalRecoveryPlan recovery =
+            await store.LoadRecoveryPlanAsync();
+        Assert.Empty(Assert.Single(recovery.ResumeCandidates).Outbox);
+        Assert.Empty(recovery.PendingUnregister);
+        Assert.Equal(
+            "rs-dead",
+            Assert.Single(recovery.ConfirmedCleanup).Rsid);
+        Assert.NotNull(await store.GetStoredSessionAsync("rs-dead"));
+        Assert.True(
+            await store.CompleteConfirmedUnregisterAsync("rs-dead"));
+        Assert.Null(await store.GetStoredSessionAsync("rs-dead"));
+    }
+
+    [Fact]
     public async Task PostCommitQueueFailureUsesExactRereadBeforeReturn()
     {
         using var directory = new RbpJournalTestDirectory();
