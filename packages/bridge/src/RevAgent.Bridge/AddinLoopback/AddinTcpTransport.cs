@@ -17,7 +17,8 @@ internal interface IAddinTransport
         AddinEndpoint endpoint,
         AddinCall call,
         CancellationToken preDispatchCancellationToken = default,
-        CancellationToken transportShutdownToken = default);
+        CancellationToken transportShutdownToken = default,
+        IAddinProcessAttestor? processAttestor = null);
 }
 
 internal sealed class AddinTcpTransport : IAddinTransport
@@ -28,7 +29,8 @@ internal sealed class AddinTcpTransport : IAddinTransport
         AddinEndpoint endpoint,
         AddinCall call,
         CancellationToken preDispatchCancellationToken = default,
-        CancellationToken transportShutdownToken = default)
+        CancellationToken transportShutdownToken = default,
+        IAddinProcessAttestor? processAttestor = null)
     {
         ArgumentNullException.ThrowIfNull(endpoint);
         ArgumentNullException.ThrowIfNull(call);
@@ -191,6 +193,53 @@ internal sealed class AddinTcpTransport : IAddinTransport
                 new OperationCanceledException(preDispatchCancellation.Token));
         }
 
+        AddinConnectedPeer? connectedPeer = null;
+        AddinProcessAttestation? processAttestation = null;
+        if (processAttestor != null)
+        {
+            try
+            {
+                connectedPeer = AddinConnectedPeer.FromConnectedClient(client);
+                processAttestation =
+                    await processAttestor.AttestBeforeDispatchAsync(
+                        connectedPeer,
+                        preDispatchCancellation.Token).ConfigureAwait(false);
+                if (processAttestation == null)
+                {
+                    throw new AddinProcessAttestationException(
+                        "addin_process_attestation_invalid",
+                        "The pre-dispatch process attestation was empty.");
+                }
+            }
+            catch (AddinProcessAttestationException exception)
+            {
+                throw Failure(
+                    exception.Code,
+                    exception.Message,
+                    AddinDispatchState.NotStarted,
+                    requestPayload.Length,
+                    requestFrame.Length,
+                    bytesWrittenLowerBound: 0,
+                    requestFullyWritten: false,
+                    responseBytesObserved: 0,
+                    exception);
+            }
+            catch (OperationCanceledException exception)
+            {
+                throw CancellationFailure(
+                    call,
+                    preDispatchCancellationToken,
+                    transportShutdownToken,
+                    AddinDispatchState.NotStarted,
+                    requestPayload.Length,
+                    requestFrame.Length,
+                    bytesWrittenLowerBound: 0,
+                    requestFullyWritten: false,
+                    responseBytesObserved: 0,
+                    exception);
+            }
+        }
+
         /*
          * The caller token is intentionally detached at the dispatch boundary.
          * Once a request may have reached Revit, O1 cancellation semantics
@@ -294,6 +343,14 @@ internal sealed class AddinTcpTransport : IAddinTransport
                     exception);
             }
 
+            if (processAttestor != null)
+            {
+                await processAttestor.VerifyAfterResponseAsync(
+                    connectedPeer!,
+                    processAttestation!,
+                    transportLifetimeCancellation.Token).ConfigureAwait(false);
+            }
+
             return new AddinCallResult(
                 response,
                 Evidence(
@@ -302,11 +359,25 @@ internal sealed class AddinTcpTransport : IAddinTransport
                     requestFrame.Length,
                     bytesWrittenLowerBound,
                     requestFullyWritten,
-                    responseBytesObserved));
+                    responseBytesObserved),
+                processAttestation);
         }
         catch (AddinTransportException)
         {
             throw;
+        }
+        catch (AddinProcessAttestationException exception)
+        {
+            throw Failure(
+                exception.Code,
+                exception.Message,
+                dispatchState,
+                requestPayload.Length,
+                requestFrame.Length,
+                bytesWrittenLowerBound,
+                requestFullyWritten,
+                responseBytesObserved,
+                exception);
         }
         catch (OperationCanceledException exception)
         {
