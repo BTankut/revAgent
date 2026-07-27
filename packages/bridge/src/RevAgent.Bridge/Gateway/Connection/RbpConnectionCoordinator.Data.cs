@@ -443,7 +443,7 @@ internal sealed partial class RbpConnectionCoordinator
                         envelope.Id,
                         immutableDigest,
                         receipt.CorrelationId,
-                        receipt.ContextJson,
+                        receipt.JournalRecordDigest,
                         now);
                     return true;
                 },

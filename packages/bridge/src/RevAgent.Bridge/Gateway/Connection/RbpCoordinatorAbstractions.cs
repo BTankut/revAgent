@@ -17,9 +17,16 @@ internal interface IRbpLocalSessionCatalog
         CancellationToken cancellationToken = default);
 }
 
+/// <summary>
+/// The P3-T5 invocation-journal handoff receipt. The durable receipt row
+/// accepts only a bounded journal-record identifier and a lowercase SHA-256
+/// digest of that record; arbitrary context JSON, parameters, and paths MUST
+/// NOT enter the compacted row (see the P3-T4b compaction contract in
+/// <c>packages/bridge/README.md</c> and <c>RbpJournalWriteContext</c>).
+/// </summary>
 internal sealed record RbpInboundJournalReceipt(
     string CorrelationId,
-    string ContextJson);
+    string JournalRecordDigest);
 
 internal interface IRbpInboundDataJournal
 {

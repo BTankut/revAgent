@@ -1,5 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using RevAgent.Bridge.Gateway.Connection;
@@ -200,9 +202,18 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             _ = context;
             Interlocked.Increment(ref _count);
+
+            // The compacted receipt row accepts only a bounded correlation id
+            // plus a lowercase SHA-256 digest of the journal record; arbitrary
+            // context JSON is rejected fail-closed by MarkInboundJournaled.
             return new RbpInboundJournalReceipt(
                 envelope.Id,
-                """{"journal":"test"}""");
+                "sha256:" +
+                Convert.ToHexString(
+                        SHA256.HashData(
+                            Encoding.UTF8.GetBytes(
+                                $"journal-record:{envelope.Rsid}:{envelope.Sequence}:{envelope.Id}")))
+                    .ToLowerInvariant());
         }
     }
 

@@ -219,7 +219,9 @@ internal sealed partial class RbpConnectionCoordinator
                     .ConfigureAwait(false);
             lifecycle = AdvanceSession(
                 lifecycle,
-                new RbpSessionEvent(RbpSessionEventType.Resumed));
+                new RbpSessionEvent(
+                    RbpSessionEventType.Resumed,
+                    Rsid: parsed.Rsid));
             context.AddBoundSession(
                 new BoundSession(local, applied.Session, lifecycle));
             context.QueueRetransmit(applied.Retransmit);
