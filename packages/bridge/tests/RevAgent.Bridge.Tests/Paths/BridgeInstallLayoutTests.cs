@@ -50,6 +50,39 @@ public sealed class BridgeInstallLayoutTests
             Path.Combine(stateRoot, "journal.db"),
             layout.JournalPath);
         Assert.Equal(
+            Path.Combine(stateRoot, "credentials"),
+            layout.CredentialDirectory);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
+                "machine-identity.dpapi"),
+            layout.MachineIdentityPath);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
+                "machine-fingerprint.json"),
+            layout.MachineFingerprintPath);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
+                "device-credential.dpapi"),
+            layout.DeviceCredentialPath);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
+                "auth-diagnostic.json"),
+            layout.AuthDiagnosticPath);
+        Assert.Equal(
+            Path.Combine(
+                stateRoot,
+                "credentials",
+                "enrollment.lock"),
+            layout.EnrollmentLockPath);
+        Assert.Equal(
             Path.Combine(stateRoot, "bundle-extract"),
             layout.BundleExtractionRoot);
     }

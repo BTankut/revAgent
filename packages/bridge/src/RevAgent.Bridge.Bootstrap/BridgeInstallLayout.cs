@@ -43,6 +43,24 @@ internal sealed record BridgeInstallLayout(string InstallRoot, string StateRoot)
     internal string JournalPath =>
         Path.Combine(StateRoot, "journal.db");
 
+    internal string CredentialDirectory =>
+        Path.Combine(StateRoot, "credentials");
+
+    internal string MachineIdentityPath =>
+        Path.Combine(CredentialDirectory, "machine-identity.dpapi");
+
+    internal string MachineFingerprintPath =>
+        Path.Combine(CredentialDirectory, "machine-fingerprint.json");
+
+    internal string DeviceCredentialPath =>
+        Path.Combine(CredentialDirectory, "device-credential.dpapi");
+
+    internal string AuthDiagnosticPath =>
+        Path.Combine(CredentialDirectory, "auth-diagnostic.json");
+
+    internal string EnrollmentLockPath =>
+        Path.Combine(CredentialDirectory, "enrollment.lock");
+
     internal string BundleExtractionRoot =>
         Path.Combine(StateRoot, "bundle-extract");
 }
