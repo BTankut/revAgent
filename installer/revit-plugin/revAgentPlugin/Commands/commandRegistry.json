@@ -1,319 +1,319 @@
-﻿{
-    "Commands":  [
-                     {
-                         "commandName":  "get_current_view_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Get current view elements"
-                     },
-                     {
-                         "commandName":  "get_current_view_info",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Get current view info"
-                     },
-                     {
-                         "commandName":  "get_selected_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Get selected elements"
-                     },
-                     {
-                         "commandName":  "send_code_to_revit",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Execute dynamic C# code in Revit with access to the Document and Revit API"
-                     },
-                     {
-                         "commandName":  "list_open_views",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "List open Revit UI views"
-                     },
-                     {
-                         "commandName":  "activate_view",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Activate a Revit UI view without opening a transaction"
-                     },
-                     {
-                         "commandName":  "close_view",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Close an open Revit UI view without opening a transaction"
-                     },
-                     {
-                         "commandName":  "clear_selection",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Clear the current Revit UI selection without opening a transaction"
-                     },
-                     {
-                         "commandName":  "delete_review_view",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Dry-run or delete an explicit revAgent review 3D view with guarded production-view protection"
-                     },
-                     {
-                         "commandName":  "get_ui_state",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Read active view, open views, selection, and document UI state"
-                     },
-                     {
-                         "commandName":  "find_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Find Revit elements by category and text across name, family, type, mark, and comments"
-                     },
-                     {
-                         "commandName":  "inspect_levels",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Inspect host and loaded linked Revit levels with deterministic source and host elevation evidence"
-                     },
-                     {
-                         "commandName":  "inspect_sheet_text",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Inspect sheet text notes, placed schedule instances, and viewport-linked text notes with native budgeted partial results"
-                     },
-                     {
-                         "commandName":  "inspect_schedules",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Inspect Revit schedules with native budgeted partial results and continuation state"
-                     },
-                     {
-                         "commandName":  "count_annotations",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Count and group Revit sheet text-note, placed schedule-cell, and viewport tag annotations with bounded native evidence"
-                     },
-                     {
-                         "commandName":  "extract_spatial_snapshot",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Extract a read-only, level-bounded Phase 1a revision-bound spatial snapshot page with deterministic host/link identity and host-mm geometry evidence"
-                     },
-                     {
-                         "commandName":  "get_spatial_change_state",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Read process-local spatial source change sequences and conservative current, stale, or unknown liveness without opening a transaction"
-                     },
-                     {
-                         "commandName":  "open_existing_plan_for_element_level",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Open an existing plan view for an element\u0027s level and focus the element without creating a new view"
-                     },
-                     {
-                         "commandName":  "focus_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Select and zoom to Revit elements in the active or requested view without opening a transaction"
-                     },
-                     {
-                         "commandName":  "section_box_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Apply a 3D section box around Revit elements and optionally select and zoom to them"
-                     },
-                     {
-                         "commandName":  "create_3d_view_for_elements",
-                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
-                         "enabled":  true,
-                         "supportedRevitVersions":  [
-                                                        "2022"
-                                                    ],
-                         "developer":  {
-                                           "name":  "DPE",
-                                           "email":  "",
-                                           "website":  "https://www.revagent.app",
-                                           "organization":  "DPE"
-                                       },
-                         "description":  "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements"
-                     }
-                 ]
+{
+  "Commands": [
+    {
+      "commandName": "get_current_view_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Get current view elements"
+    },
+    {
+      "commandName": "get_current_view_info",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Get current view info"
+    },
+    {
+      "commandName": "get_selected_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Get selected elements"
+    },
+    {
+      "commandName": "send_code_to_revit",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Execute dynamic C# code in Revit with access to the Document and Revit API"
+    },
+    {
+      "commandName": "list_open_views",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "List open Revit UI views"
+    },
+    {
+      "commandName": "activate_view",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Activate a Revit UI view without opening a transaction"
+    },
+    {
+      "commandName": "close_view",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Close an open Revit UI view without opening a transaction"
+    },
+    {
+      "commandName": "clear_selection",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Clear the current Revit UI selection without opening a transaction"
+    },
+    {
+      "commandName": "delete_review_view",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Dry-run or delete an explicit revAgent review 3D view with guarded production-view protection"
+    },
+    {
+      "commandName": "get_ui_state",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Read active view, open views, selection, and document UI state"
+    },
+    {
+      "commandName": "find_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Find Revit elements by category and text across name, family, type, mark, and comments"
+    },
+    {
+      "commandName": "inspect_levels",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Inspect host and loaded linked Revit levels with deterministic source and host elevation evidence"
+    },
+    {
+      "commandName": "inspect_sheet_text",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Inspect sheet text notes, placed schedule instances, and viewport-linked text notes with native budgeted partial results"
+    },
+    {
+      "commandName": "inspect_schedules",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Inspect Revit schedules with native budgeted partial results and continuation state"
+    },
+    {
+      "commandName": "count_annotations",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Count and group Revit sheet text-note, placed schedule-cell, and viewport tag annotations with bounded native evidence"
+    },
+    {
+      "commandName": "extract_spatial_snapshot",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Extract a read-only, level-bounded Phase 1a revision-bound spatial snapshot page with deterministic host/link identity and host-mm geometry evidence"
+    },
+    {
+      "commandName": "get_spatial_change_state",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Read process-local spatial source change sequences and conservative current, stale, or unknown liveness without opening a transaction"
+    },
+    {
+      "commandName": "open_existing_plan_for_element_level",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Open an existing plan view for an element's level and focus the element without creating a new view"
+    },
+    {
+      "commandName": "focus_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Select and zoom to Revit elements in the active or requested view without opening a transaction"
+    },
+    {
+      "commandName": "section_box_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Apply a 3D section box around Revit elements and optionally select and zoom to them"
+    },
+    {
+      "commandName": "create_3d_view_for_elements",
+      "assemblyPath": "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+      "enabled": true,
+      "supportedRevitVersions": [
+        "2022"
+      ],
+      "developer": {
+        "name": "DPE",
+        "email": "",
+        "website": "https://www.revagent.app",
+        "organization": "DPE"
+      },
+      "description": "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements"
+    }
+  ]
 }

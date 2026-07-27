@@ -179,6 +179,7 @@ if (-not $SkipPayloadCopy) {
 
     $payloadCopies = [ordered]@{
         "revAgentPlugin.dll" = $pluginDllFileName
+        "RevAgent.Contracts.dll" = "RevAgent.Contracts.dll"
         "Newtonsoft.Json.dll" = "Newtonsoft.Json.dll"
         "RevitMCPSDK.dll" = "RevitMCPSDK.dll"
     }

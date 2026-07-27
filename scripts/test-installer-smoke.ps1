@@ -1209,6 +1209,10 @@ namespace RevAgentInstallerSmoke {
         $projectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot $relativePath)
         Assert-True ($projectText -notmatch $legacyRevitConfigPattern) "$relativePath still contains legacy Revit 2020/2021 build configuration."
     }
+    $revitPluginProjectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentPlugin\revAgentPlugin.csproj")
+    $contractsProjectText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "packages\bridge\src\RevAgent.Contracts\RevAgent.Contracts.csproj")
+    Assert-True ($contractsProjectText -match '<TargetFramework>\s*netstandard2\.0\s*</TargetFramework>') "Shared add-in contracts must remain consumable by both net48 and net8 Revit add-in targets."
+    Assert-True ($revitPluginProjectText -match 'ProjectReference Include="[^"]*packages\\bridge\\src\\RevAgent\.Contracts\\RevAgent\.Contracts\.csproj"') "Revit add-in must reference the shared RevAgent.Contracts project."
 
     Write-Host "Test revAgent environment alias contract"
     $connectionManagerText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\runtime-mcp-server\src\utils\ConnectionManager.ts")
@@ -1232,11 +1236,27 @@ namespace RevAgentInstallerSmoke {
     Assert-True ($pathManagerText -match 'SpecialFolder\.LocalApplicationData' -and $pathManagerText -match 'Logs\", \"revit-plugin' -and $pathManagerText -notmatch 'Path\.Combine\(appDataDirectory, \"Logs\"\)') "Revit add-in logs must be written to a user-writable profile path, not the protected installed plugin directory."
     Assert-True ($socketServiceText -match 'REVAGENT_MAX_MESSAGE_BYTES' -and $socketServiceText -match 'REVIT_MCP_MAX_MESSAGE_BYTES') "Revit add-in message size override must support revAgent and legacy env names."
     Assert-True ($socketServiceText -match 'REVAGENT_PLUGIN_PORT' -and $socketServiceText -match 'REVAGENT_PORT' -and $socketServiceText -match 'REVIT_MCP_PLUGIN_PORT' -and $socketServiceText -match 'REVIT_MCP_PORT') "Revit add-in port override must support revAgent and legacy env names."
+    Assert-Equal ([regex]::Matches($socketServiceText, 'new\s+TcpListener\s*\(').Count) 1 "Revit add-in must have one authoritative TCP listener construction site."
+    Assert-True ($socketServiceText -match 'new TcpListener\(IPAddress\.Loopback, candidatePort\)' -and $socketServiceText -notmatch 'IPAddress\.(Any|IPv6Any)') "Revit add-in listener must bind only to numeric loopback with no wildcard opt-out."
+    Assert-True ($socketServiceText -match 'AddinFrameLimits\.DefaultMaxRequestPayloadBytes' -and $socketServiceText -match 'LengthPrefixedFrameCodec\.ReadPayloadLength' -and $socketServiceText -match 'LengthPrefixedFrameCodec\.WritePayloadLength') "Revit add-in must consume the shared frozen loopback framing contract."
+    $mcpStatusBypassIndex = $socketServiceText.IndexOf('string.Equals(request.Method, "mcp_status"', [System.StringComparison]::Ordinal)
+    $dataPlaneGateIndex = $socketServiceText.IndexOf('Monitor.Enter(_dataPlaneIntakeGate', [System.StringComparison]::Ordinal)
+    $quarantineCheckIndex = $socketServiceText.IndexOf('if (_dataPlaneIntakeQuarantined)', [System.StringComparison]::Ordinal)
+    $registryLookupIndex = $socketServiceText.IndexOf('_commandRegistry.TryGetCommand', [System.StringComparison]::Ordinal)
+    $quarantineSetIndex = $socketServiceText.IndexOf('_dataPlaneIntakeQuarantined = true;', [System.StringComparison]::Ordinal)
+    $dataPlaneGateExitIndex = $socketServiceText.IndexOf('Monitor.Exit(_dataPlaneIntakeGate)', [System.StringComparison]::Ordinal)
+    Assert-True ($socketServiceText -match 'Monitor\.Enter\(_dataPlaneIntakeGate, ref dataPlaneIntakeGateTaken\)' -and $socketServiceText -match 'Monitor\.Exit\(_dataPlaneIntakeGate\)' -and $mcpStatusBypassIndex -ge 0 -and $dataPlaneGateIndex -ge 0 -and $mcpStatusBypassIndex -lt $dataPlaneGateIndex) "Revit add-in must serialize data-plane intake while leaving cached mcp_status outside the gate."
+    Assert-True ($quarantineCheckIndex -gt $dataPlaneGateIndex -and $registryLookupIndex -gt $quarantineCheckIndex) "Revit add-in must reject quarantined data-plane requests after acquiring the gate and before registry or handler access."
+    Assert-True ($socketServiceText -match 'private static bool ContainsTimeoutException\(Exception exception\)' -and $socketServiceText -match 'ContainsTimeoutException\(innerException\)' -and $socketServiceText -match 'ContainsTimeoutException\(exception\.InnerException\)' -and $socketServiceText -match 'if \(ContainsTimeoutException\(ex\)\)' -and $quarantineSetIndex -ge 0 -and $dataPlaneGateExitIndex -gt $quarantineSetIndex) "Revit add-in must recursively detect nested ExternalEvent timeouts and quarantine intake before releasing the gate."
+    Assert-True ($socketServiceText -match 'Data-plane intake is quarantined after a timed-out Revit ExternalEvent; restart Revit before sending another command\.' -and $socketServiceText -match '(?s)if \(_dataPlaneIntakeQuarantined\).*?CreateErrorResponse\(\s*request\.Id,\s*JsonRPCErrorCodes\.InternalError,\s*DataPlaneIntakeQuarantinedMessage\)') "Quarantined data-plane requests must receive one deterministic JSON-RPC -32603 response while mcp_status remains available."
     Assert-True ($versionInfoText -match 'REVAGENT_INSTALLED_STATE' -and $versionInfoText -match 'REVIT_MCP_INSTALLED_STATE') "Revit add-in installed-state override must support revAgent and legacy env names."
 
     Write-Host "Test dynamic commandset transaction and reference guards"
     $executeCodeHandler = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs")
     Assert-True ($executeCodeHandler -match 'ContainsManualTransaction') "Dynamic commandset must detect manual transaction snippets."
+    $setExecutionParametersBody = [regex]::Match($executeCodeHandler, '(?s)public void SetExecutionParameters\(.*?\)\s*\{.*?\}(?=\s*public bool WaitForCompletion)')
+    $waitForCompletionBody = [regex]::Match($executeCodeHandler, '(?s)public bool WaitForCompletion\(.*?\)\s*\{.*?\}(?=\s*public void Execute)')
+    Assert-True (([regex]::Matches($executeCodeHandler, '_resetEvent\.Reset\(\)')).Count -eq 1 -and $setExecutionParametersBody.Success -and $setExecutionParametersBody.Value -match '_resetEvent\.Reset\(\)' -and $waitForCompletionBody.Success -and $waitForCompletionBody.Value -notmatch '_resetEvent\.Reset\(\)' -and $waitForCompletionBody.Value -match '_resetEvent\.WaitOne') "Dynamic command completion event must reset only inside SetExecutionParameters, before ExternalEvent.Raise can signal completion."
     Assert-True ($executeCodeHandler -match 'manual_transaction_requires_transactionMode_none') "Manual transaction snippets in auto mode must be classified as guarded safety blocks."
     Assert-True ($executeCodeHandler -match 'JsonProperty\("guarded"\)') "Dynamic execution results must expose guarded for the status UI."
     Assert-True ($executeCodeHandler -match 'GetMetadataReferences') "Dynamic commandset must centralize metadata reference collection."
@@ -1330,6 +1350,7 @@ namespace RevAgentInstallerSmoke {
     Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgent.addin") -PathType Leaf) "revAgent add-in manifest must be packaged with the product name."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\mcp-servers-for-revit.addin"))) "Legacy mcp-servers-for-revit add-in manifest must not be packaged."
     Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\revAgentPlugin.dll") -PathType Leaf) "revAgent plugin DLL must be packaged with the product name."
+    Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revAgentPlugin\RevAgent.Contracts.dll") -PathType Leaf) "Shared RevAgent.Contracts runtime DLL must be packaged beside revAgentPlugin.dll."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\revit-plugin\revit_mcp_plugin"))) "Legacy revit_mcp_plugin payload folder must not be packaged."
     Assert-True (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\command-payload\revAgentCommandSet.dll") -PathType Leaf) "revAgent command payload DLL must be packaged with the product name."
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $RepoRoot "installer\command-payload\RevitMCPCommandSet.dll"))) "Legacy RevitMCPCommandSet command payload DLL must not be packaged."
@@ -1906,7 +1927,8 @@ Assert-True ($updateText -notmatch '\$userChannelRoot\s*=\s*Split-Path[\s\S]{0,2
     Assert-True ($revitPayloadManifestText -match '--untracked-files=all') "Revit payload manifest guard must inspect files inside untracked source folders."
     Assert-True ($revitPayloadManifestText -match 'manifest is empty or invalid JSON' -and $revitPayloadManifestText -match 'ConvertFrom-Json -ErrorAction Stop') "Revit payload manifest guard must report empty or invalid JSON clearly."
     Assert-True ($revitPayloadManifestText -match 'sha256' -and $revitPayloadManifestText -match 'sizeBytes') "Revit payload manifest must fingerprint payload DLL bytes."
-    Assert-True ($buildRevitPluginText -match 'Write-RevitPayloadManifest') "Revit payload build must refresh the manifest with payload copies."
+    Assert-True ($buildRevitPluginText -match '"RevAgent\.Contracts\.dll"\s*=\s*"RevAgent\.Contracts\.dll"' -and $buildRevitPluginText -match 'Write-RevitPayloadManifest') "Revit payload build must copy RevAgent.Contracts.dll and refresh the manifest."
+    Assert-True ($revitPayloadManifestText -match '(?s)Name\s*=\s*"RevAgent\.Contracts".*?SourceRoot\s*=\s*"packages/bridge/src/RevAgent\.Contracts".*?PayloadPaths\s*=\s*@\(.*?"installer/revit-plugin/revAgentPlugin/RevAgent\.Contracts\.dll"') "Revit payload freshness must track RevAgent.Contracts source and runtime DLL in a separate source group."
     Assert-True ($ciText -match 'test-mcp-build-payload-freshness\.ps1"\) -RepoRoot \$RepoRoot') "CI must run the payload freshness gate."
     Assert-True ($ciText -notmatch 'test-mcp-build-payload-freshness\.ps1"\) -RepoRoot \$RepoRoot -McpOnly') "CI must not skip the Revit manifest freshness gate."
     $packageLibText = Get-Content -Raw -LiteralPath (Join-Path $RepoRoot "installer\lib\RevAgent.Package.psm1")

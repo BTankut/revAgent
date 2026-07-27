@@ -42,7 +42,6 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
 
         public bool WaitForCompletion(int timeoutMilliseconds = 10000)
         {
-            _resetEvent.Reset();
             return _resetEvent.WaitOne(timeoutMilliseconds);
         }
 

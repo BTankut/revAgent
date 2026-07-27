@@ -47,6 +47,9 @@
         <PackageReference Include="System.Data.DataSetExtensions" Version="4.5.0"/>
     </ItemGroup>
     <ItemGroup>
+        <ProjectReference Include="..\..\..\packages\bridge\src\RevAgent.Contracts\RevAgent.Contracts.csproj"/>
+    </ItemGroup>
+    <ItemGroup>
         <Resource Include="Core\Ressources\icon-16.png"/>
         <Resource Include="Core\Ressources\icon-32.png"/>
     </ItemGroup>
