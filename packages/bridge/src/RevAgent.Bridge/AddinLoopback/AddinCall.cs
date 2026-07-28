@@ -66,4 +66,5 @@ internal sealed record AddinTransportEvidence(
 
 internal sealed record AddinCallResult(
     AddinJsonRpcResponse Response,
-    AddinTransportEvidence Evidence);
+    AddinTransportEvidence Evidence,
+    AddinProcessAttestation? ProcessAttestation = null);

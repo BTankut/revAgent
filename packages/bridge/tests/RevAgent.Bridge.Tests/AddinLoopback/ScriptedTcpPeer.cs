@@ -138,7 +138,8 @@ internal sealed class ScriptedTcpPeer : IAsyncDisposable
             _shutdown.IsCancellationRequested &&
             exception is OperationCanceledException or
                 SocketException or
-                ObjectDisposedException)
+                ObjectDisposedException or
+                InvalidOperationException)
         {
         }
         finally

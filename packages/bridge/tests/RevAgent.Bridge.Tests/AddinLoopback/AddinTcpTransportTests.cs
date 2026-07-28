@@ -408,6 +408,157 @@ public sealed class AddinTcpTransportTests
         Assert.Equal(0, error.Evidence.BytesWrittenLowerBound);
     }
 
+    [Fact]
+    public async Task InvokeAsync_PreDispatchAttestationFailureWritesZeroJsonRpcBytes()
+    {
+        var bytesObserved = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var peer = new ScriptedTcpPeer(
+            async (stream, cancellationToken) =>
+            {
+                var buffer = new byte[1];
+                int bytesRead = await stream.ReadAsync(
+                    buffer,
+                    cancellationToken);
+                bytesObserved.TrySetResult(bytesRead);
+            });
+        var attestor = new RejectingProcessAttestor(
+            "addin_connection_owner_not_found");
+
+        AddinTransportException error =
+            await Assert.ThrowsAsync<AddinTransportException>(
+                () => new AddinTcpTransport().InvokeAsync(
+                    AddinEndpoint.Ipv4Loopback(peer.Port),
+                    Call("attestation-rejected"),
+                    processAttestor: attestor));
+
+        Assert.Equal("addin_connection_owner_not_found", error.Code);
+        Assert.Equal(
+            AddinDispatchState.NotStarted,
+            error.Evidence.DispatchState);
+        Assert.Equal(0, error.Evidence.BytesWrittenLowerBound);
+        Assert.False(error.Evidence.RequestFullyWritten);
+        Assert.Equal(
+            0,
+            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task InvokeAsync_DifferentPidTakeoverWritesZeroJsonRpcBytes()
+    {
+        var bytesObserved = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var peer = new ScriptedTcpPeer(
+            async (stream, cancellationToken) =>
+            {
+                var buffer = new byte[1];
+                int bytesRead = await stream.ReadAsync(
+                    buffer,
+                    cancellationToken);
+                bytesObserved.TrySetResult(bytesRead);
+            });
+        var expected = new AddinProcessAttestation(
+            new AddinProcessIdentity(
+                ProcessId: 1001,
+                StartTimeFileTimeUtc: 133000000000001001),
+            "2026",
+            @"C:\Program Files\Autodesk\Revit 2026\Revit.exe");
+        var actual = expected with
+        {
+            Identity = new AddinProcessIdentity(
+                ProcessId: 1002,
+                StartTimeFileTimeUtc: 133000000000001002),
+        };
+        var attestor = new ExpectedAddinProcessAttestor(
+            new FixedProcessAttestor(actual),
+            expected);
+
+        AddinTransportException error =
+            await Assert.ThrowsAsync<AddinTransportException>(
+                () => new AddinTcpTransport().InvokeAsync(
+                    AddinEndpoint.Ipv4Loopback(peer.Port),
+                    Call("pid-takeover"),
+                    processAttestor: attestor));
+
+        Assert.Equal("addin_process_identity_mismatch", error.Code);
+        Assert.Equal(
+            AddinDispatchState.NotStarted,
+            error.Evidence.DispatchState);
+        Assert.Equal(0, error.Evidence.BytesWrittenLowerBound);
+        Assert.False(error.Evidence.RequestFullyWritten);
+        Assert.Equal(
+            0,
+            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
+    [Fact]
+    public async Task InvokeAsync_PortRebindIdentityChangeAfterResponseFailsClosed()
+    {
+        await using var peer = new ScriptedTcpPeer(
+            async (stream, cancellationToken) =>
+            {
+                JObject request = await ScriptedTcpPeer.ReadRequestAsync(
+                    stream,
+                    cancellationToken);
+                await stream.WriteAsync(
+                    ScriptedTcpPeer.SuccessFrame(
+                        request["id"]!.Value<string>()!),
+                    cancellationToken);
+            });
+        var attestor = new ChangingProcessAttestor();
+
+        AddinTransportException error =
+            await Assert.ThrowsAsync<AddinTransportException>(
+                () => new AddinTcpTransport().InvokeAsync(
+                    AddinEndpoint.Ipv4Loopback(peer.Port),
+                    Call("post-response-rebind"),
+                    processAttestor: attestor));
+
+        Assert.Equal("revit_process_identity_changed", error.Code);
+        Assert.Equal(
+            AddinDispatchState.ResponseObserved,
+            error.Evidence.DispatchState);
+        Assert.True(error.Evidence.RequestFullyWritten);
+        Assert.NotNull(attestor.PeerBeforeDispatch);
+        Assert.Equal(
+            attestor.PeerBeforeDispatch,
+            attestor.PeerAfterResponse);
+    }
+
+    [Fact]
+    public async Task InvokeAsync_CallDeadlineIncludesPreDispatchAttestation()
+    {
+        var bytesObserved = new TaskCompletionSource<int>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var peer = new ScriptedTcpPeer(
+            async (stream, cancellationToken) =>
+            {
+                var buffer = new byte[1];
+                int bytesRead = await stream.ReadAsync(
+                    buffer,
+                    cancellationToken);
+                bytesObserved.TrySetResult(bytesRead);
+            });
+
+        AddinTransportException error =
+            await Assert.ThrowsAsync<AddinTransportException>(
+                () => new AddinTcpTransport().InvokeAsync(
+                    AddinEndpoint.Ipv4Loopback(peer.Port),
+                    Call(
+                        "attestation-timeout",
+                        timeout: TimeSpan.FromMilliseconds(150)),
+                    processAttestor: new CancellableBlockingProcessAttestor()));
+
+        Assert.Equal("addin_call_timeout", error.Code);
+        Assert.Equal(
+            AddinDispatchState.NotStarted,
+            error.Evidence.DispatchState);
+        Assert.Equal(0, error.Evidence.BytesWrittenLowerBound);
+        Assert.Equal(
+            0,
+            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+    }
+
     private static AddinCall Call(
         string invocationId,
         TimeSpan? timeout = null) =>
@@ -416,4 +567,107 @@ public sealed class AddinTcpTransportTests
             "fixture_echo",
             new JObject { ["value"] = "hello" },
             timeout ?? TimeSpan.FromSeconds(2));
+
+    private sealed class RejectingProcessAttestor
+        : IAddinProcessAttestor
+    {
+        private readonly string _code;
+
+        internal RejectingProcessAttestor(string code)
+        {
+            _code = code;
+        }
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken) =>
+            throw new AddinProcessAttestationException(
+                _code,
+                "The connected peer was rejected.");
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class ChangingProcessAttestor
+        : IAddinProcessAttestor
+    {
+        internal AddinConnectedPeer? PeerBeforeDispatch { get; private set; }
+
+        internal AddinConnectedPeer? PeerAfterResponse { get; private set; }
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            PeerBeforeDispatch = peer;
+            return Task.FromResult(
+                new AddinProcessAttestation(
+                    new AddinProcessIdentity(
+                        ProcessId: 1001,
+                        StartTimeFileTimeUtc: 133000000000001001),
+                    "2026",
+                    @"C:\Program Files\Autodesk\Revit 2026\Revit.exe"));
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken)
+        {
+            PeerAfterResponse = peer;
+            throw new AddinProcessAttestationException(
+                "revit_process_identity_changed",
+                "The original peer released its port and another process rebound it.");
+        }
+    }
+
+    private sealed class CancellableBlockingProcessAttestor
+        : IAddinProcessAttestor
+    {
+        public async Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException("Unreachable.");
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class FixedProcessAttestor : IAddinProcessAttestor
+    {
+        private readonly AddinProcessAttestation _attestation;
+
+        internal FixedProcessAttestor(
+            AddinProcessAttestation attestation)
+        {
+            _attestation = attestation;
+        }
+
+        public Task<AddinProcessAttestation> AttestBeforeDispatchAsync(
+            AddinConnectedPeer peer,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.FromResult(_attestation);
+        }
+
+        public Task VerifyAfterResponseAsync(
+            AddinConnectedPeer peer,
+            AddinProcessAttestation attestation,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return Task.CompletedTask;
+        }
+    }
 }
