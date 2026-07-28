@@ -4,9 +4,6 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - packages/gateway/**
-      - .github/workflows/gateway-ci.yml
   push:
     branches:
       - main

@@ -202,6 +202,15 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   allowlist for only `gateway-ci.yml`/`gateway-cd.yml`, an unprivileged no-sudo account, rootless Docker, and
   denied `/opt/revagent/env` access. No runner is installed or registered during M2; organization transfer
   remains a post-cutover/SaaS option.
+- **RES-32 (2026-07-28 R-F/operator correction) — the required `Gateway CI` context runs on every pull
+  request; only `push: main` remains path-filtered.** A required workflow skipped by a `pull_request.paths`
+  filter leaves non-Gateway PRs waiting indefinitely for an expected context, which would block the M3
+  `packages/bridge/**` and `src/revit-plugin/**` lanes. Therefore `gateway-ci.yml` has no pull-request path
+  filter and always reports `Gateway CI` for PR heads. The `push` trigger remains limited to
+  `packages/gateway/**` plus the workflow file itself. Measured successful runs are approximately 54–63
+  seconds, so the bounded private-repository minute cost is accepted in exchange for eliminating the
+  repository-wide merge deadlock. RES-31's runner, exact-head, Node 24, install, lint, typecheck, test,
+  secret-scan, image-build, Windows-workflow freeze, and M6 deferral decisions are otherwise unchanged.
 
 ---
 

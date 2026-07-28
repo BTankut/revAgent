@@ -556,3 +556,25 @@ This amendment changes P5-T4/T5 sequencing and runner ownership only. It does no
 Node-24, install, lint, typecheck, test, secret-scan, or image-build gate, does not authorize deployment, and
 does not edit `.github/workflows/ci.yml`. The normative resolution is RES-31 in
 `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-28 — R-F: Required Gateway CI runs on every pull request (RES-32)
+
+Source: operator correction from Barış Tankut, 2026-07-28, before adding `Gateway CI` to main branch
+protection.
+
+RES-31 initially applied the private-repository Actions-minute path filter to both pull requests and pushes.
+That is unsafe once `Gateway CI` becomes a required context: when a pull request changes only another package,
+GitHub skips the workflow and leaves the required check expected indefinitely. In particular, M3 changes under
+`packages/bridge/**` or `src/revit-plugin/**` would become unmergeable.
+
+RES-32 removes only the `pull_request.paths` filter so every pull-request head receives an exact-head
+`Gateway CI` result. The `push: main` filter remains limited to `packages/gateway/**` and the workflow file,
+preserving the post-merge minute-budget control. The observed successful runtime is approximately 54–63
+seconds per pull request, which the operator accepts against the materially larger merge-deadlock risk. A
+dummy-success job is unnecessary because the simple always-run pull-request lane provides the required context
+directly.
+
+All other RES-31 controls remain unchanged: GitHub-hosted `ubuntu-latest`, Node 24, exact-head verification,
+install, lint, typecheck, test, secret scan, image build, minimal permissions, concurrency, the unchanged
+Windows jobs in `ci.yml`, no M2 self-hosted runner, and M6 deferral of the deploy runner. The normative
+resolution is RES-32 in `docs/implementation-plan/00-INDEX.md`.
