@@ -501,3 +501,32 @@ being absent for the current head SHA after a force-push.
 
 This rule adds a verification duty only; it does not change any gate, required check, or merge authority.
 The permanent normative wording is R-I in `docs/implementation-plan/00-INDEX.md` §8.
+
+### 2026-07-28 — R-F: the M3 gate's enrollment item is split by evidence boundary (RES-30)
+
+Source: operator decision from Barış Tankut, 2026-07-28, on the M3 gate report.
+
+The M3 row in `docs/implementation-plan/08-sequencing-risks-decisions.md` names `enrollment` as a gate item
+without distinguishing bridge-side protocol completeness from end-to-end proof. End-to-end enrollment evidence
+requires a real Gateway that can issue a single-use enrollment token, exchange it for a device token, and
+revoke a device — and that Gateway is M2 work proceeding on a parallel lane. Holding M3 for it would block a
+milestone on another lane's deliverable rather than on WP3's own work.
+
+RES-30 therefore scopes the M3 enrollment item to the **bridge side**: single-use enrollment-token intake,
+the device-token exchange message flow, DPAPI-machine persistence, the re-enrollment path, and fail-closed
+refusal when credentials are absent or rejected — all demonstrated green against the M1 Gateway stub.
+Token exchange against a real Gateway, revoked-device refusal at handshake, and device-token persistence
+across reboot move to **M4**, which is the first milestone that stands up a Gateway on the office host, and
+they remain named M4 entry criteria.
+
+The operator also reassigned the M3 gate's operator task cards on the same date: NET01 is allocated to this
+work with SSH access, so service installation, SCM start/stop, reboot survival, Event Log verification, log
+rotation, and the attestation helper's positive/negative paths are executed by the implementing assistant
+over SSH under R-G. Only genuinely interactive work (live Revit GUI, UAC, licensing) remains operator-owned,
+and must be delivered as a fully scripted single-action package with a one-line statement of why SSH cannot
+cover it.
+
+This amendment changes where enrollment evidence is produced, not what enrollment must do. No other M3 gate
+item is relaxed: persistent WSS, invocation → add-in TCP framing, idempotency journal, and
+batch-as-transaction-group remain M3-blocking. The normative resolution is RES-30 in
+`docs/implementation-plan/00-INDEX.md`.

@@ -178,6 +178,18 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   external-client vertical slice and cannot begin before operator-channel M2 closure approval. This is a
   bounded Phase-1 use of D9's external-client path and does not reopen D1-D12 or remove the eventual in-house
   loop target.
+- **RES-30 (2026-07-28 R-F/operator decision) — the M3 gate's `enrollment` item is split by evidence
+  boundary.** The M3 row in section 08 names `enrollment` without distinguishing bridge-side protocol
+  completeness from end-to-end proof, but end-to-end enrollment evidence requires a real Gateway issuing and
+  revoking device tokens, and the Gateway is M2 work on a parallel lane. M3 therefore requires only the
+  **bridge side**: protocol-complete enrollment (single-use enrollment-token intake, device-token exchange
+  message flow, DPAPI-machine persistence, re-enrollment path, fail-closed refusal when credentials are
+  absent or rejected), demonstrated green against the M1 Gateway stub. **Deferred to M4**: token exchange
+  against a real Gateway, revoked-device refusal at handshake, and device-token persistence across reboot,
+  because M4 is already the first milestone that stands up a Gateway on the office host. This splits where
+  the evidence can be produced; it does not weaken any enrollment requirement, and every deferred item stays
+  a named M4 entry criterion. M3's other gate items — persistent WSS, invocation → add-in TCP framing,
+  idempotency journal, and batch-as-transaction-group — are unchanged and remain M3-blocking.
 
 ---
 
