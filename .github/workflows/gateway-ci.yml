@@ -1,0 +1,90 @@
+name: Gateway CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - packages/gateway/**
+      - .github/workflows/gateway-ci.yml
+  push:
+    branches:
+      - main
+    paths:
+      - packages/gateway/**
+      - .github/workflows/gateway-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: gateway-ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gateway-ci:
+    name: Gateway CI
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
+    steps:
+      - name: Checkout the exact triggering head
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ env.EXPECTED_HEAD_SHA }}
+
+      - name: Verify exact-head identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          actual_head="$(git rev-parse HEAD)"
+          test "$actual_head" = "$EXPECTED_HEAD_SHA"
+          git diff --cached --quiet HEAD --
+          git diff --quiet --
+
+      - name: Scan tracked history for secrets
+        uses: gitleaks/gitleaks-action@v2.3.9
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_ENABLE_COMMENTS: "false"
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
+
+      - name: Build the Gateway image from exact tracked bytes
+        shell: bash
+        run: |
+          set -euo pipefail
+          git archive --format=tar HEAD |
+            docker build \
+              --file packages/gateway/Dockerfile \
+              --tag "revagent-gateway:ci-${EXPECTED_HEAD_SHA::12}" \
+              -
+
+      - name: Set up Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.14.1
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install migration workspace dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build and verify the allowlisted native dependency
+        run: |
+          npm rebuild better-sqlite3 --ignore-scripts=false --foreground-scripts
+          npm run verify:native-dependencies
+
+      - name: Lint Gateway
+        run: npm run lint --workspace @revagent/gateway
+
+      - name: Type-check Gateway
+        run: npm run typecheck --workspace @revagent/gateway
+
+      - name: Test Gateway
+        run: npm test --workspace @revagent/gateway

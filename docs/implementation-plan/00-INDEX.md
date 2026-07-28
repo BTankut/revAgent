@@ -190,6 +190,18 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   the evidence can be produced; it does not weaken any enrollment requirement, and every deferred item stays
   a named M4 entry criterion. M3's other gate items — persistent WSS, invocation → add-in TCP framing,
   idempotency journal, and batch-as-transaction-group — are unchanged and remain M3-blocking.
+- **RES-31 (2026-07-28 R-F/operator decision) — the dedicated M2 Gateway CI lane uses GitHub-hosted
+  Linux; the self-hosted deploy runner remains deferred to M6.** `.github/workflows/gateway-ci.yml` runs on
+  `ubuntu-latest` with Node 24 and is path-filtered to `packages/gateway/**` plus its own workflow file to
+  protect the private-repository Actions minute budget. It verifies the triggering PR/push exact head, runs
+  install, Gateway lint/typecheck/tests, a secret scan, and a Gateway image build. Existing Windows
+  `Engineering gates` and `Gateway gates` in `ci.yml` remain byte-for-byte unchanged because the conformance
+  and production-launcher identity gates are Windows-specific. P5-T5 is not cancelled: the Linux
+  self-hosted runner and `gateway-cd.yml` deploy execution move to M6. When activated on this personal
+  repository, the operator-approved compensating control is a root-owned `GITHUB_WORKFLOW_REF` pre-job
+  allowlist for only `gateway-ci.yml`/`gateway-cd.yml`, an unprivileged no-sudo account, rootless Docker, and
+  denied `/opt/revagent/env` access. No runner is installed or registered during M2; organization transfer
+  remains a post-cutover/SaaS option.
 
 ---
 

@@ -530,3 +530,29 @@ This amendment changes where enrollment evidence is produced, not what enrollmen
 item is relaxed: persistent WSS, invocation → add-in TCP framing, idempotency journal, and
 batch-as-transaction-group remain M3-blocking. The normative resolution is RES-30 in
 `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-28 — R-F: Gateway CI moves to GitHub-hosted Linux; deploy runner stays deferred (RES-31)
+
+Source: operator decision from Barış Tankut, 2026-07-28, after the live P5-T4/GAP-11 readiness check.
+
+The repository is owned by a personal GitHub account, so organization/enterprise runner groups and their
+selected-workflow policy are unavailable. M2 does not need a self-hosted host trust boundary merely to prove a
+Linux-container target. RES-31 therefore moves only P5-T4's dedicated `.github/workflows/gateway-ci.yml` to
+GitHub-hosted `ubuntu-latest`. The lane uses Node 24, verifies the triggering PR/push exact head, installs the
+migration workspace, runs Gateway lint/typecheck/tests, scans for secrets, and builds the Gateway image. Its
+trigger is restricted to `packages/gateway/**` and the workflow file itself because this private repository has
+a finite Actions minute budget. The existing Windows `Engineering gates` and `Gateway gates` jobs remain
+unchanged: their conformance package and protected production-launcher Node identity are Windows-specific.
+
+This does not cancel P5-T5. The self-hosted Linux runner remains the M6 `gateway-cd.yml` deploy executor because
+that host is the LAN-only deployment target. No runner is installed, registered, or started during M2. At M6,
+the operator approves a personal-repository compensating control: a root-owned pre-job hook fail-closes on
+`GITHUB_WORKFLOW_REF` unless the job is from `gateway-ci.yml` or `gateway-cd.yml`; the dedicated runner account
+is unprivileged and has no sudo, uses rootless Docker, and cannot access `/opt/revagent/env`. Moving the
+repository into an organization for native runner-group enforcement is deferred until after migration cutover
+and remains an expected SaaS-commercialization step.
+
+This amendment changes P5-T4/T5 sequencing and runner ownership only. It does not weaken the RES-29 exact-head,
+Node-24, install, lint, typecheck, test, secret-scan, or image-build gate, does not authorize deployment, and
+does not edit `.github/workflows/ci.yml`. The normative resolution is RES-31 in
+`docs/implementation-plan/00-INDEX.md`.
