@@ -20,6 +20,15 @@ const autoRecord: GatewayToolRecord = {
   executor: "bridge",
   executorMethod: "test_read",
   inputSchema: { value: z.string().min(1) },
+  inputJsonSchema: {
+    $schema: "http://json-schema.org/draft-07/schema#",
+    additionalProperties: false,
+    properties: {
+      value: { minLength: 1, type: "string" },
+    },
+    required: ["value"],
+    type: "object",
+  },
 };
 
 function dispatchInput(args: unknown) {

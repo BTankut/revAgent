@@ -1,6 +1,8 @@
+import { z } from "zod";
 import { describe, expect, it } from "vitest";
 
 import {
+  GatewayRegistryView,
   GatewayToolRegistry,
   type GatewayToolRecord,
 } from "./registry.js";
@@ -15,6 +17,12 @@ const records: readonly GatewayToolRecord[] = [
     executor: "internal_mcp",
     executorMethod: "get_type_details",
     inputSchema: {},
+    inputJsonSchema: {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      additionalProperties: false,
+      properties: {},
+      type: "object",
+    },
   },
   {
     name: "core.ui.state",
@@ -25,6 +33,12 @@ const records: readonly GatewayToolRecord[] = [
     executor: "bridge",
     executorMethod: "get_ui_state",
     inputSchema: {},
+    inputJsonSchema: {
+      $schema: "http://json-schema.org/draft-07/schema#",
+      additionalProperties: false,
+      properties: {},
+      type: "object",
+    },
   },
 ];
 
@@ -62,6 +76,33 @@ describe("GatewayToolRegistry", () => {
     expect(forward.capabilityIndexBytes().endsWith("\n")).toBe(true);
   });
 
+  it("derives immutable entitlement views from the same registry truth", () => {
+    const registry = new GatewayToolRegistry(records);
+    const coreOnly = registry.view(["core.ui.state"]);
+
+    expect(coreOnly.registry()).toBe(registry);
+    expect(coreOnly.records().map((record) => record.name)).toEqual([
+      "core.ui.state",
+    ]);
+    expect(coreOnly.capabilityIndex().tools.map((tool) => tool.name)).toEqual([
+      "core.ui.state",
+    ]);
+    expect(coreOnly.get("docs.type.details")).toBeUndefined();
+    expect(() => coreOnly.require("docs.type.details")).toThrow(
+      "unknown or unentitled",
+    );
+    expect(() => registry.view(["missing.tool"])).toThrow(
+      "unknown Gateway tool in registry view",
+    );
+    expect(
+      () =>
+        new GatewayRegistryView(
+          registry,
+          new GatewayToolRegistry([records[0]!]).records(),
+        ),
+    ).toThrow("must originate from its registry");
+  });
+
   it("fails closed on duplicate north names", () => {
     expect(
       () => new GatewayToolRegistry([records[0]!, records[0]!]),
@@ -94,4 +135,23 @@ describe("GatewayToolRegistry", () => {
       ).toThrow("must be a Zod raw shape");
     },
   );
+
+  it("requires the serializable schema to match the runtime shape", () => {
+    expect(
+      () =>
+        new GatewayToolRegistry([
+          {
+            ...records[0]!,
+            inputSchema: { value: z.string() },
+            inputJsonSchema: {
+              $schema: "http://json-schema.org/draft-07/schema#",
+              additionalProperties: false,
+              properties: { value: { type: "number" } },
+              required: ["value"],
+              type: "object",
+            },
+          },
+        ]),
+    ).toThrow("must match the canonical executable schema");
+  });
 });
