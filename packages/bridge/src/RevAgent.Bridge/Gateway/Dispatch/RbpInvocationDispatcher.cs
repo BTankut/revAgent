@@ -1,0 +1,470 @@
+using System.Diagnostics;
+using System.Security.Cryptography;
+using System.Text.Json;
+using Newtonsoft.Json.Linq;
+using RevAgent.Bridge.AddinLoopback;
+using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Contracts.AddinLoopback;
+
+namespace RevAgent.Bridge.Gateway.Dispatch;
+
+/// <summary>
+/// Executes a frozen Section 10.2 <c>invoke</c> against the add-in under the
+/// Section 12 journal.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This type owns the Section 12.1 durability ordering, and the ordering is the
+/// reason the code is shaped the way it is:
+/// </para>
+/// <list type="number">
+/// <item><c>received</c> is durable before the first add-in byte. The journal
+/// commits inside <see cref="RbpJournalStore.AdmitInvocationAsync"/>, which
+/// returns before <see cref="IRbpInvocationChannel"/> is ever touched.</item>
+/// <item><c>executing</c> is durable before dispatch ownership is taken.</item>
+/// <item>The terminal outcome is durable before the <c>result</c> or
+/// <c>error</c> is queued for the Gateway.</item>
+/// </list>
+/// <para>
+/// A crash between steps 2 and 3 deliberately leaves <c>executing</c>, which
+/// Section 12.1 calls indeterminate by design. That is the state the Section
+/// 12.2 rules then arbitrate on redelivery.
+/// </para>
+/// </remarks>
+internal sealed class RbpInvocationDispatcher
+{
+    private readonly RbpJournalStore _journal;
+    private readonly IRbpInvocationChannel _channel;
+    private readonly IRbpInFlightGate _inFlightGate;
+    private readonly TimeProvider _timeProvider;
+
+    internal RbpInvocationDispatcher(
+        RbpJournalStore journal,
+        IRbpInvocationChannel channel,
+        IRbpInFlightGate inFlightGate,
+        TimeProvider? timeProvider = null)
+    {
+        _journal = journal ?? throw new ArgumentNullException(nameof(journal));
+        _channel = channel ?? throw new ArgumentNullException(nameof(channel));
+        _inFlightGate = inFlightGate ??
+            throw new ArgumentNullException(nameof(inFlightGate));
+        _timeProvider = timeProvider ?? TimeProvider.System;
+    }
+
+    /// <summary>
+    /// Answers one <c>invoke</c>. The returned draft is what the coordinator
+    /// queues outbound; this method never writes to the connection itself.
+    /// </summary>
+    internal async Task<RbpInvocationAnswer> DispatchAsync(
+        RbpInvokeRequest request,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(request);
+
+        // Section 10.1: a second data-plane invocation for the same rsid before
+        // the first is terminal is a protocol defect, and the bridge MUST
+        // reject it *without sending bytes to the add-in*. The gate is taken
+        // before the journal so a rejected duplicate never even reserves a row.
+        if (!_inFlightGate.TryEnter(request.Rsid))
+        {
+            return RbpInvocationAnswer.Error(
+                RbpInvocationPayloads.KnownError(
+                    request.InvocationId,
+                    faultClass: "protocol",
+                    retryable: false,
+                    message:
+                        "A data-plane invocation is already in flight for this " +
+                        "session; Section 10.1 allows exactly one."));
+        }
+
+        try
+        {
+            return await DispatchUnderGateAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _inFlightGate.Exit(request.Rsid);
+        }
+    }
+
+    private async Task<RbpInvocationAnswer> DispatchUnderGateAsync(
+        RbpInvokeRequest request,
+        CancellationToken cancellationToken)
+    {
+        RbpInvocationIdentity identity = request.ToIdentity();
+
+        // Durability step 1. Section 12.2 rule 5 (a changed digest, method,
+        // scope, policy, or clearance under the same key) surfaces here as a
+        // journal protocol conflict, before any add-in contact.
+        RbpInvocationAdmissionResult admission;
+        try
+        {
+            admission = await _journal
+                .AdmitInvocationAsync(identity, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (RbpJournalException exception)
+            when (exception.ErrorCode == RbpJournalErrorCode.ProtocolConflict)
+        {
+            return RbpInvocationAnswer.Error(
+                RbpInvocationPayloads.KnownError(
+                    request.InvocationId,
+                    faultClass: "protocol",
+                    retryable: false,
+                    message: exception.Message));
+        }
+
+        switch (admission.Admission)
+        {
+            case RbpInvocationAdmission.ReplayTerminal:
+                return ReplayTerminal(admission.Stored);
+
+            case RbpInvocationAdmission.ReplayLateAfterIndeterminate:
+                return ReplayLate(admission.Stored);
+
+            case RbpInvocationAdmission.RefuseIndeterminate:
+                return RefuseIndeterminate(request, admission);
+
+            case RbpInvocationAdmission.Accepted:
+                return await ExecuteAsync(
+                        request,
+                        identity,
+                        claimDispatchOwnership: true,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            case RbpInvocationAdmission.RetryNonMutating:
+                // Rule 3 resumes a row that is already `received` or
+                // `executing`. Dispatch ownership was taken on the delivery
+                // that stalled, and Section 12.1 makes that claim once-only, so
+                // re-asserting it here would be refused by the journal.
+                return await ExecuteAsync(
+                        request,
+                        identity,
+                        claimDispatchOwnership:
+                            admission.Stored.State ==
+                                RbpInvocationState.Received,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+
+            default:
+                throw new RbpDispatchException(
+                    RbpDispatchErrorCode.Environment,
+                    "The journal returned an unknown invocation admission.");
+        }
+    }
+
+    private static RbpInvocationAnswer ReplayTerminal(
+        RbpStoredInvocation stored)
+    {
+        JsonElement outcome = RequireOutcome(
+            stored.TerminalOutcomeJson,
+            "terminal");
+        return stored.State == RbpInvocationState.Indeterminate
+            ? RbpInvocationAnswer.Error(outcome)
+            : RbpInvocationAnswer.Result(
+                RbpInvocationPayloads.ReplayTerminal(outcome));
+    }
+
+    private static RbpInvocationAnswer ReplayLate(RbpStoredInvocation stored)
+    {
+        // Section 12.2 rule 2 and Section 10.3 both make the hold id and the
+        // exact late-result digest REQUIRED here. A row that reached this
+        // admission without them is a storage defect, not a peer fault.
+        JsonElement outcome = RequireOutcome(
+            stored.LateTerminalOutcomeJson,
+            "late terminal");
+        if (stored.VerificationHoldId is not { Length: > 0 } holdId ||
+            stored.LateResultDigest is not { Length: > 0 } digest)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A late-after-indeterminate replay requires both a " +
+                "verification hold id and the durable late result digest.");
+        }
+
+        return RbpInvocationAnswer.Result(
+            RbpInvocationPayloads.ReplayLateAfterIndeterminate(
+                outcome,
+                holdId,
+                digest));
+    }
+
+    private static RbpInvocationAnswer RefuseIndeterminate(
+        RbpInvokeRequest request,
+        RbpInvocationAdmissionResult admission)
+    {
+        if (admission.VerificationHoldId is not { Length: > 0 } holdId)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "Section 12.2 rule 4 requires an installed verification hold.");
+        }
+
+        return RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.JournalIndeterminateError(
+                request.InvocationId,
+                holdId,
+                request.MutationScope,
+                "A mutating invocation may already have executed; correlated " +
+                "read-only verification is required before another mutation."));
+    }
+
+    private async Task<RbpInvocationAnswer> ExecuteAsync(
+        RbpInvokeRequest request,
+        RbpInvocationIdentity identity,
+        bool claimDispatchOwnership,
+        CancellationToken cancellationToken)
+    {
+        // Durability step 2, before dispatch ownership.
+        if (claimDispatchOwnership)
+        {
+            await _journal
+                .MarkInvocationExecutingAsync(
+                    identity.IdempotencyKey,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        long startedTimestamp = Stopwatch.GetTimestamp();
+        RbpAddinOutcome outcome;
+        try
+        {
+            outcome = await _channel
+                .InvokeAsync(
+                    request.Rsid,
+                    new AddinCall(
+                        request.InvocationId,
+                        request.Method,
+                        JObject.Parse(request.Parameters.GetRawText()),
+                        request.Timeout),
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException)
+        {
+            // The channel threw rather than reporting dispatch evidence, so we
+            // cannot prove the add-in was untouched. Treat it as possibly
+            // dispatched: Section 15 forbids labelling an unknown write as a
+            // retryable environment fault.
+            return await TerminalizeUnknownAsync(
+                    request,
+                    identity,
+                    exception.Message,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        var metrics = new RbpInvocationMetrics(
+            (long)Stopwatch
+                .GetElapsedTime(startedTimestamp, Stopwatch.GetTimestamp())
+                .TotalMilliseconds,
+            outcome.RequestBytes,
+            outcome.ResponseBytes);
+
+        return outcome.Kind switch
+        {
+            RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
+                await TerminalizeSuccessAsync(
+                        request,
+                        identity,
+                        outcome,
+                        metrics,
+                        cancellationToken)
+                    .ConfigureAwait(false),
+
+            RbpAddinOutcomeKind.KnownNotDispatched =>
+                await TerminalizeKnownFailureAsync(
+                        request,
+                        identity,
+                        outcome,
+                        cancellationToken)
+                    .ConfigureAwait(false),
+
+            _ => await TerminalizeUnknownAsync(
+                        request,
+                        identity,
+                        outcome.Message ??
+                            "The add-in dispatch outcome is unknown.",
+                        cancellationToken)
+                    .ConfigureAwait(false),
+        };
+    }
+
+    private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(
+        RbpInvokeRequest request,
+        RbpInvocationIdentity identity,
+        RbpAddinOutcome outcome,
+        RbpInvocationMetrics metrics,
+        CancellationToken cancellationToken)
+    {
+        bool guarded = outcome.Kind == RbpAddinOutcomeKind.Guarded;
+
+        // Section 10.3: the digest is over the exact raw UTF-8 add-in JSON-RPC
+        // response body, after the 4-byte length prefix is removed and before
+        // parsing or RBP wrapping. It is REQUIRED for a terminal read carrying
+        // a non-null Section 6.2.1 verification correlation so both peers can
+        // check a later evidence digest independently.
+        string digest = ComputeResultDigest(outcome.RawResponsePayload);
+        bool digestRequired =
+            request.Verification.ValueKind is not (JsonValueKind.Null or
+                JsonValueKind.Undefined);
+
+        JsonElement body = RbpInvocationPayloads.InvocationResult(
+            request.InvocationId,
+            guarded ? "guarded" : "completed",
+            outcome.Result,
+            guarded ? outcome.GuardedReason : null,
+            digestRequired ? digest : null,
+            metrics);
+
+        // Durability step 3, before the answer leaves the bridge.
+        await _journal
+            .PersistInvocationTerminalAsync(
+                identity.IdempotencyKey,
+                new RbpInvocationTerminal(
+                    guarded
+                        ? RbpInvocationState.Guarded
+                        : RbpInvocationState.Completed,
+                    body,
+                    digest),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return RbpInvocationAnswer.Result(body);
+    }
+
+    private async Task<RbpInvocationAnswer> TerminalizeKnownFailureAsync(
+        RbpInvokeRequest request,
+        RbpInvocationIdentity identity,
+        RbpAddinOutcome outcome,
+        CancellationToken cancellationToken)
+    {
+        // Reached only when the channel can prove no add-in byte was written,
+        // so the outcome really is known and a read may be retried by the
+        // orchestrator.
+        JsonElement body = RbpInvocationPayloads.KnownError(
+            request.InvocationId,
+            outcome.FaultClass ?? "addin_unreachable",
+            retryable: !request.Mutating,
+            outcome.Message ?? "The add-in could not be reached.",
+            outcome.AddinError);
+
+        await _journal
+            .PersistInvocationTerminalAsync(
+                identity.IdempotencyKey,
+                new RbpInvocationTerminal(
+                    RbpInvocationState.Failed,
+                    body,
+                    JournalEvidenceDigest(body)),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        return RbpInvocationAnswer.Error(body);
+    }
+
+    private async Task<RbpInvocationAnswer> TerminalizeUnknownAsync(
+        RbpInvokeRequest request,
+        RbpInvocationIdentity identity,
+        string message,
+        CancellationToken cancellationToken)
+    {
+        if (!request.Mutating)
+        {
+            // A read whose dispatch is uncertain is still a known-outcome
+            // failure: re-running it cannot commit anything.
+            JsonElement readBody = RbpInvocationPayloads.KnownError(
+                request.InvocationId,
+                faultClass: "environment",
+                retryable: true,
+                message);
+            await _journal
+                .PersistInvocationTerminalAsync(
+                    identity.IdempotencyKey,
+                    new RbpInvocationTerminal(
+                        RbpInvocationState.Failed,
+                        readBody,
+                        JournalEvidenceDigest(readBody)),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return RbpInvocationAnswer.Error(readBody);
+        }
+
+        // Section 15: after the first add-in byte may have been sent,
+        // journal_indeterminate replaces the otherwise retryable environment
+        // class and activates the Section 6.2.1 scope hold. The store mints and
+        // installs the hold as part of persisting the indeterminate terminal.
+        string? holdId = await _journal
+            .PersistInvocationTerminalAsync(
+                identity.IdempotencyKey,
+                new RbpInvocationTerminal(
+                    RbpInvocationState.Indeterminate,
+                    Outcome: default,
+                    ResultDigest: null),
+                cancellationToken)
+            .ConfigureAwait(false);
+
+        if (holdId is not { Length: > 0 })
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "Persisting an indeterminate mutation must install a " +
+                "Section 6.2.1 scope hold.");
+        }
+
+        return RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.JournalIndeterminateError(
+                request.InvocationId,
+                holdId,
+                request.MutationScope,
+                message));
+    }
+
+    /// <summary>
+    /// The digest the journal stores alongside a terminal row that has no
+    /// add-in response to digest.
+    /// </summary>
+    /// <remarks>
+    /// This is journal evidence, not the Section 10.3 wire <c>result_digest</c>
+    /// — that one is defined over the raw add-in response bytes and there are
+    /// none here. Section 15 in fact forbids a wire <c>result_digest</c> on a
+    /// <c>journal_indeterminate</c> error, so the two must not be conflated.
+    /// The store uses this same canonical-body convention when it mints an
+    /// indeterminate outcome itself.
+    /// </remarks>
+    private static string JournalEvidenceDigest(JsonElement body) =>
+        Rfc8785Json.Sha256Digest(body);
+
+    private static string ComputeResultDigest(byte[] rawResponsePayload) =>
+        "sha256:" +
+        Convert.ToHexString(SHA256.HashData(rawResponsePayload))
+            .ToLowerInvariant();
+
+    private static JsonElement RequireOutcome(string? json, string what)
+    {
+        if (json is not { Length: > 0 })
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                $"The journal row is missing its {what} outcome body.");
+        }
+
+        using JsonDocument document = JsonDocument.Parse(json);
+        return document.RootElement.Clone();
+    }
+}
+
+/// <summary>
+/// What the bridge sends back for one invocation: a Section 10.3 <c>result</c>
+/// or a Section 15 <c>error</c>, already terminal and already durable.
+/// </summary>
+internal sealed record RbpInvocationAnswer(string Type, JsonElement Payload)
+{
+    internal static RbpInvocationAnswer Result(JsonElement payload) =>
+        new("result", payload);
+
+    internal static RbpInvocationAnswer Error(JsonElement payload) =>
+        new("error", payload);
+}
