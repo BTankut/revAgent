@@ -5,6 +5,7 @@ export const gatewayScaffold = Object.freeze({
   transportImplemented: false,
   transportSpikeAvailable: true,
   m2FirstSliceAvailable: true,
+  modeADiscoveryAvailable: true,
 } as const);
 
 export type GatewayScaffold = typeof gatewayScaffold;
@@ -27,12 +28,22 @@ export {
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
 export {
+  ModeADiscoverySession,
+  ModeASchemaBudgetError,
+  ModeAToolUnavailableError,
+  type ModeAActivationResult,
+  type ModeASchemaResult,
+  type ModeASearchResult,
+} from "./modeADiscovery.js";
+export {
   GATEWAY_EXECUTOR_BINDINGS,
+  GatewayRegistryView,
   GatewayToolRegistry,
   M2_BOOTSTRAP_TOOL_RECORDS,
   type CapabilityIndex,
   type CapabilityIndexTool,
   type GatewayExecutorBinding,
+  type GatewayJsonSchema,
   type GatewayPolicyClass,
   type GatewayToolRecord,
 } from "./registry.js";
