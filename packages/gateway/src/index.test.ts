@@ -11,6 +11,7 @@ describe("gateway scaffold", () => {
       transportImplemented: false,
       transportSpikeAvailable: true,
       m2FirstSliceAvailable: true,
+      modeADiscoveryAvailable: true,
     });
   });
 
