@@ -39,6 +39,44 @@ const compiledCli = path.join(
   "src",
   "cli.js",
 );
+/** No output at all for this long means the launcher is wedged, not slow. */
+const IDLE_TIMEOUT_MS = 120_000;
+
+/**
+ * Hard ceiling. It must stay above the sibling `globalSetup` budget for the
+ * same PowerShell launcher, whose measured cost on this runner has reached
+ * ~173 s; a ceiling below that would fail here first and hide the real signal.
+ */
+const ABSOLUTE_TIMEOUT_MS = 300_000;
+
+/**
+ * `child.kill()` on Windows terminates only `powershell.exe`. The production
+ * Node grandchild survives, keeps the inherited stdio pipes open, and the
+ * `close` event never fires — silently converting an intended launcher timeout
+ * into a much later whole-test timeout with no diagnostic. Kill the tree.
+ */
+function killProcessTree(pid: number | undefined): void {
+  if (pid === undefined) return;
+  if (process.platform !== "win32") {
+    try {
+      process.kill(-pid, "SIGKILL");
+    } catch {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
+    return;
+  }
+  spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+    stdio: "ignore",
+    windowsHide: true,
+  }).on("error", () => {
+    /* the process tree is already gone */
+  });
+}
+
 interface CliInvocationResult {
   status: number | null;
   signal: NodeJS.Signals | null;
@@ -64,34 +102,67 @@ function invokeCurrentCli(input: {
     },
   );
   return new Promise((resolve) => {
+    const startedAt = Date.now();
     let stdout = "";
     let stderr = "";
     let launchError: Error | undefined;
     let timedOut = false;
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
+
+    // An inactivity budget, not an absolute one. The old fixed 90 s deadline
+    // was armed at spawn and never refreshed, so it asserted machine speed
+    // rather than launcher liveness: on a loaded runner a launcher that was
+    // making steady progress still got killed. A launcher that is genuinely
+    // wedged still trips this, because a wedged launcher emits nothing.
+    let idleTimer: NodeJS.Timeout;
+    const armIdleTimer = (): void => {
+      clearTimeout(idleTimer);
+      idleTimer = setTimeout(expire, IDLE_TIMEOUT_MS);
+    };
+    // A ceiling still exists so a launcher that chatters forever cannot hang
+    // the suite; it is sized well above the measured cost of the heaviest
+    // command rather than hand-picked against a quiet machine.
+    const absoluteTimer = setTimeout(expire, ABSOLUTE_TIMEOUT_MS);
+
+    function expire(): void {
+      if (timedOut) return;
+      timedOut = true;
+      killProcessTree(child.pid);
+    }
+
     child.stdout.on("data", (chunk: string) => {
       stdout += chunk;
+      armIdleTimer();
     });
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
+      armIdleTimer();
     });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 90_000);
+    armIdleTimer();
     child.on("error", (error) => {
       launchError = error;
     });
     child.on("close", (status, signal) => {
-      clearTimeout(timeout);
+      clearTimeout(idleTimer);
+      clearTimeout(absoluteTimer);
+      const elapsedMs = Date.now() - startedAt;
       resolve({
         status,
         signal,
         stdout,
         stderr,
+        // Carry the evidence. The previous version discarded stdout/stderr
+        // context on the timeout path, which is why a timeout in this suite
+        // produced no information about what was actually slow.
         error: timedOut
-          ? new Error("validator launcher timed out after 90000ms")
+          ? new Error(
+              `validator launcher timed out after ${String(elapsedMs)}ms ` +
+                `(idle budget ${String(IDLE_TIMEOUT_MS)}ms, ` +
+                `absolute budget ${String(ABSOLUTE_TIMEOUT_MS)}ms); ` +
+                `stdout tail: ${JSON.stringify(stdout.slice(-2_048))}; ` +
+                `stderr tail: ${JSON.stringify(stderr.slice(-2_048))}`,
+            )
           : launchError,
       });
     });
@@ -279,7 +350,10 @@ describe("PASS-capable validator production identity", { timeout: 120_000 }, () 
       expect(String(result.stdout)).not.toContain("PASS");
       expect(existsSync(attackerMarker)).toBe(false);
     }
-  }, 300_000);
+    // Above 3x the launcher's own ceiling, so the inner, diagnosable timeout
+    // always fires before this outer one. An opaque vitest timeout here would
+    // tell us nothing about which of the three commands stalled.
+  }, 900_000);
 
   it("does not consult hostile npm script-shell, user config, or node.cmd", async () => {
     const root = temporaryRoot("rbp-validation-hostile-npm-");

@@ -409,13 +409,36 @@ class ProductionRuntimeLaunchGuardError extends Error {
   }
 }
 
-function retryableFixtureBindError(error: unknown): boolean {
+/**
+ * A bind failure that another port in the bounded window can absorb.
+ *
+ * On Windows a loopback bind in the ephemeral range loses the race in two
+ * shapes, not one. `EADDRINUSE` is the familiar one. `EACCES`/`WSAEACCES` is
+ * the *native* one: it is what the OS returns when the port has been claimed
+ * by a dynamic exclusion range (WinNAT/Hyper-V reallocate these while a job
+ * runs) or is held by a socket opened with `SO_EXCLUSIVEADDRUSE`. Both are
+ * transient and both are exactly what the caller's adjacent-port retry loop
+ * exists to survive, so treating only `EADDRINUSE` as retryable made that loop
+ * unreachable for the dominant Windows failure mode.
+ *
+ * The message branch carries the load here: the failure arrives as the child
+ * fixture's stderr text relayed through `readinessExitError`, which has no
+ * errno to inspect. The errno branch still matters for in-process bind probes.
+ */
+export function retryableFixtureBindError(error: unknown): boolean {
   if (error instanceof AggregateError) {
     return error.errors.some((nested) => retryableFixtureBindError(nested));
   }
   if (!(error instanceof Error)) return false;
-  if ((error as NodeJS.ErrnoException).code === "EADDRINUSE") return true;
-  if (/\bEADDRINUSE\b|address already in use/iu.test(error.message)) return true;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code === "EADDRINUSE" || code === "EACCES" || code === "EADDRNOTAVAIL") return true;
+  if (
+    /\bEADDRINUSE\b|\bEACCES\b|\bWSAEACCES\b|\bEADDRNOTAVAIL\b|address already in use|permission denied/iu.test(
+      error.message,
+    )
+  ) {
+    return true;
+  }
   return error.cause !== undefined && retryableFixtureBindError(error.cause);
 }
 
