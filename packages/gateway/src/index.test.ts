@@ -10,6 +10,7 @@ describe("gateway scaffold", () => {
       protocol: "RBP/1",
       transportImplemented: false,
       transportSpikeAvailable: true,
+      m2FirstSliceAvailable: true,
     });
   });
 

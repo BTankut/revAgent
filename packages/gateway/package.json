@@ -19,7 +19,7 @@
     "spike:list-tools": "node dist/listToolsClientCli.js",
     "spike:server": "node dist/spikeServerCli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run bundle:legacy && vitest run"
+    "test": "npm run bundle:legacy && npm run build --workspace @revagent/bridge-simulator && vitest run"
   },
   "engines": {
     "node": ">=20"

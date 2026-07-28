@@ -1,6 +1,46 @@
 # revAgent Gateway
 
-This is the additive M0 package boundary for the revAgent Gateway. It mirrors the existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict mode) and pins the same MCP SDK major.
+This additive revAgent Gateway package retains the M0 transport spike and now
+contains the first bounded M2 north/registry/dispatch slice. It mirrors the
+existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
+mode) and pins the same MCP SDK major.
+
+## M2 first north/registry/dispatch slice
+
+The first M2 slice is additive and intentionally narrow:
+
+- `GatewayToolRegistry` owns the north name, summary, version, policy class,
+  exact `bridge|internal_mcp|aps` executor binding, executor method, and
+  executable Zod input shape.
+- The compact capability index is derived from the registry, name-sorted, and
+  byte-stable. Schemas are marked `deferred`; this slice does not yet activate
+  the `tool_search` or `tool_schema` meta-tools.
+- `GatewayDispatcher` resolves policy and executor metadata from the registry;
+  client arguments cannot choose either value. It revalidates direct calls
+  against the registry Zod shape, blocks `confirm`/`gated` tools until policy
+  middleware exists, and preserves completed/guarded/failed executor outcomes.
+- `startNorthMcpEndpoint` uses one `McpServer` and
+  `StreamableHTTPServerTransport` per MCP session, authenticates every request
+  through an injected fail-closed boundary, binds the session to one immutable
+  principal, and exposes the same capability-index bytes as server
+  instructions and `revagent://capability-index`.
+- The integration test calls `core.ui.state` through the official MCP client,
+  dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
+  add-in loopback fixture. `fixture_counter` is not a production registry tool.
+
+This is not production OAuth readiness. The endpoint accepts only an injected
+token verifier, requires an HTTPS protected-resource metadata URL, and remains
+loopback-bound for this first proof. IdP/OIDC discovery, PKCE/DCR, JWKS
+rotation, public TLS/proxy binding, the full 40-tool immutable registry,
+Mode-A search/schema activation, docs-MCP internalization, confirmation,
+durable RBP ingress, and Mode-B interface stubs remain separate M2 tasks.
+The injected authenticator is contractually responsible for validating token
+signature, expiry, audience/resource, scopes, revocation, and tenant/user
+identity; the endpoint does not infer any of those from client claims.
+
+The Gateway test command builds the existing workspace Bridge simulator before
+Vitest and consumes only its public built surface. It does not add a production
+runtime dependency or modify the frozen RBP/1 package.
 
 ## W1-5 transport spike
 
