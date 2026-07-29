@@ -75,6 +75,9 @@ try {
         : { ...process.env, REVAGENT_RBP_CARDINALITY_PATH: cardinalityPath },
       stdio: "inherit",
     });
+    if (result.error !== undefined || result.status !== 0) {
+      console.error(`[rbp-conformance] FAIL ${label}`);
+    }
     if (result.error !== undefined) {
       console.error(`[rbp-conformance] ERROR ${label}: ${result.error.message}`);
       failures.push(`${label}: spawn error`);

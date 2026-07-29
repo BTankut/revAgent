@@ -31,6 +31,8 @@ const OTHER_TOKEN = "raw-binding-other-token";
 const NOW = "2026-07-23T00:00:00.000Z";
 const FINGERPRINT = `sha256:${"1".repeat(64)}`;
 const PATH_DIGEST = `sha256:${"2".repeat(64)}`;
+// Keep every ordinary raw-driver capture window above full-suite Windows scheduler jitter.
+const FULL_SUITE_ASYNC_SETTLE_MS = 250;
 const handles: GatewayStubHandle[] = [];
 const roots: string[] = [];
 
@@ -235,7 +237,7 @@ describe("parent-owned raw WSS binding driver", () => {
       openingHello: hello(),
       // The second server frame is asynchronous; keep the bounded quiet window
       // above the full-suite Windows scheduler jitter observed under parallel load.
-      limits: { settleMs: 250 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
       now: () => NOW,
     });
     const outcome = await driver(request("wss", { frame: sessionRegister() }));
@@ -285,7 +287,7 @@ describe("parent-owned raw WSS binding driver", () => {
       openingHello: hello(10),
       // The schema error is the second asynchronous server frame; preserve
       // the full-suite Windows scheduler-jitter allowance used above.
-      limits: { settleMs: 250 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const schema = successResult(await driver(request("wss", {
       serializedFrame: '{"v":1,"type":"session_register","id":"malformed"',
@@ -298,7 +300,7 @@ describe("parent-owned raw WSS binding driver", () => {
       url: handle.wsUrl,
       deviceToken: TOKEN,
       tlsTrust: trust,
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const wrongFirst = successResult(await preNegotiation(request("wss", {
       frame: sessionRegister(13),
@@ -315,7 +317,7 @@ describe("parent-owned raw WSS binding driver", () => {
       deviceToken: "invalid-device-token",
       tlsTrust: trust,
       openingHello: hello(11),
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const auth = successResult(await unauthorized(request("wss", { frame: hello(12) })));
     expect(object(auth.remoteOutcome, "auth remoteOutcome")).toMatchObject({
@@ -377,7 +379,10 @@ describe("parent-owned raw WSS binding driver", () => {
       deviceToken: TOKEN,
       tlsTrust: trust,
       openingHello: hello(24),
-      limits: { settleMs: 40, maxParsedCaptureBytes: 2_048 },
+      limits: {
+        settleMs: FULL_SUITE_ASYNC_SETTLE_MS,
+        maxParsedCaptureBytes: 2_048,
+      },
     });
     const large = successResult(await bounded(request("wss", {
       frame: { v: 1, type: "invalid_large", blob: "x".repeat(128 * 1024) },
@@ -395,7 +400,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       deviceToken: TOKEN,
       tlsTrust: trust,
       openingHello: hello(30),
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
       now: () => NOW,
     });
     const outcome = await driver(request("streamable_http_sse", { frame: sessionRegister(31) }));
@@ -440,7 +445,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       deviceToken: "invalid-device-token",
       tlsTrust: trust,
       openingHello: hello(40),
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const auth = successResult(await unauthorized(request("streamable_http_sse", {
       frame: sessionRegister(41),
@@ -468,7 +473,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       deviceToken: TOKEN,
       tlsTrust: trust,
       openingHello: hello(42),
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const schema = successResult(await schemaDriver(request("streamable_http_sse", {
       serializedFrame: '{"v":1,"type":"session_register","id":"malformed"',
@@ -485,7 +490,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       connectionUrl: handle.httpConnectionUrl,
       deviceToken: TOKEN,
       tlsTrust: trust,
-      limits: { settleMs: 40 },
+      limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
     });
     const wrongCreate = successResult(await preNegotiation(request("streamable_http_sse", {
       frame: sessionRegister(43),
@@ -546,13 +551,13 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
         url: handle.wsUrl,
         deviceToken: TOKEN,
         tlsTrust: trust,
-        limits: { settleMs: 40 },
+        limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
       },
       streamableHttpSse: {
         connectionUrl: handle.httpConnectionUrl,
         deviceToken: TOKEN,
         tlsTrust: trust,
-        limits: { settleMs: 40 },
+        limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
       },
     });
     expect(Object.keys(hooks).sort()).toEqual(["streamable_http_sse", "wss"]);
@@ -586,7 +591,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
               url: handle.wsUrl,
               deviceToken: "test-device-token",
               tlsTrust: trust,
-              limits: { settleMs: 40 },
+              limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
               now: () => NOW,
             },
           }
@@ -595,7 +600,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
               connectionUrl: handle.httpConnectionUrl,
               deviceToken: "test-device-token",
               tlsTrust: trust,
-              limits: { settleMs: 40 },
+              limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
               now: () => NOW,
             },
           });
