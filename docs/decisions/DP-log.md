@@ -625,6 +625,9 @@ Source: operator emergency directive from Barış Tankut on 2026-07-29 after PR 
 Windows `Gateway gates` lane was red, plus the same-day coordinator amendments after review of the complete
 same-tree run record and the runner-restart recovery.
 
+Provider-outage amendment source: operator directive from Barış Tankut on 2026-07-29 after the official
+Anthropic all-model incident overlapped both #321 Claude review attempts.
+
 Branch-protection configuration is not the authority to proceed through a known red exact-head shared gate.
 No executable-code PR may merge without a green `Gateway gates` result for that PR's exact head SHA. If
 `Engineering gates`, `Gateway gates`, or `Gateway CI` has two consecutive red runs in the same lane, the
@@ -635,6 +638,26 @@ that signature, any green run on the same tree SHA, and at least two candidate r
 Conformance reports use the canonical denominators — N of 373 tests and N of 60 files — and name every
 shard that started or completed. A “known flaky” label is not a disposition and cannot waive the merge stop
 or notification.
+
+Provider-caused outages are not lane defects and do not advance the R-K consecutive-red counter or trigger
+the R-K work stop when an official provider status-page incident names the affected dependency and the run
+timestamps fall inside its active window. The evidence record retains the incident title and URL, affected
+components, start timestamp, and eventual resolved timestamp. The required check remains red and merge
+remains fail-closed; assistants do not spend retries while the incident is active. After the provider records
+resolution, one exact-head retrigger may be made. Any uncovered or post-resolution red returns to ordinary
+R-K handling.
+
+The first application is the official Anthropic incident
+[`Elevated errors across all models`](https://status.claude.com/incidents/q2kg8n613kr3), opened
+2026-07-29 19:49 UTC and still unresolved at the 2026-07-29 20:57 UTC evidence read. The incident names
+`claude.ai`, Claude API (`api.anthropic.com`), Claude Code, and Claude Cowork as affected. Immediately before
+the incident, #320 review run `30479734170` / job `90670367809` completed green from 18:24–18:27 UTC with
+`total_cost_usd=0.929517`, 12 turns, populated structured output, and `blocking=false`. #321 run
+`30488398855` attempts 1 and 2 ran inside the active incident window and both ended with one turn,
+`total_cost_usd=0`, and no structured output. Those two reds therefore remain merge-blocking but are
+classified as provider-outage evidence rather than a Gateway/runner/Claude-review lane defect; they do not
+constitute an R-K stop. The provider's resolved timestamp is pending and MUST be appended before the
+authorized Draft-to-Ready exact-head retrigger is issued.
 
 R-K does not stop development, rebases, documentation-only governance/evidence records, or
 operator-authorized changes whose purpose is to repair the named shared gate. The repair exemption is

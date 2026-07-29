@@ -400,6 +400,13 @@ cutover.
   containing: the exact error signature; every red run ID in the sequence; the oldest known run carrying
   that signature; whether the same tree SHA has a green run and its ID; and at least two candidate remedies
   with their costs, in addition to the gate, shard/test, consecutive-red count, and current fix/location.
+  A provider-caused outage is not a lane defect, and a red run covered by that outage does not advance the
+  consecutive-red counter or trigger the R-K work stop, only when an official provider status-page incident
+  names the affected dependency and the run timestamps fall within the incident's active window. The record
+  MUST retain the incident title and URL, affected components, start timestamp, and eventual resolved
+  timestamp. This classification never turns the required check green or waives fail-closed merge blocking:
+  no retry is produced while the incident remains active; after the provider records resolution, one
+  exact-head retrigger may be made, and any uncovered or post-resolution red follows ordinary R-K handling.
   Conformance reports MUST state executed and passed cardinality as N of 373 tests, N of 60 files, and name
   every shard that started or completed; a smaller attempt-local denominator is forbidden. “Known flaky” is
   not an acceptable disposition. Development, rebases, documentation-only governance/evidence records, and
