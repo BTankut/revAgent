@@ -40,6 +40,7 @@ const OBSERVATION_KEYS = [
 ] as const;
 
 const CAPTURE_TOKEN = /^[A-Za-z][A-Za-z0-9_.-]*$/u;
+const DRIVER_PROGRESS_PHASE = /^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u;
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 const EXACT_SUBSTITUTION = /^\{\{([A-Za-z][A-Za-z0-9_.-]*)\}\}$/u;
 const EMBEDDED_SUBSTITUTION = /\{\{([A-Za-z][A-Za-z0-9_.-]*)\}\}/gu;
@@ -89,6 +90,7 @@ export interface ParentStepDriverRequest {
   deadlineAtMs: number;
   signal: AbortSignal;
   arguments: JsonObject;
+  reportProgress?(phase: string): void;
 }
 
 /**
@@ -845,6 +847,8 @@ export class ParentStepEngine {
     }
     const timeoutMs = step.parentTimeoutMs;
     const controller = new AbortController();
+    const startedAtMonotonicMs = performance.now();
+    let lastPhase: string = step.phase;
     const deadlineAtMs = Date.now() + timeoutMs;
     const request: ParentStepDriverRequest = {
       runId: this.input.runId,
@@ -869,13 +873,28 @@ export class ParentStepEngine {
       arguments: structuredClone(request.arguments),
       signal: controller.signal,
     };
+    Object.defineProperty(driverRequest, "reportProgress", {
+      value(phase: string): void {
+        if (!DRIVER_PROGRESS_PHASE.test(phase)) {
+          throw new Error(`${step.stepId} reported an invalid driver progress phase`);
+        }
+        lastPhase = phase;
+      },
+      enumerable: false,
+      configurable: false,
+      writable: false,
+    });
     const parentAbort = (): void => controller.abort(
       this.input.signal?.reason ?? new Error("parent step execution was aborted"),
     );
     if (this.input.signal?.aborted === true) parentAbort();
     else this.input.signal?.addEventListener("abort", parentAbort, { once: true });
     const timer = setTimeout(() => {
-      controller.abort(new Error(`${step.stepId} exceeded the parent-owned ${timeoutMs} ms deadline`));
+      const elapsedMs = Math.max(0, Math.round(performance.now() - startedAtMonotonicMs));
+      controller.abort(new Error(
+        `${step.stepId} exceeded the parent-owned ${timeoutMs} ms deadline ` +
+        `(elapsedMs=${elapsedMs}, lastPhase=${lastPhase})`,
+      ));
     }, timeoutMs);
     const aborted = new Promise<RawStepOutcome>((_resolve, reject) => {
       const rejectAbort = (): void => {

@@ -101,7 +101,9 @@ describe("parent-owned generic step engine", () => {
       label: "resume={{session.rsid}}",
     });
     const driver: ParentStepDriver = async (request) => {
+      expect(request.reportProgress).toEqual(expect.any(Function));
       seen.push(structuredClone(request));
+      expect(seen.at(-1)).not.toHaveProperty("reportProgress");
       return request.stepId === "capture-session"
         ? { kind: "success", result: { session: { rsid: "rsid-1" } } }
         : { kind: "success", result: { released: true } };
@@ -434,6 +436,7 @@ describe("parent-owned generic step engine", () => {
       drivers: driverSet(
         async (request) => {
           driverSignal = request.signal;
+          request.reportProgress?.("restart_case_stack.gateway_stub.readiness");
           delayedTimer = setTimeout(() => {
             delayedSideEffect = true;
           }, 40);
@@ -446,7 +449,9 @@ describe("parent-owned generic step engine", () => {
         },
       ),
       now: () => at,
-    })).rejects.toThrow(/exceeded the parent-owned 20 ms deadline/u);
+    })).rejects.toThrow(
+      /exceeded the parent-owned 20 ms deadline \(elapsedMs=\d+, lastPhase=restart_case_stack\.gateway_stub\.readiness\)/u,
+    );
     expect(driverSignal).toBeInstanceOf(AbortSignal);
     expect(driverSignal?.aborted).toBe(true);
     expect(drainCalls).toBe(1);

@@ -2863,18 +2863,31 @@ const OBSERVATION_POINTERS: Readonly<Record<ProcessObservationRecord["kind"], re
 
 function finalEvidenceSteps(caseId: string): CaseControlStep[] {
   const prefix = caseId.toLowerCase();
+  const resourceBaselineStart = harness(
+    `${prefix}.resource-baseline-start`,
+    "restart_case_stack",
+    args({
+      caseId,
+      binding: "{{binding}}",
+      preserveState: false,
+      requireExactExecutionPlanIdentity: true,
+    }),
+    "observation",
+    C32_STACK_LIFECYCLE_TIMEOUT_MS,
+  );
   return [
     gateway(`${prefix}.gateway-snapshot`, "snapshot", args(), "observation"),
     bridge(`${prefix}.bridge-snapshot`, "snapshot_evidence", args(), "observation"),
     fixture(`${prefix}.fixture-snapshot`, "snapshot_evidence", args(), "observation"),
     harness(`${prefix}.wire-end`, "end_wire_capture", args(), "observation"),
     harness(`${prefix}.resource-baseline-stop`, "stop_case_stack", args(), "observation"),
-    harness(`${prefix}.resource-baseline-start`, "restart_case_stack", args({
-      caseId,
-      binding: "{{binding}}",
-      preserveState: false,
-      requireExactExecutionPlanIdentity: true,
-    }), "observation"),
+    caseId === "O1-C32"
+      ? withCaptures(resourceBaselineStart, [{
+          name: `${prefix}.resource-baseline-start.restart-timing`,
+          source: "result",
+          jsonPointer: "/restartTiming",
+        }])
+      : resourceBaselineStart,
     harness(`${prefix}.resource-sample`, "capture_resource_sample", args(), "observation"),
     harness(`${prefix}.stack-stop`, "stop_case_stack", args(), "cleanup"),
   ];
