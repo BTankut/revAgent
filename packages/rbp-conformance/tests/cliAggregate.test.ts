@@ -1,5 +1,4 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
 import {
   existsSync,
   mkdtempSync,
@@ -15,9 +14,6 @@ import { describe, expect, it } from "vitest";
 
 import { createThreeRunAggregate } from "../src/aggregate.js";
 import { canonicalManifest } from "../src/index.js";
-import {
-  sanitizedProductionRuntimeEnvironment,
-} from "../src/productionRuntimeIdentity.js";
 import { aggregateReportToJUnitXml } from "../src/junit.js";
 import { stableJson } from "../src/stableJson.js";
 import {
@@ -25,9 +21,9 @@ import {
   materializePassingRunInputs,
 } from "./helpers.js";
 import {
-  canonicalProductionCliArguments,
-  exactSystemPowerShell,
-} from "./canonicalProductionLauncher.js";
+  invokeProductionCli,
+  productionCliTestTimeoutMs,
+} from "./support/invokeProductionCli.js";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,59 +35,13 @@ const compiledCli = path.join(packageRoot, "dist", "src", "cli.js");
 function invokeCurrentCli(
   args: readonly string[],
   cwd: string,
-): Promise<CliInvocationResult> {
-  const child = spawn(
-    exactSystemPowerShell,
-    canonicalProductionCliArguments(repoRoot, args),
-    {
-      cwd,
-      shell: false,
-      env: sanitizedProductionRuntimeEnvironment(),
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let launchError: Error | undefined;
-    let timedOut = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 90_000);
-    child.on("error", (error) => {
-      launchError = error;
-    });
-    child.on("close", (status, signal) => {
-      clearTimeout(timeout);
-      resolve({
-        status,
-        signal,
-        stdout,
-        stderr,
-        error: timedOut
-          ? new Error("aggregate CLI launcher timed out after 90000ms")
-          : launchError,
-      });
-    });
+): ReturnType<typeof invokeProductionCli> {
+  return invokeProductionCli({
+    repoRoot,
+    args,
+    cwd,
+    label: "aggregate CLI launcher",
   });
-}
-
-interface CliInvocationResult {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  error: Error | undefined;
 }
 
 function localPathAsAdminShare(value: string): string {
@@ -244,5 +194,5 @@ describe("aggregate CLI retained-evidence flow", () => {
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
-  }, 240_000);
+  }, productionCliTestTimeoutMs(3));
 });
