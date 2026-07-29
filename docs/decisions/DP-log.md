@@ -578,3 +578,43 @@ All other RES-31 controls remain unchanged: GitHub-hosted `ubuntu-latest`, Node 
 install, lint, typecheck, test, secret scan, image build, minimal permissions, concurrency, the unchanged
 Windows jobs in `ci.yml`, no M2 self-hosted runner, and M6 deferral of the deploy runner. The normative
 resolution is RES-32 in `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-29 — R-F: SDK v2 north MCP retains stateless legacy compatibility (RES-33)
+
+Source: operator decision from Barış Tankut on 2026-07-28, recorded on 2026-07-29 before the M2 north
+endpoint implementation advances.
+
+The installed client fleet cannot yet consume a 2026-only MCP endpoint: Codex defaults to protocol
+`2025-06-18` with its 2026 mode disabled by default, and Claude Code currently tops out at `2025-11-25`.
+The MCP compatibility matrix classifies a legacy client talking directly to a modern-only server as a
+failure. A `legacy: "reject"` cut would therefore make the Phase-1 product surface inaccessible.
+
+The MCP TypeScript SDK v2 provides the bounded migration path. M2 moves only `packages/gateway/**` from the
+monolithic v1 SDK to `@modelcontextprotocol/{server,client,core,node}@2.0.0` and Zod `^4.2`; frozen packages
+under `installer/**` retain their v1 pins and support window. Because the workspace has no Gateway-local
+lockfile, the repository-root `package-lock.json` is the sole non-Gateway generated artifact authorized for
+this dependency resolution; no other workspace or `installer/**` manifest/lock may change. The production north endpoint keeps one
+2026-style session-server factory and composes it through `createMcpHandler(factory)` and `toNodeHandler` with
+`legacy: "stateless"`. The SDK owns the legacy shim, while `server/discover` remains mandatory. Phase 1 MUST
+NOT use `legacy: "reject"` or expose a 2026-only endpoint.
+
+Stateless compatibility removes the old assumption that an MCP session identifier is the security binding.
+The existing `authBindingKey()` protection therefore moves, rather than disappears: request-carried state is
+issued by `createRequestStateCodec({ key, ttlSeconds, bind })`, bound to the verified authorization context,
+and accepted only through
+`ServerOptions.requestState.verify`. Required-but-missing, malformed, expired, tampered, or
+authorization-context-mismatched state fails closed. Separately, dispatcher correlation becomes a
+Gateway-generated identity per logical invocation and MUST remain independent of MCP transport/session identity.
+
+Gateway-owned pre-validation also MUST NOT shadow the SDK's `-32020` (`HeaderMismatch`) or `-32022`
+(`UnsupportedProtocolVersion`) response bodies because clients use those bodies to understand the server era.
+The operator-required evidence for this amendment is limited to bounded M2 unit/integration coverage for
+dual-era serving, mandatory discovery, request-state tamper/hijack refusal, normalized correlation, and
+preservation of those two error bodies.
+
+This amendment changes only RES-29's north MCP delivery mechanics and the corresponding P-GW-1 transport
+reference. It does not add a Gateway LLM, reopen the frozen RBP/1 contract, edit `packages/protocol/**`,
+authorize changes under `installer/**`, start the deferred Mode-B engine, implement the deferred
+`Mcp-Method`/`Mcp-Name` audit, or define capability-index caching. It does not change existing MRTR/GAP-2
+ownership; those opportunity slices remain separate PRs after this decision chain. The normative resolution is
+RES-33 in `docs/implementation-plan/00-INDEX.md`.
