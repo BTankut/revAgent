@@ -14,6 +14,8 @@ on:
         required: true
         default: '["self-hosted","Windows","revagent-cd"]'
 
+concurrency: { group: "ci-${{ github.event.pull_request.number || github.run_id }}", cancel-in-progress: true }
+
 jobs:
   engineering-gates:
     name: Engineering gates
