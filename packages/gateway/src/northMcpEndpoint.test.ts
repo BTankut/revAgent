@@ -3,6 +3,11 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  CLIENT_CAPABILITIES_META_KEY,
+  CLIENT_INFO_META_KEY,
+  PROTOCOL_VERSION_META_KEY,
+} from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
@@ -10,6 +15,7 @@ import {
   GatewayDispatcher,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
+  type GatewayExecutorRequest,
   type GatewayJsonObject,
   type GatewayJsonValue,
 } from "./dispatch.js";
@@ -91,8 +97,16 @@ const OTHER_TOKEN = "m2-other-test-token";
 const PRINCIPAL_KEY = "tenant-a:user-a";
 const RSID = "019f9ac3-ae89-7342-9f6d-b9269e167184";
 const REGISTRATION_ID = "019f9ac3-ae89-7342-9f6d-b9269e167185";
-const ENVELOPE_ID = "019f9ac3-ae89-7342-9f6d-b9269e167186";
-const INVOCATION_ID = "019f9ac3-ae89-7342-9f6d-b9269e167187";
+const ENVELOPE_IDS = [
+  "019f9ac3-ae89-7342-9f6d-b9269e167186",
+  "019f9ac3-ae89-7342-9f6d-b9269e167188",
+  "019f9ac3-ae89-7342-9f6d-b9269e16718a",
+] as const;
+const INVOCATION_IDS = [
+  "019f9ac3-ae89-7342-9f6d-b9269e167187",
+  "019f9ac3-ae89-7342-9f6d-b9269e167189",
+  "019f9ac3-ae89-7342-9f6d-b9269e16718b",
+] as const;
 const SCHEMA_PARITY_TOOL_RECORD = Object.freeze({
   name: "core.element.inspect",
   summary: "Inspect one element with bounded optional controls.",
@@ -176,6 +190,73 @@ function jsonObject(value: GatewayJsonValue): GatewayJsonObject {
   return value as GatewayJsonObject;
 }
 
+function recordingFetch(bodies: unknown[]): typeof fetch {
+  return async (input, init) => {
+    const request = new Request(input, init);
+    if (request.method === "POST") {
+      const text = await request.clone().text();
+      if (text.length > 0) {
+        bodies.push(JSON.parse(text) as unknown);
+      }
+    }
+    return fetch(input, init);
+  };
+}
+
+function recordedMethods(bodies: readonly unknown[]): string[] {
+  return bodies.flatMap((body) => {
+    const messages = Array.isArray(body) ? body : [body];
+    return messages.flatMap((message) => {
+      if (
+        message !== null &&
+        typeof message === "object" &&
+        "method" in message &&
+        typeof message.method === "string"
+      ) {
+        return [message.method];
+      }
+      return [];
+    });
+  });
+}
+
+function modernToolCallBody(
+  protocolVersion: string,
+  id: string,
+): Record<string, unknown> {
+  return {
+    jsonrpc: "2.0",
+    id,
+    method: "tools/call",
+    params: {
+      name: "core.ui.state",
+      arguments: {},
+      _meta: {
+        [PROTOCOL_VERSION_META_KEY]: protocolVersion,
+        [CLIENT_INFO_META_KEY]: {
+          name: "revAgent Gateway raw modern test",
+          version: "0.1.0-m2",
+        },
+        [CLIENT_CAPABILITIES_META_KEY]: {},
+      },
+    },
+  };
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  readonly resolve: (value: T | PromiseLike<T>) => void;
+  readonly reject: (reason?: unknown) => void;
+} {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((promiseResolve, promiseReject) => {
+    resolve = promiseResolve;
+    reject = promiseReject;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("M2 north MCP first slice", () => {
   it("exposes a registry index and dispatches one tool through the Bridge simulator", async () => {
     const temporaryRoot = mkdtempSync(
@@ -184,8 +265,12 @@ describe("M2 north MCP first slice", () => {
     const modules = await loadFixtureModules();
     const fixture = new modules.fixture.AddinLoopbackFixture();
     let endpoint: NorthMcpEndpointHandle | undefined;
-    let client: Client | undefined;
-    let clientTransport: StreamableHTTPClientTransport | undefined;
+    let legacyClient: Client | undefined;
+    let legacyTransport: StreamableHTTPClientTransport | undefined;
+    let modernClient: Client | undefined;
+    let modernTransport: StreamableHTTPClientTransport | undefined;
+    let otherClient: Client | undefined;
+    let otherTransport: StreamableHTTPClientTransport | undefined;
     let simulator: SimulatorLike | undefined;
     let journal: JournalLike | undefined;
 
@@ -228,19 +313,26 @@ describe("M2 north MCP first slice", () => {
       });
 
       let sequence = 0;
+      const executorRequests: GatewayExecutorRequest[] = [];
       const bridgeExecutor: GatewayExecutor = {
         binding: "bridge",
         async execute(request): Promise<GatewayExecutorOutcome> {
           sequence += 1;
+          executorRequests.push(request);
+          const envelopeId = ENVELOPE_IDS[sequence - 1];
+          const invocationId = INVOCATION_IDS[sequence - 1];
+          if (envelopeId === undefined || invocationId === undefined) {
+            throw new Error("test invocation id budget exhausted");
+          }
           const outcome = await simulator!.invoke({
             v: 1,
             type: "invoke",
-            id: ENVELOPE_ID,
+            id: envelopeId,
             rsid: RSID,
             seq: sequence,
             ts: "2026-07-25T20:00:00.000Z",
             payload: {
-              invocation_id: INVOCATION_ID,
+              invocation_id: invocationId,
               method: request.executorMethod,
               params: request.args,
               timeout_ms: 5_000,
@@ -319,7 +411,9 @@ describe("M2 north MCP first slice", () => {
                 : PRINCIPAL_KEY,
               authInfo: {
                 token: otherPrincipal ? OTHER_TOKEN : TOKEN,
-                clientId: "codex-desktop-test",
+                clientId: otherPrincipal
+                  ? "claude-code-test"
+                  : "codex-desktop-test",
                 scopes: ["mcp:tools"],
                 expiresAt: 4_102_444_800,
                 resource: new URL("https://gateway.example.test/mcp"),
@@ -339,28 +433,35 @@ describe("M2 north MCP first slice", () => {
         "oauth-protected-resource",
       );
 
-      client = new Client({
-        name: "revAgent Gateway first-slice test",
+      const legacyBodies: unknown[] = [];
+      legacyClient = new Client({
+        name: "revAgent Gateway legacy test",
         version: "0.1.0-m2",
       });
-      clientTransport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+      legacyTransport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        fetch: recordingFetch(legacyBodies),
         requestInit: {
           headers: { authorization: `Bearer ${TOKEN}` },
         },
       });
-      await client.connect(clientTransport);
-      const sessionId = clientTransport.sessionId;
-      expect(sessionId).toBeTypeOf("string");
+      await legacyClient.connect(legacyTransport);
+      expect(legacyClient.getProtocolEra()).toBe("legacy");
+      expect(legacyClient.getDiscoverResult()).toBeUndefined();
+      expect(legacyTransport.sessionId).toBeUndefined();
+      expect(recordedMethods(legacyBodies)).toContain("initialize");
+      expect(recordedMethods(legacyBodies)).not.toContain("server/discover");
 
-      expect(client.getInstructions()).toBe(registry.capabilityIndexBytes());
-      const resources = await client.listResources();
+      expect(legacyClient.getInstructions()).toBe(
+        registry.capabilityIndexBytes(),
+      );
+      const resources = await legacyClient.listResources();
       expect(resources.resources).toEqual([
         expect.objectContaining({
           uri: "revagent://capability-index",
           mimeType: "application/json",
         }),
       ]);
-      const capabilityResource = await client.readResource({
+      const capabilityResource = await legacyClient.readResource({
         uri: "revagent://capability-index",
       });
       expect(capabilityResource.contents).toEqual([
@@ -370,12 +471,12 @@ describe("M2 north MCP first slice", () => {
         }),
       ]);
 
-      const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual([
+      const legacyTools = await legacyClient.listTools();
+      expect(legacyTools.tools.map((tool) => tool.name)).toEqual([
         "core.element.inspect",
         "core.ui.state",
       ]);
-      for (const tool of tools.tools) {
+      for (const tool of legacyTools.tools) {
         expect(tool.inputSchema).toEqual(
           registry.require(tool.name).inputJsonSchema,
         );
@@ -389,7 +490,6 @@ describe("M2 north MCP first slice", () => {
           accept: "application/json, text/event-stream",
           authorization: `Bearer ${TOKEN}`,
           "content-type": "application/json",
-          "mcp-session-id": sessionId!,
         },
         body: JSON.stringify({ oversized: "x".repeat(1024 * 1024) }),
       });
@@ -406,7 +506,6 @@ describe("M2 north MCP first slice", () => {
           accept: "application/json, text/event-stream",
           authorization: `Bearer ${TOKEN}`,
           "content-type": "application/json",
-          "mcp-session-id": sessionId!,
         },
         body: "{",
       });
@@ -417,12 +516,53 @@ describe("M2 north MCP first slice", () => {
         id: null,
       });
 
-      const result = await client.callTool({
+      for (const body of ["{", ""]) {
+        const unsupportedMediaTypePost = await fetch(endpoint.endpoint, {
+          method: "POST",
+          headers: {
+            accept: "application/json, text/event-stream",
+            authorization: `Bearer ${TOKEN}`,
+            "content-type": "text/plain",
+          },
+          body,
+        });
+        expect(unsupportedMediaTypePost.status).toBe(415);
+        await expect(unsupportedMediaTypePost.json()).resolves.toEqual({
+          jsonrpc: "2.0",
+          error: {
+            code: -32_000,
+            message:
+              "Unsupported Media Type: Content-Type must be application/json",
+          },
+          id: null,
+        });
+      }
+
+      const emptyPost = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          authorization: `Bearer ${TOKEN}`,
+          "content-type": "application/json",
+        },
+        body: "",
+      });
+      expect(emptyPost.status).toBe(400);
+      await expect(emptyPost.json()).resolves.toEqual({
+        jsonrpc: "2.0",
+        error: {
+          code: -32_600,
+          message: "request body is required",
+        },
+        id: null,
+      });
+
+      const legacyResult = await legacyClient.callTool({
         name: "core.ui.state",
         arguments: {},
       });
-      expect(result.isError).not.toBe(true);
-      expect(result.structuredContent).toMatchObject({
+      expect(legacyResult.isError).not.toBe(true);
+      expect(legacyResult.structuredContent).toMatchObject({
         ok: true,
         state: "completed",
         toolName: "core.ui.state",
@@ -436,40 +576,185 @@ describe("M2 north MCP first slice", () => {
       expect(fixture.getMethodExecutionCount("get_ui_state")).toBe(1);
       expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
 
-      const missingSessionCredential = await fetch(endpoint.endpoint, {
-        method: "GET",
-        headers: { "mcp-session-id": sessionId! },
-      });
-      expect(missingSessionCredential.status).toBe(401);
-
-      const mismatchedPrincipal = await fetch(endpoint.endpoint, {
-        method: "GET",
-        headers: {
-          authorization: `Bearer ${OTHER_TOKEN}`,
-          "mcp-session-id": sessionId!,
+      const modernBodies: unknown[] = [];
+      modernClient = new Client(
+        {
+          name: "revAgent Gateway modern test",
+          version: "0.1.0-m2",
+        },
+        {
+          versionNegotiation: { mode: "auto" },
+        },
+      );
+      modernTransport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        fetch: recordingFetch(modernBodies),
+        requestInit: {
+          headers: { authorization: `Bearer ${TOKEN}` },
         },
       });
-      expect(mismatchedPrincipal.status).toBe(404);
+      await modernClient.connect(modernTransport);
+      expect(modernClient.getProtocolEra()).toBe("modern");
+      expect(modernClient.getNegotiatedProtocolVersion()).toBe("2026-07-28");
+      expect(modernClient.getDiscoverResult()).toBeDefined();
+      expect(recordedMethods(modernBodies)).toContain("server/discover");
+      expect(recordedMethods(modernBodies)).not.toContain("initialize");
+      expect(modernTransport.sessionId).toBeUndefined();
 
-      const unknownSession = await fetch(endpoint.endpoint, {
+      const modernTools = await modernClient.listTools();
+      for (const tool of modernTools.tools) {
+        expect(tool.inputSchema).toEqual(
+          registry.require(tool.name).inputJsonSchema,
+        );
+      }
+      const modernResult = await modernClient.callTool({
+        name: "core.ui.state",
+        arguments: {},
+      });
+      expect(modernResult.isError).not.toBe(true);
+      expect(modernResult.structuredContent).toMatchObject({
+        ok: true,
+        state: "completed",
+        toolName: "core.ui.state",
+        executor: "bridge",
+      });
+
+      otherClient = new Client({
+        name: "revAgent Gateway second-principal test",
+        version: "0.1.0-m2",
+      });
+      otherTransport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: {
+          headers: { authorization: `Bearer ${OTHER_TOKEN}` },
+        },
+      });
+      await otherClient.connect(otherTransport);
+      const otherResult = await otherClient.callTool({
+        name: "core.ui.state",
+        arguments: {},
+      });
+      expect(otherResult.isError).not.toBe(true);
+
+      expect(executorRequests).toHaveLength(3);
+      expect(
+        executorRequests.map(({ context }) => ({
+          principalKey: context.principalKey,
+          oauthClientId: context.oauthClientId,
+          requestScope: context.mcpSessionId,
+        })),
+      ).toEqual([
+        {
+          principalKey: PRINCIPAL_KEY,
+          oauthClientId: "codex-desktop-test",
+          requestScope: expect.stringMatching(
+            /^stateless-request:[0-9a-f-]{36}$/u,
+          ),
+        },
+        {
+          principalKey: PRINCIPAL_KEY,
+          oauthClientId: "codex-desktop-test",
+          requestScope: expect.stringMatching(
+            /^stateless-request:[0-9a-f-]{36}$/u,
+          ),
+        },
+        {
+          principalKey: "tenant-a:user-b",
+          oauthClientId: "claude-code-test",
+          requestScope: expect.stringMatching(
+            /^stateless-request:[0-9a-f-]{36}$/u,
+          ),
+        },
+      ]);
+      expect(
+        new Set(
+          executorRequests.map(
+            ({ context }) => context.mcpSessionId,
+          ),
+        ).size,
+      ).toBe(3);
+
+      const versionMismatch = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-method": "tools/call",
+          "mcp-name": "core.ui.state",
+          "mcp-protocol-version": "2025-11-25",
+        },
+        body: JSON.stringify(
+          modernToolCallBody("2026-07-28", "version-mismatch"),
+        ),
+      });
+      expect(versionMismatch.status).toBe(400);
+      await expect(versionMismatch.json()).resolves.toEqual({
+        jsonrpc: "2.0",
+        error: {
+          code: -32_020,
+          message:
+            "Bad Request: the request headers and body disagree: " +
+            "the body envelope names protocol version 2026-07-28 but " +
+            "the MCP-Protocol-Version header names 2025-11-25",
+          data: {
+            mismatch: {
+              header: "2025-11-25",
+              body:
+                "the body envelope names protocol version 2026-07-28 but " +
+                "the MCP-Protocol-Version header names 2025-11-25",
+            },
+          },
+        },
+        id: "version-mismatch",
+      });
+
+      const unsupportedVersion = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-method": "tools/call",
+          "mcp-name": "core.ui.state",
+          "mcp-protocol-version": "2030-01-01",
+        },
+        body: JSON.stringify(
+          modernToolCallBody("2030-01-01", "unsupported-version"),
+        ),
+      });
+      expect(unsupportedVersion.status).toBe(400);
+      await expect(unsupportedVersion.json()).resolves.toEqual({
+        jsonrpc: "2.0",
+        error: {
+          code: -32_022,
+          message: "Unsupported protocol version: 2030-01-01",
+          data: {
+            supported: ["2026-07-28"],
+            requested: "2030-01-01",
+          },
+        },
+        id: "unsupported-version",
+      });
+      expect(executorRequests).toHaveLength(3);
+
+      const statelessGet = await fetch(endpoint.endpoint, {
         method: "GET",
         headers: {
           authorization: `Bearer ${TOKEN}`,
-          "mcp-session-id": "unknown-session",
         },
       });
-      expect(unknownSession.status).toBe(404);
-
-      await clientTransport.terminateSession();
-      await client.close();
-      client = undefined;
-      clientTransport = undefined;
+      expect(statelessGet.status).toBe(405);
       await expect
-        .poll(() => endpoint?.activeSessionCount() ?? -1)
+        .poll(() => endpoint?.activeRequestCount() ?? -1)
         .toBe(0);
     } finally {
-      await client?.close().catch(() => undefined);
-      await clientTransport?.close().catch(() => undefined);
+      await Promise.allSettled([
+        legacyClient?.close(),
+        legacyTransport?.close(),
+        modernClient?.close(),
+        modernTransport?.close(),
+        otherClient?.close(),
+        otherTransport?.close(),
+      ]);
       await endpoint?.close();
       simulator?.close();
       journal?.close();
@@ -477,4 +762,98 @@ describe("M2 north MCP first slice", () => {
       rmSync(temporaryRoot, { recursive: true, force: true });
     }
   }, 45_000);
+
+  it.each(["legacy", "modern"] as const)(
+    "drains an in-flight %s dispatch before close resolves",
+    async (era) => {
+      const started = deferred<void>();
+      const release = deferred<void>();
+      const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+      const dispatcher = new GatewayDispatcher(registry, [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            started.resolve(undefined);
+            await release.promise;
+            return {
+              state: "completed",
+              result: { completedAfterCloseStarted: true, era },
+            };
+          },
+        },
+      ]);
+      let endpoint: NorthMcpEndpointHandle | undefined;
+      let client: Client | undefined;
+      let transport: StreamableHTTPClientTransport | undefined;
+      let closePromise: Promise<void> | undefined;
+
+      try {
+        endpoint = await startNorthMcpEndpoint({
+          dispatcher,
+          registry,
+          resourceMetadataUrl: new URL(
+            "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+          ),
+          authenticator: {
+            async authenticate(request) {
+              if (
+                request.headers.authorization !== `Bearer ${TOKEN}`
+              ) {
+                return null;
+              }
+              return {
+                principalKey: PRINCIPAL_KEY,
+                authInfo: {
+                  token: TOKEN,
+                  clientId: "close-drain-test",
+                  scopes: ["mcp:tools"],
+                },
+              };
+            },
+          },
+        });
+        client = new Client(
+          {
+            name: `revAgent Gateway ${era} close-drain test`,
+            version: "0.1.0-m2",
+          },
+          era === "modern"
+            ? { versionNegotiation: { mode: "auto" } }
+            : undefined,
+        );
+        transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+          requestInit: {
+            headers: { authorization: `Bearer ${TOKEN}` },
+          },
+        });
+        await client.connect(transport);
+
+        const callPromise = client.callTool({
+          name: "core.ui.state",
+          arguments: {},
+        }).catch(() => undefined);
+        await started.promise;
+        expect(endpoint.activeRequestCount()).toBe(1);
+
+        let closeResolved = false;
+        closePromise = endpoint.close().then(() => {
+          closeResolved = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 25));
+        expect(closeResolved).toBe(false);
+
+        release.resolve(undefined);
+        await closePromise;
+        expect(endpoint.activeRequestCount()).toBe(0);
+        await callPromise;
+      } finally {
+        release.resolve(undefined);
+        await closePromise?.catch(() => undefined);
+        await client?.close().catch(() => undefined);
+        await transport?.close().catch(() => undefined);
+        await endpoint?.close().catch(() => undefined);
+      }
+    },
+    15_000,
+  );
 });

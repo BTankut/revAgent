@@ -20,11 +20,14 @@ The first M2 slice is additive and intentionally narrow:
   client arguments cannot choose either value. It revalidates direct calls
   against the registry Zod shape, blocks `confirm`/`gated` tools until policy
   middleware exists, and preserves completed/guarded/failed executor outcomes.
-- `startNorthMcpEndpoint` uses one `McpServer` and
-  `NodeStreamableHTTPServerTransport` per MCP session, authenticates every request
-  through an injected fail-closed boundary, binds the session to one immutable
-  principal, and exposes the same capability-index bytes as server
-  instructions and `revagent://capability-index`.
+- `startNorthMcpEndpoint` wraps one pure `McpServer` factory with
+  `createMcpHandler` and `toNodeHandler`. Its explicit `legacy: "stateless"`
+  posture serves 2025-era and 2026-07-28 clients from the same registry and
+  handlers; `server/discover` selects the modern per-request path. Every HTTP
+  request is independently authenticated through the injected fail-closed
+  boundary. Endpoint shutdown drains owned dispatcher work for both eras
+  before resolving, and the endpoint exposes the same capability-index bytes
+  as server instructions and `revagent://capability-index`.
 - The integration test calls `core.ui.state` through the official MCP client,
   dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
   add-in loopback fixture. `fixture_counter` is not a production registry tool.
