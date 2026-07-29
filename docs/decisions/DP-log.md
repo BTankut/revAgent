@@ -622,18 +622,34 @@ RES-33 in `docs/implementation-plan/00-INDEX.md`.
 ### 2026-07-29 — R-F: a shared red gate stops merges and repeated red is escalated (R-K)
 
 Source: operator emergency directive from Barış Tankut on 2026-07-29 after PR #315 merged while the
-Windows `Gateway gates` lane was red.
+Windows `Gateway gates` lane was red, plus the same-day coordinator amendment after the first R-K
+notification omitted a same-tree green run.
 
 Branch-protection configuration is not the authority to proceed through a known red shared gate. Effective
-immediately, no PR may merge while `Gateway gates` is red. If `Engineering gates`, `Gateway gates`, or
-`Gateway CI` has two consecutive red runs in the same lane, the responsible assistant stops its own work
-and sends one operator notification card that names the gate, failing test, consecutive-red count, and whether a
-fix exists and where. A “known flaky” label is not a disposition and cannot waive the stop or notification.
+immediately, no executable-code PR may merge while `Gateway gates` is red. If `Engineering gates`,
+`Gateway gates`, or `Gateway CI` has two consecutive red runs in the same lane, the responsible assistant
+blocks executable-code merges in that lane and sends one operator notification card. The card names the
+gate, shard/test, consecutive-red count, and current fix/location; it also includes the exact error
+signature, every red run ID in the sequence, the oldest known occurrence of that signature, any green run
+on the same tree SHA, and at least two candidate remedies with their costs. A “known flaky” label is not a
+disposition and cannot waive the merge stop or notification.
+
+R-K does not stop development or rebases. Documentation-only governance and evidence-record commits/PRs
+also remain permitted because preventing the rule or its evidence from becoming authoritative would make
+the governance control self-defeating. M3 development and rebases may continue, but no M3 PR may merge
+without a green `Gateway gates` result for that PR's exact head SHA.
 
 The similarly named jobs have distinct scopes: `Gateway gates` is the Windows full
 migration/RBP-conformance lane in `.github/workflows/ci.yml`; `Gateway CI` is the GitHub-hosted Linux
 `packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in
 `.github/workflows/gateway-ci.yml`. This distinction is recorded in the index so a result from one lane
 cannot be mistaken for the other.
+
+The incident that prompted the coordinator amendment illustrates why the expanded fields are mandatory:
+run `30427715792` passed `Gateway gates` at attempt 1 on tree
+`c2d5bcbff65ad3ec9d89600a2c4e4e4201f771cc`, byte-identical to the later red main runs, and the same
+`[vitest-worker]: Timeout calling "onTaskUpdate"` signature already appeared on freeze-base run
+`30171018647`. A red
+sequence without those facts supports the wrong diagnosis.
 
 The permanent normative wording is R-K in `docs/implementation-plan/00-INDEX.md` section 8.

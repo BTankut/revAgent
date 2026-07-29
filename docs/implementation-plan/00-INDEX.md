@@ -374,12 +374,17 @@ cutover.
   check missing for the current head SHA) can reject a merge without an error message. After every merge
   attempt the assistant MUST verify with `gh pr view <n> --json state,mergeCommit` (or an equivalent API
   read) before reporting, and MUST correct any earlier report proven wrong by that check.
-- **R-K Shared-gate red stop and escalation.** No PR MAY merge while `Gateway gates` is red, whether or
-  not branch protection already enforces that condition. If `Engineering gates`, `Gateway gates`, or
-  `Gateway CI` has two consecutive red runs in the same lane, the responsible assistant MUST stop its own
-  work and send the operator one notification card naming the gate, failing test, consecutive-red count, and
-  whether a fix exists and where; “known flaky” is not an acceptable disposition. `Gateway gates` is the
-  Windows full migration/RBP-conformance lane in `ci.yml`; `Gateway CI` is the GitHub-hosted Linux
+- **R-K Shared-gate red merge stop and escalation.** No executable-code PR MAY merge while `Gateway gates`
+  is red, whether or not branch protection already enforces that condition. If `Engineering gates`,
+  `Gateway gates`, or `Gateway CI` has two consecutive red runs in the same lane, the responsible assistant
+  MUST block executable-code merges in that lane and send the operator one notification card containing:
+  the exact error signature; every red run ID in the sequence; the oldest known run carrying that signature;
+  whether the same tree SHA has a green run and its ID; and at least two candidate remedies with their
+  costs, in addition to the gate, shard/test, consecutive-red count, and current fix/location. “Known flaky”
+  is not an acceptable disposition. Development and rebases may continue; documentation-only governance
+  and evidence-record commits/PRs are never blocked by R-K. M3 development and rebases may continue, but
+  no M3 PR may merge without a green `Gateway gates` result for that PR's exact head SHA. `Gateway gates`
+  is the Windows full migration/RBP-conformance lane in `ci.yml`; `Gateway CI` is the GitHub-hosted Linux
   `packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in `gateway-ci.yml`.
 
 ### 8.1 2026-07-23 operator execution checkpoint
