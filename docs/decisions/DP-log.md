@@ -591,7 +591,9 @@ failure. A `legacy: "reject"` cut would therefore make the Phase-1 product surfa
 
 The MCP TypeScript SDK v2 provides the bounded migration path. M2 moves only `packages/gateway/**` from the
 monolithic v1 SDK to `@modelcontextprotocol/{server,client,core,node}@2.0.0` and Zod `^4.2`; frozen packages
-under `installer/**` retain their v1 pins and support window. The production north endpoint keeps one
+under `installer/**` retain their v1 pins and support window. Because the workspace has no Gateway-local
+lockfile, the repository-root `package-lock.json` is the sole non-Gateway generated artifact authorized for
+this dependency resolution; no other workspace or `installer/**` manifest/lock may change. The production north endpoint keeps one
 2026-style session-server factory and composes it through `createMcpHandler(factory)` and `toNodeHandler` with
 `legacy: "stateless"`. The SDK owns the legacy shim, while `server/discover` remains mandatory. Phase 1 MUST
 NOT use `legacy: "reject"` or expose a 2026-only endpoint.
