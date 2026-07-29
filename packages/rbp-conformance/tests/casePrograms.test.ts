@@ -113,6 +113,9 @@ describe("exact forty-case control and observation catalog", () => {
         `${prefix}.resource-sample`,
         `${prefix}.stack-stop`,
       ]);
+      expect(program.steps.find(
+        ({ stepId }) => stepId === `${prefix}.resource-baseline-start`,
+      )?.parentTimeoutMs).toBe(90_000);
     }
   });
 
@@ -388,9 +391,16 @@ describe("exact forty-case control and observation catalog", () => {
         })),
         {
           stepId: "o1-c32.resource-baseline-start",
-          parentTimeoutMs: 30_000,
+          parentTimeoutMs: 90_000,
         },
       ]);
+    expect(c32.steps.find(
+      ({ stepId }) => stepId === "o1-c32.resource-baseline-start",
+    )?.captures).toEqual([{
+      name: "o1-c32.resource-baseline-start.restart-timing",
+      source: "result",
+      jsonPointer: "/restartTiming",
+    }]);
     for (const vector of vectors) {
       const actionIndex = c32.steps.findIndex(({ stepId }) => stepId === `o1-c32.${vector}`);
       const snapshotIndex = c32.steps.findIndex(

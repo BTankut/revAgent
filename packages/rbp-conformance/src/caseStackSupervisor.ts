@@ -77,6 +77,50 @@ export interface RestartCaseStackOptions {
   startupOverrides?: GatewayStartupOverrides;
 }
 
+class RestartPhaseTimer {
+  readonly #startedAtMonotonicMs = performance.now();
+  readonly #phases: Array<{ phase: string; durationMs: number }> = [];
+  readonly #reportProgress: ((phase: string) => void) | undefined;
+  #activePhase: string | null = null;
+  #activePhaseStartedAtMonotonicMs = this.#startedAtMonotonicMs;
+
+  constructor(reportProgress?: (phase: string) => void) {
+    this.#reportProgress = reportProgress;
+  }
+
+  enter(phase: string): void {
+    const now = performance.now();
+    this.#closeActivePhase(now);
+    this.#activePhase = phase;
+    this.#activePhaseStartedAtMonotonicMs = now;
+    this.#reportProgress?.(phase);
+  }
+
+  finish(): JsonObject {
+    const finishedAtMonotonicMs = performance.now();
+    this.#closeActivePhase(finishedAtMonotonicMs);
+    return {
+      schemaVersion: "rbp-restart-phase-timing/v1",
+      totalElapsedMs: Math.max(
+        0,
+        Math.round(finishedAtMonotonicMs - this.#startedAtMonotonicMs),
+      ),
+      phases: this.#phases.map(({ phase, durationMs }) => ({ phase, durationMs })),
+    };
+  }
+
+  #closeActivePhase(finishedAtMonotonicMs: number): void {
+    if (this.#activePhase === null) return;
+    this.#phases.push({
+      phase: this.#activePhase,
+      durationMs: Math.max(
+        0,
+        Math.round(finishedAtMonotonicMs - this.#activePhaseStartedAtMonotonicMs),
+      ),
+    });
+  }
+}
+
 export interface SessionResumeAuthorizationProbe {
   readonly frame: JsonObject;
   readonly facts: JsonObject;
@@ -1987,12 +2031,16 @@ export class CaseStackSupervisor {
     stepId: string,
     action: string,
     signal?: AbortSignal,
+    reportProgress?: (phase: string) => void,
   ): Promise<{ result: JsonObject; observations: ProcessObservationRecord[] }> {
+    const phaseTimer = new RestartPhaseTimer(reportProgress);
     throwIfAborted(signal);
     if (this.#active !== null) {
+      phaseTimer.enter("restart_case_stack.implicit_stop");
       await this.stopCaseStack(stepId, "implicit_stop_before_restart");
       throwIfAborted(signal);
     }
+    phaseTimer.enter("restart_case_stack.prepare_instance");
     const instanceRoot = this.#privateInstanceRoot(options.caseId, options.binding);
     const instanceRootId = `sha256:${createHash("sha256").update(instanceRoot).digest("hex")}`;
     const components = new Map<ComponentId, StartedStackComponent>();
@@ -2015,11 +2063,13 @@ export class CaseStackSupervisor {
         : undefined;
 
       const fixturePlan = this.#componentPlan("addin_loopback_fixture");
+      phaseTimer.enter("restart_case_stack.addin_loopback_fixture.readiness");
       const fixture = await this.#startComponent(fixturePlan, tokens, options.startupOverrides);
       components.set(fixture.componentId, fixture);
       throwIfAborted(signal);
       const fixtureHost = numericLoopback(fixture.readiness.host, "fixture readiness host");
       const fixturePort = safePort(fixture.readiness.port, "fixture readiness port");
+      phaseTimer.enter("restart_case_stack.fixture.ParentTcpCaptureProxy.start");
       fixtureProxy = await ParentTcpCaptureProxy.start({
         name: "fixture",
         targetHost: fixtureHost,
@@ -2030,6 +2080,7 @@ export class CaseStackSupervisor {
       tokens.fixture_port = String(fixtureProxy.listeningPort);
 
       const gatewayPlan = this.#componentPlan("gateway_stub");
+      phaseTimer.enter("restart_case_stack.gateway_stub.readiness");
       const gateway = await this.#startComponent(
         gatewayPlan,
         tokens,
@@ -2052,6 +2103,7 @@ export class CaseStackSupervisor {
       if (gatewayWs.protocol !== expectedSchemes.ws || gatewayHttp.protocol !== expectedSchemes.http) {
         throw new Error("Gateway readiness transport schemes do not match the supervised TLS mode");
       }
+      phaseTimer.enter("restart_case_stack.gateway.ParentTcpCaptureProxy.start");
       gatewayProxy = await ParentTcpCaptureProxy.start({
         name: "gateway",
         targetHost: gatewayWs.hostname,
@@ -2066,10 +2118,12 @@ export class CaseStackSupervisor {
       tokens.gateway_control_url = String(gateway.readiness.control_url);
 
       const bridgePlan = this.#componentPlan("bridge_simulator");
+      phaseTimer.enter("restart_case_stack.bridge_simulator.readiness");
       const bridge = await this.#startComponent(bridgePlan, tokens, options.startupOverrides);
       components.set(bridge.componentId, bridge);
       throwIfAborted(signal);
 
+      phaseTimer.enter("restart_case_stack.finalize");
       const publicReadiness = {
         fixture: {
           ...fixture.readiness,
@@ -2139,10 +2193,12 @@ export class CaseStackSupervisor {
             pid: component.pid,
             identity: component.identity,
           })) as unknown as JsonValue,
+          restartTiming: phaseTimer.finish(),
         },
         observations,
       };
     } catch (error) {
+      phaseTimer.enter("restart_case_stack.cleanup_after_failure");
       const cleanupErrors: Error[] = [];
       for (const component of [...components.values(), ...extraFixtures].reverse()) {
         await component.stop().catch((cleanupError: unknown) => {

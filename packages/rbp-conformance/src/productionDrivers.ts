@@ -415,7 +415,9 @@ function createHarnessDriver(
           binding: request.binding,
           preserveState: request.arguments.preserveState === true,
           startupOverrides: gatewayOverrides(request.arguments),
-        }, request.stepId, request.action, request.signal);
+        }, request.stepId, request.action, request.signal, (phase) => {
+          request.reportProgress?.(phase);
+        });
         const drained = operation.then(
           () => undefined,
           () => undefined,

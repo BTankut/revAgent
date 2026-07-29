@@ -47,6 +47,26 @@ describe("shared production case-stack controls", () => {
           startupOverrides: { clockStartMs: 1_784_764_800_000 },
         }, "shared.stack", "restart_case_stack");
         expect(started.observations).toHaveLength(3);
+        const restartTiming = started.result.restartTiming as {
+          schemaVersion: string;
+          totalElapsedMs: number;
+          phases: Array<{ phase: string; durationMs: number }>;
+        };
+        expect(restartTiming.schemaVersion).toBe("rbp-restart-phase-timing/v1");
+        expect(restartTiming.phases.map(({ phase }) => phase)).toEqual([
+          "restart_case_stack.prepare_instance",
+          "restart_case_stack.addin_loopback_fixture.readiness",
+          "restart_case_stack.fixture.ParentTcpCaptureProxy.start",
+          "restart_case_stack.gateway_stub.readiness",
+          "restart_case_stack.gateway.ParentTcpCaptureProxy.start",
+          "restart_case_stack.bridge_simulator.readiness",
+          "restart_case_stack.finalize",
+        ]);
+        expect(Number.isInteger(restartTiming.totalElapsedMs)).toBe(true);
+        expect(restartTiming.totalElapsedMs).toBeGreaterThanOrEqual(0);
+        expect(restartTiming.phases.every(
+          ({ durationMs }) => Number.isInteger(durationMs) && durationMs >= 0,
+        )).toBe(true);
         expect(supervisor.setGatewayProxyBackpressure(true).enabled).toBe(true);
         expect(supervisor.setGatewayProxyBackpressure(false).enabled).toBe(false);
 

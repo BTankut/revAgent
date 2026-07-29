@@ -69,9 +69,33 @@ describe("O1-C32 registered-session production conformance", () => {
           kind === "control_result" &&
           (payload as Record<string, unknown>).stepId === "o1-c32.base64_alphabet")
         .map(({ payload }) => payload as Record<string, unknown>);
+      const restartTiming = execution.evidence.captures[
+        "o1-c32.resource-baseline-start.restart-timing"
+      ] as {
+        schemaVersion: string;
+        totalElapsedMs: number;
+        phases: Array<{ phase: string; durationMs: number }>;
+      };
       expect(execution.binding).toBe(binding);
       expect(report, JSON.stringify(actionEvidence, null, 2)).toEqual(
         report.map((entry) => ({ ...entry, passed: true })),
+      );
+      expect(restartTiming.schemaVersion).toBe("rbp-restart-phase-timing/v1");
+      expect(restartTiming.phases.map(({ phase }) => phase)).toEqual([
+        "restart_case_stack.prepare_instance",
+        "restart_case_stack.addin_loopback_fixture.readiness",
+        "restart_case_stack.fixture.ParentTcpCaptureProxy.start",
+        "restart_case_stack.gateway_stub.readiness",
+        "restart_case_stack.gateway.ParentTcpCaptureProxy.start",
+        "restart_case_stack.bridge_simulator.readiness",
+        "restart_case_stack.finalize",
+      ]);
+      console.log(
+        `[rbp-conformance] restart_case_stack timing binding=${binding} ` +
+        `step=o1-c32.resource-baseline-start totalElapsedMs=${String(restartTiming.totalElapsedMs)} ` +
+        `phases=${restartTiming.phases.map(
+          ({ phase, durationMs }) => `${phase}:${String(durationMs)}ms`,
+        ).join(",")}`,
       );
       expect(execution.evidence.observations.filter(
         stoppedLifecycleAt("o1-c32.resource-baseline-stop"),

@@ -28,6 +28,11 @@ import type {
 } from "../src/types.js";
 
 const NOW = "2026-07-22T12:00:00.000Z";
+const RAW_RESTART_TIMING = {
+  schemaVersion: "rbp-restart-phase-timing/v1",
+  totalElapsedMs: 0,
+  phases: [],
+};
 
 function objectValue(value: unknown): Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -194,6 +199,7 @@ describe("raw production C25-C40 seed catalog", () => {
                 },
               },
             },
+            restartTiming: RAW_RESTART_TIMING,
           },
         };
       }
@@ -357,6 +363,11 @@ describe("raw production C25-C40 seed catalog", () => {
           variables: rawProductionCaseVariables(caseId, { binding }),
           now: () => NOW,
         });
+        if (caseId === "O1-C32") {
+          expect(result.captures[
+            "o1-c32.resource-baseline-start.restart-timing"
+          ]).toEqual(RAW_RESTART_TIMING);
+        }
         if (caseId === "O1-C28" || caseId === "O1-C32" || caseId === "O1-C39") {
           expect(new Set(result.completedStepIds)).toEqual(
             new Set(program.steps.map(({ stepId }) => stepId)),

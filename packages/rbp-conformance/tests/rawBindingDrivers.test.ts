@@ -283,7 +283,9 @@ describe("parent-owned raw WSS binding driver", () => {
       deviceToken: TOKEN,
       tlsTrust: trust,
       openingHello: hello(10),
-      limits: { settleMs: 40 },
+      // The schema error is the second asynchronous server frame; preserve
+      // the full-suite Windows scheduler-jitter allowance used above.
+      limits: { settleMs: 250 },
     });
     const schema = successResult(await driver(request("wss", {
       serializedFrame: '{"v":1,"type":"session_register","id":"malformed"',
