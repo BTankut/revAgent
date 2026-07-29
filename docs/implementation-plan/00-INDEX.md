@@ -212,6 +212,10 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   seconds, so the bounded private-repository minute cost is accepted in exchange for eliminating the
   repository-wide merge deadlock. RES-31's runner, exact-head, Node 24, install, lint, typecheck, test,
   secret-scan, image-build, Windows-workflow freeze, and M6 deferral decisions are otherwise unchanged.
+  The operator-authorized 2026-07-29 shared-gate repair recorded by R-K is the dated, bounded exception to
+  that earlier Windows-workflow freeze wording: `.github/workflows/ci.yml` may change only for the approved
+  pull-request concurrency and Git cache-tool exposure controls; the Windows conformance and
+  production-launcher identity constraints remain unchanged.
 - **RES-33 (2026-07-28 operator decision; 2026-07-29 R-F record) — M2 adopts MCP TypeScript SDK v2
   without a flag-day client cut.** The Gateway-owned north surface uses
   `@modelcontextprotocol/{server,client,core,node}@2.0.0` with Zod `^4.2` and composes its single

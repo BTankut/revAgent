@@ -216,7 +216,7 @@ M1/M2/M3. Smoke mode or an accelerated clock cannot satisfy it.
 | Bindings | WSS and Streamable HTTP/SSE represented | Not available | `deferred_non_blocking` |
 | Churn | Real reconnect and proxy-buffer/churn cycles with heartbeat/control round trips | Not available | `deferred_non_blocking` |
 | Cleanup | Zero pending journal state and orphan processes; bounded fd/memory profile | Not available | `deferred_non_blocking` |
-| Retained report | Canonical soak JSON plus hashed metrics JSONL bound to the executable candidate commit/tree | Not available | `deferred_non_blocking` |
+| Retained report | Canonical soak JSON plus hashed metrics JSONL bound to the confirmed tag-evidence anchor commit/tree | Not available | `deferred_non_blocking` |
 
 ## Section 22 evidence matrix
 
