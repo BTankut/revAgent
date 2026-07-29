@@ -1,7 +1,5 @@
 import { performance } from "node:perf_hooks";
-
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 
 export interface ToolCatalogTimingSummary {
   iterations: number;

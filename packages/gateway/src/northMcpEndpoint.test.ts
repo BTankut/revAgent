@@ -2,10 +2,9 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-
-import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 
 import {
   GatewayDispatcher,
@@ -21,6 +20,7 @@ import {
 import {
   GatewayToolRegistry,
   M2_BOOTSTRAP_TOOL_RECORDS,
+  type GatewayToolRecord,
 } from "./registry.js";
 
 interface FixtureAddress {
@@ -93,6 +93,57 @@ const RSID = "019f9ac3-ae89-7342-9f6d-b9269e167184";
 const REGISTRATION_ID = "019f9ac3-ae89-7342-9f6d-b9269e167185";
 const ENVELOPE_ID = "019f9ac3-ae89-7342-9f6d-b9269e167186";
 const INVOCATION_ID = "019f9ac3-ae89-7342-9f6d-b9269e167187";
+const SCHEMA_PARITY_TOOL_RECORD = Object.freeze({
+  name: "core.element.inspect",
+  summary: "Inspect one element with bounded optional controls.",
+  namespace: "core",
+  version: "1.0.0",
+  policyClass: "auto",
+  executor: "bridge",
+  executorMethod: "inspect_element",
+  inputSchema: Object.freeze({
+    elementId: z
+      .string()
+      .min(1)
+      .max(64)
+      .describe("Stable element identifier."),
+    includeHidden: z
+      .boolean()
+      .optional()
+      .describe("Include hidden elements when true."),
+    limit: z
+      .number()
+      .int()
+      .min(1)
+      .max(25)
+      .optional()
+      .describe("Maximum result count."),
+  }),
+  inputJsonSchema: Object.freeze({
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    additionalProperties: false,
+    properties: Object.freeze({
+      elementId: Object.freeze({
+        description: "Stable element identifier.",
+        maxLength: 64,
+        minLength: 1,
+        type: "string",
+      }),
+      includeHidden: Object.freeze({
+        description: "Include hidden elements when true.",
+        type: "boolean",
+      }),
+      limit: Object.freeze({
+        description: "Maximum result count.",
+        maximum: 25,
+        minimum: 1,
+        type: "integer",
+      }),
+    }),
+    required: Object.freeze(["elementId"]),
+    type: "object",
+  }),
+} satisfies GatewayToolRecord);
 
 async function loadFixtureModules(): Promise<{
   readonly fixture: FixtureModule;
@@ -240,7 +291,10 @@ describe("M2 north MCP first slice", () => {
         },
       };
 
-      const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+      const registry = new GatewayToolRegistry([
+        ...M2_BOOTSTRAP_TOOL_RECORDS,
+        SCHEMA_PARITY_TOOL_RECORD,
+      ]);
       const dispatcher = new GatewayDispatcher(registry, [bridgeExecutor]);
       endpoint = await startNorthMcpEndpoint({
         dispatcher,
@@ -317,7 +371,15 @@ describe("M2 north MCP first slice", () => {
       ]);
 
       const tools = await client.listTools();
-      expect(tools.tools.map((tool) => tool.name)).toEqual(["core.ui.state"]);
+      expect(tools.tools.map((tool) => tool.name)).toEqual([
+        "core.element.inspect",
+        "core.ui.state",
+      ]);
+      for (const tool of tools.tools) {
+        expect(tool.inputSchema).toEqual(
+          registry.require(tool.name).inputJsonSchema,
+        );
+      }
       expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
       expect(fixture.getMethodExecutionCount("get_ui_state")).toBe(0);
 

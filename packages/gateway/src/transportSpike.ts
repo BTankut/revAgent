@@ -1,9 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import {
+  McpServer,
+  type CallToolResult,
+  type ServerContext,
+} from "@modelcontextprotocol/server";
+import { z, type ZodRawShape } from "zod";
 
 const SPIKE_PATH = "/mcp";
 const SUPPORTED_METHODS = new Set(["DELETE", "GET", "POST"]);
@@ -14,7 +18,26 @@ const RUNTIME_REGISTER_TOOLS_URL = new URL(
 );
 
 interface RuntimeRegisterModule {
-  registerTools(server: McpServer): Promise<void>;
+  registerTools(server: RuntimeToolServer): Promise<void>;
+}
+
+type RuntimeToolHandler = (
+  args: Record<string, unknown>,
+  context: ServerContext,
+) => CallToolResult | Promise<CallToolResult>;
+
+interface RuntimeToolServer {
+  tool(
+    name: string,
+    schema: ZodRawShape,
+    handler: RuntimeToolHandler,
+  ): unknown;
+  tool(
+    name: string,
+    description: string,
+    schema: ZodRawShape,
+    handler: RuntimeToolHandler,
+  ): unknown;
 }
 
 export interface TransportSpikeOptions {
@@ -29,6 +52,45 @@ export interface TransportSpikeHandle {
   close(): Promise<void>;
 }
 
+function runtimeToolServer(server: McpServer): RuntimeToolServer {
+  function register(
+    name: string,
+    descriptionOrSchema: string | ZodRawShape,
+    schemaOrHandler: ZodRawShape | RuntimeToolHandler,
+    optionalHandler?: RuntimeToolHandler,
+  ): unknown {
+    const description =
+      typeof descriptionOrSchema === "string"
+        ? descriptionOrSchema
+        : undefined;
+    const schema =
+      typeof descriptionOrSchema === "string"
+        ? schemaOrHandler as ZodRawShape
+        : descriptionOrSchema;
+    const handler =
+      typeof descriptionOrSchema === "string"
+        ? optionalHandler
+        : schemaOrHandler as RuntimeToolHandler;
+    if (handler === undefined) {
+      throw new TypeError(`legacy tool ${name} is missing its handler`);
+    }
+    return server.registerTool(
+      name,
+      {
+        description,
+        inputSchema: z.object(schema).strict(),
+      },
+      async (args, context) =>
+        handler(
+          args as Record<string, unknown>,
+          context,
+        ),
+    );
+  }
+
+  return { tool: register };
+}
+
 async function registerExistingRuntimeTools(server: McpServer): Promise<void> {
   const runtimeModule = (await import(
     RUNTIME_REGISTER_TOOLS_URL.href
@@ -38,7 +100,7 @@ async function registerExistingRuntimeTools(server: McpServer): Promise<void> {
       `registerTools export is missing from ${RUNTIME_REGISTER_TOOLS_URL.pathname}`,
     );
   }
-  await runtimeModule.registerTools(server);
+  await runtimeModule.registerTools(runtimeToolServer(server));
 }
 
 function sendJson(
@@ -109,7 +171,7 @@ export async function startTransportSpike(
   });
   await registerExistingRuntimeTools(mcpServer);
 
-  const transport = new StreamableHTTPServerTransport({
+  const transport = new NodeStreamableHTTPServerTransport({
     enableJsonResponse: true,
     sessionIdGenerator: randomUUID,
   });

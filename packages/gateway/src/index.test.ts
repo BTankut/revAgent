@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { gatewayScaffold } from "./index.js";
 
 describe("gateway scaffold", () => {
@@ -15,7 +14,7 @@ describe("gateway scaffold", () => {
     });
   });
 
-  it("loads the pinned MCP SDK Streamable HTTP transport surface", () => {
-    expect(StreamableHTTPServerTransport).toBeTypeOf("function");
+  it("loads the split MCP SDK v2 Node transport surface", () => {
+    expect(NodeStreamableHTTPServerTransport).toBeTypeOf("function");
   });
 });

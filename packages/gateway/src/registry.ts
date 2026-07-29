@@ -1,8 +1,5 @@
 import { z, type ZodRawShape } from "zod";
 
-import { toJsonSchemaCompat } from
-  "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
-
 export const GATEWAY_EXECUTOR_BINDINGS = [
   "bridge",
   "internal_mcp",
@@ -16,7 +13,8 @@ export type GatewayPolicyClass = "auto" | "confirm" | "gated";
 
 export type GatewayJsonSchema = Readonly<Record<string, unknown>>;
 
-const JSON_SCHEMA_DRAFT_7_URI = "http://json-schema.org/draft-07/schema#";
+const JSON_SCHEMA_2020_12_URI =
+  "https://json-schema.org/draft/2020-12/schema";
 
 export interface GatewayToolRecord {
   readonly name: string;
@@ -137,9 +135,9 @@ function normalizeInputJsonSchema(
       `${record.name}.inputJsonSchema.properties must be a plain object`,
     );
   }
-  if (normalized.$schema !== JSON_SCHEMA_DRAFT_7_URI) {
+  if (normalized.$schema !== JSON_SCHEMA_2020_12_URI) {
     throw new TypeError(
-      `${record.name}.inputJsonSchema.$schema must select JSON Schema draft-07`,
+      `${record.name}.inputJsonSchema.$schema must select JSON Schema 2020-12`,
     );
   }
   const zodFields = Object.keys(record.inputSchema).sort();
@@ -158,14 +156,9 @@ function normalizeInputJsonSchema(
 function canonicalInputJsonSchema(
   record: GatewayToolRecord,
 ): GatewayJsonSchema {
-  const generated = toJsonSchemaCompat(
-    z.object(record.inputSchema).strict(),
-    {
-      pipeStrategy: "input",
-      strictUnions: true,
-      target: "draft-7",
-    },
-  );
+  const generated = z.toJSONSchema(z.object(record.inputSchema).strict(), {
+    io: "input",
+  });
   return cloneJsonValue(
     generated,
     `${record.name}.canonicalInputJsonSchema`,
@@ -418,7 +411,7 @@ export const M2_BOOTSTRAP_TOOL_RECORDS = Object.freeze([
     executorMethod: "get_ui_state",
     inputSchema: Object.freeze({}),
     inputJsonSchema: Object.freeze({
-      $schema: JSON_SCHEMA_DRAFT_7_URI,
+      $schema: JSON_SCHEMA_2020_12_URI,
       additionalProperties: false,
       properties: Object.freeze({}),
       type: "object",

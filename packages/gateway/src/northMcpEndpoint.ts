@@ -5,12 +5,10 @@ import {
   type ServerResponse,
 } from "node:http";
 import type { AddressInfo } from "node:net";
-
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AuthInfo } from "@modelcontextprotocol/sdk/server/auth/types.js";
-import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
-import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
-
+import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
+import { McpServer, isInitializeRequest } from "@modelcontextprotocol/server";
+import type { AuthInfo } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import type { GatewayDispatcher } from "./dispatch.js";
 import type { GatewayToolRegistry } from "./registry.js";
 
@@ -58,7 +56,7 @@ export interface NorthMcpEndpointHandle {
 
 interface NorthMcpSession {
   readonly server: McpServer;
-  readonly transport: StreamableHTTPServerTransport;
+  readonly transport: NodeStreamableHTTPServerTransport;
   readonly authBindingKey: string;
 }
 
@@ -229,16 +227,16 @@ function createSessionServer(input: {
       record.name,
       {
         description: record.summary,
-        inputSchema: record.inputSchema,
+        inputSchema: z.object(record.inputSchema).strict(),
       },
-      async (args, extra) =>
+      async (args, ctx) =>
         toolResult(
           await dispatcher.dispatch({
             toolName: record.name,
             args,
             principalKey,
             oauthClientId,
-            mcpSessionId: extra.sessionId ?? "session-initializing",
+            mcpSessionId: ctx.sessionId ?? "session-initializing",
           }),
         ),
     );
@@ -392,7 +390,7 @@ export async function startNorthMcpEndpoint(
       registry: options.registry,
     });
     pendingServers.add(server);
-    const transport = new StreamableHTTPServerTransport({
+    const transport = new NodeStreamableHTTPServerTransport({
       enableJsonResponse: true,
       sessionIdGenerator: randomUUID,
       onsessioninitialized: (initializedSessionId) => {
