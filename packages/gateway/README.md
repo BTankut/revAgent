@@ -25,9 +25,13 @@ The first M2 slice is additive and intentionally narrow:
   posture serves 2025-era and 2026-07-28 clients from the same registry and
   handlers; `server/discover` selects the modern per-request path. Every HTTP
   request is independently authenticated through the injected fail-closed
-  boundary. Endpoint shutdown drains owned dispatcher work for both eras
-  before resolving, and the endpoint exposes the same capability-index bytes
-  as server instructions and `revagent://capability-index`.
+  boundary. Modern multi-round-trip `requestState` is verified with the SDK's
+  HMAC codec before dispatch, expires on the configured TTL, and is bound to
+  the originating method plus authenticated principal/client/resource/scope
+  tuple; the required key is at least 32 bytes. Endpoint shutdown drains owned
+  dispatcher work for both eras before resolving, and the endpoint exposes the
+  same capability-index bytes as server instructions and
+  `revagent://capability-index`.
 - The integration test calls `core.ui.state` through the official MCP client,
   dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
   add-in loopback fixture. `fixture_counter` is not a production registry tool.
@@ -41,6 +45,8 @@ durable RBP ingress, and Mode-B interface stubs remain separate M2 tasks.
 The injected authenticator is contractually responsible for validating token
 signature, expiry, audience/resource, scopes, revocation, and tenant/user
 identity; the endpoint does not infer any of those from client claims.
+`requestState` payloads are signed rather than encrypted and therefore must not
+contain secrets.
 
 The Gateway test command builds the existing workspace Bridge simulator before
 Vitest and consumes only its public built surface. It does not add a production

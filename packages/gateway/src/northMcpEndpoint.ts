@@ -8,10 +8,12 @@ import type { AddressInfo } from "node:net";
 import { toNodeHandler } from "@modelcontextprotocol/node";
 import {
   createMcpHandler,
+  createRequestStateCodec,
   isJsonContentType,
   McpServer,
   type AuthInfo,
   type McpRequestContext,
+  type RequestStateCodec,
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { GatewayDispatcher } from "./dispatch.js";
@@ -46,6 +48,10 @@ export interface NorthMcpEndpointOptions {
   readonly authenticator: NorthMcpAuthenticator;
   readonly dispatcher: GatewayDispatcher;
   readonly registry: GatewayToolRegistry;
+  readonly requestState: {
+    readonly key: string | Uint8Array;
+    readonly ttlSeconds?: number;
+  };
   readonly resourceMetadataUrl: URL;
   readonly host?: "127.0.0.1" | "localhost";
   readonly port?: number;
@@ -123,6 +129,17 @@ function cloneAuthInfo(authInfo: AuthInfo): AuthInfo {
       ? {}
       : { extra: { ...authInfo.extra } }),
   };
+}
+
+function authBindingKey(
+  authenticated: AuthenticatedNorthMcpRequest,
+): string {
+  return JSON.stringify([
+    authenticated.principalKey,
+    authenticated.authInfo.clientId,
+    authenticated.authInfo.resource?.href ?? null,
+    [...authenticated.authInfo.scopes].sort(),
+  ]);
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -215,6 +232,7 @@ function createSessionServer(input: {
   readonly inflightOperations: Set<Promise<unknown>>;
   readonly registry: GatewayToolRegistry;
   readonly requestScopeId: string;
+  readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
   const capabilityIndexBytes = input.registry.capabilityIndexBytes();
   const dispatcher = input.dispatcher;
@@ -227,6 +245,9 @@ function createSessionServer(input: {
     },
     {
       instructions: capabilityIndexBytes,
+      requestState: {
+        verify: input.verifyRequestState,
+      },
     },
   );
 
@@ -301,6 +322,26 @@ export async function startNorthMcpEndpoint(
   }
 
   const principalByAuthInfo = new WeakMap<AuthInfo, string>();
+  const requestStateCodec = createRequestStateCodec({
+    key: options.requestState.key,
+    ...(options.requestState.ttlSeconds === undefined
+      ? {}
+      : { ttlSeconds: options.requestState.ttlSeconds }),
+    bind: (context) => {
+      const authInfo = context.http?.authInfo;
+      const principalKey =
+        authInfo === undefined
+          ? undefined
+          : principalByAuthInfo.get(authInfo);
+      if (authInfo === undefined || principalKey === undefined) {
+        throw new Error("trusted north MCP auth context is missing");
+      }
+      return `${context.mcpReq.method}\0${authBindingKey({
+        authInfo,
+        principalKey,
+      })}`;
+    },
+  });
   const inflightOperations = new Set<Promise<unknown>>();
   const requestTasks = new Set<Promise<unknown>>();
   let boundPort = 0;
@@ -325,6 +366,7 @@ export async function startNorthMcpEndpoint(
         inflightOperations,
         registry: options.registry,
         requestScopeId: randomUUID(),
+        verifyRequestState: requestStateCodec.verify,
       });
     },
     {
