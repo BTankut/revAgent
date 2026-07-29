@@ -672,7 +672,8 @@ green run therefore forbids classifying the gate as deterministically broken. Th
 `30443700946`, attempt 2, job `90581537208`, belongs to different head
 `a685e4f668337bbe800f5de65c9b15502ebb6e16` and tree
 `3c816681d074648c0e156b60bc11a0e7d708543a`; 60/60 files, 373/373 tests, and 5/5 shards
-passed. After the runner service restart, job assignment improved from 68 minutes to 2 seconds on runner 21;
+passed. After the interactive runner listener restart, job assignment improved from 68 minutes to 2 seconds
+on runner 21;
 Engineering gates completed in 12m46s, Gateway gates in 42m10s, and the CI-safe step took 500 seconds
 versus 633 seconds in the red run and 562 seconds in the prior green run. That proves queue recovery and a
 healthy machine baseline, but it does not erase the two explicit budget defects on the protected-main tree.
