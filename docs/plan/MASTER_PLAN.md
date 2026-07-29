@@ -37,7 +37,7 @@ Windows PowerShell 5.1 `scripts/test-all.ps1` gate, all 11 named protected PS5
 installer/updater/security scripts, generated-type clean diff, protocol
 303/303, add-in fixture 55/55, Gateway stub 78/78, Bridge simulator 214/214,
 three deterministic Bridge runs of 211/211 each, and the complete conformance
-harness gate (59 files, 365/365 tests, 5/5 serial shards). These results are
+harness gate (60 files, 373/373 tests, 5/5 serial shards). These results are
 supplemented by one complete green current-candidate PR suite, the retained M1
 gate report, and the 2026-07-25 owner acceptance. The exact final PR head must
 remain green and tree-equal through protected merge.
@@ -47,7 +47,15 @@ three-run aggregate, real one-hour soak, WSS/Streamable HTTP/SSE
 proxy-interoperability evidence, and tag identity form a separate,
 non-blocking closure that may run in parallel with M2/M3. It does not block
 their start. The evidence ceiling in R-H prohibits adding or promoting
-assistant-created evidence requirements.
+assistant-created evidence requirements. Per RES-34, the evidence anchor is
+the protected main commit on which that complete evidence set is actually
+produced green; its full commit/tree identity requires operator confirmation
+before a run is counted. As an acceptance predicate of the retained-three-run
+aggregate class — not a fifth RES-28 evidence class — a mechanically separate
+full-Vitest qualification parses all five shard summaries and asserts 60
+files, 373/373 tests, and 5/5 serial shards rather than trusting exit code
+zero. Neither this record nor RES-34 authorizes tag-evidence execution or
+creation of `rbp/v1.0.0`.
 
 After the M1 closeout, this assistant is assigned only to WP2/M2 on
 `codex/wp2-*`. It may not edit `packages/bridge/**` or
