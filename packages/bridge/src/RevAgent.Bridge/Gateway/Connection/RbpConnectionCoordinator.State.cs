@@ -124,6 +124,28 @@ internal sealed partial class RbpConnectionCoordinator
         }
     }
 
+    // Invocation tasks are counted separately from owned tasks on purpose.
+    // OwnedBackgroundTaskCount means "everything the cycle must drain before it
+    // may be declared closed"; a failed drain there poisons connection
+    // authority and demands a process restart. An add-in call that cannot be
+    // cancelled past the dispatch boundary is not that kind of defect, so it
+    // must not be able to trip it.
+    private void InvocationStarted()
+    {
+        lock (_sync)
+        {
+            _activeInvocations++;
+        }
+    }
+
+    private void InvocationCompleted()
+    {
+        lock (_sync)
+        {
+            _activeInvocations--;
+        }
+    }
+
     private static JsonElement JsonObject(
         params (string Name, object? Value)[] properties)
     {

@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -29,6 +30,13 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly IRbpRandomSource _random;
     private readonly RbpConnectionCoordinatorOptions _options;
     private readonly RbpUuidV7 _identifiers;
+
+    /// <summary>
+    /// Required. A coordinator that accepts sessions and receives <c>invoke</c>
+    /// frames but has no add-in dispatch surface can only strand the Gateway,
+    /// so the case is made unrepresentable rather than handled.
+    /// </summary>
+    private readonly IRbpInvocationDispatcher _invocationDispatcher;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -37,16 +45,20 @@ internal sealed partial class RbpConnectionCoordinator
     private int _runStarted;
     private int _connectionAuthorityPoisoned;
     private int _ownedBackgroundTasks;
+    private int _activeInvocations;
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
         RbpJournalStore journal,
         IRbpLocalSessionCatalog catalog,
         RbpConnectionCoordinatorOptions options,
+        IRbpInvocationDispatcher invocationDispatcher,
         IRbpInboundDataJournal? inboundJournal = null,
         IRbpCoordinatorClock? clock = null,
         IRbpRandomSource? random = null)
     {
+        _invocationDispatcher = invocationDispatcher ??
+            throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??
             throw new ArgumentNullException(nameof(cycleFactory));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
@@ -69,12 +81,14 @@ internal sealed partial class RbpConnectionCoordinator
         long generation;
         ConnectionCycleContext? active;
         int ownedTasks;
+        int invocations;
         lock (_sync)
         {
             lifecycle = _lifecycle;
             generation = _connectionGeneration;
             active = _active;
             ownedTasks = _ownedBackgroundTasks;
+            invocations = _activeInvocations;
         }
 
         return new RbpConnectionCoordinatorSnapshot(
@@ -83,7 +97,8 @@ internal sealed partial class RbpConnectionCoordinator
             active is not null,
             active?.ActiveRsids ??
             Array.AsReadOnly(Array.Empty<string>()),
-            ownedTasks);
+            ownedTasks,
+            invocations);
     }
 
     internal void NotifyRetryConditionChanged()
@@ -320,6 +335,17 @@ internal sealed partial class RbpConnectionCoordinator
 
                 context.Cancel();
                 await CloseCycleBoundedAsync(cycle).ConfigureAwait(false);
+
+                // Give in-flight invocations a bounded chance to reach a
+                // durable decision. P-UPD-4 allows "finishes in-flight
+                // invocation OR journals it", so an expiry here loses the
+                // delivery, never the decision. The result is deliberately not
+                // consulted: an unfinished add-in call must not poison
+                // connection authority.
+                _ = await context
+                    .DrainInvocationsAsync(
+                        _options.EffectiveInvocationDrainTimeout)
+                    .ConfigureAwait(false);
                 bool ownedTasksDrained =
                     await context.AwaitOwnedTasksAsync(
                         _options.EffectiveCloseTimeout)

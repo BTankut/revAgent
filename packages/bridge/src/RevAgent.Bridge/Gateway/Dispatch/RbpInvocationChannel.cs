@@ -46,11 +46,35 @@ internal sealed record RbpAddinOutcome(
     string? GuardedReason = null,
     string? FaultClass = null,
     string? Message = null,
-    AddinErrorDetail? AddinError = null);
+    AddinErrorDetail? AddinError = null,
+    IRbpDispatchLease? Lease = null);
+
+/// <summary>
+/// Ownership of an add-in session for the duration of one invocation.
+/// </summary>
+/// <remarks>
+/// The router deliberately does not make its lease <c>IDisposable</c>:
+/// abandoning a call or leaving a scope must leave the session fail-closed, and
+/// the single-flight gate must stay shut until the invocation's fate is
+/// durable. Releasing when the add-in merely answered would reopen the session
+/// while the outcome is still only in memory, so a crash in that window would
+/// let a redelivery dispatch a second time against a row the journal still
+/// believes is <c>executing</c>. The dispatcher therefore releases only after
+/// the terminal or indeterminate outcome has been persisted.
+/// </remarks>
+internal interface IRbpDispatchLease
+{
+    void ReleaseAfterDurableDecision();
+}
 
 /// <summary>
 /// The seam between the RBP data plane and the add-in loopback transport.
 /// </summary>
+/// <remarks>
+/// An implementation that acquires a session lease MUST hand it back on
+/// <see cref="RbpAddinOutcome.Lease"/> rather than releasing it itself, so the
+/// durable-decision ordering above is preserved.
+/// </remarks>
 internal interface IRbpInvocationChannel
 {
     Task<RbpAddinOutcome> InvokeAsync(
@@ -74,6 +98,25 @@ internal interface IRbpInFlightGate
     bool TryEnter(string rsid);
 
     void Exit(string rsid);
+}
+
+/// <summary>
+/// Holds the Section 10.1 window for one session until disposed.
+/// </summary>
+internal sealed class GateClaim(IRbpInFlightGate gate, string rsid)
+    : IRbpInvocationClaim
+{
+    private int _released;
+
+    public string Rsid { get; } = rsid;
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _released, 1) == 0)
+        {
+            gate.Exit(Rsid);
+        }
+    }
 }
 
 internal sealed class RbpInFlightGate : IRbpInFlightGate

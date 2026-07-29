@@ -32,8 +32,24 @@ namespace RevAgent.Bridge.Gateway.Dispatch;
 /// 12.2 rules then arbitrate on redelivery.
 /// </para>
 /// </remarks>
-internal sealed class RbpInvocationDispatcher
+internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 {
+    /// <summary>
+    /// Section 12.1 step 3 must not be cancellable.
+    /// </summary>
+    /// <remarks>
+    /// The store takes its write gate with
+    /// <c>_gate.WaitAsync(cancellationToken)</c>, so a cancel arriving between
+    /// the add-in answering and the terminal persist would destroy an outcome
+    /// that has already happened: the row stays <c>executing</c>, and the next
+    /// mutating redelivery is answered <c>journal_indeterminate</c> with a
+    /// Section 6.2.1 hold that a human has to clear. The connection dropping is
+    /// never a reason to forget what the add-in did. This does not make the
+    /// write unbounded — the store still fails closed once disposed.
+    /// </remarks>
+    private static readonly CancellationToken DurableDecisionToken =
+        CancellationToken.None;
+
     private readonly RbpJournalStore _journal;
     private readonly IRbpInvocationChannel _channel;
     private readonly IRbpInFlightGate _inFlightGate;
@@ -156,6 +172,63 @@ internal sealed class RbpInvocationDispatcher
         }
     }
 
+    public IRbpInvocationClaim? TryClaim(string rsid) =>
+        _inFlightGate.TryEnter(rsid) ? new GateClaim(_inFlightGate, rsid) : null;
+
+    public RbpInvocationAnswer RejectConcurrent(string invocationId) =>
+        RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.KnownError(
+                invocationId,
+                faultClass: "protocol",
+                retryable: false,
+                message:
+                    "A data-plane invocation is already in flight for this " +
+                    "session; Section 10.1 allows exactly one."));
+
+    /// <summary>
+    /// Answers an invoke whose Section 10.1 claim the caller already holds.
+    /// </summary>
+    /// <remarks>
+    /// Parsing happens here rather than in the caller so a malformed payload
+    /// becomes this invocation's terminal Section 15 <c>protocol</c> error
+    /// instead of an exception thrown into the connection cycle. No add-in byte
+    /// is written and no journal row is reserved on that path.
+    /// </remarks>
+    public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
+        IRbpInvocationClaim claim,
+        JsonElement invokePayload,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(claim);
+
+        RbpInvokeRequest request;
+        try
+        {
+            request = RbpInvokeRequest.Parse(claim.Rsid, invokePayload);
+        }
+        catch (RbpDispatchException exception)
+            when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
+        {
+            return RbpInvocationAnswer.Error(
+                RbpInvocationPayloads.KnownError(
+                    ReadInvocationId(invokePayload),
+                    faultClass: "protocol",
+                    retryable: false,
+                    message: exception.Message));
+        }
+
+        return await DispatchUnderGateAsync(request, cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static string ReadInvocationId(JsonElement payload) =>
+        payload.ValueKind == JsonValueKind.Object &&
+        payload.TryGetProperty("invocation_id", out JsonElement value) &&
+        value.ValueKind == JsonValueKind.String &&
+        value.GetString() is { Length: > 0 } text
+            ? text
+            : "00000000-0000-7000-8000-000000000000";
+
     private static RbpInvocationAnswer ReplayTerminal(
         RbpStoredInvocation stored)
     {
@@ -264,33 +337,44 @@ internal sealed class RbpInvocationDispatcher
             outcome.RequestBytes,
             outcome.ResponseBytes);
 
-        return outcome.Kind switch
+        try
         {
-            RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
-                await TerminalizeSuccessAsync(
-                        request,
-                        identity,
-                        outcome,
-                        metrics,
-                        cancellationToken)
-                    .ConfigureAwait(false),
+            return outcome.Kind switch
+            {
+                RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
+                    await TerminalizeSuccessAsync(
+                            request,
+                            identity,
+                            outcome,
+                            metrics,
+                            cancellationToken)
+                        .ConfigureAwait(false),
 
-            RbpAddinOutcomeKind.KnownNotDispatched =>
-                await TerminalizeKnownFailureAsync(
-                        request,
-                        identity,
-                        outcome,
-                        cancellationToken)
-                    .ConfigureAwait(false),
+                RbpAddinOutcomeKind.KnownNotDispatched =>
+                    await TerminalizeKnownFailureAsync(
+                            request,
+                            identity,
+                            outcome,
+                            cancellationToken)
+                        .ConfigureAwait(false),
 
-            _ => await TerminalizeUnknownAsync(
-                        request,
-                        identity,
-                        outcome.Message ??
-                            "The add-in dispatch outcome is unknown.",
-                        cancellationToken)
-                    .ConfigureAwait(false),
-        };
+                _ => await TerminalizeUnknownAsync(
+                            request,
+                            identity,
+                            outcome.Message ??
+                                "The add-in dispatch outcome is unknown.",
+                            cancellationToken)
+                        .ConfigureAwait(false),
+            };
+        }
+        finally
+        {
+            // Only now. Releasing before the outcome is durable would reopen
+            // the add-in session while this invocation's fate lives solely in
+            // memory; a crash in that window lets a redelivery dispatch again
+            // against a row the journal still reports as `executing`.
+            outcome.Lease?.ReleaseAfterDurableDecision();
+        }
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(
@@ -330,7 +414,7 @@ internal sealed class RbpInvocationDispatcher
                         : RbpInvocationState.Completed,
                     body,
                     digest),
-                cancellationToken)
+                DurableDecisionToken)
             .ConfigureAwait(false);
 
         return RbpInvocationAnswer.Result(body);
@@ -359,7 +443,7 @@ internal sealed class RbpInvocationDispatcher
                     RbpInvocationState.Failed,
                     body,
                     JournalEvidenceDigest(body)),
-                cancellationToken)
+                DurableDecisionToken)
             .ConfigureAwait(false);
 
         return RbpInvocationAnswer.Error(body);
@@ -387,7 +471,7 @@ internal sealed class RbpInvocationDispatcher
                         RbpInvocationState.Failed,
                         readBody,
                         JournalEvidenceDigest(readBody)),
-                    cancellationToken)
+                    DurableDecisionToken)
                 .ConfigureAwait(false);
             return RbpInvocationAnswer.Error(readBody);
         }
@@ -403,7 +487,7 @@ internal sealed class RbpInvocationDispatcher
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
                     ResultDigest: null),
-                cancellationToken)
+                DurableDecisionToken)
             .ConfigureAwait(false);
 
         if (holdId is not { Length: > 0 })
