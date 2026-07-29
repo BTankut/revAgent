@@ -137,6 +137,10 @@ export default function setup(): void {
     "--node-executable",
     process.execPath,
   ];
+  // Record how long this actually took. Without it, a timeout here reports
+  // only that a budget was exceeded and never how close the healthy runs were,
+  // which is what made the earlier 180 s expiry impossible to interpret.
+  const startedAt = Date.now();
   const result = spawnSync(
     powershell,
     productionLaunchPowerShellArguments({
@@ -152,20 +156,33 @@ export default function setup(): void {
       encoding: "utf8",
       env: testLauncherEnvironment(),
       shell: false,
-      timeout: 180_000,
+      // The measured cost of this bootstrap on the Windows runner has reached
+      // ~173 s, so the previous 180 s budget left a few percent of headroom and
+      // turned any host slowdown straight into a red build. Sized against the
+      // observed worst case with room to spare instead.
+      timeout: 420_000,
       windowsHide: true,
     },
   );
-  if (result.error !== undefined) throw result.error;
+  const elapsedMs = Date.now() - startedAt;
+  if (result.error !== undefined) {
+    throw new Error(
+      `canonical production test preparation failed after ${String(elapsedMs)}ms ` +
+        `(budget 420000ms): ${result.error.message}`,
+      { cause: result.error },
+    );
+  }
   if (result.status !== 0) {
     throw new Error(
       [
-        `canonical production test preparation failed (exit ${String(result.status)})`,
+        `canonical production test preparation failed (exit ${String(result.status)}) ` +
+          `after ${String(elapsedMs)}ms`,
         String(result.stdout).trim(),
         String(result.stderr).trim(),
       ].filter((entry) => entry.length > 0).join("\n"),
     );
   }
+  console.log(`[globalSetup] canonical production preparation took ${String(elapsedMs)}ms`);
   process.env.RBP_TEST_PRODUCTION_PLAN = planFile;
   process.env.RBP_TEST_REPO_ROOT = repoRoot;
 }

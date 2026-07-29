@@ -1,4 +1,3 @@
-import { spawn } from "node:child_process";
 import {
   copyFileSync,
   existsSync,
@@ -21,10 +20,14 @@ import {
 import { stableJson } from "../src/stableJson.js";
 import type { ExecutionPlan } from "../src/types.js";
 import {
-  canonicalProductionCliArguments,
   exactSystemPowerShell,
 } from "./canonicalProductionLauncher.js";
 import { createCurrentProductionPlan } from "./helpers.js";
+import {
+  invokeProductionCli,
+  productionCliTestTimeoutMs,
+  type ProductionCliInvocationResult,
+} from "./support/invokeProductionCli.js";
 
 const packageRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -39,62 +42,16 @@ const compiledCli = path.join(
   "src",
   "cli.js",
 );
-interface CliInvocationResult {
-  status: number | null;
-  signal: NodeJS.Signals | null;
-  stdout: string;
-  stderr: string;
-  error: Error | undefined;
-}
 
 function invokeCurrentCli(input: {
   args: readonly string[];
   cwd: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<CliInvocationResult> {
-  const child = spawn(
-    exactSystemPowerShell,
-    canonicalProductionCliArguments(repoRoot, input.args),
-    {
-      cwd: input.cwd,
-      shell: false,
-      env: input.env ?? sanitizedProductionRuntimeEnvironment(),
-      windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-  return new Promise((resolve) => {
-    let stdout = "";
-    let stderr = "";
-    let launchError: Error | undefined;
-    let timedOut = false;
-    child.stdout.setEncoding("utf8");
-    child.stderr.setEncoding("utf8");
-    child.stdout.on("data", (chunk: string) => {
-      stdout += chunk;
-    });
-    child.stderr.on("data", (chunk: string) => {
-      stderr += chunk;
-    });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, 90_000);
-    child.on("error", (error) => {
-      launchError = error;
-    });
-    child.on("close", (status, signal) => {
-      clearTimeout(timeout);
-      resolve({
-        status,
-        signal,
-        stdout,
-        stderr,
-        error: timedOut
-          ? new Error("validator launcher timed out after 90000ms")
-          : launchError,
-      });
-    });
+}): Promise<ProductionCliInvocationResult> {
+  return invokeProductionCli({
+    ...input,
+    repoRoot,
+    label: "validator launcher",
   });
 }
 
@@ -160,7 +117,7 @@ afterEach(() => {
   }
 });
 
-describe("PASS-capable validator production identity", { timeout: 120_000 }, () => {
+describe("PASS-capable validator production identity", () => {
   it("rejects a caller-selected alternate Node before the canonical host starts", () => {
     const root = temporaryRoot("rbp-validation-alternate-node-");
     const alternateNode = path.join(
@@ -279,7 +236,10 @@ describe("PASS-capable validator production identity", { timeout: 120_000 }, () 
       expect(String(result.stdout)).not.toContain("PASS");
       expect(existsSync(attackerMarker)).toBe(false);
     }
-  }, 300_000);
+    // Above 3x the launcher's own ceiling, so the inner, diagnosable timeout
+    // always fires before this outer one. An opaque vitest timeout here would
+    // tell us nothing about which of the three commands stalled.
+  }, productionCliTestTimeoutMs(3));
 
   it("does not consult hostile npm script-shell, user config, or node.cmd", async () => {
     const root = temporaryRoot("rbp-validation-hostile-npm-");
@@ -333,6 +293,6 @@ describe("PASS-capable validator production identity", { timeout: 120_000 }, () 
     expect(String(result.stderr)).toContain(path.basename(missingReport));
     expect(String(result.stdout)).not.toContain("PASS");
     expect(existsSync(marker)).toBe(false);
-  });
+  }, productionCliTestTimeoutMs(1));
 
 });
