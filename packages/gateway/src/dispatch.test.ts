@@ -21,7 +21,7 @@ const autoRecord: GatewayToolRecord = {
   executorMethod: "test_read",
   inputSchema: { value: z.string().min(1) },
   inputJsonSchema: {
-    $schema: "http://json-schema.org/draft-07/schema#",
+    $schema: "https://json-schema.org/draft/2020-12/schema",
     additionalProperties: false,
     properties: {
       value: { minLength: 1, type: "string" },

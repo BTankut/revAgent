@@ -3,7 +3,8 @@
 This additive revAgent Gateway package retains the M0 transport spike and now
 contains the first bounded M2 north/registry/dispatch slice. It mirrors the
 existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
-mode) and pins the same MCP SDK major.
+mode). The Gateway package uses the split MCP TypeScript SDK v2 packages and
+Zod 4; frozen packages under `installer/**` retain their independent v1 pins.
 
 ## M2 first north/registry/dispatch slice
 
@@ -20,7 +21,7 @@ The first M2 slice is additive and intentionally narrow:
   against the registry Zod shape, blocks `confirm`/`gated` tools until policy
   middleware exists, and preserves completed/guarded/failed executor outcomes.
 - `startNorthMcpEndpoint` uses one `McpServer` and
-  `StreamableHTTPServerTransport` per MCP session, authenticates every request
+  `NodeStreamableHTTPServerTransport` per MCP session, authenticates every request
   through an injected fail-closed boundary, binds the session to one immutable
   principal, and exposes the same capability-index bytes as server
   instructions and `revagent://capability-index`.
@@ -44,7 +45,17 @@ runtime dependency or modify the frozen RBP/1 package.
 
 ## W1-5 transport spike
 
-The spike reads the frozen legacy source tree without modifying it. `scripts/bundle-legacy-register.mjs` bundles the existing `installer/runtime-mcp-server/src/tools/register.ts` graph into ignored Gateway build output, copies the runtime schemas needed during module initialization, and leaves package imports external so they resolve from the Gateway package. The server then connects that exact `registerTools` export to `StreamableHTTPServerTransport` on loopback HTTP. This exercises the planned transport swap at the existing runtime `src/index.ts` lines 19-20. No Revit tool handler is invoked by the catalog probe.
+The spike reads the frozen legacy source tree without modifying it.
+`scripts/bundle-legacy-register.mjs` bundles the existing
+`installer/runtime-mcp-server/src/tools/register.ts` graph into ignored
+Gateway build output, copies the runtime schemas needed during module
+initialization, and leaves package imports external so they resolve from the
+Gateway package. A Gateway-owned compatibility adapter maps that exact graph's
+legacy `.tool()` registration calls onto the v2 `McpServer`;
+`NodeStreamableHTTPServerTransport` then serves the catalog on loopback HTTP.
+This exercises the planned transport swap at the existing runtime
+`src/index.ts` lines 19-20 without retaining the monolithic v1 SDK in the
+Gateway package. No Revit tool handler is invoked by the catalog probe.
 
 Build and run the one-client spike server:
 
@@ -80,7 +91,5 @@ They are not accepted as M2 Gateway ownership. M2 MUST remove all three from the
 lockfile when the legacy registration graph is replaced by executor/package boundaries. If an M2 capability
 still needs equivalent functionality, it must add a deliberately owned dependency behind the relevant
 spatial or file-ingress design; the spike pins must not be retained silently.
-
-The MCP SDK 1.29 dependency graph currently includes `@hono/node-server` 1.19.x. GitHub advisory GHSA-frvp-7c67-39w9 affects that package's Windows-only `serve-static` helper; this spike exposes no static-file handler and uses only the SDK's Node request adapter. A forced 2.x override is intentionally avoided because it produces an invalid semver tree. Upgrade remains pending an SDK-compatible patched range.
 
 Side finding for P3: the legacy runtime declares `ws` but its source has no `ws` import. The Gateway spike therefore does not carry that dependency; confirm and drop it during relocation rather than changing the frozen runtime now.

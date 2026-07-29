@@ -18,7 +18,7 @@ const records: readonly GatewayToolRecord[] = [
     executorMethod: "get_type_details",
     inputSchema: {},
     inputJsonSchema: {
-      $schema: "http://json-schema.org/draft-07/schema#",
+      $schema: "https://json-schema.org/draft/2020-12/schema",
       additionalProperties: false,
       properties: {},
       type: "object",
@@ -34,7 +34,7 @@ const records: readonly GatewayToolRecord[] = [
     executorMethod: "get_ui_state",
     inputSchema: {},
     inputJsonSchema: {
-      $schema: "http://json-schema.org/draft-07/schema#",
+      $schema: "https://json-schema.org/draft/2020-12/schema",
       additionalProperties: false,
       properties: {},
       type: "object",
@@ -144,7 +144,7 @@ describe("GatewayToolRegistry", () => {
             ...records[0]!,
             inputSchema: { value: z.string() },
             inputJsonSchema: {
-              $schema: "http://json-schema.org/draft-07/schema#",
+              $schema: "https://json-schema.org/draft/2020-12/schema",
               additionalProperties: false,
               properties: { value: { type: "number" } },
               required: ["value"],
