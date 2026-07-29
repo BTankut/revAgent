@@ -618,3 +618,22 @@ authorize changes under `installer/**`, start the deferred Mode-B engine, implem
 `Mcp-Method`/`Mcp-Name` audit, or define capability-index caching. It does not change existing MRTR/GAP-2
 ownership; those opportunity slices remain separate PRs after this decision chain. The normative resolution is
 RES-33 in `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-29 — R-F: a shared red gate stops merges and repeated red is escalated (R-K)
+
+Source: operator emergency directive from Barış Tankut on 2026-07-29 after PR #315 merged while the
+Windows `Gateway gates` lane was red.
+
+Branch-protection configuration is not the authority to proceed through a known red shared gate. Effective
+immediately, no PR may merge while `Gateway gates` is red. If `Engineering gates`, `Gateway gates`, or
+`Gateway CI` has two consecutive red runs in the same lane, the responsible assistant stops its own work
+and sends one operator notification card that names the gate, failing test, consecutive-red count, and whether a
+fix exists and where. A “known flaky” label is not a disposition and cannot waive the stop or notification.
+
+The similarly named jobs have distinct scopes: `Gateway gates` is the Windows full
+migration/RBP-conformance lane in `.github/workflows/ci.yml`; `Gateway CI` is the GitHub-hosted Linux
+`packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in
+`.github/workflows/gateway-ci.yml`. This distinction is recorded in the index so a result from one lane
+cannot be mistaken for the other.
+
+The permanent normative wording is R-K in `docs/implementation-plan/00-INDEX.md` section 8.

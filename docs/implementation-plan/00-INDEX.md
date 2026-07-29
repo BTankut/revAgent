@@ -374,6 +374,13 @@ cutover.
   check missing for the current head SHA) can reject a merge without an error message. After every merge
   attempt the assistant MUST verify with `gh pr view <n> --json state,mergeCommit` (or an equivalent API
   read) before reporting, and MUST correct any earlier report proven wrong by that check.
+- **R-K Shared-gate red stop and escalation.** No PR MAY merge while `Gateway gates` is red, whether or
+  not branch protection already enforces that condition. If `Engineering gates`, `Gateway gates`, or
+  `Gateway CI` has two consecutive red runs in the same lane, the responsible assistant MUST stop its own
+  work and send the operator one notification card naming the gate, failing test, consecutive-red count, and
+  whether a fix exists and where; “known flaky” is not an acceptable disposition. `Gateway gates` is the
+  Windows full migration/RBP-conformance lane in `ci.yml`; `Gateway CI` is the GitHub-hosted Linux
+  `packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in `gateway-ci.yml`.
 
 ### 8.1 2026-07-23 operator execution checkpoint
 
