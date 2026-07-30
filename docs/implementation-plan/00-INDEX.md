@@ -244,8 +244,16 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   evidence, and protected-tag identity validation all remain required. As an acceptance predicate of the
   retained-three-run aggregate class — not a fifth RES-28 evidence class — a mechanically separate
   full-Vitest qualification MUST parse all five shard summaries and assert exactly 60 files, 373 tests, and
-  5/5 serial shards; exit code zero alone is insufficient. This amendment does not authorize tag-evidence
-  execution or creation of `rbp/v1.0.0`; both remain separate authorized tasks under section 8.2.
+  5/5 serial shards; exit code zero alone is insufficient. Protected-main push
+  [run 30480038477](https://github.com/BTankut/revAgent/actions/runs/30480038477), Gateway job
+  [90671414231](https://github.com/BTankut/revAgent/actions/runs/30480038477/job/90671414231), measured that
+  predicate on `main@9558fc0b1a60757f43f4813b973cc9e589d45a9a` (tree
+  `b8856d788a961a0557384c7666609fd8fe112ccc`): every shard emitted `PASS` and the final line asserted
+  `60 files / 373 tests / 5 shards`; an independent `git ls-tree` inventory at that SHA enumerated 60
+  tracked `*.test.ts` files under `packages/rbp-conformance/tests`. This is pre-tag calibration evidence,
+  not a counted tag-evidence run or anchor selection. This amendment does not authorize tag-evidence
+  execution or creation of `rbp/v1.0.0`; both require their own separate operator authorization under
+  section 8.2.
 
 ---
 

@@ -654,10 +654,22 @@ The first application is the official Anthropic incident
 the incident, #320 review run `30479734170` / job `90670367809` completed green from 18:24–18:27 UTC with
 `total_cost_usd=0.929517`, 12 turns, populated structured output, and `blocking=false`. #321 run
 `30488398855` attempts 1 and 2 ran inside the active incident window and both ended with one turn,
-`total_cost_usd=0`, and no structured output. Those two reds therefore remain merge-blocking but are
-classified as provider-outage evidence rather than a Gateway/runner/Claude-review lane defect; they do not
-constitute an R-K stop. The provider's resolved timestamp is pending and MUST be appended before the
-authorized Draft-to-Ready exact-head retrigger is issued.
+`total_cost_usd=0`, and no structured output. Those two reds kept #321 merge-blocked until a later
+exact-head green review, but are classified as provider-outage evidence rather than a
+Gateway/runner/Claude-review lane defect; they do not constitute an R-K stop. Anthropic marked that incident
+resolved at 2026-07-29 22:36 UTC.
+
+Before the authorized retry on 2026-07-30, a separate official
+[`Degraded performance on Claude Opus 4.8`](https://status.claude.com/incidents/kqjy03gs895j) incident
+opened at 13:43 UTC and named Claude API and Claude Code among the affected components. No retry was spent
+while it remained active. Anthropic marked it resolved at 14:24 UTC; only after resolution was #321 cycled
+ready → draft → ready at exact head `808be5e356545278e329b8dd11c7393b8d45e3e1`. Review
+[run 30552113415](https://github.com/BTankut/revAgent/actions/runs/30552113415), job
+[90903133862](https://github.com/BTankut/revAgent/actions/runs/30552113415/job/90903133862), completed green
+with `total_cost_usd=0.4578525`, eight turns, populated two-field structured output, and
+`blocking=false`. R-I then verified PR #321 as `state=MERGED` with
+`mergeCommit=255614623e4ace84f598b5db29834f8941410b2e`. This chronology demonstrates the rule without
+waiving the required check or consuming repeated retries during an active provider incident.
 
 R-K does not stop development, rebases, documentation-only governance/evidence records, or
 operator-authorized changes whose purpose is to repair the named shared gate. The repair exemption is
@@ -732,7 +744,9 @@ selected, confirmed, or authorized as the tag target by this amendment.
 The RES-28 anchor is the protected main commit on which the complete tag-evidence set is actually produced
 green. Before any tag-evidence run is counted, the implementing assistant reports the resolved
 protected-main 40-character commit SHA and tree SHA for operator confirmation. A separately generated
-harness-only commit is neither required nor preferred.
+harness-only commit is neither required nor preferred. This dynamic-anchor rule supersedes the
+2026-07-23 exact-protected-candidate tag-target clause while preserving that earlier record as historical
+decision context.
 
 RES-28's retained three-run aggregate, real one-hour reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE
 proxy-interoperability evidence, and protected-tag identity validation all remain in force. As an acceptance
@@ -741,6 +755,16 @@ separate full-Vitest qualification parses all five shard summaries and asserts e
 tests, and 5/5 serial shards; process exit code zero alone does not satisfy that predicate. The prior
 `59 files / 365 tests` ledger figure is corrected wherever recorded.
 
+Protected-main push [run 30480038477](https://github.com/BTankut/revAgent/actions/runs/30480038477),
+Gateway job [90671414231](https://github.com/BTankut/revAgent/actions/runs/30480038477/job/90671414231),
+measured the predicate on `main@9558fc0b1a60757f43f4813b973cc9e589d45a9a` (tree
+`b8856d788a961a0557384c7666609fd8fe112ccc`): shards 1/5 through 5/5 each emitted `PASS`, followed by
+`[rbp-conformance] cardinality 60 files / 373 tests / 5 shards`. Independently, the `git ls-tree`
+inventory under `packages/rbp-conformance/tests` contained 67 tracked paths; filtering it with
+`rg -c '\.test\.ts$'` returned `60`. Together these bind the corrected cardinality to protected-main
+execution as pre-tag calibration only. They are not a counted RES-28 tag-evidence run, do not select or
+confirm the dynamic anchor, and do not expand the R-H evidence set.
+
 This amendment does not authorize a tag-evidence run or creation of `rbp/v1.0.0`. Tag execution and tag
-creation remain separately authorized tasks under `docs/implementation-plan/00-INDEX.md` section 8.2. The
-normative resolution is RES-34 in that index.
+creation each require their own separate operator authorization under
+`docs/implementation-plan/00-INDEX.md` section 8.2. The normative resolution is RES-34 in that index.

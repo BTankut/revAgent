@@ -15,11 +15,12 @@ This ledger separates two gates under RES-28. M1 requires the executable
 O1-T3–T6 artifacts, one complete green current-candidate Section 21 suite with
 its protected PR check rollup, the other Section 22 M1 evidence, and a
 protected tree-equal squash merge. The later tag closure requires the retained
-three-run aggregate, real one-hour reconnect/proxy-churn soak,
-WSS/Streamable HTTP/SSE proxy-interoperability evidence, and tag-identity
-validation. The latter lane may run in parallel with M2/M3 and does not block
-their start. O1-T7 real-add-in and DP-10 client evidence remain separate
-pilot-entry gates.
+three-run aggregate, the RES-34 full-Vitest 60-file/373-test/5-shard
+acceptance predicate, real one-hour reconnect/proxy-churn soak,
+WSS/Streamable HTTP/SSE proxy-interoperability evidence, and protected-tag
+identity validation. The latter lane may run in parallel with M2/M3 and does
+not block their start. O1-T7 real-add-in and DP-10 client evidence remain
+separate pilot-entry gates.
 
 ## 2026-07-25 operator closing checkpoint
 
@@ -87,10 +88,10 @@ identities, and the semantic-freeze and tag gates use them differently:
    inputs, normative protocol content, version metadata, or the tagged anchor.
    Its commit is never the freeze-tag target.
 
-The post-tag evidence-record-only change replaces every
-`not_yet_available` field below with a real retained value. The table is an
-audit record of already validated facts; editing the table is not an input to
-the pass verdict.
+The post-tag evidence-record-only change replaces every `not_yet_confirmed`
+and `not_yet_available` field below with a real retained value. The table is
+an audit record of already validated facts; editing the table is not an input
+to the pass verdict.
 
 | Identity | Required value | Current evidence | State |
 |---|---|---|---|
@@ -186,6 +187,16 @@ mechanically separate full-Vitest qualification is an acceptance predicate of
 this aggregate class, not a fourth retained run or a fifth RES-28 evidence
 class; its 60-file/373-test cardinality is not a field in these 40-case reports.
 
+Protected-main push [run 30480038477](https://github.com/BTankut/revAgent/actions/runs/30480038477),
+Gateway job [90671414231](https://github.com/BTankut/revAgent/actions/runs/30480038477/job/90671414231),
+measured the qualification parser on
+`main@9558fc0b1a60757f43f4813b973cc9e589d45a9a` (tree
+`b8856d788a961a0557384c7666609fd8fe112ccc`): all five shard `PASS` records were followed by
+`60 files / 373 tests / 5 shards`; an independent `git ls-tree` inventory enumerated 60 tracked
+`*.test.ts` files under `packages/rbp-conformance/tests` at the same SHA. This is pre-tag calibration, not
+a retained run, a completed qualification for the future tag-evidence set, or selection of the dynamic
+RES-34 anchor.
+
 | Sequence | Run id | Start/finish | Duration | Cases | Assertions | Leak verdict | Run report SHA-256 | JUnit SHA-256 | State |
 |---:|---|---|---:|---:|---:|---|---|---|---|
 | 1 | `not_yet_available` | `not_yet_available` | — | — | — | — | — | — | `deferred_non_blocking` |
@@ -228,7 +239,7 @@ M1/M2/M3. Smoke mode or an accelerated clock cannot satisfy it.
 | Batchable-command restrictions and atomic rollback acceptance | Exact `batchable:true` command set, one-frame commit/rollback, model digest, and owner acceptance record | Barış Tankut, add-in implementation owner: accepted 2026-07-25 | `accepted` |
 | GAP-7 RBP artifact carrier | C15/C32/C40 stream, descriptor, digest, size, retransmission, confinement, cleanup evidence | Current-candidate harness gate passes | `passed` |
 | Exact RES-21 materialization | Gateway audit and Bridge journal rows showing literal `rsid + "/" + invocation_id` for the same invocation | Current-candidate Bridge/harness gates pass | `passed` |
-| Review/R-F record | Dated closure review and every normative implementation amendment in `docs/decisions/DP-log.md` | M1 closing approval and RES-28 recorded on 2026-07-25 | `passed` |
+| Review/R-F record | Dated closure review and every normative implementation amendment in `docs/decisions/DP-log.md` | M1 closing approval and RES-28 recorded on 2026-07-25; RES-34 recorded on 2026-07-29; full dated chain retained in the DP-log | `passed` |
 | Deferred tag: retained three-run aggregate | Three validated consecutive reports on the confirmed tag-evidence anchor | Not available | `deferred_non_blocking` |
 | Deferred tag: WSS and Streamable HTTP/SSE proxy/interoperability parity | Raw per-binding proxy observations plus equal journal/resume outcomes | Not available | `deferred_non_blocking` |
 | Deferred tag: one-hour soak | Validated 3,600,000 ms report and metrics bound to the confirmed tag-evidence anchor | Not available | `deferred_non_blocking` |
@@ -240,7 +251,8 @@ current-candidate suite, the dated RES-28 review, and named add-in owner
 acceptance. Inclusion of this record through PR #290's green, tree-equal
 protected squash merge establishes **RBP/1 FROZEN** and M1 `accepted`.
 `rbp/v1.0.0` remains absent and separately pending until the defined
-three-run/soak/proxy-interoperability tag evidence validates. That pending tag
-does not block M2/M3, but this closeout does not itself authorize either
-kickoff. A substantive semantic or safety finding remains governed by R-F and
-Section 7.3.
+three-run aggregate, RES-34 full-Vitest predicate, soak,
+proxy-interoperability evidence, and protected-tag identity validation pass.
+That pending tag does not block M2/M3, but this closeout does not itself
+authorize either kickoff. A substantive semantic or safety finding remains
+governed by R-F and Section 7.3.

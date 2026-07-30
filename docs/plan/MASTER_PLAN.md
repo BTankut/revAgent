@@ -54,8 +54,10 @@ before a run is counted. As an acceptance predicate of the retained-three-run
 aggregate class — not a fifth RES-28 evidence class — a mechanically separate
 full-Vitest qualification parses all five shard summaries and asserts 60
 files, 373/373 tests, and 5/5 serial shards rather than trusting exit code
-zero. Neither this record nor RES-34 authorizes tag-evidence execution or
-creation of `rbp/v1.0.0`.
+zero. RES-34 retains the protected-main pre-tag calibration that independently
+enumerated 60 tracked test files and measured 373/373 tests across 5/5 shards;
+it is not counted tag evidence or anchor selection. Neither this record nor
+RES-34 authorizes tag-evidence execution or creation of `rbp/v1.0.0`.
 
 After the M1 closeout, this assistant is assigned only to WP2/M2 on
 `codex/wp2-*`. It may not edit `packages/bridge/**` or
