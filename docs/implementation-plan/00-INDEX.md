@@ -212,6 +212,10 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   seconds, so the bounded private-repository minute cost is accepted in exchange for eliminating the
   repository-wide merge deadlock. RES-31's runner, exact-head, Node 24, install, lint, typecheck, test,
   secret-scan, image-build, Windows-workflow freeze, and M6 deferral decisions are otherwise unchanged.
+  The operator-authorized 2026-07-29 shared-gate repair recorded by R-K is the dated, bounded exception to
+  that earlier Windows-workflow freeze wording: `.github/workflows/ci.yml` may change only for the approved
+  pull-request concurrency and Git cache-tool exposure controls; the Windows conformance and
+  production-launcher identity constraints remain unchanged.
 - **RES-33 (2026-07-28 operator decision; 2026-07-29 R-F record) — M2 adopts MCP TypeScript SDK v2
   without a flag-day client cut.** The Gateway-owned north surface uses
   `@modelcontextprotocol/{server,client,core,node}@2.0.0` with Zod `^4.2` and composes its single
@@ -227,6 +231,29 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   `-32020` (`HeaderMismatch`) and `-32022` (`UnsupportedProtocolVersion`) response bodies. This amends only
   RES-29's north MCP delivery mechanics; the external-client ownership boundary, no-Gateway-LLM rule, frozen
   RBP/1 contract, and M2-to-M4 stop boundary remain unchanged.
+- **RES-34 (2026-07-29 R-F/operator amendment) — the RES-28 evidence anchor is resolved from the
+  protected main commit that actually produces the complete green tag-evidence set.** The semantic-freeze
+  base remains `b3cca906ec90d0068df489407d3e0ce7254a308e`, and no harness-only cherry-pick is required.
+  The normative surface is byte-identical at the freeze base and the post-#308 protected main tree:
+  `docs/specs` resolves to `614b8bc2273ce4fe4b970e090d2b2c2d89486935` and `packages/protocol` to
+  `bbc6ebb687118c30d29508771734df754a735b35` at both commits. This approval does not pin the evidence
+  anchor to a literal SHA. The dynamically resolved anchor MUST retain those two normative subtree
+  identities. Before any tag-evidence run is counted, the implementing assistant MUST report the resolved
+  protected-main 40-character commit SHA and tree SHA for operator confirmation. The retained three-run
+  aggregate, real one-hour reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE proxy-interoperability
+  evidence, and protected-tag identity validation all remain required. As an acceptance predicate of the
+  retained-three-run aggregate class — not a fifth RES-28 evidence class — a mechanically separate
+  full-Vitest qualification MUST parse all five shard summaries and assert exactly 60 files, 373 tests, and
+  5/5 serial shards; exit code zero alone is insufficient. Protected-main push
+  [run 30480038477](https://github.com/BTankut/revAgent/actions/runs/30480038477), Gateway job
+  [90671414231](https://github.com/BTankut/revAgent/actions/runs/30480038477/job/90671414231), measured that
+  predicate on `main@9558fc0b1a60757f43f4813b973cc9e589d45a9a` (tree
+  `b8856d788a961a0557384c7666609fd8fe112ccc`): every shard emitted `PASS` and the final line asserted
+  `60 files / 373 tests / 5 shards`; an independent `git ls-tree` inventory at that SHA enumerated 60
+  tracked `*.test.ts` files under `packages/rbp-conformance/tests`. This is pre-tag calibration evidence,
+  not a counted tag-evidence run or anchor selection. This amendment does not authorize tag-evidence
+  execution or creation of `rbp/v1.0.0`; both require their own separate operator authorization under
+  section 8.2.
 
 ---
 
@@ -374,6 +401,30 @@ cutover.
   check missing for the current head SHA) can reject a merge without an error message. After every merge
   attempt the assistant MUST verify with `gh pr view <n> --json state,mergeCommit` (or an equivalent API
   read) before reporting, and MUST correct any earlier report proven wrong by that check.
+- **R-K Shared-gate red merge stop, repair exemption, and escalation.** No executable-code PR MAY merge
+  without a green `Gateway gates` result for that PR's exact head SHA. If `Engineering gates`, `Gateway
+  gates`, or `Gateway CI` has two consecutive red runs in the same lane, the responsible assistant MUST
+  block unrelated executable-code merges in that lane and send the operator one notification card
+  containing: the exact error signature; every red run ID in the sequence; the oldest known run carrying
+  that signature; whether the same tree SHA has a green run and its ID; and at least two candidate remedies
+  with their costs, in addition to the gate, shard/test, consecutive-red count, and current fix/location.
+  A provider-caused outage is not a lane defect, and a red run covered by that outage does not advance the
+  consecutive-red counter or trigger the R-K work stop, only when an official provider status-page incident
+  names the affected dependency and the run timestamps fall within the incident's active window. The record
+  MUST retain the incident title and URL, affected components, start timestamp, and eventual resolved
+  timestamp. This classification never turns the required check green or waives fail-closed merge blocking:
+  no retry is produced while the incident remains active; after the provider records resolution, one
+  exact-head retrigger may be made, and any uncovered or post-resolution red follows ordinary R-K handling.
+  Conformance reports MUST state executed and passed cardinality as N of 373 tests, N of 60 files, and name
+  every shard that started or completed; a smaller attempt-local denominator is forbidden. “Known flaky” is
+  not an acceptable disposition. Development, rebases, documentation-only governance/evidence records, and
+  operator-authorized changes whose purpose is to repair the named shared gate are exempt from the R-K work
+  stop. The repair exemption is limited to the approved gate fix, its necessary diagnostic instrumentation,
+  and directly associated workflow reliability/cost controls; it does not admit unrelated product work or
+  waive exact-head gates, so the repair PR itself still MUST be green on `Gateway gates` at its exact head
+  before merge. No M3 PR may merge without that same exact-head proof. `Gateway gates` is the Windows full
+  migration/RBP-conformance lane in `ci.yml`; `Gateway CI` is the GitHub-hosted Linux
+  `packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in `gateway-ci.yml`.
 
 ### 8.1 2026-07-23 operator execution checkpoint
 

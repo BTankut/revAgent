@@ -618,3 +618,153 @@ authorize changes under `installer/**`, start the deferred Mode-B engine, implem
 `Mcp-Method`/`Mcp-Name` audit, or define capability-index caching. It does not change existing MRTR/GAP-2
 ownership; those opportunity slices remain separate PRs after this decision chain. The normative resolution is
 RES-33 in `docs/implementation-plan/00-INDEX.md`.
+
+### 2026-07-29 — R-F: a shared red gate stops unrelated merges and repeated red is escalated (R-K)
+
+Source: operator emergency directive from Barış Tankut on 2026-07-29 after PR #315 merged while the
+Windows `Gateway gates` lane was red, plus the same-day coordinator amendments after review of the complete
+same-tree run record and the runner-restart recovery.
+
+Provider-outage amendment source: operator directive from Barış Tankut on 2026-07-29 after the official
+Anthropic all-model incident overlapped both #321 Claude review attempts.
+
+Branch-protection configuration is not the authority to proceed through a known red exact-head shared gate.
+No executable-code PR may merge without a green `Gateway gates` result for that PR's exact head SHA. If
+`Engineering gates`, `Gateway gates`, or `Gateway CI` has two consecutive red runs in the same lane, the
+responsible assistant blocks unrelated executable-code merges in that lane and sends one operator
+notification card. The card names the gate, shard/test, consecutive-red count, and current fix/location; it
+also includes the exact error signature, every red run ID in the sequence, the oldest known occurrence of
+that signature, any green run on the same tree SHA, and at least two candidate remedies with their costs.
+Conformance reports use the canonical denominators — N of 373 tests and N of 60 files — and name every
+shard that started or completed. A “known flaky” label is not a disposition and cannot waive the merge stop
+or notification.
+
+Provider-caused outages are not lane defects and do not advance the R-K consecutive-red counter or trigger
+the R-K work stop when an official provider status-page incident names the affected dependency and the run
+timestamps fall inside its active window. The evidence record retains the incident title and URL, affected
+components, start timestamp, and eventual resolved timestamp. The required check remains red and merge
+remains fail-closed; assistants do not spend retries while the incident is active. After the provider records
+resolution, one exact-head retrigger may be made. Any uncovered or post-resolution red returns to ordinary
+R-K handling.
+
+The first application is the official Anthropic incident
+[`Elevated errors across all models`](https://status.claude.com/incidents/q2kg8n613kr3), opened
+2026-07-29 19:49 UTC and still unresolved at the 2026-07-29 20:57 UTC evidence read. The incident names
+`claude.ai`, Claude API (`api.anthropic.com`), Claude Code, and Claude Cowork as affected. Immediately before
+the incident, #320 review run `30479734170` / job `90670367809` completed green from 18:24–18:27 UTC with
+`total_cost_usd=0.929517`, 12 turns, populated structured output, and `blocking=false`. #321 run
+`30488398855` attempts 1 and 2 ran inside the active incident window and both ended with one turn,
+`total_cost_usd=0`, and no structured output. Those two reds kept #321 merge-blocked until a later
+exact-head green review, but are classified as provider-outage evidence rather than a
+Gateway/runner/Claude-review lane defect; they do not constitute an R-K stop. Anthropic marked that incident
+resolved at 2026-07-29 22:36 UTC.
+
+Before the authorized retry on 2026-07-30, a separate official
+[`Degraded performance on Claude Opus 4.8`](https://status.claude.com/incidents/kqjy03gs895j) incident
+opened at 13:43 UTC and named Claude API and Claude Code among the affected components. No retry was spent
+while it remained active. Anthropic marked it resolved at 14:24 UTC; only after resolution was #321 cycled
+ready → draft → ready at exact head `808be5e356545278e329b8dd11c7393b8d45e3e1`. Review
+[run 30552113415](https://github.com/BTankut/revAgent/actions/runs/30552113415), job
+[90903133862](https://github.com/BTankut/revAgent/actions/runs/30552113415/job/90903133862), completed green
+with `total_cost_usd=0.4578525`, eight turns, populated two-field structured output, and
+`blocking=false`. R-I then verified PR #321 as `state=MERGED` with
+`mergeCommit=255614623e4ace84f598b5db29834f8941410b2e`. This chronology demonstrates the rule without
+waiving the required check or consuming repeated retries during an active provider incident.
+
+R-K does not stop development, rebases, documentation-only governance/evidence records, or
+operator-authorized changes whose purpose is to repair the named shared gate. The repair exemption is
+limited to the approved fix, the diagnostic instrumentation necessary to localize and verify it, and directly
+associated workflow reliability/cost controls. It does not admit unrelated product work or waive exact-head
+checks: the repair PR itself still requires green `Gateway gates` on its exact head before merge. M3
+development and rebases may continue, but no M3 PR may merge without that same exact-head proof.
+
+The similarly named jobs have distinct scopes: `Gateway gates` is the Windows full
+migration/RBP-conformance lane in `.github/workflows/ci.yml`; `Gateway CI` is the GitHub-hosted Linux
+`packages/gateway/**` lint/typecheck/test/secret-scan/image-build lane in
+`.github/workflows/gateway-ci.yml`. A result from one lane cannot substitute for the other.
+
+The reviewed record on tree `c2d5bcbff65ad3ec9d89600a2c4e4e4201f771cc` is exactly one green and
+three red attempts:
+
+- Run `30427715792`, attempt 1, job `90497728312`, passed `Gateway gates` on PR head
+  `030ea57deb77d6f1cad2299684bf5018ad37d96d`: 60/60 files, 373/373 tests, and 5/5 shards
+  passed.
+- Run `30431553446`, attempt 1, job `90509696884`, failed in shard 5/5 with
+  `Error: [vitest-worker]: Timeout calling "onTaskUpdate"`: 52/60 files and 349/373 tests
+  reported passed; shards 1/5 through 4/5 reached PASS and shard 5/5 started but did not.
+- Run `30431553446`, attempt 2, job `90523145592`, failed in shard 2/5 with the same
+  `Error: [vitest-worker]: Timeout calling "onTaskUpdate"` signature: 21/60 files and
+  127/373 tests reported passed; shard 1/5 reached PASS and shard 2/5 started but did not.
+- Run `30443548388`, attempt 1, job `90548277839`, failed on protected-main head
+  `9251fe1e136e78d1ace675f8da57559ce0d067f3`. These were two independent failures in one job:
+  `tests/peer.test.ts` reported `Error: Test timed out in 5000ms`, while conformance shard 1/5 reported
+  `Error: o1-c32.resource-baseline-start driver failed: o1-c32.resource-baseline-start exceeded the
+  parent-owned 30000 ms deadline`. The fail-fast harness exposed only 12/60 files and 71/373 tests;
+  11/60 files and 70/373 tests passed, no shard reached PASS, and shards 2/5 through 5/5 never started.
+
+The `onTaskUpdate` signature predates #308 and appears on freeze-base run `30171018647`; the same-tree
+green run therefore forbids classifying the gate as deterministically broken. The later green run
+`30443700946`, attempt 2, job `90581537208`, belongs to different head
+`a685e4f668337bbe800f5de65c9b15502ebb6e16` and tree
+`3c816681d074648c0e156b60bc11a0e7d708543a`; 60/60 files, 373/373 tests, and 5/5 shards
+passed. After the interactive runner listener restart, job assignment improved from 68 minutes to 2 seconds
+on runner 21;
+Engineering gates completed in 12m46s, Gateway gates in 42m10s, and the CI-safe step took 500 seconds
+versus 633 seconds in the red run and 562 seconds in the prior green run. That proves queue recovery and a
+healthy machine baseline, but it does not erase the two explicit budget defects on the protected-main tree.
+
+The C32 defect is a missing budget argument: `casePrograms.ts` resource-baseline-start inherits the
+30,000 ms default while sibling `restart_case_stack` operations use the 90,000 ms
+`C32_STACK_LIFECYCLE_TIMEOUT_MS`; its three child readiness budgets can total 45,000 ms inside that
+30,000 ms parent envelope. The Bridge-simulator package likewise inherited Vitest's 5,000 ms default for a
+test observed close to that ceiling. The approved gate-repair lane corrects those budgets, adds elapsed-phase
+instrumentation and complete shard collection, carries the separately approved concurrency/cache controls,
+and leaves Vitest version, `poolOptions.forks.singleFork`, `fileParallelism: false`, and soak constants
+unchanged.
+
+The permanent normative wording is R-K in `docs/implementation-plan/00-INDEX.md` section 8.
+
+### 2026-07-29 — R-F: resolve the RES-28 evidence anchor dynamically from protected main (RES-34)
+
+Source: amended operator approval from Barış Tankut on 2026-07-29 after the #308 protected merge and
+coordinator review of the freeze/tag provenance.
+
+The semantic-freeze base remains `b3cca906ec90d0068df489407d3e0ce7254a308e` (tree
+`e2cf3849e24c1c5b7e5061d35af74ea48a5f77f7`), and no harness-only cherry-pick is required. The
+normative surface is byte-identical at the freeze base and protected
+`main@9251fe1e136e78d1ace675f8da57559ce0d067f3` (tree
+`c2d5bcbff65ad3ec9d89600a2c4e4e4201f771cc`): `docs/specs` resolves to
+`614b8bc2273ce4fe4b970e090d2b2c2d89486935` and `packages/protocol` resolves to
+`bbc6ebb687118c30d29508771734df754a735b35` at both commits. The reviewed latter tree contains 25
+intervening commits and 267 changed files, including 234 in-flight Gateway/Bridge files. The operator
+accepts that this delta would not disqualify that tree if it is later resolved and confirmed as the
+evidence anchor; `9251fe1e...`/`c2d5bcbf...` remains historical #308 inspection evidence and is not
+selected, confirmed, or authorized as the tag target by this amendment.
+
+The RES-28 anchor is the protected main commit on which the complete tag-evidence set is actually produced
+green. Before any tag-evidence run is counted, the implementing assistant reports the resolved
+protected-main 40-character commit SHA and tree SHA for operator confirmation. A separately generated
+harness-only commit is neither required nor preferred. This dynamic-anchor rule supersedes the
+2026-07-23 exact-protected-candidate tag-target clause while preserving that earlier record as historical
+decision context.
+
+RES-28's retained three-run aggregate, real one-hour reconnect/proxy-churn soak, WSS/Streamable HTTP/SSE
+proxy-interoperability evidence, and protected-tag identity validation all remain in force. As an acceptance
+predicate of the retained-three-run aggregate class — not a fifth RES-28 evidence class — a mechanically
+separate full-Vitest qualification parses all five shard summaries and asserts exactly 60 test files, 373
+tests, and 5/5 serial shards; process exit code zero alone does not satisfy that predicate. The prior
+`59 files / 365 tests` ledger figure is corrected wherever recorded.
+
+Protected-main push [run 30480038477](https://github.com/BTankut/revAgent/actions/runs/30480038477),
+Gateway job [90671414231](https://github.com/BTankut/revAgent/actions/runs/30480038477/job/90671414231),
+measured the predicate on `main@9558fc0b1a60757f43f4813b973cc9e589d45a9a` (tree
+`b8856d788a961a0557384c7666609fd8fe112ccc`): shards 1/5 through 5/5 each emitted `PASS`, followed by
+`[rbp-conformance] cardinality 60 files / 373 tests / 5 shards`. Independently, the `git ls-tree`
+inventory under `packages/rbp-conformance/tests` contained 67 tracked paths; filtering it with
+`rg -c '\.test\.ts$'` returned `60`. Together these bind the corrected cardinality to protected-main
+execution as pre-tag calibration only. They are not a counted RES-28 tag-evidence run, do not select or
+confirm the dynamic anchor, and do not expand the R-H evidence set.
+
+This amendment does not authorize a tag-evidence run or creation of `rbp/v1.0.0`. Tag execution and tag
+creation each require their own separate operator authorization under
+`docs/implementation-plan/00-INDEX.md` section 8.2. The normative resolution is RES-34 in that index.
