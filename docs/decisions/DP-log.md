@@ -819,3 +819,24 @@ and tag creation each require their own separate operator authorization under
 `docs/implementation-plan/00-INDEX.md` section 8.2, and the annotated tag, when authorized, MUST
 resolve to exactly `a99f6051da20a7a28469a44be49c9e9e394be0fd`. The normative resolution is RES-35 in
 that index.
+
+
+### 2026-07-31 — `rbp/v1.0.0` created and identity-validated (RES-36)
+
+The operator created the signed annotated tag directly: tag object
+`77ac4190b165cdda775ac30774e7f2886638065d`, message `Freeze O1/RBP v1.0`, SSH-signed with the
+operator's ED25519 key, GitHub verification `verified=true, reason=valid`. The coordinator then
+independently validated every RES-28 protected-tag identity requirement against the live repository:
+the annotated tag resolves to exactly the confirmed anchor `a99f6051da20a7a28469a44be49c9e9e394be0fd`
+(not to any later evidence-record commit), the target tree is
+`149c5af8dd7d84e7167ef372955d8fb287dff0d5`, the normative subtrees at the tag equal the
+semantic-freeze base identities (`docs/specs` `614b8bc2273ce4fe4b970e090d2b2c2d89486935`,
+`packages/protocol` `bbc6ebb687118c30d29508771734df754a735b35`), the anchor is an ancestor of
+protected `main`, and `refs/tags/rbp/v1.0.0` on origin points at the same tag object.
+
+With this validation the fourth and final RES-28 evidence class closes. Together with RES-35's
+completed three-run aggregate, one-hour soak, and proxy-interoperability evidence, **M1 is fully
+closed: RBP/1 v1.0 is semantically frozen, evidenced, and tagged.** The tag is immutable: it must
+never be deleted, moved, or recreated; any future protocol change is a new version under the O1
+versioning rules, never a rewrite of `rbp/v1.0.0`. The normative resolution is RES-36 in
+`docs/implementation-plan/00-INDEX.md`.

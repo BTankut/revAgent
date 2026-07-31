@@ -277,6 +277,15 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   operator authorization under section 8.2, and the annotated tag, when authorized, MUST resolve to
   exactly `a99f6051da20a7a28469a44be49c9e9e394be0fd`. The full dated record is in
   `docs/decisions/DP-log.md` (2026-07-31).
+- **RES-36 (2026-07-31 tag record) — `rbp/v1.0.0` exists and is identity-validated; M1 is fully
+  closed.** The operator created the signed annotated tag `77ac4190b165cdda775ac30774e7f2886638065d`
+  (`Freeze O1/RBP v1.0`, SSH signature GitHub-verified: `verified=true, reason=valid`). Independent
+  validation confirmed it resolves to exactly `a99f6051da20a7a28469a44be49c9e9e394be0fd` (tree
+  `149c5af8dd7d84e7167ef372955d8fb287dff0d5`) with both normative subtrees equal to the
+  semantic-freeze base, and that the anchor is an ancestor of protected `main`. The fourth RES-28
+  evidence class (protected-tag identity validation) is closed. The tag is immutable; any future
+  protocol change is a new version under O1 versioning, never a rewrite. Full record in
+  `docs/decisions/DP-log.md` (2026-07-31, RES-36).
 
 ---
 
