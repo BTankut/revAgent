@@ -17,6 +17,15 @@ internal static class RbpInvocationPayloads
     internal const string FramingLengthPrefixed = "length-prefixed";
 
     /// <summary>
+    /// The bounded operator-safe Section 12.2 rule 4 message. Shared so a
+    /// redelivered indeterminate answer reads identically to the refusal that
+    /// first classified it — the durable row stores no per-delivery message.
+    /// </summary>
+    internal const string MutationMayHaveExecutedMessage =
+        "A mutating invocation may already have executed; correlated " +
+        "read-only verification is required before another mutation.";
+
+    /// <summary>
     /// A first-delivery terminal result for a call the add-in actually ran.
     /// </summary>
     internal static JsonElement InvocationResult(
@@ -102,13 +111,16 @@ internal static class RbpInvocationPayloads
     /// <remarks>
     /// Section 15 forbids <c>result_digest</c> on this class precisely because
     /// there is no durable response to digest; emitting one would assert
-    /// evidence the bridge does not have.
+    /// evidence the bridge does not have. <paramref name="replayed"/> is the
+    /// only per-delivery bit: a Section 12.2 rule 1 redelivery answers with
+    /// this same complete body, flagged <c>replayed:true</c>.
     /// </remarks>
     internal static JsonElement JournalIndeterminateError(
         string invocationId,
         string verificationHoldId,
         JsonElement mutationScope,
-        string message)
+        string message,
+        bool replayed)
     {
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
@@ -119,7 +131,7 @@ internal static class RbpInvocationPayloads
             writer.WriteString("fault_class", "journal_indeterminate");
             writer.WriteString("outcome", "indeterminate");
             writer.WriteBoolean("verification_required", true);
-            writer.WriteBoolean("replayed", false);
+            writer.WriteBoolean("replayed", replayed);
             writer.WriteBoolean("late_after_indeterminate", false);
             writer.WriteString("verification_hold_id", verificationHoldId);
             writer.WritePropertyName("mutation_scope");

@@ -232,13 +232,57 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private static RbpInvocationAnswer ReplayTerminal(
         RbpStoredInvocation stored)
     {
+        if (stored.State == RbpInvocationState.Indeterminate)
+        {
+            return ReplayIndeterminate(stored);
+        }
+
         JsonElement outcome = RequireOutcome(
             stored.TerminalOutcomeJson,
             "terminal");
-        return stored.State == RbpInvocationState.Indeterminate
-            ? RbpInvocationAnswer.Error(outcome)
-            : RbpInvocationAnswer.Result(
-                RbpInvocationPayloads.ReplayTerminal(outcome));
+        return RbpInvocationAnswer.Result(
+            RbpInvocationPayloads.ReplayTerminal(outcome));
+    }
+
+    /// <summary>
+    /// Section 12.2 rule 1 replay of an indeterminate mutation.
+    /// </summary>
+    /// <remarks>
+    /// The durable rule 4 body is journal evidence and deliberately carries
+    /// only the scope, hold, and outcome flags. Section 15 makes the wire
+    /// error a complete shape — <c>invocation_id</c>, <c>fault_class</c>,
+    /// <c>replayed</c>, and a bounded <c>message</c> included — so the answer
+    /// is rebuilt from the stored row rather than echoing the evidence
+    /// verbatim, exactly as the first delivery built it, with
+    /// <c>replayed:true</c>.
+    /// </remarks>
+    private static RbpInvocationAnswer ReplayIndeterminate(
+        RbpStoredInvocation stored)
+    {
+        if (stored.VerificationHoldId is not { Length: > 0 } holdId)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "An indeterminate replay requires the installed " +
+                "Section 6.2.1 verification hold id.");
+        }
+
+        if (stored.Identity.MutationScopeJcs is not { Length: > 0 } scopeJcs)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "An indeterminate replay requires the durable mutation " +
+                "scope.");
+        }
+
+        using JsonDocument scope = JsonDocument.Parse(scopeJcs);
+        return RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.JournalIndeterminateError(
+                stored.Identity.InvocationId,
+                holdId,
+                scope.RootElement,
+                RbpInvocationPayloads.MutationMayHaveExecutedMessage,
+                replayed: true));
     }
 
     private static RbpInvocationAnswer ReplayLate(RbpStoredInvocation stored)
@@ -281,8 +325,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 request.InvocationId,
                 holdId,
                 request.MutationScope,
-                "A mutating invocation may already have executed; correlated " +
-                "read-only verification is required before another mutation."));
+                RbpInvocationPayloads.MutationMayHaveExecutedMessage,
+                replayed: false));
     }
 
     private async Task<RbpInvocationAnswer> ExecuteAsync(
@@ -503,7 +547,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 request.InvocationId,
                 holdId,
                 request.MutationScope,
-                message));
+                message,
+                replayed: false));
     }
 
     /// <summary>
