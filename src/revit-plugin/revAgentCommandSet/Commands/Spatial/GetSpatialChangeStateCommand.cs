@@ -37,12 +37,7 @@ namespace RevAgentCommandSet.Commands.Spatial
         public override object Execute(JObject parameters, string requestId)
         {
             Stopwatch stopwatch = Stopwatch.StartNew();
-            GetSpatialChangeStateRequest request = new GetSpatialChangeStateRequest
-            {
-                ExpectedTrackerSessionId = ReadString(parameters, "expectedTrackerSessionId", "").Trim(),
-                SourceRevisions = ReadSourceRevisions(parameters),
-                TimeoutMs = ReadInt(parameters, "timeoutMs", 30000, 2000, 60000)
-            };
+            GetSpatialChangeStateRequest request = ParseRequest(parameters);
 
             string cacheKey = BuildExactExpectedRevisionsKey(request);
             SpatialChangeTracker tracker = SpatialChangeTracker.Instance;
@@ -117,6 +112,21 @@ namespace RevAgentCommandSet.Commands.Spatial
             cached.LivenessGeneration = generation;
             cached.ElapsedMs = stopwatch.Elapsed.TotalMilliseconds;
             return cached;
+        }
+
+        /// <summary>
+        /// Shared command seam: used by the solo command path above and by the
+        /// execute_batch step runner, which executes the handler directly on
+        /// the Revit API thread without the process liveness cache.
+        /// </summary>
+        internal static GetSpatialChangeStateRequest ParseRequest(JObject parameters)
+        {
+            return new GetSpatialChangeStateRequest
+            {
+                ExpectedTrackerSessionId = ReadString(parameters, "expectedTrackerSessionId", "").Trim(),
+                SourceRevisions = ReadSourceRevisions(parameters),
+                TimeoutMs = ReadInt(parameters, "timeoutMs", 30000, 2000, 60000)
+            };
         }
 
         private static string BuildExactExpectedRevisionsKey(GetSpatialChangeStateRequest request)

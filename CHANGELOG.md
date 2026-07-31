@@ -4,6 +4,18 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added the add-in loopback v1 `execute_batch` command under the bounded
+  WP3/M3 migration exception (RES-4/RES-5, O1 Appendix A.4): a validated
+  allowlisted step batch executes inside ONE Revit `TransactionGroup` raised
+  through exactly one ExternalEvent, assimilates only an all-success envelope,
+  and rolls the whole group back on the first guarded/failed step so no
+  partial mutation survives. The request is validated fail-closed before any
+  Revit dispatch (non-batchable methods, reserved parameter names, id/budget
+  violations, and the `delete_review_view_commit_v1` profile), per-step
+  inline-only and aggregate byte budgets are enforced before `Assimilate()`,
+  and `mcp_status` now advertises the `batch_atomic` session capability with
+  its exact Appendix A.2 descriptor. The 21 existing command contracts,
+  framing, port allocation, and concurrency model remain unchanged.
 - Hardened the frozen Revit add-in loopback seam under the bounded WP3/M3
   migration exception: the listener is numeric-loopback-only, shared
   `RevAgent.Contracts` framing bytes replace duplicate codec logic, all

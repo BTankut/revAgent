@@ -26,7 +26,25 @@ namespace RevAgentCommandSet.Commands.Spatial
 
         public override object Execute(JObject parameters, string requestId)
         {
-            InspectLevelsRequest request = new InspectLevelsRequest
+            InspectLevelsRequest request = ParseRequest(parameters);
+
+            HandlerInstance.SetRequest(request);
+            if (RaiseAndWaitForCompletion(request.TimeoutMs))
+            {
+                return HandlerInstance.ResultInfo;
+            }
+
+            throw new TimeoutException("Timed out while inspecting Revit levels.");
+        }
+
+        /// <summary>
+        /// Shared command seam: used by the solo command path above and by the
+        /// execute_batch step runner, which executes the handler directly on
+        /// the Revit API thread.
+        /// </summary>
+        internal static InspectLevelsRequest ParseRequest(JObject parameters)
+        {
+            return new InspectLevelsRequest
             {
                 SourceScope = ReadSourceScope(parameters),
                 LinkInstanceIds = ReadIntArray(parameters, "linkInstanceIds"),
@@ -36,14 +54,6 @@ namespace RevAgentCommandSet.Commands.Spatial
                 MaxResults = ReadInt(parameters, "maxResults", 500, 1, 5000),
                 TimeoutMs = ReadInt(parameters, "timeoutMs", 30000, 2000, 60000)
             };
-
-            HandlerInstance.SetRequest(request);
-            if (RaiseAndWaitForCompletion(request.TimeoutMs))
-            {
-                return HandlerInstance.ResultInfo;
-            }
-
-            throw new TimeoutException("Timed out while inspecting Revit levels.");
         }
 
         private static string ReadSourceScope(JObject parameters)

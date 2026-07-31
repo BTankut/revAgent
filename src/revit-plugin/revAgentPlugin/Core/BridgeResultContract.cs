@@ -5,7 +5,9 @@ using Newtonsoft.Json.Serialization;
 
 namespace RevAgentPlugin.Core
 {
-    internal static class BridgeResultContract
+    // Public so the revAgentCommandSet execute_batch seam serializes nested
+    // step results with the exact same camelCase wire contract.
+    public static class BridgeResultContract
     {
         public const int ResultContractVersion = 2;
 

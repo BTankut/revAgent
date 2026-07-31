@@ -35,7 +35,8 @@ namespace RevAgentCommandSet.Commands.View
             throw new TimeoutException("Timed out while inspecting Revit sheet annotations.");
         }
 
-        private static InspectSheetTextRequest ParseRequest(JObject parameters)
+        // Shared command seam: also used by the execute_batch step runner.
+        internal static InspectSheetTextRequest ParseRequest(JObject parameters)
         {
             InspectSheetTextRequest request = new InspectSheetTextRequest();
             request.Query = ReadString(parameters, "query", "");

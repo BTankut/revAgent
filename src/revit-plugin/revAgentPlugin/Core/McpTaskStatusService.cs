@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading;
 using Newtonsoft.Json;
+using RevAgent.Contracts.AddinLoopback;
 
 namespace RevAgentPlugin.Core
 {
@@ -184,7 +185,7 @@ namespace RevAgentPlugin.Core
             return FinishTask(startedTask, "guarded", Trim(reason?.Trim(), 600), executeMs, responseBytes);
         }
 
-        public object GetSnapshot(bool isRunning, int port)
+        public object GetSnapshot(bool isRunning, int port, int maxRequestPayloadBytes)
         {
             lock (_sync)
             {
@@ -195,6 +196,24 @@ namespace RevAgentPlugin.Core
                     recent[i] = _recentTasks[i].Clone();
                 }
 
+                // Session capability advertisement (Appendix A.2). Only a
+                // capability with a valid identically keyed descriptor is
+                // advertised; an out-of-contract configured request cap fails
+                // closed by advertising no batch_atomic capability at all.
+                List<string> sessionCapabilities = new List<string>();
+                Dictionary<string, object> capabilityContracts = new Dictionary<string, object>();
+                try
+                {
+                    capabilityContracts[AddinStatusContract.BatchAtomicCapability] =
+                        AddinBatchContract.CreateCapability(maxRequestPayloadBytes);
+                    sessionCapabilities.Add(AddinStatusContract.BatchAtomicCapability);
+                }
+                catch (ArgumentOutOfRangeException)
+                {
+                    capabilityContracts.Clear();
+                    sessionCapabilities.Clear();
+                }
+
                 return new
                 {
                     service = new
@@ -202,6 +221,8 @@ namespace RevAgentPlugin.Core
                         isRunning = isRunning,
                         port = port
                     },
+                    sessionCapabilities = sessionCapabilities.ToArray(),
+                    capabilityContracts = capabilityContracts,
                     activeTask = active,
                     recentTasks = recent,
                     recentHistoryCount = recent.Length,

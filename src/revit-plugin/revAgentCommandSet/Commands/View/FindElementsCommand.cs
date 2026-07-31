@@ -25,6 +25,23 @@ namespace RevAgentCommandSet.Commands.View
 
         public override object Execute(JObject parameters, string requestId)
         {
+            int timeoutMs = ApplyRequest(_handler, parameters);
+            if (RaiseAndWaitForCompletion(timeoutMs))
+            {
+                return _handler.ResultInfo;
+            }
+
+            throw new TimeoutException("Timed out while finding Revit elements.");
+        }
+
+        /// <summary>
+        /// Shared command seam: parses the request parameters onto the supplied
+        /// handler and returns the parsed timeout. Used by the solo command
+        /// path above and by the execute_batch step runner, which executes the
+        /// handler directly on the Revit API thread.
+        /// </summary>
+        internal static int ApplyRequest(FindElementsEventHandler handler, JObject parameters)
+        {
             string originalQuery = parameters != null && parameters["originalQuery"] != null ? parameters["originalQuery"].Value<string>() : "";
             string query = parameters != null && parameters["query"] != null ? parameters["query"].Value<string>() : "";
             List<string> categoryNames = ParseStringArray(parameters, "categoryNames");
@@ -77,7 +94,7 @@ namespace RevAgentCommandSet.Commands.View
             if (maxElapsedMs > 119000) maxElapsedMs = 119000;
             object inferredScope = parameters != null && parameters["inferredScope"] != null ? parameters["inferredScope"].ToObject<object>() : null;
 
-            _handler.SetRequest(
+            handler.SetRequest(
                 originalQuery,
                 query,
                 categoryNames,
@@ -103,12 +120,7 @@ namespace RevAgentCommandSet.Commands.View
                 limit,
                 maxPlanCandidates,
                 inferredScope);
-            if (RaiseAndWaitForCompletion(timeoutMs))
-            {
-                return _handler.ResultInfo;
-            }
-
-            throw new TimeoutException("Timed out while finding Revit elements.");
+            return timeoutMs;
         }
 
         private static List<string> ParseStringArray(JObject parameters, string name)

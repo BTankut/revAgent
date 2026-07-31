@@ -35,7 +35,8 @@ namespace RevAgentCommandSet.Commands.View
             throw new TimeoutException("Timed out while inspecting Revit schedules.");
         }
 
-        private static InspectSchedulesRequest ParseRequest(JObject parameters)
+        // Shared command seam: also used by the execute_batch step runner.
+        internal static InspectSchedulesRequest ParseRequest(JObject parameters)
         {
             InspectSchedulesRequest request = new InspectSchedulesRequest();
             request.Query = ReadString(parameters, "query", "");
