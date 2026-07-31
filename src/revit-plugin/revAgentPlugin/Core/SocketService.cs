@@ -522,7 +522,7 @@ namespace RevAgentPlugin.Core
 
                 if (string.Equals(request.Method, "mcp_status", StringComparison.OrdinalIgnoreCase))
                 {
-                    object snapshot = McpTaskStatusService.Instance.GetSnapshot(_isRunning, _port);
+                    object snapshot = McpTaskStatusService.Instance.GetSnapshot(_isRunning, _port, _maxMessageBytes);
                     return CreateSuccessResponse(request.Id, snapshot);
                 }
 
@@ -618,6 +618,27 @@ namespace RevAgentPlugin.Core
                         if (!suppressTaskStatusWindow) McpTaskStatusWindowController.Instance.ShowCompleted(completedTask);
                     }
 
+                    return response;
+                }
+                catch (AddinBatchRequestException ex)
+                {
+                    // Appendix A.4: a malformed, non-batchable, or budget/id
+                    // violating execute_batch request maps to a standard
+                    // JSON-RPC error with zero executed steps and no
+                    // TransactionGroup. This path never quarantines intake.
+                    string response = CreateErrorResponse(request.Id, ex.JsonRpcErrorCode, ex.Message);
+                    if (metrics != null)
+                    {
+                        metrics.ResponseBytes = GetResponseWireBytes(response, metrics.Framing);
+                    }
+
+                    McpTaskInfo rejectedTask = McpTaskStatusService.Instance.FailTask(
+                        activeTask,
+                        ex.Message,
+                        metrics != null && metrics.ExecuteMs > 0 ? (long?)metrics.ExecuteMs : null,
+                        metrics != null ? (long?)metrics.ResponseBytes : null);
+                    LogTaskMetrics(rejectedTask, metrics);
+                    McpTaskStatusWindowController.Instance.ShowFailed(rejectedTask);
                     return response;
                 }
                 catch (Exception ex)

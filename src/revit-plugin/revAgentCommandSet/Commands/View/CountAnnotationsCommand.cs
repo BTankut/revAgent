@@ -35,7 +35,8 @@ namespace RevAgentCommandSet.Commands.View
             throw new TimeoutException("Timed out while counting Revit annotations.");
         }
 
-        private static AnnotationCountRequest ParseRequest(JObject parameters)
+        // Shared command seam: also used by the execute_batch step runner.
+        internal static AnnotationCountRequest ParseRequest(JObject parameters)
         {
             AnnotationCountRequest request = new AnnotationCountRequest();
             request.Query = ReadString(parameters, "query", "");

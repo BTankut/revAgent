@@ -112,6 +112,11 @@
       "commandName": "create_3d_view_for_elements",
       "description": "Create or reuse a 3D view for Revit elements, optionally apply/clear section box, activate it, and focus the elements",
       "assemblyPath": "revAgentCommandSet.dll"
+    },
+    {
+      "commandName": "execute_batch",
+      "description": "Execute an ordered allowlisted command batch atomically inside one Revit TransactionGroup with rollback-on-non-success",
+      "assemblyPath": "revAgentCommandSet.dll"
     }
   ]
 }

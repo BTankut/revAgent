@@ -36,7 +36,8 @@ namespace RevAgentCommandSet.Commands.Spatial
             throw new TimeoutException("Timed out while extracting the bounded Revit spatial snapshot page.");
         }
 
-        private static SpatialSnapshotRequest ParseRequest(JObject parameters)
+        // Shared command seam: also used by the execute_batch step runner.
+        internal static SpatialSnapshotRequest ParseRequest(JObject parameters)
         {
             SpatialSnapshotRequest request = new SpatialSnapshotRequest
             {
