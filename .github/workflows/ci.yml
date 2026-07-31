@@ -138,6 +138,22 @@ jobs:
             throw "Gateway gates require protected production Node 22.15.0 or newer; found $version"
           }
 
+      # Scope decision for the RBP conformance suite. The condition MUST stay at
+      # step level on this classifier output:
+      # - A workflow-level `paths:` filter never creates the required
+      #   "Gateway gates" check run, so the PR blocks forever on
+      #   "Expected - waiting for status" (RES-32, docs/decisions/DP-log.md,
+      #   fixed by PR #310).
+      # - A job-level `if:` makes GitHub report the job as skipped, and a
+      #   skipped job reports Success and SATISFIES a required check - silent
+      #   fail-open.
+      # The classifier is fail-closed (default deny) and unit-tested by
+      # scripts/test-ci-classifier.ps1 inside the required Engineering gates.
+      - name: Classify changed paths for scoped gates
+        id: classify
+        shell: pwsh
+        run: .\scripts\ci-classify-changes.ps1
+
       - name: Install migration workspace dependencies
         run: npm ci --ignore-scripts
 
@@ -153,4 +169,21 @@ jobs:
         run: npm run typecheck
 
       - name: Verify generated protocol types and test migration packages
-        run: npm test
+        shell: pwsh
+        run: npm run check:generated && node scripts/run-workspace-tests-scoped.mjs
+
+      - name: Run RBP conformance suite
+        if: steps.classify.outputs.run_rbp == 'true'
+        run: npm run test --workspace @revagent/rbp-conformance
+
+      - name: Report scope decision
+        if: always()
+        shell: pwsh
+        env:
+          SCOPE_SUMMARY: ${{ steps.classify.outputs.summary }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:SCOPE_SUMMARY)) {
+            Write-Host '[scoped] no scope decision recorded (classify step did not run)'
+          } else {
+            Write-Host $env:SCOPE_SUMMARY
+          }
