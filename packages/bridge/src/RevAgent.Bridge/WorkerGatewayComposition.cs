@@ -154,6 +154,15 @@ internal static class WorkerGatewayComposition
             new LocalCatalogRevitBusyProbe(
                 services.SessionCatalog,
                 surface.SessionRoutes));
+
+        // The P3-T7 standing document-context watcher polls the add-in's
+        // cached get_document_context through the same routed channel the
+        // dispatch path uses, so its polls can never reach a different
+        // Revit session than the rsid they report on. Sessions that do not
+        // advertise doc_context_cached_v1 are never polled.
+        var docContextWatcher = new RbpDocContextWatcher(
+            channel,
+            services.Clock);
         return new RbpConnectionCoordinator(
             services.CycleFactory,
             services.Journal,
@@ -162,7 +171,8 @@ internal static class WorkerGatewayComposition
             dispatcher,
             RbpInvocationJournalHandoff.Instance,
             services.Clock,
-            services.Random);
+            services.Random,
+            docContextWatcher);
     }
 
     /// <summary>
