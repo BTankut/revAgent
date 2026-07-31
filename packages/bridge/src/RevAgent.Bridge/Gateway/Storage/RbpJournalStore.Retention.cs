@@ -1,0 +1,184 @@
+using Microsoft.Data.Sqlite;
+
+namespace RevAgent.Bridge.Gateway.Storage;
+
+/// <summary>
+/// Exact per-authority row counts removed by one deterministic
+/// <see cref="RbpJournalStore.ApplyRetentionAsync"/> sweep.
+/// </summary>
+internal sealed record RbpJournalRetentionResult(
+    int PrunedInvocations,
+    int PrunedClearedHolds,
+    int PrunedInboundReceipts,
+    int PrunedOutboxEnvelopes,
+    int PrunedTransportSessions);
+
+/// <summary>
+/// Frozen O1 Section 12.2 journal retention. The journal retains entries
+/// for at least seven days (frozen floor) and defaults to fourteen; it
+/// never prunes a non-terminal invocation row, never prunes an
+/// <c>active|evidence_recorded|resolved_pending_bridge</c> hold, and never
+/// prunes a row such a hold still references, no matter how old the row or
+/// how large the store. Cleared holds and their evidence remain for at
+/// least the retention period. Transport rows are removed only as a whole
+/// per-session set, and only for sessions whose resume window closed at
+/// least one full retention period ago, so no supported resume/redelivery
+/// window is ever shortened and the inbound receipt history stays
+/// contiguous with its durable receive frontiers.
+/// </summary>
+internal sealed partial class RbpJournalStore
+{
+    internal static readonly TimeSpan MinimumRetentionPeriod =
+        TimeSpan.FromDays(7);
+
+    internal static readonly TimeSpan DefaultRetentionPeriod =
+        TimeSpan.FromDays(14);
+
+    private const string PrunableTransportSessions = """
+        SELECT sessions.rsid
+        FROM rbp_sessions AS sessions
+        WHERE sessions.resume_expires_at_ms<=$cutoff
+          AND NOT EXISTS(
+            SELECT 1
+            FROM rbp_unregister_tombstones AS tombstones
+            WHERE tombstones.rsid=sessions.rsid
+          )
+          AND NOT EXISTS(
+            SELECT 1
+            FROM rbp_inbound_receipts AS receipts
+            WHERE receipts.rsid=sessions.rsid
+              AND (receipts.handoff_state='pending'
+                   OR receipts.accepted_at_ms>$cutoff)
+          )
+          AND NOT EXISTS(
+            SELECT 1
+            FROM rbp_outbox AS outbox
+            WHERE outbox.rsid=sessions.rsid
+              AND outbox.created_at_ms>$cutoff
+          )
+        """;
+
+    /// <summary>
+    /// Applies one deterministic, transactional retention sweep and returns
+    /// the exact number of rows removed per authority. A retention period
+    /// below the frozen seven-day floor is rejected, never clamped.
+    /// </summary>
+    internal Task<RbpJournalRetentionResult> ApplyRetentionAsync(
+        TimeSpan? retentionPeriod = null,
+        CancellationToken cancellationToken = default)
+    {
+        TimeSpan period = retentionPeriod ?? DefaultRetentionPeriod;
+        if (period < MinimumRetentionPeriod)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(retentionPeriod),
+                "The frozen journal retention floor is seven days.");
+        }
+
+        long now = NowMilliseconds();
+        long cutoff = now - (long)period.TotalMilliseconds;
+        return ExecuteImmediateAsync(
+            context =>
+            {
+                int invocations = PruneTerminalInvocations(context, cutoff);
+                int holds = PruneClearedHolds(context, cutoff);
+                int receipts = PruneTransportRows(
+                    context,
+                    "rbp_inbound_receipts",
+                    cutoff);
+                int outbox = PruneTransportRows(
+                    context,
+                    "rbp_outbox",
+                    cutoff);
+                int sessions = PruneTransportRows(
+                    context,
+                    "rbp_session_sequence",
+                    cutoff);
+                return new RbpJournalRetentionResult(
+                    invocations,
+                    holds,
+                    receipts,
+                    outbox,
+                    sessions);
+            },
+            cancellationToken);
+    }
+
+    private static int PruneTerminalInvocations(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        // Both absolute guards live in the statement itself: a non-terminal
+        // row never matches the state list, and no row referenced by an
+        // uncleared hold — as its installed hold, as its journaled
+        // verification read, or as one of its origin idempotency keys — is
+        // ever deleted, regardless of age.
+        using SqliteCommand delete = context.CreateCommand(
+            """
+            DELETE FROM rbp_invocations
+            WHERE state IN (
+                'completed','failed','guarded','cancelled','indeterminate'
+              )
+              AND finished_at_ms<=$cutoff
+              AND NOT EXISTS(
+                SELECT 1
+                FROM rbp_verification_holds AS holds
+                WHERE holds.state<>'cleared'
+                  AND (
+                    holds.verification_hold_id=
+                      rbp_invocations.verification_hold_id
+                    OR (holds.rsid=rbp_invocations.rsid AND
+                        holds.verification_invocation_id=
+                          rbp_invocations.invocation_id)
+                    OR EXISTS(
+                      SELECT 1
+                      FROM json_each(
+                        holds.ordered_origin_idempotency_keys_json
+                      ) AS origin
+                      WHERE origin.value=rbp_invocations.idempotency_key
+                    )
+                  )
+              );
+            """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        return delete.ExecuteNonQuery();
+    }
+
+    private static int PruneClearedHolds(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        // Only cleared holds are ever prunable, and only once their
+        // clearing is older than the retention period and no retained
+        // invocation row still references them.
+        using SqliteCommand delete = context.CreateCommand(
+            """
+            DELETE FROM rbp_verification_holds
+            WHERE state='cleared'
+              AND cleared_at_ms<=$cutoff
+              AND updated_at_ms<=$cutoff
+              AND NOT EXISTS(
+                SELECT 1
+                FROM rbp_invocations
+                WHERE rbp_invocations.verification_hold_id=
+                      rbp_verification_holds.verification_hold_id
+              );
+            """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        return delete.ExecuteNonQuery();
+    }
+
+    private static int PruneTransportRows(
+        RbpJournalWriteContext context,
+        string table,
+        long cutoff)
+    {
+        using SqliteCommand delete = context.CreateCommand(
+            $"""
+             DELETE FROM {table}
+             WHERE rsid IN ({PrunableTransportSessions});
+             """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        return delete.ExecuteNonQuery();
+    }
+}
