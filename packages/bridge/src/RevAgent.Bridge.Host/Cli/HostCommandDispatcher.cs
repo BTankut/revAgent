@@ -57,8 +57,9 @@ internal sealed class HostCommandDispatcher
                 HostCommandKind.Service => await _hostRunner.RunAsync(
                     windowsService: true,
                     cancellationToken).ConfigureAwait(false),
-                HostCommandKind.Doctor => await DoctorAsync(cancellationToken)
-                    .ConfigureAwait(false),
+                HostCommandKind.Doctor => await DoctorAsync(
+                    command.ReEnroll,
+                    cancellationToken).ConfigureAwait(false),
                 HostCommandKind.Version => await VersionAsync()
                     .ConfigureAwait(false),
                 _ => throw new ArgumentOutOfRangeException(nameof(command)),
@@ -124,7 +125,9 @@ internal sealed class HostCommandDispatcher
         return (int)HostExitCode.Success;
     }
 
-    private async Task<int> DoctorAsync(CancellationToken cancellationToken)
+    private async Task<int> DoctorAsync(
+        bool reEnroll,
+        CancellationToken cancellationToken)
     {
         ResolvedWorkerExecutable worker = WorkerExecutableResolver.Resolve(_layout);
         if (!File.Exists(_layout.ConfigurationPath))
@@ -135,18 +138,30 @@ internal sealed class HostCommandDispatcher
         }
 
         Directory.CreateDirectory(_layout.BundleExtractionRoot);
+        var arguments = new List<string>
+        {
+            "__doctor",
+            "--config",
+            _layout.ConfigurationPath,
+        };
+        if (reEnroll)
+        {
+            arguments.Add("--re-enroll");
+            arguments.Add("true");
+        }
+
         WorkerCommandResult result = await _workerLauncher.RunOneShotAsync(
             new WorkerOneShotRequest(
                 worker.ExecutablePath,
                 worker.WorkingDirectory,
-                ["__doctor", "--config", _layout.ConfigurationPath],
+                arguments,
                 new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
                 {
                     ["DOTNET_BUNDLE_EXTRACT_BASE_DIR"] =
                         _layout.BundleExtractionRoot,
                 },
                 MaxDoctorOutputBytes),
-            timeout: TimeSpan.FromSeconds(30),
+            timeout: TimeSpan.FromSeconds(reEnroll ? 60 : 30),
             cancellationToken).ConfigureAwait(false);
 
         if (!string.IsNullOrEmpty(result.StandardError))

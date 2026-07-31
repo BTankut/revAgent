@@ -12,7 +12,8 @@ internal sealed record WorkerCommand(
     string? ControlPipeName = null,
     int? ExpectedHostProcessId = null,
     Guid? InstanceId = null,
-    string? ConfigurationPath = null);
+    string? ConfigurationPath = null,
+    bool ReEnroll = false);
 
 internal sealed class WorkerCommandLineException : Exception
 {
@@ -103,12 +104,25 @@ internal static class WorkerCommandLine
     private static WorkerCommand ParseDoctor(IReadOnlyList<string> args)
     {
         var options = ParseOptions(args, 1);
+        var reEnroll = false;
+        if (options.Remove("--re-enroll", out var reEnrollValue))
+        {
+            if (!string.Equals(reEnrollValue, "true", StringComparison.Ordinal))
+            {
+                throw new WorkerCommandLineException(
+                    "--re-enroll accepts only the explicit value 'true'.");
+            }
+
+            reEnroll = true;
+        }
+
         RequireExactOptions(options, "--config");
         return new WorkerCommand(
             WorkerCommandKind.Doctor,
             ConfigurationPath: NormalizeAbsolutePath(
                 options["--config"],
-                "--config"));
+                "--config"),
+            ReEnroll: reEnroll);
     }
 
     private static Dictionary<string, string> ParseOptions(

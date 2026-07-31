@@ -7,7 +7,9 @@ using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Configuration;
 using RevAgent.Bridge.Bootstrap.Diagnostics;
+using RevAgent.Bridge.Bootstrap.Enrollment;
 using RevAgent.Bridge.Bootstrap.Logging;
+using RevAgent.Bridge.Enrollment;
 
 namespace RevAgent.Bridge;
 
@@ -79,8 +81,25 @@ internal static class Program
         ResolvedBridgeConfiguration configuration =
             BridgeConfigurationLoader.LoadFromCurrentEnvironment(
                 RequireConfigurationPath(command));
+        BridgeInstallLayout layout = BridgeInstallLayout.Canonical;
+        BridgeDoctorEnrollmentReport enrollment = command.ReEnroll
+            ? await BridgeEnrollmentDoctor.RunReEnrollAsync(
+                    () => BridgeCredentialReader.CreateProduction(layout),
+                    () => new BridgeEnrollmentCoordinator(
+                        BridgeCredentialMutator.CreateProduction(layout),
+                        new BridgeEnrollmentExchangeClient(
+                            BridgeEnrollmentExchangeClient
+                                .CreateEnrollmentEndpoint(
+                                    configuration.GatewayUri))),
+                    Environment.GetEnvironmentVariable(
+                        BridgeEnrollmentDoctor
+                            .EnrollmentTokenEnvironmentVariable))
+                .ConfigureAwait(false)
+            : BridgeEnrollmentDoctor.CreateStateReport(
+                () => BridgeCredentialReader.CreateProduction(layout));
         BridgeDoctorReport report = await BridgeDoctor.RunAsync(configuration)
             .ConfigureAwait(false);
+        report = report with { Enrollment = enrollment };
         Console.Out.WriteLine(
             JsonSerializer.Serialize(
                 report,

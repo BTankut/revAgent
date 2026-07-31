@@ -34,6 +34,7 @@ export type {
   DispatchCancelRequest,
   DispatchInvokeRequest,
   DispatchPayloadRecoveryRequest,
+  EnrollmentGrantStatus,
   FrameFaultRule,
   GatewayClock,
   GatewayStubCoreOptions,
@@ -45,6 +46,8 @@ export type {
   LateTerminalEvidenceRequest,
   OpeningFaultRule,
   StaticDeviceIdentity,
+  StaticEnrollmentGrant,
+  StaticEnrollmentTokenTable,
   StaticTokenTable,
   VerificationEvidenceRequest,
 } from "./types.js";

@@ -1,6 +1,8 @@
 using System.Text.Json;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Bootstrap;
+using RevAgent.Bridge.Bootstrap.Enrollment;
+using RevAgent.Bridge.Enrollment;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -76,6 +78,38 @@ internal static class WorkerGatewayComposition
             layout.JournalPath,
             resumeTokenProtector,
             options);
+    }
+
+    /// <summary>
+    /// The production enrollment-state seam (P3-T8): the handshake reads
+    /// the DPAPI credential store through
+    /// <see cref="CredentialStoreEnrollmentStateProvider"/>. When the
+    /// store capability itself cannot be constructed, the hard-coded
+    /// always-refuse <see cref="EnrollmentRequiredStateProvider"/> remains
+    /// the explicit fallback, so the fail-closed refusal never depends on
+    /// a store that does not exist.
+    /// </summary>
+    internal static IRbpEnrollmentStateProvider CreateEnrollmentStateProvider(
+        BridgeInstallLayout layout)
+    {
+        ArgumentNullException.ThrowIfNull(layout);
+        return CreateEnrollmentStateProvider(
+            () => BridgeDeviceCredentialProvider.CreateProduction(layout));
+    }
+
+    internal static IRbpEnrollmentStateProvider CreateEnrollmentStateProvider(
+        Func<IBridgeDeviceCredentialProvider> credentialProviderFactory)
+    {
+        ArgumentNullException.ThrowIfNull(credentialProviderFactory);
+        try
+        {
+            return new CredentialStoreEnrollmentStateProvider(
+                credentialProviderFactory());
+        }
+        catch (BridgeCredentialStoreException)
+        {
+            return new EnrollmentRequiredStateProvider();
+        }
     }
 
     internal static RbpConnectionCoordinator CreateCoordinator(

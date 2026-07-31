@@ -33,6 +33,16 @@ export interface StaticDeviceIdentity {
 
 export type StaticTokenTable = Readonly<Record<string, StaticDeviceIdentity>>;
 
+export type EnrollmentGrantStatus = "active" | "denied";
+
+export interface StaticEnrollmentGrant {
+  status: EnrollmentGrantStatus;
+  deviceId: string;
+  deviceToken: string;
+}
+
+export type StaticEnrollmentTokenTable = Readonly<Record<string, StaticEnrollmentGrant>>;
+
 export interface AuthenticatedDevice extends StaticDeviceIdentity {
   tokenDigest: string;
 }
@@ -360,6 +370,7 @@ export interface GatewayClock {
 export interface GatewayStubCoreOptions {
   statePath: string;
   tokenTable: StaticTokenTable;
+  enrollmentTokenTable?: StaticEnrollmentTokenTable;
   supportedProtocols?: readonly number[];
   connectionCapabilities?: readonly string[];
   sessionCapabilities?: readonly string[];

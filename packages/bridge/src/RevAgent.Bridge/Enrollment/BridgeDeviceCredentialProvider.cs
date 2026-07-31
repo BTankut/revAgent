@@ -7,6 +7,11 @@ internal enum BridgeCredentialUnavailableErrorCode
 {
     NotEnrolled,
     StoreUnavailable,
+    EnrollmentTokenRejected,
+    EnrollmentDenied,
+    EnrollmentTokenReused,
+    EnrollmentEndpointUnavailable,
+    EnrollmentProtocolViolation,
 }
 
 internal sealed class BridgeCredentialUnavailableException : Exception
