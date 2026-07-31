@@ -768,3 +768,54 @@ confirm the dynamic anchor, and do not expand the R-H evidence set.
 This amendment does not authorize a tag-evidence run or creation of `rbp/v1.0.0`. Tag execution and tag
 creation each require their own separate operator authorization under
 `docs/implementation-plan/00-INDEX.md` section 8.2. The normative resolution is RES-34 in that index.
+
+
+### 2026-07-31 — RES-28 tag-evidence set completed at the confirmed dynamic anchor (RES-35)
+
+The operator confirmed the RES-34 resolved anchor on 2026-07-30: protected-main commit
+`a99f6051da20a7a28469a44be49c9e9e394be0fd`, tree `149c5af8dd7d84e7167ef372955d8fb287dff0d5`. Both
+normative subtrees are byte-identical to the semantic-freeze base: `docs/specs` resolves to
+`614b8bc2273ce4fe4b970e090d2b2c2d89486935` and `packages/protocol` to
+`bbc6ebb687118c30d29508771734df754a735b35`. The full-Vitest acceptance predicate was already measured
+at the anchor by protected-main push
+[run 30561677613](https://github.com/BTankut/revAgent/actions/runs/30561677613), Gateway job
+[90936010823](https://github.com/BTankut/revAgent/actions/runs/30561677613/job/90936010823): shards
+1/5 through 5/5 each PASS with `cardinality 60 files / 373 tests / 5 shards`.
+
+Execution was authorized by the operator line "ONAY — RES-28 kanıt yürütme; tag yok" (2026-07-30),
+with the mechanical promotion and execution acts delegated by the operator to the coordinator session
+the same day. Candidates were rendered by the frozen worktree renderer
+(`production-launch-bootstrap.mjs __render-production-launch-review-candidate`); the approval delta per
+vector was strictly `schemaVersion` review-candidate/v1 → authority-vector/v2 and `authoritative`
+false → true; the authority sets are retained off-repo with manifests, lock records, and read/execute
+ACL locks, and the runner wrapper pins the s04 template by SHA-256.
+
+Attempt one (set `rbp-v1.0-a99f6051da20-s14`) aborted 2026-07-30T20:49Z in run 3 at case O1-C37:
+"unable to start 3 additional fixtures in the bounded adjacent port range". Root cause was verified on
+the evidence host: WinNAT/Hyper-V dynamic TCP port exclusions covering roughly ten blocks of 100–500
+ports inside the ephemeral range; runs 1–2 had already passed all 40 cases, so the collision is
+probabilistic, and it is also the most plausible mechanism behind the historical EACCES bind
+flakiness recorded in #308. Per the harness contract a failed or partial attempt burns the
+evidence set, so set `rbp-v1.0-a99f6051da20-s15` was freshly rendered and promoted. The operator
+cleared the exclusions with an elevated `winnat` restart on 2026-07-31; the post-restart table
+retained only the administered range and four service ports. Environment provisioning on the
+vector-source worktree preserved git cleanliness and changed no tracked bytes: `npm ci
+--ignore-scripts`, `npm rebuild better-sqlite3 --ignore-scripts=false --foreground-scripts`, and a
+passing `verify:native-dependencies`.
+
+The s15 canonical final-evidence chain ran 2026-07-31T01:02:50Z → 02:29:10Z, exit 0, and printed the
+literal verdict `RBP FINAL EVIDENCE: PASS`. Retained runs `rbp-v1.0-a99f6051da20-s15-r1/-r2/-r3`:
+status passed, consecutive true, 3 of 3 required runs passing, 40 terminal cases per run across both
+bindings, aggregate JUnit 120 testcases with 0 failures, suite bodies totalling 1,300,010 ms. Soak
+`rbp-v1.0-a99f6051da20-s15-soak`: requested 3,600,000 ms, actual 3,600,015 ms, 720 alternating
+cycles, 720 resource samples, status passed, no failure. WSS / Streamable HTTP/SSE
+proxy-interoperability evidence was produced inside the retained runs and soak per RES-34. The
+evidence root and authority sets are retained off-repo on the evidence host
+(`revAgent-freeze-evidence/rbp-v1.0-a99f6051da20-s15` and the sibling authority/plan roots).
+
+Pre-tag identity checks passed at completion: `origin/main` equaled the anchor and no `rbp/*` tag
+existed locally or on origin. This record does NOT create or authorize `rbp/v1.0.0`. Tag execution
+and tag creation each require their own separate operator authorization under
+`docs/implementation-plan/00-INDEX.md` section 8.2, and the annotated tag, when authorized, MUST
+resolve to exactly `a99f6051da20a7a28469a44be49c9e9e394be0fd`. The normative resolution is RES-35 in
+that index.

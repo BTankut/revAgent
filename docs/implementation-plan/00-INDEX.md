@@ -254,6 +254,29 @@ Numbered against the consistency findings (section 09, F1–F21) and cross-plan 
   not a counted tag-evidence run or anchor selection. This amendment does not authorize tag-evidence
   execution or creation of `rbp/v1.0.0`; both require their own separate operator authorization under
   section 8.2.
+- **RES-35 (2026-07-31 evidence record) — the RES-28 tag-evidence set is complete at the confirmed
+  dynamic anchor.** The operator confirmed the RES-34 resolved anchor on 2026-07-30: protected-main
+  commit `a99f6051da20a7a28469a44be49c9e9e394be0fd`, tree `149c5af8dd7d84e7167ef372955d8fb287dff0d5`,
+  with both normative subtrees byte-identical to the semantic-freeze base (`docs/specs`
+  `614b8bc2273ce4fe4b970e090d2b2c2d89486935`, `packages/protocol`
+  `bbc6ebb687118c30d29508771734df754a735b35`), and authorized evidence execution without tag creation.
+  Under the independently protected authority set `rbp-v1.0-a99f6051da20-s15` (candidates rendered by
+  the frozen worktree renderer; approval delta strictly `schemaVersion` review-candidate/v1 to
+  authority-vector/v2 plus `authoritative` false to true; ACL-locked with manifest and lock record),
+  the canonical final-evidence chain completed 2026-07-31T01:02:50Z to 02:29:10Z with the literal
+  verdict `RBP FINAL EVIDENCE: PASS`: retained runs `…-s15-r1/-r2/-r3` all passed and consecutive
+  (3 of 3 required), 40 terminal cases per run across both bindings, aggregate JUnit 120 testcases with
+  0 failures, suite bodies 1,300,010 ms total; the one-hour soak `…-s15-soak` requested 3,600,000 ms,
+  measured 3,600,015 ms, completed 720 alternating cycles with 720 resource samples, status passed.
+  Proxy-interoperability evidence was produced inside the runs and soak per RES-34. A prior attempt
+  (set s14) aborted in run 3 at case O1-C37 on WinNAT/Hyper-V dynamic TCP port exclusions on the
+  evidence host; per the harness contract that set was burned and s15 was freshly rendered, and the
+  operator cleared the exclusions by restarting `winnat` before the s15 run. Pre-tag identity checks
+  passed at completion: `origin/main` equaled the anchor and no `rbp/*` tag existed locally or on
+  origin. This record does NOT create or authorize `rbp/v1.0.0`; tag creation remains a separate
+  operator authorization under section 8.2, and the annotated tag, when authorized, MUST resolve to
+  exactly `a99f6051da20a7a28469a44be49c9e9e394be0fd`. The full dated record is in
+  `docs/decisions/DP-log.md` (2026-07-31).
 
 ---
 
