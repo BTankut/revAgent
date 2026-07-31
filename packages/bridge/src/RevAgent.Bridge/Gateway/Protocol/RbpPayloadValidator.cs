@@ -137,10 +137,20 @@ internal static class RbpPayloadValidator
         int index = 0;
         foreach (JsonElement clearance in clearances.EnumerateArray())
         {
-            string holdId =
-                clearance.GetProperty("hold_id").GetString() ??
-                string.Empty;
-            if (!holdIds.Add(holdId))
+            // The typed parse is the one seam into Section 6.2.1 clearance
+            // acceptance: an entry that cannot become an acceptance input is
+            // rejected at this boundary and never reaches the journal.
+            RbpRecoveryClearance parsed;
+            try
+            {
+                parsed = RbpRecoveryClearance.Parse(clearance);
+            }
+            catch (FormatException exception)
+            {
+                return Failure($"{path}/{index}", exception.Message);
+            }
+
+            if (!holdIds.Add(parsed.HoldId))
             {
                 return Failure(
                     $"{path}/{index}/hold_id",
@@ -148,14 +158,14 @@ internal static class RbpPayloadValidator
             }
 
             if (previous is not null &&
-                string.CompareOrdinal(previous, holdId) > 0)
+                string.CompareOrdinal(previous, parsed.HoldId) > 0)
             {
                 return Failure(
                     path,
                     "recovery clearances must be sorted by hold_id");
             }
 
-            previous = holdId;
+            previous = parsed.HoldId;
             index++;
         }
 

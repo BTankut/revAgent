@@ -309,6 +309,65 @@ internal static class RbpJournalSchema
         CREATE INDEX ix_rbp_invocations_batch
           ON rbp_invocations(rsid,batch_id,batch_index)
           WHERE batch_id IS NOT NULL;
+
+        CREATE TABLE rbp_batches(
+          batch_key TEXT PRIMARY KEY,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          batch_id TEXT NOT NULL,
+          batch_digest TEXT NOT NULL,
+          atomic INTEGER NOT NULL CHECK(atomic IN (0,1)),
+          timeout_ms INTEGER NOT NULL
+            CHECK(timeout_ms >= 1 AND timeout_ms <= 9007199254740991),
+          recovery_clearances_jcs TEXT NOT NULL,
+          steps_jcs TEXT NOT NULL,
+          step_count INTEGER NOT NULL CHECK(step_count >= 1),
+          state TEXT NOT NULL CHECK(state IN (
+            'received','dispatched','terminal'
+          )),
+          terminal_outcome_json TEXT,
+          result_digest TEXT,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          dispatched_at_ms INTEGER,
+          finished_at_ms INTEGER,
+          UNIQUE(rsid,batch_id),
+          CHECK(length(batch_key) BETWEEN 38 AND 293),
+          CHECK(batch_key=rsid || '/' || batch_id),
+          CHECK(length(batch_id)=36),
+          CHECK(
+            length(batch_digest)=71 AND
+            substr(batch_digest,1,7)='sha256:' AND
+            substr(batch_digest,8) NOT GLOB '*[^0-9a-f]*'
+          ),
+          CHECK(length(recovery_clearances_jcs)>0),
+          CHECK(length(steps_jcs)>0),
+          CHECK(
+            (state='received' AND
+             dispatched_at_ms IS NULL AND
+             finished_at_ms IS NULL AND
+             terminal_outcome_json IS NULL AND
+             result_digest IS NULL) OR
+            (state='dispatched' AND
+             dispatched_at_ms IS NOT NULL AND
+             dispatched_at_ms >= created_at_ms AND
+             finished_at_ms IS NULL AND
+             terminal_outcome_json IS NULL AND
+             result_digest IS NULL) OR
+            (state='terminal' AND
+             finished_at_ms IS NOT NULL AND
+             finished_at_ms >= created_at_ms AND
+             (dispatched_at_ms IS NULL OR
+              finished_at_ms >= dispatched_at_ms) AND
+             terminal_outcome_json IS NOT NULL AND
+             length(terminal_outcome_json)>0 AND
+             result_digest IS NOT NULL AND
+             length(result_digest)=71 AND
+             substr(result_digest,1,7)='sha256:' AND
+             substr(result_digest,8) NOT GLOB '*[^0-9a-f]*')
+          )
+        ) STRICT;
+
+        CREATE INDEX ix_rbp_batches_session_state
+          ON rbp_batches(rsid,state,created_at_ms);
         """;
 
     internal static RbpJournalMigration BaseMigration { get; } = new(

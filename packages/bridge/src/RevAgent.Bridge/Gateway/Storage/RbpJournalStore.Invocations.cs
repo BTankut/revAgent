@@ -37,79 +37,87 @@ internal sealed partial class RbpJournalStore
             context =>
             {
                 RequireActiveSession(context, identity.Rsid);
-                RbpStoredInvocation? existing =
-                    ReadInvocation(context, identity.IdempotencyKey);
-                if (existing is null)
-                {
-                    InsertReceivedInvocation(context, identity, now);
-                    RbpStoredInvocation stored =
-                        ReadInvocation(context, identity.IdempotencyKey) ??
-                        throw new RbpJournalException(
-                            RbpJournalErrorCode.IntegrityCheckFailed,
-                            "The admitted invocation row disappeared inside " +
-                            "its own transaction.");
-                    return new RbpInvocationAdmissionResult(
-                        RbpInvocationAdmission.Accepted,
-                        stored);
-                }
-
-                // Section 12.2 rule 5: any identity drift under the same
-                // canonical key is a terminal protocol fault, never a replay.
-                RequireIdenticalIdentity(existing.Identity, identity);
-
-                // Rule 1: a known terminal row replays its stored outcome.
-                // Rule 2 takes precedence for indeterminate rows that later
-                // acquired a durable terminal outcome.
-                if (existing.State == RbpInvocationState.Indeterminate &&
-                    existing.LateTerminalOutcomeJson is not null)
-                {
-                    return new RbpInvocationAdmissionResult(
-                        RbpInvocationAdmission.ReplayLateAfterIndeterminate,
-                        existing,
-                        existing.VerificationHoldId);
-                }
-
-                if (existing.IsTerminal)
-                {
-                    return new RbpInvocationAdmissionResult(
-                        RbpInvocationAdmission.ReplayTerminal,
-                        existing,
-                        existing.VerificationHoldId);
-                }
-
-                // Rules 3 and 4 split on mutability, not on state: both
-                // `received` and `executing` are non-terminal here.
-                if (!existing.Identity.Mutating)
-                {
-                    return new RbpInvocationAdmissionResult(
-                        RbpInvocationAdmission.RetryNonMutating,
-                        existing);
-                }
-
-                // Rule 4: never re-execute a possibly dispatched mutation.
-                // The scope hold is installed before any fresh id may be
-                // considered, in this same transaction.
-                string holdId = InstallOrExtendHold(
-                    context,
-                    existing.Identity,
-                    now);
-                MarkInvocationIndeterminate(
-                    context,
-                    existing.Identity,
-                    holdId,
-                    now);
-                RbpStoredInvocation refused =
-                    ReadInvocation(context, existing.Identity.IdempotencyKey) ??
-                    throw new RbpJournalException(
-                        RbpJournalErrorCode.IntegrityCheckFailed,
-                        "The refused invocation row disappeared inside its " +
-                        "own transaction.");
-                return new RbpInvocationAdmissionResult(
-                    RbpInvocationAdmission.RefuseIndeterminate,
-                    refused,
-                    holdId);
+                return AdmitInvocation(context, identity, now);
             },
             cancellationToken);
+    }
+
+    private static RbpInvocationAdmissionResult AdmitInvocation(
+        RbpJournalWriteContext context,
+        RbpInvocationIdentity identity,
+        long now)
+    {
+        RbpStoredInvocation? existing =
+            ReadInvocation(context, identity.IdempotencyKey);
+        if (existing is null)
+        {
+            InsertReceivedInvocation(context, identity, now);
+            RbpStoredInvocation stored =
+                ReadInvocation(context, identity.IdempotencyKey) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "The admitted invocation row disappeared inside " +
+                    "its own transaction.");
+            return new RbpInvocationAdmissionResult(
+                RbpInvocationAdmission.Accepted,
+                stored);
+        }
+
+        // Section 12.2 rule 5: any identity drift under the same
+        // canonical key is a terminal protocol fault, never a replay.
+        RequireIdenticalIdentity(existing.Identity, identity);
+
+        // Rule 1: a known terminal row replays its stored outcome.
+        // Rule 2 takes precedence for indeterminate rows that later
+        // acquired a durable terminal outcome.
+        if (existing.State == RbpInvocationState.Indeterminate &&
+            existing.LateTerminalOutcomeJson is not null)
+        {
+            return new RbpInvocationAdmissionResult(
+                RbpInvocationAdmission.ReplayLateAfterIndeterminate,
+                existing,
+                existing.VerificationHoldId);
+        }
+
+        if (existing.IsTerminal)
+        {
+            return new RbpInvocationAdmissionResult(
+                RbpInvocationAdmission.ReplayTerminal,
+                existing,
+                existing.VerificationHoldId);
+        }
+
+        // Rules 3 and 4 split on mutability, not on state: both
+        // `received` and `executing` are non-terminal here.
+        if (!existing.Identity.Mutating)
+        {
+            return new RbpInvocationAdmissionResult(
+                RbpInvocationAdmission.RetryNonMutating,
+                existing);
+        }
+
+        // Rule 4: never re-execute a possibly dispatched mutation.
+        // The scope hold is installed before any fresh id may be
+        // considered, in this same transaction.
+        string holdId = InstallOrExtendHold(
+            context,
+            existing.Identity,
+            now);
+        MarkInvocationIndeterminate(
+            context,
+            existing.Identity,
+            holdId,
+            now);
+        RbpStoredInvocation refused =
+            ReadInvocation(context, existing.Identity.IdempotencyKey) ??
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "The refused invocation row disappeared inside its " +
+                "own transaction.");
+        return new RbpInvocationAdmissionResult(
+            RbpInvocationAdmission.RefuseIndeterminate,
+            refused,
+            holdId);
     }
 
     /// <summary>

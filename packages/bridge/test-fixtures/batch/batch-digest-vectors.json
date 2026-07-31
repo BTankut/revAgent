@@ -1,0 +1,525 @@
+{
+  "provenance": {
+    "source": "docs/specs/O1-bridge-gateway-protocol.md (RBP/1 v1.0, frozen)",
+    "sections": [
+      "Section 11 invoke_batch request and batch_digest material (~835-903)",
+      "Section 12.1 durable batch coordination binding (~1069-1075)",
+      "Section 12.2 invoke_batch redelivery mismatch rules (~1100-1105)",
+      "Section 21 item 30 golden vectors (~1512-1513)"
+    ],
+    "notes": [
+      "The canonical vector payload and its batch_digest are copied verbatim from the frozen Section 11 example, including the step params_digest.",
+      "Every changed-element vector pins the digest produced by the same RFC 8785 engine that reproduces the canonical spec digest; a changed vector digest must never equal the digest of its base vector, because on redelivery any changed element is a terminal protocol fault.",
+      "step-omitted is byte-for-byte the canonical single-step material, so its digest equals the canonical digest and can never be mistaken for the two-step batch: no journal path reconstructs a batch from a prefix.",
+      "property-reorder proves that harmless JSON property order reserialization yields the identical RFC 8785 value and digest."
+    ]
+  },
+  "vectors": [
+    {
+      "name": "canonical",
+      "base": null,
+      "expect": {
+        "digest": "sha256:c0d85d9f7b43d4ad4c9091b3213574c6fd9accf1250ffa4c45260925618fae41"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ],
+        "batch_digest": "sha256:c0d85d9f7b43d4ad4c9091b3213574c6fd9accf1250ffa4c45260925618fae41"
+      }
+    },
+    {
+      "name": "property-reorder",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:c0d85d9f7b43d4ad4c9091b3213574c6fd9accf1250ffa4c45260925618fae41",
+        "equals": "canonical"
+      },
+      "payload": {
+        "steps": [
+          {
+            "policy": {
+              "confirmation_id": "confirmation_uuid",
+              "class": "confirm",
+              "decision": "confirmed"
+            },
+            "mutation_scope": { "document_id": "doc_session_stable_id", "kind": "document" },
+            "mutating": true,
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "params": {
+              "confirmDelete": true,
+              "mode": "commit",
+              "exactName": true,
+              "viewType": "ThreeD",
+              "viewName": "revAgent_QA_fixture_disposable"
+            },
+            "method": "delete_review_view",
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021"
+          }
+        ],
+        "recovery_clearances": [],
+        "timeout_ms": 120000,
+        "atomic": true,
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020"
+      }
+    },
+    {
+      "name": "two-step",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:74c3795873ef6b8e455b0412e3379ed95bc020431dad519d4ff0304fad599358",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          },
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "method": "get_current_view_info",
+            "params": {},
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "allowed",
+              "confirmation_id": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "step-omitted",
+      "base": "two-step",
+      "expect": {
+        "digest": "sha256:c0d85d9f7b43d4ad4c9091b3213574c6fd9accf1250ffa4c45260925618fae41",
+        "equals": "canonical",
+        "differs_from": "two-step"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "steps-reordered",
+      "base": "two-step",
+      "expect": {
+        "digest": "sha256:068a51660b5388fa399a591deeb6b644f41e9a91f3017abb6cad5acdd8f2034b",
+        "differs_from": "two-step"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000022",
+            "method": "get_current_view_info",
+            "params": {},
+            "params_digest": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+            "mutating": false,
+            "mutation_scope": null,
+            "policy": {
+              "class": "auto",
+              "decision": "allowed",
+              "confirmation_id": null
+            }
+          },
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-policy",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:5fc501cc02a60d1c2840a7ca7bd924d60983b222b808dee2cfe40a85c0dcbd9f",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "denied",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-policy-confirmation",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:a88f9c18da3a8cb324dc8290f003c706ad7221ac4b1b83e6f3d9d50414e691c4",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": null
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-scope",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:0d664c868634aba00941cae080e42dedcde042828d46e89d94e6f78e4820f9b2",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "session" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-clearance",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:4eb7d342b16d70674f0ff26f9fa64a887263398028a1291b777d6fd307ca7bf8",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [
+          {
+            "hold_id": "vh:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "resolution_id": "0197a3c2-0000-7000-8000-0000000000d1",
+            "basis": "verification_read",
+            "verification_invocation_id": "0197a3c2-0000-7000-8000-0000000000d2",
+            "evidence_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            "decision": "postcondition_verified",
+            "audit_id": "0197a3c2-0000-7000-8000-0000000000d3"
+          }
+        ],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-atomic",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:bb5754ee25466b4bdd2487455fca8d1d23d3dd5600cefbc2a63bbfe515ae3b4b",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": false,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-timeout",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:7a8034860bf881ca2f60d1dc442c882e64cf2e0c0f73328b0037aa4c78e95711",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 180000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "changed-params-digest",
+      "base": "canonical",
+      "expect": {
+        "digest": "sha256:5cb04e3b5ecb5d8cf1ede7b993e56586b517d638ff26548ff5a656aa05a3a73f",
+        "differs_from": "canonical"
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "empty-steps",
+      "base": "canonical",
+      "expect": {
+        "rejected": true
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000,
+        "recovery_clearances": [],
+        "steps": []
+      }
+    },
+    {
+      "name": "fractional-timeout",
+      "base": "canonical",
+      "expect": {
+        "rejected": true
+      },
+      "payload": {
+        "batch_id": "0197a3c2-0000-7000-8000-000000000020",
+        "atomic": true,
+        "timeout_ms": 120000.5,
+        "recovery_clearances": [],
+        "steps": [
+          {
+            "invocation_id": "0197a3c2-0000-7000-8000-000000000021",
+            "method": "delete_review_view",
+            "params": {
+              "viewName": "revAgent_QA_fixture_disposable",
+              "viewType": "ThreeD",
+              "exactName": true,
+              "mode": "commit",
+              "confirmDelete": true
+            },
+            "params_digest": "sha256:b47279d1beb5a2a0b21098abb92fa98bacc01528b3ca2c475239e8c1754fd5a4",
+            "mutating": true,
+            "mutation_scope": { "kind": "document", "document_id": "doc_session_stable_id" },
+            "policy": {
+              "class": "confirm",
+              "decision": "confirmed",
+              "confirmation_id": "confirmation_uuid"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

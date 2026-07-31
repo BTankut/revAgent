@@ -1,0 +1,8 @@
+# Align dotnet format with the repository's .gitattributes mandate (* text=auto eol=lf).
+# Without this, the formatter emits Environment.NewLine (CRLF on Windows) whenever it
+# rewrites trivia, which git then normalises back to LF - making the format gate
+# unsatisfiable for any file the formatter touches.
+root = true
+
+[*.cs]
+end_of_line = lf
