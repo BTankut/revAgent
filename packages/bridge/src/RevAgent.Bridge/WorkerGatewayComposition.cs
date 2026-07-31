@@ -112,6 +112,43 @@ internal static class WorkerGatewayComposition
         }
     }
 
+    /// <summary>
+    /// Composes the worker's connection-cycle factory. WSS is always the
+    /// primary RBP binding; when — and only when — the provisioned
+    /// transport capabilities include
+    /// <see cref="RbpTransportCapabilities.StreamableHttp"/>, the factory
+    /// is wrapped so one fallback-eligible WSS opening failure may try the
+    /// Streamable HTTP/SSE binding within the same attempt (RES-25,
+    /// O1 Section 4.1). An unset or empty flag fail-closes to the current
+    /// WSS-only behavior, and the fallback factory itself still refuses to
+    /// open unless the capability is both provisioned and declared in
+    /// <c>hello</c>.
+    /// </summary>
+    internal static IRbpConnectionCycleFactory CreateConnectionCycleFactory(
+        IRbpEnrollmentStateProvider enrollmentState,
+        IReadOnlyCollection<string>? provisionedTransportCapabilities = null)
+    {
+        ArgumentNullException.ThrowIfNull(enrollmentState);
+        var primary = new WssRbpConnectionCycleFactory(
+            new RbpGatewayHandshakeClient(
+                enrollmentState,
+                new WssGatewayBinding()));
+        if (provisionedTransportCapabilities is null ||
+            !provisionedTransportCapabilities.Contains(
+                RbpTransportCapabilities.StreamableHttp,
+                StringComparer.Ordinal))
+        {
+            return primary;
+        }
+
+        return new RbpPrimaryFallbackConnectionCycleFactory(
+            primary,
+            new StreamableHttpRbpConnectionCycleFactory(
+                enrollmentState,
+                provisionedTransportCapabilities),
+            provisionedTransportCapabilities);
+    }
+
     internal static RbpConnectionCoordinator CreateCoordinator(
         WorkerGatewayServices services)
     {
