@@ -11,7 +11,8 @@ internal sealed record RbpJournalRetentionResult(
     int PrunedClearedHolds,
     int PrunedInboundReceipts,
     int PrunedOutboxEnvelopes,
-    int PrunedTransportSessions);
+    int PrunedTransportSessions,
+    int PrunedTerminalBatches = 0);
 
 /// <summary>
 /// Frozen O1 Section 12.2 journal retention. The journal retains entries
@@ -81,6 +82,7 @@ internal sealed partial class RbpJournalStore
             context =>
             {
                 int invocations = PruneTerminalInvocations(context, cutoff);
+                int batches = PruneTerminalBatches(context, cutoff);
                 int holds = PruneClearedHolds(context, cutoff);
                 int receipts = PruneTransportRows(
                     context,
@@ -99,7 +101,8 @@ internal sealed partial class RbpJournalStore
                     holds,
                     receipts,
                     outbox,
-                    sessions);
+                    sessions,
+                    batches);
             },
             cancellationToken);
     }
@@ -108,11 +111,14 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         long cutoff)
     {
-        // Both absolute guards live in the statement itself: a non-terminal
-        // row never matches the state list, and no row referenced by an
+        // All absolute guards live in the statement itself: a non-terminal
+        // row never matches the state list, no row referenced by an
         // uncleared hold — as its installed hold, as its journaled
         // verification read, or as one of its origin idempotency keys — is
-        // ever deleted, regardless of age.
+        // ever deleted, and no step row of a batch whose coordination row
+        // is not terminal is ever deleted, because Section 12.2 replays
+        // terminal prefix steps of an in-progress batch from their
+        // journals, regardless of age.
         using SqliteCommand delete = context.CreateCommand(
             """
             DELETE FROM rbp_invocations
@@ -138,6 +144,40 @@ internal sealed partial class RbpJournalStore
                       WHERE origin.value=rbp_invocations.idempotency_key
                     )
                   )
+              )
+              AND (
+                rbp_invocations.batch_id IS NULL
+                OR NOT EXISTS(
+                  SELECT 1
+                  FROM rbp_batches AS batches
+                  WHERE batches.rsid=rbp_invocations.rsid
+                    AND batches.batch_id=rbp_invocations.batch_id
+                    AND batches.state<>'terminal'
+                )
+              );
+            """);
+        delete.Parameters.AddWithValue("$cutoff", cutoff);
+        return delete.ExecuteNonQuery();
+    }
+
+    private static int PruneTerminalBatches(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        // A batch coordination row is prunable only once it is terminal,
+        // older than the retention period, and no step journal row still
+        // references it; a non-terminal batch is never pruned and keeps
+        // every one of its step rows retained above.
+        using SqliteCommand delete = context.CreateCommand(
+            """
+            DELETE FROM rbp_batches
+            WHERE state='terminal'
+              AND finished_at_ms<=$cutoff
+              AND NOT EXISTS(
+                SELECT 1
+                FROM rbp_invocations AS steps
+                WHERE steps.rsid=rbp_batches.rsid
+                  AND steps.batch_id=rbp_batches.batch_id
               );
             """);
         delete.Parameters.AddWithValue("$cutoff", cutoff);

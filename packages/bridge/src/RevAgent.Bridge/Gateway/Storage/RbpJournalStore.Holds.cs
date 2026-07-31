@@ -169,7 +169,12 @@ internal sealed partial class RbpJournalStore
                 RequireActiveSession(context, identity.Rsid);
                 foreach (RbpRecoveryClearance clearance in clearances)
                 {
-                    AcceptClearance(context, identity, clearance, now);
+                    AcceptClearance(
+                        context,
+                        identity.Rsid,
+                        new[] { identity.MutationScopeJcs! },
+                        clearance,
+                        now);
                 }
 
                 if (identity.Mutating &&
@@ -237,12 +242,13 @@ internal sealed partial class RbpJournalStore
 
     private static void AcceptClearance(
         RbpJournalWriteContext context,
-        RbpInvocationIdentity identity,
+        string rsid,
+        IReadOnlyList<string> envelopeScopeJcsList,
         RbpRecoveryClearance clearance,
         long now)
     {
         RbpVerificationHold hold =
-            FindHoldById(context, identity.Rsid, clearance.HoldId) ??
+            FindHoldById(context, rsid, clearance.HoldId) ??
             throw ClearanceFault(
                 "no durable hold matches the clearance for this session");
         if (!string.Equals(
@@ -255,7 +261,17 @@ internal sealed partial class RbpJournalStore
                 "scope");
         }
 
-        if (!ScopeConflicts(identity.MutationScopeJcs!, hold))
+        bool conflicts = false;
+        foreach (string envelopeScopeJcs in envelopeScopeJcsList)
+        {
+            if (ScopeConflicts(envelopeScopeJcs, hold))
+            {
+                conflicts = true;
+                break;
+            }
+        }
+
+        if (!conflicts)
         {
             // The frozen array contains every and only active holds that
             // conflict with the envelope's mutation scopes.
@@ -390,6 +406,12 @@ internal sealed partial class RbpJournalStore
                 "recovery clearances");
         }
 
+        ValidateClearanceEnvelopeShapes(clearances);
+    }
+
+    private static void ValidateClearanceEnvelopeShapes(
+        IReadOnlyList<RbpRecoveryClearance> clearances)
+    {
         var holdIds = new HashSet<string>(StringComparer.Ordinal);
         foreach (RbpRecoveryClearance clearance in clearances)
         {
