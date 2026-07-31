@@ -16,6 +16,7 @@ namespace RevAgentPlugin.Core
         public Result OnStartup(UIControlledApplication application)
         {
             SpatialChangeTracker.Instance.Subscribe(application.ControlledApplication);
+            DocumentContextTracker.Instance.Subscribe(application.ControlledApplication);
 
             RibbonPanel mcpPanel = application.CreateRibbonPanel("revAgent");
 
@@ -35,6 +36,7 @@ namespace RevAgentPlugin.Core
 
         public Result OnShutdown(UIControlledApplication application)
         {
+            DocumentContextTracker.Instance.Unsubscribe(application != null ? application.ControlledApplication : null);
             SpatialChangeTracker.Instance.Unsubscribe(application != null ? application.ControlledApplication : null);
 
             if (_uiControlledApplication != null)
@@ -73,6 +75,10 @@ namespace RevAgentPlugin.Core
             // context. Conservatively invalidate even for same-document view
             // changes; no model data is read or written by this callback.
             SpatialChangeTracker.Instance.InvalidateActiveDocumentView();
+
+            // Cheap reads only: refresh the app-event-maintained document
+            // context cache with the newly active document and view.
+            DocumentContextTracker.Instance.NotifyViewActivated(e);
         }
 
         private void StartSocketService(UIApplication uiApplication)

@@ -522,8 +522,23 @@ namespace RevAgentPlugin.Core
 
                 if (string.Equals(request.Method, "mcp_status", StringComparison.OrdinalIgnoreCase))
                 {
-                    object snapshot = McpTaskStatusService.Instance.GetSnapshot(_isRunning, _port, _maxMessageBytes);
+                    object snapshot = McpTaskStatusService.Instance.GetSnapshot(
+                        _isRunning,
+                        _port,
+                        _maxMessageBytes,
+                        DocumentContextTracker.Instance.IsEventBacked);
                     return CreateSuccessResponse(request.Id, snapshot);
+                }
+
+                if (string.Equals(request.Method, AddinDocumentContextContract.Method, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Appendix A.3: the cached document-context snapshot is a
+                    // heartbeat-cadence read served like mcp_status: outside
+                    // the data-plane intake gate, without task-status
+                    // tracking, and without raising a Revit ExternalEvent,
+                    // so the 15 s bridge poll can never be blocked by a
+                    // running command or a quarantined data plane.
+                    return CreateDocumentContextResponse(request);
                 }
 
                 // Command wrappers and their ExternalEvent handlers are process-wide
@@ -692,6 +707,23 @@ namespace RevAgentPlugin.Core
                 {
                     Monitor.Exit(_dataPlaneIntakeGate);
                 }
+            }
+        }
+
+        private string CreateDocumentContextResponse(JsonRPCRequest request)
+        {
+            try
+            {
+                AddinDocumentContextContract.ValidateRequestParameters(GetRequestParamsObject(request));
+                return CreateSuccessResponse(request.Id, DocumentContextTracker.Instance.ReadResultObject());
+            }
+            catch (AddinDocumentContextRequestException ex)
+            {
+                return CreateErrorResponse(request.Id, ex.JsonRpcErrorCode, ex.Message);
+            }
+            catch (Exception ex)
+            {
+                return CreateErrorResponse(request.Id, JsonRPCErrorCodes.InternalError, ex.Message);
             }
         }
 

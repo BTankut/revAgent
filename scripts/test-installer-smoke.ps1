@@ -1296,6 +1296,7 @@ namespace RevAgentInstallerSmoke {
         "src\revit-plugin\revAgentCommandSet\Commands\Batch\BatchStepSeamRunner.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Batch\ExecuteBatchCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Batch\ExecuteBatchEventHandler.cs",
+        "src\revit-plugin\revAgentCommandSet\Commands\Context\GetDocumentContextCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeCommand.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\ExecuteDynamicCode\ExecuteCodeEventHandler.cs",
         "src\revit-plugin\revAgentCommandSet\Commands\Spatial\ExtractSpatialSnapshotCommand.cs",

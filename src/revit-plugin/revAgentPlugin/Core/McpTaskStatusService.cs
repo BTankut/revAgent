@@ -185,7 +185,11 @@ namespace RevAgentPlugin.Core
             return FinishTask(startedTask, "guarded", Trim(reason?.Trim(), 600), executeMs, responseBytes);
         }
 
-        public object GetSnapshot(bool isRunning, int port, int maxRequestPayloadBytes)
+        public object GetSnapshot(
+            bool isRunning,
+            int port,
+            int maxRequestPayloadBytes,
+            bool documentContextCacheReady = false)
         {
             lock (_sync)
             {
@@ -212,6 +216,17 @@ namespace RevAgentPlugin.Core
                 {
                     capabilityContracts.Clear();
                     sessionCapabilities.Clear();
+                }
+
+                // doc_context_cached_v1 (Appendix A.2/A.3) is advertised only
+                // while the get_document_context command is genuinely served
+                // from the application-event-backed cache; otherwise it fails
+                // closed to no advertisement and no descriptor.
+                if (documentContextCacheReady)
+                {
+                    capabilityContracts[AddinStatusContract.DocumentContextCachedCapability] =
+                        AddinDocumentContextContract.CreateCapability();
+                    sessionCapabilities.Add(AddinStatusContract.DocumentContextCachedCapability);
                 }
 
                 return new

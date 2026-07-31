@@ -117,6 +117,11 @@
       "commandName": "execute_batch",
       "description": "Execute an ordered allowlisted command batch atomically inside one Revit TransactionGroup with rollback-on-non-success",
       "assemblyPath": "revAgentCommandSet.dll"
+    },
+    {
+      "commandName": "get_document_context",
+      "description": "Read the application-event-maintained cached document context snapshot without raising a Revit ExternalEvent",
+      "assemblyPath": "revAgentCommandSet.dll"
     }
   ]
 }
