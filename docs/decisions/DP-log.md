@@ -840,3 +840,33 @@ closed: RBP/1 v1.0 is semantically frozen, evidenced, and tagged.** The tag is i
 never be deleted, moved, or recreated; any future protocol change is a new version under the O1
 versioning rules, never a rewrite of `rbp/v1.0.0`. The normative resolution is RES-36 in
 `docs/implementation-plan/00-INDEX.md`.
+
+
+### 2026-08-01 — Migration-freeze exception: add-in `execute_batch` (RES-5 / P3-T6)
+
+Scope of the exception: `src/revit-plugin/**` gains the `execute_batch` command surface and nothing else.
+The seven batchable commands receive a mechanical `ParseRequest`/`ApplyRequest` seam extraction (no behaviour
+change), `SocketService` learns one new exception catch, `McpTaskStatusService` advertises the
+`batch_atomic` capability descriptor, and the installer payload/manifest are regenerated because the
+manifest-freshness gate hard-fails otherwise. No concurrency refactor, no unrelated cleanup, no other
+capability. This mirrors the bounded shape of the merged loopback-bind exception (#300).
+
+Authority: RES-28 records that Barış Tankut is the add-in implementation owner and accepts the
+batchable-command restrictions and the atomic rollback evidence; RES-5 requires add-in adaptations to land
+before pilot entry and assigns the adaptation lane to M3. The operator delegated execution of the M3 lane
+to the coordinator session on 2026-07-31.
+
+Frozen-contract basis: O1 §11 (~900-916) atomic:true is a single framed `execute_batch` pass-through
+executed as one Revit transaction group, capability-gated on `batch_atomic`; Appendix A.2 (~1674-1727) the
+descriptor and the hard eligible/non-batchable command sets; Appendix A.4 (~1758-1835) the request/response
+contract, reserved-name set and terminal matrix. `packages/protocol` is untouched (tagged `rbp/v1.0.0`).
+
+Atomic rollback evidence accepted by the owner: all steps execute inside one `TransactionGroup`, assimilated
+only on full success and rolled back in full on any step failure, guard or exception, with
+`rollback_failure`/`batch_indeterminate` carriers for the degenerate cases. Unit evidence covers the state
+machine through the `IAddinBatchTransactionGroup` seam (Contracts 206 -> 255). Real `TransactionGroup`
+Start/Assimilate/RollBack against a live `Document`, the single `ExternalEvent` raise and the
+no-active-document pre-group path remain live-Revit evidence for the M3 gate's 21-command run.
+
+Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
+fleet rollout; the migration release freeze remains in force.
