@@ -73,7 +73,11 @@ internal static class RbpInvocationPayloads
     /// The stored body is reissued verbatim apart from the per-delivery replay
     /// flags. Rewriting the outcome on replay would let a later bridge build
     /// answer differently from the one that actually ran, which is exactly the
-    /// drift the journal exists to prevent.
+    /// drift the journal exists to prevent. That verbatim rule includes the
+    /// stored <c>result_digest</c>: Section 10.3 makes it REQUIRED on a
+    /// terminal read carrying a verification correlation precisely so a later
+    /// clearance can be checked independently, and a replay that dropped it
+    /// would break that check on redelivery.
     /// </remarks>
     internal static JsonElement ReplayTerminal(JsonElement storedOutcome) =>
         OverrideReplayFlags(
@@ -81,7 +85,7 @@ internal static class RbpInvocationPayloads
             replayed: true,
             lateAfterIndeterminate: false,
             verificationHoldId: null,
-            resultDigest: null);
+            resultDigest: ReadStoredResultDigest(storedOutcome));
 
     /// <summary>
     /// Section 12.2 rule 2: a durable outcome that became known after the same
@@ -231,6 +235,15 @@ internal static class RbpInvocationPayloads
 
         return Materialize(buffer);
     }
+
+    private static string? ReadStoredResultDigest(JsonElement storedOutcome) =>
+        storedOutcome.ValueKind == JsonValueKind.Object &&
+        storedOutcome.TryGetProperty(
+            "result_digest",
+            out JsonElement digest) &&
+        digest.ValueKind == JsonValueKind.String
+            ? digest.GetString()
+            : null;
 
     private static bool IsReplayFlag(string name) =>
         name is "replayed" or
