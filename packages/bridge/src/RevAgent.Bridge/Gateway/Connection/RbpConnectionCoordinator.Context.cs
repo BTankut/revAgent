@@ -2,6 +2,7 @@ using System.Collections.ObjectModel;
 using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -115,6 +116,7 @@ internal sealed partial class RbpConnectionCoordinator
         private bool _heartbeatFlightConsumed;
         private Task? _receiveTask;
         private Task? _heartbeatTask;
+        private readonly List<Task> _invocations = new();
         private long _steadyStartedMilliseconds = -1;
         private Exception? _terminalFailure;
         private int _disposed;
@@ -708,6 +710,97 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
+        /// <summary>
+        /// Serializes queue-then-send for data envelopes on this cycle.
+        /// </summary>
+        /// <remarks>
+        /// Outbound sequence numbers are allocated inside the journal's write
+        /// gate, which is released before the frame reaches the socket. Two
+        /// concurrent senders could therefore take seq N and N+1 and write them
+        /// in the opposite order. The heartbeat path sends control envelopes
+        /// and never takes this gate, so it cannot be starved and there is no
+        /// lock inversion: the order is always this gate, then the journal's.
+        /// </remarks>
+        internal SemaphoreSlim OutboundGate { get; } = new(1, 1);
+
+        /// <summary>
+        /// Claims the Section 10.1 window and starts the invocation task.
+        /// </summary>
+        /// <remarks>
+        /// The claim is taken here, synchronously on the receive loop, so the
+        /// invoke that arrived <em>second</em> is the one rejected. Claiming
+        /// inside the task would make that a scheduling accident.
+        /// </remarks>
+        internal void StartInvocation(RbpDataEnvelopeSnapshot envelope)
+        {
+            IRbpInvocationClaim? claim =
+                _owner._invocationDispatcher.TryClaim(envelope.Rsid);
+            _owner.InvocationStarted();
+            lock (_sync)
+            {
+                _invocations.RemoveAll(task => task.IsCompleted);
+                _invocations.Add(
+                    claim is null
+                        ? _owner.RunConcurrentRejectionAsync(this, envelope)
+                        : _owner.RunInvocationAsync(this, claim, envelope));
+            }
+        }
+
+        internal void CompleteInvocation() => _owner.InvocationCompleted();
+
+        /// <summary>
+        /// Waits for in-flight invocations to reach a durable decision, within
+        /// a budget.
+        /// </summary>
+        /// <remarks>
+        /// Deliberately separate from <see cref="AwaitOwnedTasksAsync"/>: a
+        /// false return there poisons connection authority and requires a
+        /// process restart, which is the right answer for a handler that will
+        /// not drain but the wrong answer for an add-in call that simply has
+        /// not finished. Expiring here is not loss — the terminal outcome is
+        /// persisted before the dispatcher returns, so a redelivery replays it
+        /// under Section 12.2 rule 1.
+        /// </remarks>
+        internal async Task<bool> DrainInvocationsAsync(TimeSpan budget)
+        {
+            Task[] pending;
+            lock (_sync)
+            {
+                pending = _invocations
+                    .Where(task => !task.IsCompleted)
+                    .ToArray();
+            }
+
+            if (pending.Length == 0)
+            {
+                return true;
+            }
+
+            Task all = Task.WhenAll(pending);
+            Task finished = await Task
+                .WhenAny(all, Task.Delay(budget))
+                .ConfigureAwait(false);
+            if (!ReferenceEquals(finished, all))
+            {
+                ObserveLateFault(all);
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Keeps a straggler's fault from surfacing as an unobserved task
+        /// exception once it eventually completes.
+        /// </summary>
+        private static void ObserveLateFault(Task task) =>
+            _ = task.ContinueWith(
+                completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+
         internal async Task<bool> AwaitOwnedTasksAsync(TimeSpan timeout)
         {
             if (timeout <= TimeSpan.Zero)
@@ -771,6 +864,7 @@ internal sealed partial class RbpConnectionCoordinator
                 finally
                 {
                     _cancellation.Dispose();
+                    OutboundGate.Dispose();
                 }
             }
         }

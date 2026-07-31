@@ -123,26 +123,50 @@ internal sealed partial class RbpConnectionCoordinator
                 "Inbound RBP sequence authority rejected the data envelope.");
         }
 
-        if (accepted.Kind == RbpInboundDataKind.Accepted)
+        if (accepted.Kind != RbpInboundDataKind.Accepted)
         {
-            await JournalAcceptedInboundAsync(snapshot, context.Token)
-                .ConfigureAwait(false);
+            // A duplicate the sequence authority already answered. Re-running
+            // the invocation would be a second delivery of the same frame, and
+            // Section 12.2 arbitrates redelivery on the invocation key, not on
+            // the transport sequence.
+            return;
+        }
+
+        await JournalAcceptedInboundAsync(snapshot, context.Token)
+            .ConfigureAwait(false);
+
+        if (string.Equals(snapshot.Type, "invoke", StringComparison.Ordinal))
+        {
+            // Synchronous: claims the Section 10.1 window in arrival order and
+            // starts a detached task. The receive loop must never await the
+            // add-in, or a Section 16 cancel could not be read until the
+            // invocation it cancels had already finished.
+            context.StartInvocation(snapshot);
         }
     }
 
     private async Task FlushPendingRetransmitAsync(
         ConnectionCycleContext context)
     {
-        foreach (RbpDataEnvelopeSnapshot retransmit in
-                 context.GetPendingRetransmit())
+        await context.OutboundGate.WaitAsync(context.Token)
+            .ConfigureAwait(false);
+        try
         {
-            await context.Cycle.SendAsync(
-                    CreateDataEnvelope(retransmit),
-                    context.Token)
-                .ConfigureAwait(false);
-        }
+            foreach (RbpDataEnvelopeSnapshot retransmit in
+                     context.GetPendingRetransmit())
+            {
+                await context.Cycle.SendAsync(
+                        CreateDataEnvelope(retransmit),
+                        context.Token)
+                    .ConfigureAwait(false);
+            }
 
-        context.ClearPendingRetransmit();
+            context.ClearPendingRetransmit();
+        }
+        finally
+        {
+            context.OutboundGate.Release();
+        }
     }
 
     private async Task HeartbeatLoopAsync(ConnectionCycleContext context)

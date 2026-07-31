@@ -100,7 +100,8 @@ internal sealed record RbpConnectionCoordinatorOptions(
     TimeSpan? HeartbeatAcknowledgementTimeout = null,
     TimeSpan? HeartbeatCompletionTimeout = null,
     TimeSpan? WakeGapThreshold = null,
-    TimeSpan? CloseTimeout = null)
+    TimeSpan? CloseTimeout = null,
+    TimeSpan? InvocationDrainTimeout = null)
 {
     internal TimeSpan EffectiveHeartbeatAcknowledgementTimeout =>
         HeartbeatAcknowledgementTimeout ?? TimeSpan.FromSeconds(10);
@@ -117,6 +118,20 @@ internal sealed record RbpConnectionCoordinatorOptions(
 
     internal TimeSpan EffectiveCloseTimeout =>
         CloseTimeout ?? TimeSpan.FromSeconds(2);
+
+    /// <summary>
+    /// How long a closing cycle waits for in-flight invocations to reach a
+    /// durable decision.
+    /// </summary>
+    /// <remarks>
+    /// P-UPD-4 states the worker "finishes in-flight invocation **or journals
+    /// it**", so this budget may expire without loss: the dispatcher persists
+    /// the terminal outcome before returning, and a redelivery is then answered
+    /// from the journal under Section 12.2 rule 1. Kept short so the P3-T2
+    /// sub-10s service stop holds even with an add-in call outstanding.
+    /// </remarks>
+    internal TimeSpan EffectiveInvocationDrainTimeout =>
+        InvocationDrainTimeout ?? TimeSpan.FromSeconds(3);
 }
 
 internal enum RbpCoordinatorErrorCode
@@ -152,4 +167,5 @@ internal sealed record RbpConnectionCoordinatorSnapshot(
     long ConnectionGeneration,
     bool HasActiveConnection,
     IReadOnlyList<string> ActiveRsids,
-    int OwnedBackgroundTaskCount);
+    int OwnedBackgroundTaskCount,
+    int ActiveInvocationCount = 0);

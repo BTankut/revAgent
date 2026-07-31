@@ -173,7 +173,15 @@ internal sealed partial class RbpJournalStore
             RequireSha256(terminal.ResultDigest, nameof(terminal));
         }
 
-        string outcomeJson = Rfc8785Json.Canonicalize(terminal.Outcome);
+        // An indeterminate mutation carries no caller-supplied body: the store
+        // mints it below, together with the hold it must reference.
+        bool storeMintsOutcome =
+            terminal.State == RbpInvocationState.Indeterminate &&
+            terminal.Outcome.ValueKind == JsonValueKind.Undefined;
+        string outcomeJson = storeMintsOutcome
+            ? string.Empty
+            : Rfc8785Json.Canonicalize(terminal.Outcome);
+        string? resultDigest = terminal.ResultDigest;
         long now = NowMilliseconds();
         return ExecuteImmediateAsync<string?>(
             context =>
@@ -213,6 +221,17 @@ internal sealed partial class RbpJournalStore
                         context,
                         existing.Identity,
                         now);
+
+                    // The hold id is minted here, so the Section 12.2 rule 4
+                    // body — which MUST carry that id — can only be built here
+                    // too. This is the same body the rule 4 admission path
+                    // writes, so an indeterminate row looks identical whether
+                    // it was classified on redelivery or on a dispatch whose
+                    // outcome could not be disproved.
+                    (outcomeJson, resultDigest) =
+                        BuildJournalIndeterminateOutcome(
+                            existing.Identity,
+                            holdId);
                 }
 
                 using SqliteCommand update = context.CreateCommand(
@@ -233,7 +252,7 @@ internal sealed partial class RbpJournalStore
                 update.Parameters.AddWithValue("$outcome", outcomeJson);
                 update.Parameters.AddWithValue(
                     "$digest",
-                    (object?)terminal.ResultDigest ?? DBNull.Value);
+                    (object?)resultDigest ?? DBNull.Value);
                 update.Parameters.AddWithValue(
                     "$hold",
                     (object?)holdId ?? DBNull.Value);

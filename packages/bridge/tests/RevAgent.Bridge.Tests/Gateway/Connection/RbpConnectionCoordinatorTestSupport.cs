@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
 using RevAgent.Bridge.Gateway.Connection;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 using RevAgent.Bridge.Tests.Gateway.Storage;
@@ -20,7 +21,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         ManualCoordinatorClock clock,
         IRbpInboundDataJournal? inbound = null,
         IRbpRandomSource? random = null,
-        TimeSpan? closeTimeout = null) =>
+        TimeSpan? closeTimeout = null,
+        IRbpInvocationDispatcher? invocationDispatcher = null,
+        TimeSpan? invocationDrainTimeout = null) =>
         new(
             factory,
             store,
@@ -32,7 +35,9 @@ public sealed partial class RbpConnectionCoordinatorTests
                     "WS01",
                     "Windows 11",
                     new[] { "2026.07.26.0" }),
-                CloseTimeout: closeTimeout),
+                CloseTimeout: closeTimeout,
+                InvocationDrainTimeout: invocationDrainTimeout),
+            invocationDispatcher ?? new StubInvocationDispatcher(),
             inbound,
             clock,
             random ?? new FixedRandomSource(0));
@@ -676,5 +681,110 @@ public sealed partial class RbpConnectionCoordinatorTests
                 RbpEnvelopeDisposition.Known,
                 RbpEnvelope.FreezeAdditionalProperties(
                     new Dictionary<string, JsonElement>()));
+    }
+
+    /// <summary>
+    /// A dispatcher double for transport-level coordinator tests.
+    /// </summary>
+    /// <remarks>
+    /// It never parses the payload. That matters: the existing sequence-journal
+    /// tests deliver a minimal <c>{"invocation_id":...}</c> body, which the
+    /// frozen schema would reject long before <c>HandleDataEnvelopeAsync</c> in
+    /// production — it only reaches the coordinator because the fake cycle
+    /// injects a constructed envelope past the codec. Keeping parsing behind
+    /// the interface lets those tests keep their fixtures byte-for-byte while
+    /// still exercising the real dispatch seam.
+    /// </remarks>
+    internal sealed class StubInvocationDispatcher : IRbpInvocationDispatcher
+    {
+        private readonly RbpInFlightGate _gate = new();
+        private readonly ConcurrentQueue<string> _dispatched = new();
+        private int _concurrentPeak;
+        private int _active;
+
+        /// <summary>Held open to keep an invocation in flight.</summary>
+        internal TaskCompletionSource? Hold { get; set; }
+
+        internal IReadOnlyList<string> Dispatched => _dispatched.ToArray();
+
+        internal int ConcurrentPeak => Volatile.Read(ref _concurrentPeak);
+
+        internal ConcurrentQueue<string> RejectedInvocationIds { get; } = new();
+
+        public IRbpInvocationClaim? TryClaim(string rsid) =>
+            _gate.TryEnter(rsid) ? new GateClaim(_gate, rsid) : null;
+
+        public RbpInvocationAnswer RejectConcurrent(string invocationId)
+        {
+            RejectedInvocationIds.Enqueue(invocationId);
+            return RbpInvocationAnswer.Error(
+                Json($$"""
+                    {
+                      "invocation_id":"{{invocationId}}",
+                      "retryable":false,
+                      "fault_class":"protocol",
+                      "outcome":"known",
+                      "verification_required":false,
+                      "replayed":false,
+                      "late_after_indeterminate":false,
+                      "message":"already in flight"
+                    }
+                    """));
+        }
+
+        public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
+            IRbpInvocationClaim claim,
+            JsonElement invokePayload,
+            CancellationToken cancellationToken)
+        {
+            _dispatched.Enqueue(claim.Rsid);
+            int active = Interlocked.Increment(ref _active);
+            int peak = Volatile.Read(ref _concurrentPeak);
+            while (active > peak &&
+                   Interlocked.CompareExchange(
+                       ref _concurrentPeak, active, peak) != peak)
+            {
+                peak = Volatile.Read(ref _concurrentPeak);
+            }
+
+            try
+            {
+                if (Hold is { } hold)
+                {
+                    await hold.Task.WaitAsync(cancellationToken)
+                        .ConfigureAwait(false);
+                }
+
+                return RbpInvocationAnswer.Result(
+                    Json($$"""
+                        {
+                          "kind":"invocation",
+                          "invocation_id":"{{ReadId(invokePayload)}}",
+                          "status":"completed",
+                          "result":{},
+                          "replayed":false,
+                          "payload_omitted":false,
+                          "late_after_indeterminate":false,
+                          "metrics":{
+                            "execute_ms":1,
+                            "request_bytes":1,
+                            "response_bytes":1,
+                            "framing":"length-prefixed"
+                          }
+                        }
+                        """));
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _active);
+            }
+        }
+
+        private static string ReadId(JsonElement payload) =>
+            payload.ValueKind == JsonValueKind.Object &&
+            payload.TryGetProperty("invocation_id", out JsonElement value) &&
+            value.GetString() is { Length: > 0 } text
+                ? text
+                : "019f9add-7a83-7d11-a6a9-d2f8108c0000";
     }
 }
