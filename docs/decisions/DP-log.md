@@ -870,3 +870,37 @@ no-active-document pre-group path remain live-Revit evidence for the M3 gate's 2
 
 Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
 fleet rollout; the migration release freeze remains in force.
+
+
+### 2026-08-01 — Migration-freeze exception: add-in cached `get_document_context` (RES-3 / P3-T7)
+
+Scope of the exception: `src/revit-plugin/**` gains the cached `get_document_context` command surface and
+nothing else. `Application.cs` subscribes/unsubscribes the document and view lifecycle events that maintain
+the snapshot; `SocketService` serves the cached read ahead of the data-plane intake gate exactly as
+`mcp_status` already is; `McpTaskStatusService` advertises the `doc_context_cached_v1` descriptor, failing
+closed to no advertisement when the capability is out of contract; the installer payload and manifest are
+regenerated because the freshness gate hard-fails otherwise. No concurrency refactor, no unrelated cleanup,
+no second capability. Same bounded shape as the loopback-bind (#300) and execute_batch (#328) exceptions.
+
+Authority: RES-5 requires add-in adaptations to land before pilot entry and assigns the adaptation lane to
+M3; RES-3 makes the add-in's app-event-maintained cached `get_document_context` the document-context source
+of record. The operator delegated execution of the M3 lane to the coordinator session on 2026-07-31.
+
+Frozen-contract basis: O1 Appendix A.3 (~1729-1756) result contract, revision monotonicity, cross-field
+rules and the substitution PROHIBITION; A.2 (~1669-1672) the exact `doc_context_cached_v1` descriptor.
+`packages/protocol` is untouched (tagged `rbp/v1.0.0`). The `doc_context_update` wire shape and the 15 s
+poll remain bridge-side and are not part of this exception.
+
+Deliberate serving-path decision: the A.2 descriptor promises `uiThreadRoundTrip:false` at a 15 s poll
+cadence, so the command is served before the data-plane intake gate (like `mcp_status`) via the same tracker
+read the registered command uses. Routing it through the gated registry path would queue polls behind long
+commands and spam the task-status window on every poll. The command.json/commandRegistry entry, installer
+payload and installer-smoke command list were still updated exactly as the execute_batch exception did.
+
+Unit evidence: Contracts 255 -> 308. Every produced envelope round-trips through the frozen bridge-side
+parser. Real Revit event delivery/ordering, closing-to-closed pairing against native documents, `View`
+discipline/level reads and end-to-end socket serving under a busy data plane remain live-Revit evidence for
+the M3 gate's 21-command run.
+
+Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
+fleet rollout; the migration release freeze remains in force.
