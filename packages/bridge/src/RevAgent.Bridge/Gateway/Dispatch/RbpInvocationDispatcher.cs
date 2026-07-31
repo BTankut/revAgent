@@ -53,18 +53,21 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private readonly RbpJournalStore _journal;
     private readonly IRbpInvocationChannel _channel;
     private readonly IRbpInFlightGate _inFlightGate;
+    private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
 
     internal RbpInvocationDispatcher(
         RbpJournalStore journal,
         IRbpInvocationChannel channel,
         IRbpInFlightGate inFlightGate,
+        IRbpRevitBusyProbe? busyProbe = null,
         TimeProvider? timeProvider = null)
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
         _inFlightGate = inFlightGate ??
             throw new ArgumentNullException(nameof(inFlightGate));
+        _busyProbe = busyProbe;
         _timeProvider = timeProvider ?? TimeProvider.System;
     }
 
@@ -370,6 +373,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     request,
                     identity,
                     exception.Message,
+                    faultClassHint: null,
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -407,6 +411,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             identity,
                             outcome.Message ??
                                 "The add-in dispatch outcome is unknown.",
+                            outcome.FaultClass,
                             cancellationToken)
                         .ConfigureAwait(false),
             };
@@ -440,11 +445,15 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             request.Verification.ValueKind is not (JsonValueKind.Null or
                 JsonValueKind.Undefined);
 
+        // Section 10.3 makes guarded_reason REQUIRED exactly when the status
+        // is guarded. A channel that reports a guard without a usable code
+        // falls back to the frozen `unspecified_guarded` value rather than
+        // emitting a non-conformant body.
         JsonElement body = RbpInvocationPayloads.InvocationResult(
             request.InvocationId,
             guarded ? "guarded" : "completed",
             outcome.Result,
-            guarded ? outcome.GuardedReason : null,
+            guarded ? outcome.GuardedReason ?? "unspecified_guarded" : null,
             digestRequired ? digest : null,
             metrics);
 
@@ -473,11 +482,19 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         // Reached only when the channel can prove no add-in byte was written,
         // so the outcome really is known and a read may be retried by the
         // orchestrator.
+        (string faultClass, bool retryable, string message) =
+            await EnrichFailureWithLocalStatusAsync(
+                    request.Rsid,
+                    outcome.FaultClass ?? "addin_unreachable",
+                    outcome.Retryable ?? !request.Mutating,
+                    outcome.Message ?? "The add-in could not be reached.",
+                    cancellationToken)
+                .ConfigureAwait(false);
         JsonElement body = RbpInvocationPayloads.KnownError(
             request.InvocationId,
-            outcome.FaultClass ?? "addin_unreachable",
-            retryable: !request.Mutating,
-            outcome.Message ?? "The add-in could not be reached.",
+            faultClass,
+            retryable,
+            message,
             outcome.AddinError);
 
         await _journal
@@ -497,17 +514,29 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         RbpInvocationIdentity identity,
         string message,
+        string? faultClassHint,
         CancellationToken cancellationToken)
     {
         if (!request.Mutating)
         {
             // A read whose dispatch is uncertain is still a known-outcome
-            // failure: re-running it cannot commit anything.
+            // failure: re-running it cannot commit anything. The channel's
+            // classification hint distinguishes a deadline expiry
+            // (`revit_timeout`) from the generic transient class; both stay
+            // retryable for a read under the Section 15 table.
+            (string faultClass, bool retryable, string enrichedMessage) =
+                await EnrichFailureWithLocalStatusAsync(
+                        request.Rsid,
+                        faultClassHint ?? "environment",
+                        retryable: true,
+                        message,
+                        cancellationToken)
+                    .ConfigureAwait(false);
             JsonElement readBody = RbpInvocationPayloads.KnownError(
                 request.InvocationId,
-                faultClass: "environment",
-                retryable: true,
-                message);
+                faultClass,
+                retryable,
+                enrichedMessage);
             await _journal
                 .PersistInvocationTerminalAsync(
                     identity.IdempotencyKey,
@@ -549,6 +578,64 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 request.MutationScope,
                 message,
                 replayed: false));
+    }
+
+    /// <summary>
+    /// RES-10 failure-path enrichment: consults local <c>mcp_status</c>
+    /// evidence only after a transport-shaped failure and never on the invoke
+    /// hot path.
+    /// </summary>
+    /// <remarks>
+    /// Only <c>addin_unreachable</c>, <c>environment</c>, and
+    /// <c>revit_timeout</c> qualify — classes where the add-in never answered
+    /// and a competing active Revit task is a plausible diagnosis. A class the
+    /// add-in itself reported (<c>revit_api</c>, <c>parameter</c>,
+    /// <c>unsupported</c>) is already a known answer, and the Section 15
+    /// <c>journal_indeterminate</c> promotion never reaches this method at
+    /// all. Enrichment is best-effort evidence: a probe fault leaves the
+    /// original failure untouched.
+    /// </remarks>
+    private async Task<(string FaultClass, bool Retryable, string Message)>
+        EnrichFailureWithLocalStatusAsync(
+            string rsid,
+            string faultClass,
+            bool retryable,
+            string message,
+            CancellationToken cancellationToken)
+    {
+        if (_busyProbe is null ||
+            faultClass is not ("addin_unreachable" or
+                "environment" or
+                "revit_timeout"))
+        {
+            return (faultClass, retryable, message);
+        }
+
+        string? activeTask;
+        try
+        {
+            activeTask = await _busyProbe
+                .FindActiveTaskAsync(rsid, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (Exception exception)
+            when (exception is not OperationCanceledException)
+        {
+            return (faultClass, retryable, message);
+        }
+
+        if (activeTask is not { Length: > 0 })
+        {
+            return (faultClass, retryable, message);
+        }
+
+        // Section 15: revit_busy is retryable by default — the competing task
+        // ends and the same read can succeed unchanged.
+        return (
+            "revit_busy",
+            true,
+            $"An active Revit task occupies this session: {activeTask}. " +
+            message);
     }
 
     /// <summary>

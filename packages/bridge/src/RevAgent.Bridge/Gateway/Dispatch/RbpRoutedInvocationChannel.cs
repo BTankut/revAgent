@@ -87,16 +87,19 @@ internal sealed class RbpRoutedInvocationChannel(
         {
             // The add-in ran and reported a failure. That is a known outcome:
             // the command executed and answered, so nothing is in doubt.
+            // Section 15 defaults every add-in-reported class to
+            // retryable:false — the orchestrator, not the bridge, owns retry.
             return new RbpAddinOutcome(
                 RbpAddinOutcomeKind.KnownNotDispatched,
                 default,
                 [],
                 evidence.RequestPayloadBytes,
                 evidence.ResponseBytesObserved,
-                FaultClass: "revit_api",
+                FaultClass: MapAddinErrorFaultClass(error.Code),
                 Message: error.Message,
                 AddinError: new AddinErrorDetail(error.Code, error.Message),
-                Lease: lease);
+                Lease: lease,
+                Retryable: false);
         }
 
         JObject? body = result.Response.Result;
@@ -138,9 +141,55 @@ internal sealed class RbpRoutedInvocationChannel(
             [],
             lease.Result?.Evidence.RequestPayloadBytes ?? 0,
             lease.Result?.Evidence.ResponseBytesObserved ?? 0,
-            FaultClass: possiblyDispatched ? null : "addin_unreachable",
+            FaultClass: MapTransportFailureFaultClass(
+                exception,
+                possiblyDispatched),
             Message: exception.Message,
             Lease: leaseHandle);
+    }
+
+    /// <summary>
+    /// Maps an add-in JSON-RPC error code onto the frozen Section 15 class.
+    /// </summary>
+    /// <remarks>
+    /// <c>-32601</c> is an unsupported method; <c>-32700</c>, <c>-32600</c>,
+    /// and <c>-32602</c> are the invalid-request/parse/params family that
+    /// Section 15 folds into <c>parameter</c>. Every other reported code —
+    /// including <c>-32603</c> add-in exceptions and the app-level codes a
+    /// failure-shaped add-in result is surfaced under — means the command
+    /// executed and answered with a Revit/API failure, which is
+    /// <c>revit_api</c>.
+    /// </remarks>
+    internal static string MapAddinErrorFaultClass(int code) =>
+        code switch
+        {
+            -32601 => "unsupported",
+            -32700 or -32600 or -32602 => "parameter",
+            _ => "revit_api",
+        };
+
+    /// <summary>
+    /// Classifies a transport failure for the Section 15 fault table.
+    /// </summary>
+    /// <remarks>
+    /// A deadline expiry is <c>revit_timeout</c> rather than a reachability
+    /// fault. When the failure is possibly dispatched, the class here is only
+    /// a hint: the dispatcher still promotes an uncertain mutation to
+    /// <c>journal_indeterminate</c> regardless of what the transport reported.
+    /// </remarks>
+    internal static string? MapTransportFailureFaultClass(
+        Exception exception,
+        bool possiblyDispatched)
+    {
+        if (exception is AddinTransportException
+            {
+                Code: "addin_call_timeout",
+            })
+        {
+            return "revit_timeout";
+        }
+
+        return possiblyDispatched ? null : "addin_unreachable";
     }
 
     private static RbpAddinOutcome NotDispatched(
@@ -160,7 +209,7 @@ internal sealed class RbpRoutedInvocationChannel(
     /// result rather than a transport failure, and requires a stable
     /// lower-snake-case reason code.
     /// </summary>
-    private static (bool Guarded, string? Reason) ReadGuard(JObject? body)
+    internal static (bool Guarded, string? Reason) ReadGuard(JObject? body)
     {
         if (body is null) return (false, null);
         string? reason =
