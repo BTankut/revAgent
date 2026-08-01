@@ -4,6 +4,20 @@ All notable revAgent workstation deployment changes are tracked here.
 
 ## Unreleased
 
+- Added the add-in loopback v1 cached `get_document_context` command under the
+  bounded WP3/M3 migration exception (RES-3/RES-5, O1 Appendix A.3): Revit
+  application events (document open/create, save-as, closing/closed, view
+  activated) maintain a process-local snapshot with cheap event-time reads, and
+  the command serves that cache outside the data-plane intake gate without
+  raising an ExternalEvent, without task-status tracking, and never composed
+  from `get_current_view_info` plus `list_open_views`. The response carries the
+  exact frozen A.3 result (monotonic `revision`, `ready`/`warming`/
+  `unavailable` cacheState with bounded reasons, digested-never-raw model
+  paths, and by-construction active-document/view cross-field consistency),
+  and `mcp_status` now advertises `doc_context_cached_v1` with its exact
+  Appendix A.2 descriptor, failing closed while the event subscription is
+  absent. The 22 existing command contracts, framing, port allocation, and
+  concurrency model remain unchanged.
 - Added the add-in loopback v1 `execute_batch` command under the bounded
   WP3/M3 migration exception (RES-4/RES-5, O1 Appendix A.4): a validated
   allowlisted step batch executes inside ONE Revit `TransactionGroup` raised

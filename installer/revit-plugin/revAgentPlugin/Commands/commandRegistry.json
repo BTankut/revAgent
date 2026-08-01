@@ -329,6 +329,21 @@
                                            "organization":  "DPE"
                                        },
                          "description":  "Execute an ordered allowlisted command batch atomically inside one Revit TransactionGroup with rollback-on-non-success"
+                     },
+                     {
+                         "commandName":  "get_document_context",
+                         "assemblyPath":  "revAgentCommandSet\\\\2022\\\\revAgentCommandSet.dll",
+                         "enabled":  true,
+                         "supportedRevitVersions":  [
+                                                        "2022"
+                                                    ],
+                         "developer":  {
+                                           "name":  "DPE",
+                                           "email":  "",
+                                           "website":  "https://www.revagent.app",
+                                           "organization":  "DPE"
+                                       },
+                         "description":  "Read the application-event-maintained cached document context snapshot without raising a Revit ExternalEvent"
                      }
                  ]
 }
