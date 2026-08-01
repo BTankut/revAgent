@@ -1,0 +1,255 @@
+using Microsoft.Extensions.Hosting;
+using RevAgent.Bridge.Bootstrap.Logging;
+using RevAgent.Bridge.Gateway.Connection;
+
+namespace RevAgent.Bridge.Runtime;
+
+/// <summary>
+/// Runs the RBP data plane inside the supervised worker process, beside
+/// <see cref="WorkerControlService"/>.
+/// </summary>
+/// <remarks>
+/// <para>
+/// The fail-closed matrix this service implements:
+/// </para>
+/// <list type="bullet">
+/// <item>
+/// <description>
+/// <b>Missing or malformed precondition.</b> Composition happens in
+/// <see cref="StartAsync"/>. A journal that cannot open, a credential store
+/// that cannot be constructed, or a configuration the coordinator refuses
+/// throws out of host startup, so the worker exits non-successfully with a
+/// structured reason and no partially wired runtime ever runs.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <b>Not enrolled.</b> The runtime starts and attempts to connect. The
+/// unchanged handshake refuses with <c>enrollment_required</c>, the connection
+/// reducer parks in the frozen <c>RetryPaused</c>/<c>Auth</c> state, and the
+/// coordinator waits on its retry-condition signal instead of reconnecting.
+/// The worker keeps serving its control channel and exits cleanly on stop.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <b>Unreachable Gateway.</b> Connecting is a background task started after
+/// composition, so SCM start never waits on the network, and reconnect keeps
+/// the existing full-jitter backoff.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <b>Poisoned connection authority.</b> A connection-owned handler that
+/// ignores cancellation past the bounded close deadline surfaces as
+/// <see cref="RbpCoordinatorErrorCode.NonDrainingConnectionAuthority"/>. This
+/// service treats that as a must-exit condition: it fails the worker exit
+/// state and stops the application rather than letting anything open a
+/// replacement generation in the poisoned process.
+/// </description>
+/// </item>
+/// </list>
+/// </remarks>
+internal sealed class WorkerGatewayRuntimeService : IHostedService,
+    IAsyncDisposable
+{
+    /// <summary>
+    /// The drain budget for a stop. Deliberately below the supervisor's
+    /// 8-second graceful stop timeout so a slow drain is bounded here rather
+    /// than by a forced process-tree kill.
+    /// </summary>
+    internal static readonly TimeSpan DefaultStopBudget =
+        TimeSpan.FromSeconds(5);
+
+    private const string LogCategory = nameof(WorkerGatewayRuntimeService);
+
+    private readonly Func<WorkerGatewayRuntime> _runtimeFactory;
+    private readonly IHostApplicationLifetime _applicationLifetime;
+    private readonly IBridgeLog _log;
+    private readonly WorkerExitState _exitState;
+    private readonly TimeSpan _stopBudget;
+
+    private WorkerGatewayRuntime? _runtime;
+    private CancellationTokenSource? _runCancellation;
+    private Task _run = Task.CompletedTask;
+    private int _disposed;
+
+    internal WorkerGatewayRuntimeService(
+        Func<WorkerGatewayRuntime> runtimeFactory,
+        IHostApplicationLifetime applicationLifetime,
+        IBridgeLog log,
+        WorkerExitState exitState,
+        TimeSpan? stopBudget = null)
+    {
+        _runtimeFactory = runtimeFactory ??
+            throw new ArgumentNullException(nameof(runtimeFactory));
+        _applicationLifetime = applicationLifetime ??
+            throw new ArgumentNullException(nameof(applicationLifetime));
+        _log = log ?? throw new ArgumentNullException(nameof(log));
+        _exitState = exitState ??
+            throw new ArgumentNullException(nameof(exitState));
+        _stopBudget = stopBudget ?? DefaultStopBudget;
+        if (_stopBudget <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(stopBudget));
+        }
+    }
+
+    /// <summary>
+    /// True once the runtime object graph exists. A false value after a
+    /// failed start is the evidence that nothing half-built survived.
+    /// </summary>
+    internal bool IsComposed => Volatile.Read(ref _runtime) is not null;
+
+    internal WorkerGatewayRuntime? Runtime => Volatile.Read(ref _runtime);
+
+    public async Task StartAsync(CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        WorkerGatewayRuntime runtime;
+        try
+        {
+            runtime = _runtimeFactory() ??
+                throw new InvalidOperationException(
+                    "The worker gateway runtime factory returned no runtime.");
+        }
+        catch (Exception exception)
+        {
+            _exitState.Fail();
+            await TryLogAsync(
+                    "Error",
+                    "worker.gateway_runtime_precondition_failed",
+                    "The worker gateway runtime could not be composed; the " +
+                    "worker will not run a partially wired data plane.",
+                    exception)
+                .ConfigureAwait(false);
+            throw;
+        }
+
+        Volatile.Write(ref _runtime, runtime);
+        _runCancellation = new CancellationTokenSource();
+
+        // Connecting is background work on purpose: SCM start must never wait
+        // on Gateway reachability or on enrollment being present.
+        _run = RunAsync(_runCancellation.Token);
+        await TryLogAsync(
+                "Information",
+                "worker.gateway_runtime_started",
+                "The worker gateway runtime is composed and connecting.")
+            .ConfigureAwait(false);
+    }
+
+    public async Task StopAsync(CancellationToken cancellationToken)
+    {
+        _runCancellation?.Cancel();
+        Task run = _run;
+        if (!run.IsCompleted)
+        {
+            using var budget =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken);
+            budget.CancelAfter(_stopBudget);
+            try
+            {
+                await run.WaitAsync(budget.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                // The coordinator already bounds its own close and drain
+                // windows and poisons authority when an owned handler will not
+                // return. Waiting past this budget would only trade a bounded
+                // stop for a forced process-tree kill.
+                await TryLogAsync(
+                        "Warning",
+                        "worker.gateway_runtime_drain_timeout",
+                        "The worker gateway runtime did not drain within its " +
+                        "stop budget; shutdown continues.")
+                    .ConfigureAwait(false);
+            }
+        }
+
+        await DisposeAsync().ConfigureAwait(false);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+        {
+            return;
+        }
+
+        _runCancellation?.Cancel();
+        WorkerGatewayRuntime? runtime = Volatile.Read(ref _runtime);
+        if (runtime is not null)
+        {
+            await runtime.DisposeAsync().ConfigureAwait(false);
+        }
+
+        _runCancellation?.Dispose();
+        _runCancellation = null;
+    }
+
+    private async Task RunAsync(CancellationToken cancellationToken)
+    {
+        WorkerGatewayRuntime runtime = Volatile.Read(ref _runtime)!;
+        try
+        {
+            await runtime.RunAsync(cancellationToken).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (RbpCoordinatorException exception)
+            when (exception.ErrorCode ==
+                  RbpCoordinatorErrorCode.NonDrainingConnectionAuthority)
+        {
+            // The P3-T4 host-wiring prerequisite: non-draining connection
+            // authority is a must-exit condition, not a reconnect condition.
+            _exitState.Fail();
+            await TryLogAsync(
+                    "Error",
+                    "worker.gateway_authority_poisoned",
+                    "RBP connection authority is poisoned; the worker must " +
+                    "exit so no replacement generation opens in this process.",
+                    exception)
+                .ConfigureAwait(false);
+            _applicationLifetime.StopApplication();
+        }
+        catch (Exception exception)
+        {
+            _exitState.Fail();
+            await TryLogAsync(
+                    "Error",
+                    "worker.gateway_runtime_failed",
+                    "The worker gateway runtime stopped with an unrecoverable " +
+                    "fault.",
+                    exception)
+                .ConfigureAwait(false);
+            _applicationLifetime.StopApplication();
+        }
+    }
+
+    private async ValueTask TryLogAsync(
+        string level,
+        string eventId,
+        string message,
+        Exception? exception = null)
+    {
+        try
+        {
+            await _log.WriteAsync(
+                    level,
+                    eventId,
+                    LogCategory,
+                    message,
+                    exception,
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Logging must never own worker lifecycle.
+        }
+    }
+}
