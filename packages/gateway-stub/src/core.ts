@@ -96,6 +96,7 @@ import type {
   PersistedInFlight,
   PersistedSession,
   StaticDeviceIdentity,
+  StaticEnrollmentGrant,
   TestTransportConnection,
   VerificationEvidenceRequest,
 } from "./types.js";
@@ -341,6 +342,8 @@ export class GatewayStubCore {
   private readonly connectionCapabilities: readonly string[];
   private readonly sessionCapabilities: readonly string[];
   private readonly tokenTable: Map<string, StaticDeviceIdentity>;
+  private readonly enrollmentTokenTable: Map<string, StaticEnrollmentGrant>;
+  private readonly usedEnrollmentTokens = new Set<string>();
   private readonly connections = new Map<string, RuntimeConnection>();
   private readonly sessionBindings = new Map<string, string>();
   private readonly authorizationAudit: AuthorizationAuditEntry[] = [];
@@ -365,6 +368,11 @@ export class GatewayStubCore {
     this.tokenTable = new Map(
       Object.entries(options.tokenTable).map(([token, identity]) => [token, structuredClone(identity)]),
     );
+    this.enrollmentTokenTable = new Map(
+      Object.entries(options.enrollmentTokenTable ?? {}).map(
+        ([token, grant]) => [token, structuredClone(grant)],
+      ),
+    );
   }
 
   static async create(options: GatewayStubCoreOptions): Promise<GatewayStubCore> {
@@ -386,6 +394,21 @@ export class GatewayStubCore {
       throw new GatewayStubFault("device seat authorization rejected", "auth", 4403);
     }
     return cloneIdentity(identity, token);
+  }
+
+  exchangeEnrollment(enrollmentToken: string): { deviceId: string; deviceToken: string } {
+    const grant = this.enrollmentTokenTable.get(enrollmentToken);
+    if (grant === undefined) {
+      throw new GatewayStubFault("enrollment token rejected", "auth", 4401);
+    }
+    if (grant.status === "denied") {
+      throw new GatewayStubFault("enrollment denied for this device", "auth", 4403);
+    }
+    if (this.usedEnrollmentTokens.has(enrollmentToken)) {
+      throw new GatewayStubFault("enrollment token already used", "auth", 4409);
+    }
+    this.usedEnrollmentTokens.add(enrollmentToken);
+    return { deviceId: grant.deviceId, deviceToken: grant.deviceToken };
   }
 
   setAuthStatus(token: string, status: AuthStatus): string[] {

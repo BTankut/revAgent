@@ -776,7 +776,9 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
             ? 401
             : error.closeCode === 4403
               ? 403
-              : 400;
+              : error.closeCode === 4409
+                ? 409
+                : 400;
         const body = status === 426
           ? {
               error: error.message,
@@ -1093,6 +1095,37 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       }
       response.writeHead(202, { "content-length": "0" });
       response.end();
+      return;
+    }
+
+    if (url.pathname === "/bridge/v1/enroll" && request.method === "POST") {
+      if (!isJsonMediaType(request.headers["content-type"])) {
+        throw new HttpRequestError(415, "enrollment exchange requires Content-Type: application/json");
+      }
+      const rawBody = Buffer.from(await readBody(request, 64 * 1024)).toString("utf8");
+      let parsedBody: unknown;
+      try {
+        parsedBody = JSON.parse(rawBody) as unknown;
+      } catch {
+        throw new HttpRequestError(400, "enrollment exchange body must be valid JSON");
+      }
+      const body = controlObject(parsedBody, "enrollment exchange request");
+      exactControlKeys(
+        body,
+        ["enrollment_token", "machine_fingerprint"],
+        [],
+        "enrollment exchange request",
+      );
+      const enrollmentToken = controlString(body.enrollment_token, "enrollment_token");
+      const machineFingerprint = controlString(body.machine_fingerprint, "machine_fingerprint");
+      if (!SHA256_PATTERN.test(machineFingerprint)) {
+        throw new HttpRequestError(400, "machine_fingerprint must be a canonical sha256 digest");
+      }
+      const issued = core.exchangeEnrollment(enrollmentToken);
+      json(response, 200, {
+        device_id: issued.deviceId,
+        device_token: issued.deviceToken,
+      });
       return;
     }
 

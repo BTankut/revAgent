@@ -22,7 +22,20 @@ internal sealed record BridgeDoctorReport(
     [property: JsonPropertyName("success")] bool Success,
     [property: JsonPropertyName("configuration")] RedactedBridgeConfigurationReport Configuration,
     [property: JsonPropertyName("gateway")] BridgeDoctorGatewayReport Gateway,
-    [property: JsonPropertyName("addin")] BridgeDoctorAddinReport Addin);
+    [property: JsonPropertyName("addin")] BridgeDoctorAddinReport Addin,
+    [property: JsonPropertyName("enrollment")] BridgeDoctorEnrollmentReport? Enrollment = null);
+
+/// <summary>
+/// The RES-30 doctor enrollment section: enrolled-or-not plus the
+/// machine-fingerprint policy name and bounded diagnostic codes. It never
+/// carries the device token, the enrollment token, or any other secret.
+/// </summary>
+internal sealed record BridgeDoctorEnrollmentReport(
+    [property: JsonPropertyName("enrolled")] bool Enrolled,
+    [property: JsonPropertyName("fingerprintPolicy")] string FingerprintPolicy,
+    [property: JsonPropertyName("reEnrollAttempted")] bool ReEnrollAttempted,
+    [property: JsonPropertyName("reEnrollSucceeded")] bool? ReEnrollSucceeded,
+    [property: JsonPropertyName("error")] string? Error);
 
 internal sealed record BridgeDoctorGatewayReport(
     [property: JsonPropertyName("host")] string Host,

@@ -20,7 +20,9 @@ internal enum HostExitCode
     WorkerLifecycle = 5,
 }
 
-internal sealed record HostCommand(HostCommandKind Kind);
+internal sealed record HostCommand(
+    HostCommandKind Kind,
+    bool ReEnroll = false);
 
 internal sealed record HostCommandParseResult(
     HostCommand? Command,
@@ -33,7 +35,7 @@ internal static class HostCommandParser
 {
     internal const string Usage =
         "usage: revagent-bridge-host.exe install | uninstall | " +
-        "run --console | doctor | --version";
+        "run --console | doctor [--re-enroll] | --version";
 
     internal static HostCommandParseResult Parse(
         IReadOnlyList<string> args,
@@ -76,6 +78,15 @@ internal static class HostCommandParser
         {
             return new HostCommandParseResult(
                 new HostCommand(HostCommandKind.RunConsole),
+                null);
+        }
+
+        if (args.Count == 2 &&
+            string.Equals(args[0], "doctor", StringComparison.Ordinal) &&
+            string.Equals(args[1], "--re-enroll", StringComparison.Ordinal))
+        {
+            return new HostCommandParseResult(
+                new HostCommand(HostCommandKind.Doctor, ReEnroll: true),
                 null);
         }
 

@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 import { startGatewayStub } from "./server.js";
-import type { GatewayClock, StaticTokenTable } from "./types.js";
+import type { GatewayClock, StaticEnrollmentTokenTable, StaticTokenTable } from "./types.js";
 
 interface CliOptions {
   statePath: string;
@@ -155,6 +155,52 @@ const tokenTable: StaticTokenTable = {
     machineFingerprint: `sha256:${"2".repeat(64)}`,
     provisionedCapabilities: [],
   },
+  "enrolled-device-token-0123456789abcdef01": {
+    status: "active",
+    deviceId: "device-enrolled-01",
+    tenantId: "tenant-01",
+    userId: "user-enrolled-01",
+    seatId: "seat-enrolled-01",
+    machineFingerprint: `sha256:${"3".repeat(64)}`,
+    provisionedCapabilities: [
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ],
+  },
+  "rotated-device-token-0123456789abcdef012": {
+    status: "active",
+    deviceId: "device-enrolled-01",
+    tenantId: "tenant-01",
+    userId: "user-enrolled-01",
+    seatId: "seat-enrolled-01",
+    machineFingerprint: `sha256:${"3".repeat(64)}`,
+    provisionedCapabilities: [
+      "journal_v1",
+      "chunked_results",
+      "artifact_result_v1",
+      "transport_streamable_http",
+    ],
+  },
+};
+
+const enrollmentTokenTable: StaticEnrollmentTokenTable = {
+  "enroll-fresh-token-0123456789abcdef0123456789abcdef": {
+    status: "active",
+    deviceId: "device-enrolled-01",
+    deviceToken: "enrolled-device-token-0123456789abcdef01",
+  },
+  "enroll-rotate-token-0123456789abcdef0123456789abcdef": {
+    status: "active",
+    deviceId: "device-enrolled-01",
+    deviceToken: "rotated-device-token-0123456789abcdef012",
+  },
+  "enroll-denied-token-0123456789abcdef0123456789abcdef": {
+    status: "denied",
+    deviceId: "device-enroll-denied",
+    deviceToken: "denied-device-token-never-issued-0123456",
+  },
 };
 
 function fatalRecord(error: unknown): string {
@@ -176,6 +222,7 @@ async function main(): Promise<void> {
   const handle = await startGatewayStub({
     statePath: options.statePath,
     tokenTable,
+    enrollmentTokenTable,
     host: options.host,
     port: options.port,
     controlToken: options.controlToken,
