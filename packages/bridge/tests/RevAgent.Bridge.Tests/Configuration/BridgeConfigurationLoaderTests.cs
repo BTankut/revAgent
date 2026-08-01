@@ -126,6 +126,29 @@ public sealed class BridgeConfigurationLoaderTests
     }
 
     [Fact]
+    public void Load_EnrollmentTokenEnvironmentVariable_IsAcceptedAndContributesNoConfiguration()
+    {
+        using var file = TemporaryConfig.Create(ValidConfiguration);
+        var environment = new Dictionary<string, string?>
+        {
+            [BridgeConfigurationLoader.EnrollmentTokenEnvironmentVariable] =
+                "enroll-fresh-token-0123456789abcdef0123456789abcdef",
+        };
+
+        var configuration = BridgeConfigurationLoader.Load(file.Path, environment);
+
+        Assert.Equal(
+            "wss://gateway.revagent.example/bridge/v1",
+            configuration.GatewayUri.AbsoluteUri);
+        Assert.All(
+            configuration.SourceMetadata.Values.Values,
+            source => Assert.Equal(BridgeConfigurationSourceKind.File, source.Kind));
+        Assert.DoesNotContain(
+            BridgeConfigurationLoader.EnrollmentTokenEnvironmentVariable,
+            configuration.SourceMetadata.Values.Keys);
+    }
+
+    [Fact]
     public void Load_DuplicateEnvironmentNamesIgnoringCase_FailsClosed()
     {
         using var file = TemporaryConfig.Create(ValidConfiguration);

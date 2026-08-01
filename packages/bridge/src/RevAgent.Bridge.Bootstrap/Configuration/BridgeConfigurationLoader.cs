@@ -10,6 +10,16 @@ internal static class BridgeConfigurationLoader
     internal const string LogMaxBytesEnvironmentVariable = "REVAGENT_BRIDGE_LOG_MAX_BYTES";
     internal const string LogRetainedFilesEnvironmentVariable = "REVAGENT_BRIDGE_LOG_RETAINED_FILES";
 
+    /// <summary>
+    /// The provisioning secret consumed by <c>doctor --re-enroll</c>. It
+    /// shares the bridge environment prefix but never contributes a
+    /// configuration value, so it is reserved here rather than allowed: the
+    /// unknown-variable guard must keep rejecting typos without rejecting the
+    /// one variable that first-run enrollment depends on.
+    /// </summary>
+    internal const string EnrollmentTokenEnvironmentVariable =
+        "REVAGENT_BRIDGE_ENROLLMENT_TOKEN";
+
     private const string EnvironmentPrefix = "REVAGENT_BRIDGE_";
     private const int SupportedSchemaVersion = 1;
     private const int MaximumConfigBytes = 1024 * 1024;
@@ -23,6 +33,12 @@ internal static class BridgeConfigurationLoader
             [AddinPortEnvironmentVariable] = AddinPortEnvironmentVariable,
             [LogMaxBytesEnvironmentVariable] = LogMaxBytesEnvironmentVariable,
             [LogRetainedFilesEnvironmentVariable] = LogRetainedFilesEnvironmentVariable,
+        };
+
+    private static readonly IReadOnlySet<string> ReservedEnvironmentVariables =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            EnrollmentTokenEnvironmentVariable,
         };
 
     internal static ResolvedBridgeConfiguration Load(
@@ -237,6 +253,11 @@ internal static class BridgeConfigurationLoader
             }
 
             if (!name.StartsWith(EnvironmentPrefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            if (ReservedEnvironmentVariables.Contains(name))
             {
                 continue;
             }

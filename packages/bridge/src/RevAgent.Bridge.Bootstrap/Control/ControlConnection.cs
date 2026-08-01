@@ -97,15 +97,14 @@ internal sealed class ControlConnection : IAsyncDisposable
             return;
         }
 
-        try
-        {
-            await _stream.DisposeAsync().ConfigureAwait(false);
-        }
-        finally
-        {
-            _sendGate.Dispose();
-            _receiveGate.Dispose();
-        }
+        // The gates are deliberately not disposed. A send or receive parked on
+        // the stream is unblocked by this disposal and must still run its
+        // release in a finally; disposing the semaphore first turns that
+        // release into an ObjectDisposedException that replaces the real
+        // teardown reason and is reported as a worker fault. SemaphoreSlim
+        // needs disposal only once AvailableWaitHandle has been materialised,
+        // which this type never does, so dropping the calls leaks nothing.
+        await _stream.DisposeAsync().ConfigureAwait(false);
     }
 
     private async ValueTask<int> ReadExactAsync(
