@@ -1,4 +1,5 @@
 using System.Text;
+using RevAgent.Bridge.Bootstrap.Configuration;
 using RevAgent.Bridge.Bootstrap.Diagnostics;
 using RevAgent.Bridge.Bootstrap.Enrollment;
 
@@ -16,7 +17,7 @@ namespace RevAgent.Bridge.Enrollment;
 internal static class BridgeEnrollmentDoctor
 {
     internal const string EnrollmentTokenEnvironmentVariable =
-        "REVAGENT_BRIDGE_ENROLLMENT_TOKEN";
+        BridgeConfigurationLoader.EnrollmentTokenEnvironmentVariable;
 
     internal static BridgeDoctorEnrollmentReport CreateStateReport(
         Func<IBridgeCredentialReader> readerFactory)
