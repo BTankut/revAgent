@@ -78,6 +78,41 @@ internal sealed record RbpInvokeRequest(
             Rfc8785Json.Canonicalize(Policy),
             Rfc8785Json.Canonicalize(RecoveryClearances));
 
+    /// <summary>
+    /// The typed Section 6.2.1 clearances the journal accepts in the same
+    /// transaction that admits this invocation.
+    /// </summary>
+    /// <remarks>
+    /// An empty array is the ordinary case and carries no clearance; a
+    /// non-empty array makes this the one evidence-bound envelope, which the
+    /// clearance-gated admission path must see. An entry that cannot become
+    /// an acceptance input fails closed here, at the boundary, and never
+    /// reaches the journal or the add-in.
+    /// </remarks>
+    internal IReadOnlyList<RbpRecoveryClearance> ParseClearances()
+    {
+        if (RecoveryClearances.ValueKind != JsonValueKind.Array)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Protocol,
+                "recovery_clearances is REQUIRED and must be an array.");
+        }
+
+        int count = RecoveryClearances.GetArrayLength();
+        if (count == 0)
+        {
+            return Array.Empty<RbpRecoveryClearance>();
+        }
+
+        var clearances = new List<RbpRecoveryClearance>(count);
+        foreach (JsonElement clearance in RecoveryClearances.EnumerateArray())
+        {
+            clearances.Add(RbpRecoveryClearance.Parse(clearance));
+        }
+
+        return clearances.AsReadOnly();
+    }
+
     private static JsonElement RequireProperty(
         JsonElement payload,
         string name)

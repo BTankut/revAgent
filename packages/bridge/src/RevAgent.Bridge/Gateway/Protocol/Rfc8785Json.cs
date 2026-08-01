@@ -8,6 +8,7 @@ namespace RevAgent.Bridge.Gateway.Protocol;
 internal static class Rfc8785Json
 {
     private const string DigestPrefix = "sha256:";
+    private const string VerificationHoldPrefix = "vh:";
     private static readonly UTF8Encoding StrictUtf8 = new(
         encoderShouldEmitUTF8Identifier: false,
         throwOnInvalidBytes: true);
@@ -103,6 +104,66 @@ internal static class Rfc8785Json
 
         using JsonDocument material = JsonDocument.Parse(stream.ToArray());
         return Sha256Digest(material.RootElement);
+    }
+
+    /// <summary>
+    /// The frozen Section 6.2.1 mutation-recovery hold correlation id
+    /// (spec ~469-480).
+    /// </summary>
+    /// <remarks>
+    /// <para>The frozen material and derivation are, verbatim:</para>
+    /// <code>
+    /// hold_material = {"mutation_scope":&lt;scope&gt;,"origin_idempotency_keys":[&lt;ordered keys&gt;],"rsid":&lt;rsid&gt;}
+    /// verification_hold_id = "vh:" + lowercase_hex(SHA-256(UTF-8-without-BOM(RFC8785-JCS(hold_material))))
+    /// </code>
+    /// <para>
+    /// The same RFC 8785 engine and the same strict UTF-8 encoder that
+    /// produce <c>params_digest</c> and <c>batch_digest</c> produce this
+    /// value, so the two peers derive one identical id from one identical
+    /// material. Array order is significant: the origin list is the frozen
+    /// input order of the possibly executed mutating keys in that scope, and
+    /// a permuted list is a different hold.
+    /// </para>
+    /// </remarks>
+    internal static string MakeVerificationHoldId(
+        string rsid,
+        JsonElement mutationScope,
+        IReadOnlyList<string> orderedOriginIdempotencyKeys)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(rsid);
+        ArgumentNullException.ThrowIfNull(orderedOriginIdempotencyKeys);
+        if (orderedOriginIdempotencyKeys.Count == 0)
+        {
+            throw new ArgumentException(
+                "A verification hold requires at least one origin " +
+                "idempotency key.",
+                nameof(orderedOriginIdempotencyKeys));
+        }
+
+        using var stream = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(stream))
+        {
+            writer.WriteStartObject();
+            writer.WritePropertyName("mutation_scope");
+            mutationScope.WriteTo(writer);
+            writer.WritePropertyName("origin_idempotency_keys");
+            writer.WriteStartArray();
+            foreach (string key in orderedOriginIdempotencyKeys)
+            {
+                ArgumentException.ThrowIfNullOrEmpty(
+                    key,
+                    nameof(orderedOriginIdempotencyKeys));
+                writer.WriteStringValue(key);
+            }
+
+            writer.WriteEndArray();
+            writer.WriteString("rsid", rsid);
+            writer.WriteEndObject();
+        }
+
+        using JsonDocument material = JsonDocument.Parse(stream.ToArray());
+        return VerificationHoldPrefix +
+               Sha256Digest(material.RootElement)[DigestPrefix.Length..];
     }
 
     internal static string ImmutableEnvelopeDigest(

@@ -507,9 +507,9 @@ internal sealed partial class RbpJournalStore
                 // Spec ~1113-1114 (rule 4): the first non-terminal mutating
                 // step becomes indeterminate, installs its Section 6.2.1
                 // scope hold, stops the batch, and requires correlated
-                // verification.
-                string holdId =
-                    InstallOrExtendHold(context, row.Identity, now);
+                // verification. Exactly one step becomes uncertain here, so
+                // spec ~477 applies unchanged: the origin list has one key.
+                string holdId = InstallHold(context, row.Identity, now);
                 MarkInvocationIndeterminate(
                     context,
                     row.Identity,
@@ -544,6 +544,16 @@ internal sealed partial class RbpJournalStore
         RbpBatchIdentity identity,
         long now)
     {
+        // Spec ~477-480: for an uncertain atomic batch each scope's origin
+        // list holds, in input order, every possibly executed mutating step
+        // key in that scope, and a session-scoped uncertain step collapses
+        // the batch into one subsuming session hold. The derived id is a
+        // function of the complete ordered list, so every hold of this batch
+        // is grouped and derived before the first step row is marked
+        // indeterminate; deriving step by step would bind each earlier step
+        // to an id the next step's origin invalidates.
+        IReadOnlyDictionary<string, string> holdByStepKey =
+            InstallAtomicBatchHolds(context, identity, now);
         var steps =
             new List<RbpBatchStepArbitration>(identity.Steps.Count);
         var holdIds = new List<string>();
@@ -598,8 +608,7 @@ internal sealed partial class RbpJournalStore
                 // indeterminate; one hold per distinct conflicting mutation
                 // scope with the ordered possibly executed step keys as
                 // origins; no individual step is retried.
-                string holdId =
-                    InstallOrExtendHold(context, row.Identity, now);
+                string holdId = holdByStepKey[stepIdentity.IdempotencyKey];
                 MarkInvocationIndeterminate(
                     context,
                     row.Identity,
@@ -666,6 +675,117 @@ internal sealed partial class RbpJournalStore
             steps.AsReadOnly(),
             firstNonSuccess,
             ReplayPermitted: true);
+    }
+
+    /// <summary>
+    /// Groups the possibly executed mutating steps of one uncertain atomic
+    /// batch into their Section 6.2.1 holds and installs each derived hold
+    /// once (spec ~477-480).
+    /// </summary>
+    /// <remarks>
+    /// The frozen text is: "For an uncertain atomic batch, each scope's list
+    /// contains, in input order, every possibly executed mutating step key in
+    /// that scope. If any uncertain step uses session scope, one session hold
+    /// contains all possibly executed mutating origin keys and subsumes
+    /// document holds for that batch; otherwise there is one hold per
+    /// affected document." A step whose journal row is already terminal has a
+    /// known effect and is therefore not an origin of a new hold.
+    /// </remarks>
+    private static IReadOnlyDictionary<string, string> InstallAtomicBatchHolds(
+        RbpJournalWriteContext context,
+        RbpBatchIdentity identity,
+        long now)
+    {
+        var uncertain = new List<(string Key, string ScopeJcs)>();
+        for (int index = 0; index < identity.Steps.Count; index++)
+        {
+            RbpInvocationIdentity stepIdentity =
+                StepInvocationIdentity(identity, index);
+            RbpStoredInvocation row =
+                ReadInvocation(context, stepIdentity.IdempotencyKey) ??
+                throw MissingStepRow();
+            if (!row.IsTerminal &&
+                stepIdentity.MutationScopeJcs is { } scopeJcs)
+            {
+                uncertain.Add((stepIdentity.IdempotencyKey, scopeJcs));
+            }
+        }
+
+        var holdByStepKey =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        if (uncertain.Count == 0)
+        {
+            return holdByStepKey;
+        }
+
+        string? sessionScopeJcs = null;
+        foreach ((string _, string scopeJcs) in uncertain)
+        {
+            if (string.Equals(
+                    ReadScopeShape(scopeJcs).ScopeKind,
+                    "session",
+                    StringComparison.Ordinal))
+            {
+                sessionScopeJcs = scopeJcs;
+                break;
+            }
+        }
+
+        if (sessionScopeJcs is not null)
+        {
+            var subsumedOrigins = new List<string>(uncertain.Count);
+            foreach ((string key, string _) in uncertain)
+            {
+                subsumedOrigins.Add(key);
+            }
+
+            string sessionHoldId = InstallHold(
+                context,
+                identity.Rsid,
+                sessionScopeJcs,
+                subsumedOrigins,
+                now);
+            foreach (string key in subsumedOrigins)
+            {
+                holdByStepKey[key] = sessionHoldId;
+            }
+
+            return holdByStepKey;
+        }
+
+        var scopeOrder = new List<string>();
+        var originsByScope =
+            new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        foreach ((string key, string scopeJcs) in uncertain)
+        {
+            if (!originsByScope.TryGetValue(
+                    scopeJcs,
+                    out List<string>? scopeOrigins))
+            {
+                scopeOrigins = [];
+                originsByScope.Add(scopeJcs, scopeOrigins);
+                scopeOrder.Add(scopeJcs);
+            }
+
+            scopeOrigins.Add(key);
+        }
+
+        foreach (string scopeJcs in scopeOrder)
+        {
+            List<string> scopeOrigins = originsByScope[scopeJcs];
+            string holdId = InstallHold(
+                context,
+                identity.Rsid,
+                scopeJcs,
+                scopeOrigins,
+                now);
+            foreach (string key in scopeOrigins)
+            {
+                holdByStepKey[key] = holdId;
+            }
+        }
+
+        return holdByStepKey;
     }
 
     private static bool AllStepsStillReceived(

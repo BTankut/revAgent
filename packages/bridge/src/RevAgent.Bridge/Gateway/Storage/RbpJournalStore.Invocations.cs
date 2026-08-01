@@ -1,4 +1,3 @@
-using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -99,7 +98,7 @@ internal sealed partial class RbpJournalStore
         // Rule 4: never re-execute a possibly dispatched mutation.
         // The scope hold is installed before any fresh id may be
         // considered, in this same transaction.
-        string holdId = InstallOrExtendHold(
+        string holdId = InstallHold(
             context,
             existing.Identity,
             now);
@@ -225,7 +224,7 @@ internal sealed partial class RbpJournalStore
                 if (terminal.State == RbpInvocationState.Indeterminate &&
                     existing.Identity.Mutating)
                 {
-                    holdId = InstallOrExtendHold(
+                    holdId = InstallHold(
                         context,
                         existing.Identity,
                         now);
@@ -401,7 +400,13 @@ internal sealed partial class RbpJournalStore
         }
     }
 
-    private static string InstallOrExtendHold(
+    /// <summary>
+    /// Installs the Section 6.2.1 hold for one uncertain single invocation.
+    /// </summary>
+    /// <remarks>
+    /// Spec ~477: "For one invocation the origin list has one key."
+    /// </remarks>
+    private static string InstallHold(
         RbpJournalWriteContext context,
         RbpInvocationIdentity identity,
         long now)
@@ -413,26 +418,77 @@ internal sealed partial class RbpJournalStore
                 "A mutation-recovery hold requires a mutation scope.");
         }
 
+        return InstallHold(
+            context,
+            identity.Rsid,
+            scopeJcs,
+            new[] { identity.IdempotencyKey },
+            now);
+    }
+
+    /// <summary>
+    /// Installs the Section 6.2.1 hold for one uncertain mutation scope and
+    /// returns its derived correlation id (spec ~469-480).
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// The id is not minted: it is
+    /// <c>"vh:" + lowercase_hex(SHA-256(UTF-8-without-BOM(RFC8785-JCS(hold_material))))</c>
+    /// over
+    /// <c>{"mutation_scope":&lt;scope&gt;,"origin_idempotency_keys":[&lt;ordered keys&gt;],"rsid":&lt;rsid&gt;}</c>,
+    /// so a conforming peer derives the same value from the work it knows is
+    /// uncertain. A randomly minted id has the right shape and is refused by
+    /// a conforming Gateway, which closes the link.
+    /// </para>
+    /// <para>
+    /// Because the id is a pure function of the material, the ordered origin
+    /// list is fixed when the hold is installed and is never mutated
+    /// afterwards. Spec ~470 makes the id a <em>stable</em> correlation value
+    /// while the durable index stays <c>(rsid, mutation_scope)</c>; spec
+    /// ~477-480 defines the origin list only for one invocation or one
+    /// uncertain atomic batch; and spec ~482-485 answers every later
+    /// conflicting mutation with <em>the original hold's</em>
+    /// <c>journal_indeterminate</c> error rather than joining it to that
+    /// hold. Re-deriving on a later origin would move a stable id, and
+    /// appending without re-deriving would emit an id no peer can derive, so
+    /// an existing uncleared hold on the exact scope is returned unchanged.
+    /// </para>
+    /// </remarks>
+    private static string InstallHold(
+        RbpJournalWriteContext context,
+        string rsid,
+        string scopeJcs,
+        IReadOnlyList<string> orderedOriginIdempotencyKeys,
+        long now)
+    {
         RbpVerificationHold? existing =
-            FindHoldByExactScope(context, identity.Rsid, scopeJcs);
+            FindHoldByExactScope(context, rsid, scopeJcs);
         if (existing is not null)
         {
-            AppendHoldOrigin(
-                context,
-                existing,
-                identity.IdempotencyKey,
-                now);
             return existing.VerificationHoldId;
         }
 
         (string scopeKind, string? documentId) = ReadScopeShape(scopeJcs);
+        string holdId;
+        using (JsonDocument scope = JsonDocument.Parse(scopeJcs))
+        {
+            holdId = Rfc8785Json.MakeVerificationHoldId(
+                rsid,
+                scope.RootElement,
+                orderedOriginIdempotencyKeys);
+        }
 
-        // The frozen schema pins the hold id to "vh:" plus exactly 64
-        // lowercase hex characters.
-        Span<byte> holdEntropy = stackalloc byte[32];
-        RandomNumberGenerator.Fill(holdEntropy);
-        string holdId = "vh:" +
-                        Convert.ToHexString(holdEntropy).ToLowerInvariant();
+        if (FindHoldById(context, rsid, holdId) is not null)
+        {
+            // Identical hold material under a scope row that is already
+            // cleared or already indexed elsewhere cannot be reused; a
+            // resurrected correlation id is never inferred.
+            throw new RbpJournalException(
+                RbpJournalErrorCode.ProtocolConflict,
+                "The derived Section 6.2.1 hold id already exists for this " +
+                "session; the frozen hold material cannot be reused.");
+        }
+
         using SqliteCommand insert = context.CreateCommand(
             """
             INSERT INTO rbp_verification_holds(
@@ -443,7 +499,7 @@ internal sealed partial class RbpJournalStore
                    $now,$now);
             """);
         insert.Parameters.AddWithValue("$id", holdId);
-        insert.Parameters.AddWithValue("$rsid", identity.Rsid);
+        insert.Parameters.AddWithValue("$rsid", rsid);
         insert.Parameters.AddWithValue("$kind", scopeKind);
         insert.Parameters.AddWithValue(
             "$document",
@@ -451,7 +507,7 @@ internal sealed partial class RbpJournalStore
         insert.Parameters.AddWithValue("$scope", scopeJcs);
         insert.Parameters.AddWithValue(
             "$origins",
-            JsonSerializer.Serialize(new[] { identity.IdempotencyKey }));
+            JsonSerializer.Serialize(orderedOriginIdempotencyKeys));
         insert.Parameters.AddWithValue("$now", now);
         if (insert.ExecuteNonQuery() != 1)
         {
@@ -461,38 +517,6 @@ internal sealed partial class RbpJournalStore
         }
 
         return holdId;
-    }
-
-    private static void AppendHoldOrigin(
-        RbpJournalWriteContext context,
-        RbpVerificationHold hold,
-        string idempotencyKey,
-        long now)
-    {
-        if (hold.OrderedOriginIdempotencyKeys.Contains(
-                idempotencyKey,
-                StringComparer.Ordinal))
-        {
-            return;
-        }
-
-        var origins = new List<string>(hold.OrderedOriginIdempotencyKeys)
-        {
-            idempotencyKey,
-        };
-        using SqliteCommand update = context.CreateCommand(
-            """
-            UPDATE rbp_verification_holds
-            SET ordered_origin_idempotency_keys_json=$origins,
-                updated_at_ms=MAX(updated_at_ms,$now)
-            WHERE verification_hold_id=$id;
-            """);
-        update.Parameters.AddWithValue(
-            "$origins",
-            JsonSerializer.Serialize(origins));
-        update.Parameters.AddWithValue("$now", now);
-        update.Parameters.AddWithValue("$id", hold.VerificationHoldId);
-        _ = update.ExecuteNonQuery();
     }
 
     private static void MarkInvocationIndeterminate(
