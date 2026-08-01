@@ -16,6 +16,11 @@ namespace RevAgent.Bridge.Gateway.Storage;
 /// the Gateway. A crash after add-in completion but before terminal
 /// persistence deliberately leaves <c>executing</c>, which is indeterminate
 /// by design.
+///
+/// The same call shape carries the frozen Section 6.2.1 conflict block: the
+/// admission that commits <c>received</c> is also the one that consults the
+/// durable local hold index, so a new mutating invocation cannot reach the
+/// add-in past an uncleared conflicting hold no matter which caller admits it.
 /// </summary>
 internal sealed partial class RbpJournalStore
 {
@@ -23,7 +28,9 @@ internal sealed partial class RbpJournalStore
     /// Admits an invocation under its canonical idempotency key and applies
     /// the frozen Section 12.2 redelivery rules. On first delivery this
     /// durably persists <c>received</c> plus <c>params_digest</c> before
-    /// returning, so the caller may not have written an add-in byte yet.
+    /// returning, so the caller may not have written an add-in byte yet — and,
+    /// for a new mutating invocation, only after the Section 6.2.1 conflict
+    /// gate cleared it.
     /// </summary>
     internal Task<RbpInvocationAdmissionResult> AdmitInvocationAsync(
         RbpInvocationIdentity identity,
@@ -50,6 +57,17 @@ internal sealed partial class RbpJournalStore
             ReadInvocation(context, identity.IdempotencyKey);
         if (existing is null)
         {
+            // Spec ~480-482: "Before writing the first add-in byte, the
+            // bridge MUST perform the same check against its durable local
+            // index." This is that check, and it is unconditional for a new
+            // mutating invocation: it runs in the same transaction that would
+            // otherwise persist `received`, so no delivery can observe an
+            // uncleared hold and still reserve a row.
+            if (FindBlockingHold(context, identity) is { } blocking)
+            {
+                return BlockedByConflictingHold(context, blocking);
+            }
+
             InsertReceivedInvocation(context, identity, now);
             RbpStoredInvocation stored =
                 ReadInvocation(context, identity.IdempotencyKey) ??
@@ -117,6 +135,75 @@ internal sealed partial class RbpJournalStore
             RbpInvocationAdmission.RefuseIndeterminate,
             refused,
             holdId);
+    }
+
+    /// <summary>
+    /// The frozen Section 6.2.1 conflict gate for one <em>new</em> invocation,
+    /// against the same durable local index and the same conflict query the
+    /// clearance-carrying and batch paths use. Returns the uncleared hold that
+    /// blocks this delivery, or null when the delivery is exempt or free.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Spec ~484-485 names the complete exemption list: "Redelivery of an
+    /// origin key and a correlated read-only verification are the only
+    /// operations exempt from this block."
+    /// </para>
+    /// <list type="bullet">
+    /// <item>Redelivery of an origin key is exempt structurally: this method is
+    /// only reached when the canonical idempotency key has no durable row, so
+    /// every redelivery keeps its untouched Section 12.2 rule 1-5
+    /// arbitration.</item>
+    /// <item>A correlated read-only verification is exempt because the block
+    /// itself is scoped to "every new mutating invocation or batch" (spec
+    /// ~480-481) and a verification read is "an ordinary <c>mutating:false</c>
+    /// <c>invoke</c>" (spec ~487). The same sentence leaves every other
+    /// non-mutating invocation unblocked; a mutating one carries no exemption
+    /// at all.</item>
+    /// </list>
+    /// </remarks>
+    private static RbpVerificationHold? FindBlockingHold(
+        RbpJournalWriteContext context,
+        RbpInvocationIdentity identity) =>
+        identity.Mutating
+            ? FindConflictingHold(
+                context,
+                identity.Rsid,
+                identity.MutationScopeJcs!)
+            : null;
+
+    /// <summary>
+    /// Builds the blocked admission for a new mutating invocation that
+    /// conflicts with an uncleared hold.
+    /// </summary>
+    /// <remarks>
+    /// Spec ~482-483: "An active conflict returns the original hold's
+    /// <c>journal_indeterminate</c> error without add-in contact even when
+    /// <c>invocation_id</c> or <c>batch_id</c> is fresh." Nothing is written:
+    /// the fresh envelope gets no journal row, no hold is installed, and the
+    /// existing hold is not touched, so the answer really is the original
+    /// hold's. The durable row carried back is that hold's first origin
+    /// invocation, which retention keeps for as long as the hold is uncleared.
+    /// </remarks>
+    private static RbpInvocationAdmissionResult BlockedByConflictingHold(
+        RbpJournalWriteContext context,
+        RbpVerificationHold hold)
+    {
+        RbpStoredInvocation origin =
+            (hold.OrderedOriginIdempotencyKeys.Count > 0
+                ? ReadInvocation(
+                    context,
+                    hold.OrderedOriginIdempotencyKeys[0])
+                : null) ??
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "An uncleared Section 6.2.1 hold lost the origin invocation " +
+                "row its journal_indeterminate answer is built from.");
+        return new RbpInvocationAdmissionResult(
+            RbpInvocationAdmission.BlockedByConflictingHold,
+            origin,
+            hold.VerificationHoldId,
+            hold);
     }
 
     /// <summary>

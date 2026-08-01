@@ -117,14 +117,21 @@ public sealed class RbpVerificationHoldDerivationTests
         using var directory = new RbpJournalTestDirectory();
         await using RbpJournalStore store = await OpenAsync(directory);
 
-        string documentHold = await InstallIndeterminateHoldAsync(
-            store,
-            WriteIdentity());
-        string sessionHold = await InstallIndeterminateHoldAsync(
-            store,
-            WriteIdentity(
-                scopeJcs: SessionScope,
-                invocationId: SecondInvocationId));
+        RbpInvocationIdentity documentOrigin = WriteIdentity();
+        RbpInvocationIdentity sessionOrigin = WriteIdentity(
+            scopeJcs: SessionScope,
+            invocationId: SecondInvocationId);
+
+        // Both mutations become possibly dispatched before either is
+        // arbitrated: an uncleared hold blocks a *new* mutating invocation
+        // (spec ~480-485), so two conflicting scopes can only end up held
+        // through the redelivery exemption of two already durable origins.
+        await StartPossiblyDispatchedMutationAsync(store, documentOrigin);
+        await StartPossiblyDispatchedMutationAsync(store, sessionOrigin);
+        string documentHold =
+            await RefuseRedeliveryAsync(store, documentOrigin);
+        string sessionHold =
+            await RefuseRedeliveryAsync(store, sessionOrigin);
 
         Assert.Equal(
             Derive(Material(DocumentOneScope, Key(OriginInvocationId))),
@@ -443,8 +450,31 @@ public sealed class RbpVerificationHoldDerivationTests
         RbpJournalStore store,
         RbpInvocationIdentity origin)
     {
+        await StartPossiblyDispatchedMutationAsync(store, origin);
+        return await RefuseRedeliveryAsync(store, origin);
+    }
+
+    /// <summary>
+    /// Leaves one mutation in <c>executing</c> — the state a crash between
+    /// Section 12.1 steps 2 and 3 produces — without installing a hold yet.
+    /// </summary>
+    private static async Task StartPossiblyDispatchedMutationAsync(
+        RbpJournalStore store,
+        RbpInvocationIdentity origin)
+    {
         _ = await store.AdmitInvocationAsync(origin);
         await store.MarkInvocationExecutingAsync(origin.IdempotencyKey);
+    }
+
+    /// <summary>
+    /// Redelivers an origin key, which Section 12.2 rule 4 refuses and which
+    /// spec ~484 exempts from the Section 6.2.1 conflict block, so the hold
+    /// installs even when another scope is already held.
+    /// </summary>
+    private static async Task<string> RefuseRedeliveryAsync(
+        RbpJournalStore store,
+        RbpInvocationIdentity origin)
+    {
         RbpInvocationAdmissionResult refused =
             await store.AdmitInvocationAsync(origin);
         Assert.Equal(

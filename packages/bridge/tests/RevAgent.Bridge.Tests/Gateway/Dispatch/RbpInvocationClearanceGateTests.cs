@@ -21,6 +21,8 @@ public sealed class RbpInvocationClearanceGateTests
     private const string WriteMethod = "create_wall";
     private const string DocumentScope =
         """{"document_id":"doc-1","kind":"document"}""";
+    private const string OtherDocumentScope =
+        """{"document_id":"doc-2","kind":"document"}""";
     private const string OriginInvocationId =
         "0197a3c2-0000-7000-8000-0000000000b2";
     private const string FreshInvocationId =
@@ -117,7 +119,15 @@ public sealed class RbpInvocationClearanceGateTests
     {
         using var directory = new RbpJournalTestDirectory();
         await using RbpJournalStore store = await OpenAsync(directory);
-        string holdId = await InstallEvidencedHoldAsync(store);
+
+        // The hold is on another document, so the Section 6.2.1 conflict
+        // block (spec ~480-485) does not apply and this test can isolate the
+        // question it exists to answer: which admission an empty
+        // `recovery_clearances` array reaches. A hold on `doc-1` would refuse
+        // this write outright, which `RbpInvocationConflictGateTests` covers.
+        string holdId = await InstallEvidencedHoldAsync(
+            store,
+            OtherDocumentScope);
 
         var channel = new CountingChannel();
         RbpInvocationAnswer answer =
@@ -153,19 +163,20 @@ public sealed class RbpInvocationClearanceGateTests
     }
 
     /// <summary>
-    /// Leaves one active hold on <c>doc-1</c> with durable conclusive
-    /// verification evidence, which is the only state a
-    /// <c>verification_read</c> clearance may be accepted from.
+    /// Leaves one active hold on the supplied scope (<c>doc-1</c> by default)
+    /// with durable conclusive verification evidence, which is the only state
+    /// a <c>verification_read</c> clearance may be accepted from.
     /// </summary>
     private static async Task<string> InstallEvidencedHoldAsync(
-        RbpJournalStore store)
+        RbpJournalStore store,
+        string scopeJcs = DocumentScope)
     {
         var origin = new RbpInvocationIdentity(
             Rsid,
             OriginInvocationId,
             WriteMethod,
             Mutating: true,
-            MutationScopeJcs: DocumentScope,
+            MutationScopeJcs: scopeJcs,
             ParamsDigest: "sha256:" + new string('a', 64),
             PolicyJcs: """{"decision":"allow"}""",
             RecoveryClearancesJcs: "[]");

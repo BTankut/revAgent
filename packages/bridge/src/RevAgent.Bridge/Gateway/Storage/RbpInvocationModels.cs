@@ -103,17 +103,31 @@ internal enum RbpInvocationAdmission
     /// returns <c>journal_indeterminate</c> with the installed scope hold.
     /// </summary>
     RefuseIndeterminate,
+
+    /// <summary>
+    /// Section 6.2.1 (spec ~480-485): a <em>new</em> mutating invocation
+    /// conflicts with an uncleared hold in the durable local index. No row was
+    /// written; the caller returns the original hold's
+    /// <c>journal_indeterminate</c> error without add-in contact, even though
+    /// the <c>invocation_id</c> is fresh.
+    /// </summary>
+    BlockedByConflictingHold,
 }
 
 /// <summary>
 /// The outcome of admitting an invocation. <see cref="Admission"/> is the
 /// frozen rule that applied; <see cref="Stored"/> is the durable row the
-/// caller must answer from when the rule is a replay or refusal.
+/// caller must answer from when the rule is a replay, a refusal, or the
+/// Section 6.2.1 conflict block — for the block that row is the blocking
+/// hold's first origin invocation, because the frozen answer is <em>the
+/// original hold's</em> error and the blocked envelope deliberately never got
+/// a row of its own. <see cref="BlockingHold"/> is set only for the block.
 /// </summary>
 internal sealed record RbpInvocationAdmissionResult(
     RbpInvocationAdmission Admission,
     RbpStoredInvocation Stored,
-    string? VerificationHoldId = null);
+    string? VerificationHoldId = null,
+    RbpVerificationHold? BlockingHold = null);
 
 /// <summary>
 /// A durable mutation-recovery hold. <c>ScopeJcs</c> is the exact RFC 8785

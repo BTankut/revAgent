@@ -138,6 +138,15 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             case RbpInvocationAdmission.RefuseIndeterminate:
                 return RefuseIndeterminate(request, admission);
 
+            case RbpInvocationAdmission.BlockedByConflictingHold:
+                return BlockedByHold(
+                    request,
+                    admission.BlockingHold ??
+                        throw new RbpDispatchException(
+                            RbpDispatchErrorCode.Environment,
+                            "A blocked admission requires the original " +
+                            "Section 6.2.1 hold it is answered from."));
+
             case RbpInvocationAdmission.Accepted:
                 return await ExecuteAsync(
                         request,
@@ -187,7 +196,14 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     /// </para>
     /// <para>
     /// An <c>invoke</c> that carries no clearance keeps the ordinary Section
-    /// 12.2 admission unchanged, including which exceptions it surfaces.
+    /// 12.2 admission unchanged, including which exceptions it surfaces. That
+    /// admission is not, however, exempt from the Section 6.2.1 conflict
+    /// block: spec ~480-485 requires the check before the first add-in byte of
+    /// <em>every</em> new mutating invocation, and names redelivery of an
+    /// origin key and a correlated read-only verification as the only
+    /// exemptions. The store therefore runs the same gate on both paths and
+    /// answers a blocked delivery with
+    /// <see cref="RbpInvocationAdmission.BlockedByConflictingHold"/>.
     /// </para>
     /// </remarks>
     private async Task<(

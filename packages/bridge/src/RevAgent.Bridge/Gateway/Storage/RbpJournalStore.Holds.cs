@@ -177,36 +177,29 @@ internal sealed partial class RbpJournalStore
                         now);
                 }
 
-                if (identity.Mutating &&
-                    ReadInvocation(context, identity.IdempotencyKey) is null)
+                // The conflict gate is not re-implemented here: the ordinary
+                // admission runs it for every new mutating invocation, so
+                // both invoke paths consult the same durable local index
+                // through the same query, in the same transaction.
+                RbpInvocationAdmissionResult admitted =
+                    AdmitInvocation(context, identity, now);
+                if (admitted.BlockingHold is { } blocking)
                 {
-                    RbpVerificationHold? blocking = FindConflictingHold(
-                        context,
-                        identity.Rsid,
-                        identity.MutationScopeJcs!);
-                    if (blocking is not null)
+                    if (clearances.Count > 0)
                     {
-                        if (clearances.Count > 0)
-                        {
-                            // The one permitted evidence-bound envelope
-                            // carries every conflicting hold; a residual
-                            // conflict proves this envelope is not it, and
-                            // the rollback keeps every hold uncleared.
-                            throw ClearanceFault(
-                                "the clearance envelope does not cover " +
-                                "every hold conflicting with its mutation " +
-                                "scope");
-                        }
-
-                        return new RbpClearanceGatedAdmission(
-                            null,
-                            blocking);
+                        // The one permitted evidence-bound envelope carries
+                        // every conflicting hold; a residual conflict proves
+                        // this envelope is not it, and the rollback keeps
+                        // every hold uncleared.
+                        throw ClearanceFault(
+                            "the clearance envelope does not cover every " +
+                            "hold conflicting with its mutation scope");
                     }
+
+                    return new RbpClearanceGatedAdmission(null, blocking);
                 }
 
-                return new RbpClearanceGatedAdmission(
-                    AdmitInvocation(context, identity, now),
-                    null);
+                return new RbpClearanceGatedAdmission(admitted, null);
             },
             cancellationToken);
     }

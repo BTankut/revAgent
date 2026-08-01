@@ -308,14 +308,27 @@ public sealed class RbpBatchJournalTests
         await using RbpJournalStore store = OpenStore(directory);
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
-        string documentHold = await RbpBatchTestData.InstallActiveHoldAsync(
+
+        // Both mutations become possibly dispatched before either is
+        // arbitrated: an uncleared hold blocks a *new* mutating invocation
+        // (spec ~480-485), so two conflicting scopes can only end up held
+        // through the redelivery exemption of two already durable origins.
+        RbpInvocationIdentity documentOrigin =
+            await RbpBatchTestData.StartPossiblyDispatchedMutationAsync(
+                store,
+                RbpBatchTestData.DocumentOneScope,
+                "0197a3c2-0000-7000-8000-0000000000a9");
+        RbpInvocationIdentity sessionOrigin =
+            await RbpBatchTestData.StartPossiblyDispatchedMutationAsync(
+                store,
+                """{"kind":"session"}""",
+                "0197a3c2-0000-7000-8000-0000000000b9");
+        string documentHold = await RbpBatchTestData.RefuseRedeliveryAsync(
             store,
-            RbpBatchTestData.DocumentOneScope,
-            "0197a3c2-0000-7000-8000-0000000000a9");
-        string sessionHold = await RbpBatchTestData.InstallActiveHoldAsync(
+            documentOrigin);
+        string sessionHold = await RbpBatchTestData.RefuseRedeliveryAsync(
             store,
-            """{"kind":"session"}""",
-            "0197a3c2-0000-7000-8000-0000000000b9");
+            sessionOrigin);
         const string verificationId =
             "0197a3c2-0000-7000-8000-0000000000aa";
         string evidenceDigest = "sha256:" + new string('f', 64);
