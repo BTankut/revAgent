@@ -10,6 +10,7 @@ using RevAgent.Bridge.Bootstrap.Diagnostics;
 using RevAgent.Bridge.Bootstrap.Enrollment;
 using RevAgent.Bridge.Bootstrap.Logging;
 using RevAgent.Bridge.Enrollment;
+using RevAgent.Bridge.Runtime;
 
 namespace RevAgent.Bridge;
 
@@ -18,6 +19,14 @@ internal static class Program
     private const int UsageExitCode = 64;
     private const int ConfigurationExitCode = 78;
     private const int SoftwareExitCode = 70;
+
+    /// <summary>
+    /// Bounds the whole worker shutdown below the supervisor's 8-second
+    /// graceful stop timeout, so a slow data-plane drain still returns before
+    /// the host would force-kill the process tree.
+    /// </summary>
+    private static readonly TimeSpan WorkerShutdownTimeout =
+        TimeSpan.FromSeconds(7);
 
     public static async Task<int> Main(string[] args)
     {
@@ -146,10 +155,26 @@ internal static class Program
         builder.Services.AddSingleton(exitState);
         builder.Services.AddSingleton<IWorkerControlSessionFactory,
             NamedPipeWorkerControlSessionFactory>();
+        builder.Services.Configure<HostOptions>(
+            hostOptions => hostOptions.ShutdownTimeout = WorkerShutdownTimeout);
         builder.Services.AddSingleton<IHostedService>(
             services => new WorkerControlService(
                 services.GetRequiredService<WorkerRuntimeOptions>(),
                 services.GetRequiredService<IWorkerControlSessionFactory>(),
+                services.GetRequiredService<IHostApplicationLifetime>(),
+                services.GetRequiredService<IBridgeLog>(),
+                services.GetRequiredService<WorkerExitState>()));
+
+        // The RBP data plane runs in this same supervised process. It is
+        // registered after the control service so the host starts the control
+        // channel first and stops the data plane first: a stop request is
+        // acknowledged on the pipe by the same service that owns it, while the
+        // connection drains inside its own bounded budget.
+        builder.Services.AddSingleton<IHostedService>(
+            services => new WorkerGatewayRuntimeService(
+                () => WorkerGatewayRuntime.CreateProduction(
+                    layout,
+                    services.GetRequiredService<ResolvedBridgeConfiguration>()),
                 services.GetRequiredService<IHostApplicationLifetime>(),
                 services.GetRequiredService<IBridgeLog>(),
                 services.GetRequiredService<WorkerExitState>()));

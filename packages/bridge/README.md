@@ -56,11 +56,40 @@ authority:
   globally single-flight heartbeat fences, full-jitter reconnect, and
   monotonic sleep/wake replacement.
 
-It does not yet provide add-in discovery/session routing, the Streamable
-HTTP/SSE fallback, invocation dispatch/execution, Gateway-backed enrollment,
-production resume-token protection, workstation installer payload, or update
-behavior. Those land through separate WP3 PRs in the order fixed by
+Bounded add-in discovery/session routing, the Streamable HTTP/SSE fallback
+binding, invocation dispatch/execution, Gateway-backed enrollment, and
+machine-scoped DPAPI resume-token protection have since landed, and the
+supervised Worker now composes and runs that RBP data plane in-process beside
+its control channel. It does not yet provide the workstation installer payload
+or update behavior. Those land through separate WP3 PRs in the order fixed by
 `docs/implementation-plan/03-bridge-addin-installer.md`.
+
+The Worker host registers two hosted services. `WorkerControlService` owns the
+supervisor control pipe, unchanged. `WorkerGatewayRuntimeService` composes the
+journal store at the canonical state-root path, the bounded loopback discovery
+and session router, the routed invocation dispatcher, the P3-T5 inbound journal
+handoff, and the standing document-context watcher into one connection
+coordinator, then owns that connection for the process lifetime. Composition is
+the fail-closed gate: a journal, credential store, or configuration
+precondition that cannot be met throws out of host startup, so the worker exits
+non-successfully with a structured reason rather than holding a control pipe
+over a half-wired data plane. Connecting itself is background work, so SCM
+start never waits on Gateway reachability. An unenrolled machine reaches the
+unchanged `enrollment_required` refusal and parks in the frozen `RetryPaused`
+auth state — no retry storm, no worker crash — and a worker without an add-in
+dispatch surface still falls back to the fail-closed inbound journal. Worker
+shutdown is bounded to 7 seconds, below the supervisor's 8-second graceful stop
+budget.
+
+This wiring is local deterministic evidence only. It does not prove an
+installed service connecting to a production Gateway, a live Revit session, a
+real enrolled credential, or Streamable HTTP/SSE fallback selection: the worker
+declares no provisioned transport capability, so the composed factory is
+WSS-only by the same fail-closed default the fallback factory already enforces.
+The `rsid`-to-add-in route binding is learned from the durable session rows by
+a background pump; an invocation that arrives before its binding is observed is
+answered as a known non-dispatch (`addin_unreachable`) rather than routed to an
+unproven session.
 
 Run the complete P3-T1 contract gate from the repository root:
 
@@ -167,10 +196,11 @@ until restart recovery. A pending handoff also blocks unregister confirmation.
 
 Resume tokens enter SQLite only through an injected protected-token contract.
 Registration payloads recursively reject the reserved `resume_token` property;
-no plaintext fallback and no production DPAPI provider exists in this slice.
-Lifecycle and migration update timestamps also clamp backward wall-clock
-corrections without weakening sequence authority. P3-T8 must supply the
-production protector before live enrollment/session work. The P3-T4b evidence
+no plaintext fallback exists. Lifecycle and migration update timestamps also
+clamp backward wall-clock corrections without weakening sequence authority. The
+production protector is now the machine-scoped DPAPI adapter the Worker
+installs, reusing the same P3-T8 credential-store primitive and refusing any
+row recorded under a different protection scheme. The P3-T4b evidence
 is therefore local store, migration, post-commit fault-injection, plaintext
 artifact compaction, long-history bounded-materialization, and orderly reopen
 evidence only. Abrupt process-death/WAL recovery remains an explicit
@@ -194,11 +224,12 @@ claimed by this schema-only slice; they remain later P3-T5 behavior.
 The Windows add-in process-attestation primitive can bind an accepted
 connection's exact IPv4 loopback four-tuple to its owning PID, process start
 time, expected Program Files `Revit.exe`, protected path ACLs, and Authenticode
-evidence. This primitive is not yet wired into `AddinTcpTransport`, so this
-slice does not claim production transport enforcement and the P3-T3 gate
-remains red until a later small attested-transport PR lands. The evidence
-attests the owning `Revit.exe` process only; it does not identify or
-authenticate the loaded revAgent add-in DLL.
+evidence. The primitive is now wired into `AddinTcpTransport`, and both
+production call paths supply one: bounded discovery attests each probed target,
+and routed dispatch re-attests against the exact identity discovery accepted.
+The evidence attests the owning `Revit.exe` process only; it does not identify
+or authenticate the loaded revAgent add-in DLL, and live-Revit acceptance
+remains blocked until the P3-T6 adapted add-in is installed.
 
 Potentially blocking native inspection runs in a fresh copy of the
 self-contained Worker from the canonical fixed-local-volume
@@ -256,8 +287,9 @@ session non-dispatchable until `resume_ack` is durably applied; the receive
 loop also waits for registration/resume application before exposing a
 following data frame. Accepted inbound data is acknowledged only after an
 injected invocation-journal seam marks the exact envelope id and immutable
-digest in the same SQLite transaction. The production default for that seam is
-fail-closed until P3-T5 installs the invocation journal.
+digest in the same SQLite transaction. The Worker composition installs the
+P3-T5 invocation-journal handoff into that seam; the fail-closed refusal
+remains the default whenever no add-in dispatch surface exists.
 
 Heartbeat flights capture one immutable active-rsid and pending-unregister
 fence plus the acknowledgement deadline before transport send. Synchronous
@@ -279,14 +311,17 @@ of opening a new generation beside the stale handler. Service cancellation may
 return after the bounded drain window, but it leaves that same poison set; the
 coordinator cannot be started again in-process.
 
-**P3-T4 host-wiring prerequisite card:** this slice does not yet claim that a
-service-stop poison terminates the Worker process. Before coordinator
-production wiring is accepted, the Worker host must treat non-draining
-connection authority as a must-exit condition, return a non-success worker exit
-state, and prove under a deterministic blocked-handler test that the supervisor
-starts no replacement generation in the old process. Until that wiring and
-test land, the evidence ceiling is coordinator fail-fast plus bounded service
-return, not process-exit enforcement.
+**P3-T4 host-wiring prerequisite card (satisfied in-process):** the Worker host
+now treats non-draining connection authority as a must-exit condition. A
+deterministic blocked-handler test drives a heartbeat acknowledgement that
+ignores cancellation past the bounded close deadline and proves the composed
+host fails the worker exit state, requests application shutdown, opens no
+second connection generation in that process, and leaves the coordinator
+permanently poisoned against restart. The residual ceiling is the process
+boundary itself: the observed OS exit code of an installed Worker and the
+supervisor's restart-budget reaction to it stay VM-only operator evidence, and
+the existing supervisor tests cover exit-code handling only with a synthetic
+launcher.
 Only the exact current generation may apply the returned cumulative
 acknowledgements or confirm tombstones. The coordinator closes and replaces
 WSS after a monotonic wake gap; it never switches an active binding in place.
