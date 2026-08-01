@@ -14,6 +14,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Host", "src
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.Tests", "tests\RevAgent.Bridge.Tests\RevAgent.Bridge.Tests.csproj", "{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "RevAgent.Bridge.PowerCutHarness", "tests\RevAgent.Bridge.PowerCutHarness\RevAgent.Bridge.PowerCutHarness.csproj", "{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -44,5 +46,9 @@ Global
 		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{400970A8-AEC3-4D82-9D3A-C2B6B15F2671}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8C2DF0D1-F031-48EA-84FD-6A762FD625A9}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

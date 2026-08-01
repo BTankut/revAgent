@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    The killable child process for the RBP journal power-cut suite. The xunit
+    test project is built as a library with no entry point, so it cannot spawn
+    itself; this executable exists only to host
+    RbpJournalPowerCutChild.Run and be terminated abruptly.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>RevAgent.Bridge.PowerCutHarness</AssemblyName>
+    <RootNamespace>RevAgent.Bridge.PowerCutHarness</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <IsPublishable>false</IsPublishable>
+    <IsTestProject>false</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference
+      Include="..\RevAgent.Bridge.Tests\RevAgent.Bridge.Tests.csproj" />
+  </ItemGroup>
+</Project>
