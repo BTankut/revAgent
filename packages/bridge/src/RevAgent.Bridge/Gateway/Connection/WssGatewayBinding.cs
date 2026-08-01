@@ -147,6 +147,7 @@ internal sealed class WssGatewayBinding : IRbpGatewayBinding
             kind,
             message,
             statusCode == 0 ? null : statusCode,
+            fallbackEligible: kind == RbpGatewayFailureKind.Network,
             retryNotBeforeUtc: retryAfter.NotBeforeUtc,
             retryAfterDisposition: retryAfter.Disposition,
             innerException: exception);

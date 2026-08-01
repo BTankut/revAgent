@@ -227,6 +227,7 @@ internal sealed partial class RbpConnectionCoordinator
             context.QueueRetransmit(applied.Retransmit);
 
             context.AcknowledgeResumeApplied(candidate.Session.Rsid);
+            StartDocContextWatch(context, parsed.Rsid, local);
         }
         catch (Exception exception)
         {
@@ -288,6 +289,7 @@ internal sealed partial class RbpConnectionCoordinator
                 new BoundSession(local, stored, lifecycle));
             context.AcknowledgeRegistrationApplied(
                 local.LocalSessionKey);
+            StartDocContextWatch(context, parsed.Rsid, local);
         }
         catch (Exception exception)
         {
@@ -314,6 +316,7 @@ internal sealed partial class RbpConnectionCoordinator
                     context.Token)
                 .ConfigureAwait(false);
         context.RevokeBoundSession(session.Stored.Rsid, reason);
+        StopDocContextWatch(session.Stored.Rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }
 
@@ -353,6 +356,7 @@ internal sealed partial class RbpConnectionCoordinator
                     reason,
                     context.Token)
                 .ConfigureAwait(false);
+        StopDocContextWatch(rsid);
         await SendUnregisterAsync(context, tombstone).ConfigureAwait(false);
     }
 

@@ -32,6 +32,7 @@ internal sealed class RbpGatewayTransportException : Exception
         string message,
         int? statusCode = null,
         int? closeCode = null,
+        bool fallbackEligible = false,
         DateTimeOffset? retryNotBeforeUtc = null,
         RbpRetryAfterDisposition retryAfterDisposition =
             RbpRetryAfterDisposition.Absent,
@@ -42,6 +43,7 @@ internal sealed class RbpGatewayTransportException : Exception
         Kind = kind;
         StatusCode = statusCode;
         CloseCode = closeCode;
+        FallbackEligible = fallbackEligible;
         RetryNotBeforeUtc = retryNotBeforeUtc;
         RetryAfterDisposition = retryAfterDisposition;
         VersionWindow = versionWindow;
@@ -52,6 +54,15 @@ internal sealed class RbpGatewayTransportException : Exception
     internal int? StatusCode { get; }
 
     internal int? CloseCode { get; }
+
+    /// <summary>
+    /// Whether this failure is the Section 4.1 opening class that may try
+    /// the provisioned Streamable HTTP/SSE fallback once: a retryable
+    /// network/proxy/upgrade failure that prevented WSS from opening.
+    /// Authentication, authorization, version, and trust failures never
+    /// downgrade transport.
+    /// </summary>
+    internal bool FallbackEligible { get; }
 
     internal DateTimeOffset? RetryNotBeforeUtc { get; }
 

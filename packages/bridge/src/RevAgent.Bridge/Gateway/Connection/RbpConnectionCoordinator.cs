@@ -55,7 +55,8 @@ internal sealed partial class RbpConnectionCoordinator
         IRbpInvocationDispatcher invocationDispatcher,
         IRbpInboundDataJournal? inboundJournal = null,
         IRbpCoordinatorClock? clock = null,
-        IRbpRandomSource? random = null)
+        IRbpRandomSource? random = null,
+        RbpDocContextWatcher? docContextWatcher = null)
     {
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
@@ -69,6 +70,7 @@ internal sealed partial class RbpConnectionCoordinator
             inboundJournal ?? FailClosedRbpInboundDataJournal.Instance;
         _clock = clock ?? SystemRbpCoordinatorClock.Instance;
         _random = random ?? CryptographicRbpRandomSource.Shared;
+        _docContextWatcher = docContextWatcher;
         _identifiers = new RbpUuidV7(
             new CoordinatorTimeProvider(_clock),
             _random);

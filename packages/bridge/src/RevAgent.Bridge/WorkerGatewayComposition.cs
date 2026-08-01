@@ -112,6 +112,43 @@ internal static class WorkerGatewayComposition
         }
     }
 
+    /// <summary>
+    /// Composes the worker's connection-cycle factory. WSS is always the
+    /// primary RBP binding; when — and only when — the provisioned
+    /// transport capabilities include
+    /// <see cref="RbpTransportCapabilities.StreamableHttp"/>, the factory
+    /// is wrapped so one fallback-eligible WSS opening failure may try the
+    /// Streamable HTTP/SSE binding within the same attempt (RES-25,
+    /// O1 Section 4.1). An unset or empty flag fail-closes to the current
+    /// WSS-only behavior, and the fallback factory itself still refuses to
+    /// open unless the capability is both provisioned and declared in
+    /// <c>hello</c>.
+    /// </summary>
+    internal static IRbpConnectionCycleFactory CreateConnectionCycleFactory(
+        IRbpEnrollmentStateProvider enrollmentState,
+        IReadOnlyCollection<string>? provisionedTransportCapabilities = null)
+    {
+        ArgumentNullException.ThrowIfNull(enrollmentState);
+        var primary = new WssRbpConnectionCycleFactory(
+            new RbpGatewayHandshakeClient(
+                enrollmentState,
+                new WssGatewayBinding()));
+        if (provisionedTransportCapabilities is null ||
+            !provisionedTransportCapabilities.Contains(
+                RbpTransportCapabilities.StreamableHttp,
+                StringComparer.Ordinal))
+        {
+            return primary;
+        }
+
+        return new RbpPrimaryFallbackConnectionCycleFactory(
+            primary,
+            new StreamableHttpRbpConnectionCycleFactory(
+                enrollmentState,
+                provisionedTransportCapabilities),
+            provisionedTransportCapabilities);
+    }
+
     internal static RbpConnectionCoordinator CreateCoordinator(
         WorkerGatewayServices services)
     {
@@ -154,6 +191,15 @@ internal static class WorkerGatewayComposition
             new LocalCatalogRevitBusyProbe(
                 services.SessionCatalog,
                 surface.SessionRoutes));
+
+        // The P3-T7 standing document-context watcher polls the add-in's
+        // cached get_document_context through the same routed channel the
+        // dispatch path uses, so its polls can never reach a different
+        // Revit session than the rsid they report on. Sessions that do not
+        // advertise doc_context_cached_v1 are never polled.
+        var docContextWatcher = new RbpDocContextWatcher(
+            channel,
+            services.Clock);
         return new RbpConnectionCoordinator(
             services.CycleFactory,
             services.Journal,
@@ -162,7 +208,8 @@ internal static class WorkerGatewayComposition
             dispatcher,
             RbpInvocationJournalHandoff.Instance,
             services.Clock,
-            services.Random);
+            services.Random,
+            docContextWatcher);
     }
 
     /// <summary>
