@@ -113,27 +113,19 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         CancellationToken cancellationToken)
     {
         RbpInvocationIdentity identity = request.ToIdentity();
-
-        // Durability step 1. Section 12.2 rule 5 (a changed digest, method,
-        // scope, policy, or clearance under the same key) surfaces here as a
-        // journal protocol conflict, before any add-in contact.
-        RbpInvocationAdmissionResult admission;
-        try
-        {
-            admission = await _journal
-                .AdmitInvocationAsync(identity, cancellationToken)
+        (RbpInvocationAdmissionResult? admitted, RbpInvocationAnswer? answered)
+            = await AdmitAsync(request, identity, cancellationToken)
                 .ConfigureAwait(false);
-        }
-        catch (RbpJournalException exception)
-            when (exception.ErrorCode == RbpJournalErrorCode.ProtocolConflict)
+        if (answered is not null)
         {
-            return RbpInvocationAnswer.Error(
-                RbpInvocationPayloads.KnownError(
-                    request.InvocationId,
-                    faultClass: "protocol",
-                    retryable: false,
-                    message: exception.Message));
+            return answered;
         }
+
+        RbpInvocationAdmissionResult admission =
+            admitted ??
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "The journal returned neither an admission nor an answer.");
 
         switch (admission.Admission)
         {
@@ -173,6 +165,140 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     RbpDispatchErrorCode.Environment,
                     "The journal returned an unknown invocation admission.");
         }
+    }
+
+    /// <summary>
+    /// Section 12.1 durability step 1, under the Section 6.2.1 clearance
+    /// gate. Returns either the journal's admission or the terminal answer
+    /// that replaces it; no add-in byte has been written either way.
+    /// </summary>
+    /// <remarks>
+    /// <para>
+    /// Section 6.2.1 permits exactly one evidence-bound envelope while a hold
+    /// is <c>resolved_pending_bridge</c>: "The bridge MUST match the
+    /// clearance to its active hold and durable evidence, then atomically
+    /// mark the hold <c>cleared</c> with acceptance of the new invocation
+    /// before any add-in byte. A mismatch is a terminal <c>protocol</c>
+    /// fault." That transition exists only in
+    /// <see cref="RbpJournalStore.AdmitInvocationWithClearancesAsync"/>,
+    /// which also runs the durable conflict-index check a fresh mutating id
+    /// must pass. An <c>invoke</c> whose <c>recovery_clearances</c> array is
+    /// non-empty is therefore admitted there.
+    /// </para>
+    /// <para>
+    /// An <c>invoke</c> that carries no clearance keeps the ordinary Section
+    /// 12.2 admission unchanged, including which exceptions it surfaces.
+    /// </para>
+    /// </remarks>
+    private async Task<(
+        RbpInvocationAdmissionResult? Admission,
+        RbpInvocationAnswer? Answer)> AdmitAsync(
+            RbpInvokeRequest request,
+            RbpInvocationIdentity identity,
+            CancellationToken cancellationToken)
+    {
+        IReadOnlyList<RbpRecoveryClearance> clearances;
+        try
+        {
+            clearances = request.ParseClearances();
+        }
+        catch (Exception exception) when (
+            exception is FormatException ||
+            (exception is RbpDispatchException dispatch &&
+             dispatch.ErrorCode == RbpDispatchErrorCode.Protocol))
+        {
+            return (null, ProtocolFault(request, exception.Message));
+        }
+
+        if (clearances.Count == 0)
+        {
+            // Durability step 1. Section 12.2 rule 5 (a changed digest,
+            // method, scope, policy, or clearance under the same key)
+            // surfaces here as a journal protocol conflict, before any add-in
+            // contact.
+            try
+            {
+                return (
+                    await _journal
+                        .AdmitInvocationAsync(identity, cancellationToken)
+                        .ConfigureAwait(false),
+                    null);
+            }
+            catch (RbpJournalException exception)
+                when (exception.ErrorCode ==
+                      RbpJournalErrorCode.ProtocolConflict)
+            {
+                return (null, ProtocolFault(request, exception.Message));
+            }
+        }
+
+        RbpClearanceGatedAdmission gated;
+        try
+        {
+            gated = await _journal
+                .AdmitInvocationWithClearancesAsync(
+                    identity,
+                    clearances,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (RbpJournalException exception)
+            when (exception.ErrorCode == RbpJournalErrorCode.ProtocolConflict)
+        {
+            return (null, ProtocolFault(request, exception.Message));
+        }
+        catch (Exception exception) when (
+            exception is RbpFrameException or FormatException ||
+            exception is ArgumentException and not ArgumentNullException)
+        {
+            // A clearance envelope that cannot become an acceptance input
+            // fails closed at this boundary, leaves every hold uncleared, and
+            // never reaches the add-in.
+            return (null, ProtocolFault(request, exception.Message));
+        }
+
+        if (gated.BlockingHold is { } hold)
+        {
+            return (null, BlockedByHold(request, hold));
+        }
+
+        return (
+            gated.Admission ??
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A clearance-gated admission returned neither a decision nor " +
+                "a blocking hold."),
+            null);
+    }
+
+    private static RbpInvocationAnswer ProtocolFault(
+        RbpInvokeRequest request,
+        string message) =>
+        RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.KnownError(
+                request.InvocationId,
+                faultClass: "protocol",
+                retryable: false,
+                message));
+
+    /// <summary>
+    /// Section 6.2.1 / Section 21 item 28: a fresh mutating envelope that
+    /// still conflicts with an uncleared hold wrote no journal row and is
+    /// answered with the original hold's <c>journal_indeterminate</c> error
+    /// without add-in contact.
+    /// </summary>
+    private static RbpInvocationAnswer BlockedByHold(
+        RbpInvokeRequest request,
+        RbpVerificationHold hold)
+    {
+        using JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs);
+        return RbpInvocationAnswer.Error(
+            RbpInvocationPayloads.JournalIndeterminateError(
+                request.InvocationId,
+                hold.VerificationHoldId,
+                scope.RootElement,
+                RbpInvocationPayloads.MutationMayHaveExecutedMessage,
+                replayed: false));
     }
 
     public IRbpInvocationClaim? TryClaim(string rsid) =>
