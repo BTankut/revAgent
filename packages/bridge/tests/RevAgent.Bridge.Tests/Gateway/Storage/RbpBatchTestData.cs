@@ -170,6 +170,24 @@ internal static class RbpBatchTestData
         string scopeJcs,
         string invocationId)
     {
+        RbpInvocationIdentity identity =
+            await StartPossiblyDispatchedMutationAsync(
+                store,
+                scopeJcs,
+                invocationId);
+        return await RefuseRedeliveryAsync(store, identity);
+    }
+
+    /// <summary>
+    /// Leaves one mutation in <c>executing</c> — the state a crash between
+    /// Section 12.1 steps 2 and 3 produces — without installing a hold yet.
+    /// </summary>
+    internal static async Task<RbpInvocationIdentity>
+        StartPossiblyDispatchedMutationAsync(
+            RbpJournalStore store,
+            string scopeJcs,
+            string invocationId)
+    {
         var identity = new RbpInvocationIdentity(
             "rs-test",
             invocationId,
@@ -181,6 +199,18 @@ internal static class RbpBatchTestData
             RecoveryClearancesJcs: "[]");
         _ = await store.AdmitInvocationAsync(identity);
         await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        return identity;
+    }
+
+    /// <summary>
+    /// Redelivers an origin key, which Section 12.2 rule 4 refuses and which
+    /// spec ~484 exempts from the Section 6.2.1 conflict block, so the hold
+    /// installs even when another scope is already held.
+    /// </summary>
+    internal static async Task<string> RefuseRedeliveryAsync(
+        RbpJournalStore store,
+        RbpInvocationIdentity identity)
+    {
         RbpInvocationAdmissionResult refused =
             await store.AdmitInvocationAsync(identity);
         Assert.Equal(
