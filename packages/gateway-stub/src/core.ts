@@ -396,7 +396,10 @@ export class GatewayStubCore {
     return cloneIdentity(identity, token);
   }
 
-  exchangeEnrollment(enrollmentToken: string): { deviceId: string; deviceToken: string } {
+  exchangeEnrollment(
+    enrollmentToken: string,
+    machineFingerprint?: string,
+  ): { deviceId: string; deviceToken: string } {
     const grant = this.enrollmentTokenTable.get(enrollmentToken);
     if (grant === undefined) {
       throw new GatewayStubFault("enrollment token rejected", "auth", 4401);
@@ -408,6 +411,17 @@ export class GatewayStubCore {
       throw new GatewayStubFault("enrollment token already used", "auth", 4409);
     }
     this.usedEnrollmentTokens.add(enrollmentToken);
+    // A real Gateway binds the fingerprint presented at enrollment to the
+    // issued device credential; session_register is later checked against that
+    // binding. Keeping only the static table value made every real bridge fail
+    // registration with machine_fingerprint_mismatch, because a real bridge
+    // derives its fingerprint locally and cannot know the table constant.
+    if (machineFingerprint !== undefined) {
+      const identity = this.tokenTable.get(grant.deviceToken);
+      if (identity !== undefined) {
+        identity.machineFingerprint = machineFingerprint;
+      }
+    }
     return { deviceId: grant.deviceId, deviceToken: grant.deviceToken };
   }
 
