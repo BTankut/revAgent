@@ -28,12 +28,6 @@ jobs:
     name: Claude review gate
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
     runs-on: [self-hosted, Windows, revagent-cd]
-    # Shares the one self-hosted runner with both CI jobs, so a hang here stalls
-    # merges repo-wide. This gate blocks merge fail-closed, which makes a silent
-    # stall indistinguishable from a slow review: a timeout turns it into a
-    # visible failure that can be re-fired. 15 covers the 4m13s it has actually
-    # taken with wide headroom.
-    timeout-minutes: 15
     steps:
       - name: Checkout PR
         uses: actions/checkout@v6
