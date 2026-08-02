@@ -37,6 +37,24 @@ internal sealed partial class RbpConnectionCoordinator
     /// so the case is made unrepresentable rather than handled.
     /// </summary>
     private readonly IRbpInvocationDispatcher _invocationDispatcher;
+
+    /// <summary>
+    /// Optional because a coordinator without a dispatch surface cannot execute
+    /// a batch. Unlike the missing-surface invoke case, a batch that arrives
+    /// while this is null is answered with a terminal <c>unsupported</c> fault
+    /// rather than swallowed: the frame was already sequenced and acknowledged,
+    /// so silence here would strand the Gateway's window forever.
+    /// </summary>
+    private readonly RbpBatchCoordinator? _batchCoordinator;
+
+    /// <summary>
+    /// Bounded, non-secret dispatch trace. The batch path has several silent
+    /// returns by design — a per-session journal condition, a closed transport,
+    /// a session that lost dispatch authority — and every one of them looks
+    /// identical from outside: the Gateway's window stays occupied and nothing
+    /// is written anywhere. This makes which one happened observable.
+    /// </summary>
+    private readonly Action<string>? _onDispatchDiagnostic;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -56,8 +74,12 @@ internal sealed partial class RbpConnectionCoordinator
         IRbpInboundDataJournal? inboundJournal = null,
         IRbpCoordinatorClock? clock = null,
         IRbpRandomSource? random = null,
-        RbpDocContextWatcher? docContextWatcher = null)
+        RbpDocContextWatcher? docContextWatcher = null,
+        RbpBatchCoordinator? batchCoordinator = null,
+        Action<string>? onDispatchDiagnostic = null)
     {
+        _batchCoordinator = batchCoordinator;
+        _onDispatchDiagnostic = onDispatchDiagnostic;
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??

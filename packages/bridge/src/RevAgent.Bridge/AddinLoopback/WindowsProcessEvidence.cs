@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Net;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -198,9 +199,15 @@ internal sealed class WindowsProcessSnapshotProvider
             processId);
         if (processHandle == IntPtr.Zero)
         {
+            // The process id is the whole diagnosis here. Opening a live Revit
+            // succeeds from both LocalSystem and the interactive user, so a
+            // failure means the id resolved from the connection table was not
+            // the listener's process — carrying it makes that visible instead
+            // of leaving an unattributable "could not open" behind.
             throw NativeFailure(
                 "revit_process_identity_unavailable",
-                "Windows could not open the reported Revit process.");
+                "Windows could not open the reported Revit process " +
+                $"(pid {processId.ToString(CultureInfo.InvariantCulture)}).");
         }
 
         try

@@ -53,6 +53,11 @@ namespace RevAgentPlugin.Core
         private readonly object _dataPlaneIntakeGate = new object();
         private bool _dataPlaneIntakeQuarantined;
 
+        // Appendix A.2 requires the probe to report the addresses the listener
+        // actually bound, not the address it was asked to bind. The bridge
+        // re-checks these with the operating system loopback predicate.
+        private string[] _boundAddresses = new string[0];
+
         public static SocketService Instance
         {
             get
@@ -78,6 +83,74 @@ namespace RevAgentPlugin.Core
             }
 
             return DefaultMaxMessageBytes;
+        }
+
+        /// <summary>
+        /// The exact installed add-in identity the bridge copies into
+        /// <c>session_register</c>. Appendix A.2 bounds it to 1-128 characters.
+        /// </summary>
+        private static string ResolveAddinVersion()
+        {
+            try
+            {
+                System.Reflection.Assembly assembly =
+                    typeof(SocketService).Assembly;
+                string informational = System.Diagnostics.FileVersionInfo
+                    .GetVersionInfo(assembly.Location)
+                    .ProductVersion;
+                if (!string.IsNullOrWhiteSpace(informational))
+                {
+                    return Trim128(informational);
+                }
+
+                return Trim128(assembly.GetName().Version.ToString());
+            }
+            catch (Exception)
+            {
+                return "unknown";
+            }
+        }
+
+        /// <summary>
+        /// Appendix A.2 pins <c>revit.version</c> to exactly four digits, and
+        /// the bridge compares it to the version it reads from the attested
+        /// Revit process image. A mismatch is a discovery rejection, so this
+        /// must be the live host's own number rather than a build constant.
+        /// </summary>
+        private string ResolveRevitVersion()
+        {
+            try
+            {
+                string version = _uiApp?.Application?.VersionNumber;
+                return string.IsNullOrWhiteSpace(version) ? string.Empty : version.Trim();
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        private string ResolveRevitBuild()
+        {
+            try
+            {
+                string build = _uiApp?.Application?.VersionBuild;
+                return string.IsNullOrWhiteSpace(build) ? string.Empty : Trim128(build.Trim());
+            }
+            catch (Exception)
+            {
+                return string.Empty;
+            }
+        }
+
+        private static string Trim128(string value)
+        {
+            if (string.IsNullOrEmpty(value))
+            {
+                return value;
+            }
+
+            return value.Length <= 128 ? value : value.Substring(0, 128);
         }
 
         public bool IsRunning => _isRunning;
@@ -163,6 +236,10 @@ namespace RevAgentPlugin.Core
                     _listener.Start();
                     _port = candidatePort;
                     _isRunning = true;
+                    IPEndPoint boundEndpoint = _listener.LocalEndpoint as IPEndPoint;
+                    _boundAddresses = boundEndpoint != null
+                        ? new[] { boundEndpoint.Address.ToString() }
+                        : new[] { IPAddress.Loopback.ToString() };
 
                     _listenerThread = new Thread(ListenForClients)
                     {
@@ -526,7 +603,12 @@ namespace RevAgentPlugin.Core
                         _isRunning,
                         _port,
                         _maxMessageBytes,
-                        DocumentContextTracker.Instance.IsEventBacked);
+                        DocumentContextTracker.Instance.IsEventBacked,
+                        ResolveAddinVersion(),
+                        ResolveRevitVersion(),
+                        ResolveRevitBuild(),
+                        System.Diagnostics.Process.GetCurrentProcess().Id,
+                        _boundAddresses);
                     return CreateSuccessResponse(request.Id, snapshot);
                 }
 

@@ -31,7 +31,13 @@ internal sealed record AddinDiscoveryRejection(
     AddinEndpoint Target,
     AddinDiscoveryFailureKind Kind,
     string Code,
-    AddinTransportEvidence? TransportEvidence);
+    AddinTransportEvidence? TransportEvidence,
+    /// <summary>
+    /// Bounded, non-secret failure text. The code alone names the gate that
+    /// refused the probe but not the value that made it refuse, which is what
+    /// an operator needs on a machine where a live Revit is never discovered.
+    /// </summary>
+    string? Detail = null);
 
 internal sealed record ProbedAddinSession(
     AddinEndpoint Target,
@@ -156,7 +162,9 @@ internal sealed class AddinDiscovery
                     target,
                     ClassifyTransportFailure(exception),
                     exception.Code,
-                    exception.Evidence));
+                    exception.Evidence,
+                    Bound(
+                        (exception.InnerException ?? exception).Message)));
                 continue;
             }
 
@@ -231,7 +239,19 @@ internal sealed class AddinDiscovery
                     target,
                     AddinDiscoveryFailureKind.ProcessAttestationFailure,
                     "addin_process_attestation_invalid",
-                    result.Evidence));
+                    result.Evidence,
+                    Bound(
+                        "attested pid " +
+                        (processAttestation?.Identity.ProcessId.ToString(
+                            CultureInfo.InvariantCulture) ?? "none") +
+                        " vs status pid " +
+                        status.Revit.ProcessId.ToString(
+                            CultureInfo.InvariantCulture) +
+                        "; attested version '" +
+                        (processAttestation?.RevitVersion ?? string.Empty) +
+                        "' vs status version '" +
+                        status.Revit.Version +
+                        "'")));
                 continue;
             }
 
@@ -268,6 +288,17 @@ internal sealed class AddinDiscovery
                 selection.Targets,
                 acceptedTargets,
                 readOnlyRejections));
+    }
+
+    private static string Bound(string? value)
+    {
+        if (value is not { Length: > 0 })
+        {
+            return string.Empty;
+        }
+
+        string single = value.Replace('\r', ' ').Replace('\n', ' ');
+        return single.Length <= 240 ? single : single[..240];
     }
 
     private static void ThrowIfDiscoveryLifetimeCancelled(

@@ -65,6 +65,118 @@ internal sealed partial class RbpConnectionCoordinator
     }
 
     /// <summary>
+    /// Runs one claimed batch to its terminal Section 11.1 carrier. The fault
+    /// envelope set mirrors <see cref="RunInvocationAsync"/> exactly: the
+    /// carrier is durable before it is sent, so every abandoned delivery is
+    /// re-arbitrated by Section 12.2 rather than re-executed.
+    /// </summary>
+    private async Task RunBatchAsync(
+        ConnectionCycleContext context,
+        IRbpInvocationClaim claim,
+        RbpDataEnvelopeSnapshot envelope)
+    {
+        Diagnose($"batch start rsid={envelope.Rsid} envelope={envelope.Id}");
+        try
+        {
+            RbpInvocationAnswer answer = _batchCoordinator is { } batches
+                ? await batches
+                    .DispatchAsync(
+                        envelope.Rsid,
+                        envelope.Payload,
+                        context.Token)
+                    .ConfigureAwait(false)
+                : RbpBatchCoordinator.Unavailable(envelope.Payload);
+            Diagnose(
+                $"batch answered type={answer.Type} payload={answer.Payload.GetRawText()}");
+            await SendDataAsync(context, envelope.Rsid, answer)
+                .ConfigureAwait(false);
+            Diagnose("batch sent");
+        }
+        catch (OperationCanceledException)
+        {
+            Diagnose("batch cancelled with the cycle");
+        }
+        catch (RbpJournalException exception) when (
+            exception.ErrorCode is RbpJournalErrorCode.SessionNotFound
+                or RbpJournalErrorCode.SessionConflict
+                or RbpJournalErrorCode.StoreClosed)
+        {
+            Diagnose($"batch per-session journal condition {exception.ErrorCode}");
+        }
+        catch (RbpGatewayTransportException)
+        {
+            Diagnose("batch transport gone");
+        }
+        catch (Exception exception)
+        {
+            Diagnose($"batch fatal {exception.GetType().Name}: {exception.Message}");
+            context.FailPending(exception);
+            context.Cancel();
+        }
+        finally
+        {
+            claim.Dispose();
+            context.CompleteInvocation();
+        }
+    }
+
+    private void Diagnose(string message)
+    {
+        if (_onDispatchDiagnostic is not { } sink)
+        {
+            return;
+        }
+
+        try
+        {
+            sink(message.Length <= 3000 ? message : message[..3000]);
+        }
+        catch (Exception)
+        {
+            // Tracing must never own dispatch.
+        }
+    }
+
+    /// <summary>
+    /// Answers a batch refused by the Section 10.1 window without reserving a
+    /// journal row or writing an add-in byte.
+    /// </summary>
+    private async Task RunBatchConcurrentRejectionAsync(
+        ConnectionCycleContext context,
+        RbpDataEnvelopeSnapshot envelope)
+    {
+        try
+        {
+            await SendDataAsync(
+                    context,
+                    envelope.Rsid,
+                    RbpBatchCoordinator.RejectConcurrent(envelope.Payload))
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (RbpJournalException exception) when (
+            exception.ErrorCode is RbpJournalErrorCode.SessionNotFound
+                or RbpJournalErrorCode.SessionConflict
+                or RbpJournalErrorCode.StoreClosed)
+        {
+        }
+        catch (RbpGatewayTransportException)
+        {
+        }
+        catch (Exception exception)
+        {
+            context.FailPending(exception);
+            context.Cancel();
+        }
+        finally
+        {
+            context.CompleteInvocation();
+        }
+    }
+
+    /// <summary>
     /// Answers an invoke refused by the Section 10.1 window without reserving a
     /// journal row or writing an add-in byte.
     /// </summary>
@@ -148,11 +260,13 @@ internal sealed partial class RbpConnectionCoordinator
             // the caller treats that as a per-session condition.
             if (queued.Envelope is not { } outbound)
             {
+                Diagnose($"send suppressed: no transmit sequence for {rsid}");
                 return;
             }
 
             if (!context.IsDispatchAllowed(rsid))
             {
+                Diagnose($"send suppressed: dispatch not allowed for {rsid}");
                 return;
             }
 

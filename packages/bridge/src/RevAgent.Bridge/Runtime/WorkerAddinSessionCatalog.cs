@@ -73,6 +73,13 @@ internal sealed class WorkerAddinSessionCatalog :
     private readonly string _bridgeVersion;
     private readonly string _hostname;
 
+    /// <summary>
+    /// Receives the evidence of every discovery pass. Discovery computes an
+    /// exact rejection code per probed port and previously discarded it, so a
+    /// machine whose Revit was never registered produced no record of why.
+    /// </summary>
+    private readonly Action<AddinDiscoveryEvidence>? _onDiscovered;
+
     private readonly ConcurrentDictionary<string,
         AddinSessionRouter.SessionHandle> _handlesByLocalKey =
         new(StringComparer.Ordinal);
@@ -92,8 +99,10 @@ internal sealed class WorkerAddinSessionCatalog :
         Func<IBridgeDeviceCredentialProvider> credentials,
         Func<string, CancellationToken, Task<string?>> localSessionKeyLookup,
         string bridgeVersion,
-        string? hostname = null)
+        string? hostname = null,
+        Action<AddinDiscoveryEvidence>? onDiscovered = null)
     {
+        _onDiscovered = onDiscovered;
         _discovery = discovery ??
             throw new ArgumentNullException(nameof(discovery));
         _router = router ?? throw new ArgumentNullException(nameof(router));
@@ -126,6 +135,18 @@ internal sealed class WorkerAddinSessionCatalog :
                 cancellationToken,
                 cancellationToken)
             .ConfigureAwait(false);
+        if (_onDiscovered is { } observer)
+        {
+            try
+            {
+                observer(discovered.Evidence);
+            }
+            catch (Exception)
+            {
+                // Observing discovery must never own the discovery outcome.
+            }
+        }
+
         AddinSessionRouter.ReconciliationResult reconciled =
             _router.Reconcile(ticket, discovered);
 

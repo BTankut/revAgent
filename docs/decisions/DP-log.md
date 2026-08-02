@@ -904,3 +904,37 @@ the M3 gate's 21-command run.
 
 Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
 fleet rollout; the migration release freeze remains in force.
+
+
+### 2026-08-02 — Migration-freeze exception: add-in `mcp_status` Appendix A.2 discovery fields (RES-5 / P3 discovery)
+
+Scope of the exception: `src/revit-plugin/**` gains the Appendix A.2 REQUIRED discovery fields in the
+`mcp_status` result and nothing else. `McpTaskStatusService.GetSnapshot` now emits
+`addinLoopbackContractVersion`, `addinVersion`, `revit{version,build,processId}`, and
+`service{binding,boundAddresses,framing}` alongside the existing task-state fields; `SocketService` captures
+the listener's bound address at `Start()` and passes the live Revit version/build/pid; the installer
+payload and manifest are regenerated because the freshness gate hard-fails otherwise. No behaviour change to
+any command, no concurrency refactor, no other capability. Same bounded shape as the loopback-bind (#300),
+execute_batch (#328), and get_document_context (#329) exceptions.
+
+Authority: RES-5 requires add-in adaptations to land before pilot entry and assigns the adaptation lane to
+M3; RES-28 records that Barış Tankut is the add-in implementation owner. The operator delegated execution of
+the M3 lane to the coordinator session on 2026-07-31.
+
+Frozen-contract basis: O1 Appendix A.2 (~1638-1666) makes these discovery fields REQUIRED — the bridge
+confirms the real listener addresses from `service.boundAddresses` with the OS loopback predicate and matches
+`revit.processId`/`version` against its own process attestation before it will register a session. The live
+add-in previously answered with only `{service:{isRunning,port}}` plus task state, so every discovery probe
+failed status validation and no session was ever registered. `packages/protocol` is untouched (tagged
+`rbp/v1.0.0`); the field set is copied from the normative `mcp-status.schema.json`, and the live response now
+validates against it in strict mode with formats enforced.
+
+Live evidence (PETRUCCI, Revit 2022): the emitted result validates against the frozen `mcp-status` schema;
+`revit=2022/22.1.80.32`, `boundAddresses=[127.0.0.1]`; with the fields present the bridge registered a
+session (`session_register -> allowed`) and the full Gateway->bridge->add-in data plane executed
+`dispatch_invoke` and atomic `invoke_batch` end to end. This was the missing half that kept the chain from
+ever running against the real add-in — the loopback fixture implements the contract correctly, which is why
+every suite stayed green.
+
+Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
+fleet rollout; the migration release freeze remains in force.

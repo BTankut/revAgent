@@ -73,7 +73,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         BridgeInstallLayout layout,
         ResolvedBridgeConfiguration configuration,
         RbpJournalOpenOptions? journalOptions = null,
-        TimeSpan? bindingRefreshInterval = null)
+        TimeSpan? bindingRefreshInterval = null,
+        Action<AddinDiscoveryEvidence>? onDiscovered = null,
+        Action<string>? onDispatchDiagnostic = null)
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -96,7 +98,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                     (await journal
                         .GetStoredSessionAsync(rsid, token)
                         .ConfigureAwait(false))?.LocalSessionKey,
-                bridgeVersion);
+                bridgeVersion,
+                hostname: null,
+                onDiscovered: onDiscovered);
 
             RbpConnectionCoordinator coordinator =
                 WorkerGatewayComposition.CreateCoordinator(
@@ -111,7 +115,10 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                             RbpHelloProfile.Production(
                                 bridgeVersion,
                                 Array.Empty<string>())),
-                        new WorkerAddinDispatchSurface(router, catalog)));
+                        new WorkerAddinDispatchSurface(router, catalog),
+                        Clock: null,
+                        Random: null,
+                        OnDispatchDiagnostic: onDispatchDiagnostic));
 
             return new WorkerGatewayRuntime(
                 coordinator,

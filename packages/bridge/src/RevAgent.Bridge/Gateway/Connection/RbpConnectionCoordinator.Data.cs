@@ -143,6 +143,17 @@ internal sealed partial class RbpConnectionCoordinator
             // invocation it cancels had already finished.
             context.StartInvocation(snapshot);
         }
+        else if (string.Equals(
+                     snapshot.Type,
+                     "invoke_batch",
+                     StringComparison.Ordinal))
+        {
+            // Same discipline as invoke. Before this branch existed a batch
+            // envelope was journaled and acknowledged here and then dropped:
+            // the Gateway's Section 10.1 window stayed occupied forever while
+            // the bridge held no record that anything was owed.
+            context.StartBatch(snapshot);
+        }
     }
 
     private async Task FlushPendingRetransmitAsync(

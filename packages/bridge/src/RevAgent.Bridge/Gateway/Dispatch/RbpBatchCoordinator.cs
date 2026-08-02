@@ -114,6 +114,33 @@ internal sealed partial class RbpBatchCoordinator
     /// an exception thrown into the connection cycle; no add-in byte is
     /// written and no journal row is reserved on that path.
     /// </summary>
+    /// <summary>
+    /// Answers a batch refused by the Section 10.1 window: the session already
+    /// holds an in-flight invocation or batch, so nothing is journaled and no
+    /// add-in byte is written. Mirrors
+    /// <see cref="RbpInvocationDispatcher.RejectConcurrent"/> for the batch
+    /// carrier shape.
+    /// </summary>
+    internal static RbpInvocationAnswer RejectConcurrent(JsonElement payload) =>
+        BatchFault(
+            ReadBatchId(payload),
+            faultClass: "protocol",
+            "The Section 10.1 dispatch window already holds an in-flight " +
+            "invocation for this session; the batch was not dispatched.");
+
+    /// <summary>
+    /// Answers a batch that reached a coordinator composed without a batch
+    /// execution surface. The frame was already sequenced and acknowledged, so
+    /// a terminal <c>unsupported</c> fault is the only honest reply; silence
+    /// would leave the Gateway's Section 10.1 window occupied forever.
+    /// </summary>
+    internal static RbpInvocationAnswer Unavailable(JsonElement payload) =>
+        BatchFault(
+            ReadBatchId(payload),
+            faultClass: "unsupported",
+            "This bridge has no batch dispatch surface; no step was " +
+            "dispatched.");
+
     internal async Task<RbpInvocationAnswer> DispatchAsync(
         string rsid,
         JsonElement payload,

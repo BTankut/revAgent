@@ -174,7 +174,19 @@ internal static class Program
             services => new WorkerGatewayRuntimeService(
                 () => WorkerGatewayRuntime.CreateProduction(
                     layout,
-                    services.GetRequiredService<ResolvedBridgeConfiguration>()),
+                    services.GetRequiredService<ResolvedBridgeConfiguration>(),
+                    onDiscovered: evidence => LogAddinDiscovery(
+                        services.GetRequiredService<IBridgeLog>(),
+                        evidence),
+                    onDispatchDiagnostic: message => _ = services
+                        .GetRequiredService<IBridgeLog>()
+                        .WriteAsync(
+                            "Information",
+                            "worker.dispatch_trace",
+                            "RbpDispatch",
+                            message,
+                            cancellationToken: CancellationToken.None)
+                        .AsTask()),
                 services.GetRequiredService<IHostApplicationLifetime>(),
                 services.GetRequiredService<IBridgeLog>(),
                 services.GetRequiredService<WorkerExitState>()));
@@ -182,6 +194,43 @@ internal static class Program
         using IHost host = builder.Build();
         await host.RunAsync().ConfigureAwait(false);
         return exitState.ExitCode;
+    }
+
+    /// <summary>
+    /// Records one line per discovery pass. Without it a bridge that probes a
+    /// live Revit and refuses it leaves no evidence at all: the connection stays
+    /// healthy, no session is ever registered, and nothing on the machine says
+    /// which port was rejected or why. The codes are bounded and carry no
+    /// document or user data.
+    /// </summary>
+    private static void LogAddinDiscovery(
+        IBridgeLog log,
+        AddinDiscoveryEvidence evidence)
+    {
+        string accepted = evidence.AcceptedTargets.Count == 0
+            ? "none"
+            : string.Join(
+                ",",
+                evidence.AcceptedTargets.Select(target => target.Port));
+        string rejected = evidence.RejectedTargets.Count == 0
+            ? "none"
+            : string.Join(
+                ",",
+                evidence.RejectedTargets.Select(
+                    rejection => rejection.Detail is { Length: > 0 } detail
+                        ? $"{rejection.Target.Port}:{rejection.Kind}:{rejection.Code} ({detail})"
+                        : $"{rejection.Target.Port}:{rejection.Kind}:{rejection.Code}"));
+        _ = log.WriteAsync(
+                evidence.AcceptedTargets.Count == 0
+                    ? "Warning"
+                    : "Information",
+                "worker.addin_discovery",
+                "AddinDiscovery",
+                $"Add-in discovery source={evidence.Source} " +
+                $"probed={evidence.ProbedTargets.Count} " +
+                $"accepted=[{accepted}] rejected=[{rejected}].",
+                cancellationToken: CancellationToken.None)
+            .AsTask();
     }
 
     private static string RequireConfigurationPath(WorkerCommand command) =>

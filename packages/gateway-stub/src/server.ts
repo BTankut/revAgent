@@ -1121,7 +1121,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
       if (!SHA256_PATTERN.test(machineFingerprint)) {
         throw new HttpRequestError(400, "machine_fingerprint must be a canonical sha256 digest");
       }
-      const issued = core.exchangeEnrollment(enrollmentToken);
+      const issued = core.exchangeEnrollment(enrollmentToken, machineFingerprint);
       json(response, 200, {
         device_id: issued.deviceId,
         device_token: issued.deviceToken,
