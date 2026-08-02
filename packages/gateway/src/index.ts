@@ -31,6 +31,15 @@ export {
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
 export {
+  ExecutorPortUnavailableError,
+  unboundExecutorPort,
+  type ExecutorCallContext,
+  type ExecutorPort,
+  type ExecutorRequest,
+  type ExecutorResult,
+} from "./executorPort.js";
+
+export {
   RegistrySeedError,
   verifyRegistrySeed,
   type RegistrySeed,
