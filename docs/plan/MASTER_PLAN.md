@@ -24,6 +24,28 @@ This file is the operational milestone tracker for the migration described by `d
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
 
+## 2026-08-02 M3 gate evidence — awaiting operator acceptance
+
+The M3 bridge + add-in chain was proven end to end on a clean Windows 11
+workstation (PETRUCCI, Revit 2022): an external control caller drove
+Gateway → Bridge (the real `revAgentBridge` Windows service, LocalSystem) →
+add-in → live Revit for `dispatch_invoke` (real model data) and a
+capability-gated atomic `invoke_batch` (terminal batch carrier, session window
+released). All 23 add-in commands, service lifecycle (P3-T2), bridge-side
+enrollment (RES-30 stub-proven), the idempotency journal, and
+batch-as-transaction-group are recorded in
+`docs/plan/M3_BRIDGE_GATE_EVIDENCE.md` with a retained live-evidence bundle.
+
+Seven defects that blocked the chain — none catchable by the green suites,
+because the loopback fixture implements the frozen contracts while the product
+did not — were fixed across #336 and PR #337 (add-in `mcp_status` discovery
+fields under a migration-freeze exception, LocalSystem service account,
+journal-sidecar ACL, `invoke_batch` dispatch wiring, `effect_state` outbound
+validation), with the durability harness in PR #338. Per R-C and the tracker
+rule, the M3 row is set to `passed`; only the milestone decision owner may move
+it to `accepted`. Deferred to M4 per RES-30: real-Gateway token exchange,
+revoked-device refusal at handshake, and device-token persistence across reboot.
+
 ## 2026-07-25 M1 closing and operator lane checkpoint
 
 Barış Tankut recorded `M1 KAPANIŞ: ONAY`, identified himself as add-in
@@ -110,7 +132,7 @@ pilot-entry carry-forwards. They remain open and are not silently converted into
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `passed` |
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | `accepted` |
 | M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | `not_started` |
-| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `not_started` |
+| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `passed` |
 | M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | `not_started` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | `not_started` |
