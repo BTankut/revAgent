@@ -46,6 +46,19 @@ export {
   type RegistrySeedTool,
 } from "./registrySeed.js";
 
+// Verified together or not at all: the seed says which tools exist, the
+// manifest says the code behind them is what the packager produced. The
+// handler loader that must call both does not exist yet (`transportImplemented`
+// is still false), so this is surface, not yet enforcement -- the loader lands
+// with it wired, or it lands able to import unverified bytes.
+export {
+  HandlerManifestError,
+  verifyHandlerManifest,
+  type HandlerManifest,
+  type HandlerManifestModule,
+  type VerifyHandlerManifestOptions,
+} from "./handlerManifest.js";
+
 export {
   ModeADiscoverySession,
   ModeASchemaBudgetError,
