@@ -15,8 +15,9 @@
     "build": "tsc -p tsconfig.json",
     "lint": "eslint src scripts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && vitest run",
-    "collect:registry": "node scripts/collect-registry.mjs"
+    "test": "npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run",
+    "collect:registry": "node scripts/collect-registry.mjs",
+    "package:handlers": "node scripts/package-handlers.mjs"
   },
   "engines": {
     "node": ">=20"

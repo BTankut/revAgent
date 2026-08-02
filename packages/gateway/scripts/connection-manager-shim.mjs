@@ -109,7 +109,7 @@ function portBackedClient() {
  * session (5.2.4), so keeping a second lock here would be a distinct
  * serialization domain that can deadlock against the first.
  */
-export async function withRevitConnection(operation, _options = {}) {
+export async function withRevitConnection(operation) {
   return await operation(portBackedClient());
 }
 

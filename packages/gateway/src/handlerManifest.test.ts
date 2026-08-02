@@ -28,7 +28,8 @@ function readRealModule(file: string): Uint8Array {
 
 /** Re-seals a mutated body so a test reaches the check it is aiming at. */
 function reseal(body: Record<string, unknown>): Record<string, unknown> {
-  const { manifestDigest: _omitted, ...rest } = body;
+  const rest = { ...body };
+  delete rest.manifestDigest;
   const canonical = canonicalize(rest);
   return {
     ...rest,

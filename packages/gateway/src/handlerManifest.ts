@@ -109,7 +109,8 @@ export function verifyHandlerManifest(
     fail("manifest_digest_malformed", "The manifest digest is not a sha256 value.");
   }
 
-  const { manifestDigest: _omitted, ...body } = candidate;
+  const body = { ...candidate };
+  delete body.manifestDigest;
   const recomputed = sha256(Buffer.from(canonicalize(body), "utf8"));
   if (recomputed !== declaredDigest) {
     fail(

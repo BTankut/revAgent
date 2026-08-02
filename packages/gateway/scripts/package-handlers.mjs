@@ -46,8 +46,6 @@ const MODULES = [
   },
 ];
 
-const CHOKEPOINT_MODULE = "revitToolHelpers";
-
 function sha256(buffer) {
   return `sha256:${createHash("sha256").update(buffer).digest("hex")}`;
 }
