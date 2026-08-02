@@ -20,6 +20,14 @@ jobs:
   engineering-gates:
     name: Engineering gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    # There is exactly one self-hosted runner, and both jobs here plus the
+    # Claude review gate ask for its labels. A job that hangs holds it until a
+    # human notices, and everything else reports `queued` rather than failing --
+    # on 2026-08-02 a hung conformance run held it for 55 minutes and blocked an
+    # unrelated PR's gates the whole time. GitHub's default is 360 minutes, so
+    # the ceiling has to be set explicitly. 25 covers the 14m1s this job has
+    # actually taken with headroom.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -79,6 +87,9 @@ jobs:
   gateway-gates:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    # Same single-runner exposure as engineering-gates above. This is the job
+    # that hung on 2026-08-02.
+    timeout-minutes: 20
 
     steps:
       - name: Checkout
@@ -174,6 +185,10 @@ jobs:
 
       - name: Run RBP conformance suite
         if: steps.classify.outputs.run_rbp == 'true'
+        # Named separately from the job ceiling so a hang here fails as this
+        # step rather than as an anonymous job timeout, and so the later steps
+        # still run and report the scope decision that led here.
+        timeout-minutes: 15
         run: npm run test --workspace @revagent/rbp-conformance
 
       - name: Report scope decision
