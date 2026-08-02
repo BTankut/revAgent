@@ -80,16 +80,6 @@ export {
   type GatewayPolicyClass,
   type GatewayToolRecord,
 } from "./registry.js";
-export { measureToolCatalog } from "./toolListProbe.js";
-export { startTransportSpike } from "./transportSpike.js";
-export type {
-  ToolCatalogMeasurement,
-  ToolCatalogTimingSummary,
-} from "./toolListProbe.js";
-export type {
-  TransportSpikeHandle,
-  TransportSpikeOptions,
-} from "./transportSpike.js";
 
 // GW-2 service shell. `main.js`, `imageBootSmoke.js` and `testAdapters.js` are
 // deliberately absent: the barrel is imported at image build time and must stay
