@@ -9,6 +9,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { prepareCurrentProductionPlan } from "./prepare-current-production.mjs";
+
 const vitestCli = fileURLToPath(
   new URL("../../../node_modules/vitest/vitest.mjs", import.meta.url),
 );
@@ -18,8 +20,11 @@ if (!existsSync(vitestCli)) {
 
 const forwardedArguments = process.argv.slice(2);
 const shardCount = 5;
-const expectedFiles = 60;
-const expectedTests = 373;
+// +1 file / +10 tests over the previous 60/373 for tests/preparedPlanGuard.test.ts.
+// The cardinality gate is deliberately coupled: adding a test file has to be a
+// visible edit here rather than something a shard silently absorbs.
+const expectedFiles = 61;
+const expectedTests = 383;
 const fullSuite = forwardedArguments.length === 0;
 const invocations = forwardedArguments.length > 0
   ? [["run", ...forwardedArguments]]
@@ -58,7 +63,50 @@ let exitCode = 0;
 let observedFiles = 0;
 let observedTests = 0;
 let observedShards = 0;
+let reusedShards = 0;
 const failures = [];
+
+// One attested preparation for the whole invocation.
+//
+// tests/globalSetup.ts runs per shard, so this ~173 s step used to run five
+// times -- about 14 of the suite's 42-46 minutes. It runs here instead and the
+// identity is handed to each shard, which re-verifies rather than trusts it.
+//
+// The digest lives only in this process's memory and in each child's
+// environment block. Writing it anywhere on disk would defeat it: the plan file
+// is gitignored and writable, so a digest an attacker could rewrite alongside
+// the plan would prove nothing.
+let handoff = null;
+if (fullSuite) {
+  try {
+    const prepared = prepareCurrentProductionPlan({ nodeExecutable: process.execPath });
+    handoff = {
+      REVAGENT_RBP_PREPARED_PLAN: prepared.planFile,
+      REVAGENT_RBP_PREPARED_COMMIT: prepared.commitSha,
+      REVAGENT_RBP_PREPARED_TREE: prepared.treeSha,
+      REVAGENT_RBP_PREPARED_PLAN_SHA256: prepared.planSha256,
+    };
+    console.log(
+      `[rbp-conformance] prepared attested production plan in ${String(prepared.elapsedMs)}ms ` +
+      `(sha256 ${prepared.planSha256})`,
+    );
+  } catch (error) {
+    // Fail before entering the loop rather than letting five shards each
+    // rediscover the same failure. The suite must not run at all without a
+    // preparation.
+    console.error(
+      `[rbp-conformance] ERROR preparation: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    console.error("[rbp-conformance] FAIL preparation: failed");
+    if (cardinalityRoot !== null) {
+      rmSync(cardinalityRoot, { recursive: true, force: true });
+    }
+    process.exitCode = 1;
+    process.exit(1);
+  }
+}
 
 try {
   for (const [index, argumentsValue] of invocations.entries()) {
@@ -67,12 +115,22 @@ try {
     const cardinalityPath = cardinalityRoot === null
       ? null
       : join(cardinalityRoot, `shard-${String(index + 1)}.json`);
+    const reuseProofPath = cardinalityRoot === null
+      ? null
+      : join(cardinalityRoot, `reuse-${String(index + 1)}.json`);
     console.log(`[rbp-conformance] starting ${label}`);
     const result = spawnSync(process.execPath, [vitestCli, ...argumentsValue], {
       cwd: fileURLToPath(new URL("..", import.meta.url)),
-      env: cardinalityPath === null
-        ? process.env
-        : { ...process.env, REVAGENT_RBP_CARDINALITY_PATH: cardinalityPath },
+      env: {
+        ...process.env,
+        ...(handoff ?? {}),
+        ...(cardinalityPath === null
+          ? {}
+          : { REVAGENT_RBP_CARDINALITY_PATH: cardinalityPath }),
+        ...(reuseProofPath === null
+          ? {}
+          : { REVAGENT_RBP_REUSE_PROOF_PATH: reuseProofPath }),
+      },
       stdio: "inherit",
     });
     if (result.error !== undefined || result.status !== 0) {
@@ -100,12 +158,44 @@ try {
         exitCode ||= 1;
       }
     }
+    if (reuseProofPath !== null && handoff !== null) {
+      // A shard that silently prepared its own plan, or whose guard never ran,
+      // is the failure mode this whole change can hide: the suite would stay
+      // green at its old duration and nobody would learn the reuse never
+      // happened. Requiring the proof makes that red.
+      let mode = null;
+      if (existsSync(reuseProofPath)) {
+        try {
+          mode = JSON.parse(readFileSync(reuseProofPath, "utf8")).mode;
+        } catch {
+          mode = null;
+        }
+      }
+      if (mode === "reused") {
+        reusedShards += 1;
+      } else if (result.status === 0) {
+        console.error(
+          `[rbp-conformance] ERROR ${label}: plan not reused (reported ${String(mode)})`,
+        );
+        failures.push(`${label}: plan not reused`);
+        exitCode ||= 1;
+      }
+    }
     if (result.status !== 0) {
       failures.push(`${label}: exit ${String(result.status ?? 1)}`);
       exitCode ||= result.status ?? 1;
       continue;
     }
     console.log(`[rbp-conformance] PASS ${label}`);
+  }
+
+  if (fullSuite && handoff !== null && exitCode === 0 && reusedShards !== shardCount) {
+    console.error(
+      `[rbp-conformance] reuse mismatch: expected ${String(shardCount)} shards to reuse ` +
+      `the attested plan; observed ${String(reusedShards)}`,
+    );
+    failures.push("full suite: reuse mismatch");
+    exitCode ||= 1;
   }
 
   if (fullSuite) {
