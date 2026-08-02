@@ -173,3 +173,13 @@ export {
   type GatewayServerHandle,
   type GatewayServerPorts,
 } from "./server.js";
+// GW-3 executor and policy seed.
+export {
+  DYNAMIC_CODE_TOOL,
+  E5_CONFIRM_CLASS_TOOLS,
+  E5_EXPECTED_TOTALS,
+  E5_TOOL_BINDINGS,
+  ToolBindingError,
+  verifyToolBindings,
+  type ToolBindingRow,
+} from "./toolBindings.js";
