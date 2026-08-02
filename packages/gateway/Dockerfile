@@ -30,4 +30,14 @@ USER node
 
 RUN node --input-type=module --eval "await import('./packages/gateway/dist/index.js')"
 
-CMD ["node", "--input-type=module", "--eval", "await import('./packages/gateway/dist/index.js'); process.stdout.write('revAgent Gateway image ready\\n')"]
+# Proves the image actually boots and reports healthy, inside the build that CI
+# already runs. The Gateway CI workflow builds this image but never runs it, and
+# that workflow is out of scope here -- putting the proof in the build turns
+# "the container boots; health is green" into a red CI gate with no workflow
+# change at all. It covers what a barrel import cannot: the entry point path
+# resolves, ESM resolution works from dist/ where the workspace root manifest is
+# absent, the production non-loopback bind rule does not block boot, and SIGTERM
+# drains cleanly.
+RUN node packages/gateway/dist/imageBootSmoke.js
+
+CMD ["node", "packages/gateway/dist/main.js"]
