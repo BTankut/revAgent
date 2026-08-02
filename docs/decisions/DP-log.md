@@ -938,3 +938,43 @@ every suite stayed green.
 
 Delivery note: this changes manifest-bound add-in payload bytes. It does not authorize a NAS publish or a
 fleet rollout; the migration release freeze remains in force.
+
+## 2026-08-02 — Frozen E5:70 override: `core.bridge.list` re-homed to a Gateway-native binding (GW-1 / RES-23 / RES-29)
+
+Decision: the packaged legacy handlers are given no Revit target-selection surface.
+`resolveRevitConnectionTarget` and `getCandidateRevitTargets` fail closed in the
+build-time ConnectionManager rebinding, which means `core.bridge.list`
+(`list_revit_instances`) cannot execute as a bridge-bound tool and must be
+re-homed to a Gateway-native implementation before it is exposed.
+
+This is a deliberate override of a frozen line, recorded rather than assumed.
+E5:70 is the executor-binding statement of the tools map and reads
+"bridge-bound = tools 1-25, 27-31 (live Revit)", which counts tool 1
+(`list_revit_instances`) as bridge-bound. The override rests on RES-23/29: the
+external-client boundary makes instance discovery the Gateway's, and the M2
+discovery contract is where a client learns which sessions exist. A packaged
+handler that probes configured ports would re-introduce the workstation path
+the ExecutorPort exists to remove, and would let a tool address a Revit session
+its invocation was never authorised for, since the Gateway resolves the session
+from the rsid binding before a handler runs.
+
+Correction of an earlier reading in this lane: E5:78 was cited as support for
+treating both `core.bridge.list` and `core.session.status` as Gateway-native. It
+does not support that. E5:78 concerns visibility — `core.session.status` "should
+leave the LLM-visible core set and become orchestrator-internal" — which is a
+different axis from executor binding. A tool can be bridge-bound and
+orchestrator-internal at the same time, and `core.session.status` is exactly
+that, so it keeps its executor path. Only `core.bridge.list` is overridden here.
+The adversarial verification pass in the GW-3 mapping raised this contradiction
+against a prompt that had asserted the wrong reading as settled.
+
+Scope: no frozen file is edited. `packages/protocol` (tagged `rbp/v1.0.0`) and
+the E5 appendix are untouched; the override lives in the Gateway build and in
+this record. `src/revit-plugin/**` is not involved, so no migration-freeze
+exception applies.
+
+Consequence to carry into GW-3: the binding column for `core.bridge.list` is
+`gateway_native`, not `bridge`. E5:70's other assignments stand as written —
+spatial query/compare/summarize and `reconcile_schedule_excel` are
+gateway-internal, `capture_spatial_snapshot` is hybrid, docs tools are
+gateway-internal — and were not re-derived here.

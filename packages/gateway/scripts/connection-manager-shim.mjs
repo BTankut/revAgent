@@ -31,6 +31,12 @@ import { getExecutorPort, getExecutorContext } from "revagent-executor-port";
  */
 const CODE_EXECUTION_COMMAND = "send_code_to_revit";
 
+/** Wire command behind `core.session.status`, and behind the side-effect poll. */
+const LIVENESS_COMMAND = "mcp_status";
+
+/** E5 row 2's target name; the only tool allowed to ask for liveness. */
+const SESSION_STATUS_TOOL = "core.session.status";
+
 function codeExecutionRequest(params, options) {
   const { code, parameters, transactionMode, ...metadata } = params;
   return {
@@ -53,26 +59,37 @@ function codeExecutionRequest(params, options) {
 function portBackedClient() {
   return {
     async sendCommand(command, params = {}, options = {}) {
-      // Liveness polling never reaches the executor.
+      const context = getExecutorContext(options.toolName ?? command);
+
+      // A tool may not poll liveness as a side effect; only the session-status
+      // tool itself may ask for it.
       //
       // `refreshLiveRevitStatus` (helpers L452) is fired as
-      // `void refreshLiveRevitStatusAfterCommand()` after every command, and
-      // that call sits *inside* the helpers module, so no export rebinding can
-      // reach it -- it has to be stopped at the transport. Left alone it would
-      // add a redundant `mcp_status` dispatch per tool call: the Gateway
-      // already owns session liveness, which is what resolved the rsid this
-      // dispatch is bound to. `get_revit_mcp_status` is the only other caller
-      // and is Gateway-native per E5 row 2 ("should leave the LLM-visible core
-      // set and become orchestrator-internal").
+      // `void refreshLiveRevitStatusAfterCommand()` after every command from
+      // *inside* the helpers module, where no export rebinding reaches it, so
+      // it has to be stopped at the transport. Left alone it adds a redundant
+      // `mcp_status` dispatch per tool call, and the Gateway already owns
+      // session liveness -- it is what resolved the rsid this dispatch is
+      // bound to.
+      //
+      // The two are told apart by the bound dispatch context, not by
+      // `skipLock`: all three call sites (tool L72, list L77, refresh L459)
+      // pass `skipLock: true`, so that flag cannot distinguish them. When the
+      // Gateway dispatches core.session.status the ambient context names it;
+      // a side-effect poll runs under the outer tool's context instead.
       //
       // Throwing rather than returning null is the closer emulation: the
-      // original wraps this call in try/catch and returns null on failure
+      // original wraps its call in try/catch and returns null on failure
       // (helpers L467-469), so callers already take this path.
-      if (command === "mcp_status") {
-        throw new ExecutorPortBoundaryError('sendCommand("mcp_status")');
+      if (
+        command === LIVENESS_COMMAND &&
+        context.toolName !== SESSION_STATUS_TOOL
+      ) {
+        throw new ExecutorPortBoundaryError(
+          `sendCommand("${LIVENESS_COMMAND}") from ${context.toolName}`,
+        );
       }
 
-      const context = getExecutorContext(options.toolName ?? command);
       const outcome = await getExecutorPort().invoke(
         command === CODE_EXECUTION_COMMAND
           ? codeExecutionRequest(params ?? {}, options)
@@ -102,10 +119,19 @@ export async function withRevitConnection(operation, _options = {}) {
  * The original probes configured ports to pick a Revit instance. In the Gateway
  * the session is resolved from the rsid binding before a handler runs, so a
  * handler that picks its own target could address a session its invocation was
- * never authorised for. The two tools that call this -- `core.bridge.list` and
- * `core.session.status` -- are Gateway-native per E5 (row 1, and row 2's note
- * that status becomes orchestrator-internal), so nothing that should reach
- * Revit depends on this returning a value.
+ * never authorised for.
+ *
+ * This is a DELIBERATE OVERRIDE of frozen E5:70, not a reading of it. E5:70 is
+ * the file's executor-binding statement and it counts tools 1-25 and 27-31 as
+ * bridge-bound, which includes `core.bridge.list` (list_revit_instances). The
+ * override rests on RES-23/29 -- discovery is the Gateway's, not a handler's --
+ * and is recorded in docs/decisions/DP-log.md rather than assumed here.
+ *
+ * E5:78 is about a different axis and does not support this: it says
+ * `core.session.status` should leave the LLM-visible core set and become
+ * orchestrator-internal, which is visibility, not executor binding. A tool can
+ * be bridge-bound and orchestrator-internal at once, which is exactly what
+ * `core.session.status` is, so it keeps its executor path above.
  */
 export function resolveRevitConnectionTarget() {
   throw new ExecutorPortBoundaryError("resolveRevitConnectionTarget");
