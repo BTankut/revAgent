@@ -185,11 +185,24 @@ namespace RevAgentPlugin.Core
             return FinishTask(startedTask, "guarded", Trim(reason?.Trim(), 600), executeMs, responseBytes);
         }
 
+        /// <summary>
+        /// Builds the Appendix A.2 <c>mcp_status</c> result. The discovery
+        /// fields are not decoration: the bridge confirms the real listener
+        /// addresses from <c>service.boundAddresses</c> and matches
+        /// <c>revit.processId</c>/<c>revit.version</c> against its own
+        /// operating-system process attestation before it will register a
+        /// session. Omitting any of them makes this Revit undiscoverable.
+        /// </summary>
         public object GetSnapshot(
             bool isRunning,
             int port,
             int maxRequestPayloadBytes,
-            bool documentContextCacheReady = false)
+            bool documentContextCacheReady,
+            string addinVersion,
+            string revitVersion,
+            string revitBuild,
+            int revitProcessId,
+            IReadOnlyList<string> boundAddresses)
         {
             lock (_sync)
             {
@@ -231,10 +244,31 @@ namespace RevAgentPlugin.Core
 
                 return new
                 {
+                    addinLoopbackContractVersion = AddinStatusContract.Version,
+                    addinVersion = addinVersion,
+                    revit = new
+                    {
+                        version = revitVersion,
+                        build = revitBuild,
+                        processId = revitProcessId
+                    },
                     service = new
                     {
                         isRunning = isRunning,
-                        port = port
+                        port = port,
+                        binding = "loopback_only",
+                        boundAddresses = boundAddresses != null
+                            ? new List<string>(boundAddresses).ToArray()
+                            : new string[0],
+                        framing = new
+                        {
+                            protocol = "length_prefixed_jsonrpc_v1",
+                            headerBytes = AddinFrameLimits.HeaderBytes,
+                            byteOrder = "big_endian",
+                            payloadEncoding = "utf-8",
+                            maxRequestPayloadBytes = maxRequestPayloadBytes,
+                            maxResponsePayloadBytes = AddinFrameLimits.MaxResponsePayloadBytes
+                        }
                     },
                     sessionCapabilities = sessionCapabilities.ToArray(),
                     capabilityContracts = capabilityContracts,
