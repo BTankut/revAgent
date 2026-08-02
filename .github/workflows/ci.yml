@@ -20,6 +20,14 @@ jobs:
   engineering-gates:
     name: Engineering gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    # There is exactly one self-hosted runner, and both jobs here plus the
+    # Claude review gate ask for its labels. A job that hangs holds it until a
+    # human notices, and everything else reports `queued` rather than failing --
+    # on 2026-08-02 a hung conformance run held it for 55 minutes and blocked an
+    # unrelated PR's gates the whole time. GitHub's default is 360 minutes, so
+    # the ceiling has to be set explicitly. 25 covers the 14m1s this job has
+    # actually taken with headroom.
+    timeout-minutes: 25
 
     steps:
       - name: Checkout
@@ -79,6 +87,10 @@ jobs:
   gateway-gates:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    # Same single-runner exposure as engineering-gates above. 70 leaves headroom
+    # over the conformance step's own 60 so that step fails first and names
+    # itself, and over the 42-46 minutes this job takes whenever that step runs.
+    timeout-minutes: 70
 
     steps:
       - name: Checkout
@@ -174,6 +186,31 @@ jobs:
 
       - name: Run RBP conformance suite
         if: steps.classify.outputs.run_rbp == 'true'
+        # Named separately from the job ceiling so a hang here fails as this
+        # step rather than as an anonymous job timeout, and so the later steps
+        # still run and report the scope decision that led here.
+        #
+        # 60, from measurement, not from what the suite ought to cost.
+        #
+        # Every CI run where this step actually executed -- it is skipped on
+        # most PR branches by the classify step above -- put Gateway gates at
+        # 42-46 minutes and passed: 43.4, 43.3, 42.9, 42.5, 45.6 on main and
+        # 46.2 on a feature branch. Runs where it was skipped finish in 2-3
+        # minutes, which is why PR checks look fast and main does not.
+        #
+        # Earlier passes here set 15 and then 25. Both were derived from
+        # globalSetup.ts's own "~173 s per preparation" comment rather than
+        # from observed job durations, and 25 killed a healthy run at 28
+        # minutes. Setting this below the suite's real cost does not make it
+        # faster; it just breaks main on every push.
+        #
+        # This ceiling bounds damage. It does not make the step fast, and 43
+        # minutes is not acceptable as a steady state: scripts/run-tests.mjs
+        # runs 5 shards sequentially and each boots its own vitest, so the
+        # canonical production preparation is repeated once per shard --
+        # roughly 14 of those 43 minutes. Preparing once and sharing it is the
+        # fix, and it is a test-harness redesign rather than a CI setting.
+        timeout-minutes: 60
         run: npm run test --workspace @revagent/rbp-conformance
 
       - name: Report scope decision
