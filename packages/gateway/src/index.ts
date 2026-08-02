@@ -1,9 +1,12 @@
 export const gatewayScaffold = Object.freeze({
   serviceName: "revAgent Gateway",
-  milestone: "M0",
+  milestone: "M2",
   protocol: "RBP/1",
   transportImplemented: false,
-  transportSpikeAvailable: true,
+  // GW-1 removed the M0 transport spike and the `bundle:legacy` graph it read
+  // from: the Gateway must never load the legacy stdio entry point or an M0
+  // bundle. The collected registry seed is the only legacy-derived input.
+  registrySeedAvailable: true,
   m2FirstSliceAvailable: true,
   modeADiscoveryAvailable: true,
 } as const);
@@ -28,6 +31,13 @@ export {
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
 export {
+  RegistrySeedError,
+  verifyRegistrySeed,
+  type RegistrySeed,
+  type RegistrySeedTool,
+} from "./registrySeed.js";
+
+export {
   ModeADiscoverySession,
   ModeASchemaBudgetError,
   ModeAToolUnavailableError,
@@ -47,13 +57,3 @@ export {
   type GatewayPolicyClass,
   type GatewayToolRecord,
 } from "./registry.js";
-export { measureToolCatalog } from "./toolListProbe.js";
-export { startTransportSpike } from "./transportSpike.js";
-export type {
-  ToolCatalogMeasurement,
-  ToolCatalogTimingSummary,
-} from "./toolListProbe.js";
-export type {
-  TransportSpikeHandle,
-  TransportSpikeOptions,
-} from "./transportSpike.js";
