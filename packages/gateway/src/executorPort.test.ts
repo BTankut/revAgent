@@ -50,6 +50,7 @@ describe("executor port", () => {
         parameters: [],
         transactionMode: "none",
         parseJsonResult: true,
+        metadata: { taskId: "task-9", taskName: "probe" },
       },
       CONTEXT,
     );
@@ -58,6 +59,9 @@ describe("executor port", () => {
     expect(seen[0]).toMatchObject({
       kind: "execute_code",
       transactionMode: "none",
+      // The add-in correlates task status by these fields; dropping them would
+      // break the reporting the M3 chain demonstrated end to end.
+      metadata: { taskId: "task-9", taskName: "probe" },
     });
   });
 

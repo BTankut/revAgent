@@ -30,6 +30,16 @@ export interface ExecuteCodeRequest {
   /** `"auto"` opens a Revit transaction; `"none"` forbids one. */
   readonly transactionMode: "auto" | "none";
   readonly parseJsonResult: boolean;
+  /**
+   * The remaining wire params the add-in correlates tasks by (`taskId`,
+   * `taskName`, parent task fields, wrapper action metadata).
+   *
+   * Carried opaquely rather than dropped: the legacy helper builds one params
+   * object and the add-in's task-status reporting keys off these fields, so
+   * lifting only the policy-relevant ones would silently break the task
+   * correlation the M3 chain demonstrated end to end.
+   */
+  readonly metadata: Readonly<Record<string, unknown>>;
 }
 
 export interface SendCommandRequest {
