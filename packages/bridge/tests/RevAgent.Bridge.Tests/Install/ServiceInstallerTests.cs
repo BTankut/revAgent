@@ -197,10 +197,12 @@ public sealed class ServiceInstallerTests
     public async Task UninstallRefusesConflictingRegistrationWithoutMutation()
     {
         using var fixture = new InstallFixture();
+        // Any account other than the canonical one; LocalSystem is now the
+        // canonical logon account and would no longer be a conflict.
         ServiceSnapshot conflicting = fixture.ExactSnapshot(
             ServiceRuntimeState.Running) with
         {
-            AccountName = "LocalSystem",
+            AccountName = @"NT AUTHORITY\NetworkService",
         };
         var services = new FakeServiceControlManager(conflicting);
         var eventLog = new RecordingLifecycleEventLog();

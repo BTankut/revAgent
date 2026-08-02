@@ -111,9 +111,10 @@ public sealed class BridgeInstallLayoutTests
     {
         Assert.Equal("revAgentBridge", BridgeInstallLayout.ServiceName);
         Assert.Equal("revAgent Bridge", BridgeInstallLayout.ServiceDisplayName);
-        Assert.Equal(
-            @"NT SERVICE\revAgentBridge",
-            BridgeInstallLayout.ServiceAccount);
+        // LocalSystem, not a per-service virtual account: add-in attestation
+        // opens the interactive user's Revit process, which a virtual account
+        // is never granted. See BridgeInstallLayout.ServiceAccount.
+        Assert.Equal("LocalSystem", BridgeInstallLayout.ServiceAccount);
         Assert.Equal("revAgent Bridge", BridgeInstallLayout.EventSourceName);
     }
 }

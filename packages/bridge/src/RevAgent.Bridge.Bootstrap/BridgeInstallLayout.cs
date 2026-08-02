@@ -4,7 +4,22 @@ internal sealed record BridgeInstallLayout(string InstallRoot, string StateRoot)
 {
     internal const string ServiceName = "revAgentBridge";
     internal const string ServiceDisplayName = "revAgent Bridge";
-    internal const string ServiceAccount = @"NT SERVICE\revAgentBridge";
+    /// <summary>
+    /// The SCM logon account, in the exact spelling the SCM reports back so
+    /// the exact-registration check stays stable.
+    /// </summary>
+    /// <remarks>
+    /// A per-service virtual account cannot open the interactive user's Revit
+    /// process. Add-in attestation calls
+    /// <c>OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION)</c> on the process that
+    /// owns the loopback listener, and a process's default DACL grants that only
+    /// to its own owner, SYSTEM, and Administrators. Under the virtual account
+    /// every probe failed with <c>revit_process_identity_unavailable</c>, so no
+    /// Revit was ever discovered and no session was ever registered. The bridge
+    /// is a machine-wide supervisor of local Revit sessions, so it runs as
+    /// LocalSystem; the frozen protocol does not constrain this choice.
+    /// </remarks>
+    internal const string ServiceAccount = "LocalSystem";
     internal const string EventSourceName = "revAgent Bridge";
     internal const string HostExecutableName = "revagent-bridge-host.exe";
     internal const string WorkerExecutableName = "revagent-bridge.exe";

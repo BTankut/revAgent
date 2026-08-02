@@ -180,6 +180,17 @@ internal static class RbpBatchPayloads
     /// A completed or guarded step body. A guarded step requires its
     /// normalized Section 10.3 reason.
     /// </summary>
+    /// <remarks>
+    /// <paramref name="effectState"/> is accepted but deliberately not written
+    /// here. Spec ~999-1009 introduces <c>effect_state</c> for exactly two
+    /// cases — an inline-limit delivery fault (<c>status:"failed"</c>,
+    /// <c>fault_class:"protocol"</c>) and a step abandoned by cancellation —
+    /// so that neither can hide a known model effect, and the frozen
+    /// <c>batchStepResult</c> schema enforces that by requiring an
+    /// <c>error</c> alongside it. Emitting it on an ordinary completed step
+    /// made every successful atomic batch carrier fail the bridge's own
+    /// outbound validation, so no batch result ever reached the Gateway.
+    /// </remarks>
     internal static JsonElement SuccessEvidence(
         string status,
         JsonElement result,
@@ -187,6 +198,7 @@ internal static class RbpBatchPayloads
         string? resultDigest,
         string? effectState)
     {
+        _ = effectState;
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -211,11 +223,6 @@ internal static class RbpBatchPayloads
             if (resultDigest is { Length: > 0 } digest)
             {
                 writer.WriteString("result_digest", digest);
-            }
-
-            if (effectState is { Length: > 0 } effect)
-            {
-                writer.WriteString("effect_state", effect);
             }
 
             writer.WriteEndObject();

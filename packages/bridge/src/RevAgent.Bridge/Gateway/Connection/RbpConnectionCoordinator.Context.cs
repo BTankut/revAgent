@@ -746,6 +746,26 @@ internal sealed partial class RbpConnectionCoordinator
             }
         }
 
+        /// <summary>
+        /// Claims the same Section 10.1 window an invoke claims — one in-flight
+        /// dispatch per session regardless of carrier — and runs the batch as a
+        /// detached, cycle-scoped task.
+        /// </summary>
+        internal void StartBatch(RbpDataEnvelopeSnapshot envelope)
+        {
+            IRbpInvocationClaim? claim =
+                _owner._invocationDispatcher.TryClaim(envelope.Rsid);
+            _owner.InvocationStarted();
+            lock (_sync)
+            {
+                _invocations.RemoveAll(task => task.IsCompleted);
+                _invocations.Add(
+                    claim is null
+                        ? _owner.RunBatchConcurrentRejectionAsync(this, envelope)
+                        : _owner.RunBatchAsync(this, claim, envelope));
+            }
+        }
+
         internal void CompleteInvocation() => _owner.InvocationCompleted();
 
         /// <summary>

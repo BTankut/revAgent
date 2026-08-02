@@ -35,7 +35,8 @@ internal sealed record WorkerGatewayServices(
     RbpConnectionCoordinatorOptions Options,
     WorkerAddinDispatchSurface? DispatchSurface = null,
     IRbpCoordinatorClock? Clock = null,
-    IRbpRandomSource? Random = null);
+    IRbpRandomSource? Random = null,
+    Action<string>? OnDispatchDiagnostic = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -200,6 +201,20 @@ internal static class WorkerGatewayComposition
         var docContextWatcher = new RbpDocContextWatcher(
             channel,
             services.Clock);
+
+        // Section 11 execution shares the routed channel and journal with the
+        // single-invocation dispatcher; only the capability seam is its own.
+        // Without this wiring an inbound batch envelope was journaled,
+        // acknowledged, and then dropped by the data pump.
+        var batchCoordinator = new RbpBatchCoordinator(
+            services.Journal,
+            channel,
+            new RbpRoutedBatchCapabilitySource(
+                services.Journal,
+                surface.SessionRouter,
+                surface.SessionRoutes,
+                RevAgent.Contracts.AddinLoopback.AddinFrameLimits
+                    .MaxResponsePayloadBytes));
         return new RbpConnectionCoordinator(
             services.CycleFactory,
             services.Journal,
@@ -209,7 +224,9 @@ internal static class WorkerGatewayComposition
             RbpInvocationJournalHandoff.Instance,
             services.Clock,
             services.Random,
-            docContextWatcher);
+            docContextWatcher,
+            batchCoordinator,
+            services.OnDispatchDiagnostic);
     }
 
     /// <summary>

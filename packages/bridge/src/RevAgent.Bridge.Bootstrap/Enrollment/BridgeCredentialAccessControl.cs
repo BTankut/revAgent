@@ -401,6 +401,54 @@ internal sealed class WindowsBridgeCredentialAccessControl :
         VerifySecurity(security, BridgeCredentialAclPolicy.FileRules);
     }
 
+    /// <summary>
+    /// Collapses the declared policy onto the ACL Windows can actually hold:
+    /// one allow entry per principal. Two policy rows can name the same
+    /// principal — the bridge service is LocalSystem — and Windows merges those
+    /// into a single entry with the union of the rights, so the expected set has
+    /// to be expressed the same way or a correct ACL never compares equal.
+    /// </summary>
+    [SupportedOSPlatform("windows")]
+    private List<FileSystemAccessRule> CollapseRules(
+        IReadOnlyList<BridgeCredentialAclRule> rules,
+        bool honourInheritance)
+    {
+        var merged =
+            new Dictionary<SecurityIdentifier, (FileSystemRights Rights,
+                InheritanceFlags Inheritance)>();
+        var order = new List<SecurityIdentifier>();
+        foreach (BridgeCredentialAclRule rule in rules)
+        {
+            SecurityIdentifier sid = _principalResolver(rule.Principal);
+            FileSystemRights rights = MapRights(rule.Rights);
+            InheritanceFlags inheritance =
+                honourInheritance && rule.InheritToChildren
+                    ? InheritanceFlags.ContainerInherit |
+                      InheritanceFlags.ObjectInherit
+                    : InheritanceFlags.None;
+            if (merged.TryGetValue(sid, out (FileSystemRights Rights,
+                    InheritanceFlags Inheritance) existing))
+            {
+                merged[sid] = (
+                    existing.Rights | rights,
+                    existing.Inheritance | inheritance);
+                continue;
+            }
+
+            merged[sid] = (rights, inheritance);
+            order.Add(sid);
+        }
+
+        return order
+            .Select(sid => new FileSystemAccessRule(
+                sid,
+                merged[sid].Rights,
+                merged[sid].Inheritance,
+                PropagationFlags.None,
+                AccessControlType.Allow))
+            .ToList();
+    }
+
     [SupportedOSPlatform("windows")]
     private DirectorySecurity BuildDirectorySecurity(
         IReadOnlyList<BridgeCredentialAclRule> rules)
@@ -411,18 +459,10 @@ internal sealed class WindowsBridgeCredentialAccessControl :
         security.SetAccessRuleProtection(
             isProtected: true,
             preserveInheritance: false);
-        foreach (BridgeCredentialAclRule rule in rules)
+        foreach (FileSystemAccessRule rule in
+                 CollapseRules(rules, honourInheritance: true))
         {
-            security.AddAccessRule(
-                new FileSystemAccessRule(
-                    _principalResolver(rule.Principal),
-                    MapRights(rule.Rights),
-                    rule.InheritToChildren
-                        ? InheritanceFlags.ContainerInherit |
-                          InheritanceFlags.ObjectInherit
-                        : InheritanceFlags.None,
-                    PropagationFlags.None,
-                    AccessControlType.Allow));
+            security.AddAccessRule(rule);
         }
 
         return security;
@@ -438,15 +478,10 @@ internal sealed class WindowsBridgeCredentialAccessControl :
         security.SetAccessRuleProtection(
             isProtected: true,
             preserveInheritance: false);
-        foreach (BridgeCredentialAclRule rule in rules)
+        foreach (FileSystemAccessRule rule in
+                 CollapseRules(rules, honourInheritance: false))
         {
-            security.AddAccessRule(
-                new FileSystemAccessRule(
-                    _principalResolver(rule.Principal),
-                    MapRights(rule.Rights),
-                    InheritanceFlags.None,
-                    PropagationFlags.None,
-                    AccessControlType.Allow));
+            security.AddAccessRule(rule);
         }
 
         return security;
@@ -487,18 +522,12 @@ internal sealed class WindowsBridgeCredentialAccessControl :
             .Select(ToComparableRule)
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
-        var expected = expectedRules
-            .Select(
-                rule => ToComparableRule(
-                    new FileSystemAccessRule(
-                        _principalResolver(rule.Principal),
-                        MapRights(rule.Rights),
-                        rule.InheritToChildren
-                            ? InheritanceFlags.ContainerInherit |
-                              InheritanceFlags.ObjectInherit
-                            : InheritanceFlags.None,
-                        PropagationFlags.None,
-                        AccessControlType.Allow)))
+        var expected = CollapseRules(
+                expectedRules,
+                honourInheritance: ReferenceEquals(
+                    expectedRules,
+                    BridgeCredentialAclPolicy.DirectoryRules))
+            .Select(ToComparableRule)
             .OrderBy(value => value, StringComparer.Ordinal)
             .ToArray();
         return actual.SequenceEqual(expected, StringComparer.Ordinal);
@@ -552,10 +581,13 @@ internal sealed class WindowsBridgeCredentialAccessControl :
                 new SecurityIdentifier(
                     WellKnownSidType.BuiltinAdministratorsSid,
                     domainSid: null),
+            // The service logs on as LocalSystem, whose SCM spelling is not an
+            // LSA-resolvable account name. Resolve the well-known SID directly
+            // rather than translating BridgeInstallLayout.ServiceAccount.
             BridgeCredentialAclPrincipal.BridgeService =>
-                (SecurityIdentifier)new NTAccount(
-                        BridgeInstallLayout.ServiceAccount)
-                    .Translate(typeof(SecurityIdentifier)),
+                new SecurityIdentifier(
+                    WellKnownSidType.LocalSystemSid,
+                    domainSid: null),
             _ => throw new ArgumentOutOfRangeException(nameof(principal)),
         };
     }

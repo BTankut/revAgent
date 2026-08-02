@@ -192,9 +192,15 @@ public sealed class RbpBatchCoordinatorTests
         Assert.Equal(
             JsonValueKind.Null,
             answer.Payload.GetProperty("failed_step_index").ValueKind);
-        Assert.Equal(
-            "committed",
-            Step(answer, 1).GetProperty("effect_state").GetString());
+
+        // Spec ~999-1009 gives effect_state only to a delivery fault or a
+        // cancelled step, so that neither hides a known model effect, and the
+        // frozen batchStepResult schema pairs it with a required error. A
+        // completed step states its outcome through transaction_state, and
+        // carrying effect_state here made the whole carrier fail outbound
+        // validation.
+        Assert.False(
+            Step(answer, 1).TryGetProperty("effect_state", out _));
     }
 
     [Fact]
