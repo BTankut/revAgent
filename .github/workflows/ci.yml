@@ -87,10 +87,10 @@ jobs:
   gateway-gates:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
-    # Same single-runner exposure as engineering-gates above. This is the job
-    # that hung on 2026-08-02. 30 leaves headroom over the conformance step's
-    # own 25 so that step fails first and names itself.
-    timeout-minutes: 30
+    # Same single-runner exposure as engineering-gates above. 70 leaves headroom
+    # over the conformance step's own 60 so that step fails first and names
+    # itself, and over the 42-46 minutes this job takes whenever that step runs.
+    timeout-minutes: 70
 
     steps:
       - name: Checkout
@@ -190,18 +190,27 @@ jobs:
         # step rather than as an anonymous job timeout, and so the later steps
         # still run and report the scope decision that led here.
         #
-        # 25, not 15, because this step is legitimately slow by construction:
-        # scripts/run-tests.mjs runs 5 shards sequentially and each boots its
-        # own vitest, so tests/globalSetup.ts re-runs the canonical production
-        # preparation once per shard. That file's own comment observes ~173 s
-        # per preparation, i.e. ~14.4 minutes of setup before a single test
-        # runs, and it allows each one 420 s. A 15-minute ceiling would fail
-        # healthy runs.
+        # 60, from measurement, not from what the suite ought to cost.
         #
-        # This ceiling bounds damage; it does not make the step fast. Preparing
-        # once and sharing it across shards is the change that would, and it is
-        # a test-harness redesign, not a CI setting.
-        timeout-minutes: 25
+        # Every CI run where this step actually executed -- it is skipped on
+        # most PR branches by the classify step above -- put Gateway gates at
+        # 42-46 minutes and passed: 43.4, 43.3, 42.9, 42.5, 45.6 on main and
+        # 46.2 on a feature branch. Runs where it was skipped finish in 2-3
+        # minutes, which is why PR checks look fast and main does not.
+        #
+        # Earlier passes here set 15 and then 25. Both were derived from
+        # globalSetup.ts's own "~173 s per preparation" comment rather than
+        # from observed job durations, and 25 killed a healthy run at 28
+        # minutes. Setting this below the suite's real cost does not make it
+        # faster; it just breaks main on every push.
+        #
+        # This ceiling bounds damage. It does not make the step fast, and 43
+        # minutes is not acceptable as a steady state: scripts/run-tests.mjs
+        # runs 5 shards sequentially and each boots its own vitest, so the
+        # canonical production preparation is repeated once per shard --
+        # roughly 14 of those 43 minutes. Preparing once and sharing it is the
+        # fix, and it is a test-harness redesign rather than a CI setting.
+        timeout-minutes: 60
         run: npm run test --workspace @revagent/rbp-conformance
 
       - name: Report scope decision
