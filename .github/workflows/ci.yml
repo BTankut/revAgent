@@ -88,8 +88,9 @@ jobs:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
     # Same single-runner exposure as engineering-gates above. This is the job
-    # that hung on 2026-08-02.
-    timeout-minutes: 20
+    # that hung on 2026-08-02. 30 leaves headroom over the conformance step's
+    # own 25 so that step fails first and names itself.
+    timeout-minutes: 30
 
     steps:
       - name: Checkout
@@ -188,7 +189,19 @@ jobs:
         # Named separately from the job ceiling so a hang here fails as this
         # step rather than as an anonymous job timeout, and so the later steps
         # still run and report the scope decision that led here.
-        timeout-minutes: 15
+        #
+        # 25, not 15, because this step is legitimately slow by construction:
+        # scripts/run-tests.mjs runs 5 shards sequentially and each boots its
+        # own vitest, so tests/globalSetup.ts re-runs the canonical production
+        # preparation once per shard. That file's own comment observes ~173 s
+        # per preparation, i.e. ~14.4 minutes of setup before a single test
+        # runs, and it allows each one 420 s. A 15-minute ceiling would fail
+        # healthy runs.
+        #
+        # This ceiling bounds damage; it does not make the step fast. Preparing
+        # once and sharing it across shards is the change that would, and it is
+        # a test-harness redesign, not a CI setting.
+        timeout-minutes: 25
         run: npm run test --workspace @revagent/rbp-conformance
 
       - name: Report scope decision
