@@ -3,15 +3,19 @@ import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import { gatewayScaffold } from "./index.js";
 
 describe("gateway scaffold", () => {
-  it("keeps the W1-5 transport spike separate from production transport", () => {
+  it("carries no M0 transport spike and declares the collected registry seed", () => {
+    // GW-1 removed the W1-5 spike and the `bundle:legacy` graph it loaded:
+    // the Gateway must never import the legacy stdio entry point or an M0
+    // bundle, so the seed is the only legacy-derived input it declares.
     expect(gatewayScaffold).toMatchObject({
-      milestone: "M0",
+      milestone: "M2",
       protocol: "RBP/1",
       transportImplemented: false,
-      transportSpikeAvailable: true,
+      registrySeedAvailable: true,
       m2FirstSliceAvailable: true,
       modeADiscoveryAvailable: true,
     });
+    expect(gatewayScaffold).not.toHaveProperty("transportSpikeAvailable");
   });
 
   it("loads the split MCP SDK v2 Node transport surface", () => {

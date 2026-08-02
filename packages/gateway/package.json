@@ -12,28 +12,23 @@
     }
   },
   "scripts": {
-    "build": "npm run bundle:legacy && tsc -p tsconfig.json",
-    "bundle:legacy": "node scripts/bundle-legacy-register.mjs",
+    "build": "tsc -p tsconfig.json",
     "lint": "eslint src scripts",
-    "spike:benchmark": "node dist/transportSpikeBenchmarkCli.js",
-    "spike:list-tools": "node dist/listToolsClientCli.js",
-    "spike:server": "node dist/spikeServerCli.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run bundle:legacy && npm run build --workspace @revagent/bridge-simulator && vitest run"
+    "test": "npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run",
+    "collect:registry": "node scripts/collect-registry.mjs",
+    "package:handlers": "node scripts/package-handlers.mjs"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@e965/xlsx": "^0.20.3",
     "@modelcontextprotocol/client": "2.0.0",
     "@modelcontextprotocol/core": "2.0.0",
     "@modelcontextprotocol/node": "2.0.0",
     "@modelcontextprotocol/server": "2.0.0",
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "12.9.0",
-    "csv-parse": "^6.2.1",
     "zod": "^4.2.0"
   },
   "devDependencies": {
