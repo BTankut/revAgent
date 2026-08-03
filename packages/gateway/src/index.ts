@@ -9,6 +9,7 @@ export const gatewayScaffold = Object.freeze({
   registrySeedAvailable: true,
   m2FirstSliceAvailable: true,
   modeADiscoveryAvailable: true,
+  serviceShellAvailable: true,
 } as const);
 
 export type GatewayScaffold = typeof gatewayScaffold;
@@ -79,3 +80,96 @@ export {
   type GatewayPolicyClass,
   type GatewayToolRecord,
 } from "./registry.js";
+
+// GW-2 service shell. `main.js`, `imageBootSmoke.js` and `testAdapters.js` are
+// deliberately absent: the barrel is imported at image build time and must stay
+// side-effect free, and withholding the fixture adapters from the package's only
+// export path is half of the guarantee that a fake never reaches production.
+export {
+  GATEWAY_FIXTURE_ADAPTER_KINDS,
+  isFixtureAdapterKind,
+  isGatewayPortRefusal,
+  portNotImplemented,
+  type GatewayPortAdapterKind,
+  type GatewayPortErrorCode,
+  type GatewayPortName,
+  type GatewayPortRefusal,
+  type GatewayPortResult,
+} from "./gatewayPorts.js";
+export {
+  GATEWAY_CONFIG_ENV_ALLOWLIST,
+  GATEWAY_CONFIG_PROBLEM_MESSAGES,
+  GATEWAY_STARTUP_LOG_FIELD_ALLOWLIST,
+  loadGatewayConfig,
+  startupLogFields,
+  type GatewayConfig,
+  type GatewayConfigEnvName,
+  type GatewayConfigLoadResult,
+  type GatewayConfigProblem,
+  type GatewayConfigProblemReason,
+  type GatewayLogLevel,
+  type GatewayNodeEnv,
+} from "./config.js";
+export {
+  GATEWAY_AUTH_CONTRACT_VERSION,
+  createUnavailableEntitlementPort,
+  createUnavailableIdentityPort,
+  type AuthContext,
+  type DeviceAuthContext,
+  type EntitlementPort,
+  type GatewayClientType,
+  type GatewayModuleName,
+  type GatewayRole,
+  type IdentityPort,
+} from "./authContext.js";
+export {
+  REVAGENT_EVENT_SCHEMA,
+  createUnavailableEventSink,
+  type GatewayEventEnvelope,
+  type GatewayEventSink,
+  type GatewayEventType,
+} from "./events.js";
+export {
+  GATEWAY_STORE_CONTRACT_VERSION,
+  createUnavailableObjectStore,
+  createUnavailableProtocolStore,
+  type GatewayProtocolStore,
+  type ObjectStorePort,
+  type StoreErrorCode,
+  type StoreExpectation,
+  type StoreOutcome,
+  type StoreTransaction,
+  type StoredRecord,
+} from "./store.js";
+export {
+  createUnavailableGuardrailPort,
+  type GuardrailDecision,
+  type GuardrailPort,
+  type GuardrailRefusalCode,
+} from "./guardrails.js";
+export {
+  RBP_INGRESS_HTTP_FALLBACK_PATHS,
+  RBP_INGRESS_MOUNT_PREFIX,
+  createUnavailableRbpIngressHost,
+  type RbpIngressHost,
+} from "./rbpIngress.js";
+export {
+  CodeExecMode,
+  ModeBNotImplementedError,
+  codeExecSandboxHost,
+  generateToolWrapperTree,
+  type EngineMode,
+  type EngineModeKind,
+  type ModelCapabilities,
+  type SandboxHost,
+} from "./modeB.js";
+export {
+  GatewayFixturePortError,
+  assertProductionPorts,
+  buildFastifyOptions,
+  createFailClosedPorts,
+  createGatewayApp,
+  startGatewayServer,
+  type GatewayServerHandle,
+  type GatewayServerPorts,
+} from "./server.js";
