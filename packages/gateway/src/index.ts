@@ -183,3 +183,12 @@ export {
   verifyToolBindings,
   type ToolBindingRow,
 } from "./toolBindings.js";
+export {
+  CatalogError,
+  EntitledCatalogView,
+  buildCatalog,
+  entitleAll,
+  entitleOnly,
+  type CatalogEntry,
+  type EntitlementDecision,
+} from "./entitledRegistry.js";
