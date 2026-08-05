@@ -28,7 +28,19 @@ import {
 import { assertTrustedProductionSourceCurrent } from
   "./production-launch-attestation.mjs";
 
-const BOOTSTRAP_PIN_SCHEMA = "rbp-production-bootstrap-identity-pin/v1";
+const BOOTSTRAP_PIN_SCHEMA = "rbp-production-bootstrap-identity-pin/v2";
+const NPM_PIN_SCHEMA = "rbp-production-npm-bootstrap-dependency/v1";
+const SHA256_PATTERN = /^[0-9a-f]{64}$/u;
+const NPM_IDENTITY_KEYS = Object.freeze([
+  "schemaVersion",
+  "name",
+  "version",
+  "entrypointRelativePath",
+  "entrypointSha256",
+  "fileCount",
+  "filesSha256",
+  "digestSha256",
+]);
 const ACTIVE_HOOKS = [];
 const RESOLUTION_ENVIRONMENT_KEYS = new Set([
   "NODE_OPTIONS",
@@ -51,6 +63,25 @@ function normalizedPath(value) {
 
 function samePath(left, right) {
   return normalizedPath(left) === normalizedPath(right);
+}
+
+function validNpmIdentityPin(value) {
+  return value !== null &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    value.schemaVersion === NPM_PIN_SCHEMA &&
+    value.name === "npm" &&
+    typeof value.version === "string" &&
+    value.version.length > 0 &&
+    value.entrypointRelativePath === "bin/npm-cli.js" &&
+    typeof value.entrypointSha256 === "string" &&
+    SHA256_PATTERN.test(value.entrypointSha256) &&
+    Number.isSafeInteger(value.fileCount) &&
+    value.fileCount > 0 &&
+    typeof value.filesSha256 === "string" &&
+    SHA256_PATTERN.test(value.filesSha256) &&
+    typeof value.digestSha256 === "string" &&
+    SHA256_PATTERN.test(value.digestSha256);
 }
 
 function isInside(parentValue, childValue) {
@@ -148,8 +179,11 @@ function readBootstrapPin(repoRoot) {
     typeof pin.compilerAndGenerator !== "object" ||
     pin.controllerRuntime === null ||
     typeof pin.controllerRuntime !== "object" ||
-    pin.npm === null ||
-    typeof pin.npm !== "object"
+    !Array.isArray(pin.npm) ||
+    pin.npm.length === 0 ||
+    !pin.npm.every(validNpmIdentityPin) ||
+    new Set(pin.npm.map((identity) => identity.digestSha256)).size !==
+      pin.npm.length
   ) {
     throw new Error("production bootstrap identity pin contract is invalid");
   }
@@ -190,17 +224,10 @@ function assertPinnedCompilerIdentity(repoRoot, pin) {
 function assertPinnedNpmIdentity(npmExecutable, pin) {
   if (npmExecutable === undefined) return undefined;
   const current = captureProductionNpmBootstrapIdentity(npmExecutable);
-  const expectedKeys = [
-    "schemaVersion",
-    "name",
-    "version",
-    "entrypointRelativePath",
-    "entrypointSha256",
-    "fileCount",
-    "filesSha256",
-    "digestSha256",
-  ];
-  if (expectedKeys.some((key) => current[key] !== pin.npm[key])) {
+  const matches = pin.npm.filter((expected) =>
+    NPM_IDENTITY_KEYS.every((key) => current[key] === expected[key])
+  );
+  if (matches.length !== 1) {
     throw new Error("production npm closure does not match the tracked pin");
   }
   return current;
