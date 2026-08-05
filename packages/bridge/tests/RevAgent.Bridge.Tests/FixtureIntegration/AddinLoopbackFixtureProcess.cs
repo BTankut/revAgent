@@ -93,7 +93,7 @@ internal sealed class AddinLoopbackFixtureProcess : IAsyncDisposable
     private readonly SemaphoreSlim _controlGate = new(1, 1);
     private long _controlSequence;
     private bool _controlClosed;
-    private bool _disposed;
+    private volatile bool _disposed;
 
     private AddinLoopbackFixtureProcess(
         Process process,
@@ -116,6 +116,29 @@ internal sealed class AddinLoopbackFixtureProcess : IAsyncDisposable
     /// <c>mcp_status.result.revit.processId</c>.
     /// </summary>
     internal int ProcessId => _process.Id;
+
+    /// <summary>
+    /// Whether this exact fixture registration may still attest its port.
+    /// </summary>
+    internal bool IsActive
+    {
+        get
+        {
+            if (_disposed)
+            {
+                return false;
+            }
+
+            try
+            {
+                return !_process.HasExited;
+            }
+            catch (InvalidOperationException)
+            {
+                return false;
+            }
+        }
+    }
 
     internal static async Task<AddinLoopbackFixtureProcess> StartAsync(
         int port = 0)

@@ -15,6 +15,8 @@ public sealed class AddinLoopbackSessionRoutingTests
     [Fact]
     public async Task TwoScannedSessionsAreIndependentlyRoutableWithoutCrossTalk()
     {
+        await using AddinLoopbackFrozenPortLease portLease =
+            await AddinLoopbackFrozenPortLease.AcquireAsync();
         List<int> window = Enumerable
             .Range(
                 AddinDiscovery.ScanStartPort,
@@ -113,6 +115,8 @@ public sealed class AddinLoopbackSessionRoutingTests
     [Fact]
     public async Task ARetiredSessionStopsRoutingWhileTheSurvivorKeepsWorking()
     {
+        await using AddinLoopbackFrozenPortLease portLease =
+            await AddinLoopbackFrozenPortLease.AcquireAsync();
         List<int> window = Enumerable
             .Range(
                 AddinDiscovery.ScanStartPort,
@@ -175,6 +179,47 @@ public sealed class AddinLoopbackSessionRoutingTests
         lease.ReleaseAfterDurableDecision();
         Assert.True(result.Response.IsSuccess);
         Assert.Equal("m3-route-survivor", result.Response.Id);
+    }
+
+    [Fact]
+    public async Task RetiredFixtureAttestationCannotReachAReplacementOnTheSamePort()
+    {
+        await using AddinLoopbackFrozenPortLease portLease =
+            await AddinLoopbackFrozenPortLease.AcquireAsync();
+        List<int> window = Enumerable
+            .Range(
+                AddinDiscovery.ScanStartPort,
+                AddinDiscovery.ScanEndPort - AddinDiscovery.ScanStartPort + 1)
+            .ToList();
+
+        await using AddinLoopbackFixtureProcess retired =
+            await AddinLoopbackFixtureProcess.StartOnFirstFreePortAsync(window);
+        int reusedPort = retired.Port;
+        var attestor = new FixtureProcessAttestor(retired);
+        var transport = new FixtureAttestationTransport(attestor);
+        var discovery = new AddinDiscovery(transport, attestor);
+
+        await retired.DisposeAsync();
+        await using AddinLoopbackFixtureProcess replacement =
+            await AddinLoopbackFixtureProcess.StartAsync(reusedPort);
+
+        AddinDiscoveryResult snapshot = await discovery.DiscoverAsync(
+            FixtureBridgeConfiguration.ExplicitPortOverride(reusedPort),
+            TimeSpan.FromSeconds(3));
+
+        Assert.Empty(snapshot.Sessions);
+        AddinDiscoveryRejection rejection =
+            Assert.Single(snapshot.Evidence.RejectedTargets);
+        Assert.Equal(
+            AddinDiscoveryFailureKind.ProcessAttestationFailure,
+            rejection.Kind);
+        Assert.Equal("addin_process_attestation_invalid", rejection.Code);
+
+        FixtureEvidence replacementEvidence =
+            await replacement.SnapshotEvidenceAsync();
+        Assert.Equal(
+            0,
+            replacementEvidence.MethodExecutionCount("mcp_status"));
     }
 
     private static ProbedAddinSession SessionFor(
