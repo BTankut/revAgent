@@ -75,13 +75,25 @@ internal static class BridgeDoctor
         CancellationToken cancellationToken = default) =>
         RunAsync(configuration, BridgeDoctorOptions.Default, cancellationToken);
 
-    internal static async Task<BridgeDoctorReport> RunAsync(
+    internal static Task<BridgeDoctorReport> RunAsync(
         ResolvedBridgeConfiguration configuration,
         BridgeDoctorOptions options,
+        CancellationToken cancellationToken = default) =>
+        RunWithResolverAsync(
+            configuration,
+            options,
+            Dns.GetHostAddressesAsync,
+            cancellationToken);
+
+    internal static async Task<BridgeDoctorReport> RunWithResolverAsync(
+        ResolvedBridgeConfiguration configuration,
+        BridgeDoctorOptions options,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAddressesAsync,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(configuration);
         ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(resolveHostAddressesAsync);
         ValidateOptions(options);
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -92,6 +104,7 @@ internal static class BridgeDoctor
         var gateway = await ProbeGatewayAsync(
             configuration.GatewayUri,
             options.GatewayProbeTimeout,
+            resolveHostAddressesAsync,
             overallCancellation.Token,
             cancellationToken).ConfigureAwait(false);
 
@@ -112,6 +125,7 @@ internal static class BridgeDoctor
     private static async Task<BridgeDoctorGatewayReport> ProbeGatewayAsync(
         Uri gatewayUri,
         TimeSpan timeout,
+        Func<string, CancellationToken, Task<IPAddress[]>> resolveHostAddressesAsync,
         CancellationToken overallCancellationToken,
         CancellationToken callerCancellationToken)
     {
@@ -125,7 +139,7 @@ internal static class BridgeDoctor
 
         try
         {
-            addresses = await Dns.GetHostAddressesAsync(
+            addresses = await resolveHostAddressesAsync(
                 host,
                 probeCancellation.Token).ConfigureAwait(false);
         }
