@@ -194,7 +194,7 @@ export class ArtifactSpool {
       const inputs: ArtifactInput[] = [];
       for (const entry of paths) {
         const candidate = resolve(entry.path);
-        assertInside(realRoot, candidate);
+        assertInside(this.#root, candidate);
         const realCandidate = realpathSync.native(candidate);
         assertInside(realRoot, realCandidate);
         const before = lstatSync(candidate);
@@ -487,7 +487,7 @@ export class ArtifactSpool {
         throw new Error("durable artifact descriptor identity mismatch");
       }
       const candidate = resolve(retainedFile);
-      assertInside(realDirectory, candidate);
+      assertInside(directory, candidate);
       const realCandidate = realpathSync.native(candidate);
       assertInside(realDirectory, realCandidate);
       const stat = lstatSync(candidate);
@@ -607,7 +607,7 @@ export class ArtifactSpool {
     const realDirectory = realpathSync.native(directory);
     assertInside(realRoot, realDirectory);
     const candidate = resolve(carrier.retainedFiles[0]);
-    assertInside(realDirectory, candidate);
+    assertInside(directory, candidate);
     const realCandidate = realpathSync.native(candidate);
     assertInside(realDirectory, realCandidate);
     const stat = lstatSync(candidate);
