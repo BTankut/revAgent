@@ -1,4 +1,6 @@
+using System.Diagnostics;
 using System.Net;
+using System.Text;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Bootstrap.Configuration;
 
@@ -32,7 +34,7 @@ internal sealed class FixtureProcessAttestor : IAddinProcessAttestor
 
     private const long FixtureProcessStartFileTime = 133_000_000_000_000_000L;
 
-    private readonly Dictionary<int, AddinProcessAttestation> _byPort = new();
+    private readonly Dictionary<int, FixtureRegistration> _byPort = new();
 
     internal FixtureProcessAttestor(
         params AddinLoopbackFixtureProcess[] fixtures)
@@ -47,12 +49,14 @@ internal sealed class FixtureProcessAttestor : IAddinProcessAttestor
     internal void Register(AddinLoopbackFixtureProcess fixture)
     {
         ArgumentNullException.ThrowIfNull(fixture);
-        _byPort[fixture.Port] = new AddinProcessAttestation(
-            new AddinProcessIdentity(
-                fixture.ProcessId,
-                FixtureProcessStartFileTime + fixture.ProcessId),
-            FixtureRevitVersion,
-            TrustedImagePath);
+        _byPort[fixture.Port] = new FixtureRegistration(
+            fixture,
+            new AddinProcessAttestation(
+                new AddinProcessIdentity(
+                    fixture.ProcessId,
+                    FixtureProcessStartFileTime + fixture.ProcessId),
+                FixtureRevitVersion,
+                TrustedImagePath));
     }
 
     internal static string TrustedImagePath =>
@@ -82,15 +86,92 @@ internal sealed class FixtureProcessAttestor : IAddinProcessAttestor
     {
         if (!_byPort.TryGetValue(
                 peer.ServerEndPoint.Port,
-                out AddinProcessAttestation? attestation))
+                out FixtureRegistration? registration) ||
+            !registration.Fixture.IsActive)
         {
             throw new AddinProcessAttestationException(
                 "addin_process_attestation_invalid",
-                "The connected loopback endpoint is not a registered fixture.");
+                "The connected loopback endpoint is not an active registered fixture.");
         }
 
-        return attestation;
+        return registration.Attestation;
     }
+
+    private sealed record FixtureRegistration(
+        AddinLoopbackFixtureProcess Fixture,
+        AddinProcessAttestation Attestation);
+}
+
+/// <summary>
+/// Serializes the frozen 8080-8085 fixture window across independent testhost
+/// processes on one Windows runner account.
+/// </summary>
+/// <remarks>
+/// xUnit collections serialize only inside one testhost. Five self-hosted
+/// runner services can therefore execute this collection in separate
+/// processes on the same workstation. The exclusive file handle is released
+/// by the OS after either normal disposal or a process crash; the stable file
+/// itself may safely remain for the next owner.
+/// </remarks>
+internal sealed class AddinLoopbackFrozenPortLease : IAsyncDisposable
+{
+    private static readonly TimeSpan AcquireTimeout = TimeSpan.FromMinutes(2);
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromMilliseconds(100);
+
+    private readonly FileStream _stream;
+
+    private AddinLoopbackFrozenPortLease(FileStream stream)
+    {
+        _stream = stream;
+    }
+
+    internal static async Task<AddinLoopbackFrozenPortLease> AcquireAsync()
+    {
+        string path = Path.Combine(
+            Path.GetTempPath(),
+            "revagent-addin-loopback-ports-8080-8085.lock");
+        var stopwatch = Stopwatch.StartNew();
+        IOException? lastFailure = null;
+
+        while (stopwatch.Elapsed < AcquireTimeout)
+        {
+            FileStream? stream = null;
+            try
+            {
+                stream = new FileStream(
+                    path,
+                    FileMode.OpenOrCreate,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 256,
+                    FileOptions.Asynchronous);
+                byte[] owner = Encoding.UTF8.GetBytes(
+                    Environment.ProcessId.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture));
+                stream.SetLength(0);
+                await stream.WriteAsync(owner).ConfigureAwait(false);
+                await stream.FlushAsync().ConfigureAwait(false);
+                return new AddinLoopbackFrozenPortLease(stream);
+            }
+            catch (IOException exception)
+            {
+                stream?.Dispose();
+                lastFailure = exception;
+                await Task.Delay(RetryDelay).ConfigureAwait(false);
+            }
+            catch
+            {
+                stream?.Dispose();
+                throw;
+            }
+        }
+
+        throw new TimeoutException(
+            "Timed out acquiring the host-wide add-in loopback fixture port lease.",
+            lastFailure);
+    }
+
+    public ValueTask DisposeAsync() => _stream.DisposeAsync();
 }
 
 /// <summary>

@@ -280,22 +280,63 @@ try {
     Set-Content -LiteralPath $raceExternalHardlink -Value "race source" -Encoding ASCII
     [System.IO.File]::SetAttributes($raceExternalHardlink, [System.IO.FileAttributes]::ReadOnly)
     $raceManagedHardlink = Join-Path $packageTarget "src\race-shared.ts"
-    $raceHookEvidence = [pscustomobject]@{ bytes = $null; attributes = $null; sddl = "" }
+    $raceHookEvidence = [pscustomobject]@{ invoked = $false; bytes = $null; attributes = $null; sddl = "" }
     $raceHook = {
+        $raceHookEvidence.invoked = $true
         New-Item -ItemType HardLink -Path $raceManagedHardlink -Target $raceExternalHardlink | Out-Null
         $raceHookEvidence.bytes = [System.IO.File]::ReadAllBytes($raceExternalHardlink)
         $raceHookEvidence.attributes = [System.IO.File]::GetAttributes($raceExternalHardlink)
         $raceHookEvidence.sddl = (Get-Acl -LiteralPath $raceExternalHardlink).Sddl
     }.GetNewClosure()
-    $raceBlockedCommit = Invoke-RevAgentSourceFreeArtifactCleanup `
-        -InstallRoot $installRoot `
-        -PackageTarget $packageTarget `
-        -ServerTarget $serverTarget `
-        -UserProfileRoot $userProfileRoot `
-        -Commit `
-        -TestAfterTransactionPreflightHook $raceHook
-    Assert-Equal $raceBlockedCommit.removedCount 0 "A hardlink introduced after the global preflight must be caught before the first deletion."
-    Assert-True ($raceBlockedCommit.failedCount -gt 0 -and [string]$raceBlockedCommit.failed[0].error -match "non-unit hardlink") "Mutation-edge revalidation must report the injected hardlink race."
+    $raceAttemptDiagnostics = [System.Collections.Generic.List[object]]::new()
+    $raceBlockedCommit = $null
+    foreach ($raceAttempt in 1..3) {
+        $raceHookEvidence.invoked = $false
+        $raceHookEvidence.bytes = $null
+        $raceHookEvidence.attributes = $null
+        $raceHookEvidence.sddl = ""
+        $raceBlockedCommit = Invoke-RevAgentSourceFreeArtifactCleanup `
+            -InstallRoot $installRoot `
+            -PackageTarget $packageTarget `
+            -ServerTarget $serverTarget `
+            -UserProfileRoot $userProfileRoot `
+            -Commit `
+            -TestAfterTransactionPreflightHook $raceHook
+        $raceErrors = @($raceBlockedCommit.failed | ForEach-Object { [string]$_.error })
+        $raceAttemptDiagnostics.Add([pscustomobject][ordered]@{
+                attempt = $raceAttempt
+                hookInvoked = [bool]$raceHookEvidence.invoked
+                managedPathExists = [bool](Test-Path -LiteralPath $raceManagedHardlink -PathType Leaf)
+                removedCount = [int]$raceBlockedCommit.removedCount
+                failed = @($raceBlockedCommit.failed)
+            })
+        if ([bool]$raceHookEvidence.invoked) {
+            break
+        }
+
+        $foreignHandlePreflight = (
+            [int]$raceBlockedCommit.removedCount -eq 0 -and
+            [int]$raceBlockedCommit.failedCount -eq 1 -and
+            $raceErrors.Count -eq 1 -and
+            $raceErrors[0] -match '^Another process already retains a handle to the managed mutation identity set\.' -and
+            -not (Test-Path -LiteralPath $raceManagedHardlink))
+        if (-not $foreignHandlePreflight -or $raceAttempt -eq 3) {
+            break
+        }
+
+        Start-Sleep -Milliseconds 200
+    }
+    $raceDiagnosticsJson = @($raceAttemptDiagnostics.ToArray()) | ConvertTo-Json -Depth 8 -Compress
+    $raceFinalFailures = @($raceBlockedCommit.failed)
+    $raceExpectedError = '^Source-free cleanup transaction rejected a non-unit hardlink before mutation\. path=' +
+        [regex]::Escape([System.IO.Path]::GetFullPath($raceManagedHardlink)) +
+        ' linkCount=2$'
+    Assert-Equal $raceBlockedCommit.removedCount 0 "A hardlink introduced after the global preflight must be caught before the first deletion. attempts=$raceDiagnosticsJson"
+    Assert-True ([bool]$raceHookEvidence.invoked) "Mutation-edge hardlink hook did not run. attempts=$raceDiagnosticsJson"
+    Assert-Equal $raceBlockedCommit.failedCount 1 "Mutation-edge revalidation must emit exactly one transaction-wide failure. attempts=$raceDiagnosticsJson"
+    Assert-Equal $raceFinalFailures.Count 1 "Mutation-edge revalidation failure collection must contain exactly one entry. attempts=$raceDiagnosticsJson"
+    Assert-Equal ([string]$raceFinalFailures[0].rootLabel) "transaction-wide preflight" "Mutation-edge failure must come from the transaction-wide preflight. attempts=$raceDiagnosticsJson"
+    Assert-True ([string]$raceFinalFailures[0].error -match $raceExpectedError) "Mutation-edge revalidation must report the exact injected hardlink path and link count. attempts=$raceDiagnosticsJson"
     Assert-True ([Linq.Enumerable]::SequenceEqual([byte[]][System.IO.File]::ReadAllBytes($raceExternalHardlink), [byte[]]$raceHookEvidence.bytes)) "Race guard changed external hardlink bytes."
     Assert-Equal ([System.IO.File]::GetAttributes($raceExternalHardlink)) $raceHookEvidence.attributes "Race guard changed external hardlink attributes."
     Assert-Equal ((Get-Acl -LiteralPath $raceExternalHardlink).Sddl) $raceHookEvidence.sddl "Race guard changed external hardlink ACL."
