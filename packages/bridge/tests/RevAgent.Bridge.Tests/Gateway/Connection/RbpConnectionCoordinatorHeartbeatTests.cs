@@ -573,11 +573,33 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         Task run = coordinator.RunAsync(stop.Token);
         await EventuallyAsync(
-            () => coordinator.GetSnapshot().HasActiveConnection);
+            () =>
+            {
+                RbpConnectionCoordinatorSnapshot snapshot =
+                    coordinator.GetSnapshot();
+                return snapshot.ConnectionGeneration == 1 &&
+                       snapshot.HasActiveConnection &&
+                       snapshot.OwnedBackgroundTaskCount == 2;
+            });
+        await EventuallyAsync(
+            () => clock.HasOutstandingDelayDueIn(
+                TimeSpan.FromSeconds(15)));
         clock.Advance(TimeSpan.FromSeconds(15));
         await EventuallyAsync(() => factory.OpenCount == 2);
         Assert.True(first.CloseCount > 0);
 
+        await EventuallyAsync(
+            () =>
+            {
+                RbpConnectionCoordinatorSnapshot snapshot =
+                    coordinator.GetSnapshot();
+                return snapshot.ConnectionGeneration == 2 &&
+                       snapshot.HasActiveConnection &&
+                       snapshot.OwnedBackgroundTaskCount == 2;
+            });
+        await EventuallyAsync(
+            () => clock.HasOutstandingDelayDueIn(
+                TimeSpan.FromSeconds(15)));
         clock.Advance(TimeSpan.FromSeconds(15));
         await EventuallyAsync(
             () => second.Sent.Count(item => item.Type == "heartbeat") == 1);
