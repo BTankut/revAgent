@@ -1,5 +1,5 @@
 {
-  "schemaVersion": "rbp-production-bootstrap-identity-pin/v1",
+  "schemaVersion": "rbp-production-bootstrap-identity-pin/v2",
   "minimumNodeVersion": "22.15.0",
   "compilerAndGenerator": {
     "schemaVersion": "rbp-production-bootstrap-build-dependencies/v1",
@@ -12,14 +12,26 @@
     "digestSha256": "3b6b09fc67b5a1ea36e1288e4af6b915bea8a85aedd4d5d99118a73bdafca169",
     "packageCount": 11
   },
-  "npm": {
-    "schemaVersion": "rbp-production-npm-bootstrap-dependency/v1",
-    "name": "npm",
-    "version": "10.9.7",
-    "entrypointRelativePath": "bin/npm-cli.js",
-    "entrypointSha256": "3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e",
-    "fileCount": 1965,
-    "filesSha256": "770864d14941ec22cd2748987a5be08da5d804ee09ec1a8961bc29406ed82cf1",
-    "digestSha256": "ea3dc5497e247a87ebfb90671ec104557bf39736668cc7e261c5317165b70e04"
-  }
+  "npm": [
+    {
+      "schemaVersion": "rbp-production-npm-bootstrap-dependency/v1",
+      "name": "npm",
+      "version": "10.9.7",
+      "entrypointRelativePath": "bin/npm-cli.js",
+      "entrypointSha256": "3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e",
+      "fileCount": 1965,
+      "filesSha256": "770864d14941ec22cd2748987a5be08da5d804ee09ec1a8961bc29406ed82cf1",
+      "digestSha256": "ea3dc5497e247a87ebfb90671ec104557bf39736668cc7e261c5317165b70e04"
+    },
+    {
+      "schemaVersion": "rbp-production-npm-bootstrap-dependency/v1",
+      "name": "npm",
+      "version": "11.11.0",
+      "entrypointRelativePath": "bin/npm-cli.js",
+      "entrypointSha256": "3ce7cba6f5128dd5f54c98b6a5036b0f850496878cc2e21044b675fe3c594e3e",
+      "fileCount": 1770,
+      "filesSha256": "06aeb6baea7d99a2d0e326aa5ff0e61aefac413bbf6e37d3af6756f4316aeb0e",
+      "digestSha256": "828a4808dd3f6511c9fdf6b82e28ee7ebd5c8106bbac50f780d2aa990151398f"
+    }
+  ]
 }

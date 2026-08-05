@@ -4315,11 +4315,20 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     const replacement = new RecordingBinding("wss", "preplan-downgraded");
     const downgradedAck = helloAck("preplan-downgraded");
     downgradedAck.payload.granted_capabilities = ["journal_v1"];
+    let reconnectAttempts = 0;
     const peer = new BridgeGatewayPeer(simulator, initial, helloAck("preplan-initial"), {
       idFactory: uuid,
       reconnectJitter: () => 0,
       sleep: async () => undefined,
-      reconnect: async () => ({ binding: replacement, helloAck: downgradedAck }),
+      reconnect: async () => {
+        reconnectAttempts += 1;
+        if (reconnectAttempts > 1) {
+          throw new GatewayTransportError("unexpected repeated pre-plan downgrade reconnect", {
+            faultClass: "trust",
+          });
+        }
+        return { binding: replacement, helloAck: downgradedAck };
+      },
     });
 
     await expect(simulator.invoke(invocation)).resolves.toMatchObject({
@@ -4328,6 +4337,7 @@ describe("BridgeGatewayPeer executable lifecycle", () => {
     });
     expect(journal.durableDeliveryDisposition(rsid, invocation.payload.invocation_id)).toBeNull();
     await expect(peer.run()).rejects.toMatchObject({ faultClass: "protocol" });
+    expect(reconnectAttempts).toBe(1);
     expect(peer.snapshot().retrySuppressedFault).toBe("protocol");
     expect(replacement.closeCount).toBe(1);
     expect(replacement.sent).toEqual([]);

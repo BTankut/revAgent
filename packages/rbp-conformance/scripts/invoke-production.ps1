@@ -288,7 +288,7 @@ function Get-ProtectedPathAttestation {
     param(
         [Parameter(Mandatory = $true)][string]$PathValue,
         [Parameter(Mandatory = $true)][string]$TrustedRoot,
-        [Parameter(Mandatory = $true)][string]$ExpectedSignerSubject,
+        [Parameter(Mandatory = $true)][string[]]$ExpectedSignerSubjects,
         [Parameter(Mandatory = $true)][string]$Label
     )
 
@@ -322,12 +322,20 @@ function Get-ProtectedPathAttestation {
         throw "$Label exact Get-AuthenticodeSignature cmdlet is unavailable"
     }
     $signature = & $getSignature -LiteralPath $fullPath -ErrorAction Stop
+    $allowedSignerSubjects = [Collections.Generic.HashSet[string]]::new(
+        [StringComparer]::Ordinal
+    )
+    foreach ($expectedSignerSubject in $ExpectedSignerSubjects) {
+        if ([string]::IsNullOrWhiteSpace($expectedSignerSubject)) {
+            throw "$Label expected Authenticode publisher is empty"
+        }
+        [void]$allowedSignerSubjects.Add($expectedSignerSubject)
+    }
     if (
         $signature.Status -ne [Management.Automation.SignatureStatus]::Valid -or
         $null -eq $signature.SignerCertificate -or
-        -not [StringComparer]::Ordinal.Equals(
-            [string]$signature.SignerCertificate.Subject,
-            $ExpectedSignerSubject
+        -not $allowedSignerSubjects.Contains(
+            [string]$signature.SignerCertificate.Subject
         )
     ) {
         throw "$Label does not have the required valid Authenticode publisher"
@@ -1057,23 +1065,25 @@ if (-not [StringComparer]::OrdinalIgnoreCase.Equals(
 $expectedGit = [IO.Path]::GetFullPath(
     [IO.Path]::Combine($programFilesRoot, 'Git', 'bin', 'git.exe')
 )
-$nodeSignerSubject = (
-    'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, ' +
-    'S=California, C=US'
+$nodeSignerSubjects = @(
+    (
+        'CN=OpenJS Foundation, O=OpenJS Foundation, L=San Francisco, ' +
+        'S=California, C=US'
+    )
 )
-$gitSignerSubject = (
-    'CN=Johannes Schindelin, O=Johannes Schindelin, ' +
-    'S=Nordrhein-Westfalen, C=DE'
+$gitSignerSubjects = @(
+    'CN=Johannes Schindelin, O=Johannes Schindelin, S=Nordrhein-Westfalen, C=DE',
+    'CN=Johannes Schindelin, O=Johannes Schindelin, L=Bruehl, C=DE'
 )
 $nodeLaunchGuard = Get-ProtectedPathAttestation `
     -PathValue $expectedNode `
     -TrustedRoot $programFilesRoot `
-    -ExpectedSignerSubject $nodeSignerSubject `
+    -ExpectedSignerSubjects $nodeSignerSubjects `
     -Label 'Production Node executable'
 $gitLaunchGuard = Get-ProtectedPathAttestation `
     -PathValue $expectedGit `
     -TrustedRoot $programFilesRoot `
-    -ExpectedSignerSubject $gitSignerSubject `
+    -ExpectedSignerSubjects $gitSignerSubjects `
     -Label 'Production Git executable'
 
 $baseProcessEnvironment = @{
@@ -1367,7 +1377,7 @@ if (
     ) -or
     -not [StringComparer]::Ordinal.Equals(
         [string]$sourceAnchor.node.signature.subject,
-        $nodeSignerSubject
+        [string]$nodeLaunchGuard.signerSubject
     ) -or
     -not [StringComparer]::OrdinalIgnoreCase.Equals(
         [string]$sourceAnchor.git.path,
@@ -1387,7 +1397,7 @@ if (
     ) -or
     -not [StringComparer]::Ordinal.Equals(
         [string]$sourceAnchor.git.signature.subject,
-        $gitSignerSubject
+        [string]$gitLaunchGuard.signerSubject
     ) -or
     -not [StringComparer]::Ordinal.Equals(
         [string]$sourceAnchor.commit,

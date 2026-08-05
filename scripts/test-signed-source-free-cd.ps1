@@ -141,9 +141,11 @@ function Get-TestTreeDigest {
 }
 
 Write-Host "Test signed source-free CD producer and NAS publish wrapper"
-$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-signed-source-free-cd-test-" + [Guid]::NewGuid().ToString("N"))
+# Keep the fixture compact enough for the Windows PowerShell 5.1 extraction pass,
+# whose .NET Framework file APIs still enforce the legacy MAX_PATH boundary.
+$tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("ra-sfcd-" + [Guid]::NewGuid().ToString("N"))
 $releaseRoot = Join-Path $tempRoot "release-root"
-$nasRoot = Join-Path $tempRoot "revAgent-deploy"
+$nasRoot = Join-Path $tempRoot "n"
 $secretRoot = Join-Path $tempRoot "secrets"
 $version = "2026.06.23.1-cd-test"
 $keyId = "test-cd-key"
