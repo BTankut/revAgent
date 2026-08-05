@@ -230,6 +230,13 @@ internal static class RbpJournalPowerCutProcess
                     "kill point.");
             }
 
+            if (readiness.ProcessId != process.Id)
+            {
+                throw new InvalidOperationException(
+                    "The RBP journal power-cut child reported a process " +
+                    "identity other than the launched harness.");
+            }
+
             if (process.HasExited)
             {
                 throw new InvalidOperationException(
