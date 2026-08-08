@@ -224,59 +224,67 @@ internal sealed class GatewayStubProcess : IAsyncDisposable
                 return;
             }
 
-            string npm = ResolveNpmCommand();
-            var startInfo = new ProcessStartInfo
-            {
-                FileName = npm,
-                WorkingDirectory = repositoryRoot,
-                UseShellExecute = false,
-                RedirectStandardOutput = true,
-                RedirectStandardError = true,
-                CreateNoWindow = true,
-            };
-            startInfo.ArgumentList.Add("run");
-            startInfo.ArgumentList.Add("build");
-            startInfo.ArgumentList.Add("--workspace");
-            startInfo.ArgumentList.Add("@revagent/gateway-stub");
-            using var process = new Process { StartInfo = startInfo };
-            if (!process.Start())
-            {
-                throw new InvalidOperationException(
-                    "The Gateway stub build did not start.");
-            }
-
-            Task<string> output = process.StandardOutput.ReadToEndAsync();
-            Task<string> error = process.StandardError.ReadToEndAsync();
-            using var timeout = new CancellationTokenSource(
-                TimeSpan.FromSeconds(120));
-            try
-            {
-                await process.WaitForExitAsync(timeout.Token)
-                    .ConfigureAwait(false);
-            }
-            catch (OperationCanceledException)
-                when (timeout.IsCancellationRequested)
-            {
-                StopProcess(process);
-                throw new TimeoutException(
-                    "The unchanged Gateway stub build exceeded 120 seconds.");
-            }
-
-            string standardOutput = await output.ConfigureAwait(false);
-            string standardError = await error.ConfigureAwait(false);
-            if (process.ExitCode != 0)
-            {
-                throw new InvalidOperationException(
-                    "The unchanged Gateway stub failed to build: " +
-                    standardOutput +
-                    standardError);
-            }
+            await GatewayStubBuildCoordinator.EnsureBuiltAsync(
+                    repositoryRoot,
+                    () => BuildStubAsync(repositoryRoot))
+                .ConfigureAwait(false);
 
             _builtRepositoryRoot = repositoryRoot;
         }
         finally
         {
             BuildGate.Release();
+        }
+    }
+
+    private static async Task BuildStubAsync(string repositoryRoot)
+    {
+        string npm = ResolveNpmCommand();
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = npm,
+            WorkingDirectory = repositoryRoot,
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("run");
+        startInfo.ArgumentList.Add("build");
+        startInfo.ArgumentList.Add("--workspace");
+        startInfo.ArgumentList.Add("@revagent/gateway-stub");
+        using var process = new Process { StartInfo = startInfo };
+        if (!process.Start())
+        {
+            throw new InvalidOperationException(
+                "The Gateway stub build did not start.");
+        }
+
+        Task<string> output = process.StandardOutput.ReadToEndAsync();
+        Task<string> error = process.StandardError.ReadToEndAsync();
+        using var timeout = new CancellationTokenSource(
+            TimeSpan.FromSeconds(120));
+        try
+        {
+            await process.WaitForExitAsync(timeout.Token)
+                .ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+            when (timeout.IsCancellationRequested)
+        {
+            StopProcess(process);
+            throw new TimeoutException(
+                "The unchanged Gateway stub build exceeded 120 seconds.");
+        }
+
+        string standardOutput = await output.ConfigureAwait(false);
+        string standardError = await error.ConfigureAwait(false);
+        if (process.ExitCode != 0)
+        {
+            throw new InvalidOperationException(
+                "The unchanged Gateway stub failed to build: " +
+                standardOutput +
+                standardError);
         }
     }
 

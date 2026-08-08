@@ -8,7 +8,7 @@ namespace RevAgent.Bridge.Tests.FixtureIntegration;
 /// P3-T3 acceptance, clause 1: "all 21 commands invocable" — driven from the
 /// real bridge TCP client against the real O1-T3 add-in loopback fixture.
 /// </summary>
-[Collection(AddinLoopbackFixtureCollection.Name)]
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinLoopbackCommandSurfaceTests
 {
     [Fact]

@@ -20,6 +20,7 @@ namespace RevAgent.Bridge.Tests.Harness;
 /// fault harnesses for ports and CPU stops being deterministic.
 /// </para>
 /// </remarks>
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class RbpFaultScenarioTests
 {
     /// <summary>

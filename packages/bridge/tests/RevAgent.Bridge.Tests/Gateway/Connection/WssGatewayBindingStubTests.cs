@@ -5,6 +5,7 @@ using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Tests.Gateway.Connection;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class WssGatewayBindingStubTests
 {
     [Fact]

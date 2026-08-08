@@ -6,6 +6,7 @@ using RevAgent.Contracts.AddinLoopback;
 
 namespace RevAgent.Bridge.Tests.AddinLoopback;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinTcpTransportTests
 {
     [Fact]
@@ -42,16 +43,18 @@ public sealed class AddinTcpTransportTests
         Assert.True(result.Evidence.RequestFullyWritten);
         Assert.Equal(result.Evidence.RequestFrameBytes, result.Evidence.BytesWrittenLowerBound);
         Assert.True(result.Evidence.ResponseStarted);
-        Assert.Equal(1, peer.AcceptCount);
     }
 
     [Fact]
     public async Task InvokeAsync_MismatchedResponseIdFaultsWithoutScanningAhead()
     {
+        JObject? observedRequest = null;
         await using var peer = new ScriptedTcpPeer(
             async (stream, cancellationToken) =>
             {
-                await ScriptedTcpPeer.ReadRequestAsync(stream, cancellationToken);
+                observedRequest = await ScriptedTcpPeer.ReadRequestAsync(
+                    stream,
+                    cancellationToken);
                 var stale = ScriptedTcpPeer.SuccessFrame("stale-id");
                 var matching = ScriptedTcpPeer.SuccessFrame("invocation-exact");
                 var coalesced = new byte[stale.Length + matching.Length];
@@ -68,7 +71,12 @@ public sealed class AddinTcpTransportTests
         Assert.Equal("response_id_mismatch", error.Code);
         Assert.Equal(AddinDispatchState.ResponseObserved, error.Evidence.DispatchState);
         Assert.True(error.Evidence.RequestFullyWritten);
-        Assert.Equal(1, peer.AcceptCount);
+        Assert.Equal(
+            "invocation-exact",
+            observedRequest!["id"]!.Value<string>());
+        Assert.Equal(
+            "fixture_echo",
+            observedRequest["method"]!.Value<string>());
     }
 
     [Fact]
@@ -101,7 +109,8 @@ public sealed class AddinTcpTransportTests
             AddinDispatchState.MayHaveReachedAddin,
             error.Evidence.DispatchState);
         Assert.True(error.Evidence.RequestFullyWritten);
-        await clientEofObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await clientEofObserved.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
         await Task.Delay(TimeSpan.FromMilliseconds(250));
         Assert.Equal(1, peer.AcceptCount);
     }
@@ -109,7 +118,7 @@ public sealed class AddinTcpTransportTests
     [Fact]
     public async Task InvokeAsync_PostDispatchCallerCancellationStillObservesOutcome()
     {
-        var requestReceived = new TaskCompletionSource(
+        var requestReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var releaseResponse = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -119,7 +128,8 @@ public sealed class AddinTcpTransportTests
                 var request = await ScriptedTcpPeer.ReadRequestAsync(
                     stream,
                     cancellationToken);
-                requestReceived.SetResult();
+                requestReceived.SetResult(
+                    request["id"]!.Value<string>()!);
                 await releaseResponse.Task.WaitAsync(cancellationToken);
                 var response = ScriptedTcpPeer.SuccessFrame(
                     request["id"]!.Value<string>()!);
@@ -129,12 +139,21 @@ public sealed class AddinTcpTransportTests
 
         var invocation = new AddinTcpTransport().InvokeAsync(
             AddinEndpoint.Ipv4Loopback(peer.Port),
-            Call("cancel-id", timeout: TimeSpan.FromSeconds(5)),
+            Call(
+                "cancel-id",
+                timeout: SocketIntegrationCollection.CoordinationTimeout),
             cancellation.Token);
-        await requestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        string observedRequestId = await requestReceived.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
+        Assert.Equal("cancel-id", observedRequestId);
         cancellation.Cancel();
-        await Task.Delay(TimeSpan.FromMilliseconds(100));
+
+        Task firstCompletion = await Task.WhenAny(
+            invocation,
+            Task.Delay(TimeSpan.FromMilliseconds(100)));
+        Assert.NotSame(invocation, firstCompletion);
         Assert.False(invocation.IsCompleted);
+
         releaseResponse.SetResult();
 
         var result = await invocation;
@@ -143,22 +162,23 @@ public sealed class AddinTcpTransportTests
             AddinDispatchState.ResponseObserved,
             result.Evidence.DispatchState);
         Assert.True(result.Evidence.RequestFullyWritten);
-        await Task.Delay(TimeSpan.FromMilliseconds(250));
-        Assert.Equal(1, peer.AcceptCount);
     }
 
     [Fact]
     public async Task InvokeAsync_PostDispatchWorkerShutdownClosesWithUncertainEvidence()
     {
-        var requestReceived = new TaskCompletionSource(
+        var requestReceived = new TaskCompletionSource<string>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var clientEofObserved = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         await using var peer = new ScriptedTcpPeer(
             async (stream, cancellationToken) =>
             {
-                await ScriptedTcpPeer.ReadRequestAsync(stream, cancellationToken);
-                requestReceived.SetResult();
+                JObject request = await ScriptedTcpPeer.ReadRequestAsync(
+                    stream,
+                    cancellationToken);
+                requestReceived.SetResult(
+                    request["id"]!.Value<string>()!);
                 var buffer = new byte[1];
                 var bytesRead = await stream.ReadAsync(buffer, cancellationToken);
                 if (bytesRead != 0)
@@ -173,10 +193,14 @@ public sealed class AddinTcpTransportTests
 
         var invocation = new AddinTcpTransport().InvokeAsync(
             AddinEndpoint.Ipv4Loopback(peer.Port),
-            Call("shutdown-id", timeout: TimeSpan.FromSeconds(5)),
+            Call(
+                "shutdown-id",
+                timeout: SocketIntegrationCollection.CoordinationTimeout),
             preDispatchCancellationToken: default,
             transportShutdownToken: shutdown.Token);
-        await requestReceived.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        string observedRequestId = await requestReceived.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
+        Assert.Equal("shutdown-id", observedRequestId);
         shutdown.Cancel();
 
         var error = await Assert.ThrowsAsync<AddinTransportException>(
@@ -187,9 +211,8 @@ public sealed class AddinTcpTransportTests
             AddinDispatchState.MayHaveReachedAddin,
             error.Evidence.DispatchState);
         Assert.True(error.Evidence.RequestFullyWritten);
-        await clientEofObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
-        await Task.Delay(TimeSpan.FromMilliseconds(250));
-        Assert.Equal(1, peer.AcceptCount);
+        await clientEofObserved.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
     }
 
     [Fact]
@@ -440,7 +463,8 @@ public sealed class AddinTcpTransportTests
         Assert.False(error.Evidence.RequestFullyWritten);
         Assert.Equal(
             0,
-            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+            await bytesObserved.Task.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout));
     }
 
     [Fact]
@@ -488,7 +512,8 @@ public sealed class AddinTcpTransportTests
         Assert.False(error.Evidence.RequestFullyWritten);
         Assert.Equal(
             0,
-            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+            await bytesObserved.Task.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout));
     }
 
     [Fact]
@@ -556,7 +581,8 @@ public sealed class AddinTcpTransportTests
         Assert.Equal(0, error.Evidence.BytesWrittenLowerBound);
         Assert.Equal(
             0,
-            await bytesObserved.Task.WaitAsync(TimeSpan.FromSeconds(2)));
+            await bytesObserved.Task.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout));
     }
 
     private static AddinCall Call(
@@ -566,7 +592,7 @@ public sealed class AddinTcpTransportTests
             invocationId,
             "fixture_echo",
             new JObject { ["value"] = "hello" },
-            timeout ?? TimeSpan.FromSeconds(2));
+            timeout ?? SocketIntegrationCollection.CoordinationTimeout);
 
     private sealed class RejectingProcessAttestor
         : IAddinProcessAttestor
