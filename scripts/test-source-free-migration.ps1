@@ -70,6 +70,16 @@ function Import-ScriptFunctionForTest {
     return [scriptblock]::Create([string]$functionAst[0].Extent.Text)
 }
 
+function Test-CurrentProcessElevatedForSourceFreeFixture {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+    return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (Test-CurrentProcessElevatedForSourceFreeFixture) {
+    throw "Source-free migration security fixtures must run from an unelevated Windows token. An elevated local run takes the production pre-protected-root branch and masks the PS5.1 MAX_PATH regression with a misleading ACL assertion. Re-run this script from a non-administrator Windows PowerShell 5.1 console."
+}
+
 Write-Host "Test source-free migration artifact scan and cleanup"
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-source-free-migration-test-" + [Guid]::NewGuid().ToString("N"))
 $installRoot = Join-Path $tempRoot "ProgramData\DPE\revAgent"
@@ -78,6 +88,89 @@ $serverTarget = Join-Path $installRoot "runtime"
 $userProfileRoot = Join-Path $tempRoot "Users\Operator"
 
 try {
+    Write-Host "Test compact quarantine naming retries bounded token collisions"
+    $quarantineCollisionRoot = Join-Path $tempRoot "quarantine-collision"
+    New-Item -ItemType Directory -Path (Join-Path $quarantineCollisionRoot ".q-aaaaaaaa") -Force | Out-Null
+    $sourceFreeModule = @(Get-Module | Where-Object {
+            -not [string]::IsNullOrWhiteSpace([string]$_.Path) -and
+            [string]::Equals([System.IO.Path]::GetFullPath([string]$_.Path), (Join-Path $libRoot "RevAgent.SourceFreeMigration.psm1"), [System.StringComparison]::OrdinalIgnoreCase)
+        } | Select-Object -First 1)
+    Assert-Equal $sourceFreeModule.Count 1 "Source-free migration module must be available for private quarantine-path tests."
+    $sourceFreeModuleObject = $sourceFreeModule[0]
+    $collisionTokenFactory = {
+        param([int]$Attempt)
+        if ($Attempt -eq 0) { return "aaaaaaaa" }
+        return "bbbbbbbb"
+    }
+    $collisionResolvedPath = & $sourceFreeModuleObject {
+        param($ParentPath, $TokenFactory)
+        New-RevAgentCanonicalLegacyUniqueQuarantineChildPath `
+            -ParentPath $ParentPath `
+            -Prefix ".q-" `
+            -ItemType "directory" `
+            -Purpose "collision regression fixture" `
+            -MaxAttempts 2 `
+            -TokenFactory $TokenFactory
+    } $quarantineCollisionRoot $collisionTokenFactory
+    Assert-Equal ([System.IO.Path]::GetFileName([string]$collisionResolvedPath)) ".q-bbbbbbbb" "Quarantine naming must retry a deterministic short-token collision."
+
+    $collisionExhaustedMessage = ""
+    try {
+        [void](& $sourceFreeModuleObject {
+                param($ParentPath)
+                New-RevAgentCanonicalLegacyUniqueQuarantineChildPath `
+                    -ParentPath $ParentPath `
+                    -Prefix ".q-" `
+                    -ItemType "directory" `
+                    -Purpose "collision exhaustion fixture" `
+                    -MaxAttempts 2 `
+                    -TokenFactory { param([int]$Attempt) return "aaaaaaaa" }
+            } $quarantineCollisionRoot)
+    }
+    catch {
+        $collisionExhaustedMessage = $_.Exception.Message
+    }
+    Assert-True ($collisionExhaustedMessage -match 'after 2 bounded attempts') "Quarantine naming must fail closed after its bounded collision retry budget."
+
+    Write-Host "Test impossible quarantine budget fails before ACL or file mutation"
+    $budgetFixtureRoot = Join-Path $tempRoot "quarantine-budget-preflight"
+    $budgetCommonTargetLength = 210
+    $budgetPaddingLength = $budgetCommonTargetLength - $budgetFixtureRoot.Length - 13 # \<padding>\ProgramData
+    Assert-True ($budgetPaddingLength -gt 0 -and $budgetPaddingLength -le 200) "Quarantine budget fixture could not derive a legal bounded InstallRoot padding component."
+    $budgetCommonRoot = Join-Path (Join-Path $budgetFixtureRoot ("p" * $budgetPaddingLength)) "ProgramData"
+    Assert-Equal $budgetCommonRoot.Length $budgetCommonTargetLength "Quarantine budget fixture CommonAppDataRoot length mismatch."
+    $budgetInstallRoot = Join-Path $budgetCommonRoot "DPE\revAgent"
+    New-Item -ItemType Directory -Path $budgetInstallRoot -Force | Out-Null
+
+    $budgetSourceRoot = Join-Path $budgetCommonRoot "Autodesk\Revit\Addins\2024"
+    $budgetSourcePath = Join-Path $budgetSourceRoot "revit-mcp.addin"
+    New-Item -ItemType Directory -Path $budgetSourceRoot -Force | Out-Null
+    Set-Content -LiteralPath $budgetSourcePath -Value "legal source" -Encoding ASCII
+
+    $budgetQuarantineRootProbe = Join-Path $budgetInstallRoot ".q-00000000"
+    $budgetQuarantineLeafProbe = Join-Path $budgetQuarantineRootProbe "00000000-revit-mcp.addin"
+    Assert-True ($budgetQuarantineRootProbe.Length -le 247) "Quarantine budget fixture root must remain a legal legacy directory path."
+    Assert-True ($budgetQuarantineLeafProbe.Length -gt 259) "Quarantine budget fixture leaf must be impossible for legacy PS5.1 file APIs."
+    Assert-True ($budgetSourcePath.Length -le 259) "Quarantine budget fixture source must remain a legal legacy file path."
+
+    $budgetInstallAclBefore = (Get-Acl -LiteralPath $budgetInstallRoot).Sddl
+    $budgetSourceAclBefore = (Get-Acl -LiteralPath $budgetSourcePath).Sddl
+    $budgetBlockedCommit = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
+        -Scope machine `
+        -InstallRoot $budgetInstallRoot `
+        -CommonAppDataRoot $budgetCommonRoot `
+        -Commit
+    Assert-True (-not [bool]$budgetBlockedCommit.success) "Impossible quarantine destination must fail closed."
+    Assert-Equal ([string]$budgetBlockedCommit.deletionSkippedReason) "quarantine_path_budget_failed" "Impossible quarantine destination must report the path-budget preflight reason."
+    Assert-True (-not [bool]$budgetBlockedCommit.deletionAttempted) "Impossible quarantine destination must stop before deletion begins."
+    Assert-Equal ([int]$budgetBlockedCommit.removedCount) 0 "Impossible quarantine destination must remove no source artifacts."
+    Assert-True (@($budgetBlockedCommit.failed | Where-Object { [string]$_.surface -eq "machine_revit_addin_quarantine" -and [string]$_.reason -eq "quarantine_path_budget_failed" }).Count -eq 1) "Impossible quarantine destination must expose structured preflight evidence."
+    Assert-Equal ((Get-Acl -LiteralPath $budgetInstallRoot).Sddl) $budgetInstallAclBefore "Quarantine budget preflight must not mutate InstallRoot ACLs."
+    Assert-Equal ((Get-Acl -LiteralPath $budgetSourcePath).Sddl) $budgetSourceAclBefore "Quarantine budget preflight must not mutate source ACLs."
+    Assert-True (Test-Path -LiteralPath $budgetSourcePath -PathType Leaf) "Quarantine budget preflight must preserve the legal source file."
+    Assert-Equal ([string]$budgetBlockedCommit.quarantinePath) "" "Quarantine budget preflight must not allocate a real quarantine root."
+    Assert-Equal (@(Get-ChildItem -LiteralPath $budgetInstallRoot -Force).Count) 0 "Quarantine budget preflight must not create children under InstallRoot."
+
     foreach ($path in @(
             (Join-Path $packageTarget "src"),
             (Join-Path $packageTarget "docs"),
@@ -500,7 +593,10 @@ public static class RevAgentSourceFreeForeignHandle {
     Assert-True (Test-Path -LiteralPath (Join-Path $userProfileRoot ".codex\skills\revAgent\src\skill.ts") -PathType Leaf) "Canonical user migration, not broad source cleanup, owns retired per-user skill handling."
 
     Write-Host "Test bounded canonical legacy-surface inventory and cleanup"
-    $canonicalFixtureRoot = Join-Path $tempRoot "canonical-legacy-surface"
+    # The extra suffix guarantees that the retired 32+32-character quarantine
+    # layout crosses MAX_PATH even when TEMP is as short as C:\. The compact
+    # production layout must still remain inside the PS5.1 path budget.
+    $canonicalFixtureRoot = Join-Path $tempRoot "canonical-legacy-surface-maxpath"
     $canonicalCommonRoot = Join-Path $canonicalFixtureRoot "ProgramData"
     $canonicalInstallRoot = Join-Path $canonicalCommonRoot "DPE\revAgent"
     $canonicalUserRoot = Join-Path $canonicalFixtureRoot "Users\Operator"
@@ -612,6 +708,15 @@ public static class RevAgentSourceFreeForeignHandle {
     Assert-Equal (@($machineDryRun.matched | Where-Object { [string]$_.path -like "*ForeignVendor*" }).Count) 0 "Foreign-vendor DLLs that collide by basename must never match canonical cleanup."
     Assert-True (Test-Path -LiteralPath (Join-Path $canonicalLegacyRoot "package")) "Canonical machine dry-run removed an allowlisted legacy child."
 
+    $maxPathFixtureLeafName = "revit-mcp.addin.disabled-duplicate-20260410"
+    $retiredQuarantineRoot = Join-Path $canonicalInstallRoot (".legacy-cleanup-quarantine-" + ("0" * 32))
+    $retiredQuarantineLeaf = Join-Path $retiredQuarantineRoot (("0" * 32) + "-" + $maxPathFixtureLeafName)
+    $compactQuarantineRoot = Join-Path $canonicalInstallRoot (".q-" + ("0" * 8))
+    $compactQuarantineLeaf = Join-Path $compactQuarantineRoot (("0" * 8) + "-" + $maxPathFixtureLeafName)
+    Assert-True ($retiredQuarantineLeaf.Length -gt 259) "MAX_PATH regression fixture must prove the retired quarantine layout exceeds the PS5.1 file-path budget."
+    Assert-True ($compactQuarantineRoot.Length -le 247) "Compact quarantine root must fit the PS5.1 directory-path budget."
+    Assert-True ($compactQuarantineLeaf.Length -le 259) "Compact quarantine leaf must fit the PS5.1 file-path budget."
+
     $canonicalInstallAclBeforeBlockedCommit = (Get-Acl -LiteralPath $canonicalInstallRoot).Sddl
     $blockedMachineCommit = Invoke-RevAgentCanonicalLegacySurfaceCleanup `
         -Scope machine `
@@ -659,6 +764,14 @@ public static class RevAgentSourceFreeForeignHandle {
     Assert-Equal ([int]$machineCommit.failedCount) 0 "Canonical machine fixture cleanup must not fail."
     Assert-Equal ([int]$machineCommit.remainingCount) 0 "Canonical machine fixture must have no remaining matched artifacts."
     Assert-True ([int]$machineCommit.removedCount -gt 0) "Canonical machine commit must report removed artifacts."
+    Assert-True ([int]$machineCommit.quarantinedCount -gt 0) "Canonical machine commit must exercise protected add-in quarantine moves."
+    Assert-True ((Split-Path -Leaf ([string]$machineCommit.quarantinePath)) -match '^\.q-[0-9a-f]{8}$') "Canonical machine quarantine root must use the compact bounded token contract."
+    Assert-True (([string]$machineCommit.quarantinePath).Length -le 247) "Actual canonical machine quarantine root must remain inside the PS5.1 directory-path budget."
+    foreach ($quarantineSource in @($machineDryRun.matched | Where-Object { [string]$_.surface -match '^machine_revit_addin_' })) {
+        $quarantineBudgetPath = Join-Path ([string]$machineCommit.quarantinePath) (("0" * 8) + "-" + [System.IO.Path]::GetFileName([string]$quarantineSource.path))
+        $quarantineBudgetLimit = if ([string]$quarantineSource.itemType -eq "directory") { 247 } else { 259 }
+        Assert-True ($quarantineBudgetPath.Length -le $quarantineBudgetLimit) "Every canonical machine quarantine leaf must remain inside its PS5.1 item-type path budget."
+    }
     foreach ($removedName in @("package", "runtime", "updater", "revit-plugin", "commands", "codex", "dependencies")) {
         Assert-True (-not (Test-Path -LiteralPath (Join-Path $canonicalLegacyRoot $removedName))) "Allowlisted legacy-root child '$removedName' was not removed."
     }
