@@ -7,17 +7,6 @@ using RevAgent.Bridge.Bootstrap.Configuration;
 namespace RevAgent.Bridge.Tests.FixtureIntegration;
 
 /// <summary>
-/// Every fixture-integration class shares one xUnit collection so the real
-/// Node fixture processes and the frozen 8080-8085 scan window are never
-/// contended by two classes at once.
-/// </summary>
-[CollectionDefinition(AddinLoopbackFixtureCollection.Name)]
-public sealed class AddinLoopbackFixtureCollection
-{
-    internal const string Name = "AddinLoopbackFixtureIntegration";
-}
-
-/// <summary>
 /// Substitutes the Windows OS-level process attestation evidence for the
 /// launched fixture process.
 /// </summary>

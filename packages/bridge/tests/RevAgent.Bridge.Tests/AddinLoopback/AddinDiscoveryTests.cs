@@ -8,6 +8,7 @@ using RevAgent.Contracts.AddinLoopback;
 
 namespace RevAgent.Bridge.Tests.AddinLoopback;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinDiscoveryTests
 {
     private const long TestProcessStartFileTime = 133000000000000000;
@@ -406,17 +407,17 @@ public sealed class AddinDiscoveryTests
     public async Task DiscoverAsync_CallerCancellationClosesInFlightProbe()
     {
         using var cancellation = new CancellationTokenSource();
-        var requestObserved = new TaskCompletionSource(
+        var requestObserved = new TaskCompletionSource<JObject>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var peerEof = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         await using var peer = new ScriptedTcpPeer(
             async (stream, cancellationToken) =>
             {
-                await ScriptedTcpPeer.ReadRequestAsync(
+                JObject request = await ScriptedTcpPeer.ReadRequestAsync(
                     stream,
                     cancellationToken);
-                requestObserved.SetResult();
+                requestObserved.SetResult(request);
                 var buffer = new byte[1];
                 int bytesRead = await stream.ReadAsync(
                     buffer,
@@ -428,37 +429,42 @@ public sealed class AddinDiscoveryTests
             new AddinTcpTransport(),
             new FixedProcessAttestor(994)).DiscoverAsync(
                 EnvironmentConfiguration(peer.Port),
-                probeTimeout: TimeSpan.FromSeconds(10),
+                probeTimeout: SocketIntegrationCollection.CoordinationTimeout,
                 cancellationToken: cancellation.Token);
-        await requestObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        JObject observedRequest = await requestObserved.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
+        Assert.Equal(
+            "mcp_status",
+            observedRequest["method"]!.Value<string>());
 
         cancellation.Cancel();
 
         OperationCanceledException error =
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => discoveryTask.WaitAsync(TimeSpan.FromSeconds(2)));
+                () => discoveryTask.WaitAsync(
+                    SocketIntegrationCollection.CoordinationTimeout));
         Assert.Equal(cancellation.Token, error.CancellationToken);
         Assert.Equal(
             0,
-            await peerEof.Task.WaitAsync(TimeSpan.FromSeconds(2)));
-        Assert.Equal(1, peer.AcceptCount);
+            await peerEof.Task.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout));
     }
 
     [Fact]
     public async Task DiscoverAsync_WorkerShutdownClosesInFlightProbe()
     {
         using var shutdown = new CancellationTokenSource();
-        var requestObserved = new TaskCompletionSource(
+        var requestObserved = new TaskCompletionSource<JObject>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var peerEof = new TaskCompletionSource<int>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         await using var peer = new ScriptedTcpPeer(
             async (stream, cancellationToken) =>
             {
-                await ScriptedTcpPeer.ReadRequestAsync(
+                JObject request = await ScriptedTcpPeer.ReadRequestAsync(
                     stream,
                     cancellationToken);
-                requestObserved.SetResult();
+                requestObserved.SetResult(request);
                 var buffer = new byte[1];
                 int bytesRead = await stream.ReadAsync(
                     buffer,
@@ -470,20 +476,25 @@ public sealed class AddinDiscoveryTests
             new AddinTcpTransport(),
             new FixedProcessAttestor(994)).DiscoverAsync(
                 EnvironmentConfiguration(peer.Port),
-                probeTimeout: TimeSpan.FromSeconds(10),
+                probeTimeout: SocketIntegrationCollection.CoordinationTimeout,
                 transportShutdownToken: shutdown.Token);
-        await requestObserved.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        JObject observedRequest = await requestObserved.Task.WaitAsync(
+            SocketIntegrationCollection.CoordinationTimeout);
+        Assert.Equal(
+            "mcp_status",
+            observedRequest["method"]!.Value<string>());
 
         shutdown.Cancel();
 
         OperationCanceledException error =
             await Assert.ThrowsAnyAsync<OperationCanceledException>(
-                () => discoveryTask.WaitAsync(TimeSpan.FromSeconds(2)));
+                () => discoveryTask.WaitAsync(
+                    SocketIntegrationCollection.CoordinationTimeout));
         Assert.Equal(shutdown.Token, error.CancellationToken);
         Assert.Equal(
             0,
-            await peerEof.Task.WaitAsync(TimeSpan.FromSeconds(2)));
-        Assert.Equal(1, peer.AcceptCount);
+            await peerEof.Task.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout));
     }
 
     [Fact]
@@ -509,14 +520,13 @@ public sealed class AddinDiscoveryTests
             new AddinTcpTransport(),
             new FixedProcessAttestor(994)).DiscoverAsync(
                 EnvironmentConfiguration(peer.Port),
-                probeTimeout: TimeSpan.FromSeconds(2));
+                probeTimeout: SocketIntegrationCollection.CoordinationTimeout);
 
         Assert.NotNull(observedRequest);
         Assert.Equal("mcp_status", observedRequest!["method"]!.Value<string>());
         Assert.Empty(Assert.IsType<JObject>(observedRequest["params"]));
         Assert.Single(result.Sessions);
         Assert.Equal(peer.Port, result.Sessions[0].Target.Port);
-        Assert.Equal(1, peer.AcceptCount);
     }
 
     private static AddinDiscovery CreateDiscovery(

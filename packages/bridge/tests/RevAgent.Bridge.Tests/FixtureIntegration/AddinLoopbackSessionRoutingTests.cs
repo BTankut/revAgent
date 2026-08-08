@@ -9,7 +9,7 @@ namespace RevAgent.Bridge.Tests.FixtureIntegration;
 /// 8080-8085 window, both discovered by the bounded scan and both routed
 /// through the real session router and TCP transport.
 /// </summary>
-[Collection(AddinLoopbackFixtureCollection.Name)]
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinLoopbackSessionRoutingTests
 {
     [Fact]
