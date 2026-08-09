@@ -32,6 +32,11 @@ export {
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
 export {
+  M2_NORTH_FIRST_SLICE_CALLABLE,
+  NorthFirstSliceCompositionError,
+  buildNorthFirstSliceCallableRegistry,
+} from "./northFirstSlice.js";
+export {
   ExecutorPortUnavailableError,
   unboundExecutorPort,
   type ExecutorCallContext,
