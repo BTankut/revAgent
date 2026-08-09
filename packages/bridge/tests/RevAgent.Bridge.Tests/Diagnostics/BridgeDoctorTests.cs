@@ -6,6 +6,7 @@ using RevAgent.Bridge.Bootstrap.Diagnostics;
 
 namespace RevAgent.Bridge.Tests.Diagnostics;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class BridgeDoctorTests
 {
     [Fact]

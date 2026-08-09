@@ -15,6 +15,7 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 /// handshake over the persisted credential, token single-use conflict, and
 /// the corrupt-store re-enrollment repair path.
 /// </summary>
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class EnrollmentAgainstStubTests
 {
     private const string FreshEnrollmentToken =

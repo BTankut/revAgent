@@ -1,5 +1,13 @@
 Set-StrictMode -Version Latest
 
+# Windows PowerShell 5.1 uses .NET Framework file APIs. On hosts where
+# LongPathsEnabled is disabled, those APIs must stay inside the legacy Win32
+# budgets even when the same code would succeed in PowerShell 7.
+$script:RevAgentCanonicalLegacyMaxFilePathLength = 259
+$script:RevAgentCanonicalLegacyMaxDirectoryPathLength = 247
+$script:RevAgentCanonicalLegacyQuarantineTokenLength = 8
+$script:RevAgentCanonicalLegacyQuarantineMaxAttempts = 32
+
 $permissionsModulePath = Join-Path $PSScriptRoot "RevAgent.Permissions.psm1"
 if (-not (Test-Path -LiteralPath $permissionsModulePath -PathType Leaf)) {
     throw "Source-free cleanup requires the sibling permissions module: $permissionsModulePath"
@@ -2233,6 +2241,115 @@ function Assert-RevAgentCanonicalLegacyExactPathProtected {
     }
 }
 
+function Assert-RevAgentCanonicalLegacyDestinationPathBudget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("file", "directory")]
+        [string]$ItemType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose
+    )
+
+    $pathFull = Get-RevAgentCanonicalLegacyFullPath -Path $Path
+    $maxLength = if ($ItemType -eq "directory") {
+        $script:RevAgentCanonicalLegacyMaxDirectoryPathLength
+    }
+    else {
+        $script:RevAgentCanonicalLegacyMaxFilePathLength
+    }
+    if ($pathFull.Length -gt $maxLength) {
+        throw "Canonical legacy $Purpose exceeds the Windows PowerShell 5.1 legacy $ItemType path budget. length=$($pathFull.Length) maxLength=$maxLength path=$pathFull"
+    }
+    return $pathFull
+}
+
+function New-RevAgentCanonicalLegacyUniqueQuarantineChildPath {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$ParentPath,
+
+        [string]$Prefix = "",
+
+        [string]$Suffix = "",
+
+        [Parameter(Mandatory = $true)]
+        [ValidateSet("file", "directory")]
+        [string]$ItemType,
+
+        [Parameter(Mandatory = $true)]
+        [string]$Purpose,
+
+        [ValidateRange(1, 128)]
+        [int]$MaxAttempts = $script:RevAgentCanonicalLegacyQuarantineMaxAttempts,
+
+        [scriptblock]$TokenFactory = $null
+    )
+
+    $parentFull = Get-RevAgentCanonicalLegacyFullPath -Path $ParentPath
+    for ($attempt = 0; $attempt -lt $MaxAttempts; $attempt++) {
+        $token = if ($null -eq $TokenFactory) {
+            [Guid]::NewGuid().ToString("N").Substring(0, $script:RevAgentCanonicalLegacyQuarantineTokenLength)
+        }
+        else {
+            [string](& $TokenFactory $attempt)
+        }
+        $tokenPattern = "^[0-9a-fA-F]{$($script:RevAgentCanonicalLegacyQuarantineTokenLength)}$"
+        if ([string]::IsNullOrWhiteSpace($token) -or $token -notmatch $tokenPattern) {
+            throw "Canonical legacy quarantine token factory returned an invalid token at attempt $attempt."
+        }
+
+        $leafName = "{0}{1}{2}" -f $Prefix, $token.ToLowerInvariant(), $Suffix
+        $candidatePath = Assert-RevAgentCanonicalLegacyDestinationPathBudget `
+            -Path (Join-Path $parentFull $leafName) `
+            -ItemType $ItemType `
+            -Purpose $Purpose
+        if (-not (Test-Path -LiteralPath $candidatePath -ErrorAction Stop)) {
+            return $candidatePath
+        }
+    }
+
+    throw "Canonical legacy $Purpose could not allocate a unique quarantine path after $MaxAttempts bounded attempts under '$parentFull'."
+}
+
+function Assert-RevAgentCanonicalLegacyMachineQuarantineBudget {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$InstallRoot,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries,
+
+        [string]$QuarantinePath = ""
+    )
+
+    $installRootFull = Get-RevAgentCanonicalLegacyFullPath -Path $InstallRoot
+    $quarantinePathFull = if ([string]::IsNullOrWhiteSpace($QuarantinePath)) {
+        # Pure deterministic preflight: the real token has the same fixed
+        # length, but uniqueness probing and directory creation happen later.
+        Join-Path $installRootFull (".q-" + ("0" * $script:RevAgentCanonicalLegacyQuarantineTokenLength))
+    }
+    else {
+        Get-RevAgentCanonicalLegacyFullPath -Path $QuarantinePath
+    }
+    [void](Assert-RevAgentCanonicalLegacyDestinationPathBudget `
+            -Path $quarantinePathFull `
+            -ItemType "directory" `
+            -Purpose "machine add-in quarantine root")
+
+    foreach ($entry in $Entries) {
+        $entryPath = Get-RevAgentCanonicalLegacyFullPath -Path ([string]$entry.path)
+        $entryName = [System.IO.Path]::GetFileName($entryPath)
+        [void](Assert-RevAgentCanonicalLegacyDestinationPathBudget `
+                -Path (Join-Path $quarantinePathFull (("0" * $script:RevAgentCanonicalLegacyQuarantineTokenLength) + "-" + $entryName)) `
+                -ItemType ([string]$entry.itemType) `
+                -Purpose "machine add-in quarantine leaf")
+    }
+}
+
 function Protect-RevAgentCanonicalLegacyMachineDeletionTopology {
     param(
         [Parameter(Mandatory = $true)]
@@ -2297,11 +2414,28 @@ function New-RevAgentCanonicalLegacyMachineQuarantine {
         [string]$InstallRoot,
 
         [Parameter(Mandatory = $true)]
-        [object]$Policy
+        [object]$Policy,
+
+        [Parameter(Mandatory = $true)]
+        [object[]]$Entries
     )
 
     $installRootFull = Get-RevAgentCanonicalLegacyFullPath -Path $InstallRoot
-    $quarantinePath = Join-Path $installRootFull (".legacy-cleanup-quarantine-{0}" -f [Guid]::NewGuid().ToString("N"))
+    $quarantinePath = New-RevAgentCanonicalLegacyUniqueQuarantineChildPath `
+        -ParentPath $installRootFull `
+        -Prefix ".q-" `
+        -ItemType "directory" `
+        -Purpose "machine add-in quarantine root"
+
+    # Repeat the pure preflight against the actual unique root immediately
+    # before creation. The earlier transaction preflight guarantees zero ACL
+    # mutation for an impossible destination; this check guards future naming
+    # changes at the final mutation edge.
+    Assert-RevAgentCanonicalLegacyMachineQuarantineBudget `
+        -InstallRoot $installRootFull `
+        -Entries $Entries `
+        -QuarantinePath $quarantinePath
+
     [void][System.IO.Directory]::CreateDirectory($quarantinePath)
     Protect-RevAgentCanonicalLegacyExactPath -Path $quarantinePath -BoundaryRoot $installRootFull -ExpectedItemType "directory" -Policy $Policy
     return Get-RevAgentCanonicalLegacyFullPath -Path $quarantinePath
@@ -2323,7 +2457,16 @@ function Move-RevAgentCanonicalLegacyMachineAddinToQuarantine {
     try {
         Assert-RevAgentCanonicalLegacyExactPathProtected -Entry $Entry -Policy $Policy
         $sourcePath = Get-RevAgentCanonicalLegacyFullPath -Path ([string]$Entry.path)
-        $destinationPath = Join-Path $QuarantineRoot ("{0}-{1}" -f [Guid]::NewGuid().ToString("N"), [System.IO.Path]::GetFileName($sourcePath))
+        $destinationPath = New-RevAgentCanonicalLegacyUniqueQuarantineChildPath `
+            -ParentPath $QuarantineRoot `
+            -Suffix ("-" + [System.IO.Path]::GetFileName($sourcePath)) `
+            -ItemType ([string]$Entry.itemType) `
+            -Purpose "machine add-in quarantine leaf"
+        # QuarantineRoot has already been protected by the exact ACL policy, so
+        # an unprivileged process cannot create a destination in the remaining
+        # Test-Path-to-Move window. A privileged/concurrent collision is still
+        # fail-closed: File.Move/Directory.Move never overwrite the destination
+        # and the atomic_move catch below preserves the source for diagnosis.
         $stage = "atomic_move"
         if ([string]$Entry.itemType -eq "directory") {
             [System.IO.Directory]::Move($sourcePath, $destinationPath)
@@ -2516,6 +2659,7 @@ function Invoke-RevAgentCanonicalLegacySurfaceCleanup {
     $machinePolicy = $null
     $quarantinePath = ""
     $quarantinedCount = 0
+    $machineAddinEntries = @($matched | Where-Object { [string]$_.surface -match '^machine_revit_addin_' })
 
     $deleteAuthorized = [bool]$Commit
     if ($deleteAuthorized -and $failed.Count -gt 0) {
@@ -2549,6 +2693,28 @@ function Invoke-RevAgentCanonicalLegacySurfaceCleanup {
                 })
             $deleteAuthorized = $false
             $deletionSkippedReason = "hardlink_preflight_failed"
+        }
+    }
+
+    if ($deleteAuthorized -and $scopeName -eq "machine" -and $machineAddinEntries.Count -gt 0) {
+        try {
+            # This is intentionally before machine ACL hardening. An impossible
+            # PS5.1 destination must leave InstallRoot and every source exactly
+            # as inventory found them.
+            Assert-RevAgentCanonicalLegacyMachineQuarantineBudget `
+                -InstallRoot $InstallRoot `
+                -Entries $machineAddinEntries
+        }
+        catch {
+            $failed.Add([pscustomobject][ordered]@{
+                    scope = $scopeName
+                    surface = "machine_revit_addin_quarantine"
+                    reason = "quarantine_path_budget_failed"
+                    path = Get-RevAgentCanonicalLegacyFullPath -Path $InstallRoot
+                    error = $_.Exception.Message
+                })
+            $deleteAuthorized = $false
+            $deletionSkippedReason = "quarantine_path_budget_failed"
         }
     }
 
@@ -2593,10 +2759,12 @@ function Invoke-RevAgentCanonicalLegacySurfaceCleanup {
         }
     }
 
-    $machineAddinEntries = @($matched | Where-Object { [string]$_.surface -match '^machine_revit_addin_' })
     if ($deleteAuthorized -and $machineAddinEntries.Count -gt 0) {
         try {
-            $quarantinePath = New-RevAgentCanonicalLegacyMachineQuarantine -InstallRoot $InstallRoot -Policy $machinePolicy
+            $quarantinePath = New-RevAgentCanonicalLegacyMachineQuarantine `
+                -InstallRoot $InstallRoot `
+                -Policy $machinePolicy `
+                -Entries $machineAddinEntries
         }
         catch {
             $failed.Add([pscustomobject][ordered]@{

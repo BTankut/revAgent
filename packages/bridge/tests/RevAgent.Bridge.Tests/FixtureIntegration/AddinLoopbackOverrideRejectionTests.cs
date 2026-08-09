@@ -14,7 +14,7 @@ namespace RevAgent.Bridge.Tests.FixtureIntegration;
 /// factory is the override gate. A refused literal therefore aborts before a
 /// socket exists, which is strictly earlier than the first JSON-RPC byte.
 /// </remarks>
-[Collection(AddinLoopbackFixtureCollection.Name)]
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinLoopbackOverrideRejectionTests
 {
     [Fact]

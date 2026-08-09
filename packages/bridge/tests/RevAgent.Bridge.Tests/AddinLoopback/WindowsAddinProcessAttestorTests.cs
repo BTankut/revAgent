@@ -6,6 +6,7 @@ using RevAgent.Bridge.AddinLoopback;
 
 namespace RevAgent.Bridge.Tests.AddinLoopback;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class WindowsAddinProcessAttestorTests
 {
     private const int ProcessId = 4242;

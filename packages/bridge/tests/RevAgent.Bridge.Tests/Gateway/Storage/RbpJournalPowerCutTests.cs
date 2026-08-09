@@ -23,6 +23,7 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 /// SQLite's own <c>PRAGMA integrity_check</c> reports <c>ok</c>, and that the
 /// Section 12.2 redelivery rules arbitrate the recovered state correctly.
 /// </summary>
+[Collection(RbpJournalPowerCutCollection.Name)]
 public sealed class RbpJournalPowerCutTests
 {
     private static readonly TimeSpan RecoveryOpenTimeout =

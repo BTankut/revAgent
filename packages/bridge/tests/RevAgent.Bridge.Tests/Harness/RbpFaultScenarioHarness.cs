@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json;
 using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Gateway.Dispatch;
@@ -31,6 +32,11 @@ internal sealed class RbpFaultScenarioHarness : IAsyncDisposable
     private const string DeviceToken = "test-device-token";
     private const string DeviceId = "device-01";
     internal const string DocumentId = "doc-01";
+
+    private static readonly TimeSpan EventuallyTimeout =
+        TimeSpan.FromSeconds(30);
+    private static readonly TimeSpan EventuallyPollInterval =
+        TimeSpan.FromMilliseconds(25);
 
     private readonly GatewayStubProcess _stub;
     private readonly RbpJournalTestDirectory _directory;
@@ -271,44 +277,79 @@ internal sealed class RbpFaultScenarioHarness : IAsyncDisposable
             """);
 
     /// <summary>
-    /// Polls a deterministic condition. Nothing here waits on wall-clock
-    /// duration: the poll exists only because the coordinator's work is
-    /// genuinely concurrent, and every scenario is far inside the budget.
+    /// Polls a deterministic condition against one real wall-clock deadline.
+    /// The poll exists only because the coordinator's work is genuinely
+    /// concurrent.
     /// </summary>
     /// <remarks>
-    /// The interval is deliberately not tighter. A fault harness runs beside
-    /// the loopback-transport tests, and a tighter spin buys no determinism
-    /// while it does starve them; 25 ms across 600 attempts still leaves a
-    /// 15-second ceiling per wait, half the per-scenario budget.
+    /// The interval is deliberately not tighter. A tighter spin buys no
+    /// determinism under a loaded shared runner. The deadline remains bounded,
+    /// and timeout diagnostics report both elapsed time and completed polls.
     /// </remarks>
     internal static async Task EventuallyAsync(
         Func<bool> predicate,
         string because,
-        int attempts = 600)
+        TimeSpan? timeout = null)
     {
         await EventuallyAsync(
                 () => Task.FromResult(predicate()),
                 because,
-                attempts)
+                timeout)
             .ConfigureAwait(false);
     }
 
     internal static async Task EventuallyAsync(
         Func<Task<bool>> predicate,
         string because,
-        int attempts = 600)
+        TimeSpan? timeout = null)
     {
-        for (int attempt = 0; attempt < attempts; attempt++)
+        TimeSpan budget = timeout ?? EventuallyTimeout;
+        if (budget <= TimeSpan.Zero)
         {
-            if (await predicate().ConfigureAwait(false))
-            {
-                return;
-            }
-
-            await Task.Delay(25).ConfigureAwait(false);
+            throw new ArgumentOutOfRangeException(nameof(timeout));
         }
 
-        Assert.Fail($"Fault scenario timed out: {because}.");
+        var elapsed = Stopwatch.StartNew();
+        int attempts = 0;
+        while (elapsed.Elapsed < budget)
+        {
+            attempts++;
+            TimeSpan remaining = budget - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            Task<bool> attempt = predicate();
+            try
+            {
+                if (await attempt.WaitAsync(remaining).ConfigureAwait(false))
+                {
+                    return;
+                }
+            }
+            catch (TimeoutException) when (!attempt.IsCompleted)
+            {
+                break;
+            }
+
+            remaining = budget - elapsed.Elapsed;
+            if (remaining <= TimeSpan.Zero)
+            {
+                break;
+            }
+
+            await Task.Delay(
+                    remaining < EventuallyPollInterval
+                        ? remaining
+                        : EventuallyPollInterval)
+                .ConfigureAwait(false);
+        }
+
+        Assert.Fail(
+            "Fault scenario condition timed out: " +
+            $"{because}; elapsed_ms={elapsed.ElapsedMilliseconds}; " +
+            $"completed_polls={attempts}; budget_ms={(long)budget.TotalMilliseconds}.");
     }
 
     public async ValueTask DisposeAsync()
@@ -323,20 +364,20 @@ internal sealed class RbpFaultScenarioHarness : IAsyncDisposable
         _stop.Cancel();
         try
         {
-            await _run.WaitAsync(TimeSpan.FromSeconds(15)).ConfigureAwait(false);
+            await _run.WaitAsync(SocketIntegrationCollection.CoordinationTimeout)
+                .ConfigureAwait(false);
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (_stop.IsCancellationRequested)
         {
         }
-        catch (TimeoutException)
+        finally
         {
+            _stop.Dispose();
+            await _journal.DisposeAsync().ConfigureAwait(false);
+            Control.Dispose();
+            await _stub.DisposeAsync().ConfigureAwait(false);
+            _directory.Dispose();
         }
-
-        _stop.Dispose();
-        await _journal.DisposeAsync().ConfigureAwait(false);
-        Control.Dispose();
-        await _stub.DisposeAsync().ConfigureAwait(false);
-        _directory.Dispose();
     }
 
     private static string MachineFingerprint => "sha256:" + new string('0', 64);
