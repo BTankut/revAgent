@@ -375,6 +375,21 @@ cleanup diagnostics.
   `interface`, `enum`, `record`, or `namespace` blocks inside
   `send_code_to_revit`; use local functions or add a native runtime tool.
 
+## CI runners
+
+- Normal Windows pull-request and push CI jobs in `.github/workflows/ci.yml`
+  run on the five AXL runners labeled `revagent-ci`. The fail-closed
+  `Claude review gate` uses the same pool.
+- For a manual `workflow_dispatch`, always pass `runner_labels_json`
+  explicitly. Do not rely on older revisions whose `revagent-cd` default
+  usually targets an offline runner; keep the CI default at
+  `["self-hosted","Windows","revagent-ci"]`.
+- Never add the `revagent-cd` label to an AXL runner. Signed release/CD remains
+  a separate trust boundary on its dedicated host.
+- A pull request that changes `.github/workflows/claude-review.yml` cannot
+  review itself. It requires human review and the documented manual-merge
+  exception.
+
 ## File And Deployment Discipline
 
 - Dev/PR process for this repo: open PRs as draft, iterate (each push runs only
