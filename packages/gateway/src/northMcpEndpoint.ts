@@ -16,11 +16,13 @@ import {
   type RequestStateCodec,
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
+import type { AuthContext } from "./authContext.js";
 import type { GatewayDispatcher } from "./dispatch.js";
 import type {
   CatalogEntry,
   EntitledCatalogView,
 } from "./entitledRegistry.js";
+import type { GatewayInvocationRoute } from "./invocationContext.js";
 import type { GatewayToolRegistry } from "./registry.js";
 
 const NORTH_MCP_PATH = "/mcp";
@@ -34,6 +36,7 @@ type AuthenticatedIncomingMessage = IncomingMessage & {
 
 export interface AuthenticatedNorthMcpRequest {
   readonly authInfo: AuthInfo;
+  readonly authContext: AuthContext;
   readonly principalKey: string;
 }
 
@@ -58,6 +61,11 @@ export interface NorthMcpEndpointOptions {
   readonly catalogViewFor: (
     authenticated: AuthenticatedNorthMcpRequest,
   ) => EntitledCatalogView | null | Promise<EntitledCatalogView | null>;
+  /** Resolves the current authenticated MCP session to one bridge route. */
+  readonly invocationRouteFor: (
+    authenticated: AuthenticatedNorthMcpRequest,
+    mcpSessionId: string,
+  ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
   /** The executable subset; it is intentionally one tool in this slice. */
   readonly registry: GatewayToolRegistry;
@@ -148,6 +156,13 @@ function authBindingKey(
   authenticated: AuthenticatedNorthMcpRequest,
 ): string {
   return JSON.stringify([
+    authenticated.authContext.contractVersion,
+    authenticated.authContext.actor.tenantId,
+    authenticated.authContext.actor.userId,
+    authenticated.authContext.actor.role,
+    authenticated.authContext.actor.oidcIssuer,
+    authenticated.authContext.actor.oidcSubject,
+    authenticated.authContext.session.sessionId,
     authenticated.principalKey,
     authenticated.authInfo.clientId,
     authenticated.authInfo.resource?.href ?? null,
@@ -265,12 +280,11 @@ function createSessionServer(input: {
   readonly inflightOperations: Set<Promise<unknown>>;
   readonly registry: GatewayToolRegistry;
   readonly requestScopeId: string;
+  readonly invocationRouteFor: NorthMcpEndpointOptions["invocationRouteFor"];
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
   const capabilityIndexBytes = input.catalogView.capabilityIndexBytes();
   const dispatcher = input.dispatcher;
-  const principalKey = input.authenticated.principalKey;
-  const oauthClientId = input.authenticated.authInfo.clientId;
   const server = new McpServer(
     {
       name: "revAgent Gateway",
@@ -315,20 +329,26 @@ function createSessionServer(input: {
         description: record.summary,
         inputSchema: z.object(record.inputSchema).strict(),
       },
-      async (args, ctx) =>
-        toolResult(
+      async (args, ctx) => {
+        const mcpSessionId =
+          ctx.sessionId ?? `stateless-request:${input.requestScopeId}`;
+        return toolResult(
           await trackPromise(
             input.inflightOperations,
             dispatcher.dispatch({
               toolName: record.name,
               args,
-              principalKey,
-              oauthClientId,
-              mcpSessionId:
-                ctx.sessionId ?? `stateless-request:${input.requestScopeId}`,
+              auth: input.authenticated.authContext,
+              mcpSessionId,
+              resolveRoute: (authContext) =>
+                input.invocationRouteFor(
+                  Object.freeze({ ...input.authenticated, authContext }),
+                  mcpSessionId,
+                ),
             }),
           ),
-        ),
+        );
+      },
     );
   }
 
@@ -359,7 +379,10 @@ export async function startNorthMcpEndpoint(
     );
   }
 
-  const principalByAuthInfo = new WeakMap<AuthInfo, string>();
+  const authenticatedByAuthInfo = new WeakMap<
+    AuthInfo,
+    AuthenticatedNorthMcpRequest
+  >();
   const catalogViewByAuthInfo = new WeakMap<AuthInfo, EntitledCatalogView>();
   const requestStateCodec = createRequestStateCodec({
     key: options.requestState.key,
@@ -368,17 +391,14 @@ export async function startNorthMcpEndpoint(
       : { ttlSeconds: options.requestState.ttlSeconds }),
     bind: (context) => {
       const authInfo = context.http?.authInfo;
-      const principalKey =
+      const authenticated =
         authInfo === undefined
           ? undefined
-          : principalByAuthInfo.get(authInfo);
-      if (authInfo === undefined || principalKey === undefined) {
+          : authenticatedByAuthInfo.get(authInfo);
+      if (authInfo === undefined || authenticated === undefined) {
         throw new Error("trusted north MCP auth context is missing");
       }
-      return `${context.mcpReq.method}\0${authBindingKey({
-        authInfo,
-        principalKey,
-      })}`;
+      return `${context.mcpReq.method}\0${authBindingKey(authenticated)}`;
     },
   });
   const inflightOperations = new Set<Promise<unknown>>();
@@ -392,11 +412,11 @@ export async function startNorthMcpEndpoint(
   const mcpHandler = createMcpHandler(
     (context: McpRequestContext) => {
       const authInfo = context.authInfo;
-      const principalKey =
+      const authenticated =
         authInfo === undefined
           ? undefined
-          : principalByAuthInfo.get(authInfo);
-      if (authInfo === undefined || principalKey === undefined) {
+          : authenticatedByAuthInfo.get(authInfo);
+      if (authInfo === undefined || authenticated === undefined) {
         throw new Error("trusted north MCP auth context is missing");
       }
       const catalogView = catalogViewByAuthInfo.get(authInfo);
@@ -405,9 +425,10 @@ export async function startNorthMcpEndpoint(
       }
       return createSessionServer({
         catalogView,
-        authenticated: { authInfo, principalKey },
+        authenticated,
         dispatcher: options.dispatcher,
         inflightOperations,
+        invocationRouteFor: options.invocationRouteFor,
         registry: options.registry,
         requestScopeId: randomUUID(),
         verifyRequestState: requestStateCodec.verify,
@@ -469,6 +490,14 @@ export async function startNorthMcpEndpoint(
       );
       return;
     }
+    if (
+      authenticated.authContext.principalKey !== authenticated.principalKey ||
+      authenticated.authContext.session.oauthClientId !==
+        authenticated.authInfo.clientId
+    ) {
+      sendJson(response, 401, { error: "invalid_auth_binding" });
+      return;
+    }
     if (closing) {
       sendJson(response, 503, { error: "north_mcp_endpoint_closing" });
       return;
@@ -479,7 +508,10 @@ export async function startNorthMcpEndpoint(
       return;
     }
     const requestAuthInfo = cloneAuthInfo(authenticated.authInfo);
-    principalByAuthInfo.set(requestAuthInfo, authenticated.principalKey);
+    authenticatedByAuthInfo.set(
+      requestAuthInfo,
+      Object.freeze({ ...authenticated, authInfo: requestAuthInfo }),
+    );
     catalogViewByAuthInfo.set(requestAuthInfo, catalogView);
     (request as AuthenticatedIncomingMessage).auth = requestAuthInfo;
 

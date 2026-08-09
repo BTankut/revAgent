@@ -14,6 +14,10 @@ import {
 import { describe, expect, it } from "vitest";
 
 import {
+  GATEWAY_AUTH_CONTRACT_VERSION,
+  type AuthContext,
+} from "./authContext.js";
+import {
   GatewayDispatcher,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
@@ -27,6 +31,7 @@ import {
   entitleAll,
   entitleOnly,
 } from "./entitledRegistry.js";
+import type { GatewayInvocationRoute } from "./invocationContext.js";
 import {
   buildNorthFirstSliceCallableRegistry,
 } from "./northFirstSlice.js";
@@ -36,6 +41,7 @@ import {
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
 import { verifyRegistrySeed } from "./registrySeed.js";
+import { createCapturingEventSink } from "./testAdapters.js";
 
 interface FixtureAddress {
   readonly host: string;
@@ -118,6 +124,80 @@ const INVOCATION_IDS = [
   "019f9ac3-ae89-7342-9f6d-b9269e167189",
   "019f9ac3-ae89-7342-9f6d-b9269e16718b",
 ] as const;
+
+function testAuthContext(
+  principalKey: string,
+  clientId: string,
+  gatewaySessionId?: string,
+): AuthContext {
+  const userId = principalKey.endsWith(":user-b") ? "user-b" : "user-a";
+  return Object.freeze({
+    contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+    actor: Object.freeze({
+      type: "user" as const,
+      tenantId: "tenant-a",
+      userId,
+      role: "user" as const,
+      oidcIssuer: "https://issuer.invalid/north-test",
+      oidcSubject: `subject-${userId}`,
+    }),
+    session: Object.freeze({
+      sessionId: gatewaySessionId ?? `gateway-${userId}`,
+      clientType: "mcp" as const,
+      mcpSessionId: null,
+      oauthClientId: clientId,
+    }),
+    principalKey,
+    issuedAtMs: 0,
+    expiresAtMs: null,
+  });
+}
+
+function authenticatedRequest(
+  principalKey: string,
+  authInfo: AuthInfo,
+  gatewaySessionId?: string,
+): AuthenticatedNorthMcpRequest {
+  return Object.freeze({
+    authInfo,
+    authContext: testAuthContext(
+      principalKey,
+      authInfo.clientId,
+      gatewaySessionId,
+    ),
+    principalKey,
+  });
+}
+
+function invocationRouteFor(
+  authenticated: AuthenticatedNorthMcpRequest,
+  mcpSessionId: string,
+): GatewayInvocationRoute {
+  return Object.freeze({
+    tenantId: authenticated.authContext.actor.tenantId,
+    mcpSessionId,
+    rsid: RSID,
+    documentIdentity: Object.freeze({
+      kind: "live" as const,
+      session_document_id: "north-test-document",
+    }),
+    mutationScope: null,
+  });
+}
+
+function dispatcherOptions() {
+  let sequence = 0;
+  return {
+    eventSink: createCapturingEventSink(),
+    eventSource: {
+      component: "gateway-north-test",
+      version: "0.0.0-test",
+      instance: "north-test",
+    },
+    newInvocationId: () => `north-invocation-${++sequence}`,
+    newEventId: () => `north-event-${sequence}`,
+  } as const;
+}
 
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const VERIFIED_CATALOG = buildCatalog(
@@ -225,9 +305,22 @@ function modernToolCallBody(
 function testAuthBindingKey(input: {
   readonly principalKey: string;
   readonly authInfo: AuthInfo;
+  readonly gatewaySessionId?: string;
 }): string {
-  return JSON.stringify([
+  const authenticated = authenticatedRequest(
     input.principalKey,
+    input.authInfo,
+    input.gatewaySessionId,
+  );
+  return JSON.stringify([
+    authenticated.authContext.contractVersion,
+    authenticated.authContext.actor.tenantId,
+    authenticated.authContext.actor.userId,
+    authenticated.authContext.actor.role,
+    authenticated.authContext.actor.oidcIssuer,
+    authenticated.authContext.actor.oidcSubject,
+    authenticated.authContext.session.sessionId,
+    authenticated.principalKey,
     input.authInfo.clientId,
     input.authInfo.resource?.href ?? null,
     [...input.authInfo.scopes].sort(),
@@ -237,6 +330,7 @@ function testAuthBindingKey(input: {
 async function mintTestRequestState(input: {
   readonly principalKey: string;
   readonly authInfo: AuthInfo;
+  readonly gatewaySessionId?: string;
   readonly method?: string;
   readonly ttlSeconds?: number;
 }): Promise<string> {
@@ -395,7 +489,11 @@ describe("M2 north MCP first slice", () => {
       };
 
       const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
-      const dispatcher = new GatewayDispatcher(registry, [bridgeExecutor]);
+      const dispatcher = new GatewayDispatcher(
+        registry,
+        [bridgeExecutor],
+        dispatcherOptions(),
+      );
       endpoint = await startNorthMcpEndpoint({
         dispatcher,
         registry,
@@ -403,6 +501,7 @@ describe("M2 north MCP first slice", () => {
           authenticated.principalKey === PRINCIPAL_KEY
             ? FULL_CATALOG_VIEW
             : NO_TOOLS_CATALOG_VIEW,
+        invocationRouteFor,
         requestState: {
           key: REQUEST_STATE_KEY,
           ttlSeconds: REQUEST_STATE_TTL_SECONDS,
@@ -421,24 +520,23 @@ describe("M2 north MCP first slice", () => {
             }
             const otherPrincipal =
               authorization === `Bearer ${OTHER_TOKEN}`;
-            return {
-              principalKey: otherPrincipal
-                ? "tenant-a:user-b"
-                : PRINCIPAL_KEY,
-              authInfo: {
-                token: otherPrincipal ? OTHER_TOKEN : TOKEN,
-                clientId: otherPrincipal
-                  ? "claude-code-test"
-                  : "codex-desktop-test",
-                scopes: ["mcp:tools"],
-                expiresAt: 4_102_444_800,
-                resource: new URL("https://gateway.example.test/mcp"),
-                extra: {
-                  tenantId: "tenant-a",
-                  userId: otherPrincipal ? "user-b" : "user-a",
-                },
+            const principalKey = otherPrincipal
+              ? "tenant-a:user-b"
+              : PRINCIPAL_KEY;
+            const authInfo: AuthInfo = {
+              token: otherPrincipal ? OTHER_TOKEN : TOKEN,
+              clientId: otherPrincipal
+                ? "claude-code-test"
+                : "codex-desktop-test",
+              scopes: ["mcp:tools"],
+              expiresAt: 4_102_444_800,
+              resource: new URL("https://gateway.example.test/mcp"),
+              extra: {
+                tenantId: "tenant-a",
+                userId: otherPrincipal ? "user-b" : "user-a",
               },
             };
+            return authenticatedRequest(principalKey, authInfo);
           },
         },
       });
@@ -807,28 +905,33 @@ describe("M2 north MCP first slice", () => {
     }
   }, 45_000);
 
-  it("verifies signed requestState before dispatch and binds it to the principal and method", async () => {
+  it("verifies signed requestState before dispatch and binds it to actor, Gateway session, and method", async () => {
     const reorderedScopesToken = "m2-reordered-scopes-test-token";
     const crossClientToken = "m2-cross-client-test-token";
     const crossResourceToken = "m2-cross-resource-test-token";
     const crossScopeToken = "m2-cross-scope-test-token";
+    const crossSessionToken = "m2-cross-session-test-token";
     const resource = new URL("https://gateway.example.test/mcp");
     const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
     const executorRequests: GatewayExecutorRequest[] = [];
-    const dispatcher = new GatewayDispatcher(registry, [
-      {
-        binding: "bridge",
-        async execute(
-          request: GatewayExecutorRequest,
-        ): Promise<GatewayExecutorOutcome> {
-          executorRequests.push(request);
-          return {
-            state: "completed",
-            result: { acceptedRequestState: true },
-          };
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(
+            request: GatewayExecutorRequest,
+          ): Promise<GatewayExecutorOutcome> {
+            executorRequests.push(request);
+            return {
+              state: "completed",
+              result: { acceptedRequestState: true },
+            };
+          },
         },
-      },
-    ]);
+      ],
+      dispatcherOptions(),
+    );
     const primaryAuthInfo: AuthInfo = {
       token: TOKEN,
       clientId: "request-state-client",
@@ -865,36 +968,47 @@ describe("M2 north MCP first slice", () => {
       scopes: ["mcp:tools"],
       resource,
     };
+    const crossSessionAuthInfo: AuthInfo = {
+      token: crossSessionToken,
+      clientId: "request-state-client",
+      scopes: ["mcp:resources", "mcp:tools"],
+      resource,
+    };
     const authByAuthorization = new Map<
       string,
       AuthenticatedNorthMcpRequest
     >([
       [
         `Bearer ${TOKEN}`,
-        { principalKey: PRINCIPAL_KEY, authInfo: primaryAuthInfo },
+        authenticatedRequest(PRINCIPAL_KEY, primaryAuthInfo),
       ],
       [
         `Bearer ${OTHER_TOKEN}`,
-        { principalKey: "tenant-a:user-b", authInfo: otherAuthInfo },
+        authenticatedRequest("tenant-a:user-b", otherAuthInfo),
       ],
       [
         `Bearer ${reorderedScopesToken}`,
-        {
-          principalKey: PRINCIPAL_KEY,
-          authInfo: reorderedScopesAuthInfo,
-        },
+        authenticatedRequest(PRINCIPAL_KEY, reorderedScopesAuthInfo),
       ],
       [
         `Bearer ${crossClientToken}`,
-        { principalKey: PRINCIPAL_KEY, authInfo: crossClientAuthInfo },
+        authenticatedRequest(PRINCIPAL_KEY, crossClientAuthInfo),
       ],
       [
         `Bearer ${crossResourceToken}`,
-        { principalKey: PRINCIPAL_KEY, authInfo: crossResourceAuthInfo },
+        authenticatedRequest(PRINCIPAL_KEY, crossResourceAuthInfo),
       ],
       [
         `Bearer ${crossScopeToken}`,
-        { principalKey: PRINCIPAL_KEY, authInfo: crossScopeAuthInfo },
+        authenticatedRequest(PRINCIPAL_KEY, crossScopeAuthInfo),
+      ],
+      [
+        `Bearer ${crossSessionToken}`,
+        authenticatedRequest(
+          PRINCIPAL_KEY,
+          crossSessionAuthInfo,
+          "gateway-user-a-other-session",
+        ),
       ],
     ]);
     let endpoint: NorthMcpEndpointHandle | undefined;
@@ -904,6 +1018,7 @@ describe("M2 north MCP first slice", () => {
         dispatcher,
         registry,
         catalogViewFor: () => FULL_CATALOG_VIEW,
+        invocationRouteFor,
         requestState: {
           key: REQUEST_STATE_KEY,
           ttlSeconds: REQUEST_STATE_TTL_SECONDS,
@@ -1036,6 +1151,11 @@ describe("M2 north MCP first slice", () => {
           state: validState,
           token: crossScopeToken,
         },
+        {
+          id: "cross-gateway-session-request-state",
+          state: validState,
+          token: crossSessionToken,
+        },
       ]) {
         const response = await postState(
           rejection.token,
@@ -1065,19 +1185,23 @@ describe("M2 north MCP first slice", () => {
       const started = deferred<void>();
       const release = deferred<void>();
       const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
-      const dispatcher = new GatewayDispatcher(registry, [
-        {
-          binding: "bridge",
-          async execute(): Promise<GatewayExecutorOutcome> {
-            started.resolve(undefined);
-            await release.promise;
-            return {
-              state: "completed",
-              result: { completedAfterCloseStarted: true, era },
-            };
+      const dispatcher = new GatewayDispatcher(
+        registry,
+        [
+          {
+            binding: "bridge",
+            async execute(): Promise<GatewayExecutorOutcome> {
+              started.resolve(undefined);
+              await release.promise;
+              return {
+                state: "completed",
+                result: { completedAfterCloseStarted: true, era },
+              };
+            },
           },
-        },
-      ]);
+        ],
+        dispatcherOptions(),
+      );
       let endpoint: NorthMcpEndpointHandle | undefined;
       let client: Client | undefined;
       let transport: StreamableHTTPClientTransport | undefined;
@@ -1088,6 +1212,7 @@ describe("M2 north MCP first slice", () => {
           dispatcher,
           registry,
           catalogViewFor: () => FULL_CATALOG_VIEW,
+          invocationRouteFor,
           requestState: {
             key: REQUEST_STATE_KEY,
             ttlSeconds: REQUEST_STATE_TTL_SECONDS,
@@ -1102,14 +1227,12 @@ describe("M2 north MCP first slice", () => {
               ) {
                 return null;
               }
-              return {
-                principalKey: PRINCIPAL_KEY,
-                authInfo: {
-                  token: TOKEN,
-                  clientId: "close-drain-test",
-                  scopes: ["mcp:tools"],
-                },
+              const authInfo: AuthInfo = {
+                token: TOKEN,
+                clientId: "close-drain-test",
+                scopes: ["mcp:tools"],
               };
+              return authenticatedRequest(PRINCIPAL_KEY, authInfo);
             },
           },
         });
