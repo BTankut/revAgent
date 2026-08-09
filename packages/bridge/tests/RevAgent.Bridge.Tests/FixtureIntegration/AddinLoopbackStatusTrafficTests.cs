@@ -11,7 +11,7 @@ namespace RevAgent.Bridge.Tests.FixtureIntegration;
 /// fixture's own <c>snapshot_evidence</c> method counters rather than a
 /// bridge-side spy.
 /// </summary>
-[Collection(AddinLoopbackFixtureCollection.Name)]
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class AddinLoopbackStatusTrafficTests
 {
     private static readonly string[] OrdinaryMethods =

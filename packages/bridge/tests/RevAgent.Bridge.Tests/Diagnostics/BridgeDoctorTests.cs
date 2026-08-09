@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
@@ -7,6 +6,7 @@ using RevAgent.Bridge.Bootstrap.Diagnostics;
 
 namespace RevAgent.Bridge.Tests.Diagnostics;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class BridgeDoctorTests
 {
     [Fact]
@@ -94,30 +94,79 @@ public sealed class BridgeDoctorTests
     }
 
     [Fact]
-    public async Task RunAsync_DnsFailure_IsBoundedAndReportedWithoutEndpointClaims()
+    public async Task RunAsync_DnsTimeout_IsBoundedAndReportedWithoutEndpointClaims()
     {
+        var addinPort = ReserveThenReleasePort();
         var configuration = CreateConfiguration(
             gatewayPort: 443,
-            scanStartPort: ReserveThenReleasePort(),
-            scanEndPort: ReserveThenReleasePort(),
-            gatewayHost: $"missing-{Guid.NewGuid():N}.invalid");
+            scanStartPort: addinPort,
+            scanEndPort: addinPort,
+            gatewayHost: "resolver-controlled.invalid");
         var options = new BridgeDoctorOptions(
             GatewayProbeTimeout: TimeSpan.FromMilliseconds(200),
             AddinPortProbeTimeout: TimeSpan.FromMilliseconds(50),
-            OverallTimeout: TimeSpan.FromMilliseconds(500));
-        var stopwatch = Stopwatch.StartNew();
+            OverallTimeout: TimeSpan.FromSeconds(30));
+        CancellationToken resolverCancellationToken = default;
 
-        var report = await BridgeDoctor.RunAsync(configuration, options);
+        async Task<IPAddress[]> ResolveAfterCancellationAsync(
+            string host,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(configuration.GatewayUri.DnsSafeHost, host);
+            Assert.False(cancellationToken.IsCancellationRequested);
+            resolverCancellationToken = cancellationToken;
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            return Array.Empty<IPAddress>();
+        }
 
-        stopwatch.Stop();
+        var report = await BridgeDoctor.RunWithResolverAsync(
+                configuration,
+                options,
+                ResolveAfterCancellationAsync)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
         Assert.True(report.Success);
         Assert.False(report.Gateway.DnsResolved);
+        Assert.Empty(report.Gateway.ResolvedAddresses);
         Assert.False(report.Gateway.TcpReachable);
         Assert.False(report.Gateway.RbpAuthenticated);
-        Assert.StartsWith("gateway_dns_", report.Gateway.Error);
-        Assert.True(
-            stopwatch.Elapsed < TimeSpan.FromSeconds(2),
-            $"Doctor exceeded its bounded probe budget: {stopwatch.Elapsed}.");
+        Assert.Equal("gateway_dns_timeout", report.Gateway.Error);
+        Assert.True(resolverCancellationToken.CanBeCanceled);
+        Assert.True(resolverCancellationToken.IsCancellationRequested);
+    }
+
+    [Fact]
+    public async Task RunAsync_DnsFailure_IsReportedWithoutEndpointClaims()
+    {
+        var addinPort = ReserveThenReleasePort();
+        var configuration = CreateConfiguration(
+            gatewayPort: 443,
+            scanStartPort: addinPort,
+            scanEndPort: addinPort,
+            gatewayHost: "resolver-controlled.invalid");
+
+        Task<IPAddress[]> ResolveWithFailureAsync(
+            string host,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(configuration.GatewayUri.DnsSafeHost, host);
+            Assert.False(cancellationToken.IsCancellationRequested);
+            return Task.FromException<IPAddress[]>(
+                new SocketException((int)SocketError.HostNotFound));
+        }
+
+        var report = await BridgeDoctor.RunWithResolverAsync(
+                configuration,
+                FastOptions(),
+                ResolveWithFailureAsync)
+            .WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.True(report.Success);
+        Assert.False(report.Gateway.DnsResolved);
+        Assert.Empty(report.Gateway.ResolvedAddresses);
+        Assert.False(report.Gateway.TcpReachable);
+        Assert.False(report.Gateway.RbpAuthenticated);
+        Assert.Equal("gateway_dns_failed", report.Gateway.Error);
     }
 
     [Fact]

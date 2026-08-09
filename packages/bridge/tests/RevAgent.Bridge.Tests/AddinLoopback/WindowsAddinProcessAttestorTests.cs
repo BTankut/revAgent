@@ -6,6 +6,7 @@ using RevAgent.Bridge.AddinLoopback;
 
 namespace RevAgent.Bridge.Tests.AddinLoopback;
 
+[Collection(SocketIntegrationCollection.Name)]
 public sealed class WindowsAddinProcessAttestorTests
 {
     private const int ProcessId = 4242;
@@ -151,33 +152,40 @@ public sealed class WindowsAddinProcessAttestorTests
             processSnapshots,
             imageTrust,
             trustedRoot);
-        using var firstDeadline =
-            new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+        using var firstDeadline = new CancellationTokenSource();
 
         Task<AddinProcessAttestation> first =
             attestor.AttestBeforeDispatchAsync(
                 ConnectedPeer(),
                 firstDeadline.Token);
-        Assert.True(
-            imageTrust.Started.Wait(TimeSpan.FromSeconds(2)),
-            "The serialized native worker did not start.");
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => first);
+        AddinProcessAttestation? recovered = null;
+        try
+        {
+            await imageTrust.Started.WaitAsync(TimeSpan.FromSeconds(10));
+            firstDeadline.CancelAfter(TimeSpan.FromMilliseconds(150));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => first);
 
-        using var secondDeadline =
-            new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(
-            () => attestor.AttestBeforeDispatchAsync(
-                ConnectedPeer(),
-                secondDeadline.Token));
-        Assert.Equal(1, imageTrust.InvocationCount);
-
-        release.Set();
-        using var recoveryDeadline =
-            new CancellationTokenSource(TimeSpan.FromSeconds(2));
-        AddinProcessAttestation recovered =
-            await attestor.AttestBeforeDispatchAsync(
+            using var secondDeadline =
+                new CancellationTokenSource(TimeSpan.FromMilliseconds(150));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => attestor.AttestBeforeDispatchAsync(
+                    ConnectedPeer(),
+                    secondDeadline.Token));
+            Assert.Equal(1, imageTrust.InvocationCount);
+        }
+        finally
+        {
+            firstDeadline.Cancel();
+            release.Set();
+            using var recoveryDeadline =
+                new CancellationTokenSource(TimeSpan.FromSeconds(10));
+            recovered = await attestor.AttestBeforeDispatchAsync(
                 ConnectedPeer(),
                 recoveryDeadline.Token);
+        }
+
+        Assert.NotNull(recovered);
         Assert.Equal(ProcessId, recovered.Identity.ProcessId);
         Assert.Equal(2, imageTrust.InvocationCount);
         Assert.Equal(3, connectionOwner.ResolveCount);
@@ -589,6 +597,8 @@ public sealed class WindowsAddinProcessAttestorTests
         : IWindowsRevitImageTrustVerifier
     {
         private readonly ManualResetEventSlim _release;
+        private readonly TaskCompletionSource<bool> _started =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _invocationCount;
 
         internal BlockingImageTrustVerifier(ManualResetEventSlim release)
@@ -596,7 +606,7 @@ public sealed class WindowsAddinProcessAttestorTests
             _release = release;
         }
 
-        internal ManualResetEventSlim Started { get; } = new();
+        internal Task Started => _started.Task;
 
         internal int InvocationCount =>
             Volatile.Read(ref _invocationCount);
@@ -606,7 +616,7 @@ public sealed class WindowsAddinProcessAttestorTests
             string trustedProgramFilesRoot)
         {
             Interlocked.Increment(ref _invocationCount);
-            Started.Set();
+            _started.TrySetResult(true);
             _release.Wait();
         }
     }

@@ -38,7 +38,8 @@ internal sealed class ScriptedTcpPeer : IAsyncDisposable
 
         try
         {
-            await _serverTask.WaitAsync(TimeSpan.FromSeconds(5));
+            await _serverTask.WaitAsync(
+                SocketIntegrationCollection.CoordinationTimeout);
         }
         finally
         {

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
@@ -22,8 +23,15 @@ namespace RevAgent.Bridge.Tests.Gateway.Storage;
 /// SQLite's own <c>PRAGMA integrity_check</c> reports <c>ok</c>, and that the
 /// Section 12.2 redelivery rules arbitrate the recovered state correctly.
 /// </summary>
+[Collection(RbpJournalPowerCutCollection.Name)]
 public sealed class RbpJournalPowerCutTests
 {
+    private static readonly TimeSpan RecoveryOpenTimeout =
+        TimeSpan.FromSeconds(5);
+
+    private static readonly TimeSpan RecoveryOpenRetryDelay =
+        TimeSpan.FromMilliseconds(25);
+
     /// <summary>
     /// Kill point (a). Section 12.1 step 1: <c>received</c> plus
     /// <c>params_digest</c> are durable on their own commit, before the first
@@ -45,7 +53,8 @@ public sealed class RbpJournalPowerCutTests
         RbpJournalPowerCutFiles.AssertWalRecoveryPending(
             directory.JournalPath);
 
-        await using (RbpJournalStore recovered = OpenRecovered(directory))
+        await using (RbpJournalStore recovered =
+                         await OpenRecoveredAsync(directory))
         {
             await AssertIntegrityCheckIsOkAsync(recovered);
 
@@ -129,7 +138,8 @@ public sealed class RbpJournalPowerCutTests
         RbpJournalPowerCutFiles.AssertWalRecoveryPending(
             directory.JournalPath);
 
-        await using (RbpJournalStore recovered = OpenRecovered(directory))
+        await using (RbpJournalStore recovered =
+                         await OpenRecoveredAsync(directory))
         {
             await AssertIntegrityCheckIsOkAsync(recovered);
 
@@ -208,7 +218,8 @@ public sealed class RbpJournalPowerCutTests
         RbpJournalPowerCutFiles.AssertWalRecoveryPending(
             directory.JournalPath);
 
-        await using (RbpJournalStore recovered = OpenRecovered(directory))
+        await using (RbpJournalStore recovered =
+                         await OpenRecoveredAsync(directory))
         {
             await AssertIntegrityCheckIsOkAsync(recovered);
 
@@ -267,7 +278,8 @@ public sealed class RbpJournalPowerCutTests
         RbpJournalPowerCutFiles.AssertWalRecoveryPending(
             directory.JournalPath);
 
-        await using (RbpJournalStore recovered = OpenRecovered(directory))
+        await using (RbpJournalStore recovered =
+                         await OpenRecoveredAsync(directory))
         {
             await AssertIntegrityCheckIsOkAsync(recovered);
 
@@ -340,7 +352,8 @@ public sealed class RbpJournalPowerCutTests
         RbpJournalPowerCutFiles.AssertWalRecoveryPending(
             directory.JournalPath);
 
-        await using (RbpJournalStore recovered = OpenRecovered(directory))
+        await using (RbpJournalStore recovered =
+                         await OpenRecoveredAsync(directory))
         {
             await AssertIntegrityCheckIsOkAsync(recovered);
 
@@ -384,12 +397,79 @@ public sealed class RbpJournalPowerCutTests
             directory.JournalPath);
     }
 
-    private static RbpJournalStore OpenRecovered(
+    [Fact]
+    public async Task RecoveryOpenWaitsForTransientWriterLeaseHandoff()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using RbpJournalWriterLease blocker =
+            RbpJournalWriterLease.Acquire(directory.JournalPath);
+
+        Task<RbpJournalStore> pending = OpenRecoveredAsync(
+            directory,
+            TimeSpan.FromSeconds(1));
+        await Task.Delay(TimeSpan.FromMilliseconds(100));
+        Assert.False(pending.IsCompleted);
+
+        blocker.Dispose();
+        await using RbpJournalStore recovered = await pending;
+        Assert.Equal(
+            Path.GetFullPath(directory.JournalPath),
+            recovered.DatabasePath);
+    }
+
+    [Fact]
+    public async Task RecoveryOpenDoesNotMaskPersistentWriterLease()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using RbpJournalWriterLease blocker =
+            RbpJournalWriterLease.Acquire(directory.JournalPath);
+
+        RbpJournalException failure =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => OpenRecoveredAsync(
+                    directory,
+                    TimeSpan.FromMilliseconds(100)));
+        Assert.Equal(
+            RbpJournalErrorCode.WriterLeaseUnavailable,
+            failure.ErrorCode);
+    }
+
+    private static Task<RbpJournalStore> OpenRecoveredAsync(
         RbpJournalTestDirectory directory) =>
-        RbpJournalStore.Open(
-            directory.JournalPath,
-            new TestResumeTokenProtector(),
-            RbpJournalTestData.Options());
+        OpenRecoveredAsync(directory, RecoveryOpenTimeout);
+
+    private static async Task<RbpJournalStore> OpenRecoveredAsync(
+        RbpJournalTestDirectory directory,
+        TimeSpan timeout)
+    {
+        var elapsed = Stopwatch.StartNew();
+        while (true)
+        {
+            try
+            {
+                return RbpJournalStore.Open(
+                    directory.JournalPath,
+                    new TestResumeTokenProtector(),
+                    RbpJournalTestData.Options());
+            }
+            catch (RbpJournalException exception)
+                when (exception.ErrorCode ==
+                    RbpJournalErrorCode.WriterLeaseUnavailable)
+            {
+                // Under shared-host Windows load, the boundary between the
+                // killed harness and the recovery open can briefly contend on
+                // the just-released writer lease. Retry only that exact
+                // handoff; every other recovery failure remains immediate.
+                if (elapsed.Elapsed >= timeout)
+                {
+                    throw;
+                }
+
+                await Task.Delay(RecoveryOpenRetryDelay)
+                    .ConfigureAwait(false);
+            }
+        }
+    }
 
     private static void AssertKilledUnderProductionDurability(
         RbpJournalPowerCutReadiness readiness)

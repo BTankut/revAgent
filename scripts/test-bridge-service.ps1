@@ -348,6 +348,7 @@ try {
                 -p:IncludeAllContentForSelfExtract=false `
                 -p:PublishTrimmed=false `
                 -p:PublishReadyToRun=false `
+                -p:DebugType=embedded `
                 -p:DebugSymbols=false
         }
         Invoke-CheckedCommand "Bridge Worker win-x64 single-file publish" {
@@ -362,6 +363,7 @@ try {
                 -p:IncludeAllContentForSelfExtract=false `
                 -p:PublishTrimmed=false `
                 -p:PublishReadyToRun=false `
+                -p:DebugType=embedded `
                 -p:DebugSymbols=false
         }
     }

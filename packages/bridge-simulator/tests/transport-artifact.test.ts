@@ -408,6 +408,41 @@ describe("artifact, outbox, resume, and backoff", () => {
     root.cleanup();
   });
 
+  it("accepts safe capture and rehydration through an aliased spool ancestor", () => {
+    const root = temporaryRoot();
+    try {
+      const physicalRoot = join(root.path, "physical-root");
+      const aliasedRoot = join(root.path, "aliased-root");
+      mkdirSync(physicalRoot, { recursive: true });
+      symlinkSync(physicalRoot, aliasedRoot, process.platform === "win32" ? "junction" : "dir");
+
+      const spoolRoot = join(aliasedRoot, "spool");
+      const spool = new ArtifactSpool(spoolRoot, () => uuid());
+      const source = join(spoolRoot, "safe-source.bin");
+      writeFileSync(source, Buffer.from("safe-through-alias"));
+
+      const artifactCarrier = spool.captureDeclaredPaths(uuid(), uuid(), [{
+        path: source,
+        contentType: "application/octet-stream",
+      }]);
+      const chunkedCarrier = spool.retainChunkedResult(
+        uuid(),
+        uuid(),
+        Buffer.from('{"safe":true}\n'),
+      );
+
+      expect(spool.inspectRetained([
+        spool.compact(artifactCarrier),
+        spool.compact(chunkedCarrier),
+      ])).toMatchObject({
+        carrierCount: 2,
+        retainedFileCount: 2,
+      });
+    } finally {
+      root.cleanup();
+    }
+  });
+
   it("finishes ACK cleanup after a crash left only part of the retained directory", () => {
     const root = temporaryRoot();
     const spoolRoot = join(root.path, "spool");

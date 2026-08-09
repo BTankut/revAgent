@@ -118,8 +118,10 @@ $gs=$ExecutionContext.InvokeCommand.GetCommand('Microsoft.PowerShell.Security\Ge
 $ga=$ExecutionContext.InvokeCommand.GetCommand('Microsoft.PowerShell.Security\Get-Acl',$ct)
 if($null-eq $gs-or $null-eq $ga){throw 'B20'}
 $sig=& $gs -LiteralPath $git -ErrorAction Stop
-$sub='CN=Johannes Schindelin, O=Johannes Schindelin, S=Nordrhein-Westfalen, C=DE'
-if($sig.Status-ne [Management.Automation.SignatureStatus]::Valid-or $null-eq $sig.SignerCertificate-or -not [StringComparer]::Ordinal.Equals([string]$sig.SignerCertificate.Subject,$sub)){throw 'B21'}
+$subs=[Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+[void]$subs.Add('CN=Johannes Schindelin, O=Johannes Schindelin, S=Nordrhein-Westfalen, C=DE')
+[void]$subs.Add('CN=Johannes Schindelin, O=Johannes Schindelin, L=Bruehl, C=DE')
+if($sig.Status-ne [Management.Automation.SignatureStatus]::Valid-or $null-eq $sig.SignerCertificate-or -not $subs.Contains([string]$sig.SignerCertificate.Subject)){throw 'B21'}
 $ti='';try{$ti=[string]([Security.Principal.NTAccount]'NT SERVICE\TrustedInstaller').Translate([Security.Principal.SecurityIdentifier]).Value}catch{}
 $owners=[Collections.Generic.HashSet[string]]::new([StringComparer]::OrdinalIgnoreCase);[void]$owners.Add('S-1-5-18');[void]$owners.Add('S-1-5-32-544');if($ti){[void]$owners.Add($ti)}
 $rights=[int64]([Security.AccessControl.FileSystemRights]::WriteData-bor[Security.AccessControl.FileSystemRights]::AppendData-bor[Security.AccessControl.FileSystemRights]::WriteAttributes-bor[Security.AccessControl.FileSystemRights]::WriteExtendedAttributes-bor[Security.AccessControl.FileSystemRights]::Delete-bor[Security.AccessControl.FileSystemRights]::DeleteSubdirectoriesAndFiles-bor[Security.AccessControl.FileSystemRights]::ChangePermissions-bor[Security.AccessControl.FileSystemRights]::TakeOwnership)

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -126,7 +127,10 @@ public sealed class WindowsBridgeCredentialAccessControlTests
         try
         {
             _ = Directory.CreateDirectory(targetPath);
-            _ = Directory.CreateSymbolicLink(linkPath, targetPath);
+            CreateDirectoryJunction(linkPath, targetPath);
+            FileAttributes attributes = File.GetAttributes(linkPath);
+            Assert.True((attributes & FileAttributes.Directory) != 0);
+            Assert.True((attributes & FileAttributes.ReparsePoint) != 0);
             var accessControl = new WindowsBridgeCredentialAccessControl();
 
             BridgeCredentialStoreException exception =
@@ -277,6 +281,51 @@ public sealed class WindowsBridgeCredentialAccessControlTests
         Path.Combine(
             Path.GetTempPath(),
             "revagent-bridge-acl-tests-" + Guid.NewGuid().ToString("N"));
+
+    [SupportedOSPlatform("windows")]
+    private static void CreateDirectoryJunction(
+        string linkPath,
+        string targetPath)
+    {
+        string commandInterpreter = Path.Combine(
+            Environment.SystemDirectory,
+            "cmd.exe");
+        Assert.True(
+            File.Exists(commandInterpreter),
+            $"Trusted Windows command interpreter was not found: {commandInterpreter}");
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = commandInterpreter,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        foreach (string argument in new[]
+                 {
+                     "/d",
+                     "/v:off",
+                     "/c",
+                     "mklink",
+                     "/J",
+                     Path.GetFullPath(linkPath),
+                     Path.GetFullPath(targetPath),
+                 })
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
+        using Process process = Process.Start(startInfo) ??
+            throw new InvalidOperationException(
+                "The Windows junction fixture process did not start.");
+        if (!process.WaitForExit(10_000))
+        {
+            process.Kill(entireProcessTree: true);
+            process.WaitForExit();
+            throw new TimeoutException(
+                "The Windows junction fixture process did not finish.");
+        }
+
+        Assert.Equal(0, process.ExitCode);
+    }
 
     private static void DeleteTestRoot(string rootPath)
     {

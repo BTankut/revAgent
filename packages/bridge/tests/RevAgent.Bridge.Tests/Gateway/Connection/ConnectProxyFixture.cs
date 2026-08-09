@@ -38,22 +38,37 @@ internal sealed class ConnectProxyFixture : IAsyncDisposable
 
         _stop.Cancel();
         _listener.Stop();
-        await IgnoreExpectedAsync(_acceptLoop).ConfigureAwait(false);
-        Task[] connections = _connections.ToArray();
-        if (connections.Length != 0)
+        try
         {
-            Task all = Task.WhenAll(connections);
-            Task completed = await Task.WhenAny(
-                    all,
-                    Task.Delay(TimeSpan.FromSeconds(5)))
-                .ConfigureAwait(false);
-            if (ReferenceEquals(completed, all))
+            await IgnoreExpectedAsync(_acceptLoop).ConfigureAwait(false);
+            Task[] connections = _connections.ToArray();
+            if (connections.Length != 0)
             {
+                Task all = Task.WhenAll(connections);
+                Task completed = await Task.WhenAny(
+                        all,
+                        Task.Delay(
+                            SocketIntegrationCollection.CoordinationTimeout))
+                    .ConfigureAwait(false);
+                if (!ReferenceEquals(completed, all))
+                {
+                    int incomplete = connections.Count(
+                        connection => !connection.IsCompleted);
+                    throw new TimeoutException(
+                        "CONNECT proxy teardown left " +
+                        $"{incomplete} of {connections.Length} relay task(s) " +
+                        "incomplete after " +
+                        $"{SocketIntegrationCollection.CoordinationTimeout.TotalSeconds} " +
+                        "seconds.");
+                }
+
                 await IgnoreExpectedAsync(all).ConfigureAwait(false);
             }
         }
-
-        _stop.Dispose();
+        finally
+        {
+            _stop.Dispose();
+        }
     }
 
     private async Task AcceptAsync()
