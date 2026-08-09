@@ -1,26 +1,31 @@
 # revAgent Gateway
 
 This additive revAgent Gateway package retains the M0 transport spike and now
-contains the first bounded M2 north/registry/dispatch slice. It mirrors the
+contains the bounded M2 north/registry/dispatch proof plus the GW-1 through
+GW-3 foundations it consumes. It mirrors the
 existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
 mode). The Gateway package uses the split MCP TypeScript SDK v2 packages and
 Zod 4; frozen packages under `installer/**` retain their independent v1 pins.
 
-## M2 first north/registry/dispatch slice
+## M2 north/registry/dispatch vertical slice
 
 The first M2 slice is additive and intentionally narrow:
 
-- `GatewayToolRegistry` owns the north name, summary, version, policy class,
-  exact `bridge|internal_mcp|aps` executor binding, executor method, and
-  executable Zod input shape.
-- The compact capability index is derived from the registry, name-sorted, and
-  byte-stable. Schemas are marked `deferred`; this slice does not yet activate
-  the `tool_search` or `tool_schema` meta-tools.
+- The verified 40-tool seed and E5 binding table build the immutable catalog;
+  one `EntitledCatalogView` is the sole source for the principal's north MCP
+  instructions and `revagent://capability-index` resource. The index is
+  name-sorted and byte-stable, and every schema remains `deferred`.
+- `GatewayToolRegistry` is the deliberately smaller executable subset. This
+  slice derives exactly one callable, `core.ui.state`, from the GW-3 catalog,
+  verifies its `auto` / `bridge` / `get_ui_state` binding fail-closed, and
+  exposes only its reviewed empty-argument schema. It does not materialize
+  executable Zod records for the other 39 catalog entries.
 - `GatewayDispatcher` resolves policy and executor metadata from the registry;
   client arguments cannot choose either value. It revalidates direct calls
   against the registry Zod shape, blocks `confirm`/`gated` tools until policy
   middleware exists, and preserves completed/guarded/failed executor outcomes.
-- `startNorthMcpEndpoint` wraps one pure `McpServer` factory with
+- `startNorthMcpEndpoint` resolves one entitlement-filtered catalog view after
+  authentication and wraps one pure `McpServer` factory with
   `createMcpHandler` and `toNodeHandler`. Its explicit `legacy: "stateless"`
   posture serves 2025-era and 2026-07-28 clients from the same registry and
   handlers; `server/discover` selects the modern per-request path. Every HTTP
@@ -30,18 +35,21 @@ The first M2 slice is additive and intentionally narrow:
   the originating method plus authenticated principal/client/resource/scope
   tuple; the required key is at least 32 bytes. Endpoint shutdown drains owned
   dispatcher work for both eras before resolving, and the endpoint exposes the
-  same capability-index bytes as server instructions and
-  `revagent://capability-index`.
+  same entitled-catalog bytes as server instructions and
+  `revagent://capability-index`. An unentitled callable is not registered and a
+  forged direct call cannot reach the dispatcher.
 - The integration test calls `core.ui.state` through the official MCP client,
   dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
   add-in loopback fixture. `fixture_counter` is not a production registry tool.
 
-This is not production OAuth readiness. The endpoint accepts only an injected
-token verifier, requires an HTTPS protected-resource metadata URL, and remains
-loopback-bound for this first proof. IdP/OIDC discovery, PKCE/DCR, JWKS
-rotation, public TLS/proxy binding, the full 40-tool immutable registry,
-Mode-A search/schema activation, docs-MCP internalization, confirmation,
-durable RBP ingress, and Mode-B interface stubs remain separate M2 tasks.
+This is not production OAuth or GW-10 readiness. The endpoint accepts only an
+injected token verifier, requires an HTTPS protected-resource metadata URL,
+and remains loopback-bound for this proof; the Fastify service shell therefore
+continues to return its structured 503 on `/mcp`. IdP/OIDC discovery,
+PKCE/DCR, JWKS rotation, public TLS/proxy binding, executable materialization
+for the remaining catalog, Mode-A search/schema activation, the final pinned
+set, docs-MCP internalization, confirmation, durable RBP ingress, and the
+production north mount remain separate M2 tasks.
 The injected authenticator is contractually responsible for validating token
 signature, expiry, audience/resource, scopes, revocation, and tenant/user
 identity; the endpoint does not infer any of those from client claims.

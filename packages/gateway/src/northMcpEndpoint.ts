@@ -17,6 +17,10 @@ import {
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { GatewayDispatcher } from "./dispatch.js";
+import type {
+  CatalogEntry,
+  EntitledCatalogView,
+} from "./entitledRegistry.js";
 import type { GatewayToolRegistry } from "./registry.js";
 
 const NORTH_MCP_PATH = "/mcp";
@@ -46,7 +50,16 @@ export interface NorthMcpAuthenticator {
 
 export interface NorthMcpEndpointOptions {
   readonly authenticator: NorthMcpAuthenticator;
+  /**
+   * Resolves the one entitlement-filtered GW-3 catalog view used by every
+   * north surface for this request. Null refuses the request before MCP
+   * initialization or executor contact.
+   */
+  readonly catalogViewFor: (
+    authenticated: AuthenticatedNorthMcpRequest,
+  ) => EntitledCatalogView | null | Promise<EntitledCatalogView | null>;
   readonly dispatcher: GatewayDispatcher;
+  /** The executable subset; it is intentionally one tool in this slice. */
   readonly registry: GatewayToolRegistry;
   readonly requestState: {
     readonly key: string | Uint8Array;
@@ -226,7 +239,27 @@ function toolResult(outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>)
   };
 }
 
+function assertCallableCatalogCoherence(
+  record: ReturnType<GatewayToolRegistry["require"]>,
+  catalogEntry: CatalogEntry,
+): void {
+  if (
+    catalogEntry.name !== record.name ||
+    catalogEntry.summary !== record.summary ||
+    catalogEntry.namespace !== record.namespace ||
+    catalogEntry.version !== record.version ||
+    catalogEntry.policyClass !== record.policyClass ||
+    catalogEntry.executor !== record.executor ||
+    catalogEntry.tool !== record.executorMethod
+  ) {
+    throw new TypeError(
+      `north callable ${record.name} disagrees with its GW-3 catalog entry`,
+    );
+  }
+}
+
 function createSessionServer(input: {
+  readonly catalogView: EntitledCatalogView;
   readonly authenticated: AuthenticatedNorthMcpRequest;
   readonly dispatcher: GatewayDispatcher;
   readonly inflightOperations: Set<Promise<unknown>>;
@@ -234,7 +267,7 @@ function createSessionServer(input: {
   readonly requestScopeId: string;
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
-  const capabilityIndexBytes = input.registry.capabilityIndexBytes();
+  const capabilityIndexBytes = input.catalogView.capabilityIndexBytes();
   const dispatcher = input.dispatcher;
   const principalKey = input.authenticated.principalKey;
   const oauthClientId = input.authenticated.authInfo.clientId;
@@ -271,6 +304,11 @@ function createSessionServer(input: {
   );
 
   for (const record of input.registry.records()) {
+    const catalogEntry = input.catalogView.get(record.name);
+    if (catalogEntry === undefined) {
+      continue;
+    }
+    assertCallableCatalogCoherence(record, catalogEntry);
     server.registerTool(
       record.name,
       {
@@ -322,6 +360,7 @@ export async function startNorthMcpEndpoint(
   }
 
   const principalByAuthInfo = new WeakMap<AuthInfo, string>();
+  const catalogViewByAuthInfo = new WeakMap<AuthInfo, EntitledCatalogView>();
   const requestStateCodec = createRequestStateCodec({
     key: options.requestState.key,
     ...(options.requestState.ttlSeconds === undefined
@@ -360,7 +399,12 @@ export async function startNorthMcpEndpoint(
       if (authInfo === undefined || principalKey === undefined) {
         throw new Error("trusted north MCP auth context is missing");
       }
+      const catalogView = catalogViewByAuthInfo.get(authInfo);
+      if (catalogView === undefined) {
+        throw new Error("trusted north MCP entitlement context is missing");
+      }
       return createSessionServer({
+        catalogView,
         authenticated: { authInfo, principalKey },
         dispatcher: options.dispatcher,
         inflightOperations,
@@ -429,8 +473,14 @@ export async function startNorthMcpEndpoint(
       sendJson(response, 503, { error: "north_mcp_endpoint_closing" });
       return;
     }
+    const catalogView = await options.catalogViewFor(authenticated);
+    if (catalogView === null) {
+      sendJson(response, 403, { error: "entitlement_denied" });
+      return;
+    }
     const requestAuthInfo = cloneAuthInfo(authenticated.authInfo);
     principalByAuthInfo.set(requestAuthInfo, authenticated.principalKey);
+    catalogViewByAuthInfo.set(requestAuthInfo, catalogView);
     (request as AuthenticatedIncomingMessage).auth = requestAuthInfo;
 
     let parsedPostBody: unknown;
