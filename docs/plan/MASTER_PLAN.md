@@ -3,8 +3,8 @@
 **Document state:** living migration tracker
 
 **Current milestone:** M2 — implementation in progress; GW-1 [#342], GW-2
-[#344], and GW-3 [#345] are merged, while the required coordinator north
-integration slice remains open
+[#344], and GW-3 [#345] are merged; the coordinator north integration slice is
+ready in [#355] and awaits merge
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
@@ -28,16 +28,17 @@ Only the milestone decision owner may move a gate from `passed` to `accepted`. M
 ## 2026-08-09 M2 delivery checkpoint
 
 GW-1 through GW-3 are on `main`, alongside earlier M2 groundwork including the
-first north skeleton proof in [#291]. Their merge state is delivery evidence,
-not an M2 gate decision: M2 remains `in_progress` until its remaining
-acceptance criteria and executable exit demonstration are green.
+first north skeleton proof in [#291]. Their merge state and the ready #355
+integration evidence are delivery evidence, not an M2 gate decision: M2
+remains `in_progress` until its remaining acceptance criteria and executable
+exit demonstration are green.
 
 | Slice | Delivered evidence | GitHub state | Remaining milestone impact |
 |---|---|---|---|
 | GW-1 | Registry/executor collection and immutable legacy-handler packaging behind `ExecutorPort` | [#342](https://github.com/BTankut/revAgent/pull/342) merged | Inputs to the production north/dispatch composition; does not close M2 alone |
 | GW-2 | Gateway service shell, frozen ports, deterministic auth seam, and non-executable Mode-B stubs | [#344](https://github.com/BTankut/revAgent/pull/344) merged | Service shell still requires the coordinator north-endpoint composition |
 | GW-3 | E5 executor/policy map, entitled registry view, and byte-stable capability index | [#345](https://github.com/BTankut/revAgent/pull/345) merged | Registry/index output still requires the coordinator north-endpoint composition and one executor-dispatched tool proof |
-| Coordinator north vertical slice | Bind the GW-3 entitled capability index to the dual-era north skeleton and its one executor-dispatched tool | Not yet opened | Closes the required GW-1/GW-3 composition gap; it does not redefine the already merged §8.3.5 first proof or complete GW-10/M2 |
+| Coordinator north vertical slice | Bind the GW-3 entitled capability index to the dual-era north skeleton and its one executor-dispatched tool | [#355](https://github.com/BTankut/revAgent/pull/355) ready; required checks and Claude green | Integration evidence is ready and merge is pending; it does not redefine the already merged §8.3.5 first proof or complete GW-10/M2 |
 
 ## 2026-08-02 M3 gate evidence — awaiting operator acceptance
 
