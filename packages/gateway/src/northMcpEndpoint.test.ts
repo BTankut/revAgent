@@ -2,7 +2,10 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { Client, StreamableHTTPClientTransport } from "@modelcontextprotocol/client";
+import {
+  Client,
+  StreamableHTTPClientTransport,
+} from "@modelcontextprotocol/client";
 import {
   CLIENT_CAPABILITIES_META_KEY,
   CLIENT_INFO_META_KEY,
@@ -11,7 +14,7 @@ import {
   type AuthInfo,
   type ServerContext,
 } from "@modelcontextprotocol/server";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
@@ -32,16 +35,17 @@ import {
   entitleOnly,
 } from "./entitledRegistry.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
-import {
-  buildNorthFirstSliceCallableRegistry,
-} from "./northFirstSlice.js";
+import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
   type AuthenticatedNorthMcpRequest,
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
 import { verifyRegistrySeed } from "./registrySeed.js";
-import { createCapturingEventSink } from "./testAdapters.js";
+import {
+  createCapturingEventSink,
+  createReadOnlyRecoveryAuthorityFixture,
+} from "./testAdapters.js";
 
 interface FixtureAddress {
   readonly host: string;
@@ -89,10 +93,7 @@ interface SimulatorLike {
 }
 
 interface SimulatorModule {
-  readonly ArtifactSpool: new (
-    root: string,
-    nextId: () => string,
-  ) => unknown;
+  readonly ArtifactSpool: new (root: string, nextId: () => string) => unknown;
   readonly BridgeSimulator: new (
     journal: JournalLike,
     spool: unknown,
@@ -109,8 +110,7 @@ interface SimulatorModule {
 const TOKEN = "m2-test-token";
 const OTHER_TOKEN = "m2-other-test-token";
 const PRINCIPAL_KEY = "tenant-a:user-a";
-const REQUEST_STATE_KEY =
-  "revagent-m2-request-state-test-key-32-bytes-minimum";
+const REQUEST_STATE_KEY = "revagent-m2-request-state-test-key-32-bytes-minimum";
 const REQUEST_STATE_TTL_SECONDS = 60;
 const RSID = "019f9ac3-ae89-7342-9f6d-b9269e167184";
 const REGISTRATION_ID = "019f9ac3-ae89-7342-9f6d-b9269e167185";
@@ -181,7 +181,6 @@ function invocationRouteFor(
       kind: "live" as const,
       session_document_id: "north-test-document",
     }),
-    mutationScope: null,
   });
 }
 
@@ -196,6 +195,7 @@ function dispatcherOptions() {
     },
     newInvocationId: () => `north-invocation-${++sequence}`,
     newEventId: () => `north-event-${sequence}`,
+    recoveryAuthority: createReadOnlyRecoveryAuthorityFixture(),
   } as const;
 }
 
@@ -207,10 +207,7 @@ const VERIFIED_CATALOG = buildCatalog(
     ) as unknown,
   ),
 );
-const FULL_CATALOG_VIEW = new EntitledCatalogView(
-  VERIFIED_CATALOG,
-  entitleAll,
-);
+const FULL_CATALOG_VIEW = new EntitledCatalogView(VERIFIED_CATALOG, entitleAll);
 const NO_TOOLS_CATALOG_VIEW = new EntitledCatalogView(
   VERIFIED_CATALOG,
   entitleOnly([]),
@@ -222,10 +219,7 @@ async function loadFixtureModules(): Promise<{
 }> {
   const sourceDirectory = dirname(fileURLToPath(import.meta.url));
   const fixtureUrl = pathToFileURL(
-    resolve(
-      sourceDirectory,
-      "../../addin-loopback-fixture/dist/index.js",
-    ),
+    resolve(sourceDirectory, "../../addin-loopback-fixture/dist/index.js"),
   ).href;
   const simulatorUrl = pathToFileURL(
     resolve(sourceDirectory, "../../bridge-simulator/dist/index.js"),
@@ -337,15 +331,11 @@ async function mintTestRequestState(input: {
   const codec = createRequestStateCodec({
     key: REQUEST_STATE_KEY,
     ttlSeconds: input.ttlSeconds ?? REQUEST_STATE_TTL_SECONDS,
-    bind: (context) =>
-      `${context.mcpReq.method}\0${testAuthBindingKey(input)}`,
+    bind: (context) => `${context.mcpReq.method}\0${testAuthBindingKey(input)}`,
   });
-  return codec.mint(
-    { round: 1 },
-    {
-      mcpReq: { method: input.method ?? "tools/call" },
-    } as ServerContext,
-  );
+  return codec.mint({ round: 1 }, {
+    mcpReq: { method: input.method ?? "tools/call" },
+  } as ServerContext);
 }
 
 function deferred<T>(): {
@@ -363,10 +353,94 @@ function deferred<T>(): {
 }
 
 describe("M2 north MCP first slice", () => {
-  it("exposes a registry index and dispatches one tool through the Bridge simulator", async () => {
-    const temporaryRoot = mkdtempSync(
-      join(tmpdir(), "revagent-gateway-m2-"),
+  it("fails closed when callable catalog and registry disagree on mutation scope policy", async () => {
+    const mismatchedCatalog = VERIFIED_CATALOG.map((entry) =>
+      entry.name === "core.ui.state"
+        ? Object.freeze({
+            ...entry,
+            mutationScopePolicy: "session" as const,
+          })
+        : entry,
     );
+    const mismatchedView = new EntitledCatalogView(
+      mismatchedCatalog,
+      entitleAll,
+    );
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    let executorCalls = 0;
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            executorCalls += 1;
+            return { state: "completed", result: { ok: true } };
+          },
+        },
+      ],
+      dispatcherOptions(),
+    );
+    const authInfo: AuthInfo = {
+      token: TOKEN,
+      clientId: "catalog-coherence-test",
+      scopes: ["mcp:tools"],
+    };
+    const errorSpy = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => mismatchedView,
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL(
+          "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+        ),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(PRINCIPAL_KEY, authInfo)
+              : null;
+          },
+        },
+      });
+      client = new Client({
+        name: "revAgent catalog coherence test",
+        version: "0.1.0-m2",
+      });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: {
+          headers: { authorization: `Bearer ${TOKEN}` },
+        },
+      });
+
+      await expect(client.connect(transport)).rejects.toThrow();
+      expect(executorCalls).toBe(0);
+      expect(
+        errorSpy.mock.calls.some((call) =>
+          call.some((value) =>
+            String(value).includes(
+              "north callable core.ui.state disagrees with its GW-3 catalog entry",
+            ),
+          ),
+        ),
+      ).toBe(true);
+    } finally {
+      await Promise.allSettled([client?.close(), transport?.close()]);
+      await endpoint?.close().catch(() => undefined);
+      errorSpy.mockRestore();
+    }
+  });
+
+  it("exposes a registry index and dispatches one tool through the Bridge simulator", async () => {
+    const temporaryRoot = mkdtempSync(join(tmpdir(), "revagent-gateway-m2-"));
     const modules = await loadFixtureModules();
     const fixture = new modules.fixture.AddinLoopbackFixture();
     let endpoint: NorthMcpEndpointHandle | undefined;
@@ -395,9 +469,8 @@ describe("M2 north MCP first slice", () => {
       const ids = new modules.simulator.DeterministicUuid7Source();
       simulator = new modules.simulator.BridgeSimulator(
         journal,
-        new modules.simulator.ArtifactSpool(
-          join(temporaryRoot, "spool"),
-          () => ids.next(),
+        new modules.simulator.ArtifactSpool(join(temporaryRoot, "spool"), () =>
+          ids.next(),
         ),
       );
       const registration = await simulator.registrationForProbe({
@@ -459,10 +532,7 @@ describe("M2 north MCP first slice", () => {
           ) {
             return { state: "completed", result: normalized };
           }
-          if (
-            normalized.kind === "result" &&
-            normalized.status === "guarded"
-          ) {
+          if (normalized.kind === "result" && normalized.status === "guarded") {
             return {
               state: "guarded",
               reason:
@@ -518,8 +588,7 @@ describe("M2 north MCP first slice", () => {
             ) {
               return null;
             }
-            const otherPrincipal =
-              authorization === `Bearer ${OTHER_TOKEN}`;
+            const otherPrincipal = authorization === `Bearer ${OTHER_TOKEN}`;
             const principalKey = otherPrincipal
               ? "tenant-a:user-b"
               : PRINCIPAL_KEY;
@@ -807,11 +876,8 @@ describe("M2 north MCP first slice", () => {
         },
       ]);
       expect(
-        new Set(
-          executorRequests.map(
-            ({ context }) => context.mcpSessionId,
-          ),
-        ).size,
+        new Set(executorRequests.map(({ context }) => context.mcpSessionId))
+          .size,
       ).toBe(2);
 
       const versionMismatch = await fetch(endpoint.endpoint, {
@@ -885,9 +951,7 @@ describe("M2 north MCP first slice", () => {
         },
       });
       expect(statelessGet.status).toBe(405);
-      await expect
-        .poll(() => endpoint?.activeRequestCount() ?? -1)
-        .toBe(0);
+      await expect.poll(() => endpoint?.activeRequestCount() ?? -1).toBe(0);
     } finally {
       await Promise.allSettled([
         legacyClient?.close(),
@@ -974,14 +1038,8 @@ describe("M2 north MCP first slice", () => {
       scopes: ["mcp:resources", "mcp:tools"],
       resource,
     };
-    const authByAuthorization = new Map<
-      string,
-      AuthenticatedNorthMcpRequest
-    >([
-      [
-        `Bearer ${TOKEN}`,
-        authenticatedRequest(PRINCIPAL_KEY, primaryAuthInfo),
-      ],
+    const authByAuthorization = new Map<string, AuthenticatedNorthMcpRequest>([
+      [`Bearer ${TOKEN}`, authenticatedRequest(PRINCIPAL_KEY, primaryAuthInfo)],
       [
         `Bearer ${OTHER_TOKEN}`,
         authenticatedRequest("tenant-a:user-b", otherAuthInfo),
@@ -1028,9 +1086,10 @@ describe("M2 north MCP first slice", () => {
         ),
         authenticator: {
           async authenticate(request) {
-            return authByAuthorization.get(
-              request.headers.authorization ?? "",
-            ) ?? null;
+            return (
+              authByAuthorization.get(request.headers.authorization ?? "") ??
+              null
+            );
           },
         },
       });
@@ -1055,11 +1114,7 @@ describe("M2 north MCP first slice", () => {
         validState.slice(0, macStart) +
         (firstMacCharacter === "A" ? "B" : "A") +
         validState.slice(macStart + 1);
-      const postState = (
-        token: string,
-        id: string,
-        requestState: string,
-      ) =>
+      const postState = (token: string, id: string, requestState: string) =>
         fetch(endpoint!.endpoint, {
           method: "POST",
           headers: {
@@ -1100,9 +1155,7 @@ describe("M2 north MCP first slice", () => {
         validState,
       );
       expect(reorderedScopesResponse.status).toBe(200);
-      await expect(
-        reorderedScopesResponse.json(),
-      ).resolves.toMatchObject({
+      await expect(reorderedScopesResponse.json()).resolves.toMatchObject({
         jsonrpc: "2.0",
         id: "reordered-scopes-request-state",
         result: {
@@ -1222,9 +1275,7 @@ describe("M2 north MCP first slice", () => {
           ),
           authenticator: {
             async authenticate(request) {
-              if (
-                request.headers.authorization !== `Bearer ${TOKEN}`
-              ) {
+              if (request.headers.authorization !== `Bearer ${TOKEN}`) {
                 return null;
               }
               const authInfo: AuthInfo = {
@@ -1252,10 +1303,12 @@ describe("M2 north MCP first slice", () => {
         });
         await client.connect(transport);
 
-        const callPromise = client.callTool({
-          name: "core.ui.state",
-          arguments: {},
-        }).catch(() => undefined);
+        const callPromise = client
+          .callTool({
+            name: "core.ui.state",
+            arguments: {},
+          })
+          .catch(() => undefined);
         await started.promise;
         expect(endpoint.activeRequestCount()).toBe(1);
 

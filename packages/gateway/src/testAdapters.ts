@@ -6,7 +6,11 @@ import type {
   IdentityPort,
 } from "./authContext.js";
 import { GATEWAY_AUTH_CONTRACT_VERSION } from "./authContext.js";
-import type { GatewayEventEnvelope, GatewayEventSink, GatewayEventType } from "./events.js";
+import type {
+  GatewayEventEnvelope,
+  GatewayEventSink,
+  GatewayEventType,
+} from "./events.js";
 import { REVAGENT_EVENT_SCHEMA } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import type {
@@ -17,7 +21,11 @@ import type {
   StoredRecord,
 } from "./store.js";
 import { GATEWAY_STORE_CONTRACT_VERSION } from "./store.js";
-import type { GatewayJsonObject, GatewayJsonValue } from "./dispatch.js";
+import type {
+  GatewayDispatcherOptions,
+  GatewayJsonObject,
+  GatewayJsonValue,
+} from "./dispatch.js";
 
 /**
  * Deterministic fixture adapters (GW-2).
@@ -104,7 +112,10 @@ export const FAKE_IDENTITY_TABLE_V1: FakeIdentityTable = Object.freeze({
   deviceTokens: Object.freeze({
     "device-fixture-active": device("device-fixture-active", "active"),
     "device-fixture-revoked": device("device-fixture-revoked", "revoked"),
-    "device-fixture-seat-denied": device("device-fixture-seat-denied", "seat_denied"),
+    "device-fixture-seat-denied": device(
+      "device-fixture-seat-denied",
+      "seat_denied",
+    ),
   }),
 });
 
@@ -113,7 +124,9 @@ export function createFakeIdentityPort(
 ): IdentityPort {
   const port: IdentityPort = {
     kind: "fake" as const,
-    async authenticateNorthRequest(input): Promise<GatewayPortResult<AuthContext>> {
+    async authenticateNorthRequest(
+      input,
+    ): Promise<GatewayPortResult<AuthContext>> {
       const found =
         input.authorization === undefined
           ? undefined
@@ -128,9 +141,13 @@ export function createFakeIdentityPort(
       }
       return Object.freeze({ ok: true as const, value: found });
     },
-    async authenticateDevice(input): Promise<GatewayPortResult<DeviceAuthContext>> {
+    async authenticateDevice(
+      input,
+    ): Promise<GatewayPortResult<DeviceAuthContext>> {
       const found =
-        input.deviceToken === undefined ? undefined : table.deviceTokens[input.deviceToken];
+        input.deviceToken === undefined
+          ? undefined
+          : table.deviceTokens[input.deviceToken];
       if (found === undefined) {
         return Object.freeze({
           ok: false as const,
@@ -156,7 +173,10 @@ export function createFakeEntitlementPort(
   const port: EntitlementPort = {
     kind: "fake" as const,
     async checkModuleEntitlement(input): Promise<GatewayPortResult<boolean>> {
-      return Object.freeze({ ok: true as const, value: modules.has(input.moduleName) });
+      return Object.freeze({
+        ok: true as const,
+        value: modules.has(input.moduleName),
+      });
     },
     async checkToolEntitlement(input): Promise<GatewayPortResult<boolean>> {
       return Object.freeze({
@@ -195,6 +215,64 @@ export function createCapturingEventSink(): CapturingEventSink {
     },
     clear(): void {
       buffer.length = 0;
+    },
+  };
+}
+
+/**
+ * Read-path-only dispatcher recovery fixture.
+ *
+ * Production callers must inject the durable store-backed authority. This
+ * adapter exists solely so dispatcher/north unit tests that never prepare a
+ * mutation still exercise the mandatory invocation-window calls.
+ */
+export function createReadOnlyRecoveryAuthorityFixture(): GatewayDispatcherOptions["recoveryAuthority"] {
+  const windows = new Map<string, string>();
+  const keyFor = (tenantId: string, rsid: string): string =>
+    `${tenantId}\u0000${rsid}`;
+  return {
+    async acquireInvocationWindow(input) {
+      const key = keyFor(input.tenantId, input.rsid);
+      const activeAttemptId = windows.get(key);
+      if (activeAttemptId === undefined) {
+        windows.set(key, input.attemptId);
+        return { kind: "acquired" as const };
+      }
+      return activeAttemptId === input.attemptId
+        ? { kind: "already_acquired" as const }
+        : { kind: "blocked" as const, activeAttemptId };
+    },
+    async releaseInvocationWindow(input) {
+      const key = keyFor(input.tenantId, input.rsid);
+      const activeAttemptId = windows.get(key);
+      if (activeAttemptId === undefined) {
+        return { kind: "already_released" as const };
+      }
+      if (activeAttemptId !== input.attemptId) {
+        return {
+          kind: "protocol_fault" as const,
+          reason: "invocation_window_attempt_mismatch",
+        };
+      }
+      windows.delete(key);
+      return { kind: "released" as const };
+    },
+    async preflightMutation() {
+      return { kind: "clear" as const };
+    },
+    async prepareMutationDispatch() {
+      return {
+        kind: "unavailable" as const,
+        code: "unavailable" as const,
+        message: "read-only recovery fixture cannot prepare a mutation",
+      };
+    },
+    async reconcilePendingDispatch() {
+      return {
+        kind: "unavailable" as const,
+        code: "unavailable" as const,
+        message: "read-only recovery fixture has no pending mutation",
+      };
     },
   };
 }
@@ -297,7 +375,9 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
           namespace: string,
           key: string,
         ): Promise<StoredRecord<T2> | null> {
-          const found = state.records.get(recordKey(namespace, scope.tenantId, key));
+          const found = state.records.get(
+            recordKey(namespace, scope.tenantId, key),
+          );
           return (found as StoredRecord<T2> | undefined) ?? null;
         },
         async list(namespace: string): Promise<readonly StoredRecord[]> {
@@ -373,7 +453,11 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
 }
 
 export function createRestartableTestStore(): RestartableTestStore {
-  const state: MemoryState = { records: new Map(), nextVersion: 0, open: false };
+  const state: MemoryState = {
+    records: new Map(),
+    nextVersion: 0,
+    open: false,
+  };
   return {
     store: buildMemoryStore(state),
     snapshot(): GatewayProtocolStoreSnapshot {

@@ -18,10 +18,7 @@ import {
 import { z } from "zod";
 import type { AuthContext } from "./authContext.js";
 import type { GatewayDispatcher } from "./dispatch.js";
-import type {
-  CatalogEntry,
-  EntitledCatalogView,
-} from "./entitledRegistry.js";
+import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
 import type { GatewayToolRegistry } from "./registry.js";
 
@@ -146,15 +143,11 @@ function cloneAuthInfo(authInfo: AuthInfo): AuthInfo {
   return {
     ...authInfo,
     scopes: [...authInfo.scopes],
-    ...(authInfo.extra === undefined
-      ? {}
-      : { extra: { ...authInfo.extra } }),
+    ...(authInfo.extra === undefined ? {} : { extra: { ...authInfo.extra } }),
   };
 }
 
-function authBindingKey(
-  authenticated: AuthenticatedNorthMcpRequest,
-): string {
+function authBindingKey(authenticated: AuthenticatedNorthMcpRequest): string {
   return JSON.stringify([
     authenticated.authContext.contractVersion,
     authenticated.authContext.actor.tenantId,
@@ -187,11 +180,7 @@ async function readJsonBody(request: IncomingMessage): Promise<unknown> {
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
   } catch {
-    throw new RequestBodyError(
-      "request body is not valid JSON",
-      400,
-      -32_700,
-    );
+    throw new RequestBodyError("request body is not valid JSON", 400, -32_700);
   }
 }
 
@@ -230,9 +219,7 @@ async function drainTrackedPromises(
 ): Promise<unknown[]> {
   const errors: unknown[] = [];
   while (trackedSets.some((tracked) => tracked.size > 0)) {
-    const pending = new Set(
-      trackedSets.flatMap((tracked) => [...tracked]),
-    );
+    const pending = new Set(trackedSets.flatMap((tracked) => [...tracked]));
     const results = await Promise.allSettled(pending);
     errors.push(
       ...results
@@ -246,7 +233,9 @@ async function drainTrackedPromises(
   return errors;
 }
 
-function toolResult(outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>) {
+function toolResult(
+  outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(outcome) }],
     structuredContent: outcome as unknown as Record<string, unknown>,
@@ -264,6 +253,7 @@ function assertCallableCatalogCoherence(
     catalogEntry.namespace !== record.namespace ||
     catalogEntry.version !== record.version ||
     catalogEntry.policyClass !== record.policyClass ||
+    catalogEntry.mutationScopePolicy !== record.mutationScopePolicy ||
     catalogEntry.executor !== record.executor ||
     catalogEntry.tool !== record.executorMethod
   ) {
@@ -361,7 +351,9 @@ export async function startNorthMcpEndpoint(
   const host = options.host ?? "127.0.0.1";
   const requestedPort = options.port ?? 0;
   if (host !== "127.0.0.1" && host !== "localhost") {
-    throw new RangeError("the first M2 north endpoint may bind only to loopback");
+    throw new RangeError(
+      "the first M2 north endpoint may bind only to loopback",
+    );
   }
   if (
     !Number.isInteger(requestedPort) ||
@@ -484,8 +476,7 @@ export async function startNorthMcpEndpoint(
         401,
         { error: "unauthorized" },
         {
-          "www-authenticate":
-            `Bearer resource_metadata="${options.resourceMetadataUrl.href}"`,
+          "www-authenticate": `Bearer resource_metadata="${options.resourceMetadataUrl.href}"`,
         },
       );
       return;
@@ -572,19 +563,13 @@ export async function startNorthMcpEndpoint(
       });
     });
   } catch (error) {
-    await Promise.allSettled([
-      mcpHandler.close(),
-      closeHttpServer(httpServer),
-    ]);
+    await Promise.allSettled([mcpHandler.close(), closeHttpServer(httpServer)]);
     throw error;
   }
 
   const address = httpServer.address() as AddressInfo | null;
   if (address === null) {
-    await Promise.allSettled([
-      mcpHandler.close(),
-      closeHttpServer(httpServer),
-    ]);
+    await Promise.allSettled([mcpHandler.close(), closeHttpServer(httpServer)]);
     throw new Error("north MCP endpoint did not expose a TCP address");
   }
   boundPort = address.port;
@@ -612,10 +597,7 @@ export async function startNorthMcpEndpoint(
           )
           .map((result) => result.reason);
         closeErrors.push(
-          ...await drainTrackedPromises([
-            inflightOperations,
-            requestTasks,
-          ]),
+          ...(await drainTrackedPromises([inflightOperations, requestTasks])),
         );
         if (closeErrors.length > 0) {
           throw new AggregateError(

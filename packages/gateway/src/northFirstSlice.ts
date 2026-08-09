@@ -53,6 +53,7 @@ export function buildNorthFirstSliceCallableRegistry(
     entry.tool !== "get_ui_state" ||
     entry.module !== "runtime" ||
     entry.policyClass !== "auto" ||
+    entry.mutationScopePolicy !== "none" ||
     entry.executor !== "bridge"
   ) {
     fail(
@@ -76,6 +77,7 @@ export function buildNorthFirstSliceCallableRegistry(
     namespace: entry.namespace,
     version: entry.version,
     policyClass: entry.policyClass,
+    mutationScopePolicy: entry.mutationScopePolicy,
     executor: entry.executor,
     executorMethod: entry.tool,
   });

@@ -5,8 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   DYNAMIC_CODE_TOOL,
   E5_CONFIRM_CLASS_TOOLS,
+  E5_DOCUMENT_RECOVERY_TOOLS,
+  E5_NO_RECOVERY_TOOLS,
+  E5_SESSION_RECOVERY_TOOLS,
   E5_TOOL_BINDINGS,
   ToolBindingError,
+  mutationScopePolicyForTool,
   verifyToolBindings,
   type ToolBindingRow,
 } from "./toolBindings.js";
@@ -29,7 +33,9 @@ function mutate(
   tool: string,
   patch: Partial<ToolBindingRow>,
 ): readonly ToolBindingRow[] {
-  return E5_TOOL_BINDINGS.map((row) => (row.tool === tool ? { ...row, ...patch } : row));
+  return E5_TOOL_BINDINGS.map((row) =>
+    row.tool === tool ? { ...row, ...patch } : row,
+  );
 }
 
 describe("E5 tool binding map", () => {
@@ -43,7 +49,9 @@ describe("E5 tool binding map", () => {
     // checking them is what catches a tool that exists but was never mapped, or
     // a mapped tool that no longer exists.
     const seed = verifyRegistrySeed(
-      JSON.parse(readFileSync(join(PACKAGE_ROOT, "registry-seed.json"), "utf8")),
+      JSON.parse(
+        readFileSync(join(PACKAGE_ROOT, "registry-seed.json"), "utf8"),
+      ),
     );
     const seeded = seed.tools.map((t) => t.name).sort();
     const mapped = E5_TOOL_BINDINGS.map((r) => r.tool).sort();
@@ -73,10 +81,33 @@ describe("E5 tool binding map", () => {
     // The override has to be visible in the data, not only in a commit message:
     // a future reader comparing this table against E5 must find the reason
     // attached to the row that differs.
-    const overrides = E5_TOOL_BINDINGS.filter((r) => r.overrideOfE5 !== undefined);
+    const overrides = E5_TOOL_BINDINGS.filter(
+      (r) => r.overrideOfE5 !== undefined,
+    );
     expect(overrides).toHaveLength(1);
     expect(overrides[0]?.tool).toBe("list_revit_instances");
     expect(overrides[0]?.overrideOfE5).toMatch(/DP-log/u);
+  });
+
+  it("classifies every tool in exactly one registry-authoritative recovery scope", () => {
+    expect(E5_SESSION_RECOVERY_TOOLS).toHaveLength(12);
+    expect(E5_DOCUMENT_RECOVERY_TOOLS).toEqual([]);
+    expect(E5_NO_RECOVERY_TOOLS).toHaveLength(28);
+
+    const classified = [
+      ...E5_SESSION_RECOVERY_TOOLS,
+      ...E5_DOCUMENT_RECOVERY_TOOLS,
+      ...E5_NO_RECOVERY_TOOLS,
+    ].sort();
+    expect(classified).toEqual(E5_TOOL_BINDINGS.map((row) => row.tool).sort());
+    expect(new Set(classified).size).toBe(E5_TOOL_BINDINGS.length);
+
+    for (const tool of E5_SESSION_RECOVERY_TOOLS) {
+      expect(mutationScopePolicyForTool(tool)).toBe("session");
+    }
+    for (const tool of E5_NO_RECOVERY_TOOLS) {
+      expect(mutationScopePolicyForTool(tool)).toBe("none");
+    }
   });
 });
 
@@ -102,7 +133,10 @@ describe("the mapping fails closed", () => {
     // The realistic regression: someone relaxes a confirm-class write to auto
     // and no reviewer catches it in a forty-row diff.
     expectRejection(
-      () => verifyToolBindings(mutate("set_element_parameter", { policyClass: "auto" })),
+      () =>
+        verifyToolBindings(
+          mutate("set_element_parameter", { policyClass: "auto" }),
+        ),
       "total_mismatch",
     );
   });
@@ -112,7 +146,9 @@ describe("the mapping fails closed", () => {
       () =>
         verifyToolBindings(
           mutate("set_element_parameter", { policyClass: "auto" }).map((row) =>
-            row.tool === "find_elements" ? { ...row, policyClass: "confirm" } : row,
+            row.tool === "find_elements"
+              ? { ...row, policyClass: "confirm" }
+              : row,
           ),
         ),
       "confirm_set_mismatch",
@@ -136,7 +172,10 @@ describe("the mapping fails closed", () => {
 
   it("refuses two tools claiming one target name", () => {
     expectRejection(
-      () => verifyToolBindings(mutate("close_view", { target: "core.view.activate" })),
+      () =>
+        verifyToolBindings(
+          mutate("close_view", { target: "core.view.activate" }),
+        ),
       "target_duplicate",
     );
   });
