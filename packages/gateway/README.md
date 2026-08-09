@@ -1,8 +1,8 @@
 # revAgent Gateway
 
 This additive revAgent Gateway package retains the M0 transport spike and now
-contains the bounded M2 north/registry/dispatch proof plus the GW-1 through
-GW-3 foundations it consumes. It mirrors the
+contains the bounded M2 north/registry/dispatch proof, the GW-1 through GW-3
+foundations it consumes, and the first GW-4 invocation-authority slice. It mirrors the
 existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
 mode). The Gateway package uses the split MCP TypeScript SDK v2 packages and
 Zod 4; frozen packages under `installer/**` retain their independent v1 pins.
@@ -32,8 +32,8 @@ The first M2 slice is additive and intentionally narrow:
   request is independently authenticated through the injected fail-closed
   boundary. Modern multi-round-trip `requestState` is verified with the SDK's
   HMAC codec before dispatch, expires on the configured TTL, and is bound to
-  the originating method plus authenticated principal/client/resource/scope
-  tuple; the required key is at least 32 bytes. Endpoint shutdown drains owned
+  the originating method plus authenticated actor/Gateway-session/client/
+  resource/scope tuple; the required key is at least 32 bytes. Endpoint shutdown drains owned
   dispatcher work for both eras before resolving, and the endpoint exposes the
   same entitled-catalog bytes as server instructions and
   `revagent://capability-index`. An unentitled callable is not registered and a
@@ -41,6 +41,44 @@ The first M2 slice is additive and intentionally narrow:
 - The integration test calls `core.ui.state` through the official MCP client,
   dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
   add-in loopback fixture. `fixture_counter` is not a production registry tool.
+
+## GW-4 invocation-authority vertical slice
+
+The dispatcher now receives a structured `AuthContext` and an explicit
+tenant/MCP-session/`rsid` route instead of inferring identity from a principal
+string. It rejects cross-tenant or cross-session routes before executor
+contact, carries RES-14 live or published document identity, computes a
+frozen-RBP RFC 8785 SHA-256 parameter digest, uses UUIDv7 invocation/event
+identities, and publishes the resulting context through `AsyncLocalStorage`
+while the executor runs. Mutation scope uses the exact RBP shape (`null`,
+`session`, or `document_id`). A north AuthContext whose
+MCP session is not yet assigned is bound to the SDK session before route
+validation; an already-bound or resolved route that names another session is
+refused before executor contact. Route-resolution refusal remains inside the
+dispatcher audit boundary and produces a failed terminal event. The dispatcher
+deep-snapshots AuthContext before the first await, and a live document-scoped
+mutation must name the same document as its routed live identity.
+
+Execution is authoritative window=1 per `rsid`; independent `rsid` values may
+still progress concurrently. Every terminal dispatcher outcome emits one
+normalized `tool.invocation` envelope through the O7 event-sink seam without
+including arguments, results, credentials, or raw tokens. If the audit sink is
+unavailable after executor contact, the response reports both
+`audit_unavailable` and `executorReached: true` so callers cannot safely treat
+it as a never-dispatched retry.
+
+This does not complete GW-4: durable conflict/hold recovery, restart survival,
+batch invocation/digest propagation, verification and clearance correlation,
+bridge acceptance, and production store adapters remain later GW-4 slices. It
+also does not start GW-8 policy/confirmation or the GW-10 production Fastify
+`/mcp` mount.
+
+The local parameter-digest implementation is byte-checked against every frozen
+RBP/1 conformance vector. Replacing it with the shared
+`@revagent/protocol.makeParamsDigest` runtime import requires a declared
+Gateway workspace dependency and root lockfile update, which are outside this
+`packages/gateway/**`-only slice; that ownership cleanup remains explicit rather
+than silently claiming one production implementation.
 
 This is not production OAuth or GW-10 readiness. The endpoint accepts only an
 injected token verifier, requires an HTTPS protected-resource metadata URL,

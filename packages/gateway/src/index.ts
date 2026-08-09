@@ -8,6 +8,7 @@ export const gatewayScaffold = Object.freeze({
   // bundle. The collected registry seed is the only legacy-derived input.
   registrySeedAvailable: true,
   m2FirstSliceAvailable: true,
+  invocationAuthorityAvailable: true,
   modeADiscoveryAvailable: true,
   serviceShellAvailable: true,
 } as const);
@@ -16,6 +17,7 @@ export type GatewayScaffold = typeof gatewayScaffold;
 
 export {
   GatewayDispatcher,
+  type GatewayDispatcherOptions,
   type GatewayDispatchOutcome,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
@@ -24,6 +26,18 @@ export {
   type GatewayJsonObject,
   type GatewayJsonValue,
 } from "./dispatch.js";
+export {
+  GatewayInvocationContextError,
+  canonicalParamsDigest,
+  createGatewayInvocationContext,
+  currentGatewayInvocationContext,
+  runWithGatewayInvocationContext,
+  type GatewayDocumentIdentity,
+  type GatewayInvocationContextErrorCode,
+  type GatewayInvocationRoute,
+  type GatewayMutationScope,
+  type GatewayParamsDigest,
+} from "./invocationContext.js";
 export {
   startNorthMcpEndpoint,
   type AuthenticatedNorthMcpRequest,

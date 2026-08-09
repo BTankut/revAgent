@@ -13,6 +13,7 @@ describe("gateway scaffold", () => {
       transportImplemented: false,
       registrySeedAvailable: true,
       m2FirstSliceAvailable: true,
+      invocationAuthorityAvailable: true,
       modeADiscoveryAvailable: true,
     });
     expect(gatewayScaffold).not.toHaveProperty("transportSpikeAvailable");
