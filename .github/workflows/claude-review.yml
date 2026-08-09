@@ -27,7 +27,7 @@ jobs:
   review:
     name: Claude review gate
     if: ${{ github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository }}
-    runs-on: [self-hosted, Windows, revagent-cd]
+    runs-on: [self-hosted, Windows, revagent-ci]
     steps:
       - name: Checkout PR
         uses: actions/checkout@v6

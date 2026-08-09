@@ -19,7 +19,7 @@ concurrency: { group: "ci-${{ github.event.pull_request.number || github.run_id 
 jobs:
   engineering-gates:
     name: Engineering gates
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-ci"]') }}
     # There is exactly one self-hosted runner, and both jobs here plus the
     # Claude review gate ask for its labels. A job that hangs holds it until a
     # human notices, and everything else reports `queued` rather than failing --
@@ -86,7 +86,7 @@ jobs:
   # its dedicated workflow.
   gateway-gates:
     name: Gateway gates
-    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-cd"]') }}
+    runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-ci"]') }}
     # Same single-runner exposure as engineering-gates above. 70 leaves headroom
     # over the conformance step's own 60 so that step fails first and names
     # itself, and over the 42-46 minutes this job takes whenever that step runs.
