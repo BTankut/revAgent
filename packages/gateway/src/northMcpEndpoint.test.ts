@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -12,7 +12,6 @@ import {
   type ServerContext,
 } from "@modelcontextprotocol/server";
 import { describe, expect, it } from "vitest";
-import { z } from "zod";
 
 import {
   GatewayDispatcher,
@@ -23,15 +22,20 @@ import {
   type GatewayJsonValue,
 } from "./dispatch.js";
 import {
+  EntitledCatalogView,
+  buildCatalog,
+  entitleAll,
+  entitleOnly,
+} from "./entitledRegistry.js";
+import {
+  buildNorthFirstSliceCallableRegistry,
+} from "./northFirstSlice.js";
+import {
   type AuthenticatedNorthMcpRequest,
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
-import {
-  GatewayToolRegistry,
-  M2_BOOTSTRAP_TOOL_RECORDS,
-  type GatewayToolRecord,
-} from "./registry.js";
+import { verifyRegistrySeed } from "./registrySeed.js";
 
 interface FixtureAddress {
   readonly host: string;
@@ -114,57 +118,23 @@ const INVOCATION_IDS = [
   "019f9ac3-ae89-7342-9f6d-b9269e167189",
   "019f9ac3-ae89-7342-9f6d-b9269e16718b",
 ] as const;
-const SCHEMA_PARITY_TOOL_RECORD = Object.freeze({
-  name: "core.element.inspect",
-  summary: "Inspect one element with bounded optional controls.",
-  namespace: "core",
-  version: "1.0.0",
-  policyClass: "auto",
-  executor: "bridge",
-  executorMethod: "inspect_element",
-  inputSchema: Object.freeze({
-    elementId: z
-      .string()
-      .min(1)
-      .max(64)
-      .describe("Stable element identifier."),
-    includeHidden: z
-      .boolean()
-      .optional()
-      .describe("Include hidden elements when true."),
-    limit: z
-      .number()
-      .int()
-      .min(1)
-      .max(25)
-      .optional()
-      .describe("Maximum result count."),
-  }),
-  inputJsonSchema: Object.freeze({
-    $schema: "https://json-schema.org/draft/2020-12/schema",
-    additionalProperties: false,
-    properties: Object.freeze({
-      elementId: Object.freeze({
-        description: "Stable element identifier.",
-        maxLength: 64,
-        minLength: 1,
-        type: "string",
-      }),
-      includeHidden: Object.freeze({
-        description: "Include hidden elements when true.",
-        type: "boolean",
-      }),
-      limit: Object.freeze({
-        description: "Maximum result count.",
-        maximum: 25,
-        minimum: 1,
-        type: "integer",
-      }),
-    }),
-    required: Object.freeze(["elementId"]),
-    type: "object",
-  }),
-} satisfies GatewayToolRecord);
+
+const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const VERIFIED_CATALOG = buildCatalog(
+  verifyRegistrySeed(
+    JSON.parse(
+      readFileSync(join(PACKAGE_ROOT, "registry-seed.json"), "utf8"),
+    ) as unknown,
+  ),
+);
+const FULL_CATALOG_VIEW = new EntitledCatalogView(
+  VERIFIED_CATALOG,
+  entitleAll,
+);
+const NO_TOOLS_CATALOG_VIEW = new EntitledCatalogView(
+  VERIFIED_CATALOG,
+  entitleOnly([]),
+);
 
 async function loadFixtureModules(): Promise<{
   readonly fixture: FixtureModule;
@@ -424,14 +394,15 @@ describe("M2 north MCP first slice", () => {
         },
       };
 
-      const registry = new GatewayToolRegistry([
-        ...M2_BOOTSTRAP_TOOL_RECORDS,
-        SCHEMA_PARITY_TOOL_RECORD,
-      ]);
+      const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
       const dispatcher = new GatewayDispatcher(registry, [bridgeExecutor]);
       endpoint = await startNorthMcpEndpoint({
         dispatcher,
         registry,
+        catalogViewFor: (authenticated) =>
+          authenticated.principalKey === PRINCIPAL_KEY
+            ? FULL_CATALOG_VIEW
+            : NO_TOOLS_CATALOG_VIEW,
         requestState: {
           key: REQUEST_STATE_KEY,
           ttlSeconds: REQUEST_STATE_TTL_SECONDS,
@@ -497,7 +468,7 @@ describe("M2 north MCP first slice", () => {
       expect(recordedMethods(legacyBodies)).not.toContain("server/discover");
 
       expect(legacyClient.getInstructions()).toBe(
-        registry.capabilityIndexBytes(),
+        FULL_CATALOG_VIEW.capabilityIndexBytes(),
       );
       const resources = await legacyClient.listResources();
       expect(resources.resources).toEqual([
@@ -512,22 +483,49 @@ describe("M2 north MCP first slice", () => {
       expect(capabilityResource.contents).toEqual([
         expect.objectContaining({
           uri: "revagent://capability-index",
-          text: registry.capabilityIndexBytes(),
+          text: FULL_CATALOG_VIEW.capabilityIndexBytes(),
         }),
       ]);
+      expect(FULL_CATALOG_VIEW.entries()).toHaveLength(40);
+      expect(FULL_CATALOG_VIEW.capabilityIndex().tools).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            name: "core.ui.state",
+            schema: "deferred",
+          }),
+          expect.objectContaining({
+            name: "core.code.execute",
+            schema: "deferred",
+          }),
+        ]),
+      );
 
       const legacyTools = await legacyClient.listTools();
       expect(legacyTools.tools.map((tool) => tool.name)).toEqual([
-        "core.element.inspect",
         "core.ui.state",
       ]);
       for (const tool of legacyTools.tools) {
         expect(tool.inputSchema).toEqual(
           registry.require(tool.name).inputJsonSchema,
         );
+        expect(tool.inputSchema.properties).toEqual({});
       }
       expect(fixture.getMethodExecutionCount("mcp_status")).toBe(1);
       expect(fixture.getMethodExecutionCount("get_ui_state")).toBe(0);
+
+      await expect(
+        legacyClient.callTool({
+          name: "core.code.execute",
+          arguments: {},
+        }),
+      ).rejects.toMatchObject({ code: -32_602 });
+      await expect(
+        legacyClient.callTool({
+          name: "core.ui.state",
+          arguments: { target: "forged-client-route" },
+        }),
+      ).resolves.toMatchObject({ isError: true });
+      expect(executorRequests).toHaveLength(0);
 
       const oversizedPost = await fetch(endpoint.endpoint, {
         method: "POST",
@@ -646,6 +644,9 @@ describe("M2 north MCP first slice", () => {
       expect(modernTransport.sessionId).toBeUndefined();
 
       const modernTools = await modernClient.listTools();
+      expect(modernTools.tools.map((tool) => tool.name)).toEqual([
+        "core.ui.state",
+      ]);
       for (const tool of modernTools.tools) {
         expect(tool.inputSchema).toEqual(
           registry.require(tool.name).inputJsonSchema,
@@ -673,13 +674,18 @@ describe("M2 north MCP first slice", () => {
         },
       });
       await otherClient.connect(otherTransport);
-      const otherResult = await otherClient.callTool({
-        name: "core.ui.state",
-        arguments: {},
-      });
-      expect(otherResult.isError).not.toBe(true);
+      expect(otherClient.getInstructions()).toBe(
+        NO_TOOLS_CATALOG_VIEW.capabilityIndexBytes(),
+      );
+      expect((await otherClient.listTools()).tools).toEqual([]);
+      await expect(
+        otherClient.callTool({
+          name: "core.ui.state",
+          arguments: {},
+        }),
+      ).rejects.toMatchObject({ code: -32_601 });
 
-      expect(executorRequests).toHaveLength(3);
+      expect(executorRequests).toHaveLength(2);
       expect(
         executorRequests.map(({ context }) => ({
           principalKey: context.principalKey,
@@ -701,13 +707,6 @@ describe("M2 north MCP first slice", () => {
             /^stateless-request:[0-9a-f-]{36}$/u,
           ),
         },
-        {
-          principalKey: "tenant-a:user-b",
-          oauthClientId: "claude-code-test",
-          requestScope: expect.stringMatching(
-            /^stateless-request:[0-9a-f-]{36}$/u,
-          ),
-        },
       ]);
       expect(
         new Set(
@@ -715,7 +714,7 @@ describe("M2 north MCP first slice", () => {
             ({ context }) => context.mcpSessionId,
           ),
         ).size,
-      ).toBe(3);
+      ).toBe(2);
 
       const versionMismatch = await fetch(endpoint.endpoint, {
         method: "POST",
@@ -779,7 +778,7 @@ describe("M2 north MCP first slice", () => {
         },
         id: "unsupported-version",
       });
-      expect(executorRequests).toHaveLength(3);
+      expect(executorRequests).toHaveLength(2);
 
       const statelessGet = await fetch(endpoint.endpoint, {
         method: "GET",
@@ -814,7 +813,7 @@ describe("M2 north MCP first slice", () => {
     const crossResourceToken = "m2-cross-resource-test-token";
     const crossScopeToken = "m2-cross-scope-test-token";
     const resource = new URL("https://gateway.example.test/mcp");
-    const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
     const executorRequests: GatewayExecutorRequest[] = [];
     const dispatcher = new GatewayDispatcher(registry, [
       {
@@ -904,6 +903,7 @@ describe("M2 north MCP first slice", () => {
       endpoint = await startNorthMcpEndpoint({
         dispatcher,
         registry,
+        catalogViewFor: () => FULL_CATALOG_VIEW,
         requestState: {
           key: REQUEST_STATE_KEY,
           ttlSeconds: REQUEST_STATE_TTL_SECONDS,
@@ -1064,7 +1064,7 @@ describe("M2 north MCP first slice", () => {
     async (era) => {
       const started = deferred<void>();
       const release = deferred<void>();
-      const registry = new GatewayToolRegistry(M2_BOOTSTRAP_TOOL_RECORDS);
+      const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
       const dispatcher = new GatewayDispatcher(registry, [
         {
           binding: "bridge",
@@ -1087,6 +1087,7 @@ describe("M2 north MCP first slice", () => {
         endpoint = await startNorthMcpEndpoint({
           dispatcher,
           registry,
+          catalogViewFor: () => FULL_CATALOG_VIEW,
           requestState: {
             key: REQUEST_STATE_KEY,
             ttlSeconds: REQUEST_STATE_TTL_SECONDS,
