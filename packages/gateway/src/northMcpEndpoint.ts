@@ -15,8 +15,11 @@ import {
   type McpRequestContext,
   type RequestStateCodec,
 } from "@modelcontextprotocol/server";
-import { z } from "zod";
 import type { AuthContext } from "./authContext.js";
+import {
+  gatewayExternalToolInputSchema,
+  splitGatewayConfirmationArguments,
+} from "./confirmation.js";
 import type { GatewayDispatcher } from "./dispatch.js";
 import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
@@ -156,6 +159,7 @@ function authBindingKey(authenticated: AuthenticatedNorthMcpRequest): string {
     authenticated.authContext.actor.oidcIssuer,
     authenticated.authContext.actor.oidcSubject,
     authenticated.authContext.session.sessionId,
+    authenticated.authContext.session.mcpSessionId,
     authenticated.principalKey,
     authenticated.authInfo.clientId,
     authenticated.authInfo.resource?.href ?? null,
@@ -317,19 +321,30 @@ function createSessionServer(input: {
       record.name,
       {
         description: record.summary,
-        inputSchema: z.object(record.inputSchema).strict(),
+        inputSchema: gatewayExternalToolInputSchema(record),
       },
       async (args, ctx) => {
+        const call = splitGatewayConfirmationArguments(record, args);
         const mcpSessionId =
-          ctx.sessionId ?? `stateless-request:${input.requestScopeId}`;
+          ctx.sessionId ??
+          input.authenticated.authContext.session.mcpSessionId ??
+          `stateless-request:${input.requestScopeId}`;
+        const confirmationSessionId =
+          input.authenticated.authContext.session.mcpSessionId ??
+          ctx.sessionId ??
+          input.authenticated.authContext.session.sessionId;
         return toolResult(
           await trackPromise(
             input.inflightOperations,
             dispatcher.dispatch({
               toolName: record.name,
-              args,
+              args: call.args,
               auth: input.authenticated.authContext,
               mcpSessionId,
+              confirmationSessionId,
+              ...(call.confirmation === undefined
+                ? {}
+                : { confirmation: call.confirmation }),
               resolveRoute: (authContext) =>
                 input.invocationRouteFor(
                   Object.freeze({ ...input.authenticated, authContext }),

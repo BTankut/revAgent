@@ -59,6 +59,10 @@ export interface CapabilityIndex {
 const TOOL_NAME_PATTERN = /^[a-z][a-z0-9_]*(?:\.[a-z][a-z0-9_]*)+$/u;
 const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+$/u;
 const EXECUTOR_BINDINGS = new Set<string>(GATEWAY_EXECUTOR_BINDINGS);
+const GATEWAY_RESERVED_INPUT_FIELDS = new Set([
+  "confirm_token",
+  "originating_preview_invocation_id",
+]);
 
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
@@ -236,6 +240,11 @@ function validateRecord(record: GatewayToolRecord): void {
     throw new TypeError(`${record.name}.inputSchema must be a Zod raw shape`);
   }
   for (const [fieldName, fieldSchema] of Object.entries(record.inputSchema)) {
+    if (GATEWAY_RESERVED_INPUT_FIELDS.has(fieldName)) {
+      throw new TypeError(
+        `${record.name}.inputSchema.${fieldName} is reserved for Gateway policy control`,
+      );
+    }
     if (!(fieldSchema instanceof z.ZodType)) {
       throw new TypeError(
         `${record.name}.inputSchema.${fieldName} must be a Zod schema`,

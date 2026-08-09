@@ -32,6 +32,13 @@ import {
 } from "@revagent/protocol";
 import { z } from "zod";
 
+import type {
+  GatewayConfirmationProof,
+  GatewayConfirmationRefusalReason,
+  GatewayConfirmationTransactionAuthority,
+  GatewayPendingActionRecord,
+} from "./confirmationAuthority.js";
+import { confirmationIdFromToken } from "./confirmationAuthority.js";
 import type { GatewayJsonValue } from "./dispatch.js";
 import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
@@ -454,6 +461,12 @@ export type GatewayRecoveryPrepareResult =
       readonly reason: string;
       readonly holdIds: readonly string[];
     }
+  | {
+      readonly kind: "confirmation_rejected";
+      readonly reason: GatewayConfirmationRefusalReason;
+      readonly confirmationId: string | null;
+      readonly pendingAction: GatewayPendingActionRecord | null;
+    }
   | GatewayRecoveryProtocolFault
   | GatewayRecoveryStoreFailure;
 
@@ -500,6 +513,7 @@ export type GatewayRecoveryEvidenceResult =
 export interface GatewayRecoveryAuthorityOptions {
   readonly bridgeEvidence: GatewayDurableBridgeEvidencePort;
   readonly evidenceDecision: GatewayAuditedRecoveryDecisionPort;
+  readonly confirmationAuthority?: GatewayConfirmationTransactionAuthority;
   readonly clock?: () => number;
   readonly newId?: (timestampMs: number) => string;
 }
@@ -1910,6 +1924,9 @@ export class GatewayRecoveryAuthority {
   readonly #store: GatewayProtocolStore;
   readonly #bridgeEvidence: GatewayDurableBridgeEvidencePort;
   readonly #evidenceDecision: GatewayAuditedRecoveryDecisionPort;
+  readonly #confirmationAuthority:
+    | GatewayConfirmationTransactionAuthority
+    | undefined;
   readonly #clock: () => number;
   readonly #newId: (timestampMs: number) => string;
 
@@ -1935,9 +1952,18 @@ export class GatewayRecoveryAuthority {
         "Gateway recovery authority requires audited evidence decisions",
       );
     }
+    if (
+      options.confirmationAuthority !== undefined &&
+      !options.confirmationAuthority.usesStore(store)
+    ) {
+      throw new TypeError(
+        "Gateway recovery and confirmation authorities must share one durable store",
+      );
+    }
     this.#store = store;
     this.#bridgeEvidence = options.bridgeEvidence;
     this.#evidenceDecision = options.evidenceDecision;
+    this.#confirmationAuthority = options.confirmationAuthority;
     this.#clock = options.clock ?? Date.now;
     this.#newId = options.newId ?? gatewayUuidV7;
   }
@@ -2438,10 +2464,12 @@ export class GatewayRecoveryAuthority {
     readonly connectionId: string;
     readonly envelope: unknown;
     readonly expected: GatewayExpectedMutationDispatch;
+    readonly confirmationProof?: GatewayConfirmationProof;
   }): Promise<GatewayRecoveryPrepareResult> {
     const frozen = snapshotInput(input);
     if (frozen === null) return protocolFault("invalid_input");
     let derived: DerivedEnvelope;
+    let confirmedPolicyId: string | null = null;
     try {
       assertBoundedString(frozen.tenantId, "tenantId", 512);
       assertBoundedString(frozen.attemptId, "attemptId", 512);
@@ -2480,11 +2508,80 @@ export class GatewayRecoveryAuthority {
           "mutation envelope is not bound to server-authored dispatch authority",
         );
       }
+      if (this.#confirmationAuthority !== undefined) {
+        const confirmedBindings = derived.bindings.filter(
+          (binding) => binding.policy.class === "confirm",
+        );
+        if (confirmedBindings.length > 0) {
+          const confirmationIds = new Set(
+            confirmedBindings.map((binding) => binding.policy.confirmation_id),
+          );
+          if (
+            confirmedBindings.length !== derived.bindings.length ||
+            confirmationIds.size !== 1 ||
+            confirmedBindings.some(
+              (binding) =>
+                binding.policy.decision !== "confirmed" ||
+                binding.policy.confirmation_id === null,
+            )
+          ) {
+            throw new TypeError("confirmed mutation policy is inconsistent");
+          }
+          confirmedPolicyId = confirmedBindings[0]!.policy.confirmation_id;
+          if (
+            frozen.confirmationProof === undefined ||
+            frozen.confirmationProof.commitInvocationId !==
+              derived.correlationId ||
+            confirmationIdFromToken(frozen.confirmationProof.confirmToken) !==
+              confirmedPolicyId
+          ) {
+            throw new TypeError(
+              "confirmed mutation is missing its exact confirmation proof",
+            );
+          }
+        } else if (frozen.confirmationProof !== undefined) {
+          throw new TypeError(
+            "non-confirm mutation cannot carry a confirmation proof",
+          );
+        }
+      }
     } catch {
       return protocolFault("invalid_input");
     }
 
+    const confirmationAtMs = this.#clock();
     const result = await this.#transact(frozen.tenantId, async (tx) => {
+      const confirmationValidation =
+        frozen.confirmationProof === undefined
+          ? null
+          : this.#confirmationAuthority === undefined
+            ? null
+            : await this.#confirmationAuthority.validatePendingAction(
+                tx,
+                frozen.confirmationProof,
+                confirmationAtMs,
+              );
+      if (
+        frozen.confirmationProof !== undefined &&
+        this.#confirmationAuthority === undefined
+      ) {
+        return {
+          kind: "unavailable" as const,
+          code: "not_implemented" as const,
+          message: "durable confirmation authority is not configured",
+        };
+      }
+      if (
+        confirmationValidation !== null &&
+        confirmationValidation.kind === "rejected"
+      ) {
+        return {
+          kind: "confirmation_rejected" as const,
+          reason: confirmationValidation.reason,
+          confirmationId: confirmationValidation.confirmationId,
+          pendingAction: confirmationValidation.pendingAction,
+        };
+      }
       const loaded = await loadRecord(tx, derived.envelope.rsid);
       const record = loaded.value;
       const windowFault = invocationWindowFault(record, frozen.attemptId);
@@ -2624,6 +2721,24 @@ export class GatewayRecoveryAuthority {
         resolutionPlan: conflicts.length === 0 ? record.resolutionPlan : null,
         pendingDispatch: pending,
       };
+      if (
+        confirmationValidation !== null &&
+        confirmationValidation.kind === "validated"
+      ) {
+        if (
+          confirmedPolicyId === null ||
+          confirmationValidation.pendingAction.confirmationId !==
+            confirmedPolicyId
+        ) {
+          return protocolFault("confirmation_policy_binding_mismatch");
+        }
+        this.#confirmationAuthority!.stageConsumption(
+          tx,
+          confirmationValidation,
+          derived.correlationId,
+          confirmationAtMs,
+        );
+      }
       stageRecord(tx, loaded, next);
       return { kind: "prepared" as const, dispatch: pending };
     });
