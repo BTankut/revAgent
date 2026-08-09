@@ -2,12 +2,13 @@
 
 **Document state:** living migration tracker
 
-**Current milestone:** M1 — operator accepted; protected merge of PR #290 is
-the final mechanical close
+**Current milestone:** M2 — implementation in progress; GW-1 [#342], GW-2
+[#344], GW-3 [#345], and the coordinator north integration slice [#355] are
+merged; #355 landed as `dd6c579c89dc8cf0d11a20763d81382231774849`
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-07-25
+**Last updated:** 2026-08-09
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -23,6 +24,21 @@ This file is the operational milestone tracker for the migration described by `d
 | `accepted` | The decision owner accepted the gate |
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
+
+## 2026-08-09 M2 delivery checkpoint
+
+GW-1 through GW-3 and the coordinator north integration slice are on `main`,
+alongside earlier M2 groundwork including the first north skeleton proof in
+[#291]. Their merge state is delivery evidence, not an M2 gate decision: M2
+remains `in_progress` until its remaining acceptance criteria and executable
+exit demonstration are green.
+
+| Slice | Delivered evidence | GitHub state | Remaining milestone impact |
+|---|---|---|---|
+| GW-1 | Registry/executor collection and immutable legacy-handler packaging behind `ExecutorPort` | [#342](https://github.com/BTankut/revAgent/pull/342) merged | Inputs to the production north/dispatch composition; does not close M2 alone |
+| GW-2 | Gateway service shell, frozen ports, deterministic auth seam, and non-executable Mode-B stubs | [#344](https://github.com/BTankut/revAgent/pull/344) merged | Service shell still requires the coordinator north-endpoint composition |
+| GW-3 | E5 executor/policy map, entitled registry view, and byte-stable capability index | [#345](https://github.com/BTankut/revAgent/pull/345) merged | Registry/index output still requires the coordinator north-endpoint composition and one executor-dispatched tool proof |
+| Coordinator north vertical slice | Bind the GW-3 entitled capability index to the dual-era north skeleton and its one executor-dispatched tool | [#355](https://github.com/BTankut/revAgent/pull/355) merged as [`dd6c579c89dc8cf0d11a20763d81382231774849`](https://github.com/BTankut/revAgent/commit/dd6c579c89dc8cf0d11a20763d81382231774849) | Integration evidence is on `main`; it does not redefine the already merged §8.3.5 first proof or complete GW-10/M2 |
 
 ## 2026-08-02 M3 gate evidence — awaiting operator acceptance
 
@@ -127,19 +143,26 @@ pilot-entry carry-forwards. They remain open and are not silently converted into
 
 ## Milestones
 
-| Milestone | Outcome and executable exit demonstration | Depends on | Primary owner(s) | State |
-|---|---|---|---|---|
-| M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | `passed` |
-| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | `accepted` |
-| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | `not_started` |
-| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | `passed` |
-| M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | `not_started` |
-| M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | `not_started` |
-| M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | `not_started` |
-| M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | `not_started` |
-| M8 | Pilot uses the same client/add-in stack intended for cutover for at least five real working days; forced failures and one signed update pass | M4, M6, M7 | WP8/WP9 with pilot user | `not_started` |
-| M9 | Rehearsed runbook, signed rollback criterion, retraining, and per-machine read/confirm-write smoke complete for the entire fleet | M8 | WP8 with WP3/WP5/WP9 | `not_started` |
-| M10 | Two-week insurance window closes, NAS archive/retire checklist passes, residual trust anchors are removed, and freeze is formally lifted | M9 | WP8/WP5/WP7 | `not_started` |
+> **Binding estimate/pacing rule:** `Xd` değerleri başlangıç efor/risk tahminidir; minimum takvim süresi veya pacing talimatı değildir. Bağımlılıklar sağlanmış, acceptance kriterleri ve gerekli evidence yeşilse görev derhal tamamlanır. Asistan tahmini tüketmek için beklemez, işi uzatmaz, yapay biçimde bölmez; gerçek süreyi kaydeder ve kalan işi yeniden tahmin eder. Yalnız açıkça 'minimum elapsed' yazan pilot/soak/insurance kapıları takvim süresidir.
+
+`Planning effort forecast` values come from the current package plan. `Variance`
+is actual effort minus forecast; it remains `not calculable` until actual effort
+is recorded. Calendar-gated pilot/soak/insurance elapsed time is tracked
+separately from engineering effort.
+
+| Milestone | Outcome and executable exit demonstration | Depends on | Primary owner(s) | Planning effort forecast | Actual effort | Variance | State |
+|---|---|---|---|---|---|---|---|
+| M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | 5d | not recorded | not calculable | `passed` |
+| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
+| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | in progress; not recorded | not calculable | `in_progress` |
+| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `passed` |
+| M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `not_started` |
+| M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `not_started` |
+| M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | 12d | not recorded | not calculable | `not_started` |
+| M7 | Production Compose/tunnel, warm standby, blank-VM O10 restore drill, and O11 metric-parity gate pass with measured evidence | M4, M5 | WP5/WP7 | 6d | not recorded | not calculable | `not_started` |
+| M8 | Pilot uses the same client/add-in stack intended for cutover for at least five real working days; forced failures and one signed update pass | M4, M6, M7 | WP8/WP9 with pilot user | 8d | not recorded | not calculable | `not_started` |
+| M9 | Rehearsed runbook, signed rollback criterion, retraining, and per-machine read/confirm-write smoke complete for the entire fleet | M8 | WP8 with WP3/WP5/WP9 | 5d | not recorded | not calculable | `not_started` |
+| M10 | Two-week insurance window closes, NAS archive/retire checklist passes, residual trust anchors are removed, and freeze is formally lifted | M9 | WP8/WP5/WP7 | 3d | not recorded | not calculable | `not_started` |
 
 RES-29 applies RES-23 to the operational tracker: M2/M4 exercise D9's permitted external-client path and do
 not implement the in-house agentic loop, Gateway LLM provider, prompt/context engine, or frozen-source
