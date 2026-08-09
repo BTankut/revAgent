@@ -10,9 +10,9 @@ on:
   workflow_dispatch:
     inputs:
       runner_labels_json:
-        description: 'JSON array of runner labels. Defaults to the office self-hosted Windows runner to avoid GitHub-hosted Actions budget limits.'
+        description: 'JSON array of runner labels. Defaults to the five-runner AXL CI pool; pass explicitly for every manual dispatch.'
         required: true
-        default: '["self-hosted","Windows","revagent-cd"]'
+        default: '["self-hosted","Windows","revagent-ci"]'
 
 concurrency: { group: "ci-${{ github.event.pull_request.number || github.run_id }}", cancel-in-progress: true }
 
@@ -20,13 +20,11 @@ jobs:
   engineering-gates:
     name: Engineering gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-ci"]') }}
-    # There is exactly one self-hosted runner, and both jobs here plus the
-    # Claude review gate ask for its labels. A job that hangs holds it until a
-    # human notices, and everything else reports `queued` rather than failing --
-    # on 2026-08-02 a hung conformance run held it for 55 minutes and blocked an
-    # unrelated PR's gates the whole time. GitHub's default is 360 minutes, so
-    # the ceiling has to be set explicitly. 25 covers the 14m1s this job has
-    # actually taken with headroom.
+    # Engineering, Gateway, and Claude review jobs share the five-runner AXL
+    # pool. A hung job still consumes scarce pool capacity and reports `queued`
+    # rather than failing. GitHub's default is 360 minutes, so the ceiling has
+    # to be set explicitly. 25 covers the expected 15-17 minute runtime with
+    # headroom.
     timeout-minutes: 25
 
     steps:
@@ -87,9 +85,9 @@ jobs:
   gateway-gates:
     name: Gateway gates
     runs-on: ${{ fromJSON(github.event_name == 'workflow_dispatch' && inputs.runner_labels_json || '["self-hosted","Windows","revagent-ci"]') }}
-    # Same single-runner exposure as engineering-gates above. 70 leaves headroom
+    # Same shared-pool exposure as engineering-gates above. 70 leaves headroom
     # over the conformance step's own 60 so that step fails first and names
-    # itself, and over the 42-46 minutes this job takes whenever that step runs.
+    # itself, and over the expected 32-43 minute runtime.
     timeout-minutes: 70
 
     steps:
