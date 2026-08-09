@@ -22,6 +22,8 @@ ENV NODE_ENV=production
 WORKDIR /app
 
 COPY --from=build --chown=node:node /workspace/node_modules ./node_modules
+COPY --from=build --chown=node:node /workspace/packages/protocol/package.json ./packages/protocol/package.json
+COPY --from=build --chown=node:node /workspace/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build --chown=node:node /workspace/packages/gateway/package.json ./packages/gateway/package.json
 COPY --from=build --chown=node:node /workspace/packages/gateway/node_modules ./packages/gateway/node_modules
 COPY --from=build --chown=node:node /workspace/packages/gateway/dist ./packages/gateway/dist
