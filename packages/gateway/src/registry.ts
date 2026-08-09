@@ -6,15 +6,22 @@ export const GATEWAY_EXECUTOR_BINDINGS = [
   "aps",
 ] as const;
 
-export type GatewayExecutorBinding =
-  (typeof GATEWAY_EXECUTOR_BINDINGS)[number];
+export type GatewayExecutorBinding = (typeof GATEWAY_EXECUTOR_BINDINGS)[number];
 
 export type GatewayPolicyClass = "auto" | "confirm" | "gated";
 
+/**
+ * Server-authored recovery scope for one registry tool.
+ *
+ * This is deliberately independent from policy class: O1 has auto tools that
+ * mutate document/view state, while confirm is an approval decision rather
+ * than an effect classifier.
+ */
+export type GatewayMutationScopePolicy = "none" | "document" | "session";
+
 export type GatewayJsonSchema = Readonly<Record<string, unknown>>;
 
-const JSON_SCHEMA_2020_12_URI =
-  "https://json-schema.org/draft/2020-12/schema";
+const JSON_SCHEMA_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
 
 export interface GatewayToolRecord {
   readonly name: string;
@@ -22,6 +29,7 @@ export interface GatewayToolRecord {
   readonly namespace: string;
   readonly version: string;
   readonly policyClass: GatewayPolicyClass;
+  readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly executor: GatewayExecutorBinding;
   readonly executorMethod: string;
   readonly inputSchema: ZodRawShape;
@@ -89,7 +97,7 @@ function cloneJsonValue(
   if (Array.isArray(value)) {
     return Object.freeze(
       value.map((item, index) =>
-        cloneJsonValue(item, `${path}[${index}]`, nextAncestors)
+        cloneJsonValue(item, `${path}[${index}]`, nextAncestors),
       ),
     );
   }
@@ -98,11 +106,7 @@ function cloneJsonValue(
   }
   const clone: Record<string, unknown> = {};
   for (const key of Object.keys(value).sort()) {
-    clone[key] = cloneJsonValue(
-      value[key],
-      `${path}.${key}`,
-      nextAncestors,
-    );
+    clone[key] = cloneJsonValue(value[key], `${path}.${key}`, nextAncestors);
   }
   return Object.freeze(clone);
 }
@@ -121,9 +125,7 @@ function normalizeInputJsonSchema(
     new Set(),
   ) as GatewayJsonSchema;
   if (normalized.type !== "object") {
-    throw new TypeError(
-      `${record.name}.inputJsonSchema.type must be object`,
-    );
+    throw new TypeError(`${record.name}.inputJsonSchema.type must be object`);
   }
   if (normalized.additionalProperties !== false) {
     throw new TypeError(
@@ -223,6 +225,13 @@ function validateRecord(record: GatewayToolRecord): void {
   ) {
     throw new TypeError(`${record.name}.policyClass is not supported`);
   }
+  if (
+    record.mutationScopePolicy !== "none" &&
+    record.mutationScopePolicy !== "document" &&
+    record.mutationScopePolicy !== "session"
+  ) {
+    throw new TypeError(`${record.name}.mutationScopePolicy is not supported`);
+  }
   if (!isPlainRecord(record.inputSchema)) {
     throw new TypeError(`${record.name}.inputSchema must be a Zod raw shape`);
   }
@@ -252,7 +261,7 @@ function capabilityIndexFor(
           policyClass: record.policyClass,
           executor: record.executor,
           schema: "deferred" as const,
-        })
+        }),
       ),
     ),
   });
@@ -270,7 +279,7 @@ export class GatewayRegistryView {
     records: readonly GatewayToolRecord[],
   ) {
     const sorted = [...records].sort((left, right) =>
-      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
     );
     for (const [index, record] of sorted.entries()) {
       if (registry.get(record.name) !== record) {
@@ -288,8 +297,7 @@ export class GatewayRegistryView {
       sorted.map((record) => [record.name, record]),
     );
     this.#capabilityIndex = capabilityIndexFor(this.#records);
-    this.#capabilityIndexBytes =
-      `${JSON.stringify(this.#capabilityIndex)}\n`;
+    this.#capabilityIndexBytes = `${JSON.stringify(this.#capabilityIndex)}\n`;
   }
 
   public registry(): GatewayToolRegistry {
@@ -336,10 +344,10 @@ export class GatewayToolRegistry {
           ...record,
           inputSchema: Object.freeze({ ...record.inputSchema }),
           inputJsonSchema: normalizeInputJsonSchema(record),
-        })
+        }),
       )
       .sort((left, right) =>
-        left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
       );
     const byName = new Map<string, GatewayToolRecord>();
 
@@ -382,7 +390,7 @@ export class GatewayToolRegistry {
       visibleRecords.push(record);
     }
     visibleRecords.sort((left, right) =>
-      left.name < right.name ? -1 : left.name > right.name ? 1 : 0
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
     );
     return new GatewayRegistryView(this, visibleRecords);
   }
@@ -407,6 +415,7 @@ export const M2_BOOTSTRAP_TOOL_RECORDS = Object.freeze([
     namespace: "core",
     version: "1.0.0",
     policyClass: "auto",
+    mutationScopePolicy: "none",
     executor: "bridge",
     executorMethod: "get_ui_state",
     inputSchema: Object.freeze({}),

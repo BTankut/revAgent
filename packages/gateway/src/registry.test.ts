@@ -14,6 +14,7 @@ const records: readonly GatewayToolRecord[] = [
     namespace: "docs",
     version: "1.0.0",
     policyClass: "auto",
+    mutationScopePolicy: "none",
     executor: "internal_mcp",
     executorMethod: "get_type_details",
     inputSchema: {},
@@ -30,6 +31,7 @@ const records: readonly GatewayToolRecord[] = [
     namespace: "core",
     version: "1.0.0",
     policyClass: "auto",
+    mutationScopePolicy: "none",
     executor: "bridge",
     executorMethod: "get_ui_state",
     inputSchema: {},
@@ -47,9 +49,7 @@ describe("GatewayToolRegistry", () => {
     const forward = new GatewayToolRegistry(records);
     const reverse = new GatewayToolRegistry([...records].reverse());
 
-    expect(forward.capabilityIndexBytes()).toBe(
-      reverse.capabilityIndexBytes(),
-    );
+    expect(forward.capabilityIndexBytes()).toBe(reverse.capabilityIndexBytes());
     expect(forward.capabilityIndex()).toEqual({
       schemaVersion: "revagent-capability-index/v1",
       tools: [
@@ -104,9 +104,9 @@ describe("GatewayToolRegistry", () => {
   });
 
   it("fails closed on duplicate north names", () => {
-    expect(
-      () => new GatewayToolRegistry([records[0]!, records[0]!]),
-    ).toThrow("duplicate Gateway tool name");
+    expect(() => new GatewayToolRegistry([records[0]!, records[0]!])).toThrow(
+      "duplicate Gateway tool name",
+    );
   });
 
   it("rejects a registry seed whose raw shape is not made of Zod schemas", () => {

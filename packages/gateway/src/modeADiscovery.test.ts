@@ -24,6 +24,7 @@ function tool(
     namespace: name.split(".", 1)[0]!,
     version: "1.0.0",
     policyClass: "auto",
+    mutationScopePolicy: "none",
     executor: "bridge",
     executorMethod: name.replaceAll(".", "_"),
     inputSchema: {
@@ -92,9 +93,9 @@ describe("ModeADiscoverySession", () => {
     expect(forward.search("symbolName").map(({ name }) => name)).toEqual([
       "docs.type.details",
     ]);
-    expect(
-      forward.search("qualified symbol").map(({ name }) => name),
-    ).toEqual(["docs.type.details"]);
+    expect(forward.search("qualified symbol").map(({ name }) => name)).toEqual([
+      "docs.type.details",
+    ]);
   });
 
   it("keeps activation session-local and pinned tools outside the budget", () => {
@@ -191,9 +192,9 @@ describe("ModeADiscoverySession", () => {
     );
     expect(hiddenError).toEqual(unknownError);
 
-    expect(() =>
-      session.activate([visible.name, hidden.name]),
-    ).toThrow(ModeAToolUnavailableError);
+    expect(() => session.activate([visible.name, hidden.name])).toThrow(
+      ModeAToolUnavailableError,
+    );
     expect(session.activeNames()).toEqual([]);
     expectUnavailable(() => session.requireCallable(visible.name));
     expectUnavailable(() => session.requireCallable(hidden.name));

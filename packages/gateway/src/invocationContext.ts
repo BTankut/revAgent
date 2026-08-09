@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import type { AuthContext } from "./authContext.js";
 import type {
   GatewayExecutorBinding,
+  GatewayMutationScopePolicy,
   GatewayPolicyClass,
 } from "./registry.js";
 
@@ -42,7 +43,6 @@ export interface GatewayInvocationRoute {
   readonly mcpSessionId: string;
   readonly rsid: string;
   readonly documentIdentity: GatewayDocumentIdentity;
-  readonly mutationScope: GatewayMutationScope;
 }
 
 export interface GatewayInvocationContext {
@@ -61,6 +61,8 @@ export interface GatewayInvocationContext {
   readonly toolName: string;
   readonly toolVersion: string;
   readonly policyClass: GatewayPolicyClass;
+  readonly mutationScopePolicy: GatewayMutationScopePolicy;
+  readonly mutating: boolean;
   readonly executor: GatewayExecutorBinding;
   readonly documentIdentity: GatewayDocumentIdentity;
   readonly paramsDigest: GatewayParamsDigest;
@@ -74,6 +76,7 @@ export type GatewayInvocationContextErrorCode =
   | "invalid_auth_context"
   | "invalid_document_identity"
   | "invalid_invocation_route"
+  | "mutation_scope_policy_unsupported"
   | "session_binding_mismatch"
   | "tenant_binding_mismatch";
 
@@ -107,7 +110,9 @@ function assertWellFormedUnicode(value: string): void {
     if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
       const next = value.charCodeAt(index + 1);
       if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError("RFC 8785 input contains an unpaired high surrogate");
+        throw new TypeError(
+          "RFC 8785 input contains an unpaired high surrogate",
+        );
       }
       index += 1;
     } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
@@ -156,10 +161,16 @@ function canonicalJson(value: unknown): string {
         throw new TypeError("RFC 8785 input must contain only JSON objects");
       }
       if (Object.getOwnPropertySymbols(value).length > 0) {
-        throw new TypeError("RFC 8785 input cannot contain symbol-keyed members");
+        throw new TypeError(
+          "RFC 8785 input cannot contain symbol-keyed members",
+        );
       }
-      if (Object.getOwnPropertyNames(value).length !== Object.keys(value).length) {
-        throw new TypeError("RFC 8785 input cannot contain non-enumerable members");
+      if (
+        Object.getOwnPropertyNames(value).length !== Object.keys(value).length
+      ) {
+        throw new TypeError(
+          "RFC 8785 input cannot contain non-enumerable members",
+        );
       }
 
       const record = value as Record<string, unknown>;
@@ -168,7 +179,9 @@ function canonicalJson(value: unknown): string {
         .map((key) => {
           const member = record[key];
           if (member === undefined) {
-            throw new TypeError(`RFC 8785 input contains undefined member ${key}`);
+            throw new TypeError(
+              `RFC 8785 input contains undefined member ${key}`,
+            );
           }
           return `${quote(key)}:${canonicalJson(member)}`;
         });
@@ -229,40 +242,20 @@ function validateDocumentIdentity(
   return Object.freeze({ ...identity });
 }
 
-function validateMutationScope(scope: GatewayMutationScope): GatewayMutationScope {
-  if (scope === null) {
-    return null;
-  }
-  if (scope.kind === "session") {
-    return Object.freeze({ kind: "session" as const });
-  }
-  if (scope.kind !== "document") {
-    throw new GatewayInvocationContextError(
-      "invalid_invocation_route",
-      "mutation scope must be null, session, or document",
-    );
-  }
-  requireBoundedString(
-    scope.document_id,
-    "mutation document_id",
-    "invalid_invocation_route",
-    4_096,
-  );
-  return Object.freeze({ ...scope });
+export interface GatewayInvocationAuthority {
+  readonly documentIdentity: GatewayDocumentIdentity;
+  readonly mutationScopePolicy: GatewayMutationScopePolicy;
+  readonly mutating: boolean;
+  readonly mutationScope: GatewayMutationScope;
 }
 
-export function createGatewayInvocationContext(input: {
+export function deriveGatewayInvocationAuthority(input: {
   readonly auth: AuthContext;
   readonly route: GatewayInvocationRoute;
   readonly mcpSessionId: string;
-  readonly invocationId: string;
-  readonly toolName: string;
-  readonly toolVersion: string;
-  readonly policyClass: GatewayPolicyClass;
-  readonly executor: GatewayExecutorBinding;
-  readonly args: unknown;
+  readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly startedAtMs: number;
-}): GatewayInvocationContext {
+}): GatewayInvocationAuthority {
   const { auth, route } = input;
   if (auth.actor.type !== "user" || auth.session.clientType !== "mcp") {
     throw new GatewayInvocationContextError(
@@ -270,10 +263,7 @@ export function createGatewayInvocationContext(input: {
       "Gateway invocation requires a north MCP user AuthContext",
     );
   }
-  if (
-    auth.expiresAtMs !== null &&
-    auth.expiresAtMs <= input.startedAtMs
-  ) {
+  if (auth.expiresAtMs !== null && auth.expiresAtMs <= input.startedAtMs) {
     throw new GatewayInvocationContextError(
       "expired_auth_context",
       "Gateway invocation AuthContext has expired",
@@ -321,11 +311,6 @@ export function createGatewayInvocationContext(input: {
     "invalid_invocation_route",
   );
   requireBoundedString(route.rsid, "route rsid", "invalid_invocation_route");
-  requireBoundedString(
-    input.invocationId,
-    "invocationId",
-    "invalid_invocation_route",
-  );
   if (route.tenantId !== auth.actor.tenantId) {
     throw new GatewayInvocationContextError(
       "tenant_binding_mismatch",
@@ -349,15 +334,57 @@ export function createGatewayInvocationContext(input: {
   }
 
   const documentIdentity = validateDocumentIdentity(route.documentIdentity);
-  const mutationScope = validateMutationScope(route.mutationScope);
-  if (
-    documentIdentity.kind === "live" &&
-    mutationScope?.kind === "document" &&
-    mutationScope.document_id !== documentIdentity.session_document_id
-  ) {
+  const mutationScope: GatewayMutationScope =
+    input.mutationScopePolicy === "none"
+      ? null
+      : input.mutationScopePolicy === "session"
+        ? Object.freeze({ kind: "session" as const })
+        : documentIdentity.kind === "live"
+          ? Object.freeze({
+              kind: "document" as const,
+              document_id: documentIdentity.session_document_id,
+            })
+          : null;
+  if (input.mutationScopePolicy === "document" && mutationScope === null) {
     throw new GatewayInvocationContextError(
-      "document_scope_mismatch",
-      "live document mutation scope does not match the routed document identity",
+      "mutation_scope_policy_unsupported",
+      "document-scoped mutation requires one exact live session document",
+    );
+  }
+
+  return Object.freeze({
+    documentIdentity,
+    mutationScopePolicy: input.mutationScopePolicy,
+    mutating: mutationScope !== null,
+    mutationScope,
+  });
+}
+
+export function createGatewayInvocationContext(input: {
+  readonly auth: AuthContext;
+  readonly route: GatewayInvocationRoute;
+  readonly mcpSessionId: string;
+  readonly invocationId: string;
+  readonly toolName: string;
+  readonly toolVersion: string;
+  readonly policyClass: GatewayPolicyClass;
+  readonly mutationScopePolicy: GatewayMutationScopePolicy;
+  readonly executor: GatewayExecutorBinding;
+  readonly args: unknown;
+  readonly startedAtMs: number;
+}): GatewayInvocationContext {
+  const { auth, route } = input;
+  requireBoundedString(
+    input.invocationId,
+    "invocationId",
+    "invalid_invocation_route",
+  );
+  const authority = deriveGatewayInvocationAuthority(input);
+  const oauthClientId = auth.session.oauthClientId;
+  if (oauthClientId === null) {
+    throw new GatewayInvocationContextError(
+      "invalid_auth_context",
+      "Gateway invocation AuthContext is missing oauthClientId",
     );
   }
 
@@ -371,16 +398,18 @@ export function createGatewayInvocationContext(input: {
       role: auth.actor.role,
     }),
     gatewaySessionId: auth.session.sessionId,
-    oauthClientId: auth.session.oauthClientId,
+    oauthClientId,
     mcpSessionId: input.mcpSessionId,
     rsid: route.rsid,
     toolName: input.toolName,
     toolVersion: input.toolVersion,
     policyClass: input.policyClass,
+    mutationScopePolicy: input.mutationScopePolicy,
+    mutating: authority.mutating,
     executor: input.executor,
-    documentIdentity,
+    documentIdentity: authority.documentIdentity,
     paramsDigest: canonicalParamsDigest(input.args),
-    mutationScope,
+    mutationScope: authority.mutationScope,
     startedAtMs: input.startedAtMs,
   });
 }
@@ -388,8 +417,7 @@ export function createGatewayInvocationContext(input: {
 const invocationStorage = new AsyncLocalStorage<GatewayInvocationContext>();
 
 export function currentGatewayInvocationContext():
-  | GatewayInvocationContext
-  | undefined {
+  GatewayInvocationContext | undefined {
   return invocationStorage.getStore();
 }
 

@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
 import type { CapabilityIndex, CapabilityIndexTool } from "./registry.js";
 import type { RegistrySeed } from "./registrySeed.js";
-import { E5_TOOL_BINDINGS, type ToolBindingRow } from "./toolBindings.js";
+import {
+  E5_TOOL_BINDINGS,
+  mutationScopePolicyForTool,
+  type ToolBindingRow,
+} from "./toolBindings.js";
 
 /**
  * The entitled registry view, capability index and search corpus (GW-3).
@@ -25,6 +29,7 @@ export interface CatalogEntry {
   readonly tool: string;
   readonly module: "runtime" | "docs";
   readonly policyClass: ToolBindingRow["policyClass"];
+  readonly mutationScopePolicy: ReturnType<typeof mutationScopePolicyForTool>;
   readonly executor: ToolBindingRow["executor"];
   /** Lower-cased search terms, deduplicated and sorted. */
   readonly terms: readonly string[];
@@ -41,7 +46,10 @@ const CATALOG_VERSION = "1.0.0";
  * would state the same fact twice and let the two disagree.
  */
 function stripTags(description: string): string {
-  return description.replace(/\[[A-Z0-9_]+\]/gu, " ").replace(/\s+/gu, " ").trim();
+  return description
+    .replace(/\[[A-Z0-9_]+\]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim();
 }
 
 /**
@@ -55,7 +63,10 @@ function stripTags(description: string): string {
 function summarize(description: string): string {
   const stripped = stripTags(description);
   const firstSentence = /^(.*?[.!?])(\s|$)/u.exec(stripped)?.[1] ?? stripped;
-  const bounded = firstSentence.length > 160 ? `${firstSentence.slice(0, 157)}...` : firstSentence;
+  const bounded =
+    firstSentence.length > 160
+      ? `${firstSentence.slice(0, 157)}...`
+      : firstSentence;
   return bounded.length === 0 ? "No description available." : bounded;
 }
 
@@ -130,6 +141,7 @@ export function buildCatalog(
         tool: tool.name,
         module: binding.module,
         policyClass: binding.policyClass,
+        mutationScopePolicy: mutationScopePolicyForTool(binding.tool),
         executor: binding.executor,
         terms: termsFor({
           name: binding.target,
@@ -150,7 +162,9 @@ export function buildCatalog(
 
   // Sorted by published name so every downstream artifact is order-independent.
   return Object.freeze(
-    entries.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0)),
+    entries.sort((left, right) =>
+      left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+    ),
   );
 }
 
@@ -171,13 +185,18 @@ export class EntitledCatalogView {
   readonly #entries: readonly CatalogEntry[];
   readonly #byName: ReadonlyMap<string, CatalogEntry>;
 
-  public constructor(entries: readonly CatalogEntry[], isEntitled: EntitlementDecision) {
+  public constructor(
+    entries: readonly CatalogEntry[],
+    isEntitled: EntitlementDecision,
+  ) {
     // Sorted here, not merely assumed sorted by the caller. Byte stability is
     // this object's guarantee, and a guarantee that depends on an unstated
     // precondition holds until the first caller who does not know about it.
     const visible = entries
       .filter((entry) => isEntitled(entry))
-      .sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+      .sort((left, right) =>
+        left.name < right.name ? -1 : left.name > right.name ? 1 : 0,
+      );
     this.#entries = Object.freeze(visible);
     this.#byName = new Map(visible.map((entry) => [entry.name, entry]));
   }
@@ -246,7 +265,9 @@ export class EntitledCatalogView {
         for (const term of terms) {
           if (entry.terms.includes(term)) {
             score += 2;
-          } else if (entry.terms.some((candidate) => candidate.startsWith(term))) {
+          } else if (
+            entry.terms.some((candidate) => candidate.startsWith(term))
+          ) {
             score += 1;
           }
         }
@@ -261,7 +282,9 @@ export class EntitledCatalogView {
           ? -1
           : 1,
     );
-    return Object.freeze(scored.slice(0, limit).map((candidate) => candidate.entry));
+    return Object.freeze(
+      scored.slice(0, limit).map((candidate) => candidate.entry),
+    );
   }
 }
 
