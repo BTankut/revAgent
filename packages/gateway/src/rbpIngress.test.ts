@@ -4,7 +4,7 @@ import {
   HttpSseGatewayBinding,
   WssGatewayBinding,
   type GatewayBinding,
-} from "@revagent/bridge-simulator";
+} from "../../bridge-simulator/dist/index.js";
 import {
   createReceivedJournalRecord,
   dataEnvelopeImmutableDigest,
