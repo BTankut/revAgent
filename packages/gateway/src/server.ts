@@ -37,13 +37,11 @@ import {
 } from "./store.js";
 
 /**
- * The Phase-1 Gateway HTTP process (GW-2).
+ * The Phase-1 Gateway HTTP process (GW-2 / GW-12).
  *
- * The shell owns the public surface and refuses on all of it. Every functional
- * route answers 503 with a structured `not_implemented`, so a later task
- * replaces a *refusing* route rather than adding an absent one — a client that
- * meets a 404 cannot tell "not built yet" from "wrong URL", and a bridge that
- * meets a bare connection reset classifies it as transient and retries forever.
+ * The shell owns the public surface and remains fail closed when no adapter is
+ * injected. GW-12 replaces only the reserved RBP paths with one production
+ * ingress host; all other absent ports still answer structured refusals.
  *
  * `northMcpEndpoint.ts` is deliberately not mounted here. It refuses any
  * non-loopback bind and enforces a loopback Host allowlist, so it cannot serve
@@ -229,19 +227,23 @@ export function createGatewayApp(options: {
     app.addHook("onClose", async () => northMcp.close());
   }
 
-  const refuseIngress = async (
-    request: { readonly url: string },
-    reply: { code: (n: number) => { send: (b: unknown) => unknown } },
-  ): Promise<unknown> => {
-    const refusal = ports.rbpIngress.refuse({ path: request.url, kind: "http" });
-    return reply.code(503).send({
-      error: refusal.code,
-      port: refusal.port,
-      message: refusal.message,
-    });
-  };
-  app.all("/bridge/v1", refuseIngress);
-  app.all("/bridge/v1/*", refuseIngress);
+  if (ports.rbpIngress.enabled && ports.rbpIngress.mount !== undefined) {
+    ports.rbpIngress.mount(app);
+  } else {
+    const refuseIngress = async (
+      request: { readonly url: string },
+      reply: { code: (n: number) => { send: (b: unknown) => unknown } },
+    ): Promise<unknown> => {
+      const refusal = ports.rbpIngress.refuse({ path: request.url, kind: "http" });
+      return reply.code(503).send({
+        error: refusal.code,
+        port: refusal.port,
+        message: refusal.message,
+      });
+    };
+    app.all("/bridge/v1", refuseIngress);
+    app.all("/bridge/v1/*", refuseIngress);
+  }
 
   app.setNotFoundHandler(async (_request, reply) =>
     reply.code(404).send({ error: "not_found" }),
@@ -252,12 +254,17 @@ export function createGatewayApp(options: {
     return reply.code(500).send({ error: "internal_error" });
   });
 
-  // Fastify attaches no `upgrade` listener without a websocket plugin, and Node
-  // then closes the socket with no status line at all. A bridge dialing
-  // `wss://.../bridge/v1` would see a bare reset, which its reconnect state
-  // machine reads as a transient fault and retries forever. Writing a real 503
-  // makes the refusal legible instead of a retryable environment guess.
-  app.server.on("upgrade", (request, socket) => {
+  // Fastify attaches no `upgrade` listener without a websocket plugin. Route
+  // an enabled GW-12 host explicitly; otherwise write the original structured
+  // refusal so an absent adapter is not misclassified as a retryable reset.
+  app.server.on("upgrade", (request, socket, head) => {
+    if (
+      ports.rbpIngress.enabled &&
+      ports.rbpIngress.handleUpgrade !== undefined
+    ) {
+      ports.rbpIngress.handleUpgrade(request, socket, head);
+      return;
+    }
     const refusal = ports.rbpIngress.refuse({
       path: request.url ?? "/",
       kind: "upgrade",
@@ -281,9 +288,14 @@ export function createGatewayApp(options: {
   Object.defineProperty(app, "beginGatewayShutdown", {
     value: () => {
       shuttingDown = true;
+      ports.rbpIngress.beginDrain?.();
     },
     enumerable: false,
   });
+
+  if (ports.rbpIngress.close !== undefined) {
+    app.addHook("onClose", async () => ports.rbpIngress.close!());
+  }
 
   return app;
 }
@@ -296,11 +308,18 @@ export async function startGatewayServer(options: {
   // First, before any socket exists.
   assertProductionPorts(options.config, options.ports);
 
+  await options.ports.rbpIngress.start?.();
+
   const app = createGatewayApp(options);
-  await app.listen({
-    host: options.config.http.bindHost,
-    port: options.config.http.port,
-  });
+  try {
+    await app.listen({
+      host: options.config.http.bindHost,
+      port: options.config.http.port,
+    });
+  } catch (error) {
+    await options.ports.rbpIngress.close?.();
+    throw error;
+  }
 
   const address = app.server.address();
   const port =

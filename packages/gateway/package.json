@@ -13,9 +13,9 @@
   },
   "scripts": {
     "prebuild": "npm run build:self --workspace @revagent/protocol",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint src scripts",
-    "pretypecheck": "npm run build:self --workspace @revagent/protocol",
+    "pretypecheck": "npm run build --workspace @revagent/bridge-simulator",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "pretest": "npm run build:self --workspace @revagent/protocol",
     "test": "npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run",
@@ -35,6 +35,7 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "fastify": "^5.11.0",
+    "ws": "^8.20.1",
     "zod": "^4.2.0"
   },
   "devDependencies": {

@@ -2,7 +2,7 @@ export const gatewayScaffold = Object.freeze({
   serviceName: "revAgent Gateway",
   milestone: "M2",
   protocol: "RBP/1",
-  transportImplemented: false,
+  transportImplemented: true,
   // GW-1 removed the M0 transport spike and the `bundle:legacy` graph it read
   // from: the Gateway must never load the legacy stdio entry point or an M0
   // bundle. The collected registry seed is the only legacy-derived input.
@@ -117,9 +117,7 @@ export {
 
 // Verified together or not at all: the seed says which tools exist, the
 // manifest says the code behind them is what the packager produced. The
-// handler loader that must call both does not exist yet (`transportImplemented`
-// is still false), so this is surface, not yet enforcement -- the loader lands
-// with it wired, or it lands able to import unverified bytes.
+// executable registry calls both before exposing callable handlers.
 export {
   HandlerManifestError,
   verifyHandlerManifest,
@@ -259,9 +257,18 @@ export {
 export {
   RBP_INGRESS_HTTP_FALLBACK_PATHS,
   RBP_INGRESS_MOUNT_PREFIX,
+  createProductionRbpIngressHost,
   createUnavailableRbpIngressHost,
+  type ProductionRbpIngressHost,
   type RbpIngressHost,
 } from "./rbpIngress.js";
+export {
+  GATEWAY_RBP_SESSION_NAMESPACE,
+  GatewayBridgeSessionAuthority,
+  GatewayRbpFault,
+  type BridgeConnectionChannel,
+  type BridgeConnectionOpening,
+} from "./bridgeSession.js";
 export {
   CodeExecMode,
   ModeBNotImplementedError,
