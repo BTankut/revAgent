@@ -76,12 +76,24 @@ export {
   type GatewayParamsDigest,
 } from "./invocationContext.js";
 export {
+  NORTH_MODE_A_META_TOOLS,
+  NORTH_MODE_A_PINNED_TOOLS,
+  createNorthMcpHttpHandler,
   startNorthMcpEndpoint,
   type AuthenticatedNorthMcpRequest,
+  type NorthMcpHostHeaderPolicy,
+  type NorthMcpHttpHandler,
   type NorthMcpAuthenticator,
   type NorthMcpEndpointHandle,
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
+export {
+  GATEWAY_SERVER_AUTHORED_INPUT_FIELDS,
+  ExecutableRegistryError,
+  buildGatewayExecutableRegistry,
+  projectGatewayInputJsonSchema,
+} from "./executableRegistry.js";
+
 export {
   M2_NORTH_FIRST_SLICE_CALLABLE,
   NorthFirstSliceCompositionError,
