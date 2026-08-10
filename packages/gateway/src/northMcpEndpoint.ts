@@ -30,6 +30,12 @@ import type {
 import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
 import {
+  PHASE1_INSTRUCTION_VERSION,
+  buildGatewayInstructionPackage,
+  gatewayClientInstructions,
+  type GatewayInstructionPackage,
+} from "./instructionPackage.js";
+import {
   ModeADiscoverySession,
   ModeASchemaBudgetError,
   ModeAToolUnavailableError,
@@ -102,6 +108,8 @@ export interface NorthMcpEndpointOptions {
     "boundResult" | "readResource"
   >;
   readonly resourceMaxInlineResultBytes?: number;
+  /** O6 instruction package pin; independent from callable tool schemas. */
+  readonly instructionVersion?: string;
   /** Complete executable registry when Mode A is enabled. */
   readonly registry: GatewayToolRegistry;
   readonly requestState: {
@@ -475,6 +483,53 @@ function registerGatewayResources(
   );
 }
 
+function registerInstructionResources(
+  server: McpServer,
+  instructionPackage: GatewayInstructionPackage,
+): void {
+  for (const modulePackage of instructionPackage.modules) {
+    const moduleName = modulePackage.manifest.module;
+    server.registerResource(
+      `module-instructions-${moduleName}`,
+      modulePackage.instruction.uri,
+      {
+        title: `revAgent ${moduleName} instructions`,
+        description:
+          "Version-pinned external-client instructions for an entitled revAgent module.",
+        mimeType: modulePackage.instruction.mimeType,
+      },
+      (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: modulePackage.instruction.mimeType,
+            text: modulePackage.instruction.text,
+          },
+        ],
+      }),
+    );
+    server.registerResource(
+      `module-manifest-${moduleName}`,
+      modulePackage.manifestUri,
+      {
+        title: `revAgent ${moduleName} O6 manifest`,
+        description:
+          "Canonical entitled tool, policy, and exact executor bindings for this module.",
+        mimeType: "application/json",
+      },
+      (uri) => ({
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "application/json",
+            text: modulePackage.manifestBytes,
+          },
+        ],
+      }),
+    );
+  }
+}
+
 function createSessionServer(input: {
   readonly catalogView: EntitledCatalogView;
   readonly authenticated: AuthenticatedNorthMcpRequest;
@@ -490,9 +545,14 @@ function createSessionServer(input: {
   >;
   readonly resourceMaxInlineResultBytes: number;
   readonly invocationRouteFor: NorthMcpEndpointOptions["invocationRouteFor"];
+  readonly instructionVersion: string;
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
   const capabilityIndexBytes = input.catalogView.capabilityIndexBytes();
+  const instructionPackage = buildGatewayInstructionPackage(
+    input.catalogView,
+    input.instructionVersion,
+  );
   const dispatcher = input.dispatcher;
   const server = new McpServer(
     {
@@ -500,7 +560,7 @@ function createSessionServer(input: {
       version: "0.1.0-m2",
     },
     {
-      instructions: capabilityIndexBytes,
+      instructions: gatewayClientInstructions(instructionPackage),
       requestState: {
         verify: input.verifyRequestState,
       },
@@ -525,6 +585,7 @@ function createSessionServer(input: {
       ],
     }),
   );
+  registerInstructionResources(server, instructionPackage);
   if (input.resourceAuthority !== undefined) {
     registerGatewayResources(server, input.authenticated, input.resourceAuthority);
   }
@@ -785,6 +846,8 @@ export function createNorthMcpHttpHandler(
           ? {}
           : { modeASession }),
         invocationRouteFor: options.invocationRouteFor,
+        instructionVersion:
+          options.instructionVersion ?? PHASE1_INSTRUCTION_VERSION,
         resourceMaxInlineResultBytes,
         ...(options.resourceAuthority === undefined
           ? {}

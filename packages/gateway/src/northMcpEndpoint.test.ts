@@ -39,6 +39,10 @@ import {
   entitleAll,
   entitleOnly,
 } from "./entitledRegistry.js";
+import {
+  buildGatewayInstructionPackage,
+  gatewayClientInstructions,
+} from "./instructionPackage.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
 import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
@@ -483,6 +487,42 @@ describe("M2 north MCP first slice", () => {
       });
       await client.connect(transport);
 
+      const instructionPackage = buildGatewayInstructionPackage(view);
+      expect(client.getInstructions()).toBe(
+        gatewayClientInstructions(instructionPackage),
+      );
+      const instructionResources = await client.listResources();
+      expect(instructionResources.resources).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            uri: instructionPackage.modules[0]!.instruction.uri,
+            mimeType: "text/markdown",
+          }),
+          expect.objectContaining({
+            uri: instructionPackage.modules[0]!.manifestUri,
+            mimeType: "application/json",
+          }),
+        ]),
+      );
+      const manifestResource = await client.readResource({
+        uri: instructionPackage.modules[0]!.manifestUri,
+      });
+      const manifestContent = manifestResource.contents[0];
+      if (manifestContent === undefined || !("text" in manifestContent)) {
+        throw new Error("O6 manifest resource did not return text");
+      }
+      expect(JSON.parse(manifestContent.text)).toMatchObject({
+        module: "core",
+        tools: [
+          {
+            name: record.name,
+            policyClass: record.policyClass,
+            executor: record.executor,
+            executorMethod: record.executorMethod,
+          },
+        ],
+      });
+
       const listed = await client.listTools();
       expect(listed.tools.map((tool) => tool.name)).toEqual([record.name]);
       expect(listed.tools[0]?.inputSchema).toEqual(
@@ -843,16 +883,28 @@ describe("M2 north MCP first slice", () => {
       expect(recordedMethods(legacyBodies)).toContain("initialize");
       expect(recordedMethods(legacyBodies)).not.toContain("server/discover");
 
+      const instructionPackage =
+        buildGatewayInstructionPackage(FULL_CATALOG_VIEW);
       expect(legacyClient.getInstructions()).toBe(
-        FULL_CATALOG_VIEW.capabilityIndexBytes(),
+        gatewayClientInstructions(instructionPackage),
       );
       const resources = await legacyClient.listResources();
-      expect(resources.resources).toEqual([
+      expect(resources.resources).toEqual(
+        expect.arrayContaining([
         expect.objectContaining({
           uri: "revagent://capability-index",
           mimeType: "application/json",
         }),
-      ]);
+          expect.objectContaining({
+            uri: instructionPackage.modules[0]!.instruction.uri,
+            mimeType: "text/markdown",
+          }),
+          expect.objectContaining({
+            uri: instructionPackage.modules[0]!.manifestUri,
+            mimeType: "application/json",
+          }),
+        ]),
+      );
       const capabilityResource = await legacyClient.readResource({
         uri: "revagent://capability-index",
       });
@@ -860,6 +912,24 @@ describe("M2 north MCP first slice", () => {
         expect.objectContaining({
           uri: "revagent://capability-index",
           text: FULL_CATALOG_VIEW.capabilityIndexBytes(),
+        }),
+      ]);
+      const instructionResource = await legacyClient.readResource({
+        uri: instructionPackage.modules[0]!.instruction.uri,
+      });
+      expect(instructionResource.contents).toEqual([
+        expect.objectContaining({
+          uri: instructionPackage.modules[0]!.instruction.uri,
+          text: instructionPackage.modules[0]!.instruction.text,
+        }),
+      ]);
+      const manifestResource = await legacyClient.readResource({
+        uri: instructionPackage.modules[0]!.manifestUri,
+      });
+      expect(manifestResource.contents).toEqual([
+        expect.objectContaining({
+          uri: instructionPackage.modules[0]!.manifestUri,
+          text: instructionPackage.modules[0]!.manifestBytes,
         }),
       ]);
       expect(FULL_CATALOG_VIEW.entries()).toHaveLength(40);
@@ -1050,9 +1120,17 @@ describe("M2 north MCP first slice", () => {
         },
       });
       await otherClient.connect(otherTransport);
-      expect(otherClient.getInstructions()).toBe(
-        NO_TOOLS_CATALOG_VIEW.capabilityIndexBytes(),
+      const noToolsInstructionPackage = buildGatewayInstructionPackage(
+        NO_TOOLS_CATALOG_VIEW,
       );
+      expect(otherClient.getInstructions()).toBe(
+        gatewayClientInstructions(noToolsInstructionPackage),
+      );
+      expect(
+        (await otherClient.listResources()).resources.map(
+          (resource) => resource.uri,
+        ),
+      ).toEqual(["revagent://capability-index"]);
       expect((await otherClient.listTools()).tools).toEqual([]);
       await expect(
         otherClient.callTool({

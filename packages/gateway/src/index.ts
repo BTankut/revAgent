@@ -95,6 +95,19 @@ export {
   type NorthMcpEndpointOptions,
 } from "./northMcpEndpoint.js";
 export {
+  GATEWAY_INSTRUCTION_PACKAGE_SCHEMA,
+  GATEWAY_O6_MODULE_MANIFEST_SCHEMA,
+  PHASE1_INSTRUCTION_VERSION,
+  GatewayInstructionPackageError,
+  buildGatewayInstructionPackage,
+  gatewayClientInstructions,
+  type GatewayInstructionDocument,
+  type GatewayInstructionModulePackage,
+  type GatewayInstructionPackage,
+  type GatewayO6ModuleManifest,
+  type GatewayO6ToolBinding,
+} from "./instructionPackage.js";
+export {
   GATEWAY_SERVER_AUTHORED_INPUT_FIELDS,
   ExecutableRegistryError,
   buildGatewayExecutableRegistry,

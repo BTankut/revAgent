@@ -29,6 +29,10 @@ import {
   entitleOnly,
 } from "./entitledRegistry.js";
 import { buildGatewayExecutableRegistry } from "./executableRegistry.js";
+import {
+  buildGatewayInstructionPackage,
+  gatewayClientInstructions,
+} from "./instructionPackage.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
 import {
   NORTH_MODE_A_META_TOOLS,
@@ -314,7 +318,9 @@ describe("GW-10 north Mode-A conformance", () => {
     });
     await client.connect(transport);
     expect(client.getProtocolEra()).toBe("modern");
-    expect(client.getInstructions()).toBe(entitledView.capabilityIndexBytes());
+    expect(client.getInstructions()).toBe(
+      gatewayClientInstructions(buildGatewayInstructionPackage(entitledView)),
+    );
     expect(entitledView.entries()).toHaveLength(39);
 
     const initialTools = await client.listTools();
