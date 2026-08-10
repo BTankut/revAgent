@@ -895,7 +895,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   public async executeAtomicBatch(
     request: GatewayAtomicBatchExecutorRequest,
-    prepared?: GatewayRecoveryPendingDispatch,
+    prepared: GatewayRecoveryPendingDispatch,
   ): Promise<GatewayExecutorOutcome> {
     const first = request.steps[0];
     if (first === undefined) {
@@ -904,15 +904,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         error: { code: "protocol", message: "atomic batch has no steps" },
       };
     }
-    const draft =
-      prepared === undefined ? this.buildAtomicBatchEnvelope(request) : null;
     return await this.#executeDispatch({
       tenantId: first.context.actor.tenantId,
       rsid: first.context.rsid,
       correlationId: request.batchId,
       mutating: request.steps.some((step) => step.context.mutating),
-      envelope: prepared?.envelope ?? draft!.envelope,
-      journalRecords: prepared?.journalRecords ?? [],
+      envelope: prepared.envelope,
+      journalRecords: prepared.journalRecords,
     });
   }
 
