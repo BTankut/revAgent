@@ -11,6 +11,8 @@ import {
   createRequestStateCodec,
   isJsonContentType,
   McpServer,
+  ResourceNotFoundError,
+  ResourceTemplate,
   type AuthInfo,
   type McpRequestContext,
   type RequestStateCodec,
@@ -21,7 +23,10 @@ import {
   gatewayExternalToolInputSchema,
   splitGatewayConfirmationArguments,
 } from "./confirmation.js";
-import type { GatewayDispatcher } from "./dispatch.js";
+import type {
+  GatewayDispatcher,
+  GatewayJsonValue,
+} from "./dispatch.js";
 import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
 import {
@@ -31,6 +36,11 @@ import {
   type ModeAActivationResult,
 } from "./modeADiscovery.js";
 import type { GatewayToolRegistry } from "./registry.js";
+import {
+  GatewayResourceError,
+  resourceScopeFromAuth,
+  type GatewayResourceAuthority,
+} from "./resourceAuthority.js";
 
 const NORTH_MCP_PATH = "/mcp";
 const CAPABILITY_INDEX_URI = "revagent://capability-index";
@@ -86,6 +96,12 @@ export interface NorthMcpEndpointOptions {
     mcpSessionId: string,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
+  /** GW-9 scoped artifact/result resources; absent means no dynamic resource surface. */
+  readonly resourceAuthority?: Pick<
+    GatewayResourceAuthority,
+    "boundResult" | "readResource"
+  >;
+  readonly resourceMaxInlineResultBytes?: number;
   /** Complete executable registry when Mode A is enabled. */
   readonly registry: GatewayToolRegistry;
   readonly requestState: {
@@ -281,11 +297,16 @@ async function drainTrackedPromises(
 
 function toolResult(
   outcome: Awaited<ReturnType<GatewayDispatcher["dispatch"]>>,
+  structuredContent: Readonly<Record<string, unknown>> =
+    outcome as unknown as Readonly<Record<string, unknown>>,
+  forceError = false,
 ) {
   return {
-    content: [{ type: "text" as const, text: JSON.stringify(outcome) }],
-    structuredContent: outcome as unknown as Record<string, unknown>,
-    isError: !outcome.ok,
+    content: [
+      { type: "text" as const, text: JSON.stringify(structuredContent) },
+    ],
+    structuredContent: structuredContent as Record<string, unknown>,
+    isError: forceError || !outcome.ok,
   };
 }
 
@@ -402,6 +423,58 @@ function assertCallableCatalogCoherence(
   }
 }
 
+function registerGatewayResources(
+  server: McpServer,
+  authenticated: AuthenticatedNorthMcpRequest,
+  authority: Pick<GatewayResourceAuthority, "readResource">,
+): void {
+  const scope = resourceScopeFromAuth(
+    authenticated.authContext,
+    authenticated.authContext.session.mcpSessionId ??
+      authenticated.authContext.session.sessionId,
+  );
+  const read = async (uri: URL) => {
+    try {
+      const resource = await authority.readResource(scope, uri);
+      return {
+        contents: [
+          {
+            uri: resource.uri,
+            mimeType: resource.contentType,
+            blob: Buffer.from(resource.bytes).toString("base64"),
+          },
+        ],
+        ...(resource.nextPageUri === null
+          ? {}
+          : { _meta: { nextPageUri: resource.nextPageUri } }),
+      };
+    } catch (error) {
+      if (
+        error instanceof GatewayResourceError &&
+        ["expired", "not_found", "quarantined", "scope_denied"].includes(
+          error.code,
+        )
+      ) {
+        // Do not disclose whether a ref exists outside the authenticated scope.
+        throw new ResourceNotFoundError(uri.href);
+      }
+      throw error;
+    }
+  };
+  server.registerResource(
+    "artifact-ref",
+    new ResourceTemplate("revagent://artifact/{ref_id}", { list: undefined }),
+    { description: "Authenticated, expiring revAgent artifact." },
+    read,
+  );
+  server.registerResource(
+    "result-ref-page",
+    new ResourceTemplate("revagent://result/{ref_id}/{page}", { list: undefined }),
+    { description: "Authenticated, paged revAgent structured result." },
+    read,
+  );
+}
+
 function createSessionServer(input: {
   readonly catalogView: EntitledCatalogView;
   readonly authenticated: AuthenticatedNorthMcpRequest;
@@ -411,6 +484,11 @@ function createSessionServer(input: {
   readonly modeASession?: ModeADiscoverySession;
   readonly notifyToolsChanged: () => void;
   readonly requestScopeId: string;
+  readonly resourceAuthority?: Pick<
+    GatewayResourceAuthority,
+    "boundResult" | "readResource"
+  >;
+  readonly resourceMaxInlineResultBytes: number;
   readonly invocationRouteFor: NorthMcpEndpointOptions["invocationRouteFor"];
   readonly verifyRequestState: RequestStateCodec["verify"];
 }): McpServer {
@@ -447,6 +525,9 @@ function createSessionServer(input: {
       ],
     }),
   );
+  if (input.resourceAuthority !== undefined) {
+    registerGatewayResources(server, input.authenticated, input.resourceAuthority);
+  }
   if (input.modeASession !== undefined) {
     registerModeAMetaTools(
       server,
@@ -489,26 +570,60 @@ function createSessionServer(input: {
           input.authenticated.authContext.session.mcpSessionId ??
           ctx.sessionId ??
           input.authenticated.authContext.session.sessionId;
-        return toolResult(
-          await trackPromise(
-            input.inflightOperations,
-            dispatcher.dispatch({
-              toolName: record.name,
-              args: call.args,
-              auth: input.authenticated.authContext,
-              mcpSessionId,
-              confirmationSessionId,
-              ...(call.confirmation === undefined
-                ? {}
-                : { confirmation: call.confirmation }),
-              resolveRoute: (authContext) =>
-                input.invocationRouteFor(
-                  Object.freeze({ ...input.authenticated, authContext }),
-                  mcpSessionId,
-                ),
-            }),
-          ),
+        const outcome = await trackPromise(
+          input.inflightOperations,
+          dispatcher.dispatch({
+            toolName: record.name,
+            args: call.args,
+            auth: input.authenticated.authContext,
+            mcpSessionId,
+            confirmationSessionId,
+            ...(call.confirmation === undefined
+              ? {}
+              : { confirmation: call.confirmation }),
+            resolveRoute: (authContext) =>
+              input.invocationRouteFor(
+                Object.freeze({ ...input.authenticated, authContext }),
+                mcpSessionId,
+              ),
+          }),
         );
+        if (input.resourceAuthority === undefined) {
+          return toolResult(outcome);
+        }
+        const resourceScope = resourceScopeFromAuth(
+          input.authenticated.authContext,
+          input.authenticated.authContext.session.mcpSessionId ??
+            input.authenticated.authContext.session.sessionId,
+        );
+        try {
+          const bounded = await input.resourceAuthority.boundResult({
+            scope: resourceScope,
+            value: outcome as unknown as GatewayJsonValue,
+            maxInlineBytes: input.resourceMaxInlineResultBytes,
+          });
+          const content = bounded.kind === "inline" ? bounded.value : bounded;
+          return toolResult(
+            outcome,
+            content as unknown as Readonly<Record<string, unknown>>,
+          );
+        } catch (error) {
+          return toolResult(
+            outcome,
+            Object.freeze({
+              ok: false,
+              state: outcome.state,
+              toolName: outcome.toolName,
+              requestId: outcome.requestId,
+              executorOutcomePreserved: true,
+              error: Object.freeze({
+                code: "result_delivery_unavailable",
+                message: error instanceof Error ? error.message : String(error),
+              }),
+            }),
+            true,
+          );
+        }
       },
     );
   }
@@ -522,6 +637,14 @@ export function createNorthMcpHttpHandler(
 ): NorthMcpHttpHandler {
   if (options.resourceMetadataUrl.protocol !== "https:") {
     throw new RangeError("resourceMetadataUrl must use HTTPS");
+  }
+  const resourceMaxInlineResultBytes =
+    options.resourceMaxInlineResultBytes ?? 8 * 1024 * 1024;
+  if (
+    !Number.isSafeInteger(resourceMaxInlineResultBytes) ||
+    resourceMaxInlineResultBytes < 0
+  ) {
+    throw new RangeError("resourceMaxInlineResultBytes must be a non-negative safe integer");
   }
   if (options.dispatcher.registry() !== options.registry) {
     throw new TypeError(
@@ -662,6 +785,10 @@ export function createNorthMcpHttpHandler(
           ? {}
           : { modeASession }),
         invocationRouteFor: options.invocationRouteFor,
+        resourceMaxInlineResultBytes,
+        ...(options.resourceAuthority === undefined
+          ? {}
+          : { resourceAuthority: options.resourceAuthority }),
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
         requestScopeId: randomUUID(),
