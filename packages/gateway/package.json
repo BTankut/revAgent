@@ -13,7 +13,7 @@
   },
   "scripts": {
     "prebuild": "npm run build:self --workspace @revagent/protocol",
-    "build": "tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint src scripts",
     "pretypecheck": "npm run build:self --workspace @revagent/protocol",
     "typecheck": "tsc -p tsconfig.json --noEmit",
