@@ -4,6 +4,9 @@ import {
   acceptInboundData,
   applyCumulativeAck,
   dataEnvelopeImmutableDigest,
+  createReceivedJournalRecord,
+  makeBatchDigest,
+  makeParamsDigest,
   createConnectionLifecycle,
   createSessionLifecycle,
   markJournalExecuting,
@@ -20,6 +23,8 @@ import {
   type HelloAckEnvelope,
   type HelloEnvelope,
   type InvocationJournalRecord,
+  type BatchResult,
+  type InvokeBatchEnvelope,
   type InvokeEnvelope,
   type RbpEnvelope,
   type RbpSequenceState,
@@ -30,6 +35,7 @@ import {
 
 import type { DeviceAuthContext, IdentityPort } from "./authContext.js";
 import type {
+  GatewayAtomicBatchExecutorRequest,
   GatewayExecutor,
   GatewayExecutorOutcome,
   GatewayExecutorRequest,
@@ -262,6 +268,45 @@ function invocationPayload(request: GatewayExecutorRequest): InvokeEnvelope["pay
   } as InvokeEnvelope["payload"];
 }
 
+function atomicBatchPayload(
+  request: GatewayAtomicBatchExecutorRequest,
+): InvokeBatchEnvelope["payload"] {
+  const steps = request.steps.map((step) => {
+    const invocation = invocationPayload(step);
+    return {
+      invocation_id: invocation.invocation_id,
+      method: invocation.method,
+      params: invocation.params,
+      params_digest: step.context.paramsDigest,
+      mutating: invocation.mutating,
+      mutation_scope: invocation.mutation_scope,
+      policy: invocation.policy,
+    };
+  }) as InvokeBatchEnvelope["payload"]["steps"];
+  const digestInput = {
+    atomic: true as const,
+    batch_id: request.batchId,
+    recovery_clearances: [],
+    steps: steps.map((step) => ({
+      invocation_id: step.invocation_id,
+      method: step.method,
+      mutating: step.mutating,
+      mutation_scope: step.mutation_scope as JsonValue,
+      params_digest: step.params_digest,
+      policy: step.policy,
+    })),
+    timeout_ms: INVOCATION_TIMEOUT_MS,
+  };
+  return {
+    batch_id: request.batchId,
+    atomic: true,
+    timeout_ms: INVOCATION_TIMEOUT_MS,
+    recovery_clearances: [],
+    steps,
+    batch_digest: makeBatchDigest(digestInput),
+  };
+}
+
 function terminalOutcome(
   envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
 ): GatewayExecutorOutcome {
@@ -274,10 +319,37 @@ function terminalOutcome(
       },
     };
   }
-  if (envelope.payload.kind !== "invocation") {
+  if (envelope.payload.kind === "batch") {
+    if (envelope.payload.status === "completed") {
+      return { state: "completed", result: asJson(envelope.payload) };
+    }
+    if (envelope.payload.status === "guarded") {
+      const guarded = envelope.payload.steps.find(
+        (step) => step.status === "guarded",
+      );
+      return guarded === undefined
+        ? {
+            state: "failed",
+            error: {
+              code: "protocol",
+              message: "guarded batch omitted its guarded step",
+            },
+          }
+        : {
+            state: "guarded",
+            reason: guarded.guarded_reason,
+            result: asJson(envelope.payload),
+          };
+    }
     return {
       state: "failed",
-      error: { code: "protocol", message: "single invocation received a batch result" },
+      error: {
+        code:
+          envelope.payload.status === "indeterminate"
+            ? "journal_indeterminate"
+            : envelope.payload.status,
+        message: `atomic batch recorded ${envelope.payload.status}`,
+      },
     };
   }
   if (envelope.payload.status === "guarded") {
@@ -298,6 +370,48 @@ function terminalJournalRecords(
   envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
 ): readonly InvocationJournalRecord[] {
   if (records.length === 0) return [];
+  if (envelope.type === "result" && envelope.payload.kind === "batch") {
+    const steps = new Map(
+      envelope.payload.steps.map((step) => [step.invocation_id, step]),
+    );
+    return records.map((record) => {
+      const step = steps.get(record.binding.invocationId);
+      if (step === undefined) return record;
+      if (step.status === "not_started") {
+        return createReceivedJournalRecord(record.binding);
+      }
+      if (step.status === "indeterminate") {
+        return markJournalIndeterminate(
+          record,
+          step.error.verification_hold_id,
+        );
+      }
+      const payloadRetained = step.payload_omitted !== true;
+      if (step.status === "completed" || step.status === "guarded") {
+        return recordJournalTerminal(record, {
+          status: step.status,
+          ...(typeof step.result_digest === "string"
+            ? { resultDigest: step.result_digest }
+            : {}),
+          ...(step.status === "guarded"
+            ? { guardedReason: step.guarded_reason }
+            : {}),
+          payloadRetained,
+          ...(payloadRetained
+            ? { payload: asProtocolJson(step.result ?? null) }
+            : {}),
+        });
+      }
+      return recordJournalTerminal(record, {
+        status: step.status,
+        ...(typeof step.result_digest === "string"
+          ? { resultDigest: step.result_digest }
+          : {}),
+        payloadRetained: true,
+        payload: asProtocolJson(step.error),
+      });
+    });
+  }
   if (envelope.type === "result" && envelope.payload.kind === "invocation") {
     const payloadRetained = envelope.payload.payload_omitted !== true;
     return records.map((record) =>
@@ -684,21 +798,142 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     };
   }
 
+  public buildAtomicBatchEnvelope(request: GatewayAtomicBatchExecutorRequest): {
+    readonly sessionBindingId: string;
+    readonly connectionId: string;
+    readonly envelope: InvokeBatchEnvelope;
+    readonly expected: GatewayExpectedMutationDispatch;
+  } {
+    const first = request.steps[0];
+    if (first === undefined) {
+      throw new GatewayRbpFault("protocol", "atomic batch has no steps", 409, 4400);
+    }
+    const active = this.#active.get(first.context.rsid);
+    if (
+      active === undefined ||
+      active.tenantId !== first.context.actor.tenantId ||
+      !this.#connections.has(active.record.connectionId) ||
+      !active.record.sessionLifecycle.dispatchAllowed ||
+      !active.record.grantedCapabilities.includes("batch_atomic") ||
+      (active.record.connectionLifecycle.phase !== "steady" &&
+        active.record.connectionLifecycle.phase !== "degraded")
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "registered rsid lacks an active atomic-batch grant",
+        503,
+        1011,
+      );
+    }
+    if (
+      request.steps.some(
+        (step) =>
+          step.context.rsid !== first.context.rsid ||
+          step.context.actor.tenantId !== first.context.actor.tenantId ||
+          makeParamsDigest(step.args as unknown as JsonValue) !==
+            step.context.paramsDigest,
+      )
+    ) {
+      throw new GatewayRbpFault(
+        "protocol",
+        "atomic batch steps are not bound to one authorized session",
+        409,
+        4400,
+      );
+    }
+    const queued = queueOutboundData(active.record.sequence, {
+      type: "invoke_batch",
+      id: gatewayUuidV7(this.#clock()),
+      ack: active.record.sequence.lastRxSeq,
+      ts: nowIso(this.#clock()),
+      payload: atomicBatchPayload(request) as JsonValue,
+    });
+    if (queued.kind !== "queued") {
+      throw new GatewayRbpFault("protocol", "RBP sequence renewal required", 409, 4400);
+    }
+    const envelope = queued.envelope as InvokeBatchEnvelope;
+    return {
+      sessionBindingId: active.record.sessionBindingId,
+      connectionId: active.record.connectionId,
+      envelope,
+      expected: {
+        rsid: first.context.rsid,
+        correlationId: request.batchId,
+        bindings: request.steps.map((step, index) => ({
+          rsid: step.context.rsid,
+          invocationId: step.context.invocationId,
+          method: step.executorMethod,
+          mutating: step.context.mutating,
+          mutationScope: step.context.mutationScope,
+          paramsDigest: step.context.paramsDigest,
+          policy: envelope.payload.steps[index]!.policy,
+          verification: null,
+          recoveryClearances: [],
+          batchId: request.batchId,
+          batchIndex: index,
+          batchDigest: envelope.payload.batch_digest,
+        })),
+        recoveryClearances: [],
+      },
+    };
+  }
+
   public async execute(
     request: GatewayExecutorRequest,
     prepared?: GatewayRecoveryPendingDispatch,
   ): Promise<GatewayExecutorOutcome> {
     const draft = prepared === undefined ? this.buildEnvelope(request) : null;
-    const active = this.#active.get(request.context.rsid);
-    if (active === undefined || active.tenantId !== request.context.actor.tenantId) {
+    return await this.#executeDispatch({
+      tenantId: request.context.actor.tenantId,
+      rsid: request.context.rsid,
+      correlationId: request.context.invocationId,
+      mutating: request.context.mutating,
+      envelope: prepared?.envelope ?? draft!.envelope,
+      journalRecords: prepared?.journalRecords ?? [],
+    });
+  }
+
+  public async executeAtomicBatch(
+    request: GatewayAtomicBatchExecutorRequest,
+    prepared?: GatewayRecoveryPendingDispatch,
+  ): Promise<GatewayExecutorOutcome> {
+    const first = request.steps[0];
+    if (first === undefined) {
+      return {
+        state: "failed",
+        error: { code: "protocol", message: "atomic batch has no steps" },
+      };
+    }
+    const draft =
+      prepared === undefined ? this.buildAtomicBatchEnvelope(request) : null;
+    return await this.#executeDispatch({
+      tenantId: first.context.actor.tenantId,
+      rsid: first.context.rsid,
+      correlationId: request.batchId,
+      mutating: request.steps.some((step) => step.context.mutating),
+      envelope: prepared?.envelope ?? draft!.envelope,
+      journalRecords: prepared?.journalRecords ?? [],
+    });
+  }
+
+  async #executeDispatch(input: {
+    readonly tenantId: string;
+    readonly rsid: string;
+    readonly correlationId: string;
+    readonly mutating: boolean;
+    readonly envelope: unknown;
+    readonly journalRecords: readonly InvocationJournalRecord[];
+  }): Promise<GatewayExecutorOutcome> {
+    const active = this.#active.get(input.rsid);
+    if (active === undefined || active.tenantId !== input.tenantId) {
       return {
         state: "failed",
         error: { code: "executor_unavailable", message: "registered rsid is not active" },
       };
     }
-    const envelope = (prepared?.envelope ?? draft!.envelope) as InvokeEnvelope;
+    const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
-    const journals = (prepared?.journalRecords ?? []).map(markJournalExecuting);
+    const journals = input.journalRecords.map(markJournalExecuting);
 
     const persisted = await this.#updateSession(active.tenantId, active.rsid, (record) => {
       if (
@@ -729,8 +964,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         pending: {
           envelopeDigest: expectedDigest,
           gatewaySequence: envelope.seq,
-          invocationId: request.context.invocationId,
-          mutating: request.context.mutating,
+          invocationId: input.correlationId,
+          mutating: input.mutating,
           journalRecords: journals,
         },
         updatedAtMs: this.#clock(),
@@ -740,29 +975,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
     const connection = this.#connections.get(persisted.connectionId);
     if (connection === undefined) {
-      return this.#indeterminateOutcome(request.context.mutating);
+      return this.#indeterminateOutcome(input.mutating);
     }
 
     const outcome = new Promise<GatewayExecutorOutcome>((resolve) => {
       const timer = setTimeout(() => {
-        this.#waiters.delete(request.context.invocationId);
-        resolve(this.#indeterminateOutcome(request.context.mutating));
+        this.#waiters.delete(input.correlationId);
+        resolve(this.#indeterminateOutcome(input.mutating));
       }, INVOCATION_TIMEOUT_MS);
       timer.unref();
-      this.#waiters.set(request.context.invocationId, {
+      this.#waiters.set(input.correlationId, {
         resolve,
         timer,
-        mutating: request.context.mutating,
+        mutating: input.mutating,
       });
     });
     try {
       await connection.send(JSON.stringify(envelope));
     } catch {
-      const waiter = this.#waiters.get(request.context.invocationId);
+      const waiter = this.#waiters.get(input.correlationId);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
-        this.#waiters.delete(request.context.invocationId);
-        waiter.resolve(this.#indeterminateOutcome(request.context.mutating));
+        this.#waiters.delete(input.correlationId);
+        waiter.resolve(this.#indeterminateOutcome(input.mutating));
       }
     }
     return await outcome;
@@ -1105,6 +1340,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const correlationId =
           envelope.type === "result" && envelope.payload.kind === "invocation"
             ? envelope.payload.invocation_id
+            : envelope.type === "result" && envelope.payload.kind === "batch"
+              ? envelope.payload.batch_id
             : envelope.type === "error"
               ? envelope.payload.invocation_id ?? null
               : null;
@@ -1115,6 +1352,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const existing = evidence.find(
           (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
         );
+        const batchTerminal =
+          envelope.type === "result" && envelope.payload.kind === "batch"
+            ? {
+                result: structuredClone(envelope.payload) as BatchResult,
+                resultDigest: makeParamsDigest(
+                  envelope.payload as unknown as JsonValue,
+                ),
+              }
+            : null;
         const journal: GatewayVerifiedBridgeJournalEvidence | null =
           journals.length === 0
             ? null
@@ -1124,7 +1370,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 sessionBindingId: record.sessionBindingId,
                 envelopeDigest: pending.envelopeDigest,
                 journalRecords: journals,
-                batchTerminal: null,
+                batchTerminal,
                 durableJournalVersion: record.sessionVersion,
                 recordedAtMs: this.#clock(),
               };
@@ -1275,5 +1521,16 @@ class BridgeSessionExecutor implements GatewayExecutor {
     dispatch: GatewayRecoveryPendingDispatch,
   ): Promise<GatewayExecutorOutcome> {
     return await this.authority.execute(request, dispatch);
+  }
+
+  public buildAtomicBatchDispatch(request: GatewayAtomicBatchExecutorRequest) {
+    return this.authority.buildAtomicBatchEnvelope(request);
+  }
+
+  public async executePreparedAtomicBatch(
+    request: GatewayAtomicBatchExecutorRequest,
+    dispatch: GatewayRecoveryPendingDispatch,
+  ): Promise<GatewayExecutorOutcome> {
+    return await this.authority.executeAtomicBatch(request, dispatch);
   }
 }

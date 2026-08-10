@@ -17,6 +17,7 @@ export type GatewayScaffold = typeof gatewayScaffold;
 
 export {
   GatewayDispatcher,
+  type GatewayAtomicBatchExecutorRequest,
   type GatewayDispatcherOptions,
   type GatewayDispatchOutcome,
   type GatewayDispatchRequest,
@@ -27,6 +28,12 @@ export {
   type GatewayJsonObject,
   type GatewayJsonValue,
 } from "./dispatch.js";
+export {
+  GATEWAY_ATOMIC_BATCH_MAX_STEPS,
+  GatewayAtomicBatchAuthorizationError,
+  authorizeGatewayAtomicBatch,
+  type GatewayAtomicBatchAuthorizationErrorCode,
+} from "./batchDispatch.js";
 export {
   GATEWAY_CONFIRM_TOKEN_FIELD,
   GATEWAY_PREVIEW_INVOCATION_FIELD,

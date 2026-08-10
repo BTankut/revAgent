@@ -63,6 +63,16 @@ export interface GatewayExecutorRequest {
   readonly context: GatewayInvocationContext;
 }
 
+/**
+ * A server-authored atomic batch. Callers must obtain this value through the
+ * registry authorization helper before invoking an executor batch seam.
+ */
+export interface GatewayAtomicBatchExecutorRequest {
+  readonly batchId: string;
+  readonly atomic: true;
+  readonly steps: readonly GatewayExecutorRequest[];
+}
+
 export interface GatewayExecutor {
   readonly binding: GatewayExecutorBinding;
   execute(request: GatewayExecutorRequest): Promise<GatewayExecutorOutcome>;
@@ -84,6 +94,18 @@ export interface GatewayExecutor {
   /** Sends exactly the authority-persisted envelope; it MUST NOT reconstruct it. */
   executePreparedMutation?(
     request: GatewayExecutorRequest,
+    dispatch: GatewayRecoveryPendingDispatch,
+  ): Promise<GatewayExecutorOutcome>;
+  /** Pure construction of one atomic invoke_batch carrier. */
+  buildAtomicBatchDispatch?(request: GatewayAtomicBatchExecutorRequest): {
+    readonly sessionBindingId: string;
+    readonly connectionId: string;
+    readonly envelope: unknown;
+    readonly expected: GatewayExpectedMutationDispatch;
+  };
+  /** Sends the exact authority-persisted atomic batch without rebuilding it. */
+  executePreparedAtomicBatch?(
+    request: GatewayAtomicBatchExecutorRequest,
     dispatch: GatewayRecoveryPendingDispatch,
   ): Promise<GatewayExecutorOutcome>;
 }
