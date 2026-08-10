@@ -108,6 +108,20 @@ export {
   type GatewayO6ToolBinding,
 } from "./instructionPackage.js";
 export {
+  PROMOTION_GOVERNANCE_FEED_SCHEMA,
+  PROMOTION_GOVERNANCE_STATES,
+  GatewayPromotionGovernanceRegistry,
+  PromotionGovernanceError,
+  type PromotionCandidateEvidenceInput,
+  type PromotionEvidenceJson,
+  type PromotionGovernanceCandidate,
+  type PromotionGovernanceFeed,
+  type PromotionGovernanceState,
+  type PromotionRegistryDefinition,
+  type PromotionRegistryMetadata,
+  type PromotionRuleMetadata,
+} from "./promotionGovernance.js";
+export {
   GATEWAY_SERVER_AUTHORED_INPUT_FIELDS,
   ExecutableRegistryError,
   buildGatewayExecutableRegistry,
