@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 
+import { gatewayExternalToolInputJsonSchema } from "./confirmation.js";
 import {
   ModeADiscoverySession,
   ModeASchemaBudgetError,
@@ -198,6 +199,33 @@ describe("ModeADiscoverySession", () => {
     expect(session.activeNames()).toEqual([]);
     expectUnavailable(() => session.requireCallable(visible.name));
     expectUnavailable(() => session.requireCallable(hidden.name));
+  });
+
+  it("budgets and returns the north-equivalent confirmation schema without indexing control fields", () => {
+    const confirm: GatewayToolRecord = {
+      ...tool("core.parameter.set", "Set one exact parameter."),
+      policyClass: "confirm",
+      mutationScopePolicy: "session",
+      executorMethod: "set_element_parameter",
+    };
+    const externalSchema = gatewayExternalToolInputJsonSchema(confirm);
+    const registry = new GatewayToolRegistry([confirm]);
+    const session = new ModeADiscoverySession(
+      registry.fullView(),
+      [],
+      bytes(externalSchema),
+    );
+
+    expect(session.search("confirm_token")).toEqual([]);
+    expect(session.search("originating_preview_invocation_id")).toEqual([]);
+    expect(session.search("target").map(({ name }) => name)).toEqual([
+      confirm.name,
+    ]);
+    const activated = session.activate([confirm.name]);
+    expect(activated.schemas).toEqual([
+      { name: confirm.name, inputSchema: externalSchema },
+    ]);
+    expect(activated.activeSchemaBytes).toBe(bytes(externalSchema));
   });
 });
 

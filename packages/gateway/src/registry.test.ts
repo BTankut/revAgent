@@ -154,4 +154,26 @@ describe("GatewayToolRegistry", () => {
         ]),
     ).toThrow("must match the canonical executable schema");
   });
+
+  it.each(["confirm_token", "originating_preview_invocation_id"])(
+    "reserves the %s field for Gateway policy control",
+    (fieldName) => {
+      expect(
+        () =>
+          new GatewayToolRegistry([
+            {
+              ...records[0]!,
+              inputSchema: { [fieldName]: z.string() },
+              inputJsonSchema: {
+                $schema: "https://json-schema.org/draft/2020-12/schema",
+                additionalProperties: false,
+                properties: { [fieldName]: { type: "string" } },
+                required: [fieldName],
+                type: "object",
+              },
+            },
+          ]),
+      ).toThrow("is reserved for Gateway policy control");
+    },
+  );
 });

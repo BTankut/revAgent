@@ -14,6 +14,7 @@ import {
   type AuthInfo,
   type ServerContext,
 } from "@modelcontextprotocol/server";
+import { z } from "zod";
 import { describe, expect, it, vi } from "vitest";
 
 import {
@@ -22,12 +23,16 @@ import {
 } from "./authContext.js";
 import {
   GatewayDispatcher,
+  type GatewayDispatchOutcome,
   type GatewayExecutor,
   type GatewayExecutorOutcome,
   type GatewayExecutorRequest,
   type GatewayJsonObject,
   type GatewayJsonValue,
 } from "./dispatch.js";
+import {
+  gatewayExternalToolInputJsonSchema,
+} from "./confirmation.js";
 import {
   EntitledCatalogView,
   buildCatalog,
@@ -41,6 +46,10 @@ import {
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
+import {
+  GatewayToolRegistry,
+  type GatewayToolRecord,
+} from "./registry.js";
 import { verifyRegistrySeed } from "./registrySeed.js";
 import {
   createCapturingEventSink,
@@ -129,6 +138,7 @@ function testAuthContext(
   principalKey: string,
   clientId: string,
   gatewaySessionId?: string,
+  mcpSessionId?: string,
 ): AuthContext {
   const userId = principalKey.endsWith(":user-b") ? "user-b" : "user-a";
   return Object.freeze({
@@ -144,7 +154,7 @@ function testAuthContext(
     session: Object.freeze({
       sessionId: gatewaySessionId ?? `gateway-${userId}`,
       clientType: "mcp" as const,
-      mcpSessionId: null,
+      mcpSessionId: mcpSessionId ?? null,
       oauthClientId: clientId,
     }),
     principalKey,
@@ -157,6 +167,7 @@ function authenticatedRequest(
   principalKey: string,
   authInfo: AuthInfo,
   gatewaySessionId?: string,
+  mcpSessionId?: string,
 ): AuthenticatedNorthMcpRequest {
   return Object.freeze({
     authInfo,
@@ -164,6 +175,7 @@ function authenticatedRequest(
       principalKey,
       authInfo.clientId,
       gatewaySessionId,
+      mcpSessionId,
     ),
     principalKey,
   });
@@ -314,6 +326,7 @@ function testAuthBindingKey(input: {
     authenticated.authContext.actor.oidcIssuer,
     authenticated.authContext.actor.oidcSubject,
     authenticated.authContext.session.sessionId,
+    authenticated.authContext.session.mcpSessionId,
     authenticated.principalKey,
     input.authInfo.clientId,
     input.authInfo.resource?.href ?? null,
@@ -353,6 +366,202 @@ function deferred<T>(): {
 }
 
 describe("M2 north MCP first slice", () => {
+  it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
+    const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");
+    if (catalogEntry === undefined) {
+      throw new Error("confirm test catalog entry is unavailable");
+    }
+    const inputSchema = {
+      value: z.string().min(1),
+      mode: z.enum(["dryRun", "commit"]).optional(),
+    };
+    const record: GatewayToolRecord = Object.freeze({
+      name: catalogEntry.name,
+      summary: catalogEntry.summary,
+      namespace: catalogEntry.namespace,
+      version: catalogEntry.version,
+      policyClass: catalogEntry.policyClass,
+      mutationScopePolicy: catalogEntry.mutationScopePolicy,
+      executor: catalogEntry.executor,
+      executorMethod: catalogEntry.tool,
+      inputSchema,
+      inputJsonSchema: z.toJSONSchema(z.object(inputSchema).strict(), {
+        io: "input",
+      }),
+    });
+    const registry = new GatewayToolRegistry([record]);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            throw new Error("spied north confirmation test reached executor");
+          },
+        },
+      ],
+      dispatcherOptions(),
+    );
+    const previewInvocationId =
+      "019f9ac3-ae89-7342-9f6d-b9269e167190";
+    const confirmationId = "019f9ac3-ae89-7342-9f6d-b9269e167191";
+    const commitInvocationId = "019f9ac3-ae89-7342-9f6d-b9269e167192";
+    const digest = `sha256:${"a".repeat(64)}` as const;
+    const confirmToken = `${confirmationId}.${"t".repeat(43)}`;
+    const previewOutcome: GatewayDispatchOutcome = {
+      ok: true,
+      state: "confirmation_required",
+      toolName: record.name,
+      toolVersion: record.version,
+      executor: record.executor,
+      requestId: previewInvocationId,
+      result: { preview: "bounded", writes: 0 },
+      confirmation: {
+        confirmToken,
+        confirmationId,
+        originatingPreviewInvocationId: previewInvocationId,
+        previewDigest: digest,
+        previewRef: `inline:${digest}`,
+        commitArgsDigest: digest,
+        expiresAtMs: 1_775_000_600_000,
+      },
+    };
+    const commitOutcome: GatewayDispatchOutcome = {
+      ok: true,
+      state: "completed",
+      toolName: record.name,
+      toolVersion: record.version,
+      executor: record.executor,
+      requestId: commitInvocationId,
+      result: { committed: true },
+    };
+    const dispatchSpy = vi
+      .spyOn(dispatcher, "dispatch")
+      .mockResolvedValueOnce(previewOutcome)
+      .mockResolvedValueOnce(commitOutcome);
+    const view = new EntitledCatalogView([catalogEntry], entitleAll);
+    const authInfo: AuthInfo = {
+      token: TOKEN,
+      clientId: "codex-confirmation-test",
+      scopes: ["mcp:tools"],
+    };
+    let endpoint: NorthMcpEndpointHandle | undefined;
+    let client: Client | undefined;
+    let transport: StreamableHTTPClientTransport | undefined;
+
+    try {
+      endpoint = await startNorthMcpEndpoint({
+        dispatcher,
+        registry,
+        catalogViewFor: () => view,
+        invocationRouteFor,
+        requestState: { key: REQUEST_STATE_KEY },
+        resourceMetadataUrl: new URL(
+          "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+        ),
+        authenticator: {
+          async authenticate(request) {
+            return request.headers.authorization === `Bearer ${TOKEN}`
+              ? authenticatedRequest(
+                  PRINCIPAL_KEY,
+                  authInfo,
+                  "gateway-confirmation-session",
+                  "mcp-confirmation-session",
+                )
+              : null;
+          },
+        },
+      });
+      client = new Client({
+        name: "revAgent confirmation round-trip test",
+        version: "0.1.0-m2",
+      });
+      transport = new StreamableHTTPClientTransport(endpoint.endpoint, {
+        requestInit: {
+          headers: { authorization: `Bearer ${TOKEN}` },
+        },
+      });
+      await client.connect(transport);
+
+      const listed = await client.listTools();
+      expect(listed.tools.map((tool) => tool.name)).toEqual([record.name]);
+      expect(listed.tools[0]?.inputSchema).toEqual(
+        gatewayExternalToolInputJsonSchema(record),
+      );
+      expect(listed.tools.some((tool) => tool.name === "confirm_action")).toBe(
+        false,
+      );
+
+      const first = await client.callTool({
+        name: record.name,
+        arguments: { value: "ready" },
+      });
+      expect(first).toMatchObject({
+        isError: false,
+        structuredContent: {
+          ok: true,
+          state: "confirmation_required",
+          requestId: previewInvocationId,
+          confirmation: {
+            confirmToken,
+            originatingPreviewInvocationId: previewInvocationId,
+          },
+        },
+      });
+      const second = await client.callTool({
+        name: record.name,
+        arguments: {
+          value: "ready",
+          mode: "commit",
+          confirm_token: confirmToken,
+          originating_preview_invocation_id: previewInvocationId,
+        },
+      });
+      expect(second).toMatchObject({
+        isError: false,
+        structuredContent: {
+          ok: true,
+          state: "completed",
+          requestId: commitInvocationId,
+        },
+      });
+      expect(dispatchSpy).toHaveBeenCalledTimes(2);
+      expect(dispatchSpy.mock.calls[0]?.[0]).toMatchObject({
+        toolName: record.name,
+        args: { value: "ready" },
+      });
+      expect(dispatchSpy.mock.calls[0]?.[0]).not.toHaveProperty(
+        "confirmation",
+      );
+      expect(dispatchSpy.mock.calls[1]?.[0]).toMatchObject({
+        toolName: record.name,
+        args: { value: "ready", mode: "commit" },
+        confirmation: {
+          confirmToken,
+          originatingPreviewInvocationId: previewInvocationId,
+        },
+      });
+      expect(
+        dispatchSpy.mock.calls.map(([request]) => request.mcpSessionId),
+      ).toEqual(["mcp-confirmation-session", "mcp-confirmation-session"]);
+      expect(
+        dispatchSpy.mock.calls.map(
+          ([request]) => request.confirmationSessionId,
+        ),
+      ).toEqual(["mcp-confirmation-session", "mcp-confirmation-session"]);
+      expect(dispatchSpy.mock.calls[1]?.[0].args).not.toHaveProperty(
+        "confirm_token",
+      );
+      expect(dispatchSpy.mock.calls[1]?.[0].args).not.toHaveProperty(
+        "originating_preview_invocation_id",
+      );
+    } finally {
+      await Promise.allSettled([client?.close(), transport?.close()]);
+      await endpoint?.close().catch(() => undefined);
+      dispatchSpy.mockRestore();
+    }
+  });
+
   it("fails closed when callable catalog and registry disagree on mutation scope policy", async () => {
     const mismatchedCatalog = VERIFIED_CATALOG.map((entry) =>
       entry.name === "core.ui.state"

@@ -10,6 +10,7 @@ import {
   recordJournalTerminal,
   type InvocationJournalBinding,
   type InvocationJournalRecord,
+  type InvocationPolicy,
   type InvokeEnvelope,
   type JsonValue,
   type MutationScope,
@@ -28,6 +29,10 @@ import {
   type GatewayExecutorOutcome,
   type GatewayExecutorRequest,
 } from "./dispatch.js";
+import {
+  GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
+  GatewayConfirmationAuthority,
+} from "./confirmationAuthority.js";
 import {
   canonicalParamsDigest,
   currentGatewayInvocationContext,
@@ -73,6 +78,54 @@ const autoRecord: GatewayToolRecord = {
       value: { minLength: 1, type: "string" },
     },
     required: ["value"],
+    type: "object",
+  },
+};
+
+const confirmRecord: GatewayToolRecord = {
+  name: "core.test.confirm",
+  summary: "Preview and confirm one test write.",
+  namespace: "core",
+  version: "1.0.0",
+  policyClass: "confirm",
+  mutationScopePolicy: "session",
+  executor: "bridge",
+  executorMethod: "set_element_parameter",
+  inputSchema: {
+    value: z.string().min(1),
+    mode: z.enum(["dryRun", "commit"]).optional(),
+  },
+  inputJsonSchema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    additionalProperties: false,
+    properties: {
+      value: { minLength: 1, type: "string" },
+      mode: { enum: ["dryRun", "commit"], type: "string" },
+    },
+    required: ["value"],
+    type: "object",
+  },
+};
+
+const rawCodeConfirmRecord: GatewayToolRecord = {
+  name: "core.test.raw_code_confirm",
+  summary: "Preview and confirm one raw-code action.",
+  namespace: "core",
+  version: "1.0.0",
+  policyClass: "confirm",
+  mutationScopePolicy: "session",
+  executor: "bridge",
+  executorMethod: "send_code_to_revit",
+  inputSchema: {
+    code: z.string().min(1),
+  },
+  inputJsonSchema: {
+    $schema: "https://json-schema.org/draft/2020-12/schema",
+    additionalProperties: false,
+    properties: {
+      code: { minLength: 1, type: "string" },
+    },
+    required: ["code"],
     type: "object",
   },
 };
@@ -265,6 +318,38 @@ function mutationEnvelopeFor(
   if (request.context.mutationScope === null) {
     throw new Error("mutation test executor received a read-only context");
   }
+  const policy: InvocationPolicy = (() => {
+    if (
+      request.context.policyClass === "auto" &&
+      request.context.policyDecision === "auto" &&
+      request.context.confirmationId === null
+    ) {
+      return { class: "auto", decision: "auto", confirmation_id: null };
+    }
+    if (
+      request.context.policyClass === "confirm" &&
+      request.context.policyDecision === "confirmed" &&
+      request.context.confirmationId !== null
+    ) {
+      return {
+        class: "confirm",
+        decision: "confirmed",
+        confirmation_id: request.context.confirmationId,
+      };
+    }
+    if (
+      request.context.policyClass === "gated" &&
+      request.context.policyDecision === "gated_approved" &&
+      request.context.confirmationId !== null
+    ) {
+      return {
+        class: "gated",
+        decision: "gated_approved",
+        confirmation_id: request.context.confirmationId,
+      };
+    }
+    throw new Error("mutation test executor received a non-dispatch policy");
+  })();
   return {
     v: 1,
     type: "invoke",
@@ -280,11 +365,7 @@ function mutationEnvelopeFor(
       timeout_ms: 120_000,
       mutating: true,
       mutation_scope: structuredClone(request.context.mutationScope),
-      policy: {
-        class: "auto",
-        decision: "auto",
-        confirmation_id: null,
-      },
+      policy,
       verification: null,
       recovery_clearances: [],
     },
@@ -331,6 +412,9 @@ function createRecoveryExecutor(input: {
     request: GatewayExecutorRequest,
     pending: GatewayRecoveryPendingDispatch,
   ) => void | Promise<void>;
+  readonly preview?: (
+    request: GatewayExecutorRequest,
+  ) => Promise<GatewayExecutorOutcome & { readonly previewRef?: string }>;
 }): RecoveryExecutorHarness {
   let plainExecutions = 0;
   let prepares = 0;
@@ -346,6 +430,11 @@ function createRecoveryExecutor(input: {
         error: { code: "wrong_path", message: "mutation used read execute" },
       };
     },
+    ...(input.preview === undefined
+      ? {}
+      : {
+          previewConfirmation: input.preview,
+        }),
     buildMutationDispatch(request) {
       prepares += 1;
       preparedRequests.push(request);
@@ -383,12 +472,14 @@ function createMutationDispatcher(input: {
   readonly executor: GatewayExecutor;
   readonly record?: GatewayToolRecord;
   readonly idBase?: number;
+  readonly confirmationAuthority?: GatewayDispatcherOptions["confirmationAuthority"];
+  readonly eventSink?: CapturingEventSink;
 }): {
   readonly dispatcher: GatewayDispatcher;
   readonly eventSink: CapturingEventSink;
   readonly mintedInvocationIds: () => readonly string[];
 } {
-  const eventSink = createCapturingEventSink();
+  const eventSink = input.eventSink ?? createCapturingEventSink();
   const mintedInvocationIds: string[] = [];
   let idSequence = input.idBase ?? 10_000;
   let eventSequence = 0;
@@ -409,6 +500,9 @@ function createMutationDispatcher(input: {
           instance: "dispatch-recovery-test",
         },
         recoveryAuthority: input.recoveryAuthority,
+        ...(input.confirmationAuthority === undefined
+          ? {}
+          : { confirmationAuthority: input.confirmationAuthority }),
         clock: () => ++now,
         newAttemptId: () => uuid7(idSequence + 100_000 + ++eventSequence),
         newInvocationId: () => {
@@ -424,11 +518,47 @@ function createMutationDispatcher(input: {
   };
 }
 
+function createApprovalFailingEventSink(): CapturingEventSink {
+  const capture = createCapturingEventSink();
+  return {
+    kind: "capture" as const,
+    async emit(event) {
+      const recorded = await capture.emit(event);
+      if (
+        event.event_type === "tool.confirmation" &&
+        event.payload.state === "approved"
+      ) {
+        return Object.freeze({
+          ok: false as const,
+          port: "event_sink" as const,
+          code: "unavailable" as const,
+          message: "approval audit sink unavailable",
+        });
+      }
+      return recorded;
+    },
+    async emitBatch(events) {
+      return capture.emitBatch(events);
+    },
+    async flush() {
+      return capture.flush();
+    },
+    captured() {
+      return capture.captured();
+    },
+    clear() {
+      capture.clear();
+    },
+  };
+}
+
 async function createRecoveryAuthority(
   input: {
     readonly openStore?: boolean;
     readonly durable?: RestartableTestStore;
     readonly bridgeEvidence?: DispatchBridgeEvidence;
+    readonly confirmationAuthority?: GatewayConfirmationAuthority;
+    readonly clock?: () => number;
   } = {},
 ): Promise<{
   readonly authority: GatewayRecoveryAuthority;
@@ -456,9 +586,84 @@ async function createRecoveryAuthority(
           };
         },
       },
-      clock: () => 1_775_000_000_000,
+      ...(input.confirmationAuthority === undefined
+        ? {}
+        : { confirmationAuthority: input.confirmationAuthority }),
+      clock: input.clock ?? (() => 1_775_000_000_000),
       newId: (timestampMs) => uuid7(timestampMs % 1_000_000),
     }),
+  };
+}
+
+interface ConfirmationDispatchHarness {
+  readonly bridgeEvidence: DispatchBridgeEvidence;
+  readonly confirmationAuthority: GatewayConfirmationAuthority;
+  readonly dispatcher: GatewayDispatcher;
+  readonly durable: RestartableTestStore;
+  readonly eventSink: CapturingEventSink;
+  readonly executor: RecoveryExecutorHarness;
+  readonly mintedInvocationIds: () => readonly string[];
+  readonly previewRequests: () => readonly GatewayExecutorRequest[];
+  setNow(value: number): void;
+}
+
+async function createConfirmationDispatchHarness(
+  input: {
+    readonly durable?: RestartableTestStore;
+    readonly eventSink?: CapturingEventSink;
+    readonly idBase?: number;
+    readonly openStore?: boolean;
+  } = {},
+): Promise<ConfirmationDispatchHarness> {
+  const durable = input.durable ?? createRestartableTestStore();
+  let now = 1_775_000_000_000;
+  let confirmationSequence = 900_000;
+  const previewRequests: GatewayExecutorRequest[] = [];
+  const confirmationAuthority = new GatewayConfirmationAuthority(
+    durable.store,
+    {
+      clock: () => now,
+      newConfirmationId: () => uuid7(++confirmationSequence),
+      newTokenSecret: () => "S".repeat(43),
+    },
+  );
+  const recovery = await createRecoveryAuthority({
+    durable,
+    confirmationAuthority,
+    clock: () => now,
+    openStore: input.openStore,
+  });
+  const executor = createRecoveryExecutor({
+    bridgeEvidence: recovery.bridgeEvidence,
+    async preview(request) {
+      previewRequests.push(request);
+      return {
+        state: "completed",
+        result: { preview: "bounded", writes: 0 },
+        previewRef: "inline:confirmation-preview",
+      };
+    },
+  });
+  const dispatch = createMutationDispatcher({
+    recoveryAuthority: recovery.authority,
+    confirmationAuthority,
+    executor: executor.executor,
+    record: confirmRecord,
+    idBase: input.idBase,
+    ...(input.eventSink === undefined ? {} : { eventSink: input.eventSink }),
+  });
+  return {
+    bridgeEvidence: recovery.bridgeEvidence,
+    confirmationAuthority,
+    dispatcher: dispatch.dispatcher,
+    durable,
+    eventSink: dispatch.eventSink,
+    executor,
+    mintedInvocationIds: dispatch.mintedInvocationIds,
+    previewRequests: () => [...previewRequests],
+    setNow(value) {
+      now = value;
+    },
   };
 }
 
@@ -555,6 +760,12 @@ function dispatchInput(
   args: unknown,
   overrides: {
     readonly auth?: AuthContext;
+    readonly toolName?: string;
+    readonly confirmation?: {
+      readonly confirmToken: string;
+      readonly originatingPreviewInvocationId: string;
+    };
+    readonly confirmationSessionId?: string;
     readonly mcpSessionId?: string;
     readonly resolveRoute?: (
       auth: AuthContext,
@@ -565,7 +776,7 @@ function dispatchInput(
   const selectedAuth = overrides.auth ?? auth;
   const selectedRoute = overrides.route ?? route;
   return {
-    toolName: autoRecord.name,
+    toolName: overrides.toolName ?? autoRecord.name,
     args,
     auth: selectedAuth,
     mcpSessionId:
@@ -573,6 +784,12 @@ function dispatchInput(
       selectedAuth.session.mcpSessionId ??
       selectedRoute.mcpSessionId,
     resolveRoute: overrides.resolveRoute ?? (() => selectedRoute),
+    ...(overrides.confirmationSessionId === undefined
+      ? {}
+      : { confirmationSessionId: overrides.confirmationSessionId }),
+    ...(overrides.confirmation === undefined
+      ? {}
+      : { confirmation: overrides.confirmation }),
   } as const;
 }
 
@@ -684,21 +901,37 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
     });
   });
 
-  it("blocks confirm and gated tools until policy middleware exists", async () => {
-    const harness = createDispatcher({
-      record: { ...autoRecord, policyClass: "confirm" },
-      execute: async () => ({ state: "completed", result: { ok: true } }),
-    });
+  it.each([
+    ["confirm", "confirmation_unavailable"],
+    ["gated", "policy_enforcement_unavailable"],
+  ] as const)(
+    "fails closed for an unconfigured %s policy",
+    async (policyClass, code) => {
+      const harness = createDispatcher({
+        record:
+          policyClass === "confirm"
+            ? confirmRecord
+            : { ...autoRecord, policyClass },
+        execute: async () => ({ state: "completed", result: { ok: true } }),
+      });
 
-    await expect(
-      harness.dispatcher.dispatch(dispatchInput({ value: "ready" })),
-    ).resolves.toMatchObject({
-      ok: false,
-      state: "failed",
-      error: { code: "policy_enforcement_unavailable" },
-    });
-    expect(harness.executionCount()).toBe(0);
-  });
+      await expect(
+        harness.dispatcher.dispatch(
+          dispatchInput(
+            { value: "ready" },
+            policyClass === "confirm"
+              ? { toolName: confirmRecord.name }
+              : undefined,
+          ),
+        ),
+      ).resolves.toMatchObject({
+        ok: false,
+        state: "failed",
+        error: { code },
+      });
+      expect(harness.executionCount()).toBe(0);
+    },
+  );
 
   it("preserves an executor failure as an MCP-error dispatch outcome", async () => {
     const harness = createDispatcher({
@@ -1768,5 +2001,764 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
         principal_key: "tenant-a:user-a",
       },
     });
+  });
+});
+
+describe("GW-8 durable confirmation round trip", () => {
+  async function preview(
+    harness: ConfirmationDispatchHarness,
+    args: Readonly<Record<string, unknown>> = { value: "ready" },
+  ) {
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput(args, { toolName: confirmRecord.name }),
+    );
+    if (!outcome.ok || outcome.state !== "confirmation_required") {
+      throw new Error(`expected confirmation preview: ${JSON.stringify(outcome)}`);
+    }
+    return outcome;
+  }
+
+  function confirmationFor(
+    outcome: Awaited<ReturnType<typeof preview>>,
+  ) {
+    return {
+      confirmToken: outcome.confirmation.confirmToken,
+      originatingPreviewInvocationId:
+        outcome.confirmation.originatingPreviewInvocationId,
+    } as const;
+  }
+
+  async function createRawCodePreviewHarness(
+    previewOutcome: GatewayExecutorOutcome,
+  ) {
+    const durable = createRestartableTestStore();
+    const confirmationAuthority = new GatewayConfirmationAuthority(
+      durable.store,
+      {
+        clock: () => 1_775_000_000_000,
+        newConfirmationId: () => uuid7(910_000),
+        newTokenSecret: () => "R".repeat(43),
+      },
+    );
+    const recovery = await createRecoveryAuthority({
+      durable,
+      confirmationAuthority,
+    });
+    const executor = createRecoveryExecutor({
+      bridgeEvidence: recovery.bridgeEvidence,
+      async preview() {
+        return previewOutcome;
+      },
+    });
+    const dispatch = createMutationDispatcher({
+      recoveryAuthority: recovery.authority,
+      confirmationAuthority,
+      executor: executor.executor,
+      record: rawCodeConfirmRecord,
+      idBase: 95_000,
+    });
+    return { ...dispatch, durable, executor };
+  }
+
+  it("mints a raw-code token only for the exact safe-wrapper static preview contract", async () => {
+    const reason = "safe_wrapper_rejected_write_looking_code";
+    const completed = await createRawCodePreviewHarness({
+      state: "completed",
+      result: {
+        success: true,
+        guarded: false,
+        state: "completed",
+        action: "send_code_to_revit_safe",
+        intent: "writePreview",
+        response: { result: "read-only preview" },
+      },
+    });
+    await expect(
+      completed.dispatcher.dispatch(
+        dispatchInput(
+          { code: "return document.Title;" },
+          { toolName: rawCodeConfirmRecord.name },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      state: "confirmation_required",
+    });
+
+    const accepted = await createRawCodePreviewHarness({
+      state: "guarded",
+      reason,
+      result: {
+        success: false,
+        guarded: true,
+        state: "guarded",
+        action: "send_code_to_revit_safe_preflight",
+        error: "Rejected write-looking code for intent 'writePreview'.",
+        reason,
+        safetyReason: reason,
+        writePatterns: ["Parameter.Set"],
+      },
+    });
+
+    await expect(
+      accepted.dispatcher.dispatch(
+        dispatchInput(
+          { code: "parameter.Set(1);" },
+          { toolName: rawCodeConfirmRecord.name },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: true,
+      state: "confirmation_required",
+    });
+    expect(accepted.executor.prepareCount()).toBe(0);
+    expect(accepted.executor.sentDispatches()).toHaveLength(0);
+
+    const rejectedCases: readonly GatewayExecutorOutcome[] = [
+      {
+        state: "completed",
+        result: { preview: "not the safe-wrapper result contract" },
+      },
+      {
+        state: "guarded",
+        reason: "safe_wrapper_requires_transactionMode_none",
+        result: {
+          success: false,
+          guarded: true,
+          state: "guarded",
+          action: "send_code_to_revit_safe_preflight",
+          reason: "safe_wrapper_requires_transactionMode_none",
+          safetyReason: "safe_wrapper_requires_transactionMode_none",
+          writePatterns: ["Parameter.Set"],
+        },
+      },
+      {
+        state: "guarded",
+        reason,
+        result: {
+          success: false,
+          guarded: true,
+          state: "guarded",
+          action: "send_code_to_revit_safe",
+          reason,
+          safetyReason: reason,
+          writePatterns: [],
+        },
+      },
+    ];
+
+    for (const previewOutcome of rejectedCases) {
+      const rejected = await createRawCodePreviewHarness(previewOutcome);
+      const outcome = await rejected.dispatcher.dispatch(
+        dispatchInput(
+          { code: "parameter.Set(1);" },
+          { toolName: rawCodeConfirmRecord.name },
+        ),
+      );
+      expect(outcome).toMatchObject({
+        ok: true,
+        state: previewOutcome.state,
+      });
+      expect(outcome.state).not.toBe("confirmation_required");
+      expect(rejected.executor.prepareCount()).toBe(0);
+      expect(rejected.executor.sentDispatches()).toHaveLength(0);
+      expect(
+        rejected.eventSink
+          .captured()
+          .filter((event) => event.event_type === "tool.confirmation"),
+      ).toHaveLength(0);
+      expect(JSON.stringify(rejected.durable.snapshot())).not.toContain(
+        "gateway.confirmation-authority/v1",
+      );
+      expect(rejected.eventSink.captured().at(-1)).toMatchObject({
+        event_type: "tool.invocation",
+        payload: { confirmation_reason: "preview_not_authorizable" },
+      });
+    }
+  });
+
+  it("previews without a write and commits exactly once under a new invocation with linked audits", async () => {
+    const harness = await createConfirmationDispatchHarness();
+    const previewed = await preview(harness);
+
+    expect(harness.previewRequests()).toHaveLength(1);
+    expect(harness.previewRequests()[0]).toMatchObject({
+      executorMethod: "set_element_parameter",
+      args: { value: "ready", mode: "dryRun" },
+      context: {
+        mutating: false,
+        mutationScope: null,
+        policyClass: "confirm",
+        policyDecision: "preview",
+      },
+    });
+    expect(harness.executor.prepareCount()).toBe(0);
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+
+    const committed = await harness.dispatcher.dispatch(
+      dispatchInput(
+        { value: "ready", mode: "commit" },
+        {
+          toolName: confirmRecord.name,
+          confirmation: confirmationFor(previewed),
+        },
+      ),
+    );
+
+    expect(committed).toMatchObject({ ok: true, state: "completed" });
+    expect(committed.requestId).not.toBe(previewed.requestId);
+    expect(harness.executor.prepareCount()).toBe(1);
+    expect(harness.executor.sentDispatches()).toHaveLength(1);
+    expect(harness.executor.preparedRequests()[0]).toMatchObject({
+      args: { value: "ready", mode: "commit" },
+      context: {
+        invocationId: committed.requestId,
+        policyClass: "confirm",
+        policyDecision: "confirmed",
+        confirmationId: previewed.confirmation.confirmationId,
+        originatingPreviewInvocationId: previewed.requestId,
+      },
+    });
+    expect(harness.executor.sentDispatches()[0]?.envelope).toMatchObject({
+      payload: {
+        invocation_id: committed.requestId,
+        params: { value: "ready", mode: "commit" },
+        policy: {
+          class: "confirm",
+          decision: "confirmed",
+          confirmation_id: previewed.confirmation.confirmationId,
+        },
+      },
+    });
+
+    const confirmationEvents = harness.eventSink
+      .captured()
+      .filter((event) => event.event_type === "tool.confirmation");
+    expect(confirmationEvents).toMatchObject([
+      {
+        payload: {
+          state: "requested",
+          confirmation_id: previewed.confirmation.confirmationId,
+          originating_preview_invocation_id: previewed.requestId,
+          commit_invocation_id: null,
+          mcp_session_id: "mcp-session-test",
+        },
+      },
+      {
+        payload: {
+          state: "approved",
+          confirmation_id: previewed.confirmation.confirmationId,
+          originating_preview_invocation_id: previewed.requestId,
+          commit_invocation_id: committed.requestId,
+          mcp_session_id: "mcp-session-test",
+        },
+      },
+    ]);
+    const invocationEvents = harness.eventSink
+      .captured()
+      .filter((event) => event.event_type === "tool.invocation");
+    expect(invocationEvents).toMatchObject([
+      {
+        payload: {
+          invocation_id: previewed.requestId,
+          policy_decision: "preview",
+          confirmation_id: previewed.confirmation.confirmationId,
+          originating_preview_invocation_id: previewed.requestId,
+        },
+      },
+      {
+        payload: {
+          invocation_id: committed.requestId,
+          policy_decision: "confirmed",
+          confirmation_id: previewed.confirmation.confirmationId,
+          originating_preview_invocation_id: previewed.requestId,
+        },
+      },
+    ]);
+    const durableAndAuditText = JSON.stringify({
+      durable: harness.durable.snapshot(),
+      events: harness.eventSink.captured(),
+    });
+    expect(durableAndAuditText).not.toContain(
+      previewed.confirmation.confirmToken,
+    );
+    expect(durableAndAuditText).not.toContain("S".repeat(43));
+
+    const replay = await harness.dispatcher.dispatch(
+      dispatchInput(
+        { value: "ready", mode: "commit" },
+        {
+          toolName: confirmRecord.name,
+          confirmation: confirmationFor(previewed),
+        },
+      ),
+    );
+    expect(replay).toMatchObject({
+      ok: false,
+      error: { code: "confirmation_denied", detailCode: "replayed" },
+      executorReached: false,
+    });
+    expect(harness.executor.sentDispatches()).toHaveLength(1);
+    expect(harness.eventSink.captured().at(-2)).toMatchObject({
+      event_type: "tool.confirmation",
+      payload: {
+        state: "denied",
+        confirmation_id: previewed.confirmation.confirmationId,
+        originating_preview_invocation_id: previewed.requestId,
+        reason: "replayed",
+      },
+    });
+  });
+
+  it("persists approval and the pending dispatch atomically before an unavailable external audit sink", async () => {
+    const eventSink = createApprovalFailingEventSink();
+    const harness = await createConfirmationDispatchHarness({ eventSink });
+    const previewed = await preview(harness);
+
+    const outcome = await harness.dispatcher.dispatch(
+      dispatchInput(
+        { value: "ready", mode: "commit" },
+        {
+          toolName: confirmRecord.name,
+          confirmation: confirmationFor(previewed),
+        },
+      ),
+    );
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      error: {
+        code: "audit_unavailable",
+        detailCode: "event_sink:unavailable",
+      },
+      executorReached: false,
+    });
+    expect(harness.executor.prepareCount()).toBe(1);
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+
+    const snapshot = harness.durable.snapshot();
+    expect(
+      snapshot.records.filter(
+        (record) =>
+          record.namespace === GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
+      ),
+    ).toMatchObject([
+      {
+        value: {
+          state: "approved",
+          confirmationId: previewed.confirmation.confirmationId,
+          originatingPreviewInvocationId: previewed.requestId,
+          commitInvocationId: outcome.requestId,
+        },
+      },
+    ]);
+    const recoveryRecord = snapshot.records.find(
+      (record) => record.namespace === GATEWAY_RECOVERY_NAMESPACE,
+    )?.value as GatewayRecoveryRecord | undefined;
+    expect(recoveryRecord?.pendingDispatch).toMatchObject({
+      envelope: {
+        payload: {
+          invocation_id: outcome.requestId,
+          policy: {
+            class: "confirm",
+            decision: "confirmed",
+            confirmation_id: previewed.confirmation.confirmationId,
+          },
+        },
+      },
+    });
+    expect(
+      eventSink
+        .captured()
+        .filter(
+          (event) =>
+            event.event_type === "tool.confirmation" &&
+            event.payload.state === "approved",
+        ),
+    ).toHaveLength(1);
+  });
+
+  it("audits binding mismatches separately without consuming the valid token", async () => {
+    const harness = await createConfirmationDispatchHarness({ idBase: 20_000 });
+    const previewed = await preview(harness);
+    const confirmation = confirmationFor(previewed);
+    harness.eventSink.clear();
+
+    const foreignActor: AuthContext = Object.freeze({
+      ...auth,
+      actor: Object.freeze({ ...auth.actor, userId: "user-b" }),
+      principalKey: "tenant-a:user-b",
+    });
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          { auth: foreignActor, toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "foreign_actor" },
+      executorReached: false,
+    });
+
+    const foreignSession: AuthContext = Object.freeze({
+      ...auth,
+      session: Object.freeze({
+        ...auth.session,
+        sessionId: "gateway-session-b",
+      }),
+    });
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          { auth: foreignSession, toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "foreign_session" },
+      executorReached: false,
+    });
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "changed", mode: "commit" },
+          { toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "args_mismatch" },
+      executorReached: false,
+    });
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          {
+            toolName: confirmRecord.name,
+            confirmation: {
+              ...confirmation,
+              originatingPreviewInvocationId: uuid7(990_001),
+            },
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "preview_mismatch" },
+      executorReached: false,
+    });
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: 42, mode: "commit" },
+          { toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_arguments" },
+      executorReached: false,
+    });
+
+    const changedVersion = createMutationDispatcher({
+      recoveryAuthority: (
+        await createRecoveryAuthority({
+          durable: harness.durable,
+          bridgeEvidence: harness.bridgeEvidence,
+          confirmationAuthority: harness.confirmationAuthority,
+          openStore: false,
+        })
+      ).authority,
+      confirmationAuthority: harness.confirmationAuthority,
+      executor: harness.executor.executor,
+      record: { ...confirmRecord, version: "1.0.1" },
+      idBase: 30_000,
+    });
+    await expect(
+      changedVersion.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          { toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "tool_version_mismatch" },
+      executorReached: false,
+    });
+
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+    const denialReasons = [
+      ...harness.eventSink.captured(),
+      ...changedVersion.eventSink.captured(),
+    ]
+      .filter((event) => event.event_type === "tool.confirmation")
+      .map((event) => event.payload.reason);
+    expect(denialReasons).toEqual([
+      "foreign_actor",
+      "foreign_session",
+      "args_mismatch",
+      "preview_mismatch",
+      "invalid_arguments",
+      "tool_version_mismatch",
+    ]);
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          { toolName: confirmRecord.name, confirmation },
+        ),
+      ),
+    ).resolves.toMatchObject({ ok: true, state: "completed" });
+    expect(harness.executor.sentDispatches()).toHaveLength(1);
+  });
+
+  it("persists expiry and rejects at the exact ten-minute boundary before send", async () => {
+    const harness = await createConfirmationDispatchHarness({ idBase: 40_000 });
+    const previewed = await preview(harness);
+    harness.eventSink.clear();
+    harness.setNow(previewed.confirmation.expiresAtMs);
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          {
+            toolName: confirmRecord.name,
+            confirmation: confirmationFor(previewed),
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "confirmation_denied", detailCode: "expired" },
+      executorReached: false,
+    });
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+    expect(harness.eventSink.captured()[0]).toMatchObject({
+      event_type: "tool.confirmation",
+      payload: { state: "expired", reason: "expired" },
+    });
+    expect(JSON.stringify(harness.durable.snapshot())).toContain(
+      '"state":"expired"',
+    );
+  });
+
+  it("binds an unbound AuthContext to the dispatcher-supplied MCP confirmation session", async () => {
+    const harness = await createConfirmationDispatchHarness({ idBase: 45_000 });
+    const unboundAuth: AuthContext = Object.freeze({
+      ...auth,
+      session: Object.freeze({ ...auth.session, mcpSessionId: null }),
+    });
+    const routeFor = (mcpSessionId: string): GatewayInvocationRoute =>
+      Object.freeze({ ...route, mcpSessionId });
+    const previewedOutcome = await harness.dispatcher.dispatch(
+      dispatchInput(
+        { value: "ready" },
+        {
+          auth: unboundAuth,
+          toolName: confirmRecord.name,
+          mcpSessionId: "transport-session-a",
+          confirmationSessionId: "mcp-confirmation-a",
+          route: routeFor("transport-session-a"),
+        },
+      ),
+    );
+    if (
+      !previewedOutcome.ok ||
+      previewedOutcome.state !== "confirmation_required"
+    ) {
+      throw new Error(
+        `expected confirmation preview: ${JSON.stringify(previewedOutcome)}`,
+      );
+    }
+    const confirmation = confirmationFor(previewedOutcome);
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          {
+            auth: unboundAuth,
+            toolName: confirmRecord.name,
+            mcpSessionId: "transport-session-b",
+            confirmationSessionId: "mcp-confirmation-b",
+            route: routeFor("transport-session-b"),
+            confirmation,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "foreign_session" },
+      executorReached: false,
+    });
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          {
+            auth: unboundAuth,
+            toolName: confirmRecord.name,
+            mcpSessionId: "transport-session-a",
+            confirmationSessionId: "mcp-confirmation-a",
+            route: routeFor("transport-session-a"),
+            confirmation,
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({ ok: true, state: "completed" });
+    expect(harness.executor.sentDispatches()).toHaveLength(1);
+  });
+
+  it("survives a store restart and preserves single use", async () => {
+    const first = await createConfirmationDispatchHarness({ idBase: 50_000 });
+    const previewed = await preview(first);
+    const restartedStore = first.durable.restart();
+    await expect(restartedStore.open()).resolves.toEqual({
+      ok: true,
+      value: undefined,
+    });
+    const restartedConfirmation = new GatewayConfirmationAuthority(
+      restartedStore,
+      { clock: () => 1_775_000_000_000 },
+    );
+    const restartedRecovery = new GatewayRecoveryAuthority(restartedStore, {
+      bridgeEvidence: first.bridgeEvidence,
+      confirmationAuthority: restartedConfirmation,
+      evidenceDecision: {
+        async decideEvidence() {
+          return {
+            kind: "decided" as const,
+            conclusion: "inconclusive" as const,
+            authorityReference: "dispatch-restart-decision",
+            decisionVersion: 1,
+            decidedAtMs: 1_775_000_001_000,
+          };
+        },
+      },
+      clock: () => 1_775_000_000_000,
+      newId: (timestampMs) => uuid7(timestampMs % 1_000_000),
+    });
+    const restartedExecutor = createRecoveryExecutor({
+      bridgeEvidence: first.bridgeEvidence,
+      async preview() {
+        throw new Error("restart commit must not preview again");
+      },
+    });
+    const restarted = createMutationDispatcher({
+      recoveryAuthority: restartedRecovery,
+      confirmationAuthority: restartedConfirmation,
+      executor: restartedExecutor.executor,
+      record: confirmRecord,
+      idBase: 60_000,
+    });
+    const commitInput = dispatchInput(
+      { value: "ready", mode: "commit" },
+      {
+        toolName: confirmRecord.name,
+        confirmation: confirmationFor(previewed),
+      },
+    );
+
+    await expect(restarted.dispatcher.dispatch(commitInput)).resolves.toMatchObject({
+      ok: true,
+      state: "completed",
+    });
+    await expect(restarted.dispatcher.dispatch(commitInput)).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "replayed" },
+    });
+    expect(restartedExecutor.sentDispatches()).toHaveLength(1);
+  });
+
+  it("audits direct commit and client always-allow attempts and keeps gated approval out of band", async () => {
+    const harness = await createConfirmationDispatchHarness({ idBase: 70_000 });
+
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          { toolName: confirmRecord.name },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { detailCode: "direct_commit_without_confirmation" },
+      executorReached: false,
+    });
+    await expect(
+      harness.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", always_allow: true },
+          { toolName: confirmRecord.name },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: { code: "invalid_arguments" },
+      executorReached: false,
+    });
+
+    const previewed = await preview(harness);
+    const gatedRecord: GatewayToolRecord = {
+      ...confirmRecord,
+      name: "core.test.gated",
+      policyClass: "gated",
+    };
+    const gated = createMutationDispatcher({
+      recoveryAuthority: (
+        await createRecoveryAuthority({
+          durable: harness.durable,
+          bridgeEvidence: harness.bridgeEvidence,
+          confirmationAuthority: harness.confirmationAuthority,
+          openStore: false,
+        })
+      ).authority,
+      confirmationAuthority: harness.confirmationAuthority,
+      executor: harness.executor.executor,
+      record: gatedRecord,
+      idBase: 80_000,
+    });
+    await expect(
+      gated.dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready", mode: "commit" },
+          {
+            toolName: gatedRecord.name,
+            confirmation: confirmationFor(previewed),
+          },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      error: {
+        code: "policy_enforcement_unavailable",
+        detailCode: "gated_in_channel_approval_forbidden",
+      },
+      executorReached: false,
+    });
+
+    expect(harness.executor.sentDispatches()).toHaveLength(0);
+    expect(
+      [...harness.eventSink.captured(), ...gated.eventSink.captured()]
+        .filter((event) => event.event_type === "tool.confirmation")
+        .map((event) => event.payload.reason)
+        .filter((reason) => reason !== null),
+    ).toEqual([
+      "direct_commit_without_confirmation",
+      "invalid_arguments",
+      "gated_in_channel_approval_forbidden",
+    ]);
   });
 });

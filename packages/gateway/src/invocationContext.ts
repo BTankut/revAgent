@@ -61,6 +61,14 @@ export interface GatewayInvocationContext {
   readonly toolName: string;
   readonly toolVersion: string;
   readonly policyClass: GatewayPolicyClass;
+  readonly policyDecision:
+    | "auto"
+    | "preview"
+    | "confirmed"
+    | "gated_approved"
+    | "denied";
+  readonly confirmationId: string | null;
+  readonly originatingPreviewInvocationId: string | null;
   readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly mutating: boolean;
   readonly executor: GatewayExecutorBinding;
@@ -368,6 +376,9 @@ export function createGatewayInvocationContext(input: {
   readonly toolName: string;
   readonly toolVersion: string;
   readonly policyClass: GatewayPolicyClass;
+  readonly policyDecision?: GatewayInvocationContext["policyDecision"];
+  readonly confirmationId?: string | null;
+  readonly originatingPreviewInvocationId?: string | null;
   readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly executor: GatewayExecutorBinding;
   readonly args: unknown;
@@ -380,6 +391,53 @@ export function createGatewayInvocationContext(input: {
     "invalid_invocation_route",
   );
   const authority = deriveGatewayInvocationAuthority(input);
+  const policyDecision =
+    input.policyDecision ??
+    (input.policyClass === "auto"
+      ? "auto"
+      : input.policyClass === "confirm"
+        ? "preview"
+        : "denied");
+  const confirmationId = input.confirmationId ?? null;
+  const originatingPreviewInvocationId =
+    input.originatingPreviewInvocationId ?? null;
+  if (
+    (policyDecision === "auto" && input.policyClass !== "auto") ||
+    (policyDecision === "preview" && input.policyClass !== "confirm") ||
+    (policyDecision === "confirmed" && input.policyClass !== "confirm") ||
+    (policyDecision === "gated_approved" && input.policyClass !== "gated")
+  ) {
+    throw new GatewayInvocationContextError(
+      "invalid_invocation_route",
+      "policy decision does not match the registry policy class",
+    );
+  }
+  if (policyDecision === "confirmed") {
+    if (confirmationId === null || originatingPreviewInvocationId === null) {
+      throw new GatewayInvocationContextError(
+        "invalid_invocation_route",
+        "confirmed policy requires confirmation and preview identities",
+      );
+    }
+    requireBoundedString(
+      confirmationId,
+      "confirmationId",
+      "invalid_invocation_route",
+    );
+    requireBoundedString(
+      originatingPreviewInvocationId,
+      "originatingPreviewInvocationId",
+      "invalid_invocation_route",
+    );
+  } else if (
+    confirmationId !== null ||
+    originatingPreviewInvocationId !== null
+  ) {
+    throw new GatewayInvocationContextError(
+      "invalid_invocation_route",
+      "only a confirmed policy may carry confirmation identities",
+    );
+  }
   const oauthClientId = auth.session.oauthClientId;
   if (oauthClientId === null) {
     throw new GatewayInvocationContextError(
@@ -404,6 +462,9 @@ export function createGatewayInvocationContext(input: {
     toolName: input.toolName,
     toolVersion: input.toolVersion,
     policyClass: input.policyClass,
+    policyDecision,
+    confirmationId,
+    originatingPreviewInvocationId,
     mutationScopePolicy: input.mutationScopePolicy,
     mutating: authority.mutating,
     executor: input.executor,

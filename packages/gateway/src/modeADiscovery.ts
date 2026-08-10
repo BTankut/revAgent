@@ -3,6 +3,7 @@ import type {
   GatewayRegistryView,
   GatewayToolRecord,
 } from "./registry.js";
+import { gatewayExternalToolInputJsonSchema } from "./confirmation.js";
 
 const DEFAULT_SEARCH_LIMIT = 20;
 const MAX_SEARCH_LIMIT = 100;
@@ -164,7 +165,10 @@ function scoreTerm(term: string, corpus: SearchCorpus): number {
 }
 
 function schemaBytes(record: GatewayToolRecord): number {
-  return Buffer.byteLength(JSON.stringify(record.inputJsonSchema), "utf8");
+  return Buffer.byteLength(
+    JSON.stringify(gatewayExternalToolInputJsonSchema(record)),
+    "utf8",
+  );
 }
 
 export class ModeADiscoverySession {
@@ -322,7 +326,7 @@ export class ModeADiscoverySession {
         records.map((record) =>
           Object.freeze({
             name: record.name,
-            inputSchema: record.inputJsonSchema,
+            inputSchema: gatewayExternalToolInputJsonSchema(record),
           })
         ),
       ),

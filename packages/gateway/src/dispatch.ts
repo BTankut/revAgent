@@ -8,6 +8,16 @@ import { z } from "zod";
 
 import type { AuthContext } from "./authContext.js";
 import {
+  buildConfirmationCommitProjection,
+  buildConfirmationPreviewProjection,
+  type GatewayConfirmationControl,
+} from "./confirmation.js";
+import {
+  confirmationIdFromToken,
+  confirmationSessionIdFor,
+  type GatewayConfirmationAuthority,
+} from "./confirmationAuthority.js";
+import {
   REVAGENT_EVENT_SCHEMA,
   type GatewayEventEnvelope,
   type GatewayEventSink,
@@ -56,6 +66,13 @@ export interface GatewayExecutorRequest {
 export interface GatewayExecutor {
   readonly binding: GatewayExecutorBinding;
   execute(request: GatewayExecutorRequest): Promise<GatewayExecutorOutcome>;
+  /**
+   * Executes only the server-authored non-mutating preview projection. It must
+   * never call the durable mutation prepare/send seam.
+   */
+  previewConfirmation?(
+    request: GatewayExecutorRequest,
+  ): Promise<GatewayExecutorOutcome & { readonly previewRef?: string }>;
   /** Synchronous pure envelope construction; it MUST NOT contact Bridge/Revit. */
   buildMutationDispatch?(request: GatewayExecutorRequest): {
     readonly sessionBindingId: string;
@@ -120,6 +137,29 @@ export type GatewayDispatchOutcome =
       };
     }
   | {
+      readonly ok: true;
+      readonly state: "confirmation_required";
+      readonly toolName: string;
+      readonly toolVersion: string;
+      readonly executor: GatewayExecutorBinding;
+      readonly requestId: string;
+      readonly result: GatewayJsonValue;
+      readonly confirmation: {
+        readonly confirmToken: string;
+        readonly confirmationId: string;
+        readonly originatingPreviewInvocationId: string;
+        readonly previewDigest: `sha256:${string}`;
+        readonly previewRef: string;
+        readonly commitArgsDigest: `sha256:${string}`;
+        readonly expiresAtMs: number;
+      };
+      readonly auditDelivery?: "recorded" | "unavailable";
+      readonly auditError?: {
+        readonly detailCode: string;
+        readonly message: string;
+      };
+    }
+  | {
       readonly ok: false;
       readonly state: "failed";
       readonly toolName: string;
@@ -133,6 +173,8 @@ export type GatewayDispatchOutcome =
           | "executor_failed"
           | "invalid_executor_result"
           | "invalid_invocation_context"
+          | "confirmation_denied"
+          | "confirmation_unavailable"
           | "recovery_blocked"
           | "recovery_protocol_fault"
           | "recovery_unavailable"
@@ -150,6 +192,11 @@ export type GatewayDispatchOutcome =
         readonly message: string;
       };
     };
+
+type GatewaySuccessfulDispatchOutcome = Extract<
+  GatewayDispatchOutcome,
+  { readonly ok: true }
+>;
 
 export type { GatewayInvocationContext } from "./invocationContext.js";
 
@@ -199,6 +246,58 @@ function isJsonObject(value: unknown): value is GatewayJsonObject {
   } catch {
     return false;
   }
+}
+
+const RAW_CODE_STATIC_PREVIEW_REASON =
+  "safe_wrapper_rejected_write_looking_code" as const;
+
+function isAuthorizableRawCodePreview(
+  outcome: GatewayDispatchOutcome,
+): outcome is GatewaySuccessfulDispatchOutcome {
+  if (!outcome.ok || !isJsonObject(outcome.result)) {
+    return false;
+  }
+  const result = outcome.result;
+  if (outcome.state === "completed") {
+    return (
+      result.success === true &&
+      result.guarded === false &&
+      result.state === "completed" &&
+      result.action === "send_code_to_revit_safe" &&
+      result.intent === "writePreview" &&
+      Object.prototype.hasOwnProperty.call(result, "response")
+    );
+  }
+  if (outcome.state !== "guarded") {
+    return false;
+  }
+  const writePatterns = result.writePatterns;
+  return (
+    outcome.guardedReason === RAW_CODE_STATIC_PREVIEW_REASON &&
+    result.success === false &&
+    result.guarded === true &&
+    result.state === "guarded" &&
+    result.action === "send_code_to_revit_safe_preflight" &&
+    result.reason === RAW_CODE_STATIC_PREVIEW_REASON &&
+    result.safetyReason === RAW_CODE_STATIC_PREVIEW_REASON &&
+    Array.isArray(writePatterns) &&
+    writePatterns.length > 0 &&
+    writePatterns.every(
+      (pattern) => typeof pattern === "string" && pattern.length > 0,
+    )
+  );
+}
+
+function isAuthorizableConfirmationPreview(
+  tool: GatewayToolRecord,
+  outcome: GatewayDispatchOutcome,
+): outcome is GatewaySuccessfulDispatchOutcome {
+  if (!outcome.ok) {
+    return false;
+  }
+  return tool.executorMethod === "send_code_to_revit"
+    ? isAuthorizableRawCodePreview(outcome)
+    : outcome.state === "completed";
 }
 
 function errorMessage(error: unknown): string {
@@ -465,6 +564,10 @@ export interface GatewayDispatcherOptions {
   readonly newInvocationId?: () => string;
   readonly newAttemptId?: () => string;
   readonly newEventId?: () => string;
+  readonly confirmationAuthority?: Pick<
+    GatewayConfirmationAuthority,
+    "createPendingAction"
+  >;
   readonly recoveryAuthority: Pick<
     GatewayRecoveryAuthority,
     | "acquireInvocationWindow"
@@ -490,6 +593,28 @@ interface DispatchAuditInput {
   readonly recoveryHoldIds?: readonly string[];
   readonly recoveryResolutionIds?: readonly string[];
   readonly executorReached: boolean;
+  readonly confirmation?: {
+    readonly decision: "preview" | "confirmed" | "denied";
+    readonly confirmationId: string | null;
+    readonly originatingPreviewInvocationId: string | null;
+    readonly previewDigest?: `sha256:${string}` | null;
+    readonly previewRef?: string | null;
+    readonly commitArgsDigest?: `sha256:${string}` | null;
+    readonly reason?: string | null;
+  };
+}
+
+export interface GatewayDispatchRequest {
+  readonly toolName: string;
+  readonly args: unknown;
+  readonly auth: AuthContext;
+  readonly mcpSessionId: string;
+  /** Stable confirmation authority when transport requests are stateless. */
+  readonly confirmationSessionId?: string;
+  readonly confirmation?: GatewayConfirmationControl;
+  readonly resolveRoute: (
+    auth: AuthContext,
+  ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
 }
 
 interface DispatchAuditIdentity {
@@ -501,6 +626,7 @@ interface DispatchAuditIdentity {
   };
   readonly session: {
     readonly sessionId: string;
+    readonly mcpSessionId: string | null;
     readonly oauthClientId: string | null;
   };
 }
@@ -538,6 +664,7 @@ function snapshotAuditIdentity(auth: AuthContext): DispatchAuditIdentity {
     }),
     session: Object.freeze({
       sessionId: auth.session.sessionId,
+      mcpSessionId: auth.session.mcpSessionId,
       oauthClientId: auth.session.oauthClientId,
     }),
   });
@@ -622,8 +749,8 @@ function preparedMutationAuthorityError(input: {
     if (
       binding.rsid !== context.rsid ||
       binding.policy.class !== tool.policyClass ||
-      binding.policy.decision !== "auto" ||
-      binding.policy.confirmation_id !== null ||
+      binding.policy.decision !== context.policyDecision ||
+      binding.policy.confirmation_id !== context.confirmationId ||
       binding.verification !== null ||
       (binding.recoveryClearances ?? []).length !== 0
     ) {
@@ -655,6 +782,9 @@ export class GatewayDispatcher {
   readonly #newAttemptId: (timestampMs: number) => string;
   readonly #newEventId: (timestampMs: number) => string;
   readonly #recoveryAuthority: GatewayDispatcherOptions["recoveryAuthority"];
+  readonly #confirmationAuthority:
+    | GatewayDispatcherOptions["confirmationAuthority"]
+    | undefined;
   readonly #rsidTails = new Map<string, Promise<void>>();
   #eventSequence = 0;
 
@@ -693,47 +823,473 @@ export class GatewayDispatcher {
         ? gatewayUuidV7
         : () => configuredEventId();
     this.#recoveryAuthority = options.recoveryAuthority;
+    this.#confirmationAuthority = options.confirmationAuthority;
   }
 
   public registry(): GatewayToolRegistry {
     return this.#registry;
   }
 
-  public async dispatch(input: {
-    readonly toolName: string;
-    readonly args: unknown;
-    readonly auth: AuthContext;
-    readonly mcpSessionId: string;
-    readonly resolveRoute: (
-      auth: AuthContext,
-    ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
-  }): Promise<GatewayDispatchOutcome> {
+  public async dispatch(
+    input: GatewayDispatchRequest,
+  ): Promise<GatewayDispatchOutcome> {
     const tool = this.#registry.get(input.toolName);
+    if (
+      tool?.policyClass === "confirm" &&
+      input.confirmation === undefined
+    ) {
+      return this.#dispatchConfirmationPreview(input, tool);
+    }
     return tool?.mutationScopePolicy === "session" ||
       tool?.mutationScopePolicy === "document"
       ? this.#dispatchMutation(input, tool)
       : this.#dispatchRead(input);
   }
 
-  async #dispatchMutation(
-    input: {
-      readonly toolName: string;
-      readonly args: unknown;
-      readonly auth: AuthContext;
-      readonly mcpSessionId: string;
-      readonly resolveRoute: (
-        auth: AuthContext,
-      ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
-    },
+  async #dispatchConfirmationPreview(
+    input: GatewayDispatchRequest,
     tool: GatewayToolRecord,
   ): Promise<GatewayDispatchOutcome> {
     const startedAtMs = this.#clock();
     const attemptId = this.#newAttemptId(startedAtMs);
     const auth = snapshotAuthContext(input.auth);
     const auditIdentity = snapshotAuditIdentity(auth);
+    const confirmationSessionId = confirmationSessionIdFor(
+      auth,
+      input.confirmationSessionId ?? input.mcpSessionId,
+    );
+    let route: GatewayInvocationRoute | undefined;
+    let authority: GatewayInvocationAuthority | undefined;
+    const previewAuditState: { paramsDigest?: string } = {};
+
+    const finishFailure = async (failure: {
+      readonly code: Extract<
+        GatewayDispatchOutcome,
+        { readonly ok: false }
+      >["error"]["code"];
+      readonly message: string;
+      readonly detailCode?: string;
+      readonly invocationId?: string;
+      readonly context?: GatewayInvocationContext;
+      readonly executorReached?: boolean;
+      readonly confirmation?: DispatchAuditInput["confirmation"];
+    }): Promise<GatewayDispatchOutcome> => {
+      const outcome: GatewayDispatchOutcome = {
+        ok: false,
+        state: "failed",
+        toolName: input.toolName,
+        requestId: failure.invocationId ?? attemptId,
+        error: {
+          code: failure.code,
+          ...(failure.detailCode === undefined
+            ? {}
+            : { detailCode: failure.detailCode }),
+          message: failure.message,
+        },
+        executorReached: failure.executorReached ?? false,
+      };
+      return this.#finish(outcome, {
+        auth: auditIdentity,
+        route,
+        mcpSessionId: input.mcpSessionId,
+        toolName: input.toolName,
+        invocationId: failure.invocationId ?? null,
+        attemptId,
+        startedAtMs,
+        tool,
+        context: failure.context,
+        authority,
+        paramsDigest: previewAuditState.paramsDigest,
+        executorReached: failure.executorReached ?? false,
+        confirmation: failure.confirmation,
+      });
+    };
+
+    if (!isJsonObject(input.args)) {
+      return finishFailure({
+        code: "invalid_arguments",
+        message: "tool arguments must be a finite JSON object",
+      });
+    }
+    const parsedArgs = (() => {
+      try {
+        return z.object(tool.inputSchema).strict().safeParse(input.args);
+      } catch {
+        return null;
+      }
+    })();
+    if (
+      parsedArgs === null ||
+      !parsedArgs.success ||
+      !isJsonObject(parsedArgs.data)
+    ) {
+      await this.#emitConfirmationEvent({
+        auth: auditIdentity,
+        confirmationSessionId,
+        status: "denied",
+        tool,
+        confirmationId: null,
+        originatingPreviewInvocationId: null,
+        commitInvocationId: null,
+        commitArgsDigest: null,
+        previewDigest: null,
+        previewRef: null,
+        reason: "invalid_arguments",
+      });
+      return finishFailure({
+        code: "invalid_arguments",
+        message:
+          parsedArgs === null
+            ? "registry schema validation did not complete"
+            : "tool arguments do not match the registry schema",
+        confirmation: {
+          decision: "denied",
+          confirmationId: null,
+          originatingPreviewInvocationId: null,
+          reason: "invalid_arguments",
+        },
+      });
+    }
+    const projection = buildConfirmationPreviewProjection(
+      tool,
+      parsedArgs.data,
+    );
+    if (!projection.ok) {
+      await this.#emitConfirmationEvent({
+        auth: auditIdentity,
+        confirmationSessionId,
+        status: "denied",
+        tool,
+        confirmationId: null,
+        originatingPreviewInvocationId: null,
+        commitInvocationId: null,
+        commitArgsDigest: null,
+        previewDigest: null,
+        previewRef: null,
+        reason: projection.reason,
+      });
+      return finishFailure({
+        code: "confirmation_denied",
+        detailCode: projection.reason,
+        message: "confirmation policy denied the request",
+        confirmation: {
+          decision: "denied",
+          confirmationId: null,
+          originatingPreviewInvocationId: null,
+          reason: projection.reason,
+        },
+      });
+    }
+    previewAuditState.paramsDigest = makeParamsDigest(
+      projection.previewArgs as JsonValue,
+    );
+
+    try {
+      route = snapshotInvocationRoute(await input.resolveRoute(auth));
+      authority = deriveGatewayInvocationAuthority({
+        auth,
+        route,
+        mcpSessionId: input.mcpSessionId,
+        mutationScopePolicy: tool.mutationScopePolicy,
+        startedAtMs,
+      });
+    } catch (error) {
+      return finishFailure({
+        code: "invalid_invocation_context",
+        detailCode:
+          error instanceof GatewayInvocationContextError
+            ? error.code
+            : "route_resolution_failed",
+        message: errorMessage(error),
+      });
+    }
+    if (!authority.mutating || authority.mutationScope === null) {
+      return finishFailure({
+        code: "confirmation_unavailable",
+        detailCode: "confirm_tool_has_no_mutation_scope",
+        message: "confirm-class tool has no authoritative mutation scope",
+      });
+    }
+    const confirmationAuthority = this.#confirmationAuthority;
+    const executor = this.#executors.get(tool.executor);
+    if (confirmationAuthority === undefined) {
+      return finishFailure({
+        code: "confirmation_unavailable",
+        detailCode: "confirmation_authority_unavailable",
+        message: "durable confirmation authority is unavailable",
+      });
+    }
+    if (executor?.previewConfirmation === undefined) {
+      return finishFailure({
+        code: "confirmation_unavailable",
+        detailCode: "confirmation_preview_unavailable",
+        message: "confirm-class tool has no safe preview executor",
+      });
+    }
+
+    return this.#serialize(route.rsid, async () => {
+      const recovery = this.#recoveryAuthority;
+      const window = await recovery.acquireInvocationWindow({
+        tenantId: auth.actor.tenantId,
+        rsid: route!.rsid,
+        attemptId,
+      });
+      if (window.kind === "blocked") {
+        return finishFailure({
+          code: "recovery_blocked",
+          detailCode: "dispatch_window_active",
+          message: `another invocation owns the durable rsid window: ${window.activeAttemptId}`,
+        });
+      }
+      if (window.kind === "protocol_fault") {
+        return finishFailure({
+          code: "recovery_protocol_fault",
+          detailCode: window.reason,
+          message: `durable invocation window rejected: ${window.reason}`,
+        });
+      }
+      if (window.kind === "unavailable") {
+        return finishFailure({
+          code: "recovery_unavailable",
+          detailCode: window.code,
+          message: window.message,
+        });
+      }
+
+      try {
+        const invocationId = this.#newInvocationId(this.#clock());
+        let context: GatewayInvocationContext;
+        try {
+          context = createGatewayInvocationContext({
+            auth,
+            route: route!,
+            mcpSessionId: input.mcpSessionId,
+            invocationId,
+            toolName: tool.name,
+            toolVersion: tool.version,
+            policyClass: tool.policyClass,
+            policyDecision: "preview",
+            mutationScopePolicy: "none",
+            executor: tool.executor,
+            args: projection.previewArgs,
+            startedAtMs,
+          });
+        } catch (error) {
+          return finishFailure({
+            code: "invalid_invocation_context",
+            detailCode:
+              error instanceof GatewayInvocationContextError
+                ? error.code
+                : undefined,
+            message: errorMessage(error),
+            invocationId,
+          });
+        }
+        const request: GatewayExecutorRequest = {
+          toolName: tool.name,
+          toolVersion: tool.version,
+          executorMethod: projection.previewExecutorMethod,
+          policyClass: tool.policyClass,
+          mutationScopePolicy: "none",
+          args: projection.previewArgs,
+          context,
+        };
+        let rawPreview: Awaited<
+          ReturnType<NonNullable<GatewayExecutor["previewConfirmation"]>>
+        >;
+        try {
+          rawPreview = await runWithGatewayInvocationContext(context, () =>
+            executor.previewConfirmation!(request),
+          );
+        } catch (error) {
+          rawPreview = {
+            state: "failed",
+            error: {
+              code: "confirmation_preview_failed",
+              message: errorMessage(error),
+            },
+          };
+        }
+        const previewOutcome = normalizeExecutorOutcome({
+          tool,
+          requestId: invocationId,
+          executorOutcome: rawPreview,
+          threw: false,
+        });
+        const previewIsAuthorizable = isAuthorizableConfirmationPreview(
+          tool,
+          previewOutcome,
+        );
+        if (!previewIsAuthorizable) {
+          return this.#finish(previewOutcome, {
+            auth: auditIdentity,
+            route,
+            mcpSessionId: input.mcpSessionId,
+            toolName: input.toolName,
+            invocationId,
+            attemptId,
+            startedAtMs,
+            tool,
+            context,
+            authority,
+            paramsDigest: previewAuditState.paramsDigest,
+            executorReached: true,
+            confirmation: {
+              decision: "preview",
+              confirmationId: null,
+              originatingPreviewInvocationId: invocationId,
+              commitArgsDigest: projection.commitArgsDigest,
+              reason: "preview_not_authorizable",
+            },
+          });
+        }
+
+        const previewDigest = makeParamsDigest(
+          previewOutcome.result as JsonValue,
+        );
+        const candidatePreviewRef = rawPreview.previewRef;
+        const previewRef =
+          typeof candidatePreviewRef === "string" &&
+          candidatePreviewRef.length > 0 &&
+          candidatePreviewRef.length <= 2_048
+            ? candidatePreviewRef
+            : `inline:${previewDigest}`;
+        const issued = await confirmationAuthority.createPendingAction({
+          tenantId: auth.actor.tenantId,
+          principalKey: auth.principalKey,
+          userId: auth.actor.userId,
+          gatewaySessionId: auth.session.sessionId,
+          confirmationSessionId,
+          oauthClientId: auth.session.oauthClientId,
+          rsid: route!.rsid,
+          toolName: tool.name,
+          toolVersion: tool.version,
+          commitArgsDigest: projection.commitArgsDigest,
+          mutationScope: authority!.mutationScope!,
+          documentIdentity: authority!.documentIdentity,
+          originatingPreviewInvocationId: invocationId,
+          previewDigest,
+          previewRef,
+        });
+        if (issued.kind !== "issued") {
+          return finishFailure({
+            code: "confirmation_unavailable",
+            detailCode: issued.code,
+            message: issued.message,
+            invocationId,
+            context,
+            executorReached: true,
+            confirmation: {
+              decision: "preview",
+              confirmationId: null,
+              originatingPreviewInvocationId: invocationId,
+              previewDigest,
+              previewRef,
+              commitArgsDigest: projection.commitArgsDigest,
+              reason: "pending_action_not_durable",
+            },
+          });
+        }
+        const requestedAudit = await this.#emitConfirmationEvent({
+          auth: auditIdentity,
+          confirmationSessionId,
+          status: "requested",
+          tool,
+          confirmationId: issued.pendingAction.confirmationId,
+          originatingPreviewInvocationId: invocationId,
+          commitInvocationId: null,
+          commitArgsDigest: projection.commitArgsDigest,
+          previewDigest,
+          previewRef,
+          reason: null,
+        });
+        if (!requestedAudit.ok) {
+          return finishFailure({
+            code: "audit_unavailable",
+            detailCode: requestedAudit.detailCode,
+            message: requestedAudit.message,
+            invocationId,
+            context,
+            executorReached: true,
+            confirmation: {
+              decision: "preview",
+              confirmationId: issued.pendingAction.confirmationId,
+              originatingPreviewInvocationId: invocationId,
+              previewDigest,
+              previewRef,
+              commitArgsDigest: projection.commitArgsDigest,
+              reason: "requested_audit_unavailable",
+            },
+          });
+        }
+        const outcome: GatewayDispatchOutcome = Object.freeze({
+          ok: true as const,
+          state: "confirmation_required" as const,
+          toolName: tool.name,
+          toolVersion: tool.version,
+          executor: tool.executor,
+          requestId: invocationId,
+          result: previewOutcome.result,
+          confirmation: Object.freeze({
+            confirmToken: issued.confirmToken,
+            confirmationId: issued.pendingAction.confirmationId,
+            originatingPreviewInvocationId: invocationId,
+            previewDigest,
+            previewRef,
+            commitArgsDigest: projection.commitArgsDigest,
+            expiresAtMs: issued.pendingAction.expiresAtMs,
+          }),
+        });
+        return this.#finish(outcome, {
+          auth: auditIdentity,
+          route,
+          mcpSessionId: input.mcpSessionId,
+          toolName: input.toolName,
+          invocationId,
+          attemptId,
+          startedAtMs,
+          tool,
+          context,
+          authority,
+          paramsDigest: previewAuditState.paramsDigest,
+          executorReached: true,
+          confirmation: {
+            decision: "preview",
+            confirmationId: issued.pendingAction.confirmationId,
+            originatingPreviewInvocationId: invocationId,
+            previewDigest,
+            previewRef,
+            commitArgsDigest: projection.commitArgsDigest,
+            reason: null,
+          },
+        });
+      } finally {
+        await recovery.releaseInvocationWindow({
+          tenantId: auth.actor.tenantId,
+          rsid: route!.rsid,
+          attemptId,
+        });
+      }
+    });
+  }
+
+  async #dispatchMutation(
+    input: GatewayDispatchRequest,
+    tool: GatewayToolRecord,
+  ): Promise<GatewayDispatchOutcome> {
+    const startedAtMs = this.#clock();
+    const attemptId = this.#newAttemptId(startedAtMs);
+    const auth = snapshotAuthContext(input.auth);
+    const auditIdentity = snapshotAuditIdentity(auth);
+    const confirmationSessionId = confirmationSessionIdFor(
+      auth,
+      input.confirmationSessionId ?? input.mcpSessionId,
+    );
     let route: GatewayInvocationRoute | undefined;
     let authority: GatewayInvocationAuthority | undefined;
     let paramsDigest: string | undefined;
+    let confirmationId: string | null = null;
+    let commitArgsDigest: `sha256:${string}` | null = null;
     try {
       if (isJsonValue(input.args)) {
         paramsDigest = makeParamsDigest(input.args as JsonValue);
@@ -754,6 +1310,7 @@ export class GatewayDispatcher {
       readonly context?: GatewayInvocationContext;
       readonly recoveryHoldIds?: readonly string[];
       readonly recoveryResolutionIds?: readonly string[];
+      readonly confirmation?: DispatchAuditInput["confirmation"];
     }): Promise<GatewayDispatchOutcome> => {
       const requestId = failure.invocationId ?? attemptId;
       const outcome: GatewayDispatchOutcome = {
@@ -761,9 +1318,7 @@ export class GatewayDispatcher {
         state: "failed",
         toolName: input.toolName,
         requestId,
-        ...(failure.executorReached === undefined
-          ? {}
-          : { executorReached: failure.executorReached }),
+        executorReached: failure.executorReached ?? false,
         error: {
           code: failure.code,
           ...(failure.detailCode === undefined
@@ -787,13 +1342,47 @@ export class GatewayDispatcher {
         recoveryHoldIds: failure.recoveryHoldIds ?? [],
         recoveryResolutionIds: failure.recoveryResolutionIds ?? [],
         executorReached: failure.executorReached ?? false,
+        confirmation: failure.confirmation,
       });
+    };
+
+    const auditInvalidConfirmationArguments = async (): Promise<
+      DispatchAuditInput["confirmation"] | undefined
+    > => {
+      if (tool.policyClass !== "confirm" || input.confirmation === undefined) {
+        return undefined;
+      }
+      const suppliedConfirmationId = confirmationIdFromToken(
+        input.confirmation.confirmToken,
+      );
+      await this.#emitConfirmationEvent({
+        auth: auditIdentity,
+        confirmationSessionId,
+        status: "denied",
+        tool,
+        confirmationId: suppliedConfirmationId,
+        originatingPreviewInvocationId:
+          input.confirmation.originatingPreviewInvocationId,
+        commitInvocationId: null,
+        commitArgsDigest: null,
+        previewDigest: null,
+        previewRef: null,
+        reason: "invalid_arguments",
+      });
+      return {
+        decision: "denied",
+        confirmationId: suppliedConfirmationId,
+        originatingPreviewInvocationId:
+          input.confirmation.originatingPreviewInvocationId,
+        reason: "invalid_arguments",
+      };
     };
 
     if (!isJsonObject(input.args)) {
       return finishFailure({
         code: "invalid_arguments",
         message: "tool arguments must be a finite JSON object",
+        confirmation: await auditInvalidConfirmationArguments(),
       });
     }
     const parsedArgs = (() => {
@@ -807,12 +1396,14 @@ export class GatewayDispatcher {
       return finishFailure({
         code: "invalid_arguments",
         message: "registry schema validation did not complete",
+        confirmation: await auditInvalidConfirmationArguments(),
       });
     }
     if (!parsedArgs.success || !isJsonObject(parsedArgs.data)) {
       return finishFailure({
         code: "invalid_arguments",
         message: "tool arguments do not match the registry schema",
+        confirmation: await auditInvalidConfirmationArguments(),
       });
     }
     const parsedJsonArgs: GatewayJsonObject = parsedArgs.data;
@@ -822,7 +1413,86 @@ export class GatewayDispatcher {
       return finishFailure({
         code: "invalid_arguments",
         message: "tool arguments cannot be canonically digested",
+        confirmation: await auditInvalidConfirmationArguments(),
       });
+    }
+    if (tool.policyClass === "confirm") {
+      if (input.confirmation === undefined) {
+        return finishFailure({
+          code: "confirmation_denied",
+          detailCode: "confirmation_proof_missing",
+          message: "confirmation policy denied the request",
+        });
+      }
+      const projection = buildConfirmationCommitProjection(
+        tool,
+        parsedJsonArgs,
+      );
+      if (!projection.ok) {
+        await this.#emitConfirmationEvent({
+          auth: auditIdentity,
+          confirmationSessionId,
+          status: "denied",
+          tool,
+          confirmationId: confirmationIdFromToken(
+            input.confirmation.confirmToken,
+          ),
+          originatingPreviewInvocationId:
+            input.confirmation.originatingPreviewInvocationId,
+          commitInvocationId: null,
+          commitArgsDigest: null,
+          previewDigest: null,
+          previewRef: null,
+          reason: projection.reason,
+        });
+        return finishFailure({
+          code: "confirmation_denied",
+          detailCode: projection.reason,
+          message: "confirmation policy denied the request",
+          confirmation: {
+            decision: "denied",
+            confirmationId: confirmationIdFromToken(
+              input.confirmation.confirmToken,
+            ),
+            originatingPreviewInvocationId:
+              input.confirmation.originatingPreviewInvocationId,
+            reason: projection.reason,
+          },
+        });
+      }
+      confirmationId = confirmationIdFromToken(
+        input.confirmation.confirmToken,
+      );
+      commitArgsDigest = projection.commitArgsDigest;
+      if (confirmationId === null) {
+        await this.#emitConfirmationEvent({
+          auth: auditIdentity,
+          confirmationSessionId,
+          status: "denied",
+          tool,
+          confirmationId: null,
+          originatingPreviewInvocationId:
+            input.confirmation.originatingPreviewInvocationId,
+          commitInvocationId: null,
+          commitArgsDigest,
+          previewDigest: null,
+          previewRef: null,
+          reason: "malformed_token",
+        });
+        return finishFailure({
+          code: "confirmation_denied",
+          detailCode: "malformed_token",
+          message: "confirmation policy denied the request",
+          confirmation: {
+            decision: "denied",
+            confirmationId: null,
+            originatingPreviewInvocationId:
+              input.confirmation.originatingPreviewInvocationId,
+            commitArgsDigest,
+            reason: "malformed_token",
+          },
+        });
+      }
     }
 
     try {
@@ -852,10 +1522,50 @@ export class GatewayDispatcher {
           "mutating registry row produced no authoritative mutation scope",
       });
     }
-    if (tool.policyClass !== "auto") {
+    if (tool.policyClass === "gated") {
+      if (input.confirmation !== undefined) {
+        const suppliedConfirmationId = confirmationIdFromToken(
+          input.confirmation.confirmToken,
+        );
+        await this.#emitConfirmationEvent({
+          auth: auditIdentity,
+          confirmationSessionId,
+          status: "denied",
+          tool,
+          confirmationId: suppliedConfirmationId,
+          originatingPreviewInvocationId:
+            input.confirmation.originatingPreviewInvocationId,
+          commitInvocationId: null,
+          commitArgsDigest: null,
+          previewDigest: null,
+          previewRef: null,
+          reason: "gated_in_channel_approval_forbidden",
+        });
+        return finishFailure({
+          code: "policy_enforcement_unavailable",
+          detailCode: "gated_in_channel_approval_forbidden",
+          message:
+            "gated tools require an out-of-band role-checked approval authority",
+          confirmation: {
+            decision: "denied",
+            confirmationId: suppliedConfirmationId,
+            originatingPreviewInvocationId:
+              input.confirmation.originatingPreviewInvocationId,
+            reason: "gated_in_channel_approval_forbidden",
+          },
+        });
+      }
       return finishFailure({
         code: "policy_enforcement_unavailable",
-        message: `policy middleware is not available for ${tool.policyClass} tools`,
+        message:
+          "gated tools require an out-of-band role-checked approval authority",
+      });
+    }
+    if (tool.policyClass === "auto" && input.confirmation !== undefined) {
+      return finishFailure({
+        code: "confirmation_denied",
+        detailCode: "confirmation_fields_not_allowed",
+        message: "confirmation control is not accepted for an auto tool",
       });
     }
     const executor = this.#executors.get(tool.executor);
@@ -935,6 +1645,13 @@ export class GatewayDispatcher {
             toolName: tool.name,
             toolVersion: tool.version,
             policyClass: tool.policyClass,
+            policyDecision:
+              tool.policyClass === "confirm" ? "confirmed" : "auto",
+            confirmationId,
+            originatingPreviewInvocationId:
+              tool.policyClass === "confirm"
+                ? input.confirmation!.originatingPreviewInvocationId
+                : null,
             mutationScopePolicy: tool.mutationScopePolicy,
             executor: tool.executor,
             args: parsedJsonArgs,
@@ -1010,11 +1727,72 @@ export class GatewayDispatcher {
           connectionId: draft.connectionId,
           envelope: draft.envelope,
           expected: draft.expected,
+          ...(tool.policyClass === "confirm"
+            ? {
+                confirmationProof: {
+                  confirmToken: input.confirmation!.confirmToken,
+                  originatingPreviewInvocationId:
+                    input.confirmation!.originatingPreviewInvocationId,
+                  commitInvocationId: invocationId,
+                  binding: {
+                    tenantId: auth.actor.tenantId,
+                    principalKey: auth.principalKey,
+                    userId: auth.actor.userId,
+                    gatewaySessionId: auth.session.sessionId,
+                    confirmationSessionId,
+                    oauthClientId: auth.session.oauthClientId,
+                    rsid: route!.rsid,
+                    toolName: tool.name,
+                    toolVersion: tool.version,
+                    commitArgsDigest: commitArgsDigest!,
+                    mutationScope: authority!.mutationScope!,
+                    documentIdentity: authority!.documentIdentity,
+                  },
+                },
+              }
+            : {}),
         });
         if (
           prepared.kind !== "prepared" &&
           prepared.kind !== "already_prepared"
         ) {
+          if (prepared.kind === "confirmation_rejected") {
+            const status =
+              prepared.reason === "expired" ? "expired" : "denied";
+            await this.#emitConfirmationEvent({
+              auth: auditIdentity,
+              confirmationSessionId,
+              status,
+              tool,
+              confirmationId: prepared.confirmationId,
+              originatingPreviewInvocationId:
+                input.confirmation!.originatingPreviewInvocationId,
+              commitInvocationId: invocationId,
+              commitArgsDigest,
+              previewDigest:
+                prepared.pendingAction?.previewDigest ?? null,
+              previewRef: prepared.pendingAction?.previewRef ?? null,
+              reason: prepared.reason,
+            });
+            return finishFailure({
+              code: "confirmation_denied",
+              detailCode: prepared.reason,
+              message: "confirmation policy denied the request",
+              invocationId,
+              context,
+              confirmation: {
+                decision: "denied",
+                confirmationId: prepared.confirmationId,
+                originatingPreviewInvocationId:
+                  input.confirmation!.originatingPreviewInvocationId,
+                previewDigest:
+                  prepared.pendingAction?.previewDigest ?? null,
+                previewRef: prepared.pendingAction?.previewRef ?? null,
+                commitArgsDigest,
+                reason: prepared.reason,
+              },
+            });
+          }
           if (prepared.kind === "blocked") {
             return finishFailure({
               code: "recovery_blocked",
@@ -1054,6 +1832,39 @@ export class GatewayDispatcher {
         const recoveryResolutionIds = pending.recoveryClearances.map(
           (clearance) => clearance.resolution_id,
         );
+        if (tool.policyClass === "confirm") {
+          const approvalAudit = await this.#emitConfirmationEvent({
+            auth: auditIdentity,
+            confirmationSessionId,
+            status: "approved",
+            tool,
+            confirmationId,
+            originatingPreviewInvocationId:
+              input.confirmation!.originatingPreviewInvocationId,
+            commitInvocationId: invocationId,
+            commitArgsDigest,
+            previewDigest: null,
+            previewRef: null,
+            reason: null,
+          });
+          if (!approvalAudit.ok) {
+            return finishFailure({
+              code: "audit_unavailable",
+              detailCode: approvalAudit.detailCode,
+              message: approvalAudit.message,
+              invocationId,
+              context,
+              confirmation: {
+                decision: "confirmed",
+                confirmationId,
+                originatingPreviewInvocationId:
+                  input.confirmation!.originatingPreviewInvocationId,
+                commitArgsDigest,
+                reason: "approval_audit_unavailable",
+              },
+            });
+          }
+        }
         try {
           await runWithGatewayInvocationContext(context, () =>
             executor.executePreparedMutation!(request, pending),
@@ -1144,6 +1955,17 @@ export class GatewayDispatcher {
           ].sort(),
           recoveryResolutionIds,
           executorReached: true,
+          confirmation:
+            tool.policyClass === "confirm"
+              ? {
+                  decision: "confirmed",
+                  confirmationId,
+                  originatingPreviewInvocationId:
+                    input.confirmation!.originatingPreviewInvocationId,
+                  commitArgsDigest,
+                  reason: null,
+                }
+              : undefined,
         });
       } finally {
         // A pending durable dispatch intentionally keeps the window fenced.
@@ -1158,19 +1980,17 @@ export class GatewayDispatcher {
   }
 
   /** Effect-classified non-mutating path. Never call this for a mutating registry row. */
-  async #dispatchRead(input: {
-    readonly toolName: string;
-    readonly args: unknown;
-    readonly auth: AuthContext;
-    readonly mcpSessionId: string;
-    readonly resolveRoute: (
-      auth: AuthContext,
-    ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
-  }): Promise<GatewayDispatchOutcome> {
+  async #dispatchRead(
+    input: GatewayDispatchRequest,
+  ): Promise<GatewayDispatchOutcome> {
     const startedAtMs = this.#clock();
     const attemptId = this.#newAttemptId(startedAtMs);
     const invocationId = this.#newInvocationId(startedAtMs);
     const auth = snapshotAuthContext(input.auth);
+    const confirmationSessionId = confirmationSessionIdFor(
+      auth,
+      input.confirmationSessionId ?? input.mcpSessionId,
+    );
     let paramsDigest: string | undefined;
     try {
       if (isJsonValue(input.args)) {
@@ -1206,6 +2026,52 @@ export class GatewayDispatcher {
         tool,
         context: undefined,
         executorReached: false,
+      });
+    }
+    if (input.confirmation !== undefined && tool.policyClass !== "confirm") {
+      await this.#emitConfirmationEvent({
+        auth: auditBase.auth,
+        confirmationSessionId,
+        status: "denied",
+        tool,
+        confirmationId: confirmationIdFromToken(
+          input.confirmation.confirmToken,
+        ),
+        originatingPreviewInvocationId:
+          input.confirmation.originatingPreviewInvocationId,
+        commitInvocationId: invocationId,
+        commitArgsDigest: null,
+        previewDigest: null,
+        previewRef: null,
+        reason: "confirmation_fields_not_allowed",
+      });
+      const outcome: GatewayDispatchOutcome = {
+        ok: false,
+        state: "failed",
+        toolName: input.toolName,
+        requestId: invocationId,
+        error: {
+          code: "confirmation_denied",
+          detailCode: "confirmation_fields_not_allowed",
+          message: "confirmation control is not accepted for this tool",
+        },
+        executorReached: false,
+      };
+      return this.#finish(outcome, {
+        ...auditBase,
+        route: undefined,
+        tool,
+        context: undefined,
+        executorReached: false,
+        confirmation: {
+          decision: "denied",
+          confirmationId: confirmationIdFromToken(
+            input.confirmation.confirmToken,
+          ),
+          originatingPreviewInvocationId:
+            input.confirmation.originatingPreviewInvocationId,
+          reason: "confirmation_fields_not_allowed",
+        },
       });
     }
     if (!isJsonObject(input.args)) {
@@ -1511,6 +2377,84 @@ export class GatewayDispatcher {
     }
   }
 
+  async #emitConfirmationEvent(input: {
+    readonly auth: DispatchAuditIdentity;
+    readonly confirmationSessionId: string;
+    readonly status: "requested" | "approved" | "denied" | "expired";
+    readonly tool: GatewayToolRecord;
+    readonly confirmationId: string | null;
+    readonly originatingPreviewInvocationId: string | null;
+    readonly commitInvocationId: string | null;
+    readonly commitArgsDigest: `sha256:${string}` | null;
+    readonly previewDigest: `sha256:${string}` | null;
+    readonly previewRef: string | null;
+    readonly reason: string | null;
+  }): Promise<
+    | { readonly ok: true }
+    | {
+        readonly ok: false;
+        readonly detailCode: string;
+        readonly message: string;
+      }
+  > {
+    const recordedAtMs = this.#clock();
+    this.#eventSequence += 1;
+    const recordedAt = new Date(recordedAtMs).toISOString();
+    const event: GatewayEventEnvelope = Object.freeze({
+      schema: REVAGENT_EVENT_SCHEMA,
+      event_id: this.#newEventId(recordedAtMs),
+      event_type: "tool.confirmation",
+      occurred_at: recordedAt,
+      recorded_at: recordedAt,
+      tenant_id: input.auth.actor.tenantId,
+      source: this.#eventSource,
+      actor: Object.freeze({
+        type: "user" as const,
+        user_id: input.auth.actor.userId,
+      }),
+      session_id: input.auth.session.sessionId,
+      seq: this.#eventSequence,
+      payload: Object.freeze({
+        invocation_id:
+          input.commitInvocationId ?? input.originatingPreviewInvocationId,
+        state: input.status,
+        confirmation_id: input.confirmationId,
+        originating_preview_invocation_id:
+          input.originatingPreviewInvocationId,
+        commit_invocation_id: input.commitInvocationId,
+        principal_key: input.auth.principalKey,
+        actor_role: input.auth.actor.role,
+        gateway_session_id: input.auth.session.sessionId,
+        mcp_session_id: input.confirmationSessionId,
+        confirmation_session_id: input.confirmationSessionId,
+        oauth_client_id: input.auth.session.oauthClientId,
+        tool_name: input.tool.name,
+        tool_version: input.tool.version,
+        commit_args_digest: input.commitArgsDigest,
+        preview_digest: input.previewDigest,
+        preview_ref: input.previewRef,
+        reason: input.reason,
+        recorded_at_ms: recordedAtMs,
+      }),
+    });
+    try {
+      const emitted = await this.#eventSink.emit(event);
+      return emitted.ok
+        ? Object.freeze({ ok: true as const })
+        : Object.freeze({
+            ok: false as const,
+            detailCode: `${emitted.port}:${emitted.code}`,
+            message: errorMessage(emitted.message),
+          });
+    } catch (error) {
+      return Object.freeze({
+        ok: false as const,
+        detailCode: "event_sink:emit_exception",
+        message: errorMessage(error),
+      });
+    }
+  }
+
   async #finish(
     outcome: GatewayDispatchOutcome,
     input: DispatchAuditInput,
@@ -1534,6 +2478,20 @@ export class GatewayDispatcher {
       tool_version: input.context?.toolVersion ?? input.tool?.version ?? null,
       policy_class:
         input.context?.policyClass ?? input.tool?.policyClass ?? null,
+      policy_decision:
+        input.context?.policyDecision ?? input.confirmation?.decision ?? null,
+      confirmation_id:
+        input.context?.confirmationId ??
+        input.confirmation?.confirmationId ??
+        null,
+      originating_preview_invocation_id:
+        input.context?.originatingPreviewInvocationId ??
+        input.confirmation?.originatingPreviewInvocationId ??
+        null,
+      preview_digest: input.confirmation?.previewDigest ?? null,
+      preview_ref: input.confirmation?.previewRef ?? null,
+      commit_args_digest: input.confirmation?.commitArgsDigest ?? null,
+      confirmation_reason: input.confirmation?.reason ?? null,
       mutation_scope_policy:
         input.context?.mutationScopePolicy ??
         input.authority?.mutationScopePolicy ??
