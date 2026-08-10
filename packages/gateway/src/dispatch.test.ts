@@ -958,6 +958,46 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
     expect(harness.executionCount()).toBe(1);
   });
 
+  it("returns structured executor_unavailable for an APS-bound invocation", async () => {
+    const apsRecord: GatewayToolRecord = {
+      ...autoRecord,
+      name: "core.published.read",
+      executor: "aps",
+      executorMethod: "published_read",
+    };
+    const dispatcher = new GatewayDispatcher(
+      new GatewayToolRegistry([apsRecord]),
+      [],
+      {
+        eventSink: createCapturingEventSink(),
+        eventSource: {
+          component: "gateway-aps-seam-test",
+          version: "0.0.0-test",
+          instance: "aps-seam-test",
+        },
+        newInvocationId: () => "aps-invocation",
+        newEventId: () => "aps-event",
+        recoveryAuthority: createReadOnlyRecoveryAuthorityFixture(),
+      },
+    );
+
+    await expect(
+      dispatcher.dispatch(
+        dispatchInput(
+          { value: "ready" },
+          { toolName: apsRecord.name },
+        ),
+      ),
+    ).resolves.toMatchObject({
+      ok: false,
+      state: "failed",
+      error: {
+        code: "executor_unavailable",
+        message: "executor binding is unavailable: aps",
+      },
+    });
+  });
+
   it("rejects an unknown runtime executor outcome state", async () => {
     const harness = createDispatcher({
       execute: async () =>

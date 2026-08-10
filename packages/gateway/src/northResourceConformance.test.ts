@@ -87,6 +87,15 @@ describe("GW-9 north MCP artifact resources", () => {
           tool: row.executorMethod,
           module: "runtime" as const,
           terms: Object.freeze([]),
+          variants: Object.freeze([
+            Object.freeze({
+              plane: "live" as const,
+              executor: row.executor,
+              executorMethod: row.executorMethod,
+              schemaOverlay: null,
+              fidelityNotes: Object.freeze([]),
+            }),
+          ]),
         }),
       ],
       entitleAll,

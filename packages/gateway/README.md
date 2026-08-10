@@ -2,10 +2,32 @@
 
 This additive revAgent Gateway package retains the M0 transport spike and now
 contains the M2 north/registry/dispatch surface, the GW-1 through GW-3
-foundations it consumes, and the GW-4/GW-8/GW-10 vertical slices. It mirrors the
-existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
-mode). The Gateway package uses the split MCP TypeScript SDK v2 packages and
-Zod 4; frozen packages under `installer/**` retain their independent v1 pins.
+foundations it consumes, and the GW-4/GW-8/GW-10/GW-12/GW-13 vertical slices.
+It mirrors the existing runtime's TypeScript ESM conventions (`ES2022`,
+`NodeNext`, strict mode). The Gateway package uses the split MCP TypeScript SDK
+v2 packages and Zod 4; frozen packages under `installer/**` retain their
+independent v1 pins.
+
+## GW-13 readiness evidence
+
+`npm run readiness:gw13 --workspace @revagent/gateway` runs the deterministic
+server-observable halves of WP9 C01-C14 and writes
+`packages/gateway/artifacts/gw13-readiness.json`. Gateway CI uploads that JSON
+as an exact-head artifact. The report is deliberately `authoritative:false`:
+fixture identity cannot pass OAuth, hands-on client/UX/file/Revit observations
+remain WP9 work, and P6-T1 evidence may move from `passed` to `accepted` only by
+the milestone decision owner.
+
+The post-M3/M5 live-smoke command can be configuration-checked without making
+a network request:
+
+```powershell
+npm run smoke:gw13 --workspace @revagent/gateway -- --endpoint https://gateway.example/mcp --client selected-codex-desktop --client-build post-m3-m5 --target NET01 --token-env REVAGENT_GW13_SMOKE_TOKEN
+```
+
+Adding `--execute` performs only the server-observable north-MCP checks using
+the named environment variable; it never prints the bearer token and does not
+claim OAuth, client UX, file opening, or live-Revit acceptance.
 
 ## M2 north/registry/dispatch vertical slice
 
@@ -77,7 +99,8 @@ separate, numbered slice when the implementation-plan index reaches it.
 GW-10 is production-code MCP composition, not production OAuth. The handler
 accepts only an injected token verifier and requires an HTTPS protected-resource
 metadata URL. IdP/OIDC discovery, PKCE/DCR, JWKS rotation, and real production
-identity adapters remain M5; durable RBP ingress remains GW-12.
+identity adapters remain M5. GW-12 now supplies production WSS and provisioned
+HTTP/SSE RBP ingress through one durable bridge-session authority.
 The injected authenticator is contractually responsible for validating token
 signature, expiry, audience/resource, scopes, revocation, and tenant/user
 identity; the endpoint does not infer any of those from client claims.

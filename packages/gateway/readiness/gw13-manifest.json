@@ -1,0 +1,142 @@
+{
+  "schema": "revagent.gw13-readiness-manifest/v1",
+  "planRow": "GW-13",
+  "authority": "docs/implementation-plan/02-gateway-core.md",
+  "testFiles": [
+    "packages/gateway/src/confirmationAuthority.test.ts",
+    "packages/gateway/src/dispatch.test.ts",
+    "packages/gateway/src/entitledRegistry.test.ts",
+    "packages/gateway/src/executorPort.test.ts",
+    "packages/gateway/src/modeB.test.ts",
+    "packages/gateway/src/northMcpEndpoint.test.ts",
+    "packages/gateway/src/northModeAConformance.test.ts",
+    "packages/gateway/src/rbpIngress.test.ts",
+    "packages/gateway/src/recoveryAuthority.test.ts",
+    "packages/gateway/src/resourceAuthority.test.ts",
+    "packages/gateway/src/toolBindings.test.ts"
+  ],
+  "cases": [
+    {
+      "id": "C01",
+      "serverObservable": "A deterministic fake client opens a north session under fixture identity; the real Windows-client launch remains hands-on.",
+      "tests": ["keeps entitled discovery session-sticky and dispatches runtime/docs bindings"]
+    },
+    {
+      "id": "C02",
+      "serverObservable": "North registration binds authenticated principal, OAuth client and MCP session without treating fixture auth as OAuth proof.",
+      "tests": ["verifies signed requestState before dispatch and binds it to actor, Gateway session, and method"]
+    },
+    {
+      "id": "C03",
+      "serverObservable": "An RBP session resumes from durable state after reconnect; production token refresh and revoke remain outside fixture evidence.",
+      "tests": ["retains a pre-ACK clearance dispatch across restart and retransmits only its exact envelope"]
+    },
+    {
+      "id": "C04",
+      "serverObservable": "The entitled capability index/search/schema view activates allowed tools and denies catalog drift or forged policy.",
+      "tests": [
+        "keeps entitled discovery session-sticky and dispatches runtime/docs bindings",
+        "fails closed when callable catalog and registry disagree on mutation scope policy"
+      ]
+    },
+    {
+      "id": "C05",
+      "serverObservable": "A pinned read tool is discoverable and dispatches through the selected executor under fixture identity.",
+      "tests": ["exposes a registry index and dispatches one tool through the Bridge simulator"]
+    },
+    {
+      "id": "C06",
+      "serverObservable": "Confirm preview performs no executor write and returns a proposal tied to the originating invocation.",
+      "tests": ["previews without a write and commits exactly once under a new invocation with linked audits"]
+    },
+    {
+      "id": "C07",
+      "serverObservable": "The confirmation token is single-use, expires at the boundary and rejects unrelated preview bindings.",
+      "tests": [
+        "consumes once with CAS and remains replay-denied after restart",
+        "expires at the exact deadline and persists terminal expiry",
+        "rejects an unrelated preview without consuming the valid action"
+      ]
+    },
+    {
+      "id": "C08",
+      "serverObservable": "Dispatch, durable journal and audit correlation retain the exact invocation and accepted terminal evidence.",
+      "tests": [
+        "commits the exact envelope before external send and preserves one minted id through context, journal, and audit",
+        "exposes only committed bridge acceptance and terminal journal evidence"
+      ]
+    },
+    {
+      "id": "C09",
+      "serverObservable": "Progress is non-terminal; cancellation, reconnect and restart preserve one durable invocation without duplicate dispatch.",
+      "tests": [
+        "keeps progress non-terminal and maps an acknowledged cancellation without duplicate dispatch",
+        "resumes one active binding after restart and retransmits the durable outbox"
+      ]
+    },
+    {
+      "id": "C10",
+      "serverObservable": "Binary resource bytes are authorized by actor/session scope and denied after expiry or integrity mismatch.",
+      "tests": ["enforces actor, principal, tenant, session, expiry, and stored-byte integrity"]
+    },
+    {
+      "id": "C11",
+      "serverObservable": "Allowlisted upload bytes reach the executor without exposing a local path.",
+      "tests": ["uploads an allowlisted CSV and gives a file-aware executor bytes, never a path"]
+    },
+    {
+      "id": "C12",
+      "serverObservable": "A multi-file carrier publishes only after every sibling validates and remains scoped to the authorized session.",
+      "tests": [
+        "publishes a two-image RBP carrier only after all siblings validate",
+        "rejects stream collision, missing sibling, and digest mismatch without publishing refs"
+      ]
+    },
+    {
+      "id": "C13",
+      "serverObservable": "Outage/restart evidence remains durable and unavailable executors fail closed without an attempted dispatch.",
+      "tests": [
+        "preserves a pending dispatch and its later hold across restarts",
+        "retains inconclusive verification and records only conclusive evidence",
+        "rejects every malformed two-hold clearance set without a partial transition",
+        "clears every-and-only resolved hold only after the exact durable cumulative ACK",
+        "fails closed and states that nothing was dispatched when unbound"
+      ]
+    },
+    {
+      "id": "C14",
+      "serverObservable": "Both supported RBP bindings share one authority while Mode B remains a typed non-executable stub.",
+      "tests": [
+        "routes register and dispatch through the shared wss authority",
+        "routes register and dispatch through the shared http_sse authority",
+        "refuses every EngineMode entry point with a typed error",
+        "refuses the sandbox host without opening anything"
+      ]
+    }
+  ],
+  "res14Seams": [
+    {
+      "id": "executor_enum_aps",
+      "tests": ["returns structured executor_unavailable for an APS-bound invocation"]
+    },
+    {
+      "id": "logical_tool_variants",
+      "tests": ["reserves RES-14 logical variants without activating the APS plane"]
+    },
+    {
+      "id": "dynamic_code_aps_forbidden",
+      "tests": [
+        "refuses dynamic code bound to the cloud executor",
+        "fails closed when a Phase-1 binding attempts to activate APS"
+      ]
+    },
+    {
+      "id": "urn_document_identity",
+      "tests": ["carries the RES-14 published document identity without APS execution"]
+    },
+    {
+      "id": "aps_executor_unavailable",
+      "tests": ["returns structured executor_unavailable for an APS-bound invocation"]
+    }
+  ]
+}

@@ -300,6 +300,82 @@ describe("GW-12 production RBP ingress", () => {
     });
   }
 
+  it("keeps progress non-terminal and maps an acknowledged cancellation without duplicate dispatch", async () => {
+    const restartable = createRestartableTestStore();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, identity());
+    await authority.open();
+    const sent: RbpEnvelope[] = [];
+    const opening = await authority.openConnection({
+      deviceToken: "device-token",
+      binding: "wss",
+      hello: hello(),
+      channel: {
+        async send(serialized) {
+          sent.push(JSON.parse(serialized) as RbpEnvelope);
+        },
+        async close() {},
+      },
+    });
+
+    try {
+      await authority.receive(opening.connectionId, registration());
+      const registered = sent.shift() as SessionRegisteredEnvelope;
+      const invocation = request(registered.payload.rsid);
+      let settled = false;
+      const outcomePromise = authority.createExecutor().execute(invocation);
+      void outcomePromise.finally(() => {
+        settled = true;
+      });
+      while (sent.length === 0) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
+      const invoke = sent.shift() as Extract<RbpEnvelope, { type: "invoke" }>;
+
+      await authority.receive(opening.connectionId, {
+        v: 1,
+        type: "partial",
+        id: id(),
+        rsid: registered.payload.rsid,
+        seq: 1,
+        ack: invoke.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          kind: "progress",
+          invocation_id: invocation.context.invocationId,
+          progress: { elapsed_ms: 100, note: "waiting_for_revit" },
+        },
+      });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+
+      await authority.receive(opening.connectionId, {
+        v: 1,
+        type: "error",
+        id: id(),
+        rsid: registered.payload.rsid,
+        seq: 2,
+        ack: invoke.seq,
+        ts: new Date().toISOString(),
+        payload: {
+          invocation_id: invocation.context.invocationId,
+          retryable: false,
+          fault_class: "cancelled",
+          outcome: "known",
+          verification_required: false,
+          replayed: false,
+          message: "cancel acknowledged",
+        },
+      });
+      await expect(outcomePromise).resolves.toEqual({
+        state: "failed",
+        error: { code: "cancelled", message: "cancel acknowledged" },
+      });
+      expect(sent).toHaveLength(0);
+    } finally {
+      await authority.close();
+    }
+  });
+
   it("refuses HTTP/SSE unless the fallback capability was provisioned and granted", async () => {
     const restartable = createRestartableTestStore();
     const noFallbackIdentity = identity([]);
