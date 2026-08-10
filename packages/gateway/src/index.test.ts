@@ -10,7 +10,7 @@ describe("gateway scaffold", () => {
     expect(gatewayScaffold).toMatchObject({
       milestone: "M2",
       protocol: "RBP/1",
-      transportImplemented: false,
+      transportImplemented: true,
       registrySeedAvailable: true,
       m2FirstSliceAvailable: true,
       invocationAuthorityAvailable: true,
