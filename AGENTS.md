@@ -390,6 +390,15 @@ cleanup diagnostics.
   review itself. It requires human review and the documented manual-merge
   exception.
 
+## Slice ritual
+
+- Before the first implementation commit, push a slice-record commit and open
+  a draft PR whose body begins with this one-line scope record:
+  `Hedef | Plan satırı | Kabul | Kapsam | Forecast`.
+- Start implementation only after that draft PR exists. Finish with acceptance
+  evidence, forecast/actual/variance, the Park List, and explicit merge
+  approval.
+
 ## File And Deployment Discipline
 
 - Dev/PR process for this repo: open PRs as draft, iterate (each push runs only

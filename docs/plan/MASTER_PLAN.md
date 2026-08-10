@@ -2,13 +2,14 @@
 
 **Document state:** living migration tracker
 
-**Current milestone:** M2 — implementation in progress; GW-1 [#342], GW-2
-[#344], GW-3 [#345], and the coordinator north integration slice [#355] are
-merged; #355 landed as `dd6c579c89dc8cf0d11a20763d81382231774849`
+**Current milestone:** M2 — implementation and executable gate evidence
+`passed`; milestone-owner acceptance is awaiting decision. GW-1, GW-2, GW-3,
+GW-4, GW-8, GW-9, GW-10, GW-12, GW-13, GW-16, GW-19, and GW-20 are on
+`main` through `011b17b0095e5190a4347fca81160cbb9138eae0`.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-09
+**Last updated:** 2026-08-10
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -25,20 +26,40 @@ This file is the operational milestone tracker for the migration described by `d
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
 
-## 2026-08-09 M2 delivery checkpoint
+## 2026-08-10 M2 closing checkpoint — awaiting milestone-owner acceptance
 
-GW-1 through GW-3 and the coordinator north integration slice are on `main`,
-alongside earlier M2 groundwork including the first north skeleton proof in
-[#291]. Their merge state is delivery evidence, not an M2 gate decision: M2
-remains `in_progress` until its remaining acceptance criteria and executable
-exit demonstration are green.
+The complete M2 code chain is on `main`: GW-1, GW-2, GW-3, GW-4, GW-8,
+GW-9, GW-10, GW-12, GW-13, GW-16, GW-19, and GW-20. The coordinator's
+original negative deviation — north endpoint + capability index + executor
+dispatch not yet whole — closed when GW-10 merged in #359. The final exact-main
+evidence anchor is
+[`011b17b0095e5190a4347fca81160cbb9138eae0`](https://github.com/BTankut/revAgent/commit/011b17b0095e5190a4347fca81160cbb9138eae0).
+The acceptance mapping and evidence ceilings are recorded in
+[`M2_GATE_EVIDENCE.md`](M2_GATE_EVIDENCE.md). This record promotes no gate to
+`accepted`; that decision remains with the milestone owner.
 
-| Slice | Delivered evidence | GitHub state | Remaining milestone impact |
-|---|---|---|---|
-| GW-1 | Registry/executor collection and immutable legacy-handler packaging behind `ExecutorPort` | [#342](https://github.com/BTankut/revAgent/pull/342) merged | Inputs to the production north/dispatch composition; does not close M2 alone |
-| GW-2 | Gateway service shell, frozen ports, deterministic auth seam, and non-executable Mode-B stubs | [#344](https://github.com/BTankut/revAgent/pull/344) merged | Service shell still requires the coordinator north-endpoint composition |
-| GW-3 | E5 executor/policy map, entitled registry view, and byte-stable capability index | [#345](https://github.com/BTankut/revAgent/pull/345) merged | Registry/index output still requires the coordinator north-endpoint composition and one executor-dispatched tool proof |
-| Coordinator north vertical slice | Bind the GW-3 entitled capability index to the dual-era north skeleton and its one executor-dispatched tool | [#355](https://github.com/BTankut/revAgent/pull/355) merged as [`dd6c579c89dc8cf0d11a20763d81382231774849`](https://github.com/BTankut/revAgent/commit/dd6c579c89dc8cf0d11a20763d81382231774849) | Integration evidence is on `main`; it does not redefine the already merged §8.3.5 first proof or complete GW-10/M2 |
+| Slice | Planning effort forecast | Actual effort | Variance | PR / merge evidence |
+|---|---:|---:|---:|---|
+| GW-1 | 3d | not recorded | not calculable | [#342](https://github.com/BTankut/revAgent/pull/342) / [`99057ff4`](https://github.com/BTankut/revAgent/commit/99057ff49172e4fc561ccfc03407d05cc5ff6ea1) |
+| GW-2 | 2d | not recorded | not calculable | [#344](https://github.com/BTankut/revAgent/pull/344) / [`42938b01`](https://github.com/BTankut/revAgent/commit/42938b019c3d075c939034fe94431eb12884abaa) |
+| GW-3 | 5d | not recorded | not calculable | [#345](https://github.com/BTankut/revAgent/pull/345) / [`3052283a`](https://github.com/BTankut/revAgent/commit/3052283a7b8dfce9cf82278457cd36355c220895) |
+| GW-3 north integration | not recorded | not recorded | not calculable | [#355](https://github.com/BTankut/revAgent/pull/355) / [`dd6c579c`](https://github.com/BTankut/revAgent/commit/dd6c579c89dc8cf0d11a20763d81382231774849) |
+| GW-4 invocation authority | 5.00h | 1h33m | -3h27m | [#356](https://github.com/BTankut/revAgent/pull/356) / [`d4487e72`](https://github.com/BTankut/revAgent/commit/d4487e72e5fc82ad6d3a1c4b380b3ef649d983af) |
+| GW-4 durable recovery | 8.00h | 3h28m | -4h32m | [#357](https://github.com/BTankut/revAgent/pull/357) / [`79674256`](https://github.com/BTankut/revAgent/commit/79674256f8853545615d4e4b237d09c10ad74a9c) |
+| GW-8 | 8.00h | 1h29m | -6h31m | [#358](https://github.com/BTankut/revAgent/pull/358) / [`92a199e6`](https://github.com/BTankut/revAgent/commit/92a199e6ff58667698ab154cd27c5b08b19c1963) |
+| GW-10 | 4.00h | 1.70h | -2.30h (-58%) | [#359](https://github.com/BTankut/revAgent/pull/359) / [`dd405ab3`](https://github.com/BTankut/revAgent/commit/dd405ab3461117b034689c578197532592b18710) |
+| GW-9 | 4.00h | 1.00h | -3.00h (-75%) | [#360](https://github.com/BTankut/revAgent/pull/360) / [`32e84395`](https://github.com/BTankut/revAgent/commit/32e843951256270162d05b9810496e54dd988eb5) |
+| GW-12 | 6.00h | 1.30h | -4.70h (-79%) | [#361](https://github.com/BTankut/revAgent/pull/361) / [`b9a2152b`](https://github.com/BTankut/revAgent/commit/b9a2152b0244a3ff1b1d461eefa76417a1d26434) |
+| GW-13 | 3.00h | 0.35h | -2.65h (-88%) | [#362](https://github.com/BTankut/revAgent/pull/362) / [`71baa71d`](https://github.com/BTankut/revAgent/commit/71baa71db771ad08d768dba7e380f2749e526966) |
+| GW-16 | 1.50h | 0.30h | -1.20h (-80%) | [#363](https://github.com/BTankut/revAgent/pull/363) / [`05eb44e3`](https://github.com/BTankut/revAgent/commit/05eb44e342144bb3ade96438896c4d785e6b8f7b) |
+| GW-19 | 0.75h | 0.30h | -0.45h (-60%) | [#364](https://github.com/BTankut/revAgent/pull/364) / [`3b1d881d`](https://github.com/BTankut/revAgent/commit/3b1d881d46a937c0b97062ac4fa659786c227689) |
+| GW-20 | 0.50h | 0.15h | -0.35h (-70%) | [#365](https://github.com/BTankut/revAgent/pull/365) / [`011b17b0`](https://github.com/BTankut/revAgent/commit/011b17b0095e5190a4347fca81160cbb9138eae0) |
+
+For the ten slices whose execution effort was recorded (#356–#365), the
+aggregate is 40.75h forecast, 11.60h actual, and -29.15h variance (-72%).
+GW-1, GW-2, GW-3, and the coordinator north integration predate the enforced
+actual-effort ledger; their missing actuals are left explicit rather than
+reconstructed from PR wall-clock time.
 
 ## 2026-08-02 M3 gate evidence — awaiting operator acceptance
 
@@ -154,7 +175,7 @@ separately from engineering effort.
 |---|---|---|---|---|---|---|---|
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | 5d | not recorded | not calculable | `passed` |
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
-| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | in progress; not recorded | not calculable | `in_progress` |
+| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `passed` — awaiting milestone-owner acceptance |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `passed` |
 | M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `not_started` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `not_started` |
