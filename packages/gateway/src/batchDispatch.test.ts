@@ -12,12 +12,9 @@ import {
   type BridgeBatchOutcome,
 } from "../../bridge-simulator/dist/index.js";
 import {
-  createReceivedJournalRecord,
-  dataEnvelopeImmutableDigest,
   makeParamsDigest,
   type BatchResult,
   type JsonValue,
-  type DataEnvelopeSnapshot,
   type HelloEnvelope,
   type InvokeBatchEnvelope,
   type RbpEnvelope,
@@ -38,7 +35,10 @@ import {
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
-import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
+import {
+  GatewayRecoveryAuthority,
+  type GatewayAuditedRecoveryDecisionPort,
+} from "./recoveryAuthority.js";
 import { GatewayToolRegistry, type GatewayToolRecord } from "./registry.js";
 import { createRestartableTestStore } from "./testAdapters.js";
 
@@ -318,34 +318,50 @@ describe("GW-16 registry-authorized atomic batch", () => {
     expect(envelope.payload.steps).toHaveLength(5);
     expect(envelope.payload.atomic).toBe(true);
 
-    const journals = draft.expected.bindings.map(createReceivedJournalRecord);
-    const prepared: GatewayRecoveryPendingDispatch = {
-      kind: "mutation",
-      envelope,
-      envelopeDigest: dataEnvelopeImmutableDigest(
-        envelope as unknown as DataEnvelopeSnapshot,
-      ),
-      gatewaySequence: envelope.seq,
-      sessionBindingId: draft.sessionBindingId,
-      preparedConnectionId: draft.connectionId,
-      authorizedSessionVersion: 1,
-      requiredSessionCapabilities: ["batch_atomic"],
-      mutationEntries: batch.steps.map((batchStep, index) => ({
-        invocationId: batchStep.context.invocationId,
-        idempotencyKey: batchStep.context.idempotencyKey,
-        mutationScope: batchStep.context.mutationScope!,
-        journalBindingDigest: journals[index]!.bindingDigest,
-      })),
-      journalRecords: journals,
-      journalAttestation: null,
-      batchTerminal: null,
-      recoveryHoldIds: [],
-      recoveryClearances: [],
-      verificationHoldId: null,
-      originRedelivery: false,
-      bridgeAcceptance: null,
-      preparedAtMs: Date.now(),
+    const evidenceDecision: GatewayAuditedRecoveryDecisionPort = {
+      async decideEvidence() {
+        return {
+          kind: "decided",
+          conclusion: "inconclusive",
+          authorityReference: "gw16-fixture-only",
+          decisionVersion: 1,
+          decidedAtMs: Date.now(),
+        };
+      },
     };
+    const recovery = new GatewayRecoveryAuthority(restartable.store, {
+      bridgeEvidence: authority,
+      evidenceDecision,
+    });
+    const attemptId = id();
+    await expect(
+      recovery.acquireInvocationWindow({
+        tenantId: "tenant-gw16",
+        rsid: registered.payload.rsid,
+        attemptId,
+      }),
+    ).resolves.toMatchObject({ kind: "acquired" });
+    await expect(
+      recovery.preflightMutation({
+        tenantId: "tenant-gw16",
+        rsid: registered.payload.rsid,
+        mutationScopes: batch.steps.map(
+          (batchStep) => batchStep.context.mutationScope!,
+        ),
+      }),
+    ).resolves.toMatchObject({ kind: "clear" });
+    const preparation = await recovery.prepareMutationDispatch({
+      tenantId: "tenant-gw16",
+      attemptId,
+      sessionBindingId: draft.sessionBindingId,
+      connectionId: draft.connectionId,
+      envelope,
+      expected: draft.expected,
+    });
+    if (preparation.kind !== "prepared") {
+      throw new Error(`batch preparation failed: ${preparation.kind}`);
+    }
+    const prepared = preparation.dispatch;
 
     const pending = executor.executePreparedAtomicBatch!(batch, prepared);
     while (!sent.some((candidate) => candidate.type === "invoke_batch")) {
@@ -384,6 +400,23 @@ describe("GW-16 registry-authorized atomic batch", () => {
     );
     await expect(pending).resolves.toMatchObject({ state: "completed" });
 
+    const reconciled = await recovery.reconcilePendingDispatch({
+      tenantId: "tenant-gw16",
+      rsid: registered.payload.rsid,
+      envelopeDigest: prepared.envelopeDigest,
+    });
+    expect(reconciled).toMatchObject({
+      kind: "terminal_recorded",
+      terminalBatch: { result: { batch_id: batch.batchId, status: "completed" } },
+    });
+    await expect(
+      recovery.releaseInvocationWindow({
+        tenantId: "tenant-gw16",
+        rsid: registered.payload.rsid,
+        attemptId,
+      }),
+    ).resolves.toMatchObject({ kind: "released" });
+
     const replay = await bridge.simulator.invokeBatch({
       ...dispatched[0]!,
       id: id(),
@@ -398,6 +431,36 @@ describe("GW-16 registry-authorized atomic batch", () => {
     for (const batchStep of dispatched[0]!.payload.steps) {
       expect(fixture.getExecutionCount(batchStep.invocation_id)).toBe(1);
     }
+
+    const replayAttemptId = id();
+    await expect(
+      recovery.acquireInvocationWindow({
+        tenantId: "tenant-gw16",
+        rsid: registered.payload.rsid,
+        attemptId: replayAttemptId,
+      }),
+    ).resolves.toMatchObject({ kind: "acquired" });
+    await expect(
+      recovery.prepareMutationDispatch({
+        tenantId: "tenant-gw16",
+        attemptId: replayAttemptId,
+        sessionBindingId: draft.sessionBindingId,
+        connectionId: draft.connectionId,
+        envelope,
+        expected: draft.expected,
+      }),
+    ).resolves.toMatchObject({
+      kind: "replay_terminal",
+      history: { batchTerminal: { result: { batch_id: batch.batchId } } },
+    });
+    expect(fixture.getMethodExecutionCount("execute_batch")).toBe(1);
+    await expect(
+      recovery.releaseInvocationWindow({
+        tenantId: "tenant-gw16",
+        rsid: registered.payload.rsid,
+        attemptId: replayAttemptId,
+      }),
+    ).resolves.toMatchObject({ kind: "released" });
 
     bridge.simulator.close();
     bridge.journal.close();
