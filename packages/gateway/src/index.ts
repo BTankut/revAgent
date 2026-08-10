@@ -305,3 +305,20 @@ export {
   type CatalogEntry,
   type EntitlementDecision,
 } from "./entitledRegistry.js";
+export {
+  GW9_ALLOWED_OUTPUT_CONTENT_TYPES,
+  GW9_ALLOWED_UPLOAD_CONTENT_TYPES,
+  GatewayResourceAuthority,
+  GatewayResourceError,
+  resourceScopeFromAuth,
+  type BoundedGatewayResult,
+  type GatewayArtifactRef,
+  type GatewayResourceAuthorityOptions,
+  type GatewayResourceErrorCode,
+  type GatewayResourceKind,
+  type GatewayResourceRead,
+  type GatewayResourceScope,
+  type GatewayResultRef,
+  type IngestRbpArtifactCarrierInput,
+  type UploadArtifactInput,
+} from "./resourceAuthority.js";

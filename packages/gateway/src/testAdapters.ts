@@ -15,6 +15,7 @@ import { REVAGENT_EVENT_SCHEMA } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import type {
   GatewayProtocolStore,
+  ObjectStorePort,
   StoreExpectation,
   StoreOutcome,
   StoreTransaction,
@@ -342,7 +343,7 @@ interface MemoryState {
 }
 
 function recordKey(namespace: string, tenantId: string, key: string): string {
-  return `${tenantId} ${namespace} ${key}`;
+  return `${tenantId}\u0000${namespace}\u0000${key}`;
 }
 
 function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
@@ -469,6 +470,81 @@ export function createRestartableTestStore(): RestartableTestStore {
     restart(): GatewayProtocolStore {
       state.open = false;
       return buildMemoryStore(state);
+    },
+  };
+}
+
+export interface MemoryObjectStore extends ObjectStorePort {
+  corrupt(storageKey: string, bytes: Uint8Array): void;
+  keys(): readonly string[];
+}
+
+/** Tenant-fenced byte store for GW-9 resource conformance. */
+export function createMemoryObjectStore(): MemoryObjectStore {
+  const objects = new Map<
+    string,
+    {
+      readonly tenantId: string;
+      readonly bytes: Uint8Array;
+      readonly contentType: string;
+    }
+  >();
+  const ok = <T>(value: T): GatewayPortResult<T> =>
+    Object.freeze({ ok: true as const, value });
+  const missing = <T>(): GatewayPortResult<T> =>
+    Object.freeze({
+      ok: false as const,
+      port: "object_store" as const,
+      code: "unavailable" as const,
+      message: "memory object is unavailable",
+    });
+  return {
+    kind: "memory" as const,
+    async put(input) {
+      objects.set(
+        input.storageKey,
+        Object.freeze({
+          tenantId: input.tenantId,
+          bytes: new Uint8Array(input.bytes),
+          contentType: input.contentType,
+        }),
+      );
+      return ok({ storageKey: input.storageKey });
+    },
+    async get(input) {
+      const found = objects.get(input.storageKey);
+      return found === undefined || found.tenantId !== input.tenantId
+        ? missing()
+        : ok({
+            bytes: new Uint8Array(found.bytes),
+            contentType: found.contentType,
+          });
+    },
+    async head(input) {
+      const found = objects.get(input.storageKey);
+      return found === undefined || found.tenantId !== input.tenantId
+        ? missing()
+        : ok({ byteSize: found.bytes.byteLength });
+    },
+    async delete(input) {
+      const found = objects.get(input.storageKey);
+      if (found !== undefined && found.tenantId === input.tenantId) {
+        objects.delete(input.storageKey);
+      }
+      return ok(undefined);
+    },
+    corrupt(storageKey, bytes): void {
+      const found = objects.get(storageKey);
+      if (found === undefined) {
+        throw new RangeError("unknown memory object");
+      }
+      objects.set(
+        storageKey,
+        Object.freeze({ ...found, bytes: new Uint8Array(bytes) }),
+      );
+    },
+    keys(): readonly string[] {
+      return [...objects.keys()].sort();
     },
   };
 }
