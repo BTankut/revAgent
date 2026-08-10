@@ -21,6 +21,8 @@
     "test": "npm run build --workspace @revagent/addin-loopback-fixture && npm run build --workspace @revagent/bridge-simulator && npm run package:handlers && vitest run",
     "collect:registry": "node scripts/collect-registry.mjs",
     "package:handlers": "node scripts/package-handlers.mjs",
+    "readiness:gw13": "node scripts/run-gw13-readiness.mjs",
+    "smoke:gw13": "node scripts/gw13-live-smoke.mjs",
     "start": "node dist/main.js"
   },
   "engines": {

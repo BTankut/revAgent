@@ -85,3 +85,18 @@ jobs:
 
       - name: Test Gateway
         run: npm test --workspace @revagent/gateway
+
+      - name: Emit GW-13 readiness evidence
+        if: always()
+        run: >-
+          npm run readiness:gw13 --workspace @revagent/gateway --
+          --source-revision "${{ env.EXPECTED_HEAD_SHA }}"
+          --output packages/gateway/artifacts/gw13-readiness.json
+
+      - name: Upload GW-13 readiness evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: gw13-readiness-${{ env.EXPECTED_HEAD_SHA }}
+          path: packages/gateway/artifacts/gw13-readiness.json
+          if-no-files-found: error

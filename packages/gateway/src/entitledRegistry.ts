@@ -1,5 +1,9 @@
 import { createHash } from "node:crypto";
-import type { CapabilityIndex, CapabilityIndexTool } from "./registry.js";
+import type {
+  CapabilityIndex,
+  CapabilityIndexTool,
+  GatewayToolVariant,
+} from "./registry.js";
 import type { RegistrySeed } from "./registrySeed.js";
 import {
   E5_TOOL_BINDINGS,
@@ -31,11 +35,34 @@ export interface CatalogEntry {
   readonly policyClass: ToolBindingRow["policyClass"];
   readonly mutationScopePolicy: ReturnType<typeof mutationScopePolicyForTool>;
   readonly executor: ToolBindingRow["executor"];
+  /** RES-14 logical-tool variants. Empty for Gateway-internal tools. */
+  readonly variants: readonly GatewayToolVariant[];
   /** Lower-cased search terms, deduplicated and sorted. */
   readonly terms: readonly string[];
 }
 
 const CATALOG_VERSION = "1.0.0";
+
+function phase1Variants(binding: ToolBindingRow): readonly GatewayToolVariant[] {
+  if (binding.executor === "internal_mcp") {
+    return Object.freeze([]);
+  }
+  if (binding.executor === "aps") {
+    throw new CatalogError(
+      "phase1_aps_variant_forbidden",
+      `${binding.tool} cannot activate an APS variant in Phase 1`,
+    );
+  }
+  return Object.freeze([
+    Object.freeze({
+      plane: "live" as const,
+      executor: "bridge" as const,
+      executorMethod: binding.tool,
+      schemaOverlay: null,
+      fidelityNotes: Object.freeze([]),
+    }),
+  ]);
+}
 
 /**
  * Bracket tags are stripped from anything the client sees.
@@ -143,6 +170,7 @@ export function buildCatalog(
         policyClass: binding.policyClass,
         mutationScopePolicy: mutationScopePolicyForTool(binding.tool),
         executor: binding.executor,
+        variants: phase1Variants(binding),
         terms: termsFor({
           name: binding.target,
           tool: tool.name,

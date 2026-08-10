@@ -29,6 +29,42 @@ describe("catalog", () => {
     }
   });
 
+  it("reserves RES-14 logical variants without activating the APS plane", () => {
+    for (const entry of catalog) {
+      if (entry.executor === "internal_mcp") {
+        expect(entry.variants).toEqual([]);
+        continue;
+      }
+      expect(entry.variants).toEqual([
+        {
+          plane: "live",
+          executor: "bridge",
+          executorMethod: entry.tool,
+          schemaOverlay: null,
+          fidelityNotes: [],
+        },
+      ]);
+    }
+    expect(catalog.flatMap((entry) => entry.variants)).not.toContainEqual(
+      expect.objectContaining({ plane: "published" }),
+    );
+  });
+
+  it("fails closed when a Phase-1 binding attempts to activate APS", () => {
+    const target = E5_TOOL_BINDINGS.find(
+      (row) => row.tool === "find_elements",
+    );
+    if (target === undefined) throw new Error("fixture binding is missing");
+    expect(() =>
+      buildCatalog(
+        seed,
+        E5_TOOL_BINDINGS.map((row) =>
+          row === target ? { ...row, executor: "aps" as const } : row,
+        ),
+      ),
+    ).toThrow("cannot activate an APS variant in Phase 1");
+  });
+
   it("refuses a seeded tool that no binding covers", () => {
     // Either half missing is a real defect: an unbound tool has no policy
     // class, and a bound tool with no seed entry would be published with no

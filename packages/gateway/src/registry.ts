@@ -21,6 +21,20 @@ export type GatewayMutationScopePolicy = "none" | "document" | "session";
 
 export type GatewayJsonSchema = Readonly<Record<string, unknown>>;
 
+/**
+ * RES-14/P-APS-1 reservation for one logical tool's execution-plane variant.
+ *
+ * Phase 1 populates only reviewed live variants. Published variants remain a
+ * schema seam until the post-cutover APS package supplies an executor.
+ */
+export interface GatewayToolVariant {
+  readonly plane: "live" | "published";
+  readonly executor: GatewayExecutorBinding;
+  readonly executorMethod: string;
+  readonly schemaOverlay: GatewayJsonSchema | null;
+  readonly fidelityNotes: readonly string[];
+}
+
 const JSON_SCHEMA_2020_12_URI = "https://json-schema.org/draft/2020-12/schema";
 
 export interface GatewayToolRecord {
