@@ -26,6 +26,10 @@ import {
   type RbpIngressHost,
 } from "./rbpIngress.js";
 import {
+  createNorthMcpHttpHandler,
+  type NorthMcpEndpointOptions,
+} from "./northMcpEndpoint.js";
+import {
   createUnavailableObjectStore,
   createUnavailableProtocolStore,
   type GatewayProtocolStore,
@@ -170,10 +174,29 @@ export interface GatewayServerHandle {
 
 export function createGatewayApp(options: {
   readonly config: GatewayConfig;
+  readonly northMcp?: NorthMcpEndpointOptions;
   readonly ports: GatewayServerPorts;
 }): FastifyInstance {
   const { config, ports } = options;
   const app = Fastify(buildFastifyOptions(config));
+  const publicHostname = new URL(config.publicUrl).hostname.toLowerCase();
+  const northMcp =
+    options.northMcp === undefined
+      ? undefined
+      : createNorthMcpHttpHandler(options.northMcp, (hostHeader) => {
+          if (hostHeader === undefined) {
+            return false;
+          }
+          try {
+            return (
+              new URL(`http://${hostHeader}`).hostname.toLowerCase() ===
+              publicHostname
+            );
+          } catch {
+            return false;
+          }
+        });
+
   let shuttingDown = false;
 
   // The body is exactly two states and nothing else. This endpoint is served on
@@ -187,17 +210,24 @@ export function createGatewayApp(options: {
     return reply.code(200).send({ status: "ok" });
   });
 
-  // Reserves the north MCP mount so the later task replaces a refusing route.
-  app.all("/mcp", async (_request, reply) =>
-    reply
-      .code(503)
-      .send(
-        refusalBody(
-          "north_mcp",
-          "the north MCP surface is not implemented in Phase 1",
-        ),
-      ),
-  );
+  app.all("/mcp", async (request, reply) => {
+    if (northMcp === undefined) {
+      return reply
+        .code(503)
+        .send(
+          refusalBody(
+            "north_mcp",
+            "the north MCP surface is not configured",
+          ),
+        );
+    }
+    reply.hijack();
+    await northMcp.handle(request.raw, reply.raw, request.body);
+  });
+
+  if (northMcp !== undefined) {
+    app.addHook("onClose", async () => northMcp.close());
+  }
 
   const refuseIngress = async (
     request: { readonly url: string },
@@ -260,6 +290,7 @@ export function createGatewayApp(options: {
 
 export async function startGatewayServer(options: {
   readonly config: GatewayConfig;
+  readonly northMcp?: NorthMcpEndpointOptions;
   readonly ports: GatewayServerPorts;
 }): Promise<GatewayServerHandle> {
   // First, before any socket exists.

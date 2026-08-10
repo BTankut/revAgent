@@ -1,46 +1,43 @@
 # revAgent Gateway
 
 This additive revAgent Gateway package retains the M0 transport spike and now
-contains the bounded M2 north/registry/dispatch proof, the GW-1 through GW-3
-foundations it consumes, and the first GW-4 invocation-authority slice. It mirrors the
+contains the M2 north/registry/dispatch surface, the GW-1 through GW-3
+foundations it consumes, and the GW-4/GW-8/GW-10 vertical slices. It mirrors the
 existing runtime's TypeScript ESM conventions (`ES2022`, `NodeNext`, strict
 mode). The Gateway package uses the split MCP TypeScript SDK v2 packages and
 Zod 4; frozen packages under `installer/**` retain their independent v1 pins.
 
 ## M2 north/registry/dispatch vertical slice
 
-The first M2 slice is additive and intentionally narrow:
+GW-10 implements the Mode-A north discovery and production-code Fastify mount:
 
 - The verified 40-tool seed and E5 binding table build the immutable catalog;
   one `EntitledCatalogView` is the sole source for the principal's north MCP
   instructions and `revagent://capability-index` resource. The index is
   name-sorted and byte-stable, and every schema remains `deferred`.
-- `GatewayToolRegistry` is the deliberately smaller executable subset. This
-  slice derives exactly one callable, `core.ui.state`, from the GW-3 catalog,
-  verifies its `auto` / `bridge` / `get_ui_state` binding fail-closed, and
-  exposes only its reviewed empty-argument schema. It does not materialize
-  executable Zod records for the other 39 catalog entries.
+- `buildGatewayExecutableRegistry` materializes all 40 reviewed tools from the
+  verified registry seed, removes only the seven Gateway-authored root input
+  fields, and fails closed if executable and catalog metadata disagree. The
+  five `core.docs.*` tools retain their `internal_mcp` executor binding.
+- `tool_search` searches only the entitled index. `tool_schema` returns and
+  activates only entitled schemas. The four P-GW-7 tools are pinned; other
+  schemas live in a bounded, session-sticky LRU and activation/eviction emits
+  `notifications/tools/list_changed` through the SDK subscription bus.
 - `GatewayDispatcher` resolves policy and executor metadata from the registry;
   client arguments cannot choose either value. It revalidates direct calls
-  against the registry Zod shape, blocks `confirm`/`gated` tools until policy
-  middleware exists, and preserves completed/guarded/failed executor outcomes.
-- `startNorthMcpEndpoint` resolves one entitlement-filtered catalog view after
-  authentication and wraps one pure `McpServer` factory with
-  `createMcpHandler` and `toNodeHandler`. Its explicit `legacy: "stateless"`
-  posture serves 2025-era and 2026-07-28 clients from the same registry and
-  handlers; `server/discover` selects the modern per-request path. Every HTTP
-  request is independently authenticated through the injected fail-closed
-  boundary. Modern multi-round-trip `requestState` is verified with the SDK's
-  HMAC codec before dispatch, expires on the configured TTL, and is bound to
-  the originating method plus authenticated actor/Gateway-session/client/
-  resource/scope tuple; the required key is at least 32 bytes. Endpoint shutdown drains owned
-  dispatcher work for both eras before resolving, and the endpoint exposes the
-  same entitled-catalog bytes as server instructions and
-  `revagent://capability-index`. An unentitled callable is not registered and a
-  forged direct call cannot reach the dispatcher.
-- The integration test calls `core.ui.state` through the official MCP client,
-  dispatcher, a test-only Bridge executor, the M1 Bridge simulator, and the
-  add-in loopback fixture. `fixture_counter` is not a production registry tool.
+  against the registry Zod shape, delegates confirmation to the GW-8 policy
+  middleware, and preserves completed/guarded/failed executor outcomes.
+- `createNorthMcpHttpHandler` owns authentication, entitlement projection,
+  request-state verification, discovery state, dispatch, audit correlation,
+  and graceful drain. `createGatewayApp` mounts that handler directly at
+  `/mcp` when composed; without it the route remains a structured fail-closed
+  503. `startNorthMcpEndpoint` remains the loopback proof wrapper around the
+  same handler, not a second implementation.
+- The GW-10 conformance test uses the official modern MCP client against the
+  Fastify `/mcp` route. It proves the exact entitled index, initial meta+pinned
+  set, runtime/docs search and activation, LRU eviction plus list-change
+  delivery, calls through both `bridge` and `internal_mcp`, and fail-closed
+  unentitled search/schema/direct-call behavior with actor/audit correlation.
 
 ## GW-4 invocation-authority vertical slice
 
@@ -67,27 +64,20 @@ unavailable after executor contact, the response reports both
 `audit_unavailable` and `executorReached: true` so callers cannot safely treat
 it as a never-dispatched retry.
 
-This does not complete GW-4: durable conflict/hold recovery, restart survival,
+The earlier GW-4 slice left durable conflict/hold recovery, restart survival,
 batch invocation/digest propagation, verification and clearance correlation,
-bridge acceptance, and production store adapters remain later GW-4 slices. It
-also does not start GW-8 policy/confirmation or the GW-10 production Fastify
-`/mcp` mount.
+bridge acceptance, and production store adapters to their numbered plan rows;
+GW-8 confirmation and GW-10 north discovery are now composed above.
 
 The local parameter-digest implementation is byte-checked against every frozen
-RBP/1 conformance vector. Replacing it with the shared
-`@revagent/protocol.makeParamsDigest` runtime import requires a declared
-Gateway workspace dependency and root lockfile update, which are outside this
-`packages/gateway/**`-only slice; that ownership cleanup remains explicit rather
-than silently claiming one production implementation.
+RBP/1 conformance vector. The Gateway workspace dependency is declared, but
+moving digest ownership to `@revagent/protocol.makeParamsDigest` remains a
+separate, numbered slice when the implementation-plan index reaches it.
 
-This is not production OAuth or GW-10 readiness. The endpoint accepts only an
-injected token verifier, requires an HTTPS protected-resource metadata URL,
-and remains loopback-bound for this proof; the Fastify service shell therefore
-continues to return its structured 503 on `/mcp`. IdP/OIDC discovery,
-PKCE/DCR, JWKS rotation, public TLS/proxy binding, executable materialization
-for the remaining catalog, Mode-A search/schema activation, the final pinned
-set, docs-MCP internalization, confirmation, durable RBP ingress, and the
-production north mount remain separate M2 tasks.
+GW-10 is production-code MCP composition, not production OAuth. The handler
+accepts only an injected token verifier and requires an HTTPS protected-resource
+metadata URL. IdP/OIDC discovery, PKCE/DCR, JWKS rotation, and real production
+identity adapters remain M5; durable RBP ingress remains GW-12.
 The injected authenticator is contractually responsible for validating token
 signature, expiry, audience/resource, scopes, revocation, and tenant/user
 identity; the endpoint does not infer any of those from client claims.
