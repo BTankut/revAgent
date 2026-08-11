@@ -2,14 +2,14 @@
 
 **Evidence state:** `passed`
 
-**Acceptance state:** `awaiting_milestone_owner`
+**Acceptance state:** `accepted` (milestone owner, 2026-08-11)
 
 **Exact main anchor:**
 [`011b17b0095e5190a4347fca81160cbb9138eae0`](https://github.com/BTankut/revAgent/commit/011b17b0095e5190a4347fca81160cbb9138eae0)
 
-This document maps the M2 acceptance criteria to retained GitHub evidence. It
-does not move M2 from `passed` to `accepted`. The milestone owner owns that
-decision.
+This document maps the M2 acceptance criteria to retained GitHub evidence. The
+milestone owner recorded `M2 accepted` on 2026-08-11; that decision does not
+enlarge the evidence below or erase its stated ceilings.
 
 ## Final exact-main evidence
 
@@ -17,10 +17,11 @@ decision.
 - [Gateway CI run 31419029495](https://github.com/BTankut/revAgent/actions/runs/31419029495), attempt 1: exact-head Gateway lint, typecheck, tests, secret scan, image build, and readiness artifact passed.
 - [GW-13 readiness artifact 9074629966](https://github.com/BTankut/revAgent/actions/runs/31419029495/artifacts/9074629966): `revagent.gw13-readiness/v1`, source revision `011b17b...`, C01–C14 14/14, RES-14 seams 5/5, 151 assertions, and live-smoke dry-run ready.
 
-The artifact is intentionally `authoritative:false`. It records
-`evidenceState:passed` and `acceptanceState:awaiting_milestone_owner`; it does
-not claim real OAuth, external-client hands-on, live Revit, APS runtime, or
-Mode-B activation.
+The artifact is intentionally `authoritative:false`. As an immutable snapshot
+generated before the owner decision, it historically records
+`evidenceState:passed` and `acceptanceState:awaiting_milestone_owner`; the later
+acceptance does not make it authoritative or add proof of real OAuth,
+external-client hands-on, live Revit, APS runtime, or Mode-B activation.
 
 ## M2 acceptance map
 
@@ -35,7 +36,7 @@ Mode-B activation.
 | Serve production Fastify `/mcp`, entitled capability-index instructions/resource, `tool_search`, `tool_schema`, pinned/session-sticky callable views, bounded schema activation, and bridge/internal executor dispatch. | GW-10 | [PR #359](https://github.com/BTankut/revAgent/pull/359), [CI 31361030670](https://github.com/BTankut/revAgent/actions/runs/31361030670), [Gateway CI 31361030702](https://github.com/BTankut/revAgent/actions/runs/31361030702), [Claude 31361043366](https://github.com/BTankut/revAgent/actions/runs/31361043366) | Passed. The coordinator's north endpoint + capability index + executor-dispatch gap is closed. Real OAuth remains M5. |
 | Accept scoped client uploads/result pages and publish validated multi-file RBP artifacts without exposing workstation paths. | GW-9 | [PR #360](https://github.com/BTankut/revAgent/pull/360), [CI 31368314167](https://github.com/BTankut/revAgent/actions/runs/31368314167), [Gateway CI 31368314166](https://github.com/BTankut/revAgent/actions/runs/31368314166), [Claude 31369552925](https://github.com/BTankut/revAgent/actions/runs/31369552925) | Passed. Cross-scope, expiry, size, path, sibling, stream, and digest negatives fail closed. |
 | Terminate WSS and exact HTTP/SSE fallback through one durable Bridge-session authority and dispatch the runtime catalog under journal/recovery semantics. | GW-12 | [PR #361](https://github.com/BTankut/revAgent/pull/361), [CI 31381467618](https://github.com/BTankut/revAgent/actions/runs/31381467618), [Gateway CI 31381467599](https://github.com/BTankut/revAgent/actions/runs/31381467599), [bridge simulator 31381467637](https://github.com/BTankut/revAgent/actions/runs/31381467637), [Claude 31381473900](https://github.com/BTankut/revAgent/actions/runs/31381473900) | Passed against frozen O1 and restartable fixtures. Real host, credentials, drivers, and deployment remain M6/M7. |
-| Produce a machine-readable M2 readiness report covering the server-observable halves of WP9 C01–C14 and the five RES-14/P6-T1 seams. | GW-13 | [PR #362](https://github.com/BTankut/revAgent/pull/362), [CI 31389075589](https://github.com/BTankut/revAgent/actions/runs/31389075589), [Gateway CI 31389075922](https://github.com/BTankut/revAgent/actions/runs/31389075922), [Claude 31389089079](https://github.com/BTankut/revAgent/actions/runs/31389089079), [latest exact-main artifact](https://github.com/BTankut/revAgent/actions/runs/31419029495/artifacts/9074629966) | Passed as `authoritative:false`; owner acceptance and hands-on obligations remain open. |
+| Produce a machine-readable M2 readiness report covering the server-observable halves of WP9 C01–C14 and the five RES-14/P6-T1 seams. | GW-13 | [PR #362](https://github.com/BTankut/revAgent/pull/362), [CI 31389075589](https://github.com/BTankut/revAgent/actions/runs/31389075589), [Gateway CI 31389075922](https://github.com/BTankut/revAgent/actions/runs/31389075922), [Claude 31389089079](https://github.com/BTankut/revAgent/actions/runs/31389089079), [latest exact-main artifact](https://github.com/BTankut/revAgent/actions/runs/31419029495/artifacts/9074629966) | Passed as `authoritative:false`; the later owner acceptance does not satisfy the hands-on obligations. |
 | Send registry-authorized atomic batches as one RBP batch/transaction group and replay durable terminal results without duplicate write execution. | GW-16 | [PR #363](https://github.com/BTankut/revAgent/pull/363), [CI 31398250044](https://github.com/BTankut/revAgent/actions/runs/31398250044), [Gateway CI 31398250470](https://github.com/BTankut/revAgent/actions/runs/31398250470), [Claude 31399962733](https://github.com/BTankut/revAgent/actions/runs/31399962733) | Passed. Write retry remains journal-governed. |
 | Package version-pinned, module-scoped Phase-1 instructions/manifests and expose only entitled MCP resources. | GW-19 | [PR #364](https://github.com/BTankut/revAgent/pull/364), [CI 31407423144](https://github.com/BTankut/revAgent/actions/runs/31407423144), [Gateway CI 31407427358](https://github.com/BTankut/revAgent/actions/runs/31407427358), [Claude 31407658879](https://github.com/BTankut/revAgent/actions/runs/31407658879) | Passed. Gateway does not own the agentic loop. |
 | Ingest promotion candidate/rule metadata into an admin-readable human-review feed without changing the entitled catalog or authorizing automatic promotion/priority. | GW-20 / RES-19 | [PR #365](https://github.com/BTankut/revAgent/pull/365), [CI 31414467959](https://github.com/BTankut/revAgent/actions/runs/31414467959), [Gateway CI 31414468979](https://github.com/BTankut/revAgent/actions/runs/31414468979), [Claude 31417424696](https://github.com/BTankut/revAgent/actions/runs/31417424696) | Passed. Review evidence remains human-only and catalog bytes/digest stay unchanged. |
@@ -63,7 +64,6 @@ All rows below are sourced from the exact-main GW-13 artifact linked above.
 
 ## Known open boundaries
 
-- Milestone-owner M2 acceptance is not recorded.
 - WP9 C01–C14 must still run hands-on against the selected Codex Desktop build; visible Turkish UX, progress/cancel, downloaded-file opening, and Revit-visible results are not proven here.
 - Real OAuth/DCR, token refresh/revoke, device enrollment, seats, and two-tenant negatives remain M5.
 - Real host/credential/driver deployment and signed distribution remain later milestone work.

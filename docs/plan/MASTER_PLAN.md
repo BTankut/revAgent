@@ -2,14 +2,14 @@
 
 **Document state:** living migration tracker
 
-**Current milestone:** M2 — implementation and executable gate evidence
-`passed`; milestone-owner acceptance is awaiting decision. GW-1, GW-2, GW-3,
-GW-4, GW-8, GW-9, GW-10, GW-12, GW-13, GW-16, GW-19, and GW-20 are on
-`main` through `011b17b0095e5190a4347fca81160cbb9138eae0`.
+**Current milestone state:** M2 and M3 were accepted by the milestone owner on
+2026-08-11. M4 remains `not_started`; this acceptance record neither authorizes
+nor starts M4 work. The exact M2 code/evidence anchor remains
+`011b17b0095e5190a4347fca81160cbb9138eae0` on `main`.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-10
+**Last updated:** 2026-08-11
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -26,7 +26,7 @@ This file is the operational milestone tracker for the migration described by `d
 
 Only the milestone decision owner may move a gate from `passed` to `accepted`. M0–M10 remain open until every required row is accepted.
 
-## 2026-08-10 M2 closing checkpoint — awaiting milestone-owner acceptance
+## 2026-08-10 M2 closing checkpoint — accepted 2026-08-11
 
 The complete M2 code chain is on `main`: GW-1, GW-2, GW-3, GW-4, GW-8,
 GW-9, GW-10, GW-12, GW-13, GW-16, GW-19, and GW-20. The coordinator's
@@ -35,8 +35,9 @@ dispatch not yet whole — closed when GW-10 merged in #359. The final exact-mai
 evidence anchor is
 [`011b17b0095e5190a4347fca81160cbb9138eae0`](https://github.com/BTankut/revAgent/commit/011b17b0095e5190a4347fca81160cbb9138eae0).
 The acceptance mapping and evidence ceilings are recorded in
-[`M2_GATE_EVIDENCE.md`](M2_GATE_EVIDENCE.md). This record promotes no gate to
-`accepted`; that decision remains with the milestone owner.
+[`M2_GATE_EVIDENCE.md`](M2_GATE_EVIDENCE.md). The milestone owner recorded
+`M2 accepted` on 2026-08-11; that decision does not enlarge the evidence or
+erase the ceilings recorded there.
 
 | Slice | Planning effort forecast | Actual effort | Variance | PR / merge evidence |
 |---|---:|---:|---:|---|
@@ -61,7 +62,7 @@ GW-1, GW-2, GW-3, and the coordinator north integration predate the enforced
 actual-effort ledger; their missing actuals are left explicit rather than
 reconstructed from PR wall-clock time.
 
-## 2026-08-02 M3 gate evidence — awaiting operator acceptance
+## 2026-08-02 M3 gate evidence — accepted 2026-08-11
 
 The M3 bridge + add-in chain was proven end to end on a clean Windows 11
 workstation (PETRUCCI, Revit 2022): an external control caller drove
@@ -78,10 +79,30 @@ because the loopback fixture implements the frozen contracts while the product
 did not — were fixed across #336 and PR #337 (add-in `mcp_status` discovery
 fields under a migration-freeze exception, LocalSystem service account,
 journal-sidecar ACL, `invoke_batch` dispatch wiring, `effect_state` outbound
-validation), with the durability harness in PR #338. Per R-C and the tracker
-rule, the M3 row is set to `passed`; only the milestone decision owner may move
-it to `accepted`. Deferred to M4 per RES-30: real-Gateway token exchange,
-revoked-device refusal at handshake, and device-token persistence across reboot.
+validation), with the durability harness in PR #338. The milestone owner
+recorded `M3 accepted` on 2026-08-11. Deferred to M4 per RES-30: real-Gateway
+token exchange, revoked-device refusal at handshake, and device-token
+persistence across reboot.
+
+Effort-field provenance correction (2026-08-11): the M3 row retains
+`15d / not recorded / not calculable`. The operator designated those values as
+"operatörün staged kaydından taşındı"; the subsequent A2 blob reconciliation
+verified that the same three values were already present on `main`, so this
+record preserves them and reconstructs no actual effort.
+
+Operator branch disposition (2026-08-11): **DROP** local-only commit
+`1603800e7fafffdca433ced5ce113ffd915a7123`; do not merge it. The SHA is not
+origin-resolvable, so no remote commit link is claimed. Its stable patch is
+identical to
+[`05792273`](https://github.com/BTankut/revAgent/commit/0579227372387279c13d103146506fab984b5a96)
+in [#327](https://github.com/BTankut/revAgent/pull/327), whose protected squash
+[`1a88fb11`](https://github.com/BTankut/revAgent/commit/1a88fb1153ae006cdced1243c84ab85dbacb08df)
+is on `main`. The old branch snapshot predates the later fail-closed ordinary
+invocation conflict gate and deterministic verification-hold IDs in
+[#334](https://github.com/BTankut/revAgent/pull/334) and
+[#333](https://github.com/BTankut/revAgent/pull/333), so merging that snapshot
+would risk a security regression. Branch deletion is a separate action and was
+not performed.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 
@@ -175,8 +196,8 @@ separately from engineering effort.
 |---|---|---|---|---|---|---|---|
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | 5d | not recorded | not calculable | `passed` |
 | M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
-| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `passed` — awaiting milestone-owner acceptance |
-| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `passed` |
+| M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `accepted` |
+| M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `accepted` |
 | M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `not_started` |
 | M5 | OIDC, device enrollment, seats, tenant isolation, audit, event schema, and Postgres migrations pass two-tenant tests | M2 | WP4 | 8d | not recorded | not calculable | `not_started` |
 | M6 | Installer/uninstaller and signed bridge/add-in self-update lane pass lab install, update, crash-loop rollback, and signature checks | M3, M5 | WP3 with WP5 conventions | 12d | not recorded | not calculable | `not_started` |

@@ -1,9 +1,13 @@
 # M3 Bridge + Add-in Gate Evidence
 
-**Document state:** M3 gate evidence produced; awaiting operator acceptance.
-Only the milestone decision owner may move this gate from `passed` to
-`accepted` (MASTER_PLAN R). R-C: a milestone is exited by its scripted demo,
-not by this document; this ledger records the demo's retained evidence.
+**Evidence state:** `passed`
+
+**Acceptance state:** `accepted` (milestone owner, 2026-08-11)
+
+The milestone decision owner recorded `M3 accepted` after the gate evidence
+passed. R-C remains unchanged: a milestone is exited by its scripted demo, not
+by this document; this ledger records the demo's retained evidence and the
+owner's later acceptance decision.
 
 **Milestone:** M3 — Bridge + pre-pilot add-in adaptations connect, journal
 redelivery, and demonstrate sequential then capability-gated atomic batch
@@ -14,6 +18,21 @@ model `RME_basic_sample_project`. No prior revAgent install. Bridge ran as the
 real `revAgentBridge` Windows service (LocalSystem) against a conforming
 Gateway peer (the frozen `@revagent/gateway-stub`, TLS on loopback) and a live
 add-in listener on 127.0.0.1:8080.
+
+**Retained live-evidence locator:** off-repo and coordinator-local,
+`C:\Users\BT\Projects\revAgent-freeze-evidence\m3-live-petrucci\`. The path
+resolved on 2026-08-11 to six non-empty files totaling 88,717 bytes:
+`discovery-log.txt`, `doctor.json`, `eventlog.txt`, `gateway-snapshot.json`,
+`mcp-status-live.json`, and `service-identity.json`. The historical collection
+source was PETRUCCI `C:\revagent-deploy\m3-evidence` with `scp exit=0`.
+
+For locator/integrity checking without moving or ingesting the bundle, the
+SHA-256 of its 529-byte verification manifest is
+`8494272b27493ec19d44cd090a1b0b9a7a72a7637489400404570d3b9f2e118a`.
+That manifest is recomputed rather than stored in the bundle: sort the six
+listed ASCII filenames in ascending name order and emit one UTF-8/no-BOM
+`name<TAB>decimal-bytes<TAB>lowercase-file-sha256<LF>` row per file, including
+the final LF. This locator is not a portable repository or NAS location.
 
 ## Section-08 M3 gate items
 
