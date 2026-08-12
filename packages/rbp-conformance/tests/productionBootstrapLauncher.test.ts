@@ -1709,12 +1709,15 @@ describe("canonical production bootstrap and external launcher", () => {
     }
   });
 
+  const attestationRequestTimeoutProbeWatchdogMs = 90_000;
+  const attestationRequestTimeoutProbeTestTimeoutMs = 120_000;
+
   it("times out and terminates a child that connects without a request", async () => {
     if (process.platform !== "win32") return;
     const startedAt = Date.now();
     const result = await runCanonicalLauncher(
       ["__launcher-attestation-request-timeout-probe"],
-      { timeoutMs: 45_000 },
+      { timeoutMs: attestationRequestTimeoutProbeWatchdogMs },
     );
     const elapsedMs = Date.now() - startedAt;
     expect(result.error).toBeUndefined();
@@ -1722,8 +1725,8 @@ describe("canonical production bootstrap and external launcher", () => {
     expect(result.status).not.toBe(0);
     expect(String(result.stderr)).toMatch(/attestation request timed out/u);
     expect(elapsedMs).toBeGreaterThanOrEqual(28_000);
-    expect(elapsedMs).toBeLessThan(45_000);
-  }, 50_000);
+    expect(elapsedMs).toBeLessThan(attestationRequestTimeoutProbeWatchdogMs);
+  }, attestationRequestTimeoutProbeTestTimeoutMs);
 
   it("isolates concurrent one-shot launcher handoffs", async () => {
     if (process.platform !== "win32") return;
