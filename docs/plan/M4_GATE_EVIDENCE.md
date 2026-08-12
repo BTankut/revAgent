@@ -48,8 +48,8 @@ durability.
 | Forecast / actual / variance | Original forecast `3.00h`: repo preparation `2.25h`, host proof `0.75h`; dedicated-host retarget added `0.25h`, so revised total forecast is `3.25h`. Repo preparation actual `1.30h`, variance `-0.95h` (`-42%`). Host proof actual `1.05h`: isolated runtime/image preparation `0.80h` (evidence window `18:55:55Z–19:44:55Z`) plus dedicated-host lifecycle closure `0.25h` (`21:00:07Z–21:14:30Z`); against `0.75h`, variance `+0.30h` (`+40%`). Retarget actual `0.15h`; against `0.25h`, variance `-0.10h` (`-40%`). Revised total actual `2.50h`; variance `-0.75h` (`-23%`). Passive CI/operator waits are excluded. | `passed` |
 | Repo-preparation result | Local implementation, latest-main integration, independent review, and exact-head protected evidence passed. | `passed` |
 
-Unknown evidence remains `pending`; it is not inferred from a green adjacent
-slice or from this document's presence.
+Out-of-slice M4 evidence remains `pending`; it is not inferred from a green
+adjacent slice or from this document's presence.
 
 ### Red-result disposition
 
@@ -117,7 +117,7 @@ production-deployment, or tunnel gate.
 | No protected-surface changes | `/opt/revagent/deploy/phase1`'s four root-owned artifacts retained the DP-03-04 SHA-256 values. Docker config, cloudflared files/service, account/group, isolated-root non-evidence files, Docker logical inventories, normalized IPv4/IPv6 firewall rule graphs, and host anchors were equal at T0/T2. No credential, runner, workflow, CD, signing, or NAS mutation occurred. | `passed` |
 | Teardown | `docker stop --timeout 10` produced `Status=exited`, `ExitCode=0`, `OOMKilled=false`, empty `Error`, and no `gateway.shutdown_failed`; non-force remove succeeded. Exact-name and all-container counts are zero. | `passed` |
 | Post-run equality | Fifteen protected facets passed T0/T2 equality; exact container, all-container, network-attachment, volume, and target-listener residue is zero. | `passed` |
-| Evidence locator | Authoritative coordinator bundle `C:\Users\BT\AppData\Local\BT-M4-HOST\PR-370\1882289733ff0f3849546443e24d6cedc2c9a2dd\evidence\m4-host-lifecycle-20260812T211328Z`; remote mirror `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd/evidence/m4-host-lifecycle-20260812T211328Z`; 60/60 files reverified locally and remotely; verification-manifest SHA-256 `5a6e18c82535643b74d39fe1771c1691be08be40ac6f014102bfee97a24a1c43` | `passed` |
+| Evidence locator | Authoritative coordinator bundle `C:\Users\BT\AppData\Local\BT-M4-HOST\PR-370\1882289733ff0f3849546443e24d6cedc2c9a2dd\evidence\m4-host-lifecycle-20260812T211328Z`; remote mirror `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd/evidence/m4-host-lifecycle-20260812T211328Z`; 60/60 files reverified locally and remotely; `verification-manifest.tsv` SHA-256 `5a6e18c82535643b74d39fe1771c1691be08be40ac6f014102bfee97a24a1c43` | `passed` |
 | M4-HOST result | Exact immutable image lifecycle, positive health, structured fail-closed refusal, graceful teardown, residue, and protected-surface equality passed on the authoritative host. | `passed` |
 
 ### Retarget and red-result disposition
