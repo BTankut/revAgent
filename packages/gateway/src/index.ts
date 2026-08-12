@@ -224,6 +224,24 @@ export {
   type IdentityPort,
 } from "./authContext.js";
 export {
+  PRE_PRODUCTION_IDENTITY_CONTRACT_VERSION,
+  PreProductionIdentityConfigurationError,
+  createPreProductionIdentityAuthority,
+  type PreProductionDeviceRevocation,
+  type PreProductionEnrollmentDeviceStatus,
+  type PreProductionEnrollmentExchange,
+  type PreProductionEnrollmentExchangeInput,
+  type PreProductionEnrollmentIssue,
+  type PreProductionEnrollmentIssueInput,
+  type PreProductionIdentityAuthority,
+  type PreProductionIdentityConfigurationErrorReason,
+  type PreProductionIdentityOptions,
+  type PreProductionIdentityRefusal,
+  type PreProductionIdentityRefusalReason,
+  type PreProductionIdentityResult,
+  type PreProductionNorthIdentityFixture,
+} from "./preProductionIdentity.js";
+export {
   REVAGENT_EVENT_SCHEMA,
   createUnavailableEventSink,
   type GatewayEventEnvelope,
@@ -315,6 +333,7 @@ export {
 } from "./modeB.js";
 export {
   GatewayFixturePortError,
+  GatewayPreProductionPortError,
   assertProductionPorts,
   buildFastifyOptions,
   createFailClosedPorts,

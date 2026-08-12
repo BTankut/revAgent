@@ -1,11 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { GATEWAY_AUTH_CONTRACT_VERSION } from "./authContext.js";
 import { loadGatewayConfig, type GatewayConfig } from "./config.js";
+import { createPreProductionIdentityAuthority } from "./preProductionIdentity.js";
 import {
   GatewayFixturePortError,
+  GatewayPreProductionPortError,
   assertProductionPorts,
   buildFastifyOptions,
   createFailClosedPorts,
   createGatewayApp,
+  startGatewayServer,
 } from "./server.js";
 import { createFakeIdentityPort } from "./testAdapters.js";
 
@@ -25,6 +29,41 @@ const PROD = configFor({
   GATEWAY_PUBLIC_URL: "https://gateway.example",
 });
 
+function preProductionIdentity() {
+  return createPreProductionIdentityAuthority({
+    mode: "preproduction",
+    nodeEnv: "test",
+    tokenKey: "preproduction-server-gate-key-000000000000000001",
+    clock: () => 1_800_000_000_000,
+    northIdentities: [
+      {
+        authorization:
+          "Bearer preproduction-server-token-000000000000000001",
+        context: Object.freeze({
+          contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+          actor: Object.freeze({
+            type: "user" as const,
+            tenantId: "tenant-preproduction",
+            userId: "user-preproduction",
+            role: "user" as const,
+            oidcIssuer: "https://issuer.invalid/preproduction",
+            oidcSubject: "subject-preproduction",
+          }),
+          session: Object.freeze({
+            sessionId: "session-preproduction",
+            clientType: "mcp" as const,
+            mcpSessionId: "mcp-preproduction",
+            oauthClientId: "client-preproduction",
+          }),
+          principalKey: "tenant-preproduction:user-preproduction",
+          issuedAtMs: 1_799_999_999_000,
+          expiresAtMs: 1_800_000_060_000,
+        }),
+      },
+    ],
+  });
+}
+
 describe("production port gate", () => {
   it("refuses to serve production traffic through a fixture adapter", () => {
     // Not "no code path selects a fake" -- that stops being true the first time
@@ -36,6 +75,40 @@ describe("production port gate", () => {
   it("allows a fixture adapter outside production", () => {
     const ports = { ...createFailClosedPorts(), identity: createFakeIdentityPort() };
     expect(() => assertProductionPorts(DEV, ports)).not.toThrow();
+  });
+
+  it("refuses the pre-production identity adapter in production", () => {
+    const ports = {
+      ...createFailClosedPorts(),
+      identity: preProductionIdentity(),
+    };
+    expect(() => assertProductionPorts(PROD, ports)).toThrow(
+      GatewayPreProductionPortError,
+    );
+    expect(() => assertProductionPorts(DEV, ports)).not.toThrow();
+  });
+
+  it("guards both direct app creation and server startup before ingress", async () => {
+    let ingressStarted = false;
+    const base = createFailClosedPorts();
+    const ports = {
+      ...base,
+      identity: preProductionIdentity(),
+      rbpIngress: {
+        ...base.rbpIngress,
+        async start(): Promise<void> {
+          ingressStarted = true;
+        },
+      },
+    };
+
+    expect(() => createGatewayApp({ config: PROD, ports })).toThrow(
+      GatewayPreProductionPortError,
+    );
+    await expect(startGatewayServer({ config: PROD, ports })).rejects.toThrow(
+      GatewayPreProductionPortError,
+    );
+    expect(ingressStarted).toBe(false);
   });
 
   it("accepts the fail-closed ports in production", () => {

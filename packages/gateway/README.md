@@ -98,6 +98,22 @@ RBP/1 vectors and malformed-input guards prove that the shared implementation
 preserves the prior fail-closed behavior. The frozen protocol sources and root
 workspace lockfile remain unchanged.
 
+M4-01 adds a deterministic identity/device-authority adapter only for explicit
+`preproduction` mode. Its north bearer and derivation key are synthetic,
+caller-injected pre-production fixture inputs; enrollment/device tokens are
+derived deterministically and retained only by SHA-256 digest after their one
+success response. Enrollment issue, single-use exchange, active/seat-denied
+identity, and idempotent revoke until explicit fresh enrollment replaces the
+credential are in-memory, process-lifetime seams. They do not claim a durable
+replay store, the real
+`/bridge/v1/enroll` HTTP route, reboot evidence, or RES-30 completion.
+Construction rejects `NODE_ENV=production`, and both the server starter and the
+direct app factory reject an injected `preproduction` identity before ingress
+or a listener can start. No default bearer, token key, host binding, or runtime
+selection was added. The north MCP `NorthMcpAuthenticator` composition remains
+a later slice so it can be bound to this same identity source without opening a
+second, independently injectable pre-production credential path.
+
 GW-10 is production-code MCP composition, not production OAuth. The handler
 accepts only an injected token verifier and requires an HTTPS protected-resource
 metadata URL. IdP/OIDC discovery, PKCE/DCR, JWKS rotation, and real production

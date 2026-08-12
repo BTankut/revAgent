@@ -90,8 +90,19 @@ export class GatewayFixturePortError extends Error {
   }
 }
 
+export class GatewayPreProductionPortError extends Error {
+  readonly code = "preproduction_adapter_refused" as const;
+  readonly adapterKind = "preproduction" as const;
+  constructor(readonly port: GatewayPortName) {
+    super(
+      `refusing to start in production: the ${port} port uses the deterministic preproduction adapter`,
+    );
+    this.name = "GatewayPreProductionPortError";
+  }
+}
+
 /**
- * Refuses to run production traffic against a fixture.
+ * Refuses to run production traffic against a fixture or pre-production seam.
  *
  * This is a runtime gate rather than a claim that no code path selects a fake.
  * Fake identity is the one adapter whose accidental promotion authenticates
@@ -115,6 +126,9 @@ export function assertProductionPorts(
     ["rbp_ingress", ports.rbpIngress.kind],
   ];
   for (const [name, kind] of entries) {
+    if (kind === "preproduction") {
+      throw new GatewayPreProductionPortError(name);
+    }
     if (isFixtureAdapterKind(kind)) {
       throw new GatewayFixturePortError(name, kind);
     }
@@ -176,6 +190,10 @@ export function createGatewayApp(options: {
   readonly ports: GatewayServerPorts;
 }): FastifyInstance {
   const { config, ports } = options;
+  // `createGatewayApp` is public for injection tests. Keep the same executable
+  // production gate here so a caller cannot bypass `startGatewayServer` and
+  // call `app.listen()` directly with a non-production identity adapter.
+  assertProductionPorts(config, ports);
   const app = Fastify(buildFastifyOptions(config));
   const publicHostname = new URL(config.publicUrl).hostname.toLowerCase();
   const northMcp =
