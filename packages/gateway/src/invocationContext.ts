@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createHash } from "node:crypto";
+import { makeParamsDigest, type JsonValue } from "@revagent/protocol";
 
 import type { AuthContext } from "./authContext.js";
 import type {
@@ -112,96 +112,8 @@ function requireBoundedString(
   }
 }
 
-function assertWellFormedUnicode(value: string): void {
-  for (let index = 0; index < value.length; index += 1) {
-    const codeUnit = value.charCodeAt(index);
-    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff) {
-      const next = value.charCodeAt(index + 1);
-      if (!(next >= 0xdc00 && next <= 0xdfff)) {
-        throw new TypeError(
-          "RFC 8785 input contains an unpaired high surrogate",
-        );
-      }
-      index += 1;
-    } else if (codeUnit >= 0xdc00 && codeUnit <= 0xdfff) {
-      throw new TypeError("RFC 8785 input contains an unpaired low surrogate");
-    }
-  }
-}
-
-function quote(value: string): string {
-  assertWellFormedUnicode(value);
-  return JSON.stringify(value);
-}
-
-/** Mirrors the frozen RBP/1 RFC 8785 parameter canonicalizer. */
-function canonicalJson(value: unknown): string {
-  if (value === null) {
-    return "null";
-  }
-  switch (typeof value) {
-    case "boolean":
-      return value ? "true" : "false";
-    case "number": {
-      if (!Number.isFinite(value)) {
-        throw new TypeError("RFC 8785 input numbers must be finite");
-      }
-      return JSON.stringify(value);
-    }
-    case "string":
-      return quote(value);
-    case "object": {
-      if (Array.isArray(value)) {
-        const values: string[] = [];
-        for (let index = 0; index < value.length; index += 1) {
-          if (!Object.hasOwn(value, index) || value[index] === undefined) {
-            throw new TypeError(
-              `RFC 8785 input contains an undefined array item at ${index}`,
-            );
-          }
-          values.push(canonicalJson(value[index]));
-        }
-        return `[${values.join(",")}]`;
-      }
-
-      const prototype = Object.getPrototypeOf(value) as object | null;
-      if (prototype !== Object.prototype && prototype !== null) {
-        throw new TypeError("RFC 8785 input must contain only JSON objects");
-      }
-      if (Object.getOwnPropertySymbols(value).length > 0) {
-        throw new TypeError(
-          "RFC 8785 input cannot contain symbol-keyed members",
-        );
-      }
-      if (
-        Object.getOwnPropertyNames(value).length !== Object.keys(value).length
-      ) {
-        throw new TypeError(
-          "RFC 8785 input cannot contain non-enumerable members",
-        );
-      }
-
-      const record = value as Record<string, unknown>;
-      const members = Object.keys(record)
-        .sort()
-        .map((key) => {
-          const member = record[key];
-          if (member === undefined) {
-            throw new TypeError(
-              `RFC 8785 input contains undefined member ${key}`,
-            );
-          }
-          return `${quote(key)}:${canonicalJson(member)}`;
-        });
-      return `{${members.join(",")}}`;
-    }
-    default:
-      throw new TypeError(`RFC 8785 input cannot contain ${typeof value}`);
-  }
-}
-
 export function canonicalParamsDigest(value: unknown): GatewayParamsDigest {
-  return `sha256:${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
+  return makeParamsDigest(value as JsonValue);
 }
 
 function validateDocumentIdentity(
