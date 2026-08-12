@@ -11,6 +11,7 @@ import {
 } from "../canonicalProductionLauncher.js";
 
 const ABSOLUTE_TIMEOUT_MS = 300_000;
+const PROCESS_KILL_GRACE_MS = 5_000;
 const TEST_TIMEOUT_MARGIN_MS = 60_000;
 const OUTPUT_TAIL_CHARACTERS = 2_048;
 
@@ -77,6 +78,7 @@ function killProcessTree(pid: number | undefined): void {
     stdio: "ignore",
     windowsHide: true,
   });
+  taskkill.unref();
   taskkill.on("error", () => {
     try {
       process.kill(pid, "SIGKILL");
@@ -124,11 +126,47 @@ export function invokeProductionCli(
     let stderr = "";
     let launchError: Error | undefined;
     let timedOut = false;
+    let settled = false;
+    let killGraceTimer: NodeJS.Timeout | undefined;
+
+    const finish = (
+      status: number | null,
+      signal: NodeJS.Signals | null,
+    ): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(absoluteTimer);
+      if (killGraceTimer !== undefined) clearTimeout(killGraceTimer);
+      const elapsedMs = Date.now() - startedAt;
+      resolve({
+        status,
+        signal,
+        stdout,
+        stderr,
+        error: !timedOut
+          ? launchError
+          : new Error(
+            `${input.label} timed out on the absolute budget after ` +
+              `${String(elapsedMs)}ms (absolute budget ${String(ABSOLUTE_TIMEOUT_MS)}ms); ` +
+              `stdout tail: ${JSON.stringify(stdout.slice(-OUTPUT_TAIL_CHARACTERS))}; ` +
+              `stderr tail: ${JSON.stringify(stderr.slice(-OUTPUT_TAIL_CHARACTERS))}`,
+          ),
+      });
+    };
 
     const expire = (): void => {
       if (timedOut) return;
       timedOut = true;
       killProcessTree(child.pid);
+      killGraceTimer = setTimeout(() => {
+        // A failed Windows tree kill can leave the Node grandchild holding the
+        // inherited pipes. Stop waiting on those handles so the absolute
+        // watchdog remains a real upper bound on the test helper itself.
+        child.stdout.destroy();
+        child.stderr.destroy();
+        child.unref();
+        finish(child.exitCode, child.signalCode);
+      }, PROCESS_KILL_GRACE_MS);
     };
     const absoluteTimer = setTimeout(
       expire,
@@ -147,22 +185,7 @@ export function invokeProductionCli(
       launchError = error;
     });
     child.on("close", (status, signal) => {
-      clearTimeout(absoluteTimer);
-      const elapsedMs = Date.now() - startedAt;
-      resolve({
-        status,
-        signal,
-        stdout,
-        stderr,
-        error: !timedOut
-          ? launchError
-          : new Error(
-            `${input.label} timed out on the absolute budget after ` +
-              `${String(elapsedMs)}ms (absolute budget ${String(ABSOLUTE_TIMEOUT_MS)}ms); ` +
-              `stdout tail: ${JSON.stringify(stdout.slice(-OUTPUT_TAIL_CHARACTERS))}; ` +
-              `stderr tail: ${JSON.stringify(stderr.slice(-OUTPUT_TAIL_CHARACTERS))}`,
-          ),
-      });
+      finish(status, signal);
     });
   });
 }
