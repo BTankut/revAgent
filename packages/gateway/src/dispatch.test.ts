@@ -145,7 +145,7 @@ const O1_PARAMS_DIGEST_VECTORS = (
   ) as {
     readonly vectors: readonly {
       readonly name: string;
-      readonly params: unknown;
+      readonly params: JsonValue;
       readonly digest: string;
     }[];
   }
