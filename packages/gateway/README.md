@@ -110,9 +110,45 @@ replay store, the real
 Construction rejects `NODE_ENV=production`, and both the server starter and the
 direct app factory reject an injected `preproduction` identity before ingress
 or a listener can start. No default bearer, token key, host binding, or runtime
-selection was added. The north MCP `NorthMcpAuthenticator` composition remains
-a later slice so it can be bound to this same identity source without opening a
-second, independently injectable pre-production credential path.
+selection was added. M4-01 deliberately left the north MCP
+`NorthMcpAuthenticator` composition to its next slice so it could be bound to
+this same identity source without opening a second, independently injectable
+pre-production credential path.
+
+M4-02 composes that adapter for an explicit `profile=lan_test` and
+`mode=preproduction` simulator seam. The factory creates one identity instance
+and binds that exact reference to north authentication, Bridge session
+authority, and the pre-production-labelled RBP ingress wrapper. It accepts no
+alternate identity, north authenticator, Bridge authority, or ingress host.
+Gateway configuration must already have validated, production mode is refused,
+and the server validates the app/handler graph before ingress start and listener
+bind. North `AuthInfo` carries the prefix-free bearer only for the request
+lifetime; client id comes from the validated `AuthContext`, while scopes and the
+canonical public `/mcp` resource are explicit inputs.
+
+The same composition check remains fail closed outside that profile. A
+production north authenticator must expose production OIDC trust metadata tied
+to the exact configured identity reference, and an enabled PostgreSQL RBP host
+is accepted only as `kind=postgres` with an inspectable Bridge authority whose
+identity is `kind=oidc`, whose store is `kind=postgres`, and whose identity/store
+references exactly match the outer Gateway ports. A disabled production RBP
+port is accepted only as the `unavailable` refusal shape with no authority or
+start, mount, upgrade, drain, or close surface. Hidden, unknown, or mixed
+authority graphs are refused before ingress or the listener starts. Catalog and
+invocation callbacks receive only a token-free, allowlisted authorization
+projection; endpoint failures emit a fixed, value-free event/code report. An
+observability callback's synchronous throw or asynchronous rejection is
+isolated from request and shutdown control flow. An
+ingress-start failure is not closed as though it had started, while a listener
+failure after a successful start closes the ingress exactly once and preserves
+the listener error.
+
+This is simulator-local composition, not an image runtime profile. The current
+Gateway image remains fail closed and has no pre-production store adapter,
+environment selector, launcher path, host default, credential, OAuth/tenant
+integration, production tunnel, or persistence/reboot claim. Host execution,
+real credentials, external client/live Revit, and write confirmation remain
+separately operator-gated M4 work.
 
 GW-10 is production-code MCP composition, not production OAuth. The handler
 accepts only an injected token verifier and requires an HTTPS protected-resource
@@ -126,8 +162,9 @@ identity; the endpoint does not infer any of those from client claims.
 contain secrets.
 
 The Gateway test command builds the existing workspace Bridge simulator before
-Vitest and consumes only its public built surface. It does not add a production
-runtime dependency or modify the frozen RBP/1 package.
+Vitest and consumes only its public built surface. The M4-02 smoke exercises the
+real simulator `HttpSseGatewayBinding`; it does not add a production runtime
+dependency or modify the frozen RBP/1 package.
 
 ## W1-5 transport spike
 

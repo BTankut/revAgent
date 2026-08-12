@@ -47,6 +47,7 @@ import type { GatewayInvocationRoute } from "./invocationContext.js";
 import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
   type AuthenticatedNorthMcpRequest,
+  type AuthorizedNorthMcpRequest,
   type NorthMcpEndpointHandle,
   startNorthMcpEndpoint,
 } from "./northMcpEndpoint.js";
@@ -186,9 +187,11 @@ function authenticatedRequest(
 }
 
 function invocationRouteFor(
-  authenticated: AuthenticatedNorthMcpRequest,
+  authenticated: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
 ): GatewayInvocationRoute {
+  expect(authenticated.authInfo).not.toHaveProperty("token");
+  expect(authenticated.authInfo).not.toHaveProperty("extra");
   return Object.freeze({
     tenantId: authenticated.authContext.actor.tenantId,
     mcpSessionId,
@@ -635,9 +638,7 @@ describe("M2 north MCP first slice", () => {
       clientId: "catalog-coherence-test",
       scopes: ["mcp:tools"],
     };
-    const errorSpy = vi
-      .spyOn(console, "error")
-      .mockImplementation(() => undefined);
+    const reports: unknown[] = [];
     let endpoint: NorthMcpEndpointHandle | undefined;
     let client: Client | undefined;
     let transport: StreamableHTTPClientTransport | undefined;
@@ -659,6 +660,9 @@ describe("M2 north MCP first slice", () => {
               : null;
           },
         },
+        reportError(report) {
+          reports.push(report);
+        },
       });
       client = new Client({
         name: "revAgent catalog coherence test",
@@ -672,19 +676,17 @@ describe("M2 north MCP first slice", () => {
 
       await expect(client.connect(transport)).rejects.toThrow();
       expect(executorCalls).toBe(0);
-      expect(
-        errorSpy.mock.calls.some((call) =>
-          call.some((value) =>
-            String(value).includes(
-              "north callable core.ui.state disagrees with its GW-3 catalog entry",
-            ),
-          ),
-        ),
-      ).toBe(true);
+      expect(reports.length).toBeGreaterThan(0);
+      expect(reports).toContainEqual({
+        event: "gateway.north_mcp.error",
+        code: "sdk_error",
+      });
+      expect(JSON.stringify(reports)).not.toContain(
+        "north callable core.ui.state disagrees",
+      );
     } finally {
       await Promise.allSettled([client?.close(), transport?.close()]);
       await endpoint?.close().catch(() => undefined);
-      errorSpy.mockRestore();
     }
   });
 
