@@ -1,10 +1,12 @@
 import { createHash } from "node:crypto";
+import type { HelloEnvelope } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
 
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
   type AuthContext,
 } from "./authContext.js";
+import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import {
   PRE_PRODUCTION_IDENTITY_CONTRACT_VERSION,
   PreProductionIdentityConfigurationError,
@@ -12,6 +14,7 @@ import {
   type PreProductionEnrollmentIssueInput,
   type PreProductionIdentityOptions,
 } from "./preProductionIdentity.js";
+import { createRestartableTestStore } from "./testAdapters.js";
 
 const NOW_MS = 1_800_000_000_000;
 const NORTH_TOKEN = "north-preproduction-token-000000000001";
@@ -354,7 +357,7 @@ describe("pre-production device enrollment authority", () => {
     ).toMatchObject({ ok: false, reason: "enrollment_conflict" });
   });
 
-  it("preserves seat denial, makes revoke monotonic, and replaces a revoked credential", async () => {
+  it("preserves seat denial, keeps repeated revoke idempotent, and replaces a revoked credential", async () => {
     const authority = createPreProductionIdentityAuthority(options());
     const seatDeniedIssue = authority.issueEnrollmentToken({
       ...ACTIVE_ISSUE,
@@ -432,5 +435,63 @@ describe("pre-production device enrollment authority", () => {
         connectionId: "connection-new-token",
       }),
     ).toMatchObject({ ok: true, value: { deviceStatus: "active" } });
+  });
+
+  it("composes with the bridge session authority to refuse a revoked device", async () => {
+    const identity = createPreProductionIdentityAuthority(options());
+    const issued = identity.issueEnrollmentToken(ACTIVE_ISSUE);
+    expect(issued.ok).toBe(true);
+    if (!issued.ok) return;
+    const exchanged = identity.exchangeEnrollmentToken({
+      enrollmentToken: issued.value.enrollmentToken,
+      machineFingerprint: MACHINE_FINGERPRINT,
+    });
+    expect(exchanged.ok).toBe(true);
+    if (!exchanged.ok) return;
+    expect(identity.revokeDevice(ACTIVE_ISSUE.deviceId)).toMatchObject({
+      ok: true,
+      value: { deviceStatus: "revoked" },
+    });
+
+    const restartable = createRestartableTestStore();
+    const bridge = new GatewayBridgeSessionAuthority(restartable.store, identity, {
+      clock: () => NOW_MS,
+    });
+    await bridge.open();
+    const hello: HelloEnvelope = {
+      type: "hello",
+      id: "018f0f7a-3f5e-7c00-8000-000000000001",
+      ts: new Date(NOW_MS).toISOString(),
+      payload: {
+        min_protocol: 1,
+        max_protocol: 1,
+        capabilities: ["transport_streamable_http"],
+        bridge_version: "m4-01-preproduction-test",
+        device_id: ACTIVE_ISSUE.deviceId,
+        machine: { hostname: "m4-01-test", os: "windows" },
+        addin_versions: ["m4-01-test"],
+      },
+    };
+
+    try {
+      await expect(
+        bridge.openConnection({
+          deviceToken: exchanged.value.deviceToken,
+          binding: "wss",
+          hello,
+          channel: {
+            async send() {},
+            async close() {},
+          },
+        }),
+      ).rejects.toMatchObject({
+        name: "GatewayRbpFault",
+        code: "auth",
+        httpStatus: 403,
+        closeCode: 4403,
+      });
+    } finally {
+      await bridge.close();
+    }
   });
 });

@@ -99,11 +99,13 @@ preserves the prior fail-closed behavior. The frozen protocol sources and root
 workspace lockfile remain unchanged.
 
 M4-01 adds a deterministic identity/device-authority adapter only for explicit
-`preproduction` mode. Its north bearer and device secrets are caller-injected;
-enrollment/device tokens are derived deterministically and retained only by
-SHA-256 digest after their one success response. Enrollment issue, single-use
-exchange, active/seat-denied identity, and monotonic revoke are in-memory,
-process-lifetime seams. They do not claim a durable replay store, the real
+`preproduction` mode. Its north bearer and derivation key are synthetic,
+caller-injected pre-production fixture inputs; enrollment/device tokens are
+derived deterministically and retained only by SHA-256 digest after their one
+success response. Enrollment issue, single-use exchange, active/seat-denied
+identity, and idempotent revoke until explicit fresh enrollment replaces the
+credential are in-memory, process-lifetime seams. They do not claim a durable
+replay store, the real
 `/bridge/v1/enroll` HTTP route, reboot evidence, or RES-30 completion.
 Construction rejects `NODE_ENV=production`, and both the server starter and the
 direct app factory reject an injected `preproduction` identity before ingress
