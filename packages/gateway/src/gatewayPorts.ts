@@ -74,6 +74,7 @@ export function isGatewayPortRefusal(value: unknown): value is GatewayPortRefusa
 export type GatewayPortAdapterKind =
   | "unavailable"
   | "fake"
+  | "preproduction"
   | "capture"
   | "memory"
   | "oidc"
