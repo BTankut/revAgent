@@ -1346,11 +1346,30 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
   });
 
   it.each(O1_PARAMS_DIGEST_VECTORS)(
-    "matches the frozen O1 $name parameter digest vector",
+    "matches the protocol-owned frozen O1 $name parameter digest vector",
     ({ params, digest }) => {
-      expect(canonicalParamsDigest(params)).toBe(digest);
+      const gatewayDigest = canonicalParamsDigest(params);
+      expect(gatewayDigest).toBe(makeParamsDigest(params));
+      expect(gatewayDigest).toBe(digest);
     },
   );
+
+  it("preserves the protocol-owned malformed-input guards", () => {
+    const sparse: unknown[] = new Array(1);
+    const symbolMember: Record<PropertyKey, unknown> = { value: 1 };
+    symbolMember[Symbol("hidden")] = true;
+    const nonEnumerable = { visible: true };
+    Object.defineProperty(nonEnumerable, "hidden", {
+      enumerable: false,
+      value: true,
+    });
+
+    expect(() => canonicalParamsDigest(Number.NaN)).toThrow(/finite/);
+    expect(() => canonicalParamsDigest("\ud800")).toThrow(/surrogate/);
+    expect(() => canonicalParamsDigest(sparse)).toThrow(/undefined array item/);
+    expect(() => canonicalParamsDigest(symbolMember)).toThrow(/symbol-keyed/);
+    expect(() => canonicalParamsDigest(nonEnumerable)).toThrow(/non-enumerable/);
+  });
 
   it("rejects non-RFC-8785 Unicode before executor contact", async () => {
     const harness = createDispatcher({

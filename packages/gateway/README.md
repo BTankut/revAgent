@@ -91,10 +91,12 @@ batch invocation/digest propagation, verification and clearance correlation,
 bridge acceptance, and production store adapters to their numbered plan rows;
 GW-8 confirmation and GW-10 north discovery are now composed above.
 
-The local parameter-digest implementation is byte-checked against every frozen
-RBP/1 conformance vector. The Gateway workspace dependency is declared, but
-moving digest ownership to `@revagent/protocol.makeParamsDigest` remains a
-separate, numbered slice when the implementation-plan index reaches it.
+M4-00 makes `@revagent/protocol.makeParamsDigest` the sole RFC 8785
+parameter-digest implementation used by the Gateway invocation context. The
+Gateway keeps its public digest wrapper for API compatibility, while frozen
+RBP/1 vectors and malformed-input guards prove that the shared implementation
+preserves the prior fail-closed behavior. The frozen protocol sources and root
+workspace lockfile remain unchanged.
 
 GW-10 is production-code MCP composition, not production OAuth. The handler
 accepts only an injected token verifier and requires an HTTPS protected-resource
