@@ -4,10 +4,14 @@
 
 **Acceptance state:** `not_submitted`
 
+**M4-02 slice state:** `passed`
+([`PR #370`](https://github.com/BTankut/revAgent/pull/370) planner merge review
+pending)
+
 **Plan binding:** `M4-02` is the planner-approved decomposition of the M4
 Gateway live-path work. It prepares a deterministic pre-production composition
-for later bounded host proof; it does not by itself satisfy or enlarge the M4
-milestone gate.
+and has passed its bounded host proof; it does not by itself satisfy or enlarge
+the M4 milestone gate.
 
 **Exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -15,14 +19,15 @@ milestone gate.
 ## Authorization ceiling
 
 This ledger is limited to the DP-08 dedicated Gateway host and its own numeric
-loopback test endpoint. The operator authorized BatchMode SSH discovery, exact
-OCI-archive transfer, and native Docker image import/digest verification on
-`bt@192.168.90.154` (`revagent`). That preparation is complete. Container
-create/start, health/refusal execution, stop/removal, and lifecycle equality
-remain separately operator-gated. Credential use, public/LAN bind, DNS or
-tunnel changes, Compose or UFW mutation, external/live client execution, live
-Revit access, and every write/confirmation action remain closed. Production
-deployment, runner, signing, CD, and NAS surfaces remain untouched.
+loopback test endpoint. The operator first authorized BatchMode SSH discovery,
+exact OCI-archive transfer, and native Docker image import/digest verification
+on `bt@192.168.90.154` (`revagent`), then separately authorized the exact-card
+container lifecycle. The bounded create/start, health/refusal, stop/removal,
+residue, and protected-surface equality proof is complete. Credential use,
+public/LAN bind, DNS or tunnel changes, Compose or UFW mutation, external/live
+client execution, live Revit access, and every write/confirmation action remain
+closed. Production deployment, runner, signing, CD, and NAS surfaces remain
+untouched.
 
 The pre-production composition must remain explicit and fail closed: no
 production-mode bypass, no implicit credentials, no second identity path, and
@@ -38,9 +43,9 @@ durability.
 | Targeted test evidence | Node `v24.14.0`: 4 files / 40 tests; independent final review: 6 files / 49 tests | `passed` |
 | Local/full-gate evidence | Gateway lint, type-check, build, and 27 files / 267 tests passed. Handler manifest remained `sha256:cb193dc22716e12217edc4f5516c7145eb6e42a488c6360777b01e977644ecde`. Two independent final reviews found no remaining P0-P2 issue. | `passed` |
 | GitHub run and attempt links | Scope head: [Gateway CI 31585382544, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31585382544/attempts/1) passed; [CI 31585382546, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31585382546/attempts/1) passed Engineering but failed the diff-external RBP watchdog family described below. Latest-main integration head `1882289733ff0f3849546443e24d6cedc2c9a2dd`: [Gateway CI 31612776407, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31612776407/attempts/1) and [CI 31612776457, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31612776457/attempts/1) passed. | `passed` |
-| Immutable image reference and digest | Exact source `1882289733ff0f3849546443e24d6cedc2c9a2dd` produced OCI archive SHA-256 `13dc7c9ed1edbcf913cd6bec219aefe168bc5ad0173e5632191173e0c0784429`. It was transferred to the DP-08 host and imported by Docker 29.6.2's containerd image store. Engine `Descriptor.digest` and the exact local `tag@digest` selector both resolve `localhost/revagent-gateway:m4-host-1882289733ff@sha256:e6c7e22dfb0cd55cbacbc2c0d1cf8858cd97fd57e8ae98f1ce121dfe7998707b`. No registry publish or container start occurred; the image remains production/fail-closed. | `prepared_remote_lifecycle_pending` |
+| Immutable image reference and digest | Exact source `1882289733ff0f3849546443e24d6cedc2c9a2dd` produced OCI archive SHA-256 `13dc7c9ed1edbcf913cd6bec219aefe168bc5ad0173e5632191173e0c0784429`. It was transferred to the DP-08 host and imported by Docker 29.6.2's containerd image store. Engine `Descriptor.digest` and the exact local `tag@digest` selector both resolve `localhost/revagent-gateway:m4-host-1882289733ff@sha256:e6c7e22dfb0cd55cbacbc2c0d1cf8858cd97fd57e8ae98f1ce121dfe7998707b`. The bounded lifecycle used that exact selector. No registry publish occurred; the image remains production/fail-closed. | `passed` |
 | Lockfile/protocol/workflow protected-surface equality | No diff in `package-lock.json`, `packages/gateway/package.json`, `packages/protocol/**`, `packages/gateway/src/main.ts`, Gateway Dockerfile, `deploy/**`, or `.github/**`. Base/head blobs: lockfile `b3d8df2755b2ead322f36100bc1c0fb177af082c`; Gateway manifest `64215489441d571f0b9a52e6051758be60265f4e`; protocol tree `bbc6ebb687118c30d29508771734df754a735b35`. | `passed` |
-| Forecast / actual / variance | Total forecast `3.00h`: repo preparation `2.25h`, host proof `0.75h`. Repo preparation actual `1.30h`; variance `-0.95h` (`-42%`). Dedicated-host retarget preparation delta: reforecast `0.25h`, actual `0.15h`, variance `-0.10h` (`-40%`). M4-HOST lifecycle actual and total variance remain pending; prior local image-build preparation is retained and will be consolidated at lifecycle closeout. Passive CI/operator waits are excluded. | `repo_passed_host_lifecycle_pending` |
+| Forecast / actual / variance | Original forecast `3.00h`: repo preparation `2.25h`, host proof `0.75h`; dedicated-host retarget added `0.25h`, so revised total forecast is `3.25h`. Repo preparation actual `1.30h`, variance `-0.95h` (`-42%`). Host proof actual `1.05h`: isolated runtime/image preparation `0.80h` (evidence window `18:55:55Z–19:44:55Z`) plus dedicated-host lifecycle closure `0.25h` (`21:00:07Z–21:14:30Z`); against `0.75h`, variance `+0.30h` (`+40%`). Retarget actual `0.15h`; against `0.25h`, variance `-0.10h` (`-40%`). Revised total actual `2.50h`; variance `-0.75h` (`-23%`). Passive CI/operator waits are excluded. | `passed` |
 | Repo-preparation result | Local implementation, latest-main integration, independent review, and exact-head protected evidence passed. | `passed` |
 
 Unknown evidence remains `pending`; it is not inferred from a green adjacent
@@ -75,47 +80,45 @@ slice or from this document's presence.
   run was rerun. `MAINT-01` remains deliberately limited to the planner-bound
   `productionBootstrapLauncher.test.ts` outer-watchdog structure.
 
-### Prepared M4-HOST lifecycle (not authorized for execution)
+### Executed M4-HOST lifecycle
 
-The exact image is now present on the DP-08 host, but no container exists. After
-a new exact M4-HOST lifecycle decision, the SSH collector will retain read-only
-pre-state; reverify the dedicated host, remote loopback endpoint/TLS basis,
-isolated root, source revision, and immutable image digest; create and start
-only that image bound to the host's own `127.0.0.1:18080`; check `/healthz` and
-the structured `/mcp` plus `/bridge/v1/**` refusals through BatchMode SSH; stop
-and remove the temporary container; and retain post-state equality plus a
-resolvable evidence-bundle locator. Any selector drift, production-surface
-dependency, LAN/public exposure, teardown failure, or pre/post inequality stops
-the procedure.
+The exact-card M4-HOST decision authorized the bounded lifecycle procedure on
+the DP-08 host. The SSH collector retained pre-state; reverified the host, remote
+loopback endpoint/TLS basis, isolated root, source revision, and immutable image
+digest; created and started only that image at `127.0.0.1:18080`; checked the
+exact `/healthz`, `/mcp`, and `/bridge/v1/**` response contracts; stopped and
+removed the temporary container; and byte-proved the normalized protected
+T0/T2 projection. The authoritative attempt is retained under the dual evidence
+locator below. No selector drift, production-surface dependency, LAN/public
+exposure, teardown failure, or semantic protected-surface inequality remains.
 
 ## M4-HOST evidence collection
 
-**Gate state:** `retarget_preparation_complete_lifecycle_not_authorized`
+**Gate state:** `passed_planner_merge_review_pending`
 
-The operator authorized only dedicated-host discovery, archive transfer, and
-Docker image import/digest verification. Those steps passed without creating a
-container or listener. A new decision is required before container
-create/start, health/refusal checks, stop/removal, or lifecycle equality. No
-preparation decision opens a credential, external-client/live, write-confirm,
-LAN-bind, production-deployment, or tunnel gate.
+The operator separately authorized the exact dedicated-host lifecycle after
+discovery, archive transfer, and Docker image import/digest verification had
+passed. Lifecycle execution stayed inside that ceiling. Neither decision opens
+a credential, external-client/live, write-confirm, LAN-bind,
+production-deployment, or tunnel gate.
 
 | Field | Required retained evidence | State |
 |---|---|---|
-| Operator decision | Retarget authorization allows BatchMode discovery, exact archive transfer, `docker load`, and digest verification only. Lifecycle execution remains separately gated. | `preparation_passed_lifecycle_not_authorized` |
-| Collector | `revagent.m4-host.ssh-lifecycle.v1` | `passed_for_preparation` |
-| Collection time | Retarget preparation `2026-08-12T20:01:47Z` through `2026-08-12T20:08:38Z`; lifecycle timestamps pending | `passed_for_preparation` |
-| Host / source / image | DP-08 host `revagent` (`bt@192.168.90.154`), Ubuntu 26.04 LTS; source `1882289733ff0f3849546443e24d6cedc2c9a2dd`; exact imported ref/digest `localhost/revagent-gateway:m4-host-1882289733ff@sha256:e6c7e22dfb0cd55cbacbc2c0d1cf8858cd97fd57e8ae98f1ce121dfe7998707b` | `passed_for_preparation` |
-| Isolated root | `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd`; owner `bt:bt`, mode `0750`; no production root used | `passed_for_preparation` |
-| Endpoint / TLS | `http://127.0.0.1:18080`, the Gateway host's own numeric loopback, probed through SSH; TLS `none`; no trust/proxy mutation. LAN bind is deferred to M4-04. | `passed_for_preparation_lifecycle_pending` |
-| Pre-run inventory | BatchMode identity `bt@revagent`; Docker client/server `29.6.2`; containerd image store; zero containers; root filesystem 202 GiB available; TCP 18080/8081 clear; cloudflared disabled/inactive; UFW inactive | `preparation_passed_lifecycle_snapshot_pending` |
-| Bounded health execution | Start/health/stop evidence for only the approved immutable production/fail-closed image and endpoint; `/healthz` is the positive image/lifecycle check | `not_yet_authorized` |
-| Fail-closed execution | `/mcp` and `/bridge/v1/**` remain structurally unavailable (`503`) in the current image; production-mode refusal is proven without selecting a pre-production runtime | `not_yet_authorized` |
-| No public exposure | Preparation opened no listener; cloudflared remained disabled/inactive; TCP 18080 and staged origin 8081 remained clear. No DNS, tunnel, proxy, or LAN bind was created. | `passed_for_preparation_reprove_at_lifecycle` |
-| No protected-surface changes | `/opt/revagent/deploy/phase1`'s four root-owned artifacts still match the DP-03-04 SHA-256 values. No credential, UFW, Compose, runner, workflow, CD, signing, or NAS mutation occurred. | `passed_for_preparation_reprove_at_lifecycle` |
-| Teardown | Stop/removal evidence for the temporary test deployment and bounded residue check | `not_yet_authorized` |
-| Post-run equality | Image import left container inventory at zero and protected preparation surfaces unchanged; full lifecycle pre/post equality remains gated. | `preparation_passed_lifecycle_pending` |
-| Evidence locator | Coordinator bundle `C:\Users\BT\AppData\Local\BT-M4-HOST\PR-370\1882289733ff0f3849546443e24d6cedc2c9a2dd\evidence\m4-host-retarget-20260812T200114Z`; remote card mirror `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd/evidence/m4-host-retarget-20260812T200114Z`; verification-manifest SHA-256 `2d2f95e6490c3c63665d3b5c67504464e1fad90549d7c93c997b2cf47b0620a2` | `passed_for_preparation` |
-| M4-HOST result | Exact image preparation on the authoritative host passed. No container lifecycle ran; lifecycle result remains pending a new operator decision. | `remote_image_prepared_lifecycle_pending` |
+| Operator decision | The exact-card decision allowed only `sudo -n docker` create/start, loopback health/refusal probes, stop/remove, residue, and protected T0/T2 equality. It did not authorize configuration or production-surface repair. | `passed` |
+| Collector | `revagent.m4-host.ssh-lifecycle.v1`; authoritative collector script SHA-256 `2ca090cd4f136fd53e9d8c8fdde9f63c5e94dfbab847f94c09f07a11400c4899` | `passed` |
+| Collection time | Retarget preparation `2026-08-12T20:01:47Z` through `2026-08-12T20:08:38Z`; authoritative lifecycle `2026-08-12T21:14:12Z` through `2026-08-12T21:14:18Z` | `passed` |
+| Host / source / image | DP-08 host `revagent` (`bt@192.168.90.154`), Ubuntu 26.04 LTS; source `1882289733ff0f3849546443e24d6cedc2c9a2dd`; exact imported and executed ref/digest `localhost/revagent-gateway:m4-host-1882289733ff@sha256:e6c7e22dfb0cd55cbacbc2c0d1cf8858cd97fd57e8ae98f1ce121dfe7998707b` | `passed` |
+| Isolated root | `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd`; owner `bt:bt`, mode `0750`; no production root used | `passed` |
+| Endpoint / TLS | `http://127.0.0.1:18080`, the Gateway host's own numeric loopback, probed through SSH; TLS `none`; no trust/proxy mutation. LAN bind remains deferred to M4-04. | `passed` |
+| Pre-run inventory | BatchMode identity `bt@revagent`; Docker client/server `29.6.2`; containerd image store; zero containers and volumes; no network attachments; TCP 18080/8081 clear; cloudflared disabled/inactive; UFW inactive | `passed` |
+| Bounded health execution | Container `revagent-m4-host-pr370-1882289733ff` (`ddd37c1d794d4de234457e9442aa3509f5a7faa7e09c06d96b6c5aeb1421f330`) used read-only rootfs, `/tmp` tmpfs, all capabilities dropped, no-new-privileges, bounded PID/memory, no bind mounts, and only `127.0.0.1:18080 -> 8080/tcp`. `GET /healthz` returned exact HTTP `200` body `{"status":"ok"}`. | `passed` |
+| Fail-closed execution | `POST /mcp` returned structured HTTP `503` with `port=north_mcp`; `POST /bridge/v1` and `/bridge/v1/m4-host-proof` returned structured HTTP `503` with `port=rbp_ingress` and the exact reserved-path message. No credential or pre-production runtime was selected. | `passed` |
+| No public exposure | During T1 the only host listener was numeric loopback `127.0.0.1:18080`; TCP 8081 stayed clear. After removal both ports were clear. Cloudflared stayed disabled/inactive; no DNS, tunnel, proxy, UFW, Compose, or LAN bind was created. | `passed` |
+| No protected-surface changes | `/opt/revagent/deploy/phase1`'s four root-owned artifacts retained the DP-03-04 SHA-256 values. Docker config, cloudflared files/service, account/group, isolated-root non-evidence files, Docker logical inventories, normalized IPv4/IPv6 firewall rule graphs, and host anchors were equal at T0/T2. No credential, runner, workflow, CD, signing, or NAS mutation occurred. | `passed` |
+| Teardown | `docker stop --timeout 10` produced `Status=exited`, `ExitCode=0`, `OOMKilled=false`, empty `Error`, and no `gateway.shutdown_failed`; non-force remove succeeded. Exact-name and all-container counts are zero. | `passed` |
+| Post-run equality | Fifteen protected facets passed T0/T2 equality; exact container, all-container, network-attachment, volume, and target-listener residue is zero. | `passed` |
+| Evidence locator | Authoritative coordinator bundle `C:\Users\BT\AppData\Local\BT-M4-HOST\PR-370\1882289733ff0f3849546443e24d6cedc2c9a2dd\evidence\m4-host-lifecycle-20260812T211328Z`; remote mirror `/home/bt/m4-host/PR-370/1882289733ff0f3849546443e24d6cedc2c9a2dd/evidence/m4-host-lifecycle-20260812T211328Z`; 60/60 files reverified locally and remotely; verification-manifest SHA-256 `5a6e18c82535643b74d39fe1771c1691be08be40ac6f014102bfee97a24a1c43` | `passed` |
+| M4-HOST result | Exact immutable image lifecycle, positive health, structured fail-closed refusal, graceful teardown, residue, and protected-surface equality passed on the authoritative host. | `passed` |
 
 ### Retarget and red-result disposition
 
@@ -136,6 +139,34 @@ LAN-bind, production-deployment, or tunnel gate.
   This was not digest drift: read-only follow-up proved both the tag and exact
   `tag@digest` resolve to `e6c7...`; the archive independently byte-proves the
   `572349...` config descriptor and blob.
+- Lifecycle attempt `m4-host-lifecycle-20260812T210007Z` stopped during T0
+  before create because empty default Docker networks emitted blank lines into
+  the attachment inventory. Filtering blank rows fixed the evidence harness;
+  container and target-listener residue remained zero.
+- Attempt `...T210852Z` also stopped during T0 before create because GNU
+  `stat -c` retained literal `\n` sequences in one owner/group/mode line. Three
+  explicit lines fixed the harness; residue remained zero.
+- Attempt `...T210917Z` created and started the exact image and proved
+  `/healthz` `200`, then stopped on a collector-only `docker port` format
+  assumption. Emergency stop/remove passed. The expected output is
+  `8080/tcp -> 127.0.0.1:18080`, not a bare host endpoint.
+- Attempt `...T211042Z` passed all four HTTP checks and graceful removal, then
+  stopped because the firewall comparator retained `iptables-save` timestamps
+  and live traffic counters. The other thirteen facets were byte-equal; IPv4
+  and IPv6 rule/chain/policy projections were equal after removing only those
+  volatile fields. The authoritative comparator keeps semantic rules while
+  excluding timestamps and counters.
+- Attempt `...T211229Z` passed behavior and equality but was rejected as the
+  authoritative package: sourcing `/etc/os-release` had overwritten the generic
+  shell variable `NAME`, so the temporary container was called `Ubuntu`. It was
+  removed cleanly; the same latent naming collision affected the two earlier
+  created-container attempts, which were also removed. The final collector
+  isolates os-release reads, uses `CONTAINER_NAME`, and asserts the exact
+  deterministic name before start.
+- Authoritative attempt `...T211328Z` passed without fallback. Its first
+  manifest was then regenerated after the asynchronous transcript writer had
+  flushed; the final manifest verifies all 60 retained files and is the only
+  manifest cited above.
 
 If the approved host, endpoint/TLS basis, exact source/image, or isolation root
 is absent or drifts, collection stops without broadening scope. A port
@@ -178,6 +209,9 @@ scoped planner/operator decision; M4-HOST cannot silently authorize it.
 
 ## Submission rule
 
-This ledger stays `in_progress` / `not_submitted` until the bounded repo and
-authorized host evidence are complete. A later evidence result does not become
-milestone acceptance without the milestone owner's explicit decision.
+M4-02's bounded repo and authorized-host evidence is complete and the slice is
+`passed`; `PR #370` remains draft until planner merge approval. The M4 milestone
+ledger stays `in_progress` / `not_submitted` because M4-CREDENTIAL,
+M4-CLIENT/LIVE, M4-WRITE-CONFIRM, and the remaining planner-bound slices are
+still open. No evidence result becomes milestone acceptance without the
+milestone owner's explicit decision.
