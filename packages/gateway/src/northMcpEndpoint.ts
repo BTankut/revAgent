@@ -18,7 +18,8 @@ import {
   type RequestStateCodec,
 } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { AuthContext } from "./authContext.js";
+import type { AuthContext, IdentityPort } from "./authContext.js";
+import type { GatewayPortAdapterKind } from "./gatewayPorts.js";
 import {
   gatewayExternalToolInputSchema,
   splitGatewayConfirmationArguments,
@@ -75,7 +76,54 @@ export interface AuthenticatedNorthMcpRequest {
   readonly principalKey: string;
 }
 
+/** Token-free, allowlisted authorization data visible to Gateway callbacks. */
+export interface NorthMcpCallbackAuthInfo {
+  readonly clientId: string;
+  readonly scopes: readonly string[];
+  readonly expiresAt?: number;
+  readonly resource?: URL;
+}
+
+/**
+ * Callback context deliberately excludes the SDK's raw token and open-ended
+ * `extra` bag. Catalog and route resolvers never need either credential input.
+ */
+export interface AuthorizedNorthMcpRequest {
+  readonly authInfo: NorthMcpCallbackAuthInfo;
+  readonly authContext: AuthContext;
+  readonly principalKey: string;
+}
+
+export type NorthMcpAuthenticatorTrustMetadata =
+  | {
+      readonly mode: "production";
+      readonly adapterKind: "oidc";
+      readonly identity: IdentityPort & { readonly kind: "oidc" };
+    }
+  | {
+      readonly mode: "preproduction";
+      readonly adapterKind: "preproduction";
+      readonly identity: IdentityPort & { readonly kind: "preproduction" };
+    }
+  | {
+      readonly mode: "fixture";
+      readonly adapterKind: Extract<
+        GatewayPortAdapterKind,
+        "fake" | "capture" | "memory"
+      >;
+      readonly identity?: IdentityPort;
+    };
+
+export const NORTH_MCP_ERROR_EVENT = "gateway.north_mcp.error" as const;
+export type NorthMcpErrorCode = "sdk_error" | "request_failed";
+export interface NorthMcpErrorReport {
+  readonly event: typeof NORTH_MCP_ERROR_EVENT;
+  readonly code: NorthMcpErrorCode;
+}
+
 export interface NorthMcpAuthenticator {
+  /** Required by production composition; optional for isolated test wrappers. */
+  readonly trust?: NorthMcpAuthenticatorTrustMetadata;
   /**
    * Implementations own token signature, expiry, audience/resource, scope,
    * tenant/user, revocation, and identity validation. Return null when any
@@ -94,11 +142,11 @@ export interface NorthMcpEndpointOptions {
    * initialization or executor contact.
    */
   readonly catalogViewFor: (
-    authenticated: AuthenticatedNorthMcpRequest,
+    authenticated: AuthorizedNorthMcpRequest,
   ) => EntitledCatalogView | null | Promise<EntitledCatalogView | null>;
   /** Resolves the current authenticated MCP session to one bridge route. */
   readonly invocationRouteFor: (
-    authenticated: AuthenticatedNorthMcpRequest,
+    authenticated: AuthorizedNorthMcpRequest,
     mcpSessionId: string,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
@@ -125,6 +173,10 @@ export interface NorthMcpEndpointOptions {
     readonly now?: () => number;
   };
   readonly resourceMetadataUrl: URL;
+  /** Receives a fixed, value-free event; never the original Error or request. */
+  readonly reportError?: (
+    report: NorthMcpErrorReport,
+  ) => void | Promise<void>;
   readonly host?: "127.0.0.1" | "localhost";
   readonly port?: number;
 }
@@ -210,13 +262,37 @@ function isAllowedHostHeader(
 
 function cloneAuthInfo(authInfo: AuthInfo): AuthInfo {
   return {
-    ...authInfo,
+    token: authInfo.token,
+    clientId: authInfo.clientId,
     scopes: [...authInfo.scopes],
-    ...(authInfo.extra === undefined ? {} : { extra: { ...authInfo.extra } }),
+    ...(authInfo.expiresAt === undefined ? {} : { expiresAt: authInfo.expiresAt }),
+    ...(authInfo.resource === undefined
+      ? {}
+      : { resource: new URL(authInfo.resource.href) }),
   };
 }
 
-function authBindingKey(authenticated: AuthenticatedNorthMcpRequest): string {
+function callbackContext(
+  authenticated: AuthenticatedNorthMcpRequest,
+): AuthorizedNorthMcpRequest {
+  const authInfo: NorthMcpCallbackAuthInfo = Object.freeze({
+    clientId: authenticated.authInfo.clientId,
+    scopes: Object.freeze([...authenticated.authInfo.scopes]),
+    ...(authenticated.authInfo.expiresAt === undefined
+      ? {}
+      : { expiresAt: authenticated.authInfo.expiresAt }),
+    ...(authenticated.authInfo.resource === undefined
+      ? {}
+      : { resource: new URL(authenticated.authInfo.resource.href) }),
+  });
+  return Object.freeze({
+    authInfo,
+    authContext: authenticated.authContext,
+    principalKey: authenticated.principalKey,
+  });
+}
+
+function authBindingKey(authenticated: AuthorizedNorthMcpRequest): string {
   return JSON.stringify([
     authenticated.authContext.contractVersion,
     authenticated.authContext.actor.tenantId,
@@ -433,7 +509,7 @@ function assertCallableCatalogCoherence(
 
 function registerGatewayResources(
   server: McpServer,
-  authenticated: AuthenticatedNorthMcpRequest,
+  authenticated: AuthorizedNorthMcpRequest,
   authority: Pick<GatewayResourceAuthority, "readResource">,
 ): void {
   const scope = resourceScopeFromAuth(
@@ -532,7 +608,7 @@ function registerInstructionResources(
 
 function createSessionServer(input: {
   readonly catalogView: EntitledCatalogView;
-  readonly authenticated: AuthenticatedNorthMcpRequest;
+  readonly authenticated: AuthorizedNorthMcpRequest;
   readonly dispatcher: GatewayDispatcher;
   readonly inflightOperations: Set<Promise<unknown>>;
   readonly registry: GatewayToolRegistry;
@@ -731,7 +807,7 @@ export function createNorthMcpHttpHandler(
   >();
 
   function modeASessionFor(
-    authenticated: AuthenticatedNorthMcpRequest,
+    authenticated: AuthorizedNorthMcpRequest,
     catalogView: EntitledCatalogView,
     mcpConnectionId: string | null,
   ): ModeADiscoverySession | undefined {
@@ -783,7 +859,7 @@ export function createNorthMcpHttpHandler(
 
   const authenticatedByAuthInfo = new WeakMap<
     AuthInfo,
-    AuthenticatedNorthMcpRequest
+    AuthorizedNorthMcpRequest
   >();
   const catalogViewByAuthInfo = new WeakMap<AuthInfo, EntitledCatalogView>();
   const requestStateCodec = createRequestStateCodec({
@@ -807,9 +883,21 @@ export function createNorthMcpHttpHandler(
   const requestTasks = new Set<Promise<unknown>>();
   let closing = false;
   let activeRequests = 0;
-  const reportMcpError = (error: Error): void => {
-    console.error(error);
+  const reportError = (code: NorthMcpErrorCode): void => {
+    const report = Object.freeze({ event: NORTH_MCP_ERROR_EVENT, code });
+    try {
+      if (options.reportError === undefined) {
+        console.error(report);
+      } else {
+        void Promise.resolve(options.reportError(report)).catch(
+          () => undefined,
+        );
+      }
+    } catch {
+      // Observability must not become a request or shutdown failure path.
+    }
   };
+  const reportMcpError = (): void => reportError("sdk_error");
   const mcpHandler = createMcpHandler(
     (context: McpRequestContext) => {
       const authInfo = context.authInfo;
@@ -915,7 +1003,8 @@ export function createNorthMcpHttpHandler(
       sendJson(response, 503, { error: "north_mcp_endpoint_closing" });
       return;
     }
-    const catalogView = await options.catalogViewFor(authenticated);
+    const authorized = callbackContext(authenticated);
+    const catalogView = await options.catalogViewFor(authorized);
     if (catalogView === null) {
       sendJson(response, 403, { error: "entitlement_denied" });
       return;
@@ -923,7 +1012,7 @@ export function createNorthMcpHttpHandler(
     const requestAuthInfo = cloneAuthInfo(authenticated.authInfo);
     authenticatedByAuthInfo.set(
       requestAuthInfo,
-      Object.freeze({ ...authenticated, authInfo: requestAuthInfo }),
+      authorized,
     );
     catalogViewByAuthInfo.set(requestAuthInfo, catalogView);
     (request as AuthenticatedIncomingMessage).auth = requestAuthInfo;
@@ -986,9 +1075,8 @@ export function createNorthMcpHttpHandler(
       return trackPromise(
         requestTasks,
         handleRequest(request, response, parsedBody).catch((error: unknown) => {
-          console.error(
-            error instanceof Error ? error : new Error(String(error)),
-          );
+          void error;
+          reportError("request_failed");
           sendJson(response, 500, { error: "north_mcp_request_failed" });
         }),
       );

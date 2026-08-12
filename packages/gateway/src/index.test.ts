@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
-import { gatewayScaffold } from "./index.js";
+import {
+  GatewayCompositionError,
+  gatewayScaffold,
+  type GatewayCompositionErrorReason,
+} from "./index.js";
 
 describe("gateway scaffold", () => {
   it("carries no M0 transport spike and declares the collected registry seed", () => {
@@ -21,5 +25,14 @@ describe("gateway scaffold", () => {
 
   it("loads the split MCP SDK v2 Node transport surface", () => {
     expect(NodeStreamableHTTPServerTransport).toBeTypeOf("function");
+  });
+
+  it("exports the production composition refusal contract", () => {
+    const reason: GatewayCompositionErrorReason = "invalid_rbp_ingress_shape";
+    expect(new GatewayCompositionError("rbp_ingress", reason)).toMatchObject({
+      code: "gateway_composition_refused",
+      port: "rbp_ingress",
+      reason,
+    });
   });
 });

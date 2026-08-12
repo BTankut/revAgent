@@ -36,6 +36,8 @@ export interface RbpIngressHost {
   readonly kind: GatewayPortAdapterKind;
   readonly mountPrefix: typeof RBP_INGRESS_MOUNT_PREFIX;
   readonly enabled: boolean;
+  /** Inspectable when the host owns a live Bridge session authority. */
+  readonly authority?: GatewayBridgeSessionAuthority;
   refuse(input: {
     readonly path: string;
     readonly kind: "http" | "upgrade";

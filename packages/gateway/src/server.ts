@@ -4,6 +4,7 @@ import Fastify, {
 } from "fastify";
 
 import type { GatewayConfig } from "./config.js";
+import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
 import {
   createUnavailableEntitlementPort,
   createUnavailableIdentityPort,
@@ -101,6 +102,135 @@ export class GatewayPreProductionPortError extends Error {
   }
 }
 
+export type GatewayCompositionErrorReason =
+  | "uninspectable_north_authenticator"
+  | "uninspectable_rbp_authority"
+  | "invalid_rbp_ingress_shape"
+  | "authority_graph_mismatch";
+
+export class GatewayCompositionError extends Error {
+  readonly code = "gateway_composition_refused" as const;
+  public constructor(
+    readonly port: GatewayPortName,
+    readonly reason: GatewayCompositionErrorReason,
+  ) {
+    super(`refusing Gateway composition: ${port} ${reason}`);
+    this.name = "GatewayCompositionError";
+  }
+}
+
+function refuseAdapterKind(
+  port: GatewayPortName,
+  kind: GatewayPortAdapterKind,
+): void {
+  if (kind === "preproduction") {
+    throw new GatewayPreProductionPortError(port);
+  }
+  if (isFixtureAdapterKind(kind)) {
+    throw new GatewayFixturePortError(port, kind);
+  }
+}
+
+function northAdapterKind(
+  northMcp: NorthMcpEndpointOptions | undefined,
+): GatewayPortAdapterKind | undefined {
+  return (
+    northMcp?.authenticator as
+      | { readonly kind?: GatewayPortAdapterKind }
+      | undefined
+  )?.kind;
+}
+
+function assertPreProductionGraph(
+  ports: GatewayServerPorts,
+  northMcp: NorthMcpEndpointOptions | undefined,
+): void {
+  const trust = (
+    northMcp?.authenticator as
+      | NorthMcpEndpointOptions["authenticator"]
+      | undefined
+  )?.trust;
+  const authority = ports.rbpIngress.authority;
+  const hasPreProductionAdapter =
+    ports.identity.kind === "preproduction" ||
+    ports.rbpIngress.kind === "preproduction" ||
+    northAdapterKind(northMcp) === "preproduction" ||
+    trust?.mode === "preproduction" ||
+    trust?.identity?.kind === "preproduction" ||
+    authority?.identity.kind === "preproduction";
+  if (!hasPreProductionAdapter) {
+    return;
+  }
+  if (
+    ports.identity.kind !== "preproduction" ||
+    northMcp === undefined ||
+    northAdapterKind(northMcp) !== "preproduction" ||
+    trust?.mode !== "preproduction" ||
+    trust.adapterKind !== "preproduction" ||
+    trust.identity !== ports.identity ||
+    ports.rbpIngress.kind !== "preproduction" ||
+    !ports.rbpIngress.enabled ||
+    !(authority instanceof GatewayBridgeSessionAuthority) ||
+    authority.identity !== ports.identity ||
+    authority.store !== ports.protocolStore
+  ) {
+    throw new GatewayCompositionError(
+      "identity",
+      "authority_graph_mismatch",
+    );
+  }
+}
+
+function assertProductionRbpIngress(ports: GatewayServerPorts): void {
+  const ingress = ports.rbpIngress;
+  if (!ingress.enabled) {
+    const hasOperationalSurface =
+      ingress.start !== undefined ||
+      ingress.mount !== undefined ||
+      ingress.handleUpgrade !== undefined ||
+      ingress.beginDrain !== undefined ||
+      ingress.close !== undefined;
+    if (
+      ingress.kind !== "unavailable" ||
+      ingress.authority !== undefined ||
+      hasOperationalSurface
+    ) {
+      throw new GatewayCompositionError(
+        "rbp_ingress",
+        "invalid_rbp_ingress_shape",
+      );
+    }
+    return;
+  }
+
+  if (ingress.kind !== "postgres") {
+    throw new GatewayCompositionError(
+      "rbp_ingress",
+      "invalid_rbp_ingress_shape",
+    );
+  }
+  const authority = ingress.authority;
+  if (!(authority instanceof GatewayBridgeSessionAuthority)) {
+    throw new GatewayCompositionError(
+      "rbp_ingress",
+      "uninspectable_rbp_authority",
+    );
+  }
+  refuseAdapterKind("rbp_ingress", authority.identity.kind);
+  refuseAdapterKind("rbp_ingress", authority.store.kind);
+  if (
+    authority.identity.kind !== "oidc" ||
+    authority.store.kind !== "postgres" ||
+    authority.identity !== ports.identity ||
+    authority.store !== ports.protocolStore
+  ) {
+    throw new GatewayCompositionError(
+      "rbp_ingress",
+      "authority_graph_mismatch",
+    );
+  }
+}
+
 /**
  * Refuses to run production traffic against a fixture or pre-production seam.
  *
@@ -112,8 +242,10 @@ export class GatewayPreProductionPortError extends Error {
 export function assertProductionPorts(
   config: GatewayConfig,
   ports: GatewayServerPorts,
+  northMcp?: NorthMcpEndpointOptions,
 ): void {
   if (config.nodeEnv !== "production") {
+    assertPreProductionGraph(ports, northMcp);
     return;
   }
   const entries: readonly (readonly [GatewayPortName, GatewayPortAdapterKind])[] = [
@@ -126,13 +258,32 @@ export function assertProductionPorts(
     ["rbp_ingress", ports.rbpIngress.kind],
   ];
   for (const [name, kind] of entries) {
-    if (kind === "preproduction") {
-      throw new GatewayPreProductionPortError(name);
+    refuseAdapterKind(name, kind);
+  }
+
+  if (northMcp !== undefined) {
+    const trust = northMcp.authenticator.trust;
+    if (trust === undefined) {
+      throw new GatewayCompositionError(
+        "north_mcp",
+        "uninspectable_north_authenticator",
+      );
     }
-    if (isFixtureAdapterKind(kind)) {
-      throw new GatewayFixturePortError(name, kind);
+    refuseAdapterKind("north_mcp", trust.adapterKind);
+    if (
+      trust.mode !== "production" ||
+      trust.adapterKind !== "oidc" ||
+      trust.identity.kind !== "oidc" ||
+      trust.identity !== ports.identity
+    ) {
+      throw new GatewayCompositionError(
+        "north_mcp",
+        "authority_graph_mismatch",
+      );
     }
   }
+
+  assertProductionRbpIngress(ports);
 }
 
 /**
@@ -184,16 +335,21 @@ export interface GatewayServerHandle {
   close(): Promise<void>;
 }
 
-export function createGatewayApp(options: {
+interface GatewayServerOptions {
   readonly config: GatewayConfig;
   readonly northMcp?: NorthMcpEndpointOptions;
   readonly ports: GatewayServerPorts;
-}): FastifyInstance {
+}
+
+function buildGatewayApp(
+  options: GatewayServerOptions,
+  closeIngressOnAppClose: (() => Promise<void>) | null,
+): FastifyInstance {
   const { config, ports } = options;
   // `createGatewayApp` is public for injection tests. Keep the same executable
   // production gate here so a caller cannot bypass `startGatewayServer` and
   // call `app.listen()` directly with a non-production identity adapter.
-  assertProductionPorts(config, ports);
+  assertProductionPorts(config, ports, options.northMcp);
   const app = Fastify(buildFastifyOptions(config));
   const publicHostname = new URL(config.publicUrl).hostname.toLowerCase();
   const northMcp =
@@ -311,31 +467,65 @@ export function createGatewayApp(options: {
     enumerable: false,
   });
 
-  if (ports.rbpIngress.close !== undefined) {
-    app.addHook("onClose", async () => ports.rbpIngress.close!());
+  if (closeIngressOnAppClose !== null) {
+    app.addHook("onClose", closeIngressOnAppClose);
   }
 
   return app;
 }
 
-export async function startGatewayServer(options: {
-  readonly config: GatewayConfig;
-  readonly northMcp?: NorthMcpEndpointOptions;
-  readonly ports: GatewayServerPorts;
-}): Promise<GatewayServerHandle> {
+export function createGatewayApp(
+  options: GatewayServerOptions,
+): FastifyInstance {
+  // A directly constructed app retains its historical ownership of ingress
+  // close. The starter uses the internal variant so it can distinguish a
+  // failed start from a started ingress whose listener subsequently failed.
+  return buildGatewayApp(
+    options,
+    options.ports.rbpIngress.close === undefined
+      ? null
+      : async () => options.ports.rbpIngress.close!(),
+  );
+}
+
+export async function startGatewayServer(
+  options: GatewayServerOptions,
+): Promise<GatewayServerHandle> {
   // First, before any socket exists.
-  assertProductionPorts(options.config, options.ports);
+  assertProductionPorts(options.config, options.ports, options.northMcp);
 
-  await options.ports.rbpIngress.start?.();
-
-  const app = createGatewayApp(options);
+  let ingressStarted = false;
+  let ingressClosed = false;
+  const closeIngressOnce = async (): Promise<void> => {
+    if (!ingressStarted || ingressClosed) {
+      return;
+    }
+    ingressClosed = true;
+    await options.ports.rbpIngress.close?.();
+  };
+  // Constructing the app validates the north handler, Host policy and mounted
+  // ingress routes without opening a listener or durable ingress. Its close
+  // hook is started-state-aware so public `handle.app.close()` retains the
+  // same resource ownership without closing an ingress whose start failed.
+  const app = buildGatewayApp(options, closeIngressOnce);
   try {
+    await options.ports.rbpIngress.start?.();
+    ingressStarted = true;
     await app.listen({
       host: options.config.http.bindHost,
       port: options.config.http.port,
     });
   } catch (error) {
-    await options.ports.rbpIngress.close?.();
+    try {
+      await app.close();
+    } catch {
+      // Preserve the validation/start/listen failure as the primary cause.
+    }
+    try {
+      await closeIngressOnce();
+    } catch {
+      // Preserve the validation/start/listen failure as the primary cause.
+    }
     throw error;
   }
 
@@ -351,7 +541,20 @@ export async function startGatewayServer(options: {
       (app as unknown as { beginGatewayShutdown: () => void }).beginGatewayShutdown();
     },
     async close(): Promise<void> {
-      await app.close();
+      let primaryError: unknown;
+      try {
+        await app.close();
+      } catch (error) {
+        primaryError = error;
+      }
+      try {
+        await closeIngressOnce();
+      } catch (error) {
+        primaryError ??= error;
+      }
+      if (primaryError !== undefined) {
+        throw primaryError;
+      }
     },
   };
 }

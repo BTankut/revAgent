@@ -85,9 +85,15 @@ export {
 export {
   NORTH_MODE_A_META_TOOLS,
   NORTH_MODE_A_PINNED_TOOLS,
+  NORTH_MCP_ERROR_EVENT,
   createNorthMcpHttpHandler,
   startNorthMcpEndpoint,
   type AuthenticatedNorthMcpRequest,
+  type AuthorizedNorthMcpRequest,
+  type NorthMcpAuthenticatorTrustMetadata,
+  type NorthMcpCallbackAuthInfo,
+  type NorthMcpErrorCode,
+  type NorthMcpErrorReport,
   type NorthMcpHostHeaderPolicy,
   type NorthMcpHttpHandler,
   type NorthMcpAuthenticator,
@@ -242,6 +248,16 @@ export {
   type PreProductionNorthIdentityFixture,
 } from "./preProductionIdentity.js";
 export {
+  PRE_PRODUCTION_LAN_TEST_PROFILE,
+  PreProductionCompositionError,
+  createPreProductionLanTestComposition,
+  type PreProductionCompositionErrorCode,
+  type PreProductionLanTestComposition,
+  type PreProductionLanTestCompositionOptions,
+  type PreProductionNorthMcpAuthenticator,
+  type PreProductionRbpIngressHost,
+} from "./preProductionComposition.js";
+export {
   REVAGENT_EVENT_SCHEMA,
   createUnavailableEventSink,
   type GatewayEventEnvelope,
@@ -332,6 +348,7 @@ export {
   type SandboxHost,
 } from "./modeB.js";
 export {
+  GatewayCompositionError,
   GatewayFixturePortError,
   GatewayPreProductionPortError,
   assertProductionPorts,
@@ -339,6 +356,7 @@ export {
   createFailClosedPorts,
   createGatewayApp,
   startGatewayServer,
+  type GatewayCompositionErrorReason,
   type GatewayServerHandle,
   type GatewayServerPorts,
 } from "./server.js";

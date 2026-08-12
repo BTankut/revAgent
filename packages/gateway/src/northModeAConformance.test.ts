@@ -38,6 +38,7 @@ import {
   NORTH_MODE_A_META_TOOLS,
   NORTH_MODE_A_PINNED_TOOLS,
   type AuthenticatedNorthMcpRequest,
+  type AuthorizedNorthMcpRequest,
 } from "./northMcpEndpoint.js";
 import type { GatewayProtocolStore } from "./store.js";
 import { createFailClosedPorts, createGatewayApp } from "./server.js";
@@ -123,7 +124,7 @@ function authenticated(
 }
 
 function routeFor(
-  request: AuthenticatedNorthMcpRequest,
+  request: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
 ): GatewayInvocationRoute {
   return Object.freeze({
