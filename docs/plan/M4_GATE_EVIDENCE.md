@@ -287,6 +287,16 @@ persistence, external-client conformance, live Revit, or write confirmation.
   positive cleanup, and protected equality are `passed`. No credential file or
   material remains in the live namespace or evidence package; filesystem-block
   secure erase is not claimed. This closure opens no adjacent gate.
+- **M4-04 target authority:** the operator placed NET01 outside the program and
+  corrected the live Revit workstation to PETRUCCI on 2026-08-13. Read-only
+  locator and installed-surface evidence is retained in
+  `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`; the accepted live
+  chain remains in `M3_BRIDGE_GATE_EVIDENCE.md`. Gateway is `revagent`, and
+  Bridge/add-in/live Revit is PETRUCCI. WP9 client placement remains unresolved
+  and operator-gated: PETRUCCI has an installed but inactive/unproven Codex
+  client surface; DESKTOP-OKNV128 is the evidence coordinator but is not
+  selected as the M4-04 client by this record. This correction is not a
+  live-gate approval.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
   exchange, and live Revit execution remain separately operator-gated.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target

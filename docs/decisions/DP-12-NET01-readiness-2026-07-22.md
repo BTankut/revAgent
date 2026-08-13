@@ -1,5 +1,12 @@
 # DP-12 — NET01 Live Readiness Evidence
 
+> **Superseded workstation assignment — 2026-08-13:** this file is retained as
+> historical evidence of the 2026-07-22 NET01 inventory. `NET01` is outside the
+> current program and must not be used as the DP-12/M4 live workstation. The
+> current authority is `PETRUCCI`; see
+> `DP-12-PETRUCCI-readiness-2026-08-13.md` and
+> `docs/plan/M3_BRIDGE_GATE_EVIDENCE.md`.
+
 **Evidence date:** 2026-07-22
 **Collector:** revAgent implementation assistant through read-only SSH
 **Canonical SSH selector used:** `Net01@100.119.168.39`

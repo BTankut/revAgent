@@ -192,8 +192,10 @@ used. Production NAS releases should be published from a clean tree.
 11. Watch the signed source-free CD run that starts from the protected `main`
     update.
 12. After a separately approved manual dispatch, verify the exact signed
-    channel, release manifest, ZIP path/hash, and authorized machines. Use
-    `publish_to_pilot=true` for the isolated DESKTOP-OKNV128/NET01 cohort;
+    channel, release manifest, ZIP path/hash, and authorized machines. The
+    code-pinned `publish_to_pilot=true` target remains the legacy signed-CD
+    delivery cohort DESKTOP-OKNV128/NET01; it is not the current DP-12/M4 live
+    workstation assignment and must not be dispatched as an M4 shortcut.
     `publish_to_nas=true` is a later stable/fleet action. The daily task is
     audit-only; payload installation remains a manual GUI/UAC action.
 
@@ -474,16 +476,21 @@ Do not run the loose NAS `tools\test-commandset-live.ps1` copy. Use a clean
 repository checkout or an independently protected local coordinator copy; the
 SSH wrapper stages the exact local helper over SCP before execution.
 
-For the standard NET01 representative smoke, run the coordinator-side SSH
-wrapper instead of manually opening Revit. First run the open/model gate; it
-opens the installed Revit 2022 sample model in the logged-on workstation
-session, waits for the local bridge, and verifies through revAgent that the
-expected model and an active view are loaded:
+For the current PETRUCCI representative smoke, run the coordinator-side SSH
+wrapper from DESKTOP-OKNV128 instead of manually opening Revit. The wrapper's
+checked-in implicit default still names the superseded NET01 target, so always
+pass PETRUCCI's explicit computer, user, host, and key until that executable
+default is removed in a separately reviewed engineering slice. First run the
+open/model gate; it opens the installed Revit 2022 sample model in the logged-on
+workstation session, waits for the local bridge, and verifies through revAgent
+that the expected model and an active view are loaded:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
-  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
-  -Computer NET01 `
+  -Computer PETRUCCI `
+  -User ws2 `
+  -HostName 192.168.90.122 `
+  -Key C:\Users\BT\.ssh\id_ed25519 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
   -OpenOnly
 ```
@@ -494,8 +501,10 @@ evidence:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
-  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
-  -Computer NET01 `
+  -Computer PETRUCCI `
+  -User ws2 `
+  -HostName 192.168.90.122 `
+  -Key C:\Users\BT\.ssh\id_ed25519 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 ```
 
@@ -708,7 +717,8 @@ Live smoke test after install:
    parsing changes, confirm deterministic tests cover `parseJsonResult=true`
    nested JSON parsing and raw-string preservation on failed parsing.
 10. For rollout closure evidence, prefer
-    `scripts\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
+    `scripts\invoke-live-smoke-over-ssh.ps1 -Computer PETRUCCI -User ws2
+    -HostName 192.168.90.122 -Key C:\Users\BT\.ssh\id_ed25519 -ReleaseRoot
     "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" -OpenOnly` first, so the
     coordinator opens the Revit 2022 sample model in the logged-on workstation
     session and verifies the expected document through revAgent before full
@@ -773,8 +783,11 @@ git pull --ff-only
 For any change that reaches protected `main`, including a direct push if branch
 protection allows one, the signed source-free CD workflow builds and validates
 the signed release root but publishes neither NAS channel. Treat manual
-`workflow_dispatch` with `publish_to_pilot=true` as the isolated developer/NET01
-pilot trigger; `publish_to_nas=true` is the separate stable/fleet trigger.
+`workflow_dispatch` with `publish_to_pilot=true` as the legacy signed-CD
+DESKTOP-OKNV128/NET01 delivery trigger, not as the current DP-12/M4 live-
+workstation trigger. NET01 is outside the current program; changing the
+code-pinned cohort requires a separate approved workflow/publisher slice.
+`publish_to_nas=true` is the separate stable/fleet trigger.
 Verify the GitHub Actions CD run plus the selected signed channel before any
 manual rollout instruction. Audit-only scheduled tasks do not need to be
 paused; repair any legacy task that still has payload-write behavior.
@@ -826,10 +839,15 @@ reports\
 tools\
 ```
 
-Signed pilot releases publish through manual `workflow_dispatch` with
-`publish_to_pilot=true`. The cohort is exactly DESKTOP-OKNV128 and NET01; the
+The legacy signed-CD pilot channel publishes through manual `workflow_dispatch`
+with `publish_to_pilot=true`. Its code-pinned delivery cohort is exactly
+DESKTOP-OKNV128 and NET01; that historical channel identity does not make
+NET01 the current DP-12/M4 workstation. Because NET01 is outside the current
+program, do not dispatch this channel as an M4 deployment substitute. A cohort
+retarget is a separate workflow/publisher change and requires explicit
+approval. When used for an independently authorized legacy purpose, the
 operation may create only a pilot-namespaced release and the signed pilot
-channel pair. It must prove stable metadata, the active stable release, and the
+channel pair and must prove stable metadata, the active stable release, and the
 shared tools tree stayed unchanged. Production stable/fleet release is a later,
 separately approved `publish_to_nas=true` dispatch and is currently fail-closed
 until shared-tools replacement has the same handle-bound transaction guarantees.
@@ -1555,12 +1573,16 @@ Security/compatibility acceptance for updater changes includes:
   both commands/arguments, and both `initialize`/`tools/list` handshakes pass.
 
 Deliver this risk path through the normal draft PR, protected engineering and
-review gates, merge, and automatic signed source-free build. Dispatch only the
-signed `publish_to_pilot=true` channel for DESKTOP-OKNV128 and NET01, then
+review gates, merge, and automatic signed source-free build. The existing
+`publish_to_pilot=true` channel is still code-pinned to the legacy
+DESKTOP-OKNV128/NET01 cohort. It cannot close the current DP-12/M4 pilot because
+NET01 is outside the program and PETRUCCI is not in that channel. Do not
+dispatch or retarget it for M4 without a separate operator-approved
+workflow/publisher change. For an independently authorized legacy delivery,
 verify exact version/hash, ACLs, both phase reports, Revit behavior where
-applicable, and a genuinely new ChatGPT task. This is sufficient to close the
-pilot task. General stable/fleet publication remains a later, separately
-approved `publish_to_nas=true` action; do not contact other machines.
+applicable, and a genuinely new ChatGPT task. General stable/fleet publication
+remains a later, separately approved `publish_to_nas=true` action; do not
+contact other machines.
 
 Background updater notifications:
 

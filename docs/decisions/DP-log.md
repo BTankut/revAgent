@@ -21,7 +21,7 @@
 | DP-9 | Bridge update signing | Pilot entry | awaiting_confirmation | Recommended: reuse the detached RS256 pinned-key chain | — | Confirm existing production key custody and bridge-manifest signing use. |
 | DP-10 | Phase-1 designer client | Pilot entry | confirmed_pending_conformance | Existing authorized ChatGPT/Codex Desktop client | 2026-07-22 | Barış Tankut confirmed operator attribution on 2026-07-22. Client installation, subscription, and user session are user responsibilities; revAgent owns remote MCP registration and end-to-end compatibility verification. WP9 conformance must pass before pilot/cutover. |
 | DP-11 | Backup target | Cutover entry | awaiting_confirmation | Recommended: S3-compatible off-host bucket | — | Record provider, region, owner, and budget. |
-| DP-12 | Pilot user/machine and cutover window | Pilot entry | partially_confirmed | Pilot machine: `NET01` (registered, dedicated to this work, waiting, and reachable by stored SSH access at the requested date/time) | 2026-07-22 | Barış Tankut confirmed operator attribution and the machine allocation. Live SSH/resource/installed-surface evidence is retained in `DP-12-NET01-readiness-2026-07-22.md`; the stale non-`AuditOnly` updater task and the named user/window/roles remain open. |
+| DP-12 | Pilot user/machine and cutover window | Pilot entry | partially_confirmed | Current live workstation: `PETRUCCI` (`ws2@192.168.90.122` from `DESKTOP-OKNV128`); `NET01` is outside the program | 2026-08-13 | Barış Tankut corrected the workstation authority. Current read-only locator/surface evidence is retained in `DP-12-PETRUCCI-readiness-2026-08-13.md`, and the accepted M3 chain is in `docs/plan/M3_BRIDGE_GATE_EVIDENCE.md`. Named pilot roles/window and all M4-04 live gates remain open. The 2026-07-22 NET01 record is historical only. |
 | DP-13 | Monorepo layout | M0 / build entry | confirmed | `packages/gateway`, `packages/bridge`, `packages/protocol`; legacy directories untouched | 2026-07-22 | Operator-confirmed; the W1 scaffold must preserve the frozen legacy paths and independent runtime lockfile. |
 | DP-14 | Node MSI disposition | Cutover entry | awaiting_confirmation | Recommended: keep through insurance, remove only at Retire if no other owner needs it | — | Confirm shared-machine dependencies before removal. |
 | DP-15 | Historical usage archive | Cutover entry | awaiting_confirmation | Recommended: read-only NAS archive through insurance, then cold storage; no Postgres migration | — | Record final archive location, retention, and access owner. |
@@ -34,9 +34,11 @@
 - Evidence source: operator-provided written checkpoints in the Week-1 review and merge-execution tasks.
 - Confirmed decisions: DP-1, DP-2, DP-3, DP-4, DP-8 host selection, DP-10 client selection, and DP-13.
 - Phase-1 non-applicability: DP-6; the client owns the loop and the Gateway has no LLM API key.
-- Partially confirmed: DP-12 assigns the registered `NET01` machine exclusively to this work and makes it
-  available over stored SSH access at the requested date/time; pilot user, concrete dates/window, fallback
-  operator, and communications owner remain open.
+- Partially confirmed at this checkpoint: DP-12 assigned the registered `NET01`
+  machine exclusively to this work and made it available over stored SSH
+  access; pilot user, concrete dates/window, fallback operator, and
+  communications owner remained open. This historical assignment was
+  superseded by the 2026-08-13 PETRUCCI correction recorded below.
 - Network resilience disposition: the router has no dual-WAN/LTE support; Barış Tankut accepts WAN-outage
   risk as of 2026-07-22.
 - Live host evidence: BatchMode SSH reached `bt@192.168.90.154`; Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM,
@@ -45,7 +47,7 @@
   credential-hash parity, loopback ingress validation, QUIC/HTTP2 edge proof, Docker Engine 29.6.2,
   Compose v5.3.1, hash-matched PR #273 artifacts, configuration validation, and the deliberate stopped
   state. Active-origin `/healthz`, power-recovery/UPS, and later production-readiness proof remain open.
-- Executable gates remain independent of decision acceptance: WP9 must prove the selected client's remote-MCP path; NET01 and the Gateway host must produce retained readiness evidence.
+- Executable gates remained independent of decision acceptance: WP9 had to prove the selected client's remote-MCP path; the then-assigned NET01 and the Gateway host had to produce retained readiness evidence. The current workstation target is governed by the 2026-08-13 correction below.
 
 ### 2026-07-22 — Operator attribution closure
 
@@ -68,7 +70,7 @@ PR #273 origin artifacts root-owned under `/opt/revagent/deploy/phase1`, and pas
 Compose validation. No container or TCP 8081 listener was started. The stale Ookla Ubuntu 26.04 apt source
 that blocked package-index refresh was moved to the reversible `.list.disabled` form and retained.
 
-### 2026-07-22 — DP-12 NET01 live readiness evidence
+### 2026-07-22 — Historical DP-12 NET01 readiness evidence (superseded 2026-08-13)
 
 Under R-G, the implementation assistant used the stored machine-specific SSH selector and proved that
 `NET01` is reachable, idle, dedicated-capacity Windows 11 hardware with Revit 2022, the OpenAI Codex AppX,
@@ -80,6 +82,10 @@ and recorded task result `1`. The current source-side audit-only correction post
 package. No task, updater, installer, model, or direct repair was executed. GAP-13.2 scheduled-task proof and
 DP-12 pilot readiness therefore remain open until a controlled technical-team neutralization/repair is
 evidenced; this work is not assigned to the pilot user.
+
+This snapshot remains evidence of what was observed on NET01 on 2026-07-22. It
+does not assign a current workstation: the operator placed NET01 outside the
+program and made PETRUCCI the DP-12/M4 live workstation on 2026-08-13.
 
 ## Amendments
 
@@ -519,12 +525,15 @@ Token exchange against a real Gateway, revoked-device refusal at handshake, and 
 across reboot move to **M4**, which is the first milestone that stands up a Gateway on the office host, and
 they remain named M4 entry criteria.
 
-The operator also reassigned the M3 gate's operator task cards on the same date: NET01 is allocated to this
-work with SSH access, so service installation, SCM start/stop, reboot survival, Event Log verification, log
-rotation, and the attestation helper's positive/negative paths are executed by the implementing assistant
-over SSH under R-G. Only genuinely interactive work (live Revit GUI, UAC, licensing) remains operator-owned,
-and must be delivered as a fully scripted single-action package with a one-line statement of why SSH cannot
-cover it.
+The operator also assigned the M3 gate's operator task cards to NET01 on that
+date, with SSH execution for service installation, SCM start/stop, reboot
+survival, Event Log verification, log rotation, and the attestation helper's
+positive/negative paths under R-G. That target assignment is retained as a
+historical decision and was superseded on 2026-08-13: the M3 live chain was in
+fact completed on PETRUCCI, and PETRUCCI is the current DP-12/M4 live
+workstation. Only genuinely interactive work (live Revit GUI, UAC, licensing)
+remains operator-owned and must be delivered as a fully scripted single-action
+package with a one-line statement of why SSH cannot cover it.
 
 This amendment changes where enrollment evidence is produced, not what enrollment must do. No other M3 gate
 item is relaxed: persistent WSS, invocation → add-in TCP framing, idempotency journal, and
@@ -978,3 +987,41 @@ Consequence to carry into GW-3: the binding column for `core.bridge.list` is
 spatial query/compare/summarize and `reconcile_schedule_excel` are
 gateway-internal, `capture_spatial_snapshot` is hybrid, docs tools are
 gateway-internal — and were not re-derived here.
+
+## 2026-08-13 — DP-12 workstation authority correction (DOCS-01)
+
+Operator decision: `NET01` is outside the current program. `PETRUCCI` is the
+current DP-12/M4 live Revit workstation. The earlier NET01 allocation and
+readiness inventory remain historical records and must not be read as a live
+target.
+
+Read-only discovery from `DESKTOP-OKNV128` verified strict public-key SSH to
+`ws2@192.168.90.122` (`whoami=petrucci\ws2`), Windows 11 Pro, Revit 2022
+`22.1.80.32`, the protected-main-matching add-in payload, and a Running/Auto/
+LocalSystem `revAgentBridge`. The Bridge configuration still targets the M3
+stub at `wss://localhost:8443/bridge/v1`; retained enrollment is stub-only.
+Codex Desktop is installed on PETRUCCI, but no active client session or current
+open Revit document was established. Exact non-secret evidence and ceilings
+are recorded in `DP-12-PETRUCCI-readiness-2026-08-13.md`; the accepted M3 chain
+remains authoritative in `docs/plan/M3_BRIDGE_GATE_EVIDENCE.md`.
+
+For M4-04, Gateway is `revagent` (`192.168.90.154`) and live Revit is
+`PETRUCCI` (`192.168.90.122`). WP9 client placement remains unresolved and
+operator-gated: PETRUCCI has Codex Desktop installed but no active client
+session was proven; DESKTOP-OKNV128 is the coordinator but was not selected as
+the M4-04 client by this decision. This record opens no live gate.
+`NETWORK/ACL`, `DNS/TLS-TRUST`, `BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, and
+`CLIENT/LIVE` each require a separate operator approval.
+
+Executable residual: `scripts/invoke-live-smoke-over-ssh.ps1` and
+`packages/gateway/scripts/gw13-live-smoke.mjs` plus
+`packages/gateway/scripts/run-gw13-readiness.mjs` still contain NET01 defaults
+or intended-target text. DOCS-01 is markdown-only, so the current
+`docs/DEVELOPER_RUNBOOK.md` examples pass PETRUCCI's explicit user/host/key and
+warn against the implicit default. Removing the executable defaults belongs to
+a separately reviewed M4-04/A engineering change. Secondary historical/example
+Markdown outside the decision/runbook authority also still names NET01; it
+must not override this dated decision and should be aligned with the executable
+cleanup. Signed-CD workflow/publisher references to DESKTOP-OKNV128/NET01
+identify a legacy delivery cohort, not DP-12/M4 workstation authority; they are
+not changed by this decision.

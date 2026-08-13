@@ -390,7 +390,9 @@ Entra ID alternative gated on M365 tenant + WP9 OAuth verification) · DP-6 not 
 DP-7 seats (named) · DP-8 host confirmed and live SSH/resource proof retained; router has no dual-WAN/LTE
 and the operator accepted WAN-outage risk on 2026-07-22 · DP-9 update signing (reuse RS256 chain) ·
 **DP-10 existing ChatGPT/Codex Desktop remote-MCP conformance (selection confirmed; WP9 gate)** · DP-11
-backup target · DP-12 dedicated/SSH-ready `NET01` confirmed, with pilot user/window still pending · DP-13 monorepo layout
+backup target · **DP-12 live workstation `PETRUCCI` confirmed by the accepted M3 chain and read-only
+`DESKTOP-OKNV128 -> ws2@192.168.90.122` SSH evidence; pilot user/window and all M4-04 live gates remain
+pending; `NET01` is outside the program and its 2026-07-22 record is historical only** · DP-13 monorepo layout
 (`packages/gateway|bridge|protocol`, confirmed) · DP-14 Node MSI disposition · DP-15 historical-data archive
 location. Gate mapping: DP-1/2/13 before build; DP-3/4/8/9/10-conformance/12 before pilot; rest before
 cutover.
