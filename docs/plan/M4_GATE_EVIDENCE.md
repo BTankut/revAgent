@@ -8,21 +8,28 @@
 ([`PR #370`](https://github.com/BTankut/revAgent/pull/370) merged as
 [`55a34032e9926cfe1c49af932449fc95bc23876c`](https://github.com/BTankut/revAgent/commit/55a34032e9926cfe1c49af932449fc95bc23876c))
 
-**M4-03 slice state:** `passed`
-([`PR #372`](https://github.com/BTankut/revAgent/pull/372) draft; planner merge
-review pending)
+**M4-03 slice state:** `passed_merged`
+([`PR #372`](https://github.com/BTankut/revAgent/pull/372) merged as
+[`9b7ead1396ac080ea90bf2923bd1ebe871847f3f`](https://github.com/BTankut/revAgent/commit/9b7ead1396ac080ea90bf2923bd1ebe871847f3f))
+
+**M4-CREDENTIAL/B gate state:** `passed`
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
-bounded-host decomposition of the M4 Gateway live path. `M4-03` is the
-operator-approved engineering seam limited to a versioned credential-file
-loader and listenerless one-shot validator. Neither slice by itself satisfies
-or enlarges the M4 milestone gate.
+bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
+operator-approved repo seam limited to a versioned credential-file loader and
+listenerless one-shot validator. `M4-CREDENTIAL/B` is the separately authorized
+exact-source target-host proof of one native Linux credential load plus cleanup.
+None of these bounded slices by itself satisfies or enlarges the M4 milestone
+gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
 
 **M4-03 exact slice base:**
 [`55a34032e9926cfe1c49af932449fc95bc23876c`](https://github.com/BTankut/revAgent/commit/55a34032e9926cfe1c49af932449fc95bc23876c)
+
+**M4-CREDENTIAL/B exact source:**
+[`9b7ead1396ac080ea90bf2923bd1ebe871847f3f`](https://github.com/BTankut/revAgent/commit/9b7ead1396ac080ea90bf2923bd1ebe871847f3f)
 
 ## Authorization ceiling
 
@@ -34,12 +41,16 @@ authorized the exact-card container lifecycle. The bounded create/start,
 health/refusal, stop/removal, residue, and protected-surface equality proof is
 complete.
 
-The later M4-03 authorization is repo-only. It permits no real credential,
+The M4-03/A authorization was repo-only. It permitted no real credential,
 credential file, host access, stage/use, container execution, or image build.
-Credential use, public/LAN bind, DNS or tunnel changes, Compose or UFW
-mutation, external/live client execution, live Revit access, and every
-write/confirmation action remain closed. Production deployment, runner,
-signing, CD, and NAS surfaces remain untouched.
+After A merged, the operator separately authorized the exact M4-CREDENTIAL/B
+card: exact-source image import, one ephemeral pre-production credential file,
+one listenerless validator container with `--network none`, and mandatory
+cleanup/equality proof on the DP-08 host. B did not authorize Gateway start,
+public/LAN bind, DNS or tunnel changes, Compose or UFW mutation, external/live
+client execution, live Revit access, enrollment/revoke, reboot, or any
+write/confirmation action. Production deployment, runner, signing, CD, and NAS
+surfaces remained untouched.
 
 The pre-production composition must remain explicit and fail closed: no
 production-mode bypass, no implicit credentials, no second identity path, and
@@ -196,14 +207,15 @@ The current image deliberately fixes `NODE_ENV=production`, starts only the
 fail-closed ports, and contains no runtime protocol-store adapter. M4-HOST may
 therefore prove only its immutable image, lifecycle, health, refusal, isolation,
 and teardown properties. M4-03/A adds a standalone repo-local validator only;
-it deliberately refuses `NODE_ENV=production`. Image/default-CMD/runtime
-selection, a new build and digest, credential stage/use, and any promoted store
-remain M4-CREDENTIAL/B work under a separate operator card. M4-HOST cannot
-silently authorize them.
+it deliberately refuses `NODE_ENV=production`. M4-HOST and M4-03/A deferred the
+new build/digest and credential stage/use to a separate operator card; that
+bounded M4-CREDENTIAL/B proof is now complete below. No Gateway runtime/store
+selection or start occurred, no store was promoted, and neither earlier slice
+silently authorized B or an adjacent gate.
 
 ## M4-03 engineering-seam evidence
 
-**Gate state:** `passed_planner_merge_review_pending`
+**Gate state:** `passed_merged`
 
 | Field | Evidence | State |
 |---|---|---|
@@ -215,11 +227,12 @@ silently authorize them.
 | Listenerless / production refusal | The real bundled main is subprocess-tested for exact exit/output behavior and a server/store/composition-free import graph. Ambient `NODE_ENV=production` returns a value-free exit `78` before file access. | `passed` |
 | Local evidence | Node `v24.19.0`: targeted 2 files / 15 tests passed, with 1 additional real-POSIX smoke skipped only on Windows; Gateway lint, type-check, build, and full 29 files / 282 tests passed, with the same platform-specific smoke skipped. Handler manifest remained `sha256:cb193dc22716e12217edc4f5516c7145eb6e42a488c6360777b01e977644ecde`. | `passed` |
 | Independent review | Three salt-read-only reviews found no remaining P0-P2 source or scope issue after production-refusal, value-free-output, typed-error, exact-mode, path-race, import-graph, and evidence fixes. | `passed` |
-| Protected exact-head runs | Exact implementation head: [Gateway CI 31671674694, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674694/attempts/1) passed; [CI 31671674559, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674559/attempts/1) passed both Engineering and Gateway gates. GitGuardian passed. No rerun. Scope-head runs are not implementation evidence. | `passed` |
+| Protected exact-head runs | Exact implementation head: [Gateway CI 31671674694, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674694/attempts/1) passed; [CI 31671674559, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674559/attempts/1) passed both Engineering and Gateway gates. Final PR head `bf6a6be0f6caf286f161036f0c2f99e630952adc`: [Gateway CI 31673749478, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31673749478/attempts/1), [CI 31673749475, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31673749475/attempts/1), and [Claude review 31677066523, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31677066523/attempts/1) passed. GitGuardian passed. No rerun. Scope-head runs are not implementation evidence. | `passed` |
+| Protected merge / merge-push | `PR #372` merged as [`9b7ead1396ac080ea90bf2923bd1ebe871847f3f`](https://github.com/BTankut/revAgent/commit/9b7ead1396ac080ea90bf2923bd1ebe871847f3f). Merge-push [CI 31677260832, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31677260832/attempts/1) passed Engineering and Gateway gates; [Gateway CI 31677260849, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31677260849/attempts/1) passed. No rerun. | `passed` |
 | Protected-surface equality | No diff from `55a34032` in root lockfile; Gateway package manifest, Dockerfile/default CMD, production `main.ts`, public `index.ts`, `config.ts`, `server.ts`, `store.ts`, `testAdapters.ts`; protocol; deploy; or workflows. | `passed` |
-| Image / credential operation | Not performed. New image build/digest and every credential stage/use action are explicitly deferred to the separate M4-CREDENTIAL/B card after A merges. | `passed` |
+| Image / credential operation | Not performed under A. The later exact-source image build and separately authorized M4-CREDENTIAL/B target-host operation are recorded below; they do not retroactively enlarge A. | `passed` |
 | Forecast / actual / variance | Forecast `1.50h`; actual `0.75h`; variance `-0.75h` (`-50%`). Passive CI/operator waits excluded. | `passed` |
-| Result | Repo-local implementation, local proof, three independent reviews, and exact implementation-head protected evidence passed. Planner merge review remains required. | `passed` |
+| Result | Repo-local implementation, local proof, three independent reviews, final-head protected/Claude evidence, protected merge, and merge-push verification passed. | `passed` |
 
 ### M4-03 local red-result disposition
 
@@ -229,38 +242,81 @@ silently authorize them.
   module for Node 24 restored the intended environment; targeted and full
   Gateway tests then passed. No manifest or lockfile changed.
 
-## Explicitly open gates and deferred proof
+## M4-CREDENTIAL/B target-host evidence
 
-- **M4-CREDENTIAL:** a new exact-source image build/digest, real credential
-  material, and credential installation/use remain separately operator-gated.
+**Gate state:** `passed`
+
+The operator separately approved the complete card values and a maximum of one
+bounded validator attempt. The exact-source image was imported on the DP-08
+Gateway host; ephemeral pre-production material was created there, loaded once
+under native Linux `0400`, and removed. This is credential-seam proof only. It
+does not prove a tenant/OAuth exchange, enrollment/revocation, reboot
+persistence, external-client conformance, live Revit, or write confirmation.
+
+| Field | Required retained evidence | State |
+|---|---|---|
+| Operator decision | Exact card: `revagent` (`bt@192.168.90.154`), source `9b7ead1396ac080ea90bf2923bd1ebe871847f3f`, immutable image `localhost/revagent-gateway:m4-credential-9b7ead1396ac@sha256:66f0eb1d0eb4eb9c571823ad820275c1eb2c419a4a81da170a66037ef009772f`, isolated root `/home/bt/m4-credential/PR-372/9b7ead1396ac080ea90bf2923bd1ebe871847f3f`, collector `revagent.m4-credential.ssh-oneshot.v1`. Maximum scope was read-only staging, one listenerless validation, and mandatory cleanup. | `passed` |
+| Exact build chain | Source archive SHA-256 `6bef0792d959d95942313350fcea4bd09ffeff08f34ddbfd629188c2f794a9d7`; Dockerfile SHA-256 `3a8957010d0458925397fb7daa704f0ba4f514e00fd239b4613b164525adfb03`; build-log SHA-256 `0b113c3352dfe248637bbc2127032fbb692eb69d3414d5cf5123cd7834270841`; OCI archive SHA-256 `561b3c9250ca2dbbfeadff70d8fcd16a8cbbdcaca3fcf8610ea7f93ff89dc65b`; OCI/engine manifest digest `sha256:66f0eb1d0eb4eb9c571823ad820275c1eb2c419a4a81da170a66037ef009772f`. The build-stage boot smoke was local build evidence only; the target-host normal Gateway command did not execute. No registry publish occurred. | `passed` |
+| Collector / bounded invocation | Collector script SHA-256 `ba7139b69749cceebcd0af279e8256df1692025396380c1fdb267938d312f60a`; one and only one `docker run`, `2026-08-13T08:48:53Z–08:48:59Z` (`6` seconds), with live host `UID:GID 1000:1000`, `--network none`, read-only root filesystem, direct read-only file bind, all capabilities dropped, no-new-privileges, bounded PID/memory, `NODE_ENV=preproduction`, and explicit `node /app/packages/gateway/dist/preProductionCredentialValidatorMain.js`. | `passed` |
+| Linux credential policy / result | The target-host file was `bt:bt`, canonical regular file, exact mode `0400`, `nlink=1`, bounded size `368` bytes. The native loader returned exit `0` and exactly one success object: action `validate_preproduction_credential_file`, contract `revagent.m4-preproduction-credentials/v1`, `lan_test`, `preproduction`, `posix-owner-read-only-0400`, and `northCredentialCount=1`. Validator stderr was empty. | `passed` |
+| Value-free evidence | Three independent ephemeral values were generated and held transiently in the host shell process, written only to the bounded credential file, and piped in memory to the scanner; they were never emitted to argv, environment, stdout, stderr, transcript, or retained evidence. The complete pass/fail evidence tree was scanned against every contiguous 10-character distinguishing fragment before packaging; it passed. No body, hash, or fragment is retained in evidence. The file was unlinked; secure erase of filesystem blocks is not claimed. | `passed` |
+| Positive cleanup / residue | The credential was explicitly unlinked and then separately observed absent. The exact isolated root was removed and then separately observed absent. The `finally` path independently recorded credential/root/container absence. A fresh post-package SSH probe again returned credential/root/container absent, `0` attempt processes, `0` attempt mounts, `0` containers, and `0` volumes. The immutable image is the sole retained delta. | `passed` |
+| Protected-surface equality | Fifteen pre/post facets matched: host/service anchors; container, volume, network, attachment, process, mount, and listener inventories; normalized IPv4/IPv6 firewall rules; Phase-1 deploy artifacts; cloudflared and Docker configuration; account/group. No image was removed; the single addition was the exact approved tag/digest. | `passed` |
+| Evidence locator / integrity | Coordinator evidence: `C:\Users\BT\AppData\Local\BT-M4-CREDENTIAL\PR-372\9b7ead1396ac080ea90bf2923bd1ebe871847f3f\execution-20260813T082824Z`. The extracted bundle has 51/51 verified manifest entries; manifest SHA-256 `abc7e54bf4e6da53d9aff39ed1d397d60a3ddfff9459dc8c3e093e2f30fb8b58`; compressed evidence SHA-256 `6ae6163993bc5bd4a680396ef02df885228e79ddad0dc28ce887919cd8dc5b44`. The remote isolated root is intentionally absent after cleanup. | `passed` |
+| Forecast / actual / variance | Forecast `0.75h`; actual `0.36h` active execution and verification effort; variance `-0.39h` (`-52%`). Passive waits excluded. | `passed` |
+| Result | Exact immutable image import, one native Linux `0400` credential load, exact value-free validator output, positive unlink/root removal, zero credential/root/container/transient residue, and protected-surface equality passed without rerun. The exact image is the sole permitted retained delta. | `passed` |
+
+### M4-CREDENTIAL/B preparation disposition
+
+- A first coordinator root-preparation call stopped in local PowerShell quoting;
+  no remote command ran, and a read-only follow-up proved the root absent.
+- The literal remote preparation then created the final `image` directory but
+  left its intermediate parent at inherited mode `0775`; the exact-mode
+  assertion stopped before archive transfer, credential creation, image load,
+  or container execution. The attempt-owned root was changed to `0700` and
+  reverified before transfer. These preparation stops are not validator
+  attempts; the authorized bounded validator count remained exactly one.
+- Two independent pre-execution script audits initially returned no-go on
+  failure-path ownership, full-tree secret-fragment scanning, and process/mount
+  residue coverage. The collector was corrected and both audits returned GO on
+  exact script SHA-256 `ba7139...` before host credential or container work.
+
+## Closed credential gate and explicitly open gates
+
+- **M4-CREDENTIAL/B:** exact-source build, target-host native Linux validation,
+  positive cleanup, and protected equality are `passed`. No credential file or
+  material remains in the live namespace or evidence package; filesystem-block
+  secure erase is not claimed. This closure opens no adjacent gate.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
   exchange, and live Revit execution remain separately operator-gated.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target
   remains separately operator-gated.
 - **RES-30:** real Gateway token exchange, revoked-device refusal at handshake,
   and device-token persistence across reboot remain unproven. Reboot is not
-  authorized by M4-02, M4-HOST, or M4-03/A.
+  authorized by M4-02, M4-HOST, M4-03/A, or M4-CREDENTIAL/B.
 - **Production exposure/deployment:** a production tunnel or public DNS route is
-  outside M4-02 and M4-03/A. The self-hosted deploy runner remains deferred to
-  M6; no runner, workflow, or CD change is authorized here.
+  outside M4-02, M4-03/A, and M4-CREDENTIAL/B. The self-hosted deploy runner
+  remains deferred to M6; no runner, workflow, or CD change is authorized here.
 
 ## Park List
 
-- The production-pruned Gateway image build from exact source
-  `1882289733ff0f3849546443e24d6cedc2c9a2dd` reported `2 moderate / 1 high`
-  in `npm audit`. This is non-blocking for M4-02/M4-HOST but requires a separate
-  planner-bound security disposition before the M5 security/auth lane begins.
-  No automatic `npm audit fix` or dependency, manifest, or lockfile mutation was
-  authorized or performed. Evidence: `gateway-image-build.log`, SHA-256
-  `269f3a10bfe8704773f5c1794774abea1ed79d436a4fb1e51ea3a3b2c03cd66d`.
+- The production-pruned Gateway image builds from exact sources
+  `1882289733ff0f3849546443e24d6cedc2c9a2dd` and
+  `9b7ead1396ac080ea90bf2923bd1ebe871847f3f` both reported `2 moderate / 1 high`
+  in `npm audit`. This remains one non-blocking Park item for M4, requiring a
+  separate planner-bound security disposition before the M5 security/auth lane
+  begins. No automatic `npm audit fix` or dependency, manifest, or lockfile
+  mutation was authorized or performed. Build-log evidence SHA-256 values:
+  `269f3a10bfe8704773f5c1794774abea1ed79d436a4fb1e51ea3a3b2c03cd66d` and
+  `0b113c3352dfe248637bbc2127032fbb692eb69d3414d5cf5123cd7834270841`.
 
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
-`passed`, and `PR #370` merged as `55a34032`. M4-03/A has passed local,
-independent-review, and exact implementation-head protected evidence; `PR #372`
-remains draft until the planner grants merge approval. The M4 milestone ledger
-stays `in_progress` / `not_submitted` because M4-CREDENTIAL, M4-CLIENT/LIVE,
-M4-WRITE-CONFIRM, and the remaining planner-bound slices are still open. No
-evidence result becomes milestone acceptance without the milestone owner's
-explicit decision.
+`passed`, and `PR #370` merged as `55a34032`. M4-03/A passed and `PR #372`
+merged as `9b7ead13`; its merge-push CI is green. M4-CREDENTIAL/B also passed its
+separately approved exact-source target-host execution and positive cleanup.
+The M4 milestone ledger stays `in_progress` / `not_submitted` because
+M4-CLIENT/LIVE, M4-WRITE-CONFIRM, RES-30, and the remaining planner-bound slices
+are still open. No evidence result becomes milestone acceptance without the
+milestone owner's explicit decision.
