@@ -8,9 +8,9 @@
 ([`PR #370`](https://github.com/BTankut/revAgent/pull/370) merged as
 [`55a34032e9926cfe1c49af932449fc95bc23876c`](https://github.com/BTankut/revAgent/commit/55a34032e9926cfe1c49af932449fc95bc23876c))
 
-**M4-03 slice state:** `in_progress`
-([`PR #372`](https://github.com/BTankut/revAgent/pull/372) draft; protected
-exact-head evidence pending)
+**M4-03 slice state:** `passed`
+([`PR #372`](https://github.com/BTankut/revAgent/pull/372) draft; planner merge
+review pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03` is the
@@ -203,21 +203,23 @@ silently authorize them.
 
 ## M4-03 engineering-seam evidence
 
-**Gate state:** `implementation_complete_protected_evidence_pending`
+**Gate state:** `passed_planner_merge_review_pending`
 
 | Field | Evidence | State |
 |---|---|---|
+| Exact implementation head | [`00a9e560248cfaed97138e1668f70cc69c436683`](https://github.com/BTankut/revAgent/commit/00a9e560248cfaed97138e1668f70cc69c436683); tree `ff49667dd90d8139f4e030c3e6fd0ab396424237`. | `passed` |
+| Changed-path inventory | Seven paths: five new `packages/gateway/src/preProductionCredential*` implementation/test files plus the Gateway README and this M4 ledger; 2,057 insertions / 33 deletions. | `passed` |
 | Authorization / scope | Operator-approved A only: versioned credential-file loader plus listenerless one-shot validator on protected `main@55a34032`. No real credential, host access, stage/use, container, or image build. | `passed` |
 | Contract and physical policy | `revagent.m4-preproduction-credentials/v1`; exact `lan_test` / `preproduction`; bounded independent visible-ASCII fields; canonical current-user POSIX regular file; exact `0400`; one hard link; pre/post canonical path and descriptor-state checks. Windows actual loading fails closed. | `passed` |
 | Value-free and synthetic-fixture proof | All new secret fixtures use fixed recognizable `SYNTHETIC-...` canaries. Loader and validator tests scan complete values and distinguishing fragments across exception, stack, own properties, injected evidence, ambient stdout/stderr, and console paths, including forged typed errors and a real loader-to-validator refusal. | `passed` |
 | Listenerless / production refusal | The real bundled main is subprocess-tested for exact exit/output behavior and a server/store/composition-free import graph. Ambient `NODE_ENV=production` returns a value-free exit `78` before file access. | `passed` |
 | Local evidence | Node `v24.19.0`: targeted 2 files / 15 tests passed, with 1 additional real-POSIX smoke skipped only on Windows; Gateway lint, type-check, build, and full 29 files / 282 tests passed, with the same platform-specific smoke skipped. Handler manifest remained `sha256:cb193dc22716e12217edc4f5516c7145eb6e42a488c6360777b01e977644ecde`. | `passed` |
 | Independent review | Three salt-read-only reviews found no remaining P0-P2 source or scope issue after production-refusal, value-free-output, typed-error, exact-mode, path-race, import-graph, and evidence fixes. | `passed` |
-| Protected exact-head runs | Pending implementation push. Scope-head runs are not implementation evidence. | `pending` |
+| Protected exact-head runs | Exact implementation head: [Gateway CI 31671674694, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674694/attempts/1) passed; [CI 31671674559, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31671674559/attempts/1) passed both Engineering and Gateway gates. GitGuardian passed. No rerun. Scope-head runs are not implementation evidence. | `passed` |
 | Protected-surface equality | No diff from `55a34032` in root lockfile; Gateway package manifest, Dockerfile/default CMD, production `main.ts`, public `index.ts`, `config.ts`, `server.ts`, `store.ts`, `testAdapters.ts`; protocol; deploy; or workflows. | `passed` |
 | Image / credential operation | Not performed. New image build/digest and every credential stage/use action are explicitly deferred to the separate M4-CREDENTIAL/B card after A merges. | `passed` |
-| Forecast / actual / variance | Forecast `1.50h`; actual and variance close after exact-head protected evidence. Passive CI/operator waits excluded. | `pending` |
-| Result | Repo-local implementation and local proof passed; protected exact-head evidence remains required before planner merge review. | `pending` |
+| Forecast / actual / variance | Forecast `1.50h`; actual `0.75h`; variance `-0.75h` (`-50%`). Passive CI/operator waits excluded. | `passed` |
+| Result | Repo-local implementation, local proof, three independent reviews, and exact implementation-head protected evidence passed. Planner merge review remains required. | `passed` |
 
 ### M4-03 local red-result disposition
 
@@ -255,9 +257,10 @@ silently authorize them.
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
-`passed`, and `PR #370` merged as `55a34032`. M4-03/A remains draft in `PR #372`
-until exact-head protected evidence passes and the planner grants merge
-approval. The M4 milestone ledger stays `in_progress` / `not_submitted` because
-M4-CREDENTIAL, M4-CLIENT/LIVE, M4-WRITE-CONFIRM, and the remaining
-planner-bound slices are still open. No evidence result becomes milestone
-acceptance without the milestone owner's explicit decision.
+`passed`, and `PR #370` merged as `55a34032`. M4-03/A has passed local,
+independent-review, and exact implementation-head protected evidence; `PR #372`
+remains draft until the planner grants merge approval. The M4 milestone ledger
+stays `in_progress` / `not_submitted` because M4-CREDENTIAL, M4-CLIENT/LIVE,
+M4-WRITE-CONFIRM, and the remaining planner-bound slices are still open. No
+evidence result becomes milestone acceptance without the milestone owner's
+explicit decision.
