@@ -234,6 +234,11 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
             (RbpGatewayFailureKind)expectedKind,
             exception.Kind);
         Assert.False(exception.FallbackEligible);
+        Assert.NotNull(exception.OpeningContext);
+        Assert.Equal(
+            RbpOpeningBinding.HttpSse,
+            exception.OpeningContext.Binding);
+        Assert.True(Guid.TryParse(exception.OpeningContext.CorrelationId, out _));
     }
 
     [Fact]
@@ -420,6 +425,34 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
         Assert.Equal(
             RbpGatewayFailureKind.RemoteClosed,
             exception.Kind);
+    }
+
+    [Fact]
+    public async Task EventsAuthorizationFailureIsNotHelloCorrelated()
+    {
+        int requestNumber = 0;
+        var handler = new ScriptedHttpMessageHandler(
+            (_, _) =>
+            {
+                if (Interlocked.Increment(ref requestNumber) == 1)
+                {
+                    return Task.FromResult(
+                        StreamableHttpResponses.Created(
+                            "conn-test",
+                            StreamableHttpRbpConnectionCycleTests.HelloAck(
+                                "conn-test")));
+                }
+
+                return Task.FromResult(
+                    new HttpResponseMessage(HttpStatusCode.Forbidden));
+            });
+
+        RbpGatewayTransportException exception =
+            await OpenFailureAsync(handler);
+
+        Assert.Equal(RbpGatewayFailureKind.Authorization, exception.Kind);
+        Assert.Equal(403, exception.StatusCode);
+        Assert.Null(exception.OpeningContext);
     }
 
     [Fact]

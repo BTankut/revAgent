@@ -10,6 +10,7 @@ using RevAgent.Bridge.Bootstrap.Diagnostics;
 using RevAgent.Bridge.Bootstrap.Enrollment;
 using RevAgent.Bridge.Bootstrap.Logging;
 using RevAgent.Bridge.Enrollment;
+using RevAgent.Bridge.Gateway.Connection;
 using RevAgent.Bridge.Runtime;
 
 namespace RevAgent.Bridge;
@@ -186,7 +187,11 @@ internal static class Program
                             "RbpDispatch",
                             message,
                             cancellationToken: CancellationToken.None)
-                        .AsTask()),
+                        .AsTask(),
+                    onConnectionFailureObservation: observation =>
+                        LogGatewayRetryPaused(
+                            services.GetRequiredService<IBridgeLog>(),
+                            observation)),
                 services.GetRequiredService<IHostApplicationLifetime>(),
                 services.GetRequiredService<IBridgeLog>(),
                 services.GetRequiredService<WorkerExitState>()));
@@ -231,6 +236,29 @@ internal static class Program
                 $"accepted=[{accepted}] rejected=[{rejected}].",
                 cancellationToken: CancellationToken.None)
             .AsTask();
+    }
+
+    internal static async ValueTask LogGatewayRetryPaused(
+        IBridgeLog log,
+        RbpConnectionFailureObservation observation)
+    {
+        ArgumentNullException.ThrowIfNull(log);
+        ArgumentNullException.ThrowIfNull(observation);
+        try
+        {
+            await log.WriteAsync(
+                    "Warning",
+                    "worker.gateway_retry_paused",
+                    "RbpConnection",
+                    observation.ToLogMessage(),
+                    exception: null,
+                    cancellationToken: CancellationToken.None)
+                .ConfigureAwait(false);
+        }
+        catch
+        {
+            // Evidence logging cannot own retry or worker lifecycle.
+        }
     }
 
     private static string RequireConfigurationPath(WorkerCommand command) =>

@@ -75,7 +75,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         RbpJournalOpenOptions? journalOptions = null,
         TimeSpan? bindingRefreshInterval = null,
         Action<AddinDiscoveryEvidence>? onDiscovered = null,
-        Action<string>? onDispatchDiagnostic = null)
+        Action<string>? onDispatchDiagnostic = null,
+        Func<RbpConnectionFailureObservation, ValueTask>?
+            onConnectionFailureObservation = null)
     {
         ArgumentNullException.ThrowIfNull(layout);
         ArgumentNullException.ThrowIfNull(configuration);
@@ -118,7 +120,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                         new WorkerAddinDispatchSurface(router, catalog),
                         Clock: null,
                         Random: null,
-                        OnDispatchDiagnostic: onDispatchDiagnostic));
+                        OnDispatchDiagnostic: onDispatchDiagnostic,
+                        OnConnectionFailureObservation:
+                            onConnectionFailureObservation));
 
             return new WorkerGatewayRuntime(
                 coordinator,

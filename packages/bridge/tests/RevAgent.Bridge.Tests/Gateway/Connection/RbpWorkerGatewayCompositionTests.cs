@@ -16,6 +16,64 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed partial class RbpConnectionCoordinatorTests
 {
     [Fact]
+    public async Task WorkerCompositionForwardsValueFreeRefusalObserver()
+    {
+        const string correlationId =
+            "018f3f5e-7b6a-7abc-8def-0123456789ab";
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        var observed = new TaskCompletionSource<
+            RbpConnectionFailureObservation>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var factory = new RefusingConnectionCycleFactory(
+            new RbpGatewayTransportException(
+                    RbpGatewayFailureKind.Authorization,
+                    "SYNTHETIC-COMPOSITION-SECRET",
+                    statusCode: 403)
+                .WithOpeningContext(
+                    correlationId,
+                    RbpOpeningBinding.HttpSse));
+        RbpConnectionCoordinator coordinator =
+            WorkerGatewayComposition.CreateCoordinator(
+                new WorkerGatewayServices(
+                    factory,
+                    store,
+                    new MutableSessionCatalog(),
+                    CompositionOptions(),
+                    new WorkerAddinDispatchSurface(
+                        new AddinSessionRouter(
+                            new NeverInvokedAddinTransport()),
+                        new NoRouteResolver()),
+                    clock,
+                    new FixedRandomSource(0),
+                    OnConnectionFailureObservation:
+                        observation =>
+                        {
+                            observed.TrySetResult(observation);
+                            return ValueTask.CompletedTask;
+                        }));
+        using var stop = new CancellationTokenSource();
+
+        Task run = coordinator.RunAsync(stop.Token);
+        RbpConnectionFailureObservation observation =
+            await observed.Task.WaitAsync(TimeSpan.FromSeconds(2));
+
+        Assert.Equal(correlationId, observation.CorrelationId);
+        Assert.Equal(RbpOpeningBinding.HttpSse, observation.Binding);
+        Assert.True(observation.HasHttpStatus);
+        Assert.False(observation.HasCloseCode);
+        Assert.DoesNotContain(
+            "SYNTHETIC-COMPOSITION-SECRET",
+            observation.ToLogMessage(),
+            StringComparison.Ordinal);
+        Assert.Equal(1, factory.OpenCount);
+
+        stop.Cancel();
+        await run.WaitAsync(TimeSpan.FromSeconds(2));
+    }
+
+    [Fact]
     public async Task WorkerCompositionDispatchesInboundDataInsteadOfThrowing()
     {
         using var directory = new RbpJournalTestDirectory();

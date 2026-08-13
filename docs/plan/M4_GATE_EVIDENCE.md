@@ -20,8 +20,13 @@
 
 **M4-04 Gate 1 state:** `completed_with_blocker`
 
-**M4-04/A2 slice state:** `scope_recorded`
-(draft PR pending)
+**M4-04/A2 slice state:** `passed_merged`
+([`PR #376`](https://github.com/BTankut/revAgent/pull/376) merged as
+[`003fbc0d1a95be546c7b3ebdc36caa14e4f2b557`](https://github.com/BTankut/revAgent/commit/003fbc0d1a95be546c7b3ebdc36caa14e4f2b557))
+
+**M4-04/A3 slice state:** `implementation_complete_local`
+(draft [`PR #377`](https://github.com/BTankut/revAgent/pull/377); protected
+implementation checks pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -32,8 +37,11 @@ exact-source target-host proof of one native Linux credential load plus cleanup.
 it prepares no host, DNS, trust, credential, container, client, or Revit
 operation. Gate 1 is the planner-authorized read-only PETRUCCI placement and
 client-feasibility inspection. `M4-04/A2` is the separately authorized
-repo-only credential generation and two-host secret-handoff seam. None of
-these bounded slices by itself satisfies or enlarges the M4 milestone gate.
+repo-only credential generation and two-host secret-handoff seam. `M4-04/A3`
+is the separately authorized repo-only value-free refusal observer; it exposes
+the existing Gateway refusal and Bridge retry-pause decisions without changing
+their semantics. None of these bounded slices by itself satisfies or enlarges
+the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -409,7 +417,7 @@ different client-auth route.
 
 ## M4-04/A2 secret-generation and two-host-handoff seam
 
-**Gate state:** `implementation_complete_local`
+**Gate state:** `passed_merged`
 
 **Scope of record:** protected source is
 `6aa04593657fa2e3ee8a656ff97b553daf07f29e`. This repo-only slice owns one
@@ -499,6 +507,15 @@ Passive CI/review waits are excluded.
   `.csproj` is an intentional in-scope project manifest. No real secret, SSH
   handoff, host mutation, container, Codex configuration, Bridge, Revit,
   DNS/TLS, or later gate was exercised.
+- The protected implementation passed [`PR #376`](https://github.com/BTankut/revAgent/pull/376)
+  Engineering gates, Gateway gates, Gateway CI, and Claude review. It squash-
+  merged as [`003fbc0d`](https://github.com/BTankut/revAgent/commit/003fbc0d1a95be546c7b3ebdc36caa14e4f2b557).
+  The merge-push run was green on attempt 1: [Engineering and Gateway gates,
+  run 31740826366](https://github.com/BTankut/revAgent/actions/runs/31740826366)
+  plus [Gateway CI, run 31740826363](https://github.com/BTankut/revAgent/actions/runs/31740826363).
+  Signed Source-Free CD also ran because its current path filter includes
+  `scripts/**`, which A2 changed; [run 31740826399](https://github.com/BTankut/revAgent/actions/runs/31740826399)
+  passed on attempt 1 with artifact upload and NAS publish both skipped.
 
 **Red-attempt dispositions:**
 
@@ -527,7 +544,7 @@ Passive CI/review waits are excluded.
 
 ## M4-04/A3 observer disposition
 
-**Gate state:** `scope_recorded`
+**Gate state:** `implementation_complete_local`
 
 **Planner decision:** `A3 bound` on 2026-08-13.
 
@@ -564,8 +581,64 @@ exact binary digest, config backup, bounded service stop/start, rollback, and
 protected-surface equality before PETRUCCI execution.
 
 **Forecast:** `2.25h` active effort, calibrated against the prior M2 `-72%`
-and A2 `-14%` variances. Passive CI/review waits are excluded. Actual and
-variance are filled only after implementation and protected evidence.
+and A2 `-14%` variances. **Actual:** `1.00h` active effort. **Variance:**
+`-1.25h` (`-56%`). Passive CI/review waits are excluded.
+
+**Local implementation evidence:**
+
+- Gateway emits the exact frozen
+  `revagent.m4-rbp-refusal-observer/v1` record only for an RBP opening
+  authorization `403/4403`. HTTP and WSS reuse the existing `hello.id`; WSS
+  claims its attempt-local observer guard before invoking either sink, so
+  concurrent duplicate hello frames still emit exactly once.
+- Default Gateway evidence is one value-free JSONL record submitted through a
+  callback-based non-blocking stderr write. Immediate, callback-time, sync, and
+  async observer failures are swallowed; deterministic tests hold both async
+  sinks unresolved until after the authoritative WSS `4403` close. The focused
+  ingress suite passed `11/11`, including `10/10` repeated concurrent-race
+  runs. The complete Gateway package passed `37/37` files and `431/431` tests;
+  one Windows-only POSIX permission smoke remained the pre-existing expected
+  skip. The packaged-handler manifest stayed
+  `sha256:cb193dc22716e12217edc4f5516c7145eb6e42a488c6360777b01e977644ecde`.
+- Bridge carries value-free opening context only through the WSS hello exchange
+  or the HTTP create/hello request. A successful HTTP `hello_ack` followed by
+  an event-stream `403` has no opening context and cannot masquerade as the
+  correlated revoked-opening chain. After the existing reducer enters
+  `RetryPaused/Auth/Pause`, a `Func<..., ValueTask>` observer exposes the closed
+  snapshot immediately before the existing retry-authority wait; synchronous
+  and post-await callback faults are observed and swallowed.
+- The Release Bridge solution built with `0` warnings and `0` errors. Contracts
+  passed `308/308`; Bridge passed `800/800`. Regression tests prove exact closed
+  fields, recognizable `SYNTHETIC-...` canary absence, WSS and HTTP correlation,
+  post-ack event-stream exclusion, callback-failure isolation, one failed
+  attempt, and continued pause until the pre-existing retry-condition signal.
+- Root `package-lock.json` remains byte-identical at blob
+  `b3d8df2755b2ead322f36100bc1c0fb177af082c`. Package manifests, workflows,
+  runner, CD/signing, and NAS surfaces have no diff. No host, stage, service,
+  credential, container, DNS/TLS, client, Revit, or other live operation was
+  performed.
+
+**Red-attempt and review dispositions:**
+
+- The first fresh-worktree Gateway package attempt used Node 22 after an
+  `--ignore-scripts` install; two unchanged SQLite tests could not load
+  `better-sqlite3`. The A3 ingress test itself was green. Rebuilding the native
+  dependency under Node 24 removed this environment-only ABI/preparation
+  failure; the full `431`-test package then passed.
+- Early focused Bridge preparation lacked the ignored generated simulator
+  package, then a test-project-only full run lacked the PowerCut harness and
+  reported five harness-launch failures while the other `794` tests passed.
+  Exact npm preparation plus a solution restore/build produced the final
+  `800/800` Bridge and `308/308` Contracts result. No product assertion failed
+  after the required build outputs existed.
+- Independent review found three observer-boundary defects before commit: a
+  synchronous default Gateway stderr write could delay refusal; an HTTP
+  post-`hello_ack` event-stream `403` inherited opening correlation; and an
+  `Action<T>` Bridge seam could admit an escaping `async void` fault. They were
+  respectively replaced by callback-based non-blocking logging, create-only
+  HTTP context, and an observed `Func<T, ValueTask>` seam, with the regression
+  proofs above. No auth classification, reducer, retry authority, timer,
+  connection, protocol-frame, or Bridge auth/retry behavior was changed.
 
 The current Bridge cannot close RES-30's revoked-device evidence using only a
 Gateway-side value-free `4403` record plus existing PETRUCCI logs. Gateway can

@@ -74,6 +74,7 @@ internal sealed class RbpGatewayHandshakeClient
                     SupportedProtocols),
                 cancellationToken)
             .ConfigureAwait(false);
+        RbpEnvelope? sentHello = null;
         try
         {
             lifecycle = Advance(
@@ -90,6 +91,7 @@ internal sealed class RbpGatewayHandshakeClient
                     RbpEnvelopeCodec.Encode(hello),
                     cancellationToken)
                 .ConfigureAwait(false);
+            sentHello = hello;
             byte[] frame = await connection.ReceiveTextAsync(cancellationToken)
                 .ConfigureAwait(false);
             RbpEnvelope opening;
@@ -141,7 +143,7 @@ internal sealed class RbpGatewayHandshakeClient
                 acknowledgement,
                 lifecycle);
         }
-        catch
+        catch (Exception exception)
         {
             try
             {
@@ -151,6 +153,14 @@ internal sealed class RbpGatewayHandshakeClient
             {
                 // Preserve the protocol/authentication failure that caused
                 // cleanup; disposal is bounded best-effort on this path.
+            }
+
+            if (exception is RbpGatewayTransportException transport &&
+                sentHello is not null)
+            {
+                throw transport.WithOpeningContext(
+                    sentHello.Id,
+                    RbpOpeningBinding.Wss);
             }
 
             throw;

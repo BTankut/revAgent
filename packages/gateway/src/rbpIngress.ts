@@ -1,3 +1,4 @@
+import { write } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { Duplex } from "node:stream";
 
@@ -31,6 +32,22 @@ export const RBP_INGRESS_HTTP_FALLBACK_PATHS = Object.freeze([
 
 const MAX_HTTP_MESSAGE_BYTES = 48 * 1024 * 1024;
 const MAX_PENDING_TRANSPORT_BYTES = 1024 * 1024;
+
+export const RBP_OPENING_REFUSAL_OBSERVER_CONTRACT =
+  "revagent.m4-rbp-refusal-observer/v1" as const;
+
+const RBP_OPENING_REFUSAL_EVENT = "gateway.rbp_opening_refused" as const;
+
+export interface RbpOpeningRefusalObservation {
+  readonly contractVersion: typeof RBP_OPENING_REFUSAL_OBSERVER_CONTRACT;
+  readonly event: typeof RBP_OPENING_REFUSAL_EVENT;
+  readonly correlationId: string;
+  readonly binding: "wss" | "http_sse";
+  readonly faultClass: "auth";
+  readonly httpStatus: 403;
+  readonly closeCode: 4403;
+  readonly decision: "refused";
+}
 
 export interface RbpIngressHost {
   readonly kind: GatewayPortAdapterKind;
@@ -147,6 +164,26 @@ function faultBody(error: GatewayRbpFault): {
   return { error: error.message, fault_class: error.code };
 }
 
+function openingRefusalObservation(
+  error: GatewayRbpFault,
+  correlationId: string,
+  binding: RbpOpeningRefusalObservation["binding"],
+): RbpOpeningRefusalObservation | null {
+  if (error.code !== "auth" || error.httpStatus !== 403 || error.closeCode !== 4403) {
+    return null;
+  }
+  return Object.freeze({
+    contractVersion: RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+    event: RBP_OPENING_REFUSAL_EVENT,
+    correlationId,
+    binding,
+    faultClass: "auth",
+    httpStatus: 403,
+    closeCode: 4403,
+    decision: "refused",
+  });
+}
+
 function rawResponse(
   socket: Duplex,
   status: number,
@@ -179,6 +216,10 @@ function rawResponse(
 
 export function createProductionRbpIngressHost(options: {
   readonly authority: GatewayBridgeSessionAuthority;
+  readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
+  readonly onOpeningRefusalObservation?: (
+    observation: RbpOpeningRefusalObservation,
+  ) => void;
 }): ProductionRbpIngressHost {
   const { authority } = options;
   const websocketServer = new WebSocketServer({
@@ -188,6 +229,33 @@ export function createProductionRbpIngressHost(options: {
   const httpChannels = new Map<string, HttpSseChannel>();
   let draining = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
+
+  const bestEffort = (operation: () => unknown): void => {
+    try {
+      void Promise.resolve(operation()).catch(() => {
+        // Async observation failure is isolated from protocol lifecycle too.
+      });
+    } catch {
+      // Observability cannot own authorization or connection lifecycle.
+    }
+  };
+
+  const observeOpeningRefusal = (observation: RbpOpeningRefusalObservation): void => {
+    const serialized = JSON.stringify(observation);
+    bestEffort(() => {
+      if (options.writeOpeningRefusalLog !== undefined) {
+        return options.writeOpeningRefusalLog(serialized);
+      }
+      write(process.stderr.fd, `${serialized}\n`, (error) => {
+        // The fd result is deliberately terminal here: neither an immediate
+        // nor callback-time log failure may own the refusal lifecycle.
+        void error;
+      });
+    });
+    if (options.onOpeningRefusalObservation !== undefined) {
+      bestEffort(() => options.onOpeningRefusalObservation!(observation));
+    }
+  };
 
   const host: ProductionRbpIngressHost = {
     kind: "postgres" as const,
@@ -218,6 +286,7 @@ export function createProductionRbpIngressHost(options: {
         { bodyLimit: MAX_HTTP_MESSAGE_BYTES },
         async (request, reply) => {
           if (draining) return reply.code(503).send({ error: "server_draining" });
+          let openingCorrelationId: string | null = null;
           try {
             if (!versionOneOffered(request.raw)) {
               return reply
@@ -229,6 +298,7 @@ export function createProductionRbpIngressHost(options: {
             if (hello.type !== "hello") {
               throw new GatewayRbpFault("protocol", "create body must be hello", 400, 4400);
             }
+            openingCorrelationId = hello.id;
             const channel = new HttpSseChannel();
             const opened = await authority.openConnection({
               deviceToken: bearer(request.headers.authorization),
@@ -244,6 +314,14 @@ export function createProductionRbpIngressHost(options: {
               .send(opened.helloAck);
           } catch (error) {
             if (error instanceof GatewayRbpFault) {
+              if (openingCorrelationId !== null) {
+                const observation = openingRefusalObservation(
+                  error,
+                  openingCorrelationId,
+                  "http_sse",
+                );
+                if (observation !== null) observeOpeningRefusal(observation);
+              }
               return reply.code(error.httpStatus).send(faultBody(error));
             }
             throw error;
@@ -336,6 +414,7 @@ export function createProductionRbpIngressHost(options: {
         websocketServer.handleUpgrade(request, socket, head, (websocket) => {
           let connectionId: string | null = null;
           let opening = true;
+          let openingRefusalObserved = false;
           const channel: BridgeConnectionChannel = {
             async send(serialized): Promise<void> {
               if (websocket.readyState !== WebSocket.OPEN) {
@@ -362,6 +441,7 @@ export function createProductionRbpIngressHost(options: {
           };
           websocket.on("message", (raw, binary) => {
             void (async () => {
+              let openingCorrelationId: string | null = null;
               try {
                 if (binary) {
                   throw new GatewayRbpFault("protocol", "RBP WSS requires text frames", 400, 4400);
@@ -373,6 +453,7 @@ export function createProductionRbpIngressHost(options: {
                   if (envelope.type !== "hello") {
                     throw new GatewayRbpFault("protocol", "first WSS frame must be hello", 400, 4400);
                   }
+                  openingCorrelationId = envelope.id;
                   const opened = await authority.openConnection({
                     deviceToken: bearer(request.headers.authorization),
                     binding: "wss",
@@ -395,6 +476,19 @@ export function createProductionRbpIngressHost(options: {
                         400,
                         4400,
                       );
+                const observation =
+                  opening && openingCorrelationId !== null
+                    ? openingRefusalObservation(fault, openingCorrelationId, "wss")
+                    : null;
+                if (
+                  !openingRefusalObserved &&
+                  observation !== null
+                ) {
+                  // Claim before invoking any best-effort sink so duplicate
+                  // hello frames cannot race the observer side effect.
+                  openingRefusalObserved = true;
+                  observeOpeningRefusal(observation);
+                }
                 if (!opening && websocket.readyState === WebSocket.OPEN) {
                   try {
                     await channel.send(
