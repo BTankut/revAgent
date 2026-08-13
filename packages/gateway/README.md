@@ -150,6 +150,35 @@ integration, production tunnel, or persistence/reboot claim. Host execution,
 real credentials, external client/live Revit, and write confirmation remain
 separately operator-gated M4 work.
 
+M4-03 adds only the credential engineering seam needed before any material may
+be staged. The strict
+`revagent.m4-preproduction-credentials/v1` file binds exactly
+`profile=lan_test`, `mode=preproduction`, one north bearer token, one identity
+token-derivation key, and one request-state HMAC key. The three secret values
+must be independent bounded visible-ASCII strings; unknown, missing, duplicate,
+malformed, non-string, or out-of-policy fields fail closed. The loader accepts
+only one absolute canonical POSIX regular file owned by the current user, with
+exact mode `0400`, one hard link, a 1–16384-byte bound, no symlink component,
+and an unchanged descriptor identity and metadata before and after the read.
+Windows filesystem loading is refused because POSIX mode bits cannot prove an
+NTFS ACL; the same policy branches are injected and exercised without skips on
+the Windows CI runners.
+
+The dedicated one-shot entry point is
+`dist/preProductionCredentialValidatorMain.js`; it requires explicit
+`--file`, `--profile lan_test`, and `--mode preproduction` arguments. It emits
+one allowlisted JSON success or refusal line and terminates without importing
+or starting a server, store, composition, ingress, or listener. Invocation,
+credential-file, and unexpected failures use exit codes 64, 78, and 1
+respectively, with fixed value-free output. It refuses before reading when the
+ambient Node environment is `production`. New test credentials are visibly
+fake `SYNTHETIC-...` canaries, and the adversarial suite scans their complete
+values and distinguishing fragments across exception, stack, own-property,
+stdout, stderr, console, and evidence projections. This slice does not create,
+stage, install, or use credential material and does not build an image. A new
+exact image digest and any material stage/use remain a separate operator card
+after M4-03 merges.
+
 GW-10 is production-code MCP composition, not production OAuth. The handler
 accepts only an injected token verifier and requires an HTTPS protected-resource
 metadata URL. IdP/OIDC discovery, PKCE/DCR, JWKS rotation, and real production

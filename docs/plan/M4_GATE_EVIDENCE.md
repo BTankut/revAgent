@@ -5,29 +5,41 @@
 **Acceptance state:** `not_submitted`
 
 **M4-02 slice state:** `passed`
-([`PR #370`](https://github.com/BTankut/revAgent/pull/370) planner merge review
-pending)
+([`PR #370`](https://github.com/BTankut/revAgent/pull/370) merged as
+[`55a34032e9926cfe1c49af932449fc95bc23876c`](https://github.com/BTankut/revAgent/commit/55a34032e9926cfe1c49af932449fc95bc23876c))
 
-**Plan binding:** `M4-02` is the planner-approved decomposition of the M4
-Gateway live-path work. It prepares a deterministic pre-production composition
-and has passed its bounded host proof; it does not by itself satisfy or enlarge
-the M4 milestone gate.
+**M4-03 slice state:** `in_progress`
+([`PR #372`](https://github.com/BTankut/revAgent/pull/372) draft; protected
+exact-head evidence pending)
 
-**Exact slice base:**
+**Plan binding:** `M4-02` is the planner-approved deterministic composition and
+bounded-host decomposition of the M4 Gateway live path. `M4-03` is the
+operator-approved engineering seam limited to a versioned credential-file
+loader and listenerless one-shot validator. Neither slice by itself satisfies
+or enlarges the M4 milestone gate.
+
+**M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
+
+**M4-03 exact slice base:**
+[`55a34032e9926cfe1c49af932449fc95bc23876c`](https://github.com/BTankut/revAgent/commit/55a34032e9926cfe1c49af932449fc95bc23876c)
 
 ## Authorization ceiling
 
-This ledger is limited to the DP-08 dedicated Gateway host and its own numeric
-loopback test endpoint. The operator first authorized BatchMode SSH discovery,
-exact OCI-archive transfer, and native Docker image import/digest verification
-on `bt@192.168.90.154` (`revagent`), then separately authorized the exact-card
-container lifecycle. The bounded create/start, health/refusal, stop/removal,
-residue, and protected-surface equality proof is complete. Credential use,
-public/LAN bind, DNS or tunnel changes, Compose or UFW mutation, external/live
-client execution, live Revit access, and every write/confirmation action remain
-closed. Production deployment, runner, signing, CD, and NAS surfaces remain
-untouched.
+The M4-02 host authorization was limited to the DP-08 dedicated Gateway host
+and its own numeric loopback test endpoint. The operator first authorized
+BatchMode SSH discovery, exact OCI-archive transfer, and native Docker image
+import/digest verification on `bt@192.168.90.154` (`revagent`), then separately
+authorized the exact-card container lifecycle. The bounded create/start,
+health/refusal, stop/removal, residue, and protected-surface equality proof is
+complete.
+
+The later M4-03 authorization is repo-only. It permits no real credential,
+credential file, host access, stage/use, container execution, or image build.
+Credential use, public/LAN bind, DNS or tunnel changes, Compose or UFW
+mutation, external/live client execution, live Revit access, and every
+write/confirmation action remain closed. Production deployment, runner,
+signing, CD, and NAS surfaces remain untouched.
 
 The pre-production composition must remain explicit and fail closed: no
 production-mode bypass, no implicit credentials, no second identity path, and
@@ -94,7 +106,13 @@ exposure, teardown failure, or semantic protected-surface inequality remains.
 
 ## M4-HOST evidence collection
 
-**Gate state:** `passed_planner_merge_review_pending`
+**Gate state:** `passed_merged`
+
+`PR #370` merged as `55a34032e9926cfe1c49af932449fc95bc23876c`.
+Its mandatory merge-push verification passed on
+[CI 31652873400, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31652873400/attempts/1)
+and
+[Gateway CI 31652873401, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31652873401/attempts/1).
 
 The operator separately authorized the exact dedicated-host lifecycle after
 discovery, archive transfer, and Docker image import/digest verification had
@@ -177,25 +195,52 @@ not permission to repair infrastructure.
 The current image deliberately fixes `NODE_ENV=production`, starts only the
 fail-closed ports, and contains no runtime protocol-store adapter. M4-HOST may
 therefore prove only its immutable image, lifecycle, health, refusal, isolation,
-and teardown properties. The pre-production north + RBP identity flow remains a
-repo-local deterministic simulator proof. Adding a pre-production entry point,
-promoting a test store, or selecting host runtime credentials is a separately
-scoped planner/operator decision; M4-HOST cannot silently authorize it.
+and teardown properties. M4-03/A adds a standalone repo-local validator only;
+it deliberately refuses `NODE_ENV=production`. Image/default-CMD/runtime
+selection, a new build and digest, credential stage/use, and any promoted store
+remain M4-CREDENTIAL/B work under a separate operator card. M4-HOST cannot
+silently authorize them.
+
+## M4-03 engineering-seam evidence
+
+**Gate state:** `implementation_complete_protected_evidence_pending`
+
+| Field | Evidence | State |
+|---|---|---|
+| Authorization / scope | Operator-approved A only: versioned credential-file loader plus listenerless one-shot validator on protected `main@55a34032`. No real credential, host access, stage/use, container, or image build. | `passed` |
+| Contract and physical policy | `revagent.m4-preproduction-credentials/v1`; exact `lan_test` / `preproduction`; bounded independent visible-ASCII fields; canonical current-user POSIX regular file; exact `0400`; one hard link; pre/post canonical path and descriptor-state checks. Windows actual loading fails closed. | `passed` |
+| Value-free and synthetic-fixture proof | All new secret fixtures use fixed recognizable `SYNTHETIC-...` canaries. Loader and validator tests scan complete values and distinguishing fragments across exception, stack, own properties, injected evidence, ambient stdout/stderr, and console paths, including forged typed errors and a real loader-to-validator refusal. | `passed` |
+| Listenerless / production refusal | The real bundled main is subprocess-tested for exact exit/output behavior and a server/store/composition-free import graph. Ambient `NODE_ENV=production` returns a value-free exit `78` before file access. | `passed` |
+| Local evidence | Node `v24.19.0`: targeted 2 files / 15 tests passed, with 1 additional real-POSIX smoke skipped only on Windows; Gateway lint, type-check, build, and full 29 files / 282 tests passed, with the same platform-specific smoke skipped. Handler manifest remained `sha256:cb193dc22716e12217edc4f5516c7145eb6e42a488c6360777b01e977644ecde`. | `passed` |
+| Independent review | Three salt-read-only reviews found no remaining P0-P2 source or scope issue after production-refusal, value-free-output, typed-error, exact-mode, path-race, import-graph, and evidence fixes. | `passed` |
+| Protected exact-head runs | Pending implementation push. Scope-head runs are not implementation evidence. | `pending` |
+| Protected-surface equality | No diff from `55a34032` in root lockfile; Gateway package manifest, Dockerfile/default CMD, production `main.ts`, public `index.ts`, `config.ts`, `server.ts`, `store.ts`, `testAdapters.ts`; protocol; deploy; or workflows. | `passed` |
+| Image / credential operation | Not performed. New image build/digest and every credential stage/use action are explicitly deferred to the separate M4-CREDENTIAL/B card after A merges. | `passed` |
+| Forecast / actual / variance | Forecast `1.50h`; actual and variance close after exact-head protected evidence. Passive CI/operator waits excluded. | `pending` |
+| Result | Repo-local implementation and local proof passed; protected exact-head evidence remains required before planner merge review. | `pending` |
+
+### M4-03 local red-result disposition
+
+- The first full-Gateway invocation used an incomplete borrowed dependency tree
+  and stopped before product tests. Installing the exact locked dependencies in
+  the isolated worktree and rebuilding the allowlisted `better-sqlite3` native
+  module for Node 24 restored the intended environment; targeted and full
+  Gateway tests then passed. No manifest or lockfile changed.
 
 ## Explicitly open gates and deferred proof
 
-- **M4-CREDENTIAL:** real credential material or credential installation/use
-  remains separately operator-gated.
+- **M4-CREDENTIAL:** a new exact-source image build/digest, real credential
+  material, and credential installation/use remain separately operator-gated.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
   exchange, and live Revit execution remain separately operator-gated.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target
   remains separately operator-gated.
 - **RES-30:** real Gateway token exchange, revoked-device refusal at handshake,
   and device-token persistence across reboot remain unproven. Reboot is not
-  authorized by M4-02 or M4-HOST.
+  authorized by M4-02, M4-HOST, or M4-03/A.
 - **Production exposure/deployment:** a production tunnel or public DNS route is
-  outside M4-02. The self-hosted deploy runner remains deferred to M6; no
-  runner, workflow, or CD change is authorized here.
+  outside M4-02 and M4-03/A. The self-hosted deploy runner remains deferred to
+  M6; no runner, workflow, or CD change is authorized here.
 
 ## Park List
 
@@ -209,9 +254,10 @@ scoped planner/operator decision; M4-HOST cannot silently authorize it.
 
 ## Submission rule
 
-M4-02's bounded repo and authorized-host evidence is complete and the slice is
-`passed`; `PR #370` remains draft until planner merge approval. The M4 milestone
-ledger stays `in_progress` / `not_submitted` because M4-CREDENTIAL,
-M4-CLIENT/LIVE, M4-WRITE-CONFIRM, and the remaining planner-bound slices are
-still open. No evidence result becomes milestone acceptance without the
-milestone owner's explicit decision.
+M4-02's bounded repo and authorized-host evidence is complete, the slice is
+`passed`, and `PR #370` merged as `55a34032`. M4-03/A remains draft in `PR #372`
+until exact-head protected evidence passes and the planner grants merge
+approval. The M4 milestone ledger stays `in_progress` / `not_submitted` because
+M4-CREDENTIAL, M4-CLIENT/LIVE, M4-WRITE-CONFIRM, and the remaining
+planner-bound slices are still open. No evidence result becomes milestone
+acceptance without the milestone owner's explicit decision.
