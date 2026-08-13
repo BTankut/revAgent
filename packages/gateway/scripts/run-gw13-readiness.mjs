@@ -101,14 +101,22 @@ try {
       "selected-codex-desktop",
       "--client-build",
       "post-m3-m5",
-      "--target",
-      "NET01",
       "--token-env",
       "REVAGENT_GW13_SMOKE_TOKEN",
     ],
     { cwd: repositoryRoot, encoding: "utf8" },
   );
-  const liveSmokeReady = liveSmoke.status === 0;
+  let liveSmokeReport;
+  try {
+    liveSmokeReport = JSON.parse(liveSmoke.stdout ?? "");
+  } catch {
+    liveSmokeReport = undefined;
+  }
+  const liveSmokeReady =
+    liveSmoke.status === 0 &&
+    liveSmokeReport?.execute === false &&
+    liveSmokeReport.state === "dry_run_ready" &&
+    liveSmokeReport.target === null;
   const passed =
     vitest.status === 0 &&
     liveSmokeReady &&
@@ -136,6 +144,7 @@ try {
       passedRes14SeamCount: seams.filter((item) => item.status === "passed").length,
       executedAssertionCount: assertions.length,
       liveSmokeDryRunReady: liveSmokeReady,
+      liveSmokeDryRunTargetless: liveSmokeReport?.target === null,
     },
     cases,
     res14Seams: seams.map((seam) => ({
@@ -145,7 +154,7 @@ try {
     manualObligations: [
       "WP9 C01-C14 must still be run hands-on against the selected Codex Desktop build.",
       "OAuth/DCR, token refresh/revoke, Turkish UX, visible progress/cancel, downloaded-file opening and Revit-visible results are not proven here.",
-      "The NET01 live-smoke command may execute only after M3/M5 integration with an approved endpoint and credential.",
+      "The live-smoke command requires a caller-supplied approved workstation target and may execute only after M3/M5 integration with an approved endpoint and credential.",
       "P6-T1 passed-to-accepted remains a milestone-owner decision.",
     ],
     diagnostics: passed
@@ -156,6 +165,7 @@ try {
             vitestStdout: vitest.stdout.slice(-4000),
             vitestStderr: vitest.stderr.slice(-4000),
             liveSmokeExitCode: liveSmoke.status ?? 1,
+            liveSmokeStdout: (liveSmoke.stdout ?? "").slice(-2000),
             liveSmokeStderr: (liveSmoke.stderr ?? "").slice(-2000),
           },
         ],

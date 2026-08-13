@@ -477,13 +477,12 @@ repository checkout or an independently protected local coordinator copy; the
 SSH wrapper stages the exact local helper over SCP before execution.
 
 For the current PETRUCCI representative smoke, run the coordinator-side SSH
-wrapper from DESKTOP-OKNV128 instead of manually opening Revit. The wrapper's
-checked-in implicit default still names the superseded NET01 target, so always
-pass PETRUCCI's explicit computer, user, host, and key until that executable
-default is removed in a separately reviewed engineering slice. First run the
-open/model gate; it opens the installed Revit 2022 sample model in the logged-on
-workstation session, waits for the local bridge, and verifies through revAgent
-that the expected model and an active view are loaded:
+wrapper from DESKTOP-OKNV128 instead of manually opening Revit. The wrapper has
+no implicit live-workstation target and fails before SSH/SCP unless `-Computer`
+is supplied by the caller, so pass PETRUCCI's explicit computer, user, host, and
+key. First run the open/model gate; it opens the installed Revit 2022 sample
+model in the logged-on workstation session, waits for the local bridge, and
+verifies through revAgent that the expected model and an active view are loaded:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `

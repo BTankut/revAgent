@@ -114,3 +114,26 @@ software presence or the phrase "three endpoints".
 
 No `NETWORK/ACL`, `DNS/TLS-TRUST`, `BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, or
 `CLIENT/LIVE` approval is implied by this evidence record.
+
+## Subsequent operator placement amendment — 2026-08-13
+
+After this read-only discovery was recorded, the operator bound the WP9 client
+to PETRUCCI. The resulting topology has three logical endpoints on two physical
+machines: Gateway is `revagent`, while the WP9 client, Bridge, add-in, and Revit
+are on `PETRUCCI`. `DESKTOP-OKNV128` remains the evidence coordinator and is not
+an M4 client. This amendment resolves placement only; it does not convert the
+installed Codex Desktop into proof of an active session, registration, or live
+execution, and it does not claim that the sample model is currently open.
+
+The DNS/TLS basis is retained in [`DP-04`](DP-04-domain.md) and the
+[`DP-03/DP-04 staging evidence`](DP-03-04-cloudflare-staging.md). The production
+name and stopped production connector are not used by M4. A separate same-zone
+test FQDN, DNS-only private-address record, trusted-CA DNS-01 certificate, and
+out-of-band narrow-zone token remain subject to their own operator card.
+
+The seven M4-04/B records/gates remain distinct:
+`CLIENT-PLACEMENT/FEASIBILITY`, `NETWORK/ACL`, `DNS/TLS-TRUST`,
+`BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, `CLIENT/LIVE`, and
+`CLEANUP/RESIDUE-EQUALITY`. The placement decision is bound, but active-session
+feasibility and all six execution gates remain open. `M4-WRITE-CONFIRM` remains
+a later separate gate; M4-04/A is repo-only.

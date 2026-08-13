@@ -14,13 +14,18 @@
 
 **M4-CREDENTIAL/B gate state:** `passed`
 
+**M4-04/A slice state:** `in_progress`
+([`PR #375`](https://github.com/BTankut/revAgent/pull/375), draft)
+
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
 operator-approved repo seam limited to a versioned credential-file loader and
 listenerless one-shot validator. `M4-CREDENTIAL/B` is the separately authorized
 exact-source target-host proof of one native Linux credential load plus cleanup.
-None of these bounded slices by itself satisfies or enlarges the M4 milestone
-gate.
+`M4-04/A` is the separately authorized repo-only pre-production serving seam;
+it prepares no host, DNS, trust, credential, container, client, or Revit
+operation. None of these bounded slices by itself satisfies or enlarges the M4
+milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -30,6 +35,9 @@ gate.
 
 **M4-CREDENTIAL/B exact source:**
 [`9b7ead1396ac080ea90bf2923bd1ebe871847f3f`](https://github.com/BTankut/revAgent/commit/9b7ead1396ac080ea90bf2923bd1ebe871847f3f)
+
+**M4-04/A exact slice base:**
+[`bfc21873370891a544c11494f8888fd077136b55`](https://github.com/BTankut/revAgent/commit/bfc21873370891a544c11494f8888fd077136b55)
 
 ## Authorization ceiling
 
@@ -56,6 +64,12 @@ The pre-production composition must remain explicit and fail closed: no
 production-mode bypass, no implicit credentials, no second identity path, and
 no claim that deterministic identity fixtures prove real OAuth or device-token
 durability.
+
+The M4-04/A authorization is likewise repo-only. The operator bound the three
+logical endpoints to two physical machines: Gateway is `revagent`, while the
+WP9 client, Bridge, add-in, and Revit are all on `PETRUCCI`.
+`DESKTOP-OKNV128` is not an M4 client. This placement decision does not prove an
+active client session, a current Revit document, or any live path.
 
 ## M4-02 repo-preparation evidence
 
@@ -281,6 +295,68 @@ persistence, external-client conformance, live Revit, or write confirmation.
   residue coverage. The collector was corrected and both audits returned GO on
   exact script SHA-256 `ba7139...` before host credential or container work.
 
+## M4-04/A repo-only engineering seam
+
+**Gate state:** `in_progress`
+
+M4-04/A is limited to the explicit `lan_test` / `preproduction` Gateway serving
+seam, deterministic tests, caller-supplied live-smoke target parameters, and
+the directly related plan and decision records. It may prepare the strict
+real-Gateway enrollment and revoked-device refusal seams in code, but it does
+not perform a real exchange, create or stage a credential, start a Gateway,
+connect a client, or contact Revit. RES-30 therefore remains open, including
+device-token persistence across reboot.
+
+The engineering acceptance scope requires the M4-03 credential loader to feed
+one identity/store/Bridge/north graph, a strict `POST /bridge/v1/enroll` seam,
+deterministic selected-session routing, revoked-device and value-free negative
+tests, and an unchanged production fail-closed default. The three executable
+residuals are `scripts/invoke-live-smoke-over-ssh.ps1`,
+`packages/gateway/scripts/gw13-live-smoke.mjs`, and
+`packages/gateway/scripts/run-gw13-readiness.mjs`; live execution must receive
+its target from the caller and must not default to NET01 or PETRUCCI. Root
+lockfile churn is outside the slice and is a stop condition.
+
+The production naming and connector authority already exists and is not an
+M4 discovery item:
+
+- [`DP-04`](../decisions/DP-04-domain.md) confirms the canonical production
+  origin `gateway.revagent.app` and forbids configuring clients with an IP
+  address or machine hostname.
+- [`DP-03/DP-04 staging evidence`](../decisions/DP-03-04-cloudflare-staging.md)
+  records the existing production tunnel and its
+  `gateway.revagent.app -> http://127.0.0.1:8081` ingress. The connector remains
+  deliberately stopped and is not started by M4.
+
+The M4 test approach is a separate same-zone test FQDN with a DNS-only private
+`A` record to `192.168.90.154` and a publicly trusted certificate to be
+obtained by DNS-01. The name may resolve publicly, but its private target is not
+publicly routable. The test label is only a candidate until the separate
+`DNS/TLS-TRUST` card binds its exact FQDN and certificate details; no DNS record
+or certificate exists by virtue of this repo seam. The Cloudflare token also
+requires its own operator gate. It must be supplied out of band, limited to DNS
+edit for the relevant zone, excluded from git, PRs, CI, logs, and evidence, and
+given an explicit post-use revoke, rotate, or retained-custody disposition in
+that card. If the approved narrow scope cannot support the DNS-01 client, work
+stops for operator/planner disposition rather than silently broadening access
+or installing local trust.
+
+The serving process and the later Docker publish are two different bind
+surfaces. Inside the image, pre-production requires an explicit
+`GATEWAY_BIND_HOST=0.0.0.0`; loopback and omitted values fail closed, and the
+host's LAN address is not valid inside the container namespace. The separate
+`NETWORK/ACL` card must bind Docker's host publish specifically to
+`192.168.90.154` and prove the approved exposure. This engineering seam opens
+neither listener.
+
+The seven M4-04/B records/gates remain distinct:
+`CLIENT-PLACEMENT/FEASIBILITY`, `NETWORK/ACL`, `DNS/TLS-TRUST`,
+`BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, `CLIENT/LIVE`, and
+`CLEANUP/RESIDUE-EQUALITY`. The placement decision is now bound to PETRUCCI,
+but its active-session feasibility proof and the other six execution gates
+remain open. The later `M4-WRITE-CONFIRM` gate also remains separately closed.
+M4-04/A authorizes none of those operations.
+
 ## Closed credential gate and explicitly open gates
 
 - **M4-CREDENTIAL/B:** exact-source build, target-host native Linux validation,
@@ -291,12 +367,18 @@ persistence, external-client conformance, live Revit, or write confirmation.
   corrected the live Revit workstation to PETRUCCI on 2026-08-13. Read-only
   locator and installed-surface evidence is retained in
   `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`; the accepted live
-  chain remains in `M3_BRIDGE_GATE_EVIDENCE.md`. Gateway is `revagent`, and
-  Bridge/add-in/live Revit is PETRUCCI. WP9 client placement remains unresolved
-  and operator-gated: PETRUCCI has an installed but inactive/unproven Codex
-  client surface; DESKTOP-OKNV128 is the evidence coordinator but is not
-  selected as the M4-04 client by this record. This correction is not a
-  live-gate approval.
+  chain remains in `M3_BRIDGE_GATE_EVIDENCE.md`. The operator subsequently
+  bound Gateway to `revagent` and the WP9 client, Bridge, add-in, and live Revit
+  to PETRUCCI. DESKTOP-OKNV128 is not an M4 client. An active PETRUCCI Codex
+  client session remains unproven, so this placement decision is not a live-
+  gate approval.
+- **M4-DNS/TLS-TRUST:** the production-origin and stopped-connector baselines
+  remain [`DP-04`](../decisions/DP-04-domain.md) and
+  [`DP-03/DP-04`](../decisions/DP-03-04-cloudflare-staging.md). M4 does not use
+  `gateway.revagent.app` or start its connector. The separate test FQDN,
+  DNS-only private-address record, trusted-CA DNS-01 certificate, narrowly
+  scoped out-of-band token, and post-use token disposition remain operator-
+  gated and unexecuted.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
   exchange, and live Revit execution remain separately operator-gated.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target

@@ -258,6 +258,35 @@ export {
   type PreProductionRbpIngressHost,
 } from "./preProductionComposition.js";
 export {
+  PRE_PRODUCTION_ENROLLMENT_PATH,
+  createPreProductionEnrollmentEndpoint,
+  type PreProductionEnrollmentEndpoint,
+  type PreProductionEnrollmentEndpointOptions,
+} from "./preProductionEnrollmentEndpoint.js";
+export {
+  PRE_PRODUCTION_SERVING_CONTRACT_VERSION,
+  PreProductionServingError,
+  preparePreProductionServing,
+  type PreparedPreProductionServing,
+  type PreProductionServingDependencies,
+  type PreProductionServingDevice,
+  type PreProductionServingErrorReason,
+  type PreProductionServingOptions,
+  type PreProductionServingPrincipal,
+} from "./preProductionServing.js";
+export {
+  createPreProductionRuntimeAdapters,
+  type PreProductionRuntimeAdapters,
+} from "./preProductionRuntimeAdapters.js";
+export {
+  PreProductionTlsMaterialError,
+  loadPreProductionTlsMaterial,
+  type PreProductionTlsFileHandle,
+  type PreProductionTlsFileStat,
+  type PreProductionTlsMaterialErrorReason,
+  type PreProductionTlsMaterialIo,
+} from "./preProductionTlsMaterial.js";
+export {
   REVAGENT_EVENT_SCHEMA,
   createUnavailableEventSink,
   type GatewayEventEnvelope,
@@ -358,7 +387,9 @@ export {
   startGatewayServer,
   type GatewayCompositionErrorReason,
   type GatewayServerHandle,
+  type GatewayServerOptions,
   type GatewayServerPorts,
+  type GatewayServerTlsMaterial,
 } from "./server.js";
 // GW-3 executor and policy seed.
 export {

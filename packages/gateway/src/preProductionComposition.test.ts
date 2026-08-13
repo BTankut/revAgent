@@ -253,6 +253,9 @@ describe("M4-02 pre-production LAN/test composition", () => {
   it("keeps raw token and callback/reporter failures out of observable surfaces", async () => {
     const sentinel = "m4-02-SENTINEL-secret-000000000000000001";
     const base = options();
+    if (base.northMcp === undefined) {
+      throw new Error("test north MCP configuration must be present");
+    }
     if (!base.config.ok) throw new Error("test config must be valid");
     const reports: unknown[] = [];
     let reportAttempt = 0;

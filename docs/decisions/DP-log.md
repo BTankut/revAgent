@@ -1025,3 +1025,43 @@ must not override this dated decision and should be aligned with the executable
 cleanup. Signed-CD workflow/publisher references to DESKTOP-OKNV128/NET01
 identify a legacy delivery cohort, not DP-12/M4 workstation authority; they are
 not changed by this decision.
+
+## 2026-08-13 — M4-04 client placement and DNS/TLS basis
+
+This amendment records the operator decisions made after the DOCS-01 discovery
+record above without rewriting that record's then-current facts. Gateway is
+`revagent`; the WP9 client, Bridge, add-in, and Revit are all on `PETRUCCI`.
+`DESKTOP-OKNV128` is not an M4 client. PETRUCCI's installed Codex Desktop does
+not by itself prove an active client session, a remote-MCP registration, a
+current Revit document, or a live path.
+
+[`DP-04`](DP-04-domain.md) remains authoritative for the canonical production
+origin `gateway.revagent.app`.
+[`DP-03/DP-04 staging evidence`](DP-03-04-cloudflare-staging.md) remains
+authoritative for the existing production tunnel and the deliberately stopped
+connector on `revagent`. M4 does not use that production origin and does not
+start that connector.
+
+The M4 test approach is a separate same-zone test FQDN with a DNS-only private
+`A` record to `192.168.90.154` and a publicly trusted certificate to be
+obtained by DNS-01. The name may resolve publicly, but its private target is not
+publicly routable. The suggested test label is only a candidate; the exact FQDN,
+certificate paths, renewal/retention details, and lifecycle values are not
+bound until the separate `DNS/TLS-TRUST` operator card. A Cloudflare token must
+be supplied out of band under its own operator approval, limited to DNS edit
+for the relevant zone, excluded from git, PRs, CI, logs, and evidence, and
+assigned an explicit post-use revoke, rotate, or retained-custody disposition.
+If that narrow scope is not feasible for the selected DNS-01 client, execution
+stops for operator/planner disposition; permission scope and local trust are not
+silently broadened.
+
+M4-04/A is a repo-only engineering seam. The seven M4-04/B records/gates remain
+distinct: `CLIENT-PLACEMENT/FEASIBILITY`, `NETWORK/ACL`, `DNS/TLS-TRUST`,
+`BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, `CLIENT/LIVE`, and
+`CLEANUP/RESIDUE-EQUALITY`. Placement is now bound to PETRUCCI, but its active-
+session feasibility proof and the other six execution gates remain open. The
+later `M4-WRITE-CONFIRM` gate remains separate. No host, DNS, token,
+certificate, trust-store, credential, container, Bridge, client, Revit,
+OAuth/tenant, write, reboot, tunnel, or production deployment operation is
+authorized or claimed by this amendment. M4 remains `in_progress` /
+`not_submitted`, RES-30 remains open, and the one-item Park List is unchanged.

@@ -26,6 +26,7 @@ COPY --from=build --chown=node:node /workspace/packages/protocol/package.json ./
 COPY --from=build --chown=node:node /workspace/packages/protocol/node_modules ./packages/protocol/node_modules
 COPY --from=build --chown=node:node /workspace/packages/protocol/dist ./packages/protocol/dist
 COPY --from=build --chown=node:node /workspace/packages/gateway/package.json ./packages/gateway/package.json
+COPY --from=build --chown=node:node /workspace/packages/gateway/registry-seed.json ./packages/gateway/registry-seed.json
 COPY --from=build --chown=node:node /workspace/packages/gateway/node_modules ./packages/gateway/node_modules
 COPY --from=build --chown=node:node /workspace/packages/gateway/dist ./packages/gateway/dist
 

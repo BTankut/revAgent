@@ -29,7 +29,11 @@ export const GATEWAY_CONFIG_ENV_ALLOWLIST = Object.freeze([
 
 export type GatewayConfigEnvName = (typeof GATEWAY_CONFIG_ENV_ALLOWLIST)[number];
 
-export type GatewayNodeEnv = "development" | "production" | "test";
+export type GatewayNodeEnv =
+  | "development"
+  | "preproduction"
+  | "production"
+  | "test";
 
 export type GatewayLogLevel =
   | "fatal"
@@ -55,7 +59,8 @@ export type GatewayConfigProblemReason =
   | "unsupported_value"
   | "malformed_url"
   | "insecure_scheme"
-  | "loopback_bind_in_production";
+  | "loopback_bind_in_production"
+  | "invalid_preproduction_bind";
 
 /**
  * Frozen and value-free.
@@ -75,6 +80,8 @@ export const GATEWAY_CONFIG_PROBLEM_MESSAGES: Readonly<
   insecure_scheme: "must use a secure scheme",
   loopback_bind_in_production:
     "must not bind to loopback in production; the container would answer its own health check while refusing external traffic",
+  invalid_preproduction_bind:
+    "must be exactly 0.0.0.0 inside the pre-production container",
 });
 
 export interface GatewayConfigProblem {
@@ -152,6 +159,7 @@ export function loadGatewayConfig(
   let nodeEnv: GatewayNodeEnv = "development";
   if (
     rawNodeEnv === "development" ||
+    rawNodeEnv === "preproduction" ||
     rawNodeEnv === "production" ||
     rawNodeEnv === "test"
   ) {
@@ -171,9 +179,20 @@ export function loadGatewayConfig(
   // Defaults to every interface, not loopback. A loopback default is the
   // failure this rejects below: the container passes its own health check while
   // the reverse proxy in front of it gets connection refused.
-  const bindHost = readValue(env, "GATEWAY_BIND_HOST") ?? "0.0.0.0";
+  const rawBindHost = readValue(env, "GATEWAY_BIND_HOST");
+  const bindHost = rawBindHost ?? "0.0.0.0";
+  if (nodeEnv === "preproduction" && rawBindHost === undefined) {
+    problems.push(problem("GATEWAY_BIND_HOST", "missing_required"));
+  }
   if (nodeEnv === "production" && LOOPBACK_HOSTS.has(bindHost.toLowerCase())) {
     problems.push(problem("GATEWAY_BIND_HOST", "loopback_bind_in_production"));
+  }
+  if (
+    nodeEnv === "preproduction" &&
+    rawBindHost !== undefined &&
+    bindHost !== "0.0.0.0"
+  ) {
+    problems.push(problem("GATEWAY_BIND_HOST", "invalid_preproduction_bind"));
   }
 
   let port = 8080;
@@ -194,7 +213,7 @@ export function loadGatewayConfig(
   let publicUrl = `http://127.0.0.1:${String(port)}`;
   const rawPublicUrl = readValue(env, "GATEWAY_PUBLIC_URL");
   if (rawPublicUrl === undefined) {
-    if (nodeEnv === "production") {
+    if (nodeEnv === "production" || nodeEnv === "preproduction") {
       problems.push(problem("GATEWAY_PUBLIC_URL", "missing_required"));
     }
   } else {
@@ -205,7 +224,10 @@ export function loadGatewayConfig(
       problems.push(problem("GATEWAY_PUBLIC_URL", "malformed_url"));
     }
     if (parsedUrl !== null) {
-      if (nodeEnv === "production" && parsedUrl.protocol !== "https:") {
+      if (
+        (nodeEnv === "production" || nodeEnv === "preproduction") &&
+        parsedUrl.protocol !== "https:"
+      ) {
         problems.push(problem("GATEWAY_PUBLIC_URL", "insecure_scheme"));
       } else {
         publicUrl = parsedUrl.toString();
