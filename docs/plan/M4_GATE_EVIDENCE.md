@@ -527,7 +527,45 @@ Passive CI/review waits are excluded.
 
 ## M4-04/A3 observer disposition
 
-**Decision requested from planner:** `bind A3`
+**Gate state:** `scope_recorded`
+
+**Planner decision:** `A3 bound` on 2026-08-13.
+
+**Scope of record:** protected source is
+`003fbc0d1a95be546c7b3ebdc36caa14e4f2b557` (`PR #376` squash merge).
+This repo-only slice exposes the already-existing revoked-opening chain through
+one versioned value-free observer contract:
+`revagent.m4-rbp-refusal-observer/v1`. The existing RBP `hello.id` is the only
+cross-host correlation identity. Gateway records the correlated opening
+refusal using closed codes; Bridge records the resulting final
+`RetryPaused/Auth/Pause` snapshot immediately before the existing retry-
+authority wait. Neither event may include a credential, token, header, device
+identity, endpoint, hostname, path, exception, stack, or arbitrary failure
+message.
+
+The observer is downstream of existing decisions. It must not change 4403
+mapping, failure classification, reducer semantics, retry/fallback selection,
+timers, semaphore/signals, connection count, enrollment, journal, worker exit,
+or protocol frames. Observer callback/log failures are best-effort and must be
+swallowed without notifying retry authority or altering lifecycle state.
+Deterministic tests must prove exact closed fields, same-`hello.id`
+correlation, exactly-once emission, value-free output with recognizable
+`SYNTHETIC-...` canaries, callback-failure isolation, and continued pause until
+the pre-existing retry signal is explicitly changed.
+
+**Explicitly out:** PETRUCCI or `revagent` access, binary build/stage/install,
+Bridge service/config mutation, backup/restart/restore, live Gateway or
+container execution, real credential/device/tenant/OAuth exchange, DNS/TLS/UFW
+or tunnel work, Codex configuration, Revit/model operations, reboot,
+write/confirm, workflow/runner/CD/signing/NAS changes, doctor or
+`AuthDiagnosticPath`, protocol schema, dependency/manifest/lockfile changes,
+and any A4 client-auth implementation. A later Bridge-stage card must bind an
+exact binary digest, config backup, bounded service stop/start, rollback, and
+protected-surface equality before PETRUCCI execution.
+
+**Forecast:** `2.25h` active effort, calibrated against the prior M2 `-72%`
+and A2 `-14%` variances. Passive CI/review waits are excluded. Actual and
+variance are filled only after implementation and protected evidence.
 
 The current Bridge cannot close RES-30's revoked-device evidence using only a
 Gateway-side value-free `4403` record plus existing PETRUCCI logs. Gateway can
@@ -540,9 +578,9 @@ the correlated `4403`, classified it as authorization failure, entered
 `RetryPaused/Auth`, and remained paused. Absence of another handshake cannot
 distinguish that state from transport loss or a stalled worker.
 
-A3's minimum repo scope is a value-free Gateway refusal correlation plus a
-value-free Bridge `RetryPaused/Auth` observer. Any Bridge binary stage remains
-outside A3 implementation proof and requires its own operator-approved
+A3's minimum repo scope is therefore a value-free Gateway refusal correlation
+plus a value-free Bridge `RetryPaused/Auth` observer. Any Bridge binary stage
+remains outside A3 implementation proof and requires its own operator-approved
 snapshot, service-stop/stage/start, rollback, and protected-surface equality
 card.
 
