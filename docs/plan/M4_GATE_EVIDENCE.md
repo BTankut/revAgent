@@ -387,6 +387,7 @@ any later M4-04/B gate.
 | Host/session | `petrucci\ws2` on `PETRUCCI`; console session 1 was `Active`. | placement identity passed |
 | Codex Desktop | AppX `OpenAI.Codex` `26.803.10989.0` was `Ok`; `ChatGPT.exe` and its child `codex.exe` ran as `PETRUCCI\ws2` in session 1. The user auth artifact existed and was updated that day, but its contents were not read; process plus artifact presence is not accepted as proof of a valid signed-in account. | active local process passed; signed-in state unproven |
 | Remote-MCP registration | The installed user's `~\.codex\config.toml` existed with two MCP sections. Its value-free shape contained one `command` key and no `url`, `bearer_token_env_var`, `http_headers`, or `env_http_headers` key. Current Codex documentation supports Streamable HTTP with bearer-token environment variables or OAuth, but the live PETRUCCI build has no configured remote server and no arbitrary static-bearer secure-store import was found. | transport is product-supported; required no-env/no-plain-config bearer sink blocked |
+| Binary receiver feasibility | No `node.exe` existed on `PATH`, under canonical `C:\Program Files\nodejs`, or in the revAgent installed receipt. Codex's user-writable bundled Node `v24.14.0` at `C:\Users\ws2\AppData\Local\OpenAI\Codex\runtimes\cua_node\23828fd353da361d\bin\node.exe` had SHA-256 `1acf46c7fc017391d28871ec7b8db3f037beafe778d39c5131ba6013704bbb8d`, a valid OpenAI signature, and preserved a 38-byte NUL/`0xff` binary stdin probe exactly (input/output SHA-256 `0e8c271bb2e79c6723d2621f2e25527911e2795f73c6d8db959ab2673a16b469`, empty stderr). Its AppData origin and mutable Codex lifecycle do not satisfy revAgent's protected Program Files/OpenJS runtime authority. | raw-stdin mechanics passed; Codex Node rejected as execution authority; A2 uses a self-contained receiver |
 | Call origin | The running PETRUCCI Codex process tree was observed. No connection to `192.168.90.154` existed and no request was sent. A future direct remote-MCP or local-broker route would originate on PETRUCCI, but live origin remains unproven until `CLIENT/LIVE`. | prospective origin resolved; live origin unproven |
 | Revit/add-in | Revit 2022 process `4760` ran as `PETRUCCI\ws2`; its add-in listener was active on `127.0.0.1:8080`. Add-in manifest SHA-256 `9aa1ea865289adc352d5ad467fec93c11ff48b10f15f5c40bc5348d036f95b6c` and DLL SHA-256 `1e25e5a3eaaaad420a98e45abc511a11ab6ba0d9c62875650010b91c7433aefa` retained their earlier protected-main match. SSH did not identify the open document. | runtime surface present; current model unproven |
 | Bridge | `revAgentBridge` remained `Running` / `Auto` / `LocalSystem`; host and worker processes ran as SYSTEM. Configuration still named `wss://localhost:8443/bridge/v1`; the M3 stub listened on loopback `8443`; no Bridge TCP connection was present. Credential artifacts were inventoried by path/size only and never read. | installed M3 surface present; real-Gateway enrollment absent |
@@ -408,17 +409,24 @@ different client-auth route.
 
 ## M4-04/A2 secret-generation and two-host-handoff seam
 
-**Gate state:** `scope_recorded`
+**Gate state:** `implementation_complete_local`
 
 **Scope of record:** protected source is
 `6aa04593657fa2e3ee8a656ff97b553daf07f29e`. This repo-only slice owns one
 OS-CSPRNG generator for the three M4 pre-production credential fields, a
 bounded binary two-host handoff for the allowlisted `north_bearer` and
-`enrollment_artifact` classes, a PowerShell 5.1 destination receiver, and
+`enrollment_artifact` classes, a self-contained .NET 8 `win-x64` destination
+receiver, and
 deterministic tests for success, refusal, timeout/failure cleanup, and
 value-free output. Secret fixtures use a recognizable `SYNTHETIC-...` prefix.
-The slice uses only existing platform libraries; root lockfile churn is a stop
-condition.
+The receiver replacement is deliberate: a live deterministic fixture proved
+that Windows PowerShell 5.1 `-File` binds redirected stdin to its script
+pipeline and can echo raw frame bytes into parameter-binding diagnostics.
+PowerShell is therefore only the coordinator; it never parses or hosts secret
+stdin. The receiver is single-file/self-contained, validates its own pinned
+SHA-256 before reading stdin, and requires no PETRUCCI Node or .NET install.
+The slice uses only existing platform libraries; root lockfile churn remains a
+stop condition.
 
 The generator must produce three independent 48-byte values; create only an
 exclusive, canonical, owner-bound POSIX `0400` file below exact `0700`
@@ -428,6 +436,24 @@ The handoff must keep secret bytes off argv, environment, transcript, log, and
 evidence surfaces; enforce closed secret classes and byte bounds; use binary
 streams rather than PowerShell text pipelines; share one bounded deadline; and
 positively verify owned source/destination cleanup on every failure.
+The coordinator uses a two-phase commit: it relays the bounded frame, waits for
+the source process to terminate, then uses one attempt-scoped container name to
+stop/remove any surviving remote Docker process and positively proves both
+that container and the exact source file absent. Only then does it send the
+receiver's commit byte, and only when the bounded source stderr is also exactly
+empty. A failed/uncertain source metadata or cleanup/probe sends an abort byte,
+and both endpoint probes decide the final result. Local `ssh.exe` termination
+alone is never accepted as remote-container termination. No source or
+destination error text is forwarded into evidence.
+
+The path/identity cleanup guards operate inside exact owner-isolated roots
+(`0700` on Linux; current user, SYSTEM, and Administrators only on Windows).
+They defend against cross-principal replacement and make detected uncertainty
+fail closed; they do not claim atomic deletion against a malicious concurrent
+actor already running as the same OS principal. Such an actor can already read
+or replace that principal's credential material and is outside this seam's
+threat boundary. Cleanup is therefore described as identity-checked plus
+positive absence, not as an absolute handle-bound unlink guarantee.
 
 Gate 1 constrains the destination behavior. `enrollment_artifact` may reach one
 protected Windows file consumer. `north_bearer` must return the fixed
@@ -445,8 +471,59 @@ runner, CD/signing, and NAS. A new exact-source image is deferred until A2
 merges because Gateway build-context bytes will change.
 
 **Forecast:** `1.75h` active effort, calibrated from the prior M2 `-72%`
-variance. Passive CI/review waits are excluded. Actual and variance are filled
-only after implementation and protected evidence.
+variance. **Actual:** `1.50h` active effort. **Variance:** `-0.25h` (`-14%`).
+Passive CI/review waits are excluded.
+
+**Local implementation evidence:**
+
+- Generator/source focused Vitest: `2` files, `99` tests passed. The generator
+  uses three independent 48-byte OS-CSPRNG calls, exclusive no-follow `0400`
+  creation, hardened loader validation, post-close path/identity checks, and
+  identity-checked failure cleanup. Source error reasons pass a closed runtime
+  allowlist; transferred buffers are cleared after their awaited binary write.
+- Gateway lint, typecheck, and production build passed under the pinned Node 24
+  toolchain.
+- The complete local CI-safe engineering gate passed in `666s`, including
+  `308` Contracts tests, `796` Bridge tests, both new handoff harnesses, source-
+  free/distribution guards, runtime MCP suites, and repository classifiers.
+- The self-contained receiver publish and Windows ACL/frame/refusal/cleanup
+  harness passed. The coordinator's independent-process matrix passed success,
+  deliberate north refusal, source failure/abort, invalid destination frame,
+  exit-zero source stderr/abort, timeout, source container/file cleanup
+  uncertainty, and destination cleanup uncertainty. The production wrapper
+  assigns an attempt-scoped container,
+  forcibly removes a survivor, and requires a clean Docker inventory plus
+  exact source-file absence before commit.
+- Root `package-lock.json`, npm `package.json` manifests, workflows, runner,
+  CD/signing, and NAS surfaces have no diff. The new self-contained receiver's
+  `.csproj` is an intentional in-scope project manifest. No real secret, SSH
+  handoff, host mutation, container, Codex configuration, Bridge, Revit,
+  DNS/TLS, or later gate was exercised.
+
+**Red-attempt dispositions:**
+
+- The first PowerShell receiver fixture timed out, then exposed raw synthetic
+  frame fragments in `-File` parameter-binding stderr. Root cause was the
+  PowerShell text-pipeline boundary, not product timing. That receiver was
+  removed and replaced by the raw-stdin self-contained executable; both the
+  confidentiality canary and bounded coordinator matrix are now green.
+- Early full-Gateway attempts failed before tests because `better-sqlite3` was
+  absent after `npm ci --ignore-scripts`, then had Node ABI `127` while the
+  pinned runner was ABI `137`; one intermediate dependency-junction race also
+  prevented resolution. Rebuilding the native dependency under the exact Node
+  24 runtime removed those environment-only failures; the full suite passed.
+- One focused command named a nonexistent Gateway Vitest config; rerunning with
+  the repository's root configuration passed. Later typecheck and focused-test
+  reds were test-harness types introduced while adding zeroization
+  (`Uint8Array.readUInt32BE` / Buffer preservation); the harness was corrected,
+  and lint, typecheck, build, and all `99` focused tests pass.
+- A first combined-CI launch was terminated by the coordinator's one-second
+  command timeout before a repository test result existed; no attempt-owned
+  process remained. It was rerun with the intended bounded wait. A separate
+  Windows PowerShell 5.1 review run initially reported `argv count drifted`
+  because its `ConvertFrom-Json` array enumeration differs from PowerShell 7;
+  explicit array normalization fixed the cross-shell harness, and the direct
+  PowerShell 5.1 receiver/coordinator run passes.
 
 ## M4-04/A3 observer disposition
 
