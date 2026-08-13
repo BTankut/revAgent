@@ -14,8 +14,14 @@
 
 **M4-CREDENTIAL/B gate state:** `passed`
 
-**M4-04/A slice state:** `in_progress`
-([`PR #375`](https://github.com/BTankut/revAgent/pull/375), draft)
+**M4-04/A slice state:** `passed_merged`
+([`PR #375`](https://github.com/BTankut/revAgent/pull/375) merged as
+[`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAgent/commit/6aa04593657fa2e3ee8a656ff97b553daf07f29e))
+
+**M4-04 Gate 1 state:** `completed_with_blocker`
+
+**M4-04/A2 slice state:** `scope_recorded`
+(draft PR pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -24,8 +30,10 @@ listenerless one-shot validator. `M4-CREDENTIAL/B` is the separately authorized
 exact-source target-host proof of one native Linux credential load plus cleanup.
 `M4-04/A` is the separately authorized repo-only pre-production serving seam;
 it prepares no host, DNS, trust, credential, container, client, or Revit
-operation. None of these bounded slices by itself satisfies or enlarges the M4
-milestone gate.
+operation. Gate 1 is the planner-authorized read-only PETRUCCI placement and
+client-feasibility inspection. `M4-04/A2` is the separately authorized
+repo-only credential generation and two-host secret-handoff seam. None of
+these bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -38,6 +46,9 @@ milestone gate.
 
 **M4-04/A exact slice base:**
 [`bfc21873370891a544c11494f8888fd077136b55`](https://github.com/BTankut/revAgent/commit/bfc21873370891a544c11494f8888fd077136b55)
+
+**M4-04/A2 exact slice base:**
+[`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAgent/commit/6aa04593657fa2e3ee8a656ff97b553daf07f29e)
 
 ## Authorization ceiling
 
@@ -297,7 +308,7 @@ persistence, external-client conformance, live Revit, or write confirmation.
 
 ## M4-04/A repo-only engineering seam
 
-**Gate state:** `in_progress`
+**Gate state:** `passed_merged`
 
 M4-04/A is limited to the explicit `lan_test` / `preproduction` Gateway serving
 seam, deterministic tests, caller-supplied live-smoke target parameters, and
@@ -356,6 +367,107 @@ The seven M4-04/B records/gates remain distinct:
 but its active-session feasibility proof and the other six execution gates
 remain open. The later `M4-WRITE-CONFIRM` gate also remains separately closed.
 M4-04/A authorizes none of those operations.
+
+The protected implementation merged in [PR #375](https://github.com/BTankut/revAgent/pull/375)
+as [`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAgent/commit/6aa04593657fa2e3ee8a656ff97b553daf07f29e).
+
+## M4-04 Gate 1 — PETRUCCI client-placement feasibility
+
+**Gate state:** `completed_with_blocker`
+
+The planner authorized one read-only collection from `DESKTOP-OKNV128` to
+`ws2@192.168.90.122`. The collection ran on 2026-08-13 between
+`17:55:52Z` and `18:05:58Z` with BatchMode and strict host-key checking. It did
+not edit a file, start/stop a service, open a model, invoke the Revit MCP
+runtime, add an MCP registration, contact `revagent` from PETRUCCI, or exercise
+any later M4-04/B gate.
+
+| Surface | Read-only evidence | Disposition |
+|---|---|---|
+| Host/session | `petrucci\ws2` on `PETRUCCI`; console session 1 was `Active`. | placement identity passed |
+| Codex Desktop | AppX `OpenAI.Codex` `26.803.10989.0` was `Ok`; `ChatGPT.exe` and its child `codex.exe` ran as `PETRUCCI\ws2` in session 1. The user auth artifact existed and was updated that day, but its contents were not read; process plus artifact presence is not accepted as proof of a valid signed-in account. | active local process passed; signed-in state unproven |
+| Remote-MCP registration | The installed user's `~\.codex\config.toml` existed with two MCP sections. Its value-free shape contained one `command` key and no `url`, `bearer_token_env_var`, `http_headers`, or `env_http_headers` key. Current Codex documentation supports Streamable HTTP with bearer-token environment variables or OAuth, but the live PETRUCCI build has no configured remote server and no arbitrary static-bearer secure-store import was found. | transport is product-supported; required no-env/no-plain-config bearer sink blocked |
+| Call origin | The running PETRUCCI Codex process tree was observed. No connection to `192.168.90.154` existed and no request was sent. A future direct remote-MCP or local-broker route would originate on PETRUCCI, but live origin remains unproven until `CLIENT/LIVE`. | prospective origin resolved; live origin unproven |
+| Revit/add-in | Revit 2022 process `4760` ran as `PETRUCCI\ws2`; its add-in listener was active on `127.0.0.1:8080`. Add-in manifest SHA-256 `9aa1ea865289adc352d5ad467fec93c11ff48b10f15f5c40bc5348d036f95b6c` and DLL SHA-256 `1e25e5a3eaaaad420a98e45abc511a11ab6ba0d9c62875650010b91c7433aefa` retained their earlier protected-main match. SSH did not identify the open document. | runtime surface present; current model unproven |
+| Bridge | `revAgentBridge` remained `Running` / `Auto` / `LocalSystem`; host and worker processes ran as SYSTEM. Configuration still named `wss://localhost:8443/bridge/v1`; the M3 stub listened on loopback `8443`; no Bridge TCP connection was present. Credential artifacts were inventoried by path/size only and never read. | installed M3 surface present; real-Gateway enrollment absent |
+| Model candidate | `C:\Program Files\Autodesk\Revit 2022\Samples\rme_basic_sample_project.rvt` existed at 30,482,432 bytes with SHA-256 `701e419b1f566c46bff51bb75f033d219719e593c47cfb2bb3548b6e8137fa51`. | exact candidate accessible; opening remains `CLIENT/LIVE` |
+
+One optional binary-capability string scan exceeded its 60-second bound and
+produced no evidence. Its exact read-only PowerShell process was found by PID,
+terminated as attempt-owned cleanup, and then positively observed absent. No
+application/configuration state changed; the scan is excluded from every
+capability claim above.
+
+Gate 1 therefore validates the chosen two-machine placement but does not open
+`CLIENT/LIVE`: the static north bearer has no approved client sink. An
+environment variable would violate the card's no-env requirement, a literal
+header would persist the secret in plain configuration, and `auth.json`
+existence is not an API for importing an arbitrary MCP bearer. A separate
+planner decision would be required for a local DPAPI-backed stdio broker or a
+different client-auth route.
+
+## M4-04/A2 secret-generation and two-host-handoff seam
+
+**Gate state:** `scope_recorded`
+
+**Scope of record:** protected source is
+`6aa04593657fa2e3ee8a656ff97b553daf07f29e`. This repo-only slice owns one
+OS-CSPRNG generator for the three M4 pre-production credential fields, a
+bounded binary two-host handoff for the allowlisted `north_bearer` and
+`enrollment_artifact` classes, a PowerShell 5.1 destination receiver, and
+deterministic tests for success, refusal, timeout/failure cleanup, and
+value-free output. Secret fixtures use a recognizable `SYNTHETIC-...` prefix.
+The slice uses only existing platform libraries; root lockfile churn is a stop
+condition.
+
+The generator must produce three independent 48-byte values; create only an
+exclusive, canonical, owner-bound POSIX `0400` file below exact `0700`
+ancestors; sync and close its handle; validate it through the existing
+listenerless M4-03 loader; and positively prove absence after any owned failure.
+The handoff must keep secret bytes off argv, environment, transcript, log, and
+evidence surfaces; enforce closed secret classes and byte bounds; use binary
+streams rather than PowerShell text pipelines; share one bounded deadline; and
+positively verify owned source/destination cleanup on every failure.
+
+Gate 1 constrains the destination behavior. `enrollment_artifact` may reach one
+protected Windows file consumer. `north_bearer` must return the fixed
+value-free refusal `client_secure_store_unavailable` until a separately
+planner-bound Codex consumer exists; A2 must still drain/clean both logical
+handoff sides in that negative case. Green A2 evidence cannot be cited as a
+Codex registration, client credential stage, live handoff, or permission for
+Gate 2–7.
+
+**Explicitly out:** real secret generation, either live host, SSH execution,
+credential or Bridge staging, Codex configuration/auth mutation, Gateway or
+container start, DNS/TLS/UFW/Compose, Revit/model operation, enrollment/revoke,
+reboot, external client, write/confirm, production origin/tunnel, workflow,
+runner, CD/signing, and NAS. A new exact-source image is deferred until A2
+merges because Gateway build-context bytes will change.
+
+**Forecast:** `1.75h` active effort, calibrated from the prior M2 `-72%`
+variance. Passive CI/review waits are excluded. Actual and variance are filled
+only after implementation and protected evidence.
+
+## M4-04/A3 observer disposition
+
+**Decision requested from planner:** `bind A3`
+
+The current Bridge cannot close RES-30's revoked-device evidence using only a
+Gateway-side value-free `4403` record plus existing PETRUCCI logs. Gateway can
+prove that it refused the handshake, and Bridge code maps `4403` to
+`Authorization`, then `Auth`, then `RetryPaused/Auth`; however, that final
+state exists only in the coordinator's internal snapshot. Normal worker logs
+do not emit it and `doctor` performs DNS/TCP checks rather than an RBP
+handshake. The missing live observation is: the same PETRUCCI worker received
+the correlated `4403`, classified it as authorization failure, entered
+`RetryPaused/Auth`, and remained paused. Absence of another handshake cannot
+distinguish that state from transport loss or a stalled worker.
+
+A3's minimum repo scope is a value-free Gateway refusal correlation plus a
+value-free Bridge `RetryPaused/Auth` observer. Any Bridge binary stage remains
+outside A3 implementation proof and requires its own operator-approved
+snapshot, service-stop/stage/start, rollback, and protected-surface equality
+card.
 
 ## Closed credential gate and explicitly open gates
 
