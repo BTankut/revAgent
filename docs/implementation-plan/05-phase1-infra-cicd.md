@@ -137,7 +137,7 @@ All file:line citations are repo-relative at commit 11020d1 (+ uncommitted docs/
 ## Appendix B — Pilot-Machine Setup Steps (infra view; migration step 2, docs/TARGET_ARCHITECTURE.md:205)
 
 1. Gateway pre-flight: current image deployed green; monitoring green; backup chain green ≥ 48 h.
-2. Enroll pilot machine device token (candidate: the existing pilot machine `DESKTOP-OKNV128` or `NET01`, already the signed-CD pilot channel machines — .github/workflows/signed-source-free-cd.yml:268).
+2. Enroll the current pilot workstation device token only after its separate credential gate (candidate: `PETRUCCI`, the DP-12/M4 live workstation). The code-pinned DESKTOP-OKNV128/NET01 signed-CD delivery cohort is legacy channel identity, not current workstation authority, and does not authorize enrollment.
 3. Install bridge alongside the untouched old stack (pilot coexists; old stack keeps working — Section 8 step 2). Bridge points at `https://gateway.<domain>`.
 4. Run the connect+execute probe (P5-T12); then several days of real work with daily probe + gateway-side audit review; exercise sleep/wake and WAN-flap reconnects.
 5. Exit criteria to schedule cutover: N consecutive workdays of pilot use with zero unexplained disconnects, idempotency journal clean on redeliveries, self-update path exercised once (with O9 package).

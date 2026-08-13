@@ -106,6 +106,33 @@ invocation conflict gate and deterministic verification-hold IDs in
 would risk a security regression. Branch deletion is a separate action and was
 not performed.
 
+## 2026-08-13 DP-12 workstation authority correction (DOCS-01)
+
+The operator placed `NET01` outside the current program and corrected the
+DP-12/M4 live Revit workstation to `PETRUCCI`. The accepted M3 chain already
+proves PETRUCCI, Revit 2022, the real `revAgentBridge`, the installed add-in,
+and a live model against the M3 Gateway stub. The retained authority is
+`docs/plan/M3_BRIDGE_GATE_EVIDENCE.md`.
+
+A 2026-08-13 read-only refresh from `DESKTOP-OKNV128` verified strict
+public-key SSH to `ws2@192.168.90.122`, the protected-main-matching add-in,
+Running/Auto/LocalSystem Bridge service, installed Codex Desktop, and the M3
+sample-model candidate. The Bridge still points to
+`wss://localhost:8443/bridge/v1`, and retained enrollment is stub-only. Exact
+non-secret evidence and the no-mutation ceiling are recorded in
+`docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`.
+
+M4-04 fixes two endpoints: `revagent` Gateway (`192.168.90.154`) and
+`PETRUCCI` Bridge/add-in/live Revit (`192.168.90.122`). WP9 client placement
+remains operator-gated: PETRUCCI has Codex Desktop installed without a proven
+active client session, while DESKTOP-OKNV128 is the evidence coordinator but
+is not selected as the M4-04 client by this record. DOCS-01 opens no live gate.
+`NETWORK/ACL`, `DNS/TLS-TRUST`, `BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, and
+`CLIENT/LIVE` remain separate operator decisions. NET01's 2026-07-22
+readiness snapshot is retained only as superseded history. The code-pinned
+DESKTOP-OKNV128/NET01 signed-CD cohort is a legacy delivery-channel identity,
+not the current DP-12/M4 workstation assignment.
+
 ## 2026-07-25 M1 closing and operator lane checkpoint
 
 Barış Tankut recorded `M1 KAPANIŞ: ONAY`, identified himself as add-in
@@ -173,17 +200,21 @@ record; this assistant will not continue, ready, or merge it.
 | WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; the M0 comparison matrix merged through [#275](https://github.com/BTankut/revAgent/pull/275) | `passed` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility in the separate DP-10 hands-on gate; selection alone is not conformance |
 | DP-8 host selection and live reachability evidence | BatchMode SSH evidence retained in PR [#268](https://github.com/BTankut/revAgent/pull/268): Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM, 204 GiB free root storage, and 870 GiB free data storage; router has no dual-WAN/LTE and Barış Tankut accepted WAN-outage risk on 2026-07-22 | `passed` | M0 reachability is closed. Under R-G, the implementation assistant owns later Docker/Compose and tunnel/origin work; retain power/UPS and production-readiness evidence for M7 |
 | DP-3/DP-4 connector and domain staging | `cloudflared` 2026.7.2, matching tunnel credential hash, `gateway.revagent.app` → `http://127.0.0.1:8081` ingress validation, bounded QUIC/HTTP2 proof, Docker Engine 29.6.2/Compose v5.3.1, hash-matched PR #273 artifacts, and configuration validation are retained in `docs/decisions/DP-03-04-cloudflare-staging.md`; zero containers/listeners and connector disabled/inactive | `passed` | After the immutable Gateway image and root-owned environment exist, start the real origin, enable the connector, and retain public `/healthz`, TLS, restart, and reconnect evidence for pilot entry |
-| DP-12 NET01 live readiness | Public-key SSH, Windows/resources, Revit 2022, Codex AppX, revAgent stable, and protected bootstrap evidence retained in `docs/decisions/DP-12-NET01-readiness-2026-07-22.md`; stale updater launcher lacks `-AuditOnly` and last task result is `1` | `in_progress` | Technical team neutralizes or repairs the updater through the controlled pilot path without bypassing the release freeze; operator names pilot user, dates, fallback, and communications owner |
+| DP-12 PETRUCCI live-workstation readiness | Accepted M3 evidence proves the live PETRUCCI/Revit 2022 chain; 2026-08-13 read-only SSH and installed-surface evidence is retained in `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`. Bridge still targets the M3 loopback stub and real-Gateway enrollment is unproven; NET01 is outside the program | `in_progress` | Obtain separate M4-04 network/trust, Bridge-stage, credential/enrollment, and client/live approvals; operator names pilot user, dates, fallback, and communications owner |
 
 The core M0 exit defined by the Week-1 objective is evidenced by merged PRs #268-#275: the decisions are
 recorded, O1 v0.9 completed its closure review, the monorepo and Compose scaffolds exist, the 35-tool HTTP
-spike passed, and the new-package CI is present. PR #276 adds live NET01 evidence. Exact-main run
+spike passed, and the new-package CI is present. PR #276 adds the now-historical
+NET01 inventory; the 2026-08-13 operator correction makes PETRUCCI the current
+DP-12/M4 live workstation without rewriting that earlier evidence. Exact-main run
 29929124082 completed green, so M0 is `passed`; only the milestone decision owner may promote it to
 `accepted`.
 
-GAP-13.2's exact WhatsApp distribution/acknowledgement proof and scheduled-task neutrality, DP-12 updater
-neutralization and named pilot roles/window, WP9 hands-on conformance, and active-origin/tunnel proof are
-pilot-entry carry-forwards. They remain open and are not silently converted into M0 completion evidence.
+GAP-13.2's exact WhatsApp distribution/acknowledgement proof and scheduled-task
+neutrality, DP-12's named pilot roles/window plus PETRUCCI's separately gated
+M4-04 live steps, WP9 hands-on conformance, and active-origin/tunnel proof are
+pilot-entry carry-forwards. They remain open and are not silently converted
+into M0 completion evidence.
 
 ## Milestones
 
