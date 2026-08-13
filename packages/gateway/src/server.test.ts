@@ -486,7 +486,7 @@ describe("production port gate", () => {
     expect(closeCount).toBe(0);
   });
 
-  it("closes a started ingress exactly once when listener bind fails and preserves that error", async () => {
+  it("bounds cleanup retries when listener bind and ingress close fail and preserves the bind error", async () => {
     let closeCount = 0;
     const secondary = new Error("ingress-close-secondary");
     const base = createFailClosedPorts();
@@ -515,7 +515,38 @@ describe("production port gate", () => {
 
     expect(primary).toMatchObject({ code: "ERR_SOCKET_BAD_PORT" });
     expect(primary).not.toBe(secondary);
-    expect(closeCount).toBe(1);
+    expect(closeCount).toBe(2);
+  });
+
+  it("retries a failed ingress close before reporting shutdown residue", async () => {
+    let closeCount = 0;
+    const firstCloseFailure = new Error("ingress-close-first-attempt");
+    const base = createFailClosedPorts();
+    const handle = await startGatewayServer({
+      config: {
+        ...DEV,
+        http: { bindHost: "127.0.0.1", port: 0 },
+        publicUrl: "http://127.0.0.1",
+      },
+      ports: {
+        ...base,
+        rbpIngress: {
+          ...base.rbpIngress,
+          enabled: true,
+          mount(): void {},
+          async start(): Promise<void> {},
+          async close(): Promise<void> {
+            closeCount += 1;
+            if (closeCount === 1) throw firstCloseFailure;
+          },
+        },
+      },
+    });
+
+    await expect(handle.close()).rejects.toBe(firstCloseFailure);
+    expect(closeCount).toBe(2);
+    await expect(handle.close()).resolves.toBeUndefined();
+    expect(closeCount).toBe(2);
   });
 
   it("builds and validates the app before starting ingress", async () => {

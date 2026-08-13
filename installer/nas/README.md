@@ -438,12 +438,13 @@ coordinator surface, not an elevated execution or trust root.
 Run `scripts\test-commandset-live.ps1` from a clean repository checkout or an
 independently protected local coordinator copy, with `-ReleaseRoot`, to write
 `reports\rollout\live-smoke-latest.json`.
-For the standard NET01 smoke, run the repo-side coordinator SSH wrapper in two
-steps: first `scripts\invoke-live-smoke-over-ssh.ps1 -Computer NET01 -ReleaseRoot
-<root> -OpenOnly` to open the installed Revit 2022 sample model in the
-logged-on workstation session and verify the expected active document through
-revAgent, then rerun without `-OpenOnly` to run the helper and write the same
-rollout evidence.
+For the current PETRUCCI smoke, run the repo-side coordinator SSH wrapper with
+the explicit caller-supplied target: first
+`scripts\invoke-live-smoke-over-ssh.ps1 -Computer PETRUCCI -User ws2 -HostName
+192.168.90.122 -Key C:\Users\BT\.ssh\id_ed25519 -ReleaseRoot <root> -OpenOnly`
+to open the installed Revit 2022 sample model in the logged-on workstation
+session and verify the expected active document through revAgent, then rerun
+without `-OpenOnly` to run the helper and write the same rollout evidence.
 Record the launcher audit in `desktopLauncherEvidence` or
 `reports\rollout\desktop-launcher-latest.json`. The supported path is to run
 the repo/protected-local `scripts\publish-desktop-launcher-evidence.ps1 -Mode ScanLocal` on each

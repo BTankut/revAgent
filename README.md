@@ -647,8 +647,10 @@ that the expected model and an active view are loaded:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
-  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
-  -Computer NET01 `
+  -Computer PETRUCCI `
+  -User ws2 `
+  -HostName 192.168.90.122 `
+  -Key C:\Users\BT\.ssh\id_ed25519 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy" `
   -OpenOnly
 ```
@@ -659,8 +661,10 @@ writes per-machine logs plus `reports\rollout\live-smoke-latest.json`:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\invoke-live-smoke-over-ssh.ps1 `
-  -TargetsPath C:\ProgramData\DPE\revAgentOps\fleet.json `
-  -Computer NET01 `
+  -Computer PETRUCCI `
+  -User ws2 `
+  -HostName 192.168.90.122 `
+  -Key C:\Users\BT\.ssh\id_ed25519 `
   -ReleaseRoot "\\dpe-nas\Dpe-Ortak\Baris Tankut\revAgent-deploy"
 ```
 

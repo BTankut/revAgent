@@ -106,6 +106,7 @@ export type GatewayCompositionErrorReason =
   | "uninspectable_north_authenticator"
   | "uninspectable_rbp_authority"
   | "invalid_rbp_ingress_shape"
+  | "preproduction_tls_required"
   | "authority_graph_mismatch";
 
 export class GatewayCompositionError extends Error {
@@ -335,10 +336,17 @@ export interface GatewayServerHandle {
   close(): Promise<void>;
 }
 
-interface GatewayServerOptions {
+export interface GatewayServerTlsMaterial {
+  readonly key: Buffer;
+  readonly cert: Buffer;
+}
+
+export interface GatewayServerOptions {
   readonly config: GatewayConfig;
   readonly northMcp?: NorthMcpEndpointOptions;
   readonly ports: GatewayServerPorts;
+  /** Explicit TLS material; absent preserves the production proxy/HTTP default. */
+  readonly tls?: GatewayServerTlsMaterial;
 }
 
 function buildGatewayApp(
@@ -350,7 +358,23 @@ function buildGatewayApp(
   // production gate here so a caller cannot bypass `startGatewayServer` and
   // call `app.listen()` directly with a non-production identity adapter.
   assertProductionPorts(config, ports, options.northMcp);
-  const app = Fastify(buildFastifyOptions(config));
+  if (config.nodeEnv === "preproduction" && options.tls === undefined) {
+    throw new GatewayCompositionError(
+      "north_mcp",
+      "preproduction_tls_required",
+    );
+  }
+  const fastifyOptions =
+    options.tls === undefined
+      ? buildFastifyOptions(config)
+      : ({
+          ...buildFastifyOptions(config),
+          https: {
+            key: options.tls.key,
+            cert: options.tls.cert,
+          },
+        } as FastifyServerOptions);
+  const app = Fastify(fastifyOptions);
   const publicHostname = new URL(config.publicUrl).hostname.toLowerCase();
   const northMcp =
     options.northMcp === undefined
@@ -496,12 +520,23 @@ export async function startGatewayServer(
 
   let ingressStarted = false;
   let ingressClosed = false;
+  let ingressCloseAttempt: Promise<void> | null = null;
   const closeIngressOnce = async (): Promise<void> => {
     if (!ingressStarted || ingressClosed) {
       return;
     }
-    ingressClosed = true;
-    await options.ports.rbpIngress.close?.();
+    if (ingressCloseAttempt === null) {
+      ingressCloseAttempt = (async () => {
+        await options.ports.rbpIngress.close?.();
+        ingressClosed = true;
+      })();
+    }
+    try {
+      await ingressCloseAttempt;
+    } catch (error) {
+      ingressCloseAttempt = null;
+      throw error;
+    }
   };
   // Constructing the app validates the north handler, Host policy and mounted
   // ingress routes without opening a listener or durable ingress. Its close
@@ -535,7 +570,7 @@ export async function startGatewayServer(
 
   return {
     app,
-    url: `http://${options.config.http.bindHost}:${String(port)}`,
+    url: `${options.tls === undefined ? "http" : "https"}://${options.config.http.bindHost}:${String(port)}`,
     port,
     beginShutdown(): void {
       (app as unknown as { beginGatewayShutdown: () => void }).beginGatewayShutdown();

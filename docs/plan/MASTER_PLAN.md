@@ -133,6 +133,48 @@ readiness snapshot is retained only as superseded history. The code-pinned
 DESKTOP-OKNV128/NET01 signed-CD cohort is a legacy delivery-channel identity,
 not the current DP-12/M4 workstation assignment.
 
+## 2026-08-13 M4-04 client and DNS/TLS binding (M4-04/A)
+
+After the DOCS-01 discovery record, the operator resolved the remaining WP9
+placement choice: Gateway is `revagent`, while the WP9 client, Bridge, add-in,
+and live Revit are all on `PETRUCCI`. `DESKTOP-OKNV128` remains an evidence
+coordinator and is not an M4 client. This placement does not establish an
+active client session, a current Revit document, or live-path evidence.
+
+The existing naming and connector authority is explicit. The canonical
+production origin remains `gateway.revagent.app` under
+[`DP-04`](../decisions/DP-04-domain.md), and the existing production tunnel plus
+its stopped-state evidence remains recorded in
+[`DP-03/DP-04`](../decisions/DP-03-04-cloudflare-staging.md). M4 does not use the
+production name and does not start that connector.
+
+The bound M4 approach is a separate same-zone test FQDN, with a DNS-only private
+`A` record to `192.168.90.154` and a publicly trusted certificate to be
+obtained by DNS-01. The name may resolve publicly, but its private target is not
+publicly routable. The exact test label remains a candidate until its own
+`DNS/TLS-TRUST` operator card binds it. The Cloudflare token is also separately
+gated: it must be supplied out of band, limited to DNS edit for the relevant
+zone, absent from git, PRs, CI, logs, and evidence, and given an explicit
+post-use disposition. Failure under that narrow authority stops the operation
+for operator/planner disposition; it does not authorize broader credentials or
+an implicit local-trust fallback.
+
+Pre-production's in-image listener bind and the later host publish are kept
+separate: the process requires explicit `GATEWAY_BIND_HOST=0.0.0.0` because the
+host LAN address does not exist in the container namespace, while the closed
+`NETWORK/ACL` gate must bind Docker's host publish specifically to
+`192.168.90.154`. Omitted or loopback pre-production process binds fail closed;
+this repo-only seam starts neither surface.
+
+M4-04/A is only the repo engineering seam. Its seven M4-04/B records/gates are
+kept distinct: `CLIENT-PLACEMENT/FEASIBILITY`, `NETWORK/ACL`,
+`DNS/TLS-TRUST`, `BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, `CLIENT/LIVE`, and
+`CLEANUP/RESIDUE-EQUALITY`. The placement choice is now bound to PETRUCCI, but
+its active-session feasibility proof and the other six execution gates remain
+open; none is executed by A. `M4-WRITE-CONFIRM` remains a later separate gate.
+M4 stays `in_progress` / `not_submitted`; RES-30 remains open and the one-item
+Park List is unchanged.
+
 ## 2026-07-25 M1 closing and operator lane checkpoint
 
 Barış Tankut recorded `M1 KAPANIŞ: ONAY`, identified himself as add-in

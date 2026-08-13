@@ -141,6 +141,61 @@ describe("gateway config validation", () => {
     ).toBe(false);
   });
 
+  it("requires an explicit https origin for pre-production LAN serving", () => {
+    const missingBind = loadGatewayConfig({
+      NODE_ENV: "preproduction",
+      GATEWAY_PUBLIC_URL: "https://m4-gateway.example.test",
+    });
+    expect(missingBind.ok).toBe(false);
+    if (missingBind.ok) {
+      throw new Error("unreachable");
+    }
+    expect(missingBind.problems).toContainEqual(
+      expect.objectContaining({
+        variable: "GATEWAY_BIND_HOST",
+        reason: "missing_required",
+      }),
+    );
+    expect(
+      loadGatewayConfig({
+        NODE_ENV: "preproduction",
+        GATEWAY_BIND_HOST: "0.0.0.0",
+      }).ok,
+    ).toBe(false);
+    expect(
+      loadGatewayConfig({
+        NODE_ENV: "preproduction",
+        GATEWAY_BIND_HOST: "0.0.0.0",
+        GATEWAY_PUBLIC_URL: "http://m4-gateway.example.test",
+      }).ok,
+    ).toBe(false);
+    const valid = loadGatewayConfig({
+      NODE_ENV: "preproduction",
+      // This is the explicit *container* bind. The later NETWORK/ACL card
+      // separately binds Docker's host publish to 192.168.90.154.
+      GATEWAY_BIND_HOST: "0.0.0.0",
+      GATEWAY_PUBLIC_URL: "https://m4-gateway.example.test",
+    });
+    expect(valid).toMatchObject({
+      ok: true,
+      value: { nodeEnv: "preproduction" },
+    });
+    for (const bindHost of ["127.0.0.1", "::", "192.168.90.154"]) {
+      const nonExact = loadGatewayConfig({
+        NODE_ENV: "preproduction",
+        GATEWAY_BIND_HOST: bindHost,
+        GATEWAY_PUBLIC_URL: "https://m4-gateway.example.test",
+      });
+      expect(nonExact.ok).toBe(false);
+      if (nonExact.ok) {
+        throw new Error("unreachable");
+      }
+      expect(nonExact.problems.map((problem) => problem.reason)).toContain(
+        "invalid_preproduction_bind",
+      );
+    }
+  });
+
   it("reports every problem rather than stopping at the first", () => {
     const result = loadGatewayConfig({
       NODE_ENV: "banana",

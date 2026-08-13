@@ -1,5 +1,6 @@
 import type { IncomingMessage } from "node:http";
 import type { AuthInfo } from "@modelcontextprotocol/server";
+import type { FastifyInstance } from "fastify";
 
 import type { EntitlementPort } from "./authContext.js";
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
@@ -23,6 +24,7 @@ import {
   createProductionRbpIngressHost,
   type RbpIngressHost,
 } from "./rbpIngress.js";
+import { createPreProductionEnrollmentEndpoint } from "./preProductionEnrollmentEndpoint.js";
 import type { GatewayServerPorts } from "./server.js";
 import type {
   GatewayProtocolStore,
@@ -87,7 +89,15 @@ export interface PreProductionLanTestCompositionOptions {
     readonly resource: URL;
   };
   /** The factory owns and overwrites the authenticator seam. */
-  readonly northMcp: Omit<NorthMcpEndpointOptions, "authenticator">;
+  readonly northMcp?: Omit<NorthMcpEndpointOptions, "authenticator">;
+  /**
+   * Serving-only factory for a north graph that needs this exact Bridge
+   * authority. Mutually exclusive with `northMcp`.
+   */
+  readonly northMcpFor?: (input: {
+    readonly identity: PreProductionIdentityAuthority;
+    readonly bridgeAuthority: GatewayBridgeSessionAuthority;
+  }) => Omit<NorthMcpEndpointOptions, "authenticator">;
 }
 
 export interface PreProductionLanTestComposition {
@@ -195,12 +205,29 @@ function createNorthAuthenticator(options: {
 
 function createPreProductionRbpIngress(
   authority: GatewayBridgeSessionAuthority,
+  identity: PreProductionIdentityAuthority,
 ): PreProductionRbpIngressHost {
   const delegate = createProductionRbpIngressHost({ authority });
+  let acceptingEnrollment = true;
+  const enrollmentEndpoint = createPreProductionEnrollmentEndpoint(identity, {
+    isAccepting: () => acceptingEnrollment,
+  });
   return Object.freeze({
     ...delegate,
     kind: "preproduction" as const,
     authority,
+    mount(app: FastifyInstance): void {
+      delegate.mount?.(app);
+      enrollmentEndpoint.mount(app);
+    },
+    beginDrain(): void {
+      acceptingEnrollment = false;
+      delegate.beginDrain?.();
+    },
+    async close(): Promise<void> {
+      acceptingEnrollment = false;
+      await delegate.close?.();
+    },
   });
 }
 
@@ -245,6 +272,15 @@ export function createPreProductionLanTestComposition(
       "the LAN/test composition requires an explicit protocol store adapter",
     );
   }
+  if (
+    (options.northMcp === undefined) ===
+    (options.northMcpFor === undefined)
+  ) {
+    fail(
+      "invalid_north_authority",
+      "exactly one pre-production north MCP configuration must be supplied",
+    );
+  }
   const canonicalResource = new URL("/mcp", config.publicUrl).href;
   if (options.northAuth.resource.href !== canonicalResource) {
     fail(
@@ -268,9 +304,11 @@ export function createPreProductionLanTestComposition(
     identity,
     { clock: options.identityOptions.clock },
   );
-  const rbpIngress = createPreProductionRbpIngress(bridgeAuthority);
+  const rbpIngress = createPreProductionRbpIngress(bridgeAuthority, identity);
+  const configuredNorthMcp =
+    options.northMcp ?? options.northMcpFor!({ identity, bridgeAuthority });
   const northMcp: NorthMcpEndpointOptions = Object.freeze({
-    ...options.northMcp,
+    ...configuredNorthMcp,
     authenticator: northAuthenticator,
   });
   const ports: GatewayServerPorts = Object.freeze({

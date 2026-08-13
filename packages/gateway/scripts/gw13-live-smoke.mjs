@@ -39,7 +39,7 @@ if (endpoint.username !== "" || endpoint.password !== "") {
 
 const clientName = required("--client");
 const clientBuild = required("--client-build");
-const target = required("--target");
+const target = execute ? required("--target") : (argument("--target") ?? null);
 const tokenEnvironmentVariable = required("--token-env");
 if (!/^[A-Z][A-Z0-9_]+$/u.test(tokenEnvironmentVariable)) {
   throw new Error("--token-env must name an uppercase environment variable");
@@ -58,7 +58,7 @@ const base = {
     oauthPassed: false,
     handsOnPassed: false,
     liveRevitPassed: false,
-    intendedUse: "post-M3/M5 selected-client and NET01 diagnostic",
+    intendedUse: "post-M3/M5 selected-client and caller-selected live-workstation diagnostic",
   },
 };
 

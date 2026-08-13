@@ -22,12 +22,19 @@ The post-M3/M5 live-smoke command can be configuration-checked without making
 a network request:
 
 ```powershell
-npm run smoke:gw13 --workspace @revagent/gateway -- --endpoint https://gateway.example/mcp --client selected-codex-desktop --client-build post-m3-m5 --target NET01 --token-env REVAGENT_GW13_SMOKE_TOKEN
+npm run smoke:gw13 --workspace @revagent/gateway -- --endpoint https://gateway.example/mcp --client selected-codex-desktop --client-build post-m3-m5 --token-env REVAGENT_GW13_SMOKE_TOKEN
 ```
 
-Adding `--execute` performs only the server-observable north-MCP checks using
-the named environment variable; it never prints the bearer token and does not
-claim OAuth, client UX, file opening, or live-Revit acceptance.
+The dry run records `target:null` and makes no network request. Adding
+`--execute --target PETRUCCI` performs only the server-observable north-MCP
+checks using the named environment variable; execution has no implicit target,
+never prints the bearer token, and does not claim OAuth, client UX, file
+opening, or live-Revit acceptance.
+
+The separate M4 pre-production entrypoint requires an explicit in-container
+`GATEWAY_BIND_HOST=0.0.0.0` and an HTTPS public origin; omitted or loopback
+binds fail closed. This does not publish a host port. The later operator-gated
+`NETWORK/ACL` step owns the Docker host publish and its exact LAN address.
 
 ## M2 north/registry/dispatch vertical slice
 

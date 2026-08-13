@@ -20,6 +20,7 @@ import {
   transitionSession,
   type ConnectionLifecycleState,
   type DataEnvelopeSnapshot,
+  type DocContextUpdate,
   type HelloAckEnvelope,
   type HelloEnvelope,
   type InvocationJournalRecord,
@@ -57,6 +58,7 @@ import type {
   GatewayProtocolStore,
   StoreTransaction,
 } from "./store.js";
+import type { GatewayInvocationRoute } from "./invocationContext.js";
 
 export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
@@ -87,6 +89,12 @@ interface DurableDispatchEvidence {
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
 }
 
+interface DurableLiveDocumentRoute {
+  readonly sessionDocumentId: string;
+  readonly observedConnectionId: string;
+  readonly observedSequence: number;
+}
+
 interface DurableRbpSession {
   readonly schema: typeof GATEWAY_RBP_SESSION_NAMESPACE;
   readonly tenantId: string;
@@ -105,6 +113,7 @@ interface DurableRbpSession {
   readonly sessionLifecycle: SessionLifecycleState;
   readonly lastHeartbeatAtMs: number;
   readonly sequence: RbpSequenceState;
+  readonly liveDocumentRoute: DurableLiveDocumentRoute | null;
   readonly pending: DurablePendingDispatch | null;
   readonly evidence: readonly DurableDispatchEvidence[];
   readonly updatedAtMs: number;
@@ -228,6 +237,58 @@ function immutableEnvelopeDigest(envelope: RbpEnvelope): `sha256:${string}` {
     throw new GatewayRbpFault("protocol", "data envelope required", 400, 4400);
   }
   return dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot);
+}
+
+function liveDocumentRouteFrom(
+  payload: DocContextUpdate,
+  connectionId: string,
+  sequence: number,
+): DurableLiveDocumentRoute | null {
+  const documentIds = new Set<string>();
+  const activeDocuments: string[] = [];
+  for (const document of payload.documents) {
+    if (documentIds.has(document.document_id)) {
+      throw new GatewayRbpFault(
+        "protocol",
+        "document context is inconsistent",
+        400,
+        4400,
+      );
+    }
+    documentIds.add(document.document_id);
+    if (document.is_active) activeDocuments.push(document.document_id);
+  }
+
+  if (payload.active_document === null) {
+    if (activeDocuments.length !== 0) {
+      throw new GatewayRbpFault(
+        "protocol",
+        "document context is inconsistent",
+        400,
+        4400,
+      );
+    }
+    return null;
+  }
+
+  if (
+    activeDocuments.length !== 1 ||
+    activeDocuments[0] !== payload.active_document ||
+    !documentIds.has(payload.active_document)
+  ) {
+    throw new GatewayRbpFault(
+      "protocol",
+      "document context is inconsistent",
+      400,
+      4400,
+    );
+  }
+
+  return {
+    sessionDocumentId: payload.active_document,
+    observedConnectionId: connectionId,
+    observedSequence: sequence,
+  };
 }
 
 function invocationPolicy(request: GatewayExecutorRequest): InvokeEnvelope["payload"]["policy"] {
@@ -746,6 +807,52 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return new BridgeSessionExecutor(this);
   }
 
+  /**
+   * Resolves one authenticated north request to exactly one live Bridge
+   * document. Zero and multiple candidates share one value-free refusal so
+   * route topology is never disclosed to the caller.
+   */
+  public resolveLiveInvocationRoute(input: {
+    readonly tenantId: string;
+    readonly userId: string;
+    readonly deviceId: string;
+    readonly mcpSessionId: string;
+  }): GatewayInvocationRoute {
+    const candidates = [...this.#active.values()].filter((active) => {
+      const record = active.record;
+      return (
+        record.tenantId === input.tenantId &&
+        record.userId === input.userId &&
+        record.deviceId === input.deviceId &&
+        this.#connections.has(record.connectionId) &&
+        record.sessionLifecycle.dispatchAllowed &&
+        (record.connectionLifecycle.phase === "steady" ||
+          record.connectionLifecycle.phase === "degraded") &&
+        record.liveDocumentRoute !== null &&
+        record.liveDocumentRoute !== undefined &&
+        record.liveDocumentRoute.observedConnectionId === record.connectionId
+      );
+    });
+    if (candidates.length !== 1) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "live invocation route is unavailable",
+        503,
+        1011,
+      );
+    }
+    const selected = candidates[0]!.record;
+    return {
+      tenantId: input.tenantId,
+      mcpSessionId: input.mcpSessionId,
+      rsid: selected.rsid,
+      documentIdentity: {
+        kind: "live",
+        session_document_id: selected.liveDocumentRoute!.sessionDocumentId,
+      },
+    };
+  }
+
   public buildEnvelope(request: GatewayExecutorRequest): {
     readonly sessionBindingId: string;
     readonly connectionId: string;
@@ -1114,6 +1221,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         outbox: [],
         acceptedInbound: [],
       },
+      liveDocumentRoute: null,
       pending: null,
       evidence: [],
       updatedAtMs: this.#clock(),
@@ -1193,6 +1301,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         binding: connection.binding,
         sessionVersion: record.sessionVersion + 1,
         sequence: acknowledged.state,
+        liveDocumentRoute: null,
         connectionLifecycle,
         sessionLifecycle,
         lastHeartbeatAtMs: this.#clock(),
@@ -1286,6 +1395,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) {
       throw new GatewayRbpFault("auth", "rsid is not bound to this connection", 403, 4403);
     }
+    const nextLiveDocumentRoute =
+      envelope.type === "doc_context_update"
+        ? liveDocumentRouteFrom(
+            envelope.payload,
+            connection.connectionId,
+            envelope.seq,
+          )
+        : undefined;
     let completed: GatewayExecutorOutcome | null = null;
     let completedInvocationId: string | null = null;
     const updated = await this.#updateSession(active.tenantId, active.rsid, (record) => {
@@ -1389,6 +1506,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       return {
         ...record,
         sequence: accepted.state,
+        liveDocumentRoute:
+          envelope.type === "doc_context_update"
+            ? nextLiveDocumentRoute!
+            : record.liveDocumentRoute ?? null,
         pending,
         evidence,
         updatedAtMs: this.#clock(),

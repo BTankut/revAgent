@@ -57,9 +57,9 @@ try {
     $targetsPath = Join-Path $tempRoot "targets.json"
     @(
         [ordered]@{
-            computer = "NET01"
-            user = "Net01"
-            host = "100.119.168.39"
+            computer = "TEST-WORKSTATION"
+            user = "TestUser"
+            host = "192.0.2.10"
         },
         [ordered]@{
             computer = "OLD"
@@ -69,8 +69,21 @@ try {
     ) | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $targetsPath -Encoding UTF8
 
     $listOutput = & $scriptPath -TargetsPath $targetsPath -ListOnly | Out-String
-    Assert-True ($listOutput -match 'NET01') "ListOnly should include NET01."
+    Assert-True ($listOutput -match 'TEST-WORKSTATION') "ListOnly should include the enabled test workstation without requiring -Computer."
     Assert-True ($listOutput -notmatch 'OLD') "ListOnly should exclude disabled targets."
+
+    $missingTargetError = ""
+    try {
+        & $scriptPath -TargetsPath $targetsPath -OpenOnly *> $null
+    }
+    catch {
+        $missingTargetError = $_.Exception.Message
+    }
+    Assert-True ([string]::Equals(
+            $missingTargetError,
+            "A live workstation target is required. Provide -Computer explicitly; no implicit target is selected.",
+            [System.StringComparison]::Ordinal
+        )) "Every live path must fail closed on a missing caller-supplied -Computer before SSH or SCP."
 }
 finally {
     if (Test-Path -LiteralPath $tempRoot) {

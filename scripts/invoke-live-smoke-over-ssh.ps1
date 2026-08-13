@@ -9,14 +9,14 @@
     helper, and writes stdout/stderr plus a compact invocation report under the
     canonical NAS reports root.
 
-    It is intended for representative rollout closure checks such as NET01.
+    It is intended for an explicitly selected representative rollout target.
 #>
 
 [CmdletBinding()]
 param(
     [string]$TargetsPath = "C:\ProgramData\DPE\revAgentOps\fleet.json",
 
-    [string]$Computer = "NET01",
+    [string]$Computer = "",
 
     [string]$User = "",
 
@@ -237,6 +237,10 @@ $targets = @(Read-RevAgentTargets -Path $TargetsPath)
 if ($ListOnly) {
     $targets | Format-Table -AutoSize
     return
+}
+
+if (-not $PSBoundParameters.ContainsKey("Computer") -or [string]::IsNullOrWhiteSpace($Computer)) {
+    throw "A live workstation target is required. Provide -Computer explicitly; no implicit target is selected."
 }
 
 $target = @($targets | Where-Object { [string]::Equals($_.Computer, $Computer, [System.StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1)

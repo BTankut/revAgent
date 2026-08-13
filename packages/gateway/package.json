@@ -23,7 +23,8 @@
     "package:handlers": "node scripts/package-handlers.mjs",
     "readiness:gw13": "node scripts/run-gw13-readiness.mjs",
     "smoke:gw13": "node scripts/gw13-live-smoke.mjs",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "start:preproduction": "node dist/preProductionServingMain.js"
   },
   "engines": {
     "node": ">=24.14.1 <25"
