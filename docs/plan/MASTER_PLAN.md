@@ -221,16 +221,22 @@ contract. The planner therefore bound A5 as a `2.00h` repo-only hard blocker:
 one listenerless protected-file consumer validates path, owner/DACL, link,
 bounded schema, and expiry; calls the existing enrollment coordinator in
 memory; emits only value-free results; and positively unlinks the artifact on
-every owned terminal path. The repo implementation is now
-`implementation_checks_passed` in draft `PR #379`: the focused A5 suite passed
+every owned terminal path. The repo implementation is now `passed_merged` in
+`PR #379`: the focused A5 suite passed
 `57/57`, formatting verification passed, and the final common tree passed
 `test-all` (exit `0`, `745.8s`; Contracts `308/308`, Bridge `850/850`) and
 `test-ci` (exit `0`, `752.1s`). Root `package-lock.json` remains byte-identical.
 Forecast was `2.00h`; actual active effort was `1.75h`, variance `-0.25h`
 (`-13%`). Scope-record and implementation heads passed CI and Gateway CI at
 attempt `1`; implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8`
-passed both CI jobs and the separate Gateway CI without rerun. Claude review
-and merge authorization remain pending while `PR #379` stays draft.
+passed both CI jobs and the separate Gateway CI without rerun. Final head
+`7be7ab3056e055b7b975881a5b6db63e1ed7fdf0` also passed both protected CI
+runs, then
+[Claude review 31814037252, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31814037252/attempts/1).
+It squash-merged as `8dcb664ee721d706e69ed70a17620ded73bec292`;
+merge-push [CI 31814356194, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31814356194/attempts/1)
+passed Engineering and Gateway/RBP jobs. No rerun or Signed Source-Free CD run
+was used.
 
 A5 may not alter Bridge auth/retry/observer behavior and opens no host or live
 gate. PETRUCCI stage/service/config mutation, real enrollment, Gateway image
@@ -238,6 +244,37 @@ rebuild, DNS/TLS/ACL, broker/client/Revit execution, revoke evidence, reboot,
 write/confirm, production deploy, and the separately bound A7 audit export
 remain outside this slice. M4 remains `in_progress` / `not_submitted`; RES-30
 and the one-item npm-audit Park List remain open.
+
+## 2026-08-14 M4-04 bounded value-free audit-export binding (M4-04/A7)
+
+The planner bound A7 as a `2.00h` repo-only hard blocker after A5. The
+pre-production event sink already holds the invocation/confirmation audit, but
+its raw `revagent.event.v2` envelope contains tenant/user/session and other
+live values and has no retained-evidence boundary. A7 therefore owns one
+listenerless, single-attempt downstream projector for a closed
+`revagent.m4-value-free-audit-export/v1` bundle. It selects the exact configured
+live principal/session internally, emits only validated correlation/digest,
+registry-bound metadata, closed enum/timing, and boolean binding fields, and
+fails without partial output on selector, schema, duplicate, count, byte,
+deadline, or writer failure. It must not alter Gateway authorization, dispatch,
+Bridge auth/retry/A3 observer behavior, or add an HTTP/MCP/RBP/admin listener.
+
+A7's implementation allowlist is the minimum
+`packages/gateway/src/preProductionAuditExport*` and `preProductionServing*`
+surfaces plus their
+tests and these tracker records. Root manifests/lockfiles, protocol, Bridge,
+installer, workflows, runners, CD/signing, NAS, host, image, credential,
+DNS/TLS/ACL, broker/client, Revit, enrollment/revoke execution, reboot,
+write/confirm, and production deploy/tunnel surfaces are outside the slice.
+Protected source is `8dcb664ee721d706e69ed70a17620ded73bec292`;
+state is `scope_recorded`, with actual/variance open.
+
+The manual DNS route is also final: A6 is permanently canceled and no
+Cloudflare API token will be generated or requested. G2 will show the operator
+`m4-gateway.revagent.app` A `192.168.90.154` as DNS-only/grey-cloud plus the
+certificate order's generated `_acme-challenge` TXT value on one screen. G7
+will delete both records and retain positive operator confirmation. A7 itself
+authorizes no DNS mutation.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 

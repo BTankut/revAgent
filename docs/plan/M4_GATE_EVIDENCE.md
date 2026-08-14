@@ -32,9 +32,11 @@
 ([`PR #378`](https://github.com/BTankut/revAgent/pull/378) merged as
 [`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02))
 
-**M4-04/A5 slice state:** `implementation_checks_passed`
-([`PR #379`](https://github.com/BTankut/revAgent/pull/379) remains draft;
-Claude review and merge authorization pending)
+**M4-04/A5 slice state:** `passed_merged`
+([`PR #379`](https://github.com/BTankut/revAgent/pull/379) merged as
+[`8dcb664ee721d706e69ed70a17620ded73bec292`](https://github.com/BTankut/revAgent/commit/8dcb664ee721d706e69ed70a17620ded73bec292))
+
+**M4-04/A7 slice state:** `scope_recorded`
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -53,7 +55,10 @@ numeric-loopback bearer-broker seam. It does not install or run the broker on
 PETRUCCI and does not open any M4-04/B execution gate. `M4-04/A5` is the
 planner-bound repo-only listenerless protected enrollment-file consumer; it
 adapts the A2 handoff artifact to the existing Bridge enrollment coordinator
-without changing Bridge auth, retry, or observer semantics. None of these
+without changing Bridge auth, retry, or observer semantics. `M4-04/A7` is the
+planner-bound repo-only bounded, value-free projection of the pre-production
+Gateway's process-lifetime invocation/confirmation audit. It opens no route or
+listener and does not export the raw event envelope. None of these
 bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
@@ -883,7 +888,7 @@ rerun was used.
 
 ## M4-04/A5 protected enrollment-file consumer
 
-**Gate state:** `implementation_checks_passed`
+**Gate state:** `passed_merged`
 
 **Planner decision:** `A5 bound` on 2026-08-14 as a hard prerequisite for the
 single bounded M4-04/B live session.
@@ -978,8 +983,16 @@ Implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8` passed
 [CI 31805770391, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770391/attempts/1),
 including both Engineering and Gateway gates, and
 [Gateway CI 31805770374, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770374/attempts/1).
-No rerun was used. `PR #379` remains draft; its Claude review is skipped until
-ready, and no merge authorization is claimed.
+Final PR head `7be7ab3056e055b7b975881a5b6db63e1ed7fdf0` passed
+[CI 31807074847, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31807074847/attempts/1)
+and
+[Gateway CI 31807074919, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31807074919/attempts/1).
+[Claude review 31814037252, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31814037252/attempts/1)
+then passed without a new commit. `PR #379` squash-merged as
+`8dcb664ee721d706e69ed70a17620ded73bec292`; its merge-push
+[CI 31814356194, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31814356194/attempts/1)
+passed both Engineering and Gateway/RBP jobs. No rerun was used. No
+`installer/**` path changed, and no Signed Source-Free CD run was triggered.
 
 **Red-attempt and review dispositions:**
 
@@ -1001,6 +1014,69 @@ ready, and no merge authorization is claimed.
   runner remained, the same unchanged source tree was run once more to the
   recorded exit `0` terminal above. No GitHub rerun was used.
 
+## M4-04/A7 bounded value-free audit export
+
+**Gate state:** `scope_recorded`
+
+**Planner decision:** `A7 bound` on 2026-08-14 as a `2.00h` hard prerequisite
+for the single bounded M4-04/B live session.
+
+**Scope of record:** protected source is
+`8dcb664ee721d706e69ed70a17620ded73bec292` (`PR #379` squash merge). This
+repo-only slice owns one listenerless, single-attempt export of the existing
+pre-production event sink's process-lifetime `tool.invocation` and
+`tool.confirmation` records. The exporter must project a new closed
+`revagent.m4-value-free-audit-export/v1` contract; it must never serialize or
+spread the raw `revagent.event.v2` envelope.
+
+The configured live principal and Gateway session are selectors used only for
+exact in-process comparison. The export represents successful selector matches
+as booleans and must not emit tenant, user, device, principal, OAuth, Gateway,
+MCP, RBP-session, host, endpoint, path, document/model, parameter/result,
+preview-reference, confirmation-reason, header, raw error, exception, stack, or
+unknown payload values. It may emit only validated correlation identifiers,
+canonical digests, registry-bound tool metadata, closed policy/executor/outcome
+enums, timing fields, and boolean binding evidence. `eventId` remains distinct
+from recovery `auditId` / protocol `audit_id`; A7 must not synthesize either.
+
+Acceptance requires exact profile `lan_test`, mode `preproduction`, and a
+code-derived `approvedLiveSelector=true`; at least one selected record; no more
+than `128` input events and `64` selected records; no more than `4096` serialized
+bytes per record or `131072` bytes total; deterministic `seq`, then `eventId`
+ordering; duplicate sequence/identifier refusal; a `5s` whole-export deadline;
+and no partial/truncated output on any schema, selector, limit, deadline, or
+writer failure. The live serving process may expose only a one-shot signal/
+writer seam over its existing process; A7 must not add an HTTP, MCP, RBP, admin,
+or other listener. Recognizable `SYNTHETIC-...` secret and personal-data
+canaries plus distinguishing head/middle/tail fragments must be absent from
+success, refusal, stdout, stderr, exception, and retained-evidence surfaces.
+
+**Explicitly out:** host, image build, container, Bridge/add-in stage or
+behavior, credential/enrollment/revoke execution, DNS/TLS/ACL, broker/client,
+Revit/model, reboot/persistence, write/confirm execution, production mode or
+tunnel/deploy, workflow/runner/CD/signing/NAS changes, and any change to A3
+observer, Bridge auth/retry, or Gateway authorization semantics. Each remains
+behind its existing separate gate.
+
+The path allowlist is `packages/gateway/src/preProductionAuditExport*`, the
+minimum existing `preProductionServing*` integration and tests, Gateway package
+documentation if required, and these M4 tracker/evidence records only.
+`packages/protocol/**`, `packages/bridge/**`, `src/revit-plugin/**`,
+`installer/**`, root manifests/lockfiles, workflows, runner, CD/signing, and NAS
+surfaces are outside this slice. Root `package-lock.json` must remain blob-
+identical.
+
+**Forecast:** `2.00h` active effort, calibrated against the prior M2 `-72%`
+variance. Actual and variance remain open until the implementation evidence is
+complete. Passive CI/review and operator waits are excluded.
+
+**DNS route binding carried forward:** A6 is permanently canceled. Gate G2
+uses operator-managed manual DNS only: `m4-gateway.revagent.app` A
+`192.168.90.154`, DNS-only/grey-cloud, plus the `_acme-challenge` TXT value
+generated and shown during the certificate order. No Cloudflare API token will
+be generated or requested. G7 must delete both A and TXT records and retain the
+operator's positive confirmation. No DNS mutation is authorized by A7.
+
 ## Closed credential gate and explicitly open gates
 
 - **M4-CREDENTIAL/B:** exact-source build, target-host native Linux validation,
@@ -1020,9 +1096,10 @@ ready, and no merge authorization is claimed.
   remain [`DP-04`](../decisions/DP-04-domain.md) and
   [`DP-03/DP-04`](../decisions/DP-03-04-cloudflare-staging.md). M4 does not use
   `gateway.revagent.app` or start its connector. The separate test FQDN,
-  DNS-only private-address record, trusted-CA DNS-01 certificate, narrowly
-  scoped out-of-band token, and post-use token disposition remain operator-
-  gated and unexecuted.
+  DNS-only private-address record, trusted-CA DNS-01 certificate, manual A/TXT
+  creation, and post-session A/TXT deletion remain operator-gated and
+  unexecuted. A6 is permanently canceled; no Cloudflare API token will be
+  generated or requested.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
   exchange, and live Revit execution remain separately operator-gated.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target
