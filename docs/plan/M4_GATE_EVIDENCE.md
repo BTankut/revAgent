@@ -1114,9 +1114,15 @@ The scope checkpoint `96c117afd419b3e20b0f57a5088fe06ed018c657`
 passed [CI 31817877971, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31817877971/attempts/1)
 with both Engineering and Gateway jobs green, plus
 [Gateway CI 31817877933, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31817877933/attempts/1).
-No rerun was used. Implementation-head protected evidence remains open until
-the draft PR receives this candidate push; Claude review and merge remain
-planner-gated.
+The implementation candidate
+`66f0fd9264afb9165e0b868d49b83ff18239a6d2` then passed
+[CI 31825900958, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31825900958/attempts/1)
+with both Engineering and Gateway gates green, including the `31m14s` RBP
+conformance step, plus
+[Gateway CI 31825900964, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31825900964/attempts/1)
+under protected Node 24. No rerun was used. The docs-only evidence head still
+requires its own protected checks; Claude review and merge remain planner-
+gated.
 
 **Red-attempt dispositions:** the first independent focused run passed `68/69`
 and rejected only the shutdown test's manually cast bundle after the runtime

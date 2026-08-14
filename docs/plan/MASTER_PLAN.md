@@ -281,8 +281,10 @@ proven projector output, so forged extra-field or `toJSON` bundles cannot
 bypass the closed value-free contract. Root `package-lock.json` remains byte-
 identical. Forecast was `2.00h`; actual active effort is `2.50h`, variance
 `+0.50h` (`+25%`). The scope checkpoint passed CI and Gateway CI at attempt `1`
-without rerun; implementation-head protected evidence, Claude review, and
-planner merge authorization remain open.
+without rerun. Implementation candidate
+`66f0fd9264afb9165e0b868d49b83ff18239a6d2` passed CI `31825900958` and
+Gateway CI `31825900964`, both at attempt `1` without rerun. The docs-only
+evidence head, Claude review, and planner merge authorization remain open.
 
 The manual DNS route is also final: A6 is permanently canceled and no
 Cloudflare API token will be generated or requested. G2 will show the operator
