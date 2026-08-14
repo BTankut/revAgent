@@ -3401,6 +3401,45 @@ function Set-RevAgentMcpSectionText {
     return $prefix + $block
 }
 
+function Resolve-RevAgentM4LoopbackMcpUrl {
+    param([Parameter(Mandatory = $true)][AllowEmptyString()][string]$Url)
+
+    # This is deliberately narrower than a general-purpose URI validator. The
+    # A4 broker is an attempt-scoped, numeric IPv4 loopback listener on the
+    # canonical non-privileged port range; accepting URI normalization,
+    # aliases, wildcard hosts, IPv6, privileged ports, or path/query drift
+    # would silently broaden the caller-visible registration surface.
+    $match = [regex]::Match($Url, '\Ahttp://127\.0\.0\.1:(?<port>[1-9][0-9]{0,4})/mcp\z')
+    if (-not $match.Success) {
+        throw 'M4 loopback MCP URL must be exact numeric IPv4 loopback HTTP with a canonical decimal port and /mcp path.'
+    }
+    $port = 0
+    if (-not [int]::TryParse($match.Groups['port'].Value, [ref]$port) -or $port -lt 1024 -or $port -gt 65535) {
+        throw 'M4 loopback MCP URL port is outside the permitted 1024..65535 range.'
+    }
+    return $Url
+}
+
+function Set-RevAgentMcpUrlSectionText {
+    param(
+        [string]$Content,
+        [string]$Name,
+        [Parameter(Mandatory = $true)][string]$Url
+    )
+
+    $exactUrl = Resolve-RevAgentM4LoopbackMcpUrl -Url $Url
+    $escapedName = [regex]::Escape($Name)
+    # Remove both the managed server table and any auth/header child tables.
+    # A replacement block containing only `url` is then appended; unrelated
+    # TOML tables and scalars remain byte-for-byte inputs to the normal atomic
+    # config transaction below.
+    $namespacePattern = "(?ms)^\[mcp_servers\.$escapedName(?:\.[^\]\r\n]+)?\]\s*.*?(?=^\[|\z)"
+    $withoutManagedNamespace = [regex]::Replace($Content, $namespacePattern, '')
+    $block = "[mcp_servers.$Name]`r`nurl = $(ConvertTo-RevAgentTomlString $exactUrl)`r`n"
+    $prefix = if ([string]::IsNullOrWhiteSpace($withoutManagedNamespace)) { '' } else { $withoutManagedNamespace.TrimEnd() + "`r`n`r`n" }
+    return $prefix + $block
+}
+
 function Resolve-RevAgentCodexRootReasoningEffortCompatibility {
     param(
         [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Content,
@@ -3512,6 +3551,8 @@ function Set-RevAgentCodexMcpConfigAtomic {
         [Parameter(Mandatory = $true)][string]$RuntimeServerPath,
         [Parameter(Mandatory = $true)][string]$DocsServerPath,
         [Parameter(Mandatory = $true)][string]$ExpectedSha256,
+        [ValidateSet('stdio', 'm4-loopback-http')][string]$RuntimeTransportMode = 'stdio',
+        [AllowEmptyString()][string]$RuntimeLoopbackUrl = '',
         [AllowNull()][object]$ReasoningEffortCompatibility,
         [string]$ExpectedCodexCliSha256 = '',
         [int]$LockTimeoutSeconds = 20,
@@ -3521,6 +3562,14 @@ function Set-RevAgentCodexMcpConfigAtomic {
         [Parameter(DontShow = $true)][scriptblock]$AfterAtomicCommitValidation,
         [Parameter(DontShow = $true)][scriptblock]$BeforePostCommitRollback
     )
+
+    $exactRuntimeLoopbackUrl = ''
+    if ($RuntimeTransportMode -eq 'm4-loopback-http') {
+        $exactRuntimeLoopbackUrl = Resolve-RevAgentM4LoopbackMcpUrl -Url $RuntimeLoopbackUrl
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($RuntimeLoopbackUrl)) {
+        throw 'RuntimeLoopbackUrl is valid only with RuntimeTransportMode m4-loopback-http.'
+    }
 
     $configPath = Join-Path $CodexHome 'config.toml'
     $lockPath = Join-Path $CodexHome '.revagent-config.lock'
@@ -3563,7 +3612,12 @@ function Set-RevAgentCodexMcpConfigAtomic {
             $legacyPattern = "(?ms)^\[mcp_servers\.$([regex]::Escape($legacyName))\]\s*.*?(?=^\[|\z)"
             $content = [regex]::Replace($content, $legacyPattern, '')
         }
-        $content = Set-RevAgentMcpSectionText -Content $content -Name 'revAgent' -Command $NodePath -Arguments @($RuntimeServerPath)
+        $content = if ($RuntimeTransportMode -eq 'm4-loopback-http') {
+            Set-RevAgentMcpUrlSectionText -Content $content -Name 'revAgent' -Url $exactRuntimeLoopbackUrl
+        }
+        else {
+            Set-RevAgentMcpSectionText -Content $content -Name 'revAgent' -Command $NodePath -Arguments @($RuntimeServerPath)
+        }
         $content = Set-RevAgentMcpSectionText -Content $content -Name 'revAgent-api-docs' -Command $NodePath -Arguments @($DocsServerPath)
         $content = Normalize-RevitMcpCodexServiceTier -Content $content
         $content = Set-RevitMcpTomlScalar -Content $content -Section 'features' -Key 'memories' -Value 'true'
@@ -4178,7 +4232,25 @@ function Get-RevAgentCodexAgentsAttestation {
 
 function Test-RevAgentCodexMcpReadback {
     [CmdletBinding()]
-    param([string]$CodexCliPath, [string]$CodexHome, [string]$NodePath, [string]$RuntimeServerPath, [string]$DocsServerPath, [object]$CodexCliCandidate)
+    param(
+        [string]$CodexCliPath,
+        [string]$CodexHome,
+        [string]$NodePath,
+        [string]$RuntimeServerPath,
+        [string]$DocsServerPath,
+        [object]$CodexCliCandidate,
+        [ValidateSet('stdio', 'm4-loopback-http')][string]$RuntimeTransportMode = 'stdio',
+        [AllowEmptyString()][string]$RuntimeLoopbackUrl = ''
+    )
+
+    $exactRuntimeLoopbackUrl = ''
+    if ($RuntimeTransportMode -eq 'm4-loopback-http') {
+        $exactRuntimeLoopbackUrl = Resolve-RevAgentM4LoopbackMcpUrl -Url $RuntimeLoopbackUrl
+    }
+    elseif (-not [string]::IsNullOrWhiteSpace($RuntimeLoopbackUrl)) {
+        throw 'RuntimeLoopbackUrl is valid only with RuntimeTransportMode m4-loopback-http.'
+    }
+
     $rows = [System.Collections.Generic.List[object]]::new()
     foreach ($server in @([pscustomobject]@{ name = 'revAgent'; entry = $RuntimeServerPath }, [pscustomobject]@{ name = 'revAgent-api-docs'; entry = $DocsServerPath })) {
         if ($null -ne $CodexCliCandidate) {
@@ -4194,12 +4266,68 @@ function Test-RevAgentCodexMcpReadback {
         }
         $data = $null
         try { if ($probe.exitCode -eq 0) { $data = $probe.stdout | ConvertFrom-Json } } catch {}
-        $match = $null -ne $data -and $data.enabled -eq $true -and $data.transport.type -eq 'stdio' -and
-            [string]::Equals([string]$data.transport.command, $NodePath, [System.StringComparison]::OrdinalIgnoreCase) -and
-            @($data.transport.args).Count -eq 1 -and [string]::Equals([string]$data.transport.args[0], $server.entry, [System.StringComparison]::OrdinalIgnoreCase)
-        $rows.Add([pscustomobject][ordered]@{ name = $server.name; success = $match; exitCode = $probe.exitCode; command = if ($data) { $data.transport.command } else { '' }; args = if ($data) { @($data.transport.args) } else { @() }; error = if ($match) { '' } else { ($probe.stderr + ' ' + $probe.stdout).Trim() } })
+        $runtimeLoopback = $server.name -eq 'revAgent' -and $RuntimeTransportMode -eq 'm4-loopback-http'
+        $transportProperty = Get-RevAgentObjectPropertyInfo -InputObject $data -Name 'transport'
+        $transport = if ($null -ne $transportProperty) { $transportProperty.Value } else { $null }
+        $transportTypeProperty = Get-RevAgentObjectPropertyInfo -InputObject $transport -Name 'type'
+        $transportType = if ($null -ne $transportTypeProperty) { [string]$transportTypeProperty.Value } else { '' }
+        $urlProperty = Get-RevAgentObjectPropertyInfo -InputObject $data -Name 'url'
+        $readbackUrl = if ($null -ne $urlProperty -and $null -ne $urlProperty.Value) { [string]$urlProperty.Value } else { '' }
+        $commandProperty = Get-RevAgentObjectPropertyInfo -InputObject $transport -Name 'command'
+        $argsProperty = Get-RevAgentObjectPropertyInfo -InputObject $transport -Name 'args'
+        [object[]]$readbackArgs = @()
+        if ($null -ne $argsProperty -and $null -ne $argsProperty.Value) { $readbackArgs = @($argsProperty.Value) }
+
+        if ($runtimeLoopback) {
+            $authFieldsEmpty = $true
+            foreach ($field in @('bearer_token_env_var', 'http_headers', 'env_http_headers')) {
+                $fieldProperty = Get-RevAgentObjectPropertyInfo -InputObject $data -Name $field
+                if ($null -ne $fieldProperty -and $null -ne $fieldProperty.Value) { $authFieldsEmpty = $false }
+            }
+            $stdioFieldsEmpty = ($null -eq $commandProperty -or $null -eq $commandProperty.Value) -and
+                ($null -eq $argsProperty -or $null -eq $argsProperty.Value)
+            $match = $null -ne $data -and $data.enabled -eq $true -and $transportType -eq 'streamable_http' -and
+                [string]::Equals($readbackUrl, $exactRuntimeLoopbackUrl, [System.StringComparison]::Ordinal) -and
+                $authFieldsEmpty -and $stdioFieldsEmpty
+        }
+        else {
+            $match = $null -ne $data -and $data.enabled -eq $true -and $transportType -eq 'stdio' -and
+                $null -ne $commandProperty -and [string]::Equals([string]$commandProperty.Value, $NodePath, [System.StringComparison]::OrdinalIgnoreCase) -and
+                $null -ne $argsProperty -and $readbackArgs.Count -eq 1 -and
+                [string]::Equals([string]$readbackArgs[0], $server.entry, [System.StringComparison]::OrdinalIgnoreCase)
+        }
+        $readbackError = if ($match) { '' } elseif ($RuntimeTransportMode -eq 'm4-loopback-http') {
+            'Codex MCP readback did not match the exact secretless M4 loopback/runtime plus stdio/docs contract.'
+        }
+        else { ($probe.stderr + ' ' + $probe.stdout).Trim() }
+        $reportedCommand = if ($RuntimeTransportMode -eq 'm4-loopback-http' -and -not $match) { '' } elseif ($null -ne $commandProperty -and $null -ne $commandProperty.Value) { [string]$commandProperty.Value } else { '' }
+        $reportedArgs = if ($RuntimeTransportMode -eq 'm4-loopback-http' -and -not $match) { @() } else { @($readbackArgs) }
+        $row = [ordered]@{
+            name = $server.name; success = $match; exitCode = $probe.exitCode
+            command = $reportedCommand; args = @($reportedArgs); error = $readbackError
+        }
+        if ($RuntimeTransportMode -eq 'm4-loopback-http') {
+            $row.Add('transportType', $(if ($match) { $transportType } else { '' }))
+            $row.Add('url', $(if ($match) { $readbackUrl } else { '' }))
+        }
+        $rows.Add([pscustomobject]$row)
     }
     return [pscustomobject][ordered]@{ success = @($rows | Where-Object { -not $_.success }).Count -eq 0; servers = @($rows) }
+}
+
+function Get-RevAgentCodexMcpStdioHandshakePlan {
+    param(
+        [ValidateSet('stdio', 'm4-loopback-http')][string]$RuntimeTransportMode,
+        [string]$RuntimeServerPath,
+        [string]$DocsServerPath
+    )
+
+    $rows = [System.Collections.Generic.List[object]]::new()
+    if ($RuntimeTransportMode -eq 'stdio') {
+        $rows.Add([pscustomobject]@{ name = 'revAgent'; path = $RuntimeServerPath; expectedServer = 'revAgent'; expectedTool = 'get_revit_mcp_status' })
+    }
+    $rows.Add([pscustomobject]@{ name = 'revAgent-api-docs'; path = $DocsServerPath; expectedServer = 'revit-api-docs'; expectedTool = 'resolve_api_symbols_bulk' })
+    return @($rows)
 }
 
 function Test-RevAgentStrictJsonRpcId {
@@ -4406,7 +4534,9 @@ function Invoke-RevAgentCodexUserIntegration {
         [ValidateSet('managed-user-pack', 'preserve-local')][string]$CodexInstructionPolicy = 'managed-user-pack',
         [string]$TargetUserProfileRoot = '', [string]$TargetUserSid = '', [string]$CodexHome = '',
         [string]$CodexCliPath = '', [string]$NodePath = '', [string]$RuntimeServerPath = '', [string]$DocsServerPath = '',
-        [string]$SkillSourcePath = '', [string]$AgentsSourcePath = '', [string]$ExpectedConfigSha256 = '', [switch]$SkipMcpHandshake
+        [string]$SkillSourcePath = '', [string]$AgentsSourcePath = '', [string]$ExpectedConfigSha256 = '', [switch]$SkipMcpHandshake,
+        [ValidateSet('stdio', 'm4-loopback-http')][string]$RuntimeTransportMode = 'stdio',
+        [AllowEmptyString()][string]$RuntimeLoopbackUrl = ''
     )
 
     $appProcess = Get-RevAgentCodexAppProcessState
@@ -4442,13 +4572,17 @@ function Invoke-RevAgentCodexUserIntegration {
         param($CommittedPath, $CommittedHash, $CommittedIdentity)
         $probe = Invoke-RevAgentGuardedCodexProcessProbe -Candidate $cli.selected -Arguments @('mcp', 'list', '--json') -Environment @{ CODEX_HOME = $codexHomeInfo.path }
         $jsonValid = $probe.exitCode -eq 0 -and (Test-RevAgentJsonText -Text $probe.stdout)
-        $error = if ($jsonValid) { '' } else { ($probe.stderr + ' ' + $probe.stdout).Trim() }
+        $probeDiagnostic = if ($jsonValid -or $RuntimeTransportMode -eq 'm4-loopback-http') { '' } else { ($probe.stderr + ' ' + $probe.stdout).Trim() }
         if (-not $jsonValid) {
-            throw "The newest attested Codex CLI rejected the atomically committed CODEX_HOME; refusing silent downgrade. path=$($cli.selected.path) version=$($cli.selected.version) error=$error"
+            if ($RuntimeTransportMode -eq 'm4-loopback-http') {
+                throw 'The newest attested Codex CLI rejected the atomically committed secretless M4 loopback registration; refusing silent downgrade.'
+            }
+            throw "The newest attested Codex CLI rejected the atomically committed CODEX_HOME; refusing silent downgrade. path=$($cli.selected.path) version=$($cli.selected.version) error=$probeDiagnostic"
         }
         return [pscustomobject][ordered]@{ exitCode = [int]$probe.exitCode; jsonValid = $true; error = ''; guardedPackageRebind = $true }
     }.GetNewClosure()
     $config = Set-RevAgentCodexMcpConfigAtomic -CodexHome $codexHomeInfo.path -GuardRoot $codexHomeInfo.guardRoot -NodePath $node.selected.path -RuntimeServerPath $RuntimeServerPath -DocsServerPath $DocsServerPath -ExpectedSha256 $ExpectedConfigSha256 `
+        -RuntimeTransportMode $RuntimeTransportMode -RuntimeLoopbackUrl $RuntimeLoopbackUrl `
         -ReasoningEffortCompatibility $cli.reasoningEffortCompatibility -ExpectedCodexCliSha256 $cli.selected.sha256 `
         -BeforeAtomicCommit $preCommitCliBindingValidation -AfterAtomicCommitValidation $postCommitActualConfigValidation
     $actualCapability = $config.postCommitValidation
@@ -4457,22 +4591,24 @@ function Invoke-RevAgentCodexUserIntegration {
     $cli.selected.actualConfigCapabilityError = [string]$actualCapability.error
     $cli.actualConfigProbe = 'passed'
     $cli.actualConfigProbePhase = 'post-commit-under-config-lock-before-backup-cleanup'
-    $readback = Test-RevAgentCodexMcpReadback -CodexCliPath $cli.selected.path -CodexHome $codexHomeInfo.path -NodePath $node.selected.path -RuntimeServerPath $RuntimeServerPath -DocsServerPath $DocsServerPath -CodexCliCandidate $cli.selected
+    $readback = Test-RevAgentCodexMcpReadback -CodexCliPath $cli.selected.path -CodexHome $codexHomeInfo.path -NodePath $node.selected.path -RuntimeServerPath $RuntimeServerPath -DocsServerPath $DocsServerPath -CodexCliCandidate $cli.selected `
+        -RuntimeTransportMode $RuntimeTransportMode -RuntimeLoopbackUrl $RuntimeLoopbackUrl
     $handshakes = @()
     if (-not $SkipMcpHandshake) {
         $handshakeRows = [System.Collections.Generic.List[object]]::new()
-        foreach ($server in @(
-            [pscustomobject]@{ path = $RuntimeServerPath; expectedServer = 'revAgent'; expectedTool = 'get_revit_mcp_status'; attestation = $serverAttestations.runtime.entrypoint },
-            [pscustomobject]@{ path = $DocsServerPath; expectedServer = 'revit-api-docs'; expectedTool = 'resolve_api_symbols_bulk'; attestation = $serverAttestations.docs.entrypoint }
-        )) {
+        $handshakePlan = @(Get-RevAgentCodexMcpStdioHandshakePlan -RuntimeTransportMode $RuntimeTransportMode -RuntimeServerPath $RuntimeServerPath -DocsServerPath $DocsServerPath)
+        foreach ($server in $handshakePlan) {
+            $serverAttestation = if ($server.name -eq 'revAgent') { $serverAttestations.runtime.entrypoint } else { $serverAttestations.docs.entrypoint }
             $handshakeRows.Add((Test-RevAgentMcpStdioHandshake -NodePath $node.selected.path -ServerPath $server.path `
                 -ExpectedServerNames @($server.expectedServer) -ExpectedToolNames @($server.expectedTool) `
-                -NodeCandidate $node.selected -ServerAttestation $server.attestation))
+                -NodeCandidate $node.selected -ServerAttestation $serverAttestation))
         }
         $handshakes = @($handshakeRows)
     }
     $instructionPolicySatisfied = Test-RevAgentCodexInstructionPolicySatisfied -Policy $CodexInstructionPolicy -Skill $skill -Agents $agents
-    $success = $instructionPolicySatisfied -and $readback.success -and ($SkipMcpHandshake -or @($handshakes | Where-Object { -not $_.success }).Count -eq 0)
+    $expectedHandshakeCount = if ($RuntimeTransportMode -eq 'm4-loopback-http') { 1 } else { 2 }
+    $handshakesSatisfied = $SkipMcpHandshake -or (@($handshakes).Count -eq $expectedHandshakeCount -and @($handshakes | Where-Object { -not $_.success }).Count -eq 0)
+    $success = $instructionPolicySatisfied -and $readback.success -and $handshakesSatisfied
     return [pscustomobject][ordered]@{
         success = $success; state = if ($success) { 'verified' } else { 'verification_failed' }; elevated = $false
         targetUser = $user; codexHome = $codexHomeInfo; codexCli = $cli; node = $node; config = $config; appProcess = $appProcess

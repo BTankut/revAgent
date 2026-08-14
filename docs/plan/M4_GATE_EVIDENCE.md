@@ -28,8 +28,9 @@
 ([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
 
-**M4-04/A4 slice state:** `scope_recorded`
-(planner-bound repo-only client-bearer route; implementation pending)
+**M4-04/A4 slice state:** `implementation_complete_local`
+(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); protected
+implementation checks pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -679,7 +680,7 @@ card.
 
 ## M4-04/A4 CurrentUser bearer-broker seam
 
-**Gate state:** `scope_recorded`
+**Gate state:** `implementation_complete_local`
 
 **Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
 CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
@@ -729,8 +730,116 @@ operation, reboot/persistence, write/confirm, production origin/deploy,
 workflow/runner/CD/signing/NAS changes, and implementation of the stdio
 fallback. Each remains behind its existing separate gate.
 
-**Forecast:** `5.50h` active effort. Passive CI/review and later live-gate
-waits are excluded. Actual and variance remain pending implementation closure.
+**Forecast:** `5.50h` active effort. **Actual:** `1.50h` active effort.
+**Variance:** `-4.00h` (`-73%`). Passive CI/review and later live-gate waits
+are excluded.
+
+**Local implementation evidence:**
+
+- The self-contained `net8.0-windows` broker accepts the A2 handoff frame only
+  through standard input, retains only `CurrentUser` DPAPI ciphertext beneath a
+  protected, non-reparse, single-link root/file chain, and exposes fixed,
+  value-free receive, absence-probe, cleanup, and refusal metadata. Deterministic
+  negatives cover inherited or broad ACLs, hardlinks, reparse paths when the
+  host permits their creation, and a foreign/non-narrow replacement that cleanup
+  must not delete.
+- Every proxied request is authorized before decrypting the bearer. The caller
+  authority resolves the accepted IPv4 connection's reverse tuple to one
+  non-broker PID, opens and retains that process plus its protected image, and
+  checks exact SID/account, AppX package/full-name/path, image SHA-256, valid
+  OpenAI signer subject, and operator-pinned signer thumbprint before and after
+  forwarding. Unauthorized callers make zero upstream calls and trigger zero
+  decrypts. The mutable bearer buffer is zeroed after success, refusal,
+  cancellation, and upstream failure; no stronger claim is made about immutable
+  framework strings or a process already compromised under the same user,
+  Administrator, or SYSTEM authority.
+- The broker binds only canonical `http://127.0.0.1:1024..65535/mcp`, forwards
+  only `GET`/`POST`/`DELETE` to
+  `https://m4-gateway.revagent.app/mcp`, strips caller auth/cookie/proxy/
+  forwarding and unlisted headers, and preserves bounded MCP/SSE response
+  streaming and cancellation. Its `13` focused scenarios pass under both
+  PowerShell 7 and Windows PowerShell 5.1; the final root rerun was `4.70s` with
+  `0` build warnings and `0` build errors.
+- The A2 coordinator keeps `north_refusal_v1` as its exact default and exposes
+  `current_user_dpapi_broker_v1` only for `north_bearer`. The explicit route
+  reserves ordered absolute deadlines at `40/50/65/70/80/85/100%` for operation,
+  source stop, source absence proof, destination stop, destination cleanup,
+  cleanup stop, and positive destination absence proof. Native process-handle
+  waits and ownership guards prevent inherited stdout/stderr or an incomplete
+  pipe copy from bypassing those deadlines. Fifteen-second source and
+  destination pipe-holder regressions remain below their `9.50s` ceiling, and a
+  real operation timeout proves the source cleanup probe ran before destination
+  disposition. The final focused coordinator suite passed in `44.98s`.
+- Codex registration preserves stdio as the default. The explicit A4 mode
+  atomically replaces only the managed runtime table with the exact secretless
+  numeric-loopback URL, retains the docs server on stdio, verifies the current
+  `streamable_http` CLI readback shape with every bearer/header field absent,
+  and is wired through the hardened public installer entrypoint. Ports below
+  `1024`, aliases, wildcard/IPv6 hosts, and path/query/fragment drift fail before
+  mutation. The final Codex integration-security suite passed in `46.35s`.
+- The recognizable `64`-character synthetic bearer and distinct head/middle/
+  tail fragments are absent from DPAPI ciphertext and every exercised public
+  output/error/evidence surface. Registration tests separately prove their
+  absence from TOML, result/readback/error data, and observed child argv/env.
+  Root `package-lock.json` remains byte-identical at blob
+  `b3d8df2755b2ead322f36100bc1c0fb177af082c`; the new project has no
+  `PackageReference`. No host, credential, Codex user configuration, DNS/TLS,
+  Gateway, Bridge, Revit, workflow/runner, signing, CD, or NAS operation ran.
+  The implementation necessarily changes `installer/**`, so the later approved
+  merge is expected to trigger Signed Source-Free CD and its terminal result
+  must be reported.
+- The final common local tree passed `scripts/test-all.ps1` with exit `0` in
+  `749.46s` and `scripts/test-ci.ps1` with exit `0` in `744.11s`. The latter
+  includes the same `13` broker scenarios, coordinator and Codex security
+  regressions, Bridge suites, release guards, and CI-safe engineering gates.
+
+**Red-attempt and review dispositions:**
+
+- Initial broker preparation failed on missing restore assets, three incorrect
+  framework API assumptions, a self-contained test/project mismatch, and the
+  test source being compiled as a second entrypoint. Restore, the pinned .NET 8
+  APIs, matching test RID, and explicit test-source exclusion closed these
+  build-only failures; the final build has no warning or error.
+- Early broker harness runs exposed Windows PowerShell 5.1 differences in ACL
+  extension discovery, `ProcessStartInfo.ArgumentList`, UTF-8 BOM handling,
+  `Span<byte>` binding, string overloads, and process-tree kill overloads. The
+  runner now uses bounded compatibility paths already supported by the repo;
+  both PowerShell editions pass the same `13` scenarios. A RID-dependent source-
+  root calculation also made the no-argv test scan its own `--bearer` fixture;
+  resolving from the repo working directory removed that harness-only false
+  positive. A separately attempted external symlink feasibility command was
+  blocked before execution by shell policy, so the final proof uses deterministic
+  identity policy plus native .NET symlink fixtures where the host permits them.
+- Independent review found that an early proxy loaded plaintext before caller
+  authorization and that its first caller policy was broader than the bound
+  exact image/package/signer identity. Decrypt was moved behind a retained
+  authorization lease, identity was pinned exactly, and deterministic native-
+  negative, tuple/process-sandwich, ACL, reparse, hardlink, replacement,
+  zero-decrypt, zeroization, and fragment-leak regressions were added.
+- Coordinator harness iterations exposed `OrderedDictionary` property lookup,
+  PowerShell 5.1 BOM and nullable binding, an unconsumed stop-helper boolean,
+  an undersized receiver-abort window, and a residue-negative expectation that
+  contradicted positive-absence semantics. These were respectively corrected
+  with dictionary-key lookup, the production receiver's exact optional-BOM
+  rule, direct integer binding, voided helper output, a distinct destination
+  stop window, and the required `exit 79` plus retained-residue expectation.
+  Review then found three boundedness defects:
+  synchronous stream harvest after uncertain stop, no source-proof budget after
+  an operation timeout, and a second synchronous commit/abort write while an
+  incomplete copy still owned the destination pipe. Fixed metadata harvesting,
+  distinct ordered deadlines, native handle waits, and the incomplete-copy
+  ownership guard close all three; the adversarial `45s` suite is green.
+- Registration tests initially had fixture-only scalar/name mismatches. The
+  corrected fixtures now prove both the legacy stdio result shape and the exact
+  secretless HTTP shape. Review also found a `1..1023` registration range that
+  the broker would refuse; both layers now share the canonical
+  `1024..65535` contract. No protected CI attempt has failed for the
+  implementation head because that head has not yet been pushed.
+- The first local `test-ci` launcher used a `5s` orchestration timeout. The
+  tool returned `124` before any test result, left one child briefly running,
+  and lost that child's exit/output; it is therefore not counted as a test
+  attempt. The child was confirmed absent before the single evidence-bearing
+  rerun above, which completed normally with exit `0`.
 
 ## Closed credential gate and explicitly open gates
 

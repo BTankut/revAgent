@@ -183,7 +183,13 @@ missing WP9 bearer sink: a CurrentUser-DPAPI numeric-loopback broker on
 PETRUCCI. The repo-only A4 slice may add the protected store, exact caller
 attestation, bounded local Streamable HTTP proxy, explicit A2 north-destination
 disposition, and a Codex registration containing only the numeric-loopback URL.
-Its active-effort forecast is `5.50h`.
+The repo-only implementation is complete locally in draft `PR #378`: focused
+broker, coordinator, and Codex registration/security suites are green; both
+canonical local gates passed (`test-all` exit `0`, `749.46s`; `test-ci` exit
+`0`, `744.11s`); and the root lockfile remains byte-identical. Forecast was
+`5.50h`; actual active effort was `1.50h`, variance `-4.00h` (`-73%`).
+Protected implementation checks remain pending, so A4 is not yet `passed` or
+merge-authorized.
 
 The authorization ceiling is unchanged. A4 may not access or mutate PETRUCCI,
 stage or run a broker, configure a real client, use a credential, or exercise

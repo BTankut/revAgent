@@ -673,6 +673,107 @@ keep = "untouched"
     Assert-Equal $atomic.modelReasoningEffortCompatibility.action 'preserved_supported_ultra' "Config result did not attest the supports-Ultra action."
     Assert-Equal $atomic.modelReasoningEffortCompatibility.capabilityCliSha256 $fixtureCliSha256 "Config result lost the selected CLI capability binding."
 
+    Write-Host "Test explicit M4 numeric-loopback registration is exact, secretless, and atomic"
+    $loopbackHome = Join-Path $profileRoot 'm4-loopback-home'
+    $loopbackConfigPath = Join-Path $loopbackHome 'config.toml'
+    $loopbackUrl = 'http://127.0.0.1:1024/mcp'
+    $loopbackCanary = 'SYNTHETIC-M4-A4-BEARER-DO-NOT-USE'
+    $loopbackCanaryFragments = @('SYNTHETIC-M4-A4', 'BEARER-DO-NOT-USE')
+    New-Item -ItemType Directory -Path $loopbackHome -Force | Out-Null
+    $legacyLoopbackConfig = @"
+unrelated_loopback_root = "preserve-me"
+
+[mcp_servers.revAgent]
+command = "legacy-runtime"
+args = ["legacy-runtime.js"]
+bearer_token_env_var = "$loopbackCanary"
+http_headers = { Authorization = "Bearer $loopbackCanary" }
+env_http_headers = { Authorization = "$loopbackCanary" }
+
+[mcp_servers.revAgent.http_headers]
+Authorization = "Bearer $loopbackCanary"
+
+[mcp_servers.revAgent.env_http_headers]
+Authorization = "$loopbackCanary"
+
+[mcp_servers.revAgent-api-docs]
+command = "legacy-docs"
+args = ["legacy-docs.js"]
+
+[profiles.loopback_fixture]
+keep = "untouched"
+"@ -replace "`n", "`r`n"
+    Write-Utf8NoBom -Path $loopbackConfigPath -Content ($legacyLoopbackConfig.Trim() + "`r`n")
+    $loopbackAtomic = Set-RevAgentCodexMcpConfigAtomic -CodexHome $loopbackHome -GuardRoot $profileRoot -NodePath $programFilesNode `
+        -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' -ExpectedSha256 (Get-RevAgentFileSha256 $loopbackConfigPath) `
+        -RuntimeTransportMode m4-loopback-http -RuntimeLoopbackUrl $loopbackUrl
+    $loopbackConfigText = Get-Content -Raw -LiteralPath $loopbackConfigPath
+    $loopbackRuntimeBlock = [regex]::Match($loopbackConfigText, '(?ms)^\[mcp_servers\.revAgent\]\s*.*?(?=^\[|\z)').Value.Trim()
+    $loopbackDocsBlock = [regex]::Match($loopbackConfigText, '(?ms)^\[mcp_servers\.revAgent-api-docs\]\s*.*?(?=^\[|\z)').Value.Trim()
+    $expectedNodeToml = '"' + $programFilesNode.Replace('\', '\\').Replace('"', '\"') + '"'
+    Assert-Equal ($loopbackRuntimeBlock -replace "`r`n", "`n") "[mcp_servers.revAgent]`nurl = `"$loopbackUrl`"" "M4 runtime table must contain only the exact numeric-loopback URL."
+    Assert-True ($loopbackConfigText -notmatch 'bearer_token_env_var|http_headers|env_http_headers') "M4 loopback registration retained a Codex bearer/header sink."
+    Assert-True (-not $loopbackConfigText.Contains($loopbackCanary)) "M4 loopback registration retained the synthetic legacy bearer canary in TOML."
+    $loopbackAtomicText = $loopbackAtomic | ConvertTo-Json -Depth 12 -Compress
+    foreach ($fragment in $loopbackCanaryFragments) {
+        Assert-True (-not $loopbackConfigText.Contains($fragment)) "M4 loopback TOML retained a distinguishing bearer fragment."
+        Assert-True (-not $loopbackAtomicText.Contains($fragment)) "M4 loopback config result exposed a distinguishing bearer fragment."
+    }
+    Assert-True ($loopbackConfigText -match '(?m)^unrelated_loopback_root\s*=\s*"preserve-me"\s*$' -and $loopbackConfigText -match '(?ms)^\[profiles\.loopback_fixture\].*?^keep\s*=\s*"untouched"\s*$') "M4 loopback registration modified unrelated TOML."
+    Assert-Equal ($loopbackDocsBlock -replace "`r`n", "`n") "[mcp_servers.revAgent-api-docs]`ncommand = $expectedNodeToml`nargs = [`"docs.js`"]" "M4 loopback mode did not preserve the docs server as stdio."
+    Assert-True (-not $loopbackAtomicText.Contains($loopbackCanary)) "M4 loopback config result exposed the synthetic bearer canary."
+    Assert-Equal @(Get-ChildItem -LiteralPath $loopbackHome -Force | Where-Object { $_.Name -match '^\.config\.toml\.revagent-.*\.(tmp|bak|discard)$' }).Count 0 "M4 loopback config update left an atomic staging artifact."
+
+    Write-Host "Test M4 loopback URL aliases, wildcard hosts, IPv6, zero ports, and path drift fail before mutation"
+    $invalidLoopbackBefore = Get-Content -Raw -LiteralPath $loopbackConfigPath
+    foreach ($invalidLoopbackUrl in @(
+            'http://localhost:18443/mcp',
+            'http://0.0.0.0:18443/mcp',
+            'http://*:18443/mcp',
+            'http://[::1]:18443/mcp',
+            'http://127.0.0.1:0/mcp',
+            'http://127.0.0.1:1/mcp',
+            'http://127.0.0.1:80/mcp',
+            'http://127.0.0.1:1023/mcp',
+            'http://127.0.0.1:08080/mcp',
+            'http://127.0.0.1:18443/',
+            'http://127.0.0.1:18443/mcp/',
+            'http://127.0.0.1:18443/mcp?secretless=false',
+            "http://127.0.0.1:18443/mcp/$loopbackCanary"
+        )) {
+        $invalidLoopbackError = $null
+        try {
+            Set-RevAgentCodexMcpConfigAtomic -CodexHome $loopbackHome -GuardRoot $profileRoot -NodePath $programFilesNode `
+                -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' -ExpectedSha256 (Get-RevAgentFileSha256 $loopbackConfigPath) `
+                -RuntimeTransportMode m4-loopback-http -RuntimeLoopbackUrl $invalidLoopbackUrl | Out-Null
+        }
+        catch { $invalidLoopbackError = $_ }
+        Assert-True ($null -ne $invalidLoopbackError -and $invalidLoopbackError.Exception.Message -match 'M4 loopback MCP URL') "Unsafe M4 loopback URL was not rejected."
+        Assert-True (-not $invalidLoopbackError.Exception.Message.Contains($loopbackCanary)) "M4 loopback URL rejection echoed the synthetic bearer canary."
+        foreach ($fragment in $loopbackCanaryFragments) {
+            Assert-True (-not $invalidLoopbackError.Exception.Message.Contains($fragment)) "M4 loopback URL rejection echoed a distinguishing bearer fragment."
+        }
+        Assert-Equal (Get-Content -Raw -LiteralPath $loopbackConfigPath) $invalidLoopbackBefore "Invalid M4 loopback URL modified config.toml."
+    }
+
+    $stdioWithUrlBefore = Get-Content -Raw -LiteralPath $loopbackConfigPath
+    Assert-ThrowsLike -Action {
+        Set-RevAgentCodexMcpConfigAtomic -CodexHome $loopbackHome -GuardRoot $profileRoot -NodePath $programFilesNode `
+            -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js' -ExpectedSha256 (Get-RevAgentFileSha256 $loopbackConfigPath) `
+            -RuntimeLoopbackUrl $loopbackUrl | Out-Null
+    } -Pattern 'valid only with RuntimeTransportMode m4-loopback-http' -Message 'Default stdio mode must reject an unused loopback URL.'
+    Assert-Equal (Get-Content -Raw -LiteralPath $loopbackConfigPath) $stdioWithUrlBefore "Default stdio URL rejection modified config.toml."
+
+    $stdioHandshakePlan = @(& $codexRegistrationModule {
+        Get-RevAgentCodexMcpStdioHandshakePlan -RuntimeTransportMode stdio -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js'
+    })
+    $loopbackHandshakePlan = @(& $codexRegistrationModule {
+        Get-RevAgentCodexMcpStdioHandshakePlan -RuntimeTransportMode m4-loopback-http -RuntimeServerPath 'runtime.js' -DocsServerPath 'docs.js'
+    })
+    Assert-Equal $stdioHandshakePlan.Count 2 "Default stdio mode must retain both MCP handshakes."
+    Assert-Equal $loopbackHandshakePlan.Count 1 "M4 loopback mode must skip only the runtime stdio handshake."
+    Assert-Equal $loopbackHandshakePlan[0].name 'revAgent-api-docs' "M4 loopback mode must retain the docs stdio handshake."
+
     $rejectsUltraHome = Join-Path $profileRoot 'rejects-ultra-home'
     New-Item -ItemType Directory -Path $rejectsUltraHome -Force | Out-Null
     $rejectsUltraPath = Join-Path $rejectsUltraHome 'config.toml'
@@ -1108,23 +1209,83 @@ keep = "untouched"
     $runtimePath = Join-Path $tempRoot "runtime-server.js"
     $docsPath = Join-Path $tempRoot "docs-server.js"
     $fakeCliSource = @'
+const fs = require("fs");
 const name = process.argv[4];
+const canary = "SYNTHETIC-M4-A4-BEARER-DO-NOT-USE";
+const canaryFragments = ["SYNTHETIC-M4-A4", "BEARER-DO-NOT-USE"];
 const entry = name === "revAgent" ? process.env.REVAGENT_FIXTURE_RUNTIME : process.env.REVAGENT_FIXTURE_DOCS;
-process.stdout.write(JSON.stringify({enabled:true,transport:{type:"stdio",command:process.env.REVAGENT_FIXTURE_NODE,args:[entry]}}));
+if (process.env.REVAGENT_FIXTURE_OBSERVATION) {
+  const argvLeak = process.argv.some((value) => value.includes(canary));
+  const envLeak = Object.values(process.env).some((value) => typeof value === "string" && value.includes(canary));
+  const argvFragmentLeak = process.argv.some((value) => canaryFragments.some((fragment) => value.includes(fragment)));
+  const envFragmentLeak = Object.values(process.env).some((value) => typeof value === "string" && canaryFragments.some((fragment) => value.includes(fragment)));
+  fs.appendFileSync(process.env.REVAGENT_FIXTURE_OBSERVATION, JSON.stringify({argvLeak,envLeak,argvFragmentLeak,envFragmentLeak}) + "\n");
+}
+if (name === "revAgent" && process.env.REVAGENT_FIXTURE_RUNTIME_MODE === "m4-loopback-http") {
+  const result = {
+    enabled: true,
+    transport: {type: "streamable_http"},
+    url: process.env.REVAGENT_FIXTURE_LOOPBACK_URL,
+    bearer_token_env_var: null,
+    http_headers: null,
+    env_http_headers: null
+  };
+  if (process.env.REVAGENT_FIXTURE_BAD_AUTH === "1") {
+    result.http_headers = {Authorization: "fixture-value-that-must-not-surface"};
+  }
+  process.stdout.write(JSON.stringify(result));
+} else {
+  process.stdout.write(JSON.stringify({enabled:true,transport:{type:"stdio",command:process.env.REVAGENT_FIXTURE_NODE,args:[entry]}}));
+}
 '@
     Write-Utf8NoBom -Path $fakeCliScript -Content $fakeCliSource
     Write-Utf8NoBom -Path $fakeCli -Content ('@echo off' + "`r`n" + '"' + $programFilesNode + '" "%~dp0fake-codex.js" %*' + "`r`n")
     $env:REVAGENT_FIXTURE_NODE = $programFilesNode
     $env:REVAGENT_FIXTURE_RUNTIME = $runtimePath
     $env:REVAGENT_FIXTURE_DOCS = $docsPath
+    $readbackObservationPath = Join-Path $tempRoot 'fake-codex-readback-observations.jsonl'
+    $env:REVAGENT_FIXTURE_OBSERVATION = $readbackObservationPath
     try {
         $readback = Test-RevAgentCodexMcpReadback -CodexCliPath $fakeCli -CodexHome $defaultHome.path -NodePath $programFilesNode -RuntimeServerPath $runtimePath -DocsServerPath $docsPath
+        Assert-True ([bool]$readback.success) ("Fake codex mcp get --json readback failed: " + (($readback.servers | ConvertTo-Json -Depth 8 -Compress)))
+        Assert-Equal @($readback.servers).Count 2 "MCP readback did not verify both servers."
+        Assert-Equal ((@($readback.servers)[0].PSObject.Properties.Name) -join ',') 'name,success,exitCode,command,args,error' "Default stdio readback output shape changed."
+
+        $env:REVAGENT_FIXTURE_RUNTIME_MODE = 'm4-loopback-http'
+        $env:REVAGENT_FIXTURE_LOOPBACK_URL = $loopbackUrl
+        $loopbackReadback = Test-RevAgentCodexMcpReadback -CodexCliPath $fakeCli -CodexHome $defaultHome.path -NodePath $programFilesNode `
+            -RuntimeServerPath $runtimePath -DocsServerPath $docsPath -RuntimeTransportMode m4-loopback-http -RuntimeLoopbackUrl $loopbackUrl
+        Assert-True ([bool]$loopbackReadback.success) ("M4 loopback Codex readback failed: " + (($loopbackReadback.servers | ConvertTo-Json -Depth 8 -Compress)))
+        $loopbackRuntimeReadback = @($loopbackReadback.servers | Where-Object name -eq 'revAgent')[0]
+        $loopbackDocsReadback = @($loopbackReadback.servers | Where-Object name -eq 'revAgent-api-docs')[0]
+        Assert-Equal $loopbackRuntimeReadback.transportType 'streamable_http' "M4 runtime readback did not require Streamable HTTP."
+        Assert-Equal $loopbackRuntimeReadback.url $loopbackUrl "M4 runtime readback did not bind the exact numeric-loopback URL."
+        Assert-Equal $loopbackDocsReadback.command $programFilesNode "M4 loopback readback did not keep docs on stdio."
+        $loopbackReadbackText = $loopbackReadback | ConvertTo-Json -Depth 12 -Compress
+        Assert-True (-not $loopbackReadbackText.Contains($loopbackCanary)) "M4 loopback readback output exposed the synthetic bearer canary."
+        foreach ($fragment in $loopbackCanaryFragments) {
+            Assert-True (-not $loopbackReadbackText.Contains($fragment)) "M4 loopback readback output exposed a distinguishing bearer fragment."
+        }
+
+        $env:REVAGENT_FIXTURE_BAD_AUTH = '1'
+        $badAuthReadback = Test-RevAgentCodexMcpReadback -CodexCliPath $fakeCli -CodexHome $defaultHome.path -NodePath $programFilesNode `
+            -RuntimeServerPath $runtimePath -DocsServerPath $docsPath -RuntimeTransportMode m4-loopback-http -RuntimeLoopbackUrl $loopbackUrl
+        $badAuthReadbackText = $badAuthReadback | ConvertTo-Json -Depth 12 -Compress
+        Assert-True (-not [bool]$badAuthReadback.success) "M4 loopback readback accepted a non-null HTTP auth/header field."
+        Assert-True (-not $badAuthReadbackText.Contains('fixture-value-that-must-not-surface')) "M4 loopback readback surfaced rejected header material in output/error."
+        foreach ($fragment in $loopbackCanaryFragments) {
+            Assert-True (-not $badAuthReadbackText.Contains($fragment)) "M4 loopback readback error exposed a distinguishing bearer fragment."
+        }
     }
     finally {
-        Remove-Item Env:\REVAGENT_FIXTURE_NODE, Env:\REVAGENT_FIXTURE_RUNTIME, Env:\REVAGENT_FIXTURE_DOCS -ErrorAction SilentlyContinue
+        Remove-Item Env:\REVAGENT_FIXTURE_NODE, Env:\REVAGENT_FIXTURE_RUNTIME, Env:\REVAGENT_FIXTURE_DOCS, `
+            Env:\REVAGENT_FIXTURE_OBSERVATION, Env:\REVAGENT_FIXTURE_RUNTIME_MODE, Env:\REVAGENT_FIXTURE_LOOPBACK_URL, `
+            Env:\REVAGENT_FIXTURE_BAD_AUTH -ErrorAction SilentlyContinue
     }
-    Assert-True ([bool]$readback.success) ("Fake codex mcp get --json readback failed: " + (($readback.servers | ConvertTo-Json -Depth 8 -Compress)))
-    Assert-Equal @($readback.servers).Count 2 "MCP readback did not verify both servers."
+    $readbackObservations = @(Get-Content -LiteralPath $readbackObservationPath | ForEach-Object { $_ | ConvertFrom-Json })
+    Assert-Equal $readbackObservations.Count 6 "Fake Codex did not observe all default, loopback, and negative readback process launches."
+    Assert-True (@($readbackObservations | Where-Object { $_.argvLeak -or $_.envLeak }).Count -eq 0) "Synthetic bearer canary entered Codex readback argv or environment."
+    Assert-True (@($readbackObservations | Where-Object { $_.argvFragmentLeak -or $_.envFragmentLeak }).Count -eq 0) "Distinguishing bearer fragments entered Codex readback argv or environment."
 
     Write-Host "Test fake MCP initialize and tools/list handshake through Program Files Node"
     $fakeMcp = Join-Path $tempRoot "fake-mcp-server.js"
@@ -1496,6 +1657,39 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     $codexUserEarlyGuardIndex = $codexUserIntegrationText.IndexOf('Codex user integration must run unelevated before sibling module import')
     $codexUserProductImportIndex = $codexUserIntegrationText.IndexOf('Import-Module $modulePath[0] -Force')
     Assert-True ($codexUserEarlyGuardIndex -ge 0 -and $codexUserProductImportIndex -ge 0 -and $codexUserEarlyGuardIndex -lt $codexUserProductImportIndex) "Codex user entrypoint must reject elevation before resolving/importing its sibling product module."
+    $codexUserTokens = $null
+    $codexUserParseErrors = $null
+    $codexUserAst = [Management.Automation.Language.Parser]::ParseFile(
+        (Join-Path $RepoRoot 'installer\nas\Invoke-revAgent-CodexUserIntegration.ps1'),
+        [ref]$codexUserTokens,
+        [ref]$codexUserParseErrors
+    )
+    Assert-Equal @($codexUserParseErrors).Count 0 "Codex user entrypoint transport seam did not parse."
+    $runtimeTransportParameters = @($codexUserAst.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -eq 'RuntimeTransportMode'
+        })
+    $runtimeLoopbackParameters = @($codexUserAst.ParamBlock.Parameters | Where-Object {
+            $_.Name.VariablePath.UserPath -eq 'RuntimeLoopbackUrl'
+        })
+    Assert-Equal $runtimeTransportParameters.Count 1 "Codex user entrypoint must expose one RuntimeTransportMode parameter."
+    Assert-Equal $runtimeLoopbackParameters.Count 1 "Codex user entrypoint must expose one RuntimeLoopbackUrl parameter."
+    Assert-Equal $runtimeTransportParameters[0].DefaultValue.SafeGetValue() 'stdio' "Codex user entrypoint must preserve stdio as its default transport."
+    Assert-Equal $runtimeLoopbackParameters[0].DefaultValue.SafeGetValue() '' "Codex user entrypoint must default to no loopback URL."
+    $runtimeTransportValidateSet = @($runtimeTransportParameters[0].Attributes | Where-Object {
+            $_.TypeName.FullName -eq 'ValidateSet'
+        })
+    Assert-Equal $runtimeTransportValidateSet.Count 1 "Codex user entrypoint transport must have one ValidateSet guard."
+    $runtimeTransportChoices = @($runtimeTransportValidateSet[0].PositionalArguments | ForEach-Object { $_.SafeGetValue() })
+    Assert-Equal ($runtimeTransportChoices -join ',') 'stdio,m4-loopback-http' "Codex user entrypoint transport choices drifted."
+    $invokeParamsAssignments = @($codexUserAst.FindAll({
+                param($node)
+                $node -is [Management.Automation.Language.AssignmentStatementAst] -and
+                    $node.Left.Extent.Text -eq '$invokeParams'
+            }, $true))
+    Assert-Equal $invokeParamsAssignments.Count 1 "Codex user entrypoint must construct one invokeParams map."
+    $invokeParamsText = $invokeParamsAssignments[0].Right.Extent.Text
+    Assert-True ($invokeParamsText -match '(?m)^\s*RuntimeTransportMode\s*=\s*\$RuntimeTransportMode\s*$') "Codex user entrypoint did not explicitly forward RuntimeTransportMode."
+    Assert-True ($invokeParamsText -match '(?m)^\s*RuntimeLoopbackUrl\s*=\s*\$RuntimeLoopbackUrl\s*$') "Codex user entrypoint did not explicitly forward RuntimeLoopbackUrl."
     Assert-True ($permissionsText -match 'function Protect-RevitMcpManagedExecutionTree' -and $permissionsText -match 'function Grant-RevitMcpUserStateAccess') "Permissions module must separate protected machine execution trees from user state."
     Assert-True ($permissionsText -match 'Join-Path \$WorkRoot "user-state"' -and $permissionsText -match 'Join-Path \$WorkRoot "logs"') "User write ACLs must be limited to logs/user-state."
     Assert-True ($permissionsText -match 'SetAccessRuleProtection\(\$true, \$false\)' -and $permissionsText -match 'S-1-5-32-545' -and $permissionsText -match 'ReadAndExecute') "Protected machine tree must replace its DACL with the SYSTEM/Admin/Users-RX allowlist."
@@ -1530,7 +1724,7 @@ Import-Module Microsoft.PowerShell.Archive -Force -ErrorAction Stop
     Assert-True ($updaterText -match 'function Invoke-InstalledCodexUserIntegration' -and $updaterText -match 'RevAgentCodexUserIntegrationResult' -and $updaterText -notmatch 'Register-CodexMcpServersInConfig' -and $updaterText -notmatch 'Set-CodexMcpServerConfig' -and $updaterText -notmatch 'Set-CodexMemoryConfig') "Updater must not keep a direct config.toml writer; every Codex config mutation must flow through the atomic user-integration contract."
     Assert-True ($codexRegistrationText -match '\[IO\.File\]::Move\(\$configPath, \$missingRollbackDiscard\)' -and $codexRegistrationText -match '\[IO\.File\]::Replace\(\$rollbackDiscard, \$configPath, \$backupPath, \$true\)' -and $codexRegistrationText -match 'competing writer replaced the staged config' -and $codexRegistrationText -match 'concurrent writer was restored exactly') "Both missing/existing config rollback branches must atomically displace and restore concurrent writers instead of deleting or overwriting them after a pathname precheck."
     Assert-True ($codexRegistrationText -match 'function Open-RevAgentSafeUserProbeRootGuard' -and $codexRegistrationText -match 'function Clear-RevAgentSafeUserProbeDirectory' -and $codexRegistrationText -match 'function Close-RevAgentSafeUserProbeRootGuard' -and $codexRegistrationText -match 'Codex probe cleanup failed closed; user config must remain unchanged' -and $codexRegistrationText -notmatch 'Remove-Item\s+-LiteralPath\s+\$probeHome\s+-Recurse') "Disposable Codex probe homes must hold an exact root identity guard and use bounded leaf-first, non-traversing cleanup that fails before config mutation."
-    Assert-True ($codexRegistrationText -match 'OpenDirectoryReadLock' -and $codexRegistrationText -match 'function Open-RevAgentExecutableLaunchGuard' -and $codexRegistrationText -match 'function Invoke-RevAgentGuardedCodexProcessProbe' -and $codexRegistrationText -match 'Invoke-RevAgentGuardedCodexProcessProbe -Candidate \$CodexCliCandidate' -and $codexRegistrationText -match '-NodeCandidate \$node\.selected -ServerAttestation \$server\.attestation') "Codex probes/readback and the final Node/server handshake must hold executable and directory-chain launch guards through process creation."
+    Assert-True ($codexRegistrationText -match 'OpenDirectoryReadLock' -and $codexRegistrationText -match 'function Open-RevAgentExecutableLaunchGuard' -and $codexRegistrationText -match 'function Invoke-RevAgentGuardedCodexProcessProbe' -and $codexRegistrationText -match 'Invoke-RevAgentGuardedCodexProcessProbe -Candidate \$CodexCliCandidate' -and $codexRegistrationText -match '-NodeCandidate \$node\.selected -ServerAttestation \$serverAttestation') "Codex probes/readback and the final Node/server handshake must hold executable and directory-chain launch guards through process creation."
     $nativeCreateIndex = $codexRegistrationText.IndexOf('CreateProcessW(CREATE_SUSPENDED) failed')
     $nativeAssignIndex = $codexRegistrationText.IndexOf('AssignProcessToJobObject before resume failed')
     $nativeResumeIndex = $codexRegistrationText.IndexOf('ResumeThread failed')

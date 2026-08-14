@@ -9,6 +9,10 @@ param(
     [string]$CodexCliPath = '',
     [string]$NodePath = '',
     [string]$RuntimeServerPath = '',
+    [ValidateSet('stdio', 'm4-loopback-http')]
+    [string]$RuntimeTransportMode = 'stdio',
+    [AllowEmptyString()]
+    [string]$RuntimeLoopbackUrl = '',
     [string]$DocsServerPath = '',
     [string]$SkillSourcePath = '',
     [string]$AgentsSourcePath = '',
@@ -157,6 +161,8 @@ $invokeParams = @{
     CodexCliPath = $CodexCliPath
     NodePath = $NodePath
     RuntimeServerPath = $RuntimeServerPath
+    RuntimeTransportMode = $RuntimeTransportMode
+    RuntimeLoopbackUrl = $RuntimeLoopbackUrl
     DocsServerPath = $DocsServerPath
     SkillSourcePath = $SkillSourcePath
     AgentsSourcePath = $AgentsSourcePath

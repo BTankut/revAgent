@@ -49,7 +49,10 @@ param(
     [string]$SourceUidGid,
 
     [ValidateRange(10, 120)]
-    [int]$TimeoutSeconds = 30
+    [int]$TimeoutSeconds = 30,
+
+    [ValidateSet("north_refusal_v1", "current_user_dpapi_broker_v1")]
+    [string]$DestinationDisposition = "north_refusal_v1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -202,6 +205,8 @@ try {
         $sshSha256 -notmatch $shaPattern -or
         $IdentityFile -notmatch $windowsPath -or
         $KnownHostsFile -notmatch $windowsPath -or
+        ($DestinationDisposition -eq "current_user_dpapi_broker_v1" -and
+            $Kind -ne "north_bearer") -or
         -not (Test-RevAgentCanonicalNonReparseFile -Path $sshPath) -or
         -not (Test-RevAgentPrivateIdentityFile -Path $IdentityFile) -or
         -not (Test-RevAgentPrivateIdentityFile -Path $KnownHostsFile)) {
@@ -271,15 +276,30 @@ try {
     # command reconstruction, and the Linux login shell without another
     # quoting layer. The decoded script contains no secret material.
     $sourceProbeCommand = "printf %s $sourceProbeEncoded | base64 -d | sh"
-    $destinationCommand = @(
+    $destinationArgumentVector = @(
         "cmd.exe", "/d", "/s", "/c",
         $ReceiverPath,
         "--contract", $contractVersion,
         "--kind", $Kind,
         "--root", $DestinationRoot,
         "--expected-self-sha256", $receiverSha256
-    ) -join " "
+    )
+    if ($DestinationDisposition -eq "current_user_dpapi_broker_v1") {
+        $destinationArgumentVector += @(
+            "--destination-disposition", $DestinationDisposition
+        )
+    }
+    $destinationCommand = $destinationArgumentVector -join " "
     $destinationProbeCommand = $destinationCommand + " --probe-absent true"
+    $destinationCleanupStartInfo = $null
+    if ($DestinationDisposition -eq "current_user_dpapi_broker_v1") {
+        $destinationCleanupCommand = $destinationCommand + " --cleanup true"
+        $destinationCleanupStartInfo = New-RevAgentSshStartInfo `
+            -SshPath $sshPath `
+            -Selector $DestinationSelector `
+            -RemoteCommand $destinationCleanupCommand `
+            -RedirectInput $true
+    }
 
     $result = Invoke-RevAgentM4HandoffCore `
         -Kind $Kind `
@@ -287,7 +307,9 @@ try {
         -DestinationStartInfo (New-RevAgentSshStartInfo -SshPath $sshPath -Selector $DestinationSelector -RemoteCommand $destinationCommand -RedirectInput $true) `
         -SourceProbeStartInfo (New-RevAgentSshStartInfo -SshPath $sshPath -Selector $SourceSelector -RemoteCommand $sourceProbeCommand -RedirectInput $true) `
         -DestinationProbeStartInfo (New-RevAgentSshStartInfo -SshPath $sshPath -Selector $DestinationSelector -RemoteCommand $destinationProbeCommand -RedirectInput $true) `
-        -TimeoutMilliseconds ($TimeoutSeconds * 1000)
+        -TimeoutMilliseconds ($TimeoutSeconds * 1000) `
+        -DestinationDisposition $DestinationDisposition `
+        -DestinationCleanupStartInfo $destinationCleanupStartInfo
 
     [Console]::Out.Write(($result.Result | ConvertTo-Json -Compress) + "`n")
     exit $result.ExitCode
