@@ -28,9 +28,13 @@
 ([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
 
-**M4-04/A4 slice state:** `implementation_checks_passed`
-(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); Claude review
-and merge authorization pending)
+**M4-04/A4 slice state:** `passed_merged`
+([`PR #378`](https://github.com/BTankut/revAgent/pull/378) merged as
+[`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02))
+
+**M4-04/A5 slice state:** `scope_recorded`
+(planner-bound repo-only protected Bridge enrollment-file consumer;
+implementation pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -46,8 +50,11 @@ is the separately authorized repo-only value-free refusal observer; it exposes
 the existing Gateway refusal and Bridge retry-pause decisions without changing
 their semantics. `M4-04/A4` is the planner-bound repo-only CurrentUser-DPAPI
 numeric-loopback bearer-broker seam. It does not install or run the broker on
-PETRUCCI and does not open any M4-04/B execution gate. None of these bounded
-slices by itself satisfies or enlarges the M4 milestone gate.
+PETRUCCI and does not open any M4-04/B execution gate. `M4-04/A5` is the
+planner-bound repo-only listenerless protected enrollment-file consumer; it
+adapts the A2 handoff artifact to the existing Bridge enrollment coordinator
+without changing Bridge auth, retry, or observer semantics. None of these
+bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -66,6 +73,9 @@ slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-04/A4 exact slice base:**
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3)
+
+**M4-04/A5 exact slice base:**
+[`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02)
 
 ## Authorization ceiling
 
@@ -680,7 +690,7 @@ card.
 
 ## M4-04/A4 CurrentUser bearer-broker seam
 
-**Gate state:** `implementation_checks_passed`
+**Gate state:** `passed_merged`
 
 **Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
 CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
@@ -794,17 +804,18 @@ are excluded.
   includes the same `13` broker scenarios, coordinator and Codex security
   regressions, Bridge suites, release guards, and CI-safe engineering gates.
 
-**Protected implementation evidence:** final implementation head
-`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` passed
-[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1):
-[Engineering job 94701789935](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701789935)
-and [Gateway job 94701791035](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701791035)
-both passed. Separate
-[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1)
-([job 94701787582](https://github.com/BTankut/revAgent/actions/runs/31779441323/job/94701787582))
-passed. GitGuardian passed; no rerun was used. The PR remains draft, so Claude
-review is intentionally not yet triggered and this is not a merge or M4 gate
-closure.
+**Protected closure evidence:** final PR head
+`17e8375d5683cdccb2f3c21cd2ed0c6140a0a197` passed
+[CI 31781722442, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722442/attempts/1),
+[Gateway CI 31781722487, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722487/attempts/1), and
+[Claude review 31789332568, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789332568/attempts/1).
+`PR #378` squash-merged as
+`239de8d3826f25a12f858374f495d5ecfbd67e02`. Its merge-push
+[CI 31789828249, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789828249/attempts/1)
+passed Engineering and Gateway/RBP gates. Installer-path changes triggered
+[Signed Source-Free CD 31789828190, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789828190/attempts/1),
+whose build/validation passed and NAS publish job was skipped as expected. No
+rerun was used.
 
 **Red-attempt and review dispositions:**
 
@@ -869,6 +880,45 @@ closure.
   run's [Gateway job 94691012520](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012520)
   passed, as did
   [Gateway CI 31775848467, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848467/attempts/1).
+
+## M4-04/A5 protected enrollment-file consumer
+
+**Gate state:** `scope_recorded`
+
+**Planner decision:** `A5 bound` on 2026-08-14 as a hard prerequisite for the
+single bounded M4-04/B live session.
+
+**Scope of record:** protected source is
+`239de8d3826f25a12f858374f495d5ecfbd67e02` (`PR #378` squash merge). This
+repo-only slice owns one listenerless Bridge command that consumes the A2
+receiver's protected `enrollment.json`, validates it without placing the token
+in argv or environment, invokes the existing `BridgeEnrollmentCoordinator`
+re-enrollment behavior in memory, and positively removes the source file on
+every success or refusal path.
+
+Acceptance requires the exact `revagent.m4-enrollment-artifact/v1` contract;
+strict bounded UTF-8/JSON shape, token and expiry validation; a fully qualified
+canonical local path; no device namespace, UNC, mapped drive, alternate data
+stream, reparse component, or hard link; protected owner/DACL compatibility
+with the A2 Windows receiver; stable file identity across validation/read/
+cleanup; a single bounded attempt; and a fail-closed result when positive
+absence cannot be proved. Recognizable `SYNTHETIC-...` fixtures and distinct
+head/middle/tail fragments must be absent from argv, environment, stdout,
+stderr, exceptions, logs, and retained evidence on both success and every
+error path. The implementation must not redefine Bridge auth, retry,
+`RetryPaused/Auth`, observer, exchange, or credential-store semantics, and the
+root npm lockfile must remain byte-identical.
+
+**Explicitly out:** PETRUCCI or `revagent` access, Bridge stage/service/config
+mutation, real enrollment or credential use, Gateway/container/image build,
+DNS/TLS/ACL, Codex broker/client execution, Revit/model access, revoked-device
+exercise, reboot/persistence, write/confirm, production deploy/tunnel,
+workflow/runner/CD/signing/NAS changes, and the separately bound A7 audit
+export. Each remains behind its existing gate.
+
+**Forecast:** `2.00h` active effort, calibrated against the prior M2 `-72%`
+variance. Passive CI/review and operator waits are excluded. Actual and
+variance remain pending implementation closure.
 
 ## Closed credential gate and explicitly open gates
 
