@@ -28,9 +28,13 @@
 ([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
 
-**M4-04/A4 slice state:** `implementation_checks_passed`
-(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); Claude review
-and merge authorization pending)
+**M4-04/A4 slice state:** `passed_merged`
+([`PR #378`](https://github.com/BTankut/revAgent/pull/378) merged as
+[`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02))
+
+**M4-04/A5 slice state:** `implementation_checks_passed`
+([`PR #379`](https://github.com/BTankut/revAgent/pull/379) remains draft;
+Claude review and merge authorization pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -46,8 +50,11 @@ is the separately authorized repo-only value-free refusal observer; it exposes
 the existing Gateway refusal and Bridge retry-pause decisions without changing
 their semantics. `M4-04/A4` is the planner-bound repo-only CurrentUser-DPAPI
 numeric-loopback bearer-broker seam. It does not install or run the broker on
-PETRUCCI and does not open any M4-04/B execution gate. None of these bounded
-slices by itself satisfies or enlarges the M4 milestone gate.
+PETRUCCI and does not open any M4-04/B execution gate. `M4-04/A5` is the
+planner-bound repo-only listenerless protected enrollment-file consumer; it
+adapts the A2 handoff artifact to the existing Bridge enrollment coordinator
+without changing Bridge auth, retry, or observer semantics. None of these
+bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -66,6 +73,9 @@ slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-04/A4 exact slice base:**
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3)
+
+**M4-04/A5 exact slice base:**
+[`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02)
 
 ## Authorization ceiling
 
@@ -680,7 +690,7 @@ card.
 
 ## M4-04/A4 CurrentUser bearer-broker seam
 
-**Gate state:** `implementation_checks_passed`
+**Gate state:** `passed_merged`
 
 **Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
 CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
@@ -794,17 +804,18 @@ are excluded.
   includes the same `13` broker scenarios, coordinator and Codex security
   regressions, Bridge suites, release guards, and CI-safe engineering gates.
 
-**Protected implementation evidence:** final implementation head
-`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` passed
-[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1):
-[Engineering job 94701789935](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701789935)
-and [Gateway job 94701791035](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701791035)
-both passed. Separate
-[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1)
-([job 94701787582](https://github.com/BTankut/revAgent/actions/runs/31779441323/job/94701787582))
-passed. GitGuardian passed; no rerun was used. The PR remains draft, so Claude
-review is intentionally not yet triggered and this is not a merge or M4 gate
-closure.
+**Protected closure evidence:** final PR head
+`17e8375d5683cdccb2f3c21cd2ed0c6140a0a197` passed
+[CI 31781722442, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722442/attempts/1),
+[Gateway CI 31781722487, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722487/attempts/1), and
+[Claude review 31789332568, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789332568/attempts/1).
+`PR #378` squash-merged as
+`239de8d3826f25a12f858374f495d5ecfbd67e02`. Its merge-push
+[CI 31789828249, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789828249/attempts/1)
+passed Engineering and Gateway/RBP gates. Installer-path changes triggered
+[Signed Source-Free CD 31789828190, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789828190/attempts/1),
+whose build/validation passed and NAS publish job was skipped as expected. No
+rerun was used.
 
 **Red-attempt and review dispositions:**
 
@@ -869,6 +880,126 @@ closure.
   run's [Gateway job 94691012520](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012520)
   passed, as did
   [Gateway CI 31775848467, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848467/attempts/1).
+
+## M4-04/A5 protected enrollment-file consumer
+
+**Gate state:** `implementation_checks_passed`
+
+**Planner decision:** `A5 bound` on 2026-08-14 as a hard prerequisite for the
+single bounded M4-04/B live session.
+
+**Scope of record:** protected source is
+`239de8d3826f25a12f858374f495d5ecfbd67e02` (`PR #378` squash merge). This
+repo-only slice owns one listenerless Bridge command that consumes the A2
+receiver's protected `enrollment.json`, validates it without placing the token
+in argv or environment, invokes the existing `BridgeEnrollmentCoordinator`
+re-enrollment behavior in memory, and positively removes the source file on
+every owned terminal path: success, semantic refusal, invalid or expired
+artifact, coordinator or exchange failure, timeout, and cancellation. Cleanup
+must prove positive absence, and must never delete a foreign replacement whose
+identity and ownership were not proven.
+
+Acceptance requires the exact `revagent.m4-enrollment-artifact/v1` contract;
+strict bounded UTF-8/JSON shape, token and expiry validation; a fully qualified
+canonical local path; no device namespace, UNC, mapped drive, alternate data
+stream, reparse component, or hard link; protected owner/DACL compatibility
+with the A2 Windows receiver; stable file identity across validation/read/
+cleanup; a single bounded attempt; and a fail-closed result when positive
+absence cannot be proved. Recognizable `SYNTHETIC-...` fixtures and distinct
+head/middle/tail fragments must be absent from argv, environment, stdout,
+stderr, exceptions, logs, and retained evidence on both success and every
+error path. The implementation must not redefine Bridge auth, retry,
+`RetryPaused/Auth`, observer, exchange, or credential-store semantics, and the
+root npm lockfile must remain byte-identical.
+
+**Explicitly out:** PETRUCCI or `revagent` access, Bridge stage/service/config
+mutation, real enrollment or credential use, Gateway/container/image build,
+DNS/TLS/ACL, Codex broker/client execution, Revit/model access, revoked-device
+exercise, reboot/persistence, write/confirm, production deploy/tunnel,
+workflow/runner/CD/signing/NAS changes, and the separately bound A7 audit
+export. Each remains behind its existing gate.
+
+The path allowlist for this slice is `packages/bridge/**`, Bridge tests, and
+these M4 tracker/evidence records only. `packages/protocol/**`,
+`packages/gateway/**`, `src/revit-plugin/**`, and `installer/**` are explicitly
+outside the slice.
+
+**Forecast:** `2.00h` active effort, calibrated against the prior M2 `-72%`
+variance. **Actual:** `1.75h` active effort. **Variance:** `-0.25h` (`-13%`).
+Passive CI/review and operator waits are excluded.
+
+**Local implementation evidence:**
+
+- The exact internal `__re-enroll-file` command accepts only absolute
+  configuration and canonical `enrollment.json` paths. It starts no worker,
+  listener, host, or doctor flow. The whole command is bounded to `45s`, sends
+  cancellation with `5s` cleanup lead, and returns value-free closed JSON with
+  exit `79` when cleanup absence is uncertain.
+- The consumer accepts only the exact
+  `revagent.m4-enrollment-artifact/v1` three-field object, canonical positive
+  decimal expiry, visible-ASCII token bytes, and the bounded `32..4096` byte
+  token / `4096` byte file limits. Mutable file and token buffers are zeroed.
+  Expired, overlong, duplicate, unknown, escaped-name, BOM, trailing-data, and
+  non-canonical inputs are refused before enrollment.
+- The Windows source pins one no-follow handle through bounded read and
+  handle-bound deletion. It verifies canonical local path, exact leaf, current
+  user owner, protected current-user/SYSTEM/Administrators DACL, regular file,
+  stable identity, single hardlink, no reparse ancestor, and no alternate data
+  stream at open, read, and disposition. A foreign replacement is retained and
+  reported as `cleanup_uncertain`; owned paths require positive post-unlink
+  absence before exchange begins.
+- Re-enrollment requires the already-existing machine identity and fingerprint.
+  A missing identity, fingerprint, or protected store fails without creating a
+  credential directory, lock, identity, fingerprint, or exchange. Existing
+  enroll/re-enroll paths retain their prior create/recovery semantics, and A5
+  does not change Bridge auth, retry, `RetryPaused/Auth`, observer, or exchange
+  behavior.
+- Recognizable `SYNTHETIC-...` canaries and distinct fragments are absent from
+  argv, environment, result JSON, errors, exceptions, and exercised evidence.
+  Ambient legacy-token ambiguity is refused without reading the artifact, but
+  still performs the same positive source cleanup before returning.
+- The final focused A5 suite passed `57/57`; formatting verification passed.
+  The final common tree passed `scripts/test-all.ps1` with exit `0` in
+  `745.8s` (Contracts `308/308`, Bridge `850/850`) and
+  `scripts/test-ci.ps1` with exit `0` in `752.1s`, ending with `All CI-safe
+  revAgent engineering gates passed.`
+- Root `package-lock.json` remains byte-identical to protected source at blob
+  `b3d8df2755b2ead322f36100bc1c0fb177af082c`. The diff stays within
+  `packages/bridge/**`, Bridge tests, and these M4 records. No host, credential,
+  enrollment, image, DNS/TLS/ACL, broker/client, Revit, workflow/runner,
+  signing, CD, or NAS operation ran.
+
+**Protected implementation evidence:** the scope-record head
+`945e9093566c99b24754b2a068f3ef47e49d0c1d` passed
+[CI 31799865959, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31799865959/attempts/1)
+and
+[Gateway CI 31799865960, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31799865960/attempts/1).
+Implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8` passed
+[CI 31805770391, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770391/attempts/1),
+including both Engineering and Gateway gates, and
+[Gateway CI 31805770374, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770374/attempts/1).
+No rerun was used. `PR #379` remains draft; its Claude review is skipped until
+ready, and no merge authorization is claimed.
+
+**Red-attempt and review dispositions:**
+
+- The first full Bridge Debug run had `32` fixture-build failures because the
+  clean worktree did not yet contain the root Node development dependency used
+  by those fixtures. Canonical `npm ci --ignore-scripts` plus the locked .NET
+  restore supplied the declared dependencies without changing the lockfile;
+  the same sources then passed, and both final Release-based local gates above
+  are green.
+- Independent review identified three slice blockers: ambient-token refusal did
+  not initially clean the artifact, the command lacked a whole-operation hard
+  bound, and alternate streams were checked only at open. The final consumer
+  performs no-read cleanup on ambiguity, the executable enforces the `45s/5s`
+  bound, and ADS inventory is revalidated before/after read and immediately
+  before disposition. Dedicated regressions for all three pass.
+- One earlier local `test-ci` execution produced too much orchestrator output
+  for its terminal record to survive context compaction. It showed no test
+  failure signature and is not counted as evidence. After confirming no test
+  runner remained, the same unchanged source tree was run once more to the
+  recorded exit `0` terminal above. No GitHub rerun was used.
 
 ## Closed credential gate and explicitly open gates
 

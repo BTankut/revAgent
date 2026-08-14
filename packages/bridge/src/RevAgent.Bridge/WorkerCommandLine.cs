@@ -5,6 +5,7 @@ internal enum WorkerCommandKind
     Version,
     Run,
     Doctor,
+    ReEnrollFile,
 }
 
 internal sealed record WorkerCommand(
@@ -13,6 +14,7 @@ internal sealed record WorkerCommand(
     int? ExpectedHostProcessId = null,
     Guid? InstanceId = null,
     string? ConfigurationPath = null,
+    string? EnrollmentArtifactPath = null,
     bool ReEnroll = false);
 
 internal sealed class WorkerCommandLineException : Exception
@@ -47,6 +49,7 @@ internal static class WorkerCommandLine
         {
             "__worker" => ParseRun(args),
             "__doctor" => ParseDoctor(args),
+            "__re-enroll-file" => ParseReEnrollFile(args),
             _ => throw new WorkerCommandLineException(
                 $"Unknown worker command '{args[0]}'."),
         };
@@ -123,6 +126,21 @@ internal static class WorkerCommandLine
                 options["--config"],
                 "--config"),
             ReEnroll: reEnroll);
+    }
+
+    private static WorkerCommand ParseReEnrollFile(
+        IReadOnlyList<string> args)
+    {
+        var options = ParseOptions(args, 1);
+        RequireExactOptions(options, "--config", "--artifact");
+        return new WorkerCommand(
+            WorkerCommandKind.ReEnrollFile,
+            ConfigurationPath: NormalizeAbsolutePath(
+                options["--config"],
+                "--config"),
+            EnrollmentArtifactPath: NormalizeCanonicalAbsolutePath(
+                options["--artifact"],
+                "--artifact"));
     }
 
     private static Dictionary<string, string> ParseOptions(
@@ -204,5 +222,19 @@ internal static class WorkerCommandLine
             throw new WorkerCommandLineException(
                 $"{optionName} is not a valid absolute path.");
         }
+    }
+
+    private static string NormalizeCanonicalAbsolutePath(
+        string value,
+        string optionName)
+    {
+        string fullPath = NormalizeAbsolutePath(value, optionName);
+        if (!string.Equals(value, fullPath, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new WorkerCommandLineException(
+                $"{optionName} must already be a canonical absolute path.");
+        }
+
+        return fullPath;
     }
 }

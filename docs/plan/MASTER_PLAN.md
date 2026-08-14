@@ -7,7 +7,7 @@
 its evidence remains `not_submitted`, and no milestone acceptance is recorded.
 The exact M2 code/evidence anchor remains
 `011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `50e6cd9d0028bd480a378fd1201859fbdcbc13f3` on `main`.
+anchor is `239de8d3826f25a12f858374f495d5ecfbd67e02` on `main`.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
@@ -183,7 +183,7 @@ missing WP9 bearer sink: a CurrentUser-DPAPI numeric-loopback broker on
 PETRUCCI. The repo-only A4 slice may add the protected store, exact caller
 attestation, bounded local Streamable HTTP proxy, explicit A2 north-destination
 disposition, and a Codex registration containing only the numeric-loopback URL.
-The repo-only implementation is complete locally in draft `PR #378`: focused
+The repo-only implementation closed in `PR #378`: focused
 broker, coordinator, and Codex registration/security suites are green; both
 canonical local gates passed on the final common tree (`test-all` exit `0`,
 `777.50s`; `test-ci` exit `0`, `780.97s`); and the root lockfile remains byte-
@@ -192,13 +192,13 @@ identical. Forecast was `5.50h`; actual active effort was `1.75h`, variance
 failed deterministically on its in-diff PowerShell 7 fixture compiler and
 exposed a missing destination abort-grace wiring; both defects are corrected
 locally without a same-head rerun. Its Gateway and separate Gateway CI jobs
-passed. Final implementation head
-`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` then passed
-[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1)
-for Engineering and Gateway/RBP plus
-[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1),
-without rerun. A4 remains draft; Claude review and planner merge authorization
-are pending, so the slice is not yet `passed` or merge-authorized.
+passed. Final PR head `17e8375d5683cdccb2f3c21cd2ed0c6140a0a197` passed
+[CI 31781722442, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722442/attempts/1),
+[Gateway CI 31781722487, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31781722487/attempts/1), and
+[Claude review 31789332568, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31789332568/attempts/1),
+without rerun. It squash-merged as the current protected source above;
+merge-push CI and the expected installer-triggered Signed Source-Free CD both
+passed, with NAS publish skipped.
 
 The authorization ceiling is unchanged. A4 may not access or mutate PETRUCCI,
 stage or run a broker, configure a real client, use a credential, or exercise
@@ -210,6 +210,34 @@ Route 1 stops without widening its allowlist. The E4 listenerless stdio route
 then requires a separate planner-bound fallback slice. A4 does not claim
 isolation from a process that has already compromised the same Windows user,
 administrator, or SYSTEM authority.
+
+## 2026-08-14 M4-04 protected enrollment-file binding (M4-04/A5)
+
+The post-A4 gate audit proved that A2 can transfer the Gateway's protected
+`revagent.m4-enrollment-artifact/v1` file to PETRUCCI, but the current Bridge
+can re-enroll only from `REVAGENT_BRIDGE_ENROLLMENT_TOKEN`. Moving that value
+through environment would violate A2's accepted no-argv/no-env/no-log custody
+contract. The planner therefore bound A5 as a `2.00h` repo-only hard blocker:
+one listenerless protected-file consumer validates path, owner/DACL, link,
+bounded schema, and expiry; calls the existing enrollment coordinator in
+memory; emits only value-free results; and positively unlinks the artifact on
+every owned terminal path. The repo implementation is now
+`implementation_checks_passed` in draft `PR #379`: the focused A5 suite passed
+`57/57`, formatting verification passed, and the final common tree passed
+`test-all` (exit `0`, `745.8s`; Contracts `308/308`, Bridge `850/850`) and
+`test-ci` (exit `0`, `752.1s`). Root `package-lock.json` remains byte-identical.
+Forecast was `2.00h`; actual active effort was `1.75h`, variance `-0.25h`
+(`-13%`). Scope-record and implementation heads passed CI and Gateway CI at
+attempt `1`; implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8`
+passed both CI jobs and the separate Gateway CI without rerun. Claude review
+and merge authorization remain pending while `PR #379` stays draft.
+
+A5 may not alter Bridge auth/retry/observer behavior and opens no host or live
+gate. PETRUCCI stage/service/config mutation, real enrollment, Gateway image
+rebuild, DNS/TLS/ACL, broker/client/Revit execution, revoke evidence, reboot,
+write/confirm, production deploy, and the separately bound A7 audit export
+remain outside this slice. M4 remains `in_progress` / `not_submitted`; RES-30
+and the one-item npm-audit Park List remain open.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 

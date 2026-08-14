@@ -14,6 +14,8 @@ internal interface IBridgeCredentialMutator
 {
     BridgeMachineIdentity GetOrCreateMachineIdentity();
 
+    BridgeMachineIdentity GetRequiredMachineIdentity();
+
     BridgeAtomicWriteResult SaveDeviceCredential(
         string expectedMachineFingerprint,
         BridgeDeviceCredential deviceCredential);
@@ -156,6 +158,55 @@ internal sealed class BridgeCredentialMutator : IBridgeCredentialMutator
             }
 
             return CreateAndPersistIdentity();
+        }
+    }
+
+    public BridgeMachineIdentity GetRequiredMachineIdentity()
+    {
+        lock (_gate)
+        {
+            BridgeCredentialEntryState initialEntries =
+                _persistence.ClassifyCredentialEntries();
+            if (!initialEntries.IdentityExists)
+            {
+                throw new BridgeCredentialStoreException(
+                    BridgeCredentialStoreErrorCode.IdentityMissing,
+                    "A durable bridge machine identity must already exist " +
+                    "before protected-file re-enrollment.");
+            }
+
+            if (!initialEntries.FingerprintExists)
+            {
+                throw new BridgeCredentialStoreException(
+                    BridgeCredentialStoreErrorCode.InvalidState,
+                    "Protected-file re-enrollment requires the existing " +
+                    "machine-fingerprint metadata.");
+            }
+
+            using IDisposable lease = _enrollmentLock.AcquireForMutation();
+            _persistence.EnsureNoAtomicResidue();
+            BridgeCredentialEntryState entries =
+                _persistence.ClassifyCredentialEntries();
+            if (!entries.IdentityExists || !entries.FingerprintExists)
+            {
+                throw new BridgeCredentialStoreException(
+                    BridgeCredentialStoreErrorCode.InvalidState,
+                    "The required Bridge identity changed before " +
+                    "protected-file re-enrollment.");
+            }
+
+            BridgeMachineIdentity identity =
+                _persistence.ReadMachineIdentity();
+            try
+            {
+                _persistence.VerifyRequiredMachineFingerprint(identity);
+                return identity;
+            }
+            catch
+            {
+                identity.Dispose();
+                throw;
+            }
         }
     }
 
@@ -915,6 +966,31 @@ internal sealed class BridgeCredentialPersistence
             throw InvalidState(
                 "The bridge machine fingerprint metadata path is not a " +
                 "regular file.");
+        }
+
+        RuntimeMachineIdentityRead metadata =
+            ReadRuntimeMachineFingerprint();
+        if (!string.Equals(
+                metadata.MachineFingerprint,
+                identity.MachineFingerprint,
+                StringComparison.Ordinal))
+        {
+            throw InvalidState(
+                "The bridge machine fingerprint metadata does not match " +
+                "the durable identity seed.");
+        }
+    }
+
+    internal void VerifyRequiredMachineFingerprint(
+        BridgeMachineIdentity identity)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        if (_accessControl.ClassifyPath(_layout.MachineFingerprintPath) !=
+            BridgePathEntryKind.File)
+        {
+            throw InvalidState(
+                "The required bridge machine fingerprint metadata is " +
+                "missing or not a regular file.");
         }
 
         RuntimeMachineIdentityRead metadata =

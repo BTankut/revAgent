@@ -28,6 +28,10 @@ internal static class Program
     /// </summary>
     private static readonly TimeSpan WorkerShutdownTimeout =
         TimeSpan.FromSeconds(7);
+    private static readonly TimeSpan EnrollmentArtifactCommandTimeout =
+        TimeSpan.FromSeconds(45);
+    private static readonly TimeSpan EnrollmentArtifactCancellationLead =
+        TimeSpan.FromSeconds(5);
 
     public static async Task<int> Main(string[] args)
     {
@@ -56,6 +60,9 @@ internal static class Program
                 WorkerCommandKind.Version => WriteVersion(),
                 WorkerCommandKind.Doctor => await RunDoctorAsync(command)
                     .ConfigureAwait(false),
+                WorkerCommandKind.ReEnrollFile =>
+                    await RunEnrollmentArtifactAsync(command)
+                        .ConfigureAwait(false),
                 WorkerCommandKind.Run => await RunWorkerAsync(command)
                     .ConfigureAwait(false),
                 _ => throw new InvalidOperationException(
@@ -118,6 +125,126 @@ internal static class Program
                     WriteIndented = false,
                 }));
         return 0;
+    }
+
+    private static async Task<int> RunEnrollmentArtifactAsync(
+        WorkerCommand command)
+    {
+        string? ambientToken = Environment.GetEnvironmentVariable(
+            BridgeEnrollmentDoctor.EnrollmentTokenEnvironmentVariable);
+        string configurationPath = RequireConfigurationPath(command);
+        string artifactPath = command.EnrollmentArtifactPath ??
+            throw new InvalidOperationException(
+                "The enrollment artifact path is missing.");
+        BridgeInstallLayout layout = BridgeInstallLayout.Canonical;
+        var consumer = new BridgeEnrollmentArtifactConsumer(
+            new WindowsBridgeEnrollmentArtifactSource(),
+            async (token, cancellationToken) =>
+            {
+                ResolvedBridgeConfiguration configuration =
+                    BridgeConfigurationLoader.LoadFromCurrentEnvironment(
+                        configurationPath);
+                var coordinator = new BridgeEnrollmentCoordinator(
+                    BridgeCredentialMutator.CreateProduction(layout),
+                    new BridgeEnrollmentExchangeClient(
+                        BridgeEnrollmentExchangeClient
+                            .CreateEnrollmentEndpoint(
+                                configuration.GatewayUri)));
+                _ = await coordinator
+                    .ReEnrollExistingIdentityAsync(
+                        token,
+                        cancellationToken)
+                    .ConfigureAwait(false);
+            });
+        Func<CancellationToken, Task<BridgeEnrollmentArtifactConsumerResult>>
+            operation = !string.IsNullOrEmpty(ambientToken)
+                ? cancellationToken =>
+                    consumer.RefuseAmbiguousSecretSourceAsync(
+                        artifactPath,
+                        cancellationToken)
+                : cancellationToken =>
+                    consumer.ConsumeAsync(artifactPath, cancellationToken);
+        BridgeEnrollmentArtifactConsumerResult result =
+            await RunBoundedEnrollmentArtifactCommandAsync(
+                    operation,
+                    EnrollmentArtifactCommandTimeout,
+                    EnrollmentArtifactCancellationLead)
+                .ConfigureAwait(false);
+        return WriteEnrollmentArtifactResult(result);
+    }
+
+    internal static async Task<BridgeEnrollmentArtifactConsumerResult>
+        RunBoundedEnrollmentArtifactCommandAsync(
+            Func<
+                CancellationToken,
+                Task<BridgeEnrollmentArtifactConsumerResult>> operation,
+            TimeSpan commandTimeout,
+            TimeSpan cancellationLead)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        if (commandTimeout <= TimeSpan.Zero ||
+            cancellationLead <= TimeSpan.Zero ||
+            cancellationLead >= commandTimeout)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(commandTimeout),
+                "The bounded command timeout and cancellation lead are " +
+                "invalid.");
+        }
+
+        using var cancellation = new CancellationTokenSource();
+        cancellation.CancelAfter(commandTimeout - cancellationLead);
+        Task<BridgeEnrollmentArtifactConsumerResult> attempt = Task.Run(
+            () => operation(cancellation.Token),
+            CancellationToken.None);
+        try
+        {
+            return await attempt.WaitAsync(commandTimeout)
+                .ConfigureAwait(false);
+        }
+        catch (TimeoutException)
+        {
+            cancellation.Cancel();
+            _ = attempt.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+            return CreateEnrollmentArtifactRefusal("cleanup_uncertain");
+        }
+        catch (OperationCanceledException)
+        {
+            return CreateEnrollmentArtifactRefusal("operation_cancelled");
+        }
+        catch
+        {
+            return CreateEnrollmentArtifactRefusal("operation_failed");
+        }
+    }
+
+    private static BridgeEnrollmentArtifactConsumerResult
+        CreateEnrollmentArtifactRefusal(string error) =>
+            new(
+                Ok: false,
+                Action: BridgeEnrollmentArtifactConsumer.Action,
+                ContractVersion:
+                    BridgeEnrollmentArtifactConsumer.ContractVersion,
+                ArtifactContractVersion:
+                    BridgeEnrollmentArtifactConsumer.ArtifactContractVersion,
+                ReEnrollAttempted: false,
+                ReEnrollSucceeded: false,
+                SourceAbsent: false,
+                Error: error);
+
+    private static int WriteEnrollmentArtifactResult(
+        BridgeEnrollmentArtifactConsumerResult result)
+    {
+        Console.Out.WriteLine(
+            JsonSerializer.Serialize(
+                result,
+                new JsonSerializerOptions { WriteIndented = false }));
+        return result.ExitCode;
     }
 
     private static async Task<int> RunWorkerAsync(WorkerCommand command)

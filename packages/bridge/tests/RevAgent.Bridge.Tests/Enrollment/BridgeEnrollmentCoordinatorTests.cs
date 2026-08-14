@@ -108,6 +108,91 @@ public sealed class BridgeEnrollmentCoordinatorTests
                 "device-credential.dpapi.quarantine-*"));
     }
 
+    [Fact]
+    public async Task ReEnrollExistingIdentityAsync_MissingIdentityDoesNotMutateOrExchange()
+    {
+        using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();
+        var exchange = new FakeExchangeClient("device-51", RotatedIssuedToken);
+        var coordinator = new BridgeEnrollmentCoordinator(
+            fixture.Mutator,
+            exchange);
+        using BridgeEnrollmentToken token =
+            BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+
+        BridgeCredentialStoreException exception =
+            await Assert.ThrowsAsync<BridgeCredentialStoreException>(
+                () => coordinator.ReEnrollExistingIdentityAsync(token));
+
+        Assert.Equal(
+            BridgeCredentialStoreErrorCode.IdentityMissing,
+            exception.ErrorCode);
+        Assert.Equal(0, exchange.CallCount);
+        Assert.False(File.Exists(fixture.Layout.MachineIdentityPath));
+        Assert.False(File.Exists(fixture.Layout.MachineFingerprintPath));
+        Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
+        Assert.False(File.Exists(fixture.Layout.EnrollmentLockPath));
+        Assert.False(Directory.Exists(fixture.Layout.CredentialDirectory));
+        Assert.False(token.IsConsumed);
+    }
+
+    [Fact]
+    public async Task ReEnrollExistingIdentityAsync_PreservesExistingFingerprint()
+    {
+        using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();
+        string fingerprint;
+        using (BridgeMachineIdentity identity =
+               fixture.Mutator.GetOrCreateMachineIdentity())
+        {
+            fingerprint = identity.MachineFingerprint;
+        }
+
+        var exchange = new FakeExchangeClient("device-51", RotatedIssuedToken);
+        var coordinator = new BridgeEnrollmentCoordinator(
+            fixture.Mutator,
+            exchange);
+        using BridgeEnrollmentToken token =
+            BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+
+        BridgeEnrollmentOutcome outcome =
+            await coordinator.ReEnrollExistingIdentityAsync(token);
+
+        Assert.Equal(1, exchange.CallCount);
+        Assert.Equal(fingerprint, exchange.LastMachineFingerprint);
+        Assert.Equal(fingerprint, outcome.MachineFingerprint);
+        using BridgeRuntimeCredentialState state = fixture.Reader.Load()!;
+        Assert.Equal(fingerprint, state.MachineFingerprint);
+        Assert.True(state.IsEnrolled);
+    }
+
+    [Fact]
+    public async Task ReEnrollExistingIdentityAsync_MissingFingerprintIsNotRepaired()
+    {
+        using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();
+        using (BridgeMachineIdentity identity =
+               fixture.Mutator.GetOrCreateMachineIdentity())
+        {
+        }
+        File.Delete(fixture.Layout.MachineFingerprintPath);
+        var exchange = new FakeExchangeClient("device-51", RotatedIssuedToken);
+        var coordinator = new BridgeEnrollmentCoordinator(
+            fixture.Mutator,
+            exchange);
+        using BridgeEnrollmentToken token =
+            BridgeEnrollmentToken.Parse(EnrollmentTokenValue);
+
+        BridgeCredentialStoreException exception =
+            await Assert.ThrowsAsync<BridgeCredentialStoreException>(
+                () => coordinator.ReEnrollExistingIdentityAsync(token));
+
+        Assert.Equal(
+            BridgeCredentialStoreErrorCode.InvalidState,
+            exception.ErrorCode);
+        Assert.Equal(0, exchange.CallCount);
+        Assert.False(File.Exists(fixture.Layout.MachineFingerprintPath));
+        Assert.False(File.Exists(fixture.Layout.DeviceCredentialPath));
+        Assert.False(token.IsConsumed);
+    }
+
     private sealed class FakeExchangeClient :
         IBridgeEnrollmentExchangeClient
     {
@@ -129,11 +214,14 @@ public sealed class BridgeEnrollmentCoordinatorTests
 
         internal string? LastMachineFingerprint { get; private set; }
 
+        internal int CallCount { get; private set; }
+
         public Task<BridgeIssuedDeviceCredential> ExchangeAsync(
             BridgeEnrollmentToken enrollmentToken,
             string machineFingerprint,
             CancellationToken cancellationToken = default)
         {
+            CallCount++;
             _ = enrollmentToken.ConsumeForExchange();
             LastMachineFingerprint = machineFingerprint;
             if (_exception is not null)

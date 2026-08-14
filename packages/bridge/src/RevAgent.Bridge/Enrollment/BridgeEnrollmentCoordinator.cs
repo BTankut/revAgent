@@ -44,6 +44,7 @@ internal sealed class BridgeEnrollmentCoordinator
         CancellationToken cancellationToken = default) =>
         RunAsync(
             enrollmentToken,
+            static mutator => mutator.GetOrCreateMachineIdentity(),
             static (mutator, fingerprint, credential) =>
                 mutator.SaveDeviceCredential(fingerprint, credential),
             cancellationToken);
@@ -53,6 +54,24 @@ internal sealed class BridgeEnrollmentCoordinator
         CancellationToken cancellationToken = default) =>
         RunAsync(
             enrollmentToken,
+            static mutator => mutator.GetOrCreateMachineIdentity(),
+            static (mutator, fingerprint, credential) =>
+                mutator.RepairDeviceCredentialForReenrollment(
+                    fingerprint,
+                    credential),
+            cancellationToken);
+
+    /// <summary>
+    /// Re-enrolls only when the durable Bridge identity already exists.
+    /// Protected-file consumption uses this path so a missing or displaced
+    /// live identity cannot be silently replaced before the Gateway exchange.
+    /// </summary>
+    internal Task<BridgeEnrollmentOutcome> ReEnrollExistingIdentityAsync(
+        BridgeEnrollmentToken enrollmentToken,
+        CancellationToken cancellationToken = default) =>
+        RunAsync(
+            enrollmentToken,
+            static mutator => mutator.GetRequiredMachineIdentity(),
             static (mutator, fingerprint, credential) =>
                 mutator.RepairDeviceCredentialForReenrollment(
                     fingerprint,
@@ -61,6 +80,7 @@ internal sealed class BridgeEnrollmentCoordinator
 
     private async Task<BridgeEnrollmentOutcome> RunAsync(
         BridgeEnrollmentToken enrollmentToken,
+        Func<IBridgeCredentialMutator, BridgeMachineIdentity> getIdentity,
         Action<IBridgeCredentialMutator, string, BridgeDeviceCredential>
             persist,
         CancellationToken cancellationToken)
@@ -68,7 +88,7 @@ internal sealed class BridgeEnrollmentCoordinator
         ArgumentNullException.ThrowIfNull(enrollmentToken);
         string machineFingerprint;
         using (BridgeMachineIdentity identity =
-               _mutator.GetOrCreateMachineIdentity())
+               getIdentity(_mutator))
         {
             machineFingerprint = identity.MachineFingerprint;
         }
