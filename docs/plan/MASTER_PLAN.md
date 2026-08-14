@@ -123,10 +123,12 @@ non-secret evidence and the no-mutation ceiling are recorded in
 `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`.
 
 M4-04 fixes two endpoints: `revagent` Gateway (`192.168.90.154`) and
-`PETRUCCI` Bridge/add-in/live Revit (`192.168.90.122`). WP9 client placement
-remains operator-gated: PETRUCCI has Codex Desktop installed without a proven
-active client session, while DESKTOP-OKNV128 is the evidence coordinator but
-is not selected as the M4-04 client by this record. DOCS-01 opens no live gate.
+`PETRUCCI` Bridge/add-in/live Revit (`192.168.90.122`). At DOCS-01 closure the
+WP9 client placement still remained operator-gated: PETRUCCI had Codex Desktop
+installed without a proven active client session, while DESKTOP-OKNV128 was the
+evidence coordinator but was not selected as the M4-04 client by that record.
+The later PETRUCCI placement binding is recorded below. DOCS-01 opens no live
+gate.
 `NETWORK/ACL`, `DNS/TLS-TRUST`, `BRIDGE-STAGE`, `CREDENTIAL/ENROLL`, and
 `CLIENT/LIVE` remain separate operator decisions. NET01's 2026-07-22
 readiness snapshot is retained only as superseded history. The code-pinned
@@ -148,16 +150,16 @@ its stopped-state evidence remains recorded in
 [`DP-03/DP-04`](../decisions/DP-03-04-cloudflare-staging.md). M4 does not use the
 production name and does not start that connector.
 
-The bound M4 approach is a separate same-zone test FQDN, with a DNS-only private
-`A` record to `192.168.90.154` and a publicly trusted certificate to be
-obtained by DNS-01. The name may resolve publicly, but its private target is not
-publicly routable. The exact test label remains a candidate until its own
-`DNS/TLS-TRUST` operator card binds it. The Cloudflare token is also separately
-gated: it must be supplied out of band, limited to DNS edit for the relevant
-zone, absent from git, PRs, CI, logs, and evidence, and given an explicit
-post-use disposition. Failure under that narrow authority stops the operation
-for operator/planner disposition; it does not authorize broader credentials or
-an implicit local-trust fallback.
+The bound M4 approach is the separate same-zone test FQDN
+`m4-gateway.revagent.app`. In G2 the operator will create
+`m4-gateway.revagent.app -> 192.168.90.154` as DNS-only (grey cloud), then
+create the `_acme-challenge` TXT record with the exact value generated and
+shown by the certificate order. DNS-01 supplies the publicly trusted
+certificate; the publicly resolvable private target remains non-routable from
+the public Internet. A6 is permanently canceled: no Cloudflare API token will
+be generated or requested. G7 must delete both A and TXT records and retain the
+operator's positive confirmation. No DNS record or certificate exists merely
+by virtue of the repo seam.
 
 Pre-production's in-image listener bind and the later host publish are kept
 separate: the process requires explicit `GATEWAY_BIND_HOST=0.0.0.0` because the
@@ -255,19 +257,32 @@ listenerless, single-attempt downstream projector for a closed
 `revagent.m4-value-free-audit-export/v1` bundle. It selects the exact configured
 live principal/session internally, emits only validated correlation/digest,
 registry-bound metadata, closed enum/timing, and boolean binding fields, and
-fails without partial output on selector, schema, duplicate, count, byte,
-deadline, or writer failure. It must not alter Gateway authorization, dispatch,
-Bridge auth/retry/A3 observer behavior, or add an HTTP/MCP/RBP/admin listener.
+publishes the completed bytes only as the atomically protected sibling
+`<enrollment-output-stem>.audit.jsonl`. Success writes no stdout; a failure
+before publish leaves neither a final artifact nor owned temporary residue. It
+must not alter Gateway authorization, dispatch, Bridge auth/retry/A3 observer
+behavior, or add an HTTP/MCP/RBP/admin listener.
 
-A7's implementation allowlist is the minimum
-`packages/gateway/src/preProductionAuditExport*` and `preProductionServing*`
-surfaces plus their
-tests and these tracker records. Root manifests/lockfiles, protocol, Bridge,
-installer, workflows, runners, CD/signing, NAS, host, image, credential,
-DNS/TLS/ACL, broker/client, Revit, enrollment/revoke execution, reboot,
-write/confirm, and production deploy/tunnel surfaces are outside the slice.
+A7's implementation allowlist is
+`packages/gateway/src/preProductionAuditExport*`,
+`packages/gateway/src/preProductionAuditWriter*`,
+`packages/gateway/src/preProductionAuditFile*`, and the minimum existing
+`packages/gateway/src/preProductionServing*` integration/tests plus these
+tracker records. Root manifests/lockfiles, protocol, Bridge, installer,
+workflows, runners, CD/signing, NAS, host, image, credential, DNS/TLS/ACL,
+broker/client, Revit, enrollment/revoke execution, reboot, write/confirm, and
+production deploy/tunnel surfaces are outside the slice.
 Protected source is `8dcb664ee721d706e69ed70a17620ded73bec292`;
-state is `scope_recorded`, with actual/variance open.
+state is `implementation_checks_passed` in draft `PR #380`. The final focused
+five-file A7/serving suite passes `91` with one POSIX permission test skipped
+on Windows; Gateway lint, type-check, and build pass; `test-all` exits `0` in
+`720.8s`; and `test-ci` exits `0` in `727.0s`. The writer accepts only runtime-
+proven projector output, so forged extra-field or `toJSON` bundles cannot
+bypass the closed value-free contract. Root `package-lock.json` remains byte-
+identical. Forecast was `2.00h`; actual active effort is `2.50h`, variance
+`+0.50h` (`+25%`). The scope checkpoint passed CI and Gateway CI at attempt `1`
+without rerun; implementation-head protected evidence, Claude review, and
+planner merge authorization remain open.
 
 The manual DNS route is also final: A6 is permanently canceled and no
 Cloudflare API token will be generated or requested. G2 will show the operator

@@ -36,7 +36,7 @@
 ([`PR #379`](https://github.com/BTankut/revAgent/pull/379) merged as
 [`8dcb664ee721d706e69ed70a17620ded73bec292`](https://github.com/BTankut/revAgent/commit/8dcb664ee721d706e69ed70a17620ded73bec292))
 
-**M4-04/A7 slice state:** `scope_recorded`
+**M4-04/A7 slice state:** `implementation_checks_passed`
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -56,9 +56,10 @@ PETRUCCI and does not open any M4-04/B execution gate. `M4-04/A5` is the
 planner-bound repo-only listenerless protected enrollment-file consumer; it
 adapts the A2 handoff artifact to the existing Bridge enrollment coordinator
 without changing Bridge auth, retry, or observer semantics. `M4-04/A7` is the
-planner-bound repo-only bounded, value-free projection of the pre-production
-Gateway's process-lifetime invocation/confirmation audit. It opens no route or
-listener and does not export the raw event envelope. None of these
+planner-bound repo-only bounded, value-free projection and atomic protected
+retained-artifact export of the pre-production Gateway's process-lifetime
+invocation/confirmation audit. Success writes no stdout; it opens no route or
+listener and never exports the raw event envelope. None of these
 bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
@@ -371,18 +372,16 @@ M4 discovery item:
   `gateway.revagent.app -> http://127.0.0.1:8081` ingress. The connector remains
   deliberately stopped and is not started by M4.
 
-The M4 test approach is a separate same-zone test FQDN with a DNS-only private
-`A` record to `192.168.90.154` and a publicly trusted certificate to be
-obtained by DNS-01. The name may resolve publicly, but its private target is not
-publicly routable. The test label is only a candidate until the separate
-`DNS/TLS-TRUST` card binds its exact FQDN and certificate details; no DNS record
-or certificate exists by virtue of this repo seam. The Cloudflare token also
-requires its own operator gate. It must be supplied out of band, limited to DNS
-edit for the relevant zone, excluded from git, PRs, CI, logs, and evidence, and
-given an explicit post-use revoke, rotate, or retained-custody disposition in
-that card. If the approved narrow scope cannot support the DNS-01 client, work
-stops for operator/planner disposition rather than silently broadening access
-or installing local trust.
+The M4 test approach is the separate same-zone test FQDN
+`m4-gateway.revagent.app`. In G2 the operator will create
+`m4-gateway.revagent.app -> 192.168.90.154` as DNS-only (grey cloud), then
+create the `_acme-challenge` TXT record with the exact value generated and
+shown by the certificate order. DNS-01 supplies the publicly trusted
+certificate; the publicly resolvable private target remains non-routable from
+the public Internet. A6 is permanently canceled: no Cloudflare API token will
+be generated or requested. G7 must delete both A and TXT records and retain the
+operator's positive confirmation. No DNS record or certificate exists merely
+by virtue of the repo seam.
 
 The serving process and the later Docker publish are two different bind
 surfaces. Inside the image, pre-production requires an explicit
@@ -1016,7 +1015,7 @@ passed both Engineering and Gateway/RBP jobs. No rerun was used. No
 
 ## M4-04/A7 bounded value-free audit export
 
-**Gate state:** `scope_recorded`
+**Gate state:** `implementation_checks_passed`
 
 **Planner decision:** `A7 bound` on 2026-08-14 as a `2.00h` hard prerequisite
 for the single bounded M4-04/B live session.
@@ -1027,7 +1026,10 @@ repo-only slice owns one listenerless, single-attempt export of the existing
 pre-production event sink's process-lifetime `tool.invocation` and
 `tool.confirmation` records. The exporter must project a new closed
 `revagent.m4-value-free-audit-export/v1` contract; it must never serialize or
-spread the raw `revagent.event.v2` envelope.
+spread the raw `revagent.event.v2` envelope. The completed bundle is retained
+only as the deterministic sibling `<enrollment-output-stem>.audit.jsonl`,
+derived from the already-bound absolute `enrollmentOutputPath`; A7 adds no CLI
+path or flag.
 
 The configured live principal and Gateway session are selectors used only for
 exact in-process comparison. The export represents successful selector matches
@@ -1044,12 +1046,18 @@ code-derived `approvedLiveSelector=true`; at least one selected record; no more
 than `128` input events and `64` selected records; no more than `4096` serialized
 bytes per record or `131072` bytes total; deterministic `seq`, then `eventId`
 ordering; duplicate sequence/identifier refusal; a `5s` whole-export deadline;
-and no partial/truncated output on any schema, selector, limit, deadline, or
-writer failure. The live serving process may expose only a one-shot signal/
-writer seam over its existing process; A7 must not add an HTTP, MCP, RBP, admin,
-or other listener. Recognizable `SYNTHETIC-...` secret and personal-data
-canaries plus distinguishing head/middle/tail fragments must be absent from
-success, refusal, stdout, stderr, exception, and retained-evidence surfaces.
+and no partial or truncated retained artifact on any schema, selector, limit,
+deadline, staging, verification, or publish failure. Success stdout must remain
+empty; only fixed value-free refusals may reach stderr. An ordinary refusal
+before atomic publish is complete only after both the final path and owned
+temporary residue are positively absent; inability to prove cleanup is a
+distinct fatal `artifact_cleanup_failed` stop and never a clean-refusal claim.
+The live serving process may expose only a one-shot shutdown/writer seam on its
+existing `SIGINT`/`SIGTERM` path; A7 must not add an HTTP, MCP, RBP, admin,
+signal-specific, or other listener. Recognizable `SYNTHETIC-...` secret and
+personal-data canaries plus distinguishing head/middle/tail fragments must be
+absent from success, refusal, stdout, stderr, exception, and retained-evidence
+surfaces.
 
 **Explicitly out:** host, image build, container, Bridge/add-in stage or
 behavior, credential/enrollment/revoke execution, DNS/TLS/ACL, broker/client,
@@ -1058,24 +1066,91 @@ tunnel/deploy, workflow/runner/CD/signing/NAS changes, and any change to A3
 observer, Bridge auth/retry, or Gateway authorization semantics. Each remains
 behind its existing separate gate.
 
-The path allowlist is `packages/gateway/src/preProductionAuditExport*`, the
-minimum existing `preProductionServing*` integration and tests, Gateway package
+The path allowlist is `packages/gateway/src/preProductionAuditExport*`,
+`packages/gateway/src/preProductionAuditWriter*`,
+`packages/gateway/src/preProductionAuditFile*`, and the minimum existing
+`packages/gateway/src/preProductionServing*` integration/tests, Gateway package
 documentation if required, and these M4 tracker/evidence records only.
 `packages/protocol/**`, `packages/bridge/**`, `src/revit-plugin/**`,
 `installer/**`, root manifests/lockfiles, workflows, runner, CD/signing, and NAS
 surfaces are outside this slice. Root `package-lock.json` must remain blob-
 identical.
 
-**Forecast:** `2.00h` active effort, calibrated against the prior M2 `-72%`
-variance. Actual and variance remain open until the implementation evidence is
-complete. Passive CI/review and operator waits are excluded.
+**Implementation:** the projector validates the exact pre-production event
+source, live principal/session selector, registry tool binding, closed
+policy/executor/outcome vocabulary, UUID/digest/timestamp fields, deterministic
+order, duplicate refusal, and every count/byte bound before returning a frozen
+bundle. A non-forgeable in-process provenance guard prevents a cast, extra-field
+object, or `toJSON` hook from bypassing that projection at the writer.
+
+The writer owns one attempt and derives `<enrollment-output-stem>.audit.jsonl`
+beside the existing `enrollmentOutputPath`. It stages bytes in an
+`O_EXCL`/`O_NOFOLLOW` temporary file at mode `0400`, writes and fsyncs them,
+verifies owner/mode/size, rechecks abort state, and performs a synchronous
+same-filesystem hard-link/no-clobber publish. It then removes the temporary
+link, revalidates artifact identity, and fsyncs the directory before marking
+the attempt committed. Normal failure before that commit removes owned residue
+and leaves no final artifact; an unverifiable removal becomes the separate
+value-free fatal `artifact_cleanup_failed` stop. A monotonic commit-point check
+prevents a synchronous filesystem stall from bypassing the `5s` deadline, and
+a deadline cannot reclassify success after commit. Success stdout is empty and
+only fixed value-free refusals use stderr.
+
+The existing serving lifecycle performs
+`cleanup -> event flush -> detached snapshot -> projection -> atomic retained-artifact publish`
+on `SIGINT`/`SIGTERM`. `SIGUSR2` revoke behavior is unchanged; no new signal,
+CLI flag, package script, route, or listener was added.
+
+**Local evidence:** the focused five-file A7/serving suite passes `91` and skips
+one POSIX parent-permission test on Windows; the same test remains active on
+protected Linux Gateway CI. Gateway lint, type-check, and build each exit `0`.
+On the final local tree, `scripts/test-all.ps1` exits `0` in `720.8s` with
+`All local non-Revit tests passed`, and `scripts/test-ci.ps1` exits `0` in
+`727.0s` with `All CI-safe revAgent engineering gates passed`. Root
+`package-lock.json` remains blob-identical at
+`b3d8df2755b2ead322f36100bc1c0fb177af082c`.
+
+The scope checkpoint `96c117afd419b3e20b0f57a5088fe06ed018c657`
+passed [CI 31817877971, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31817877971/attempts/1)
+with both Engineering and Gateway jobs green, plus
+[Gateway CI 31817877933, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31817877933/attempts/1).
+No rerun was used. Implementation-head protected evidence remains open until
+the draft PR receives this candidate push; Claude review and merge remain
+planner-gated.
+
+**Red-attempt dispositions:** the first independent focused run passed `68/69`
+and rejected only the shutdown test's manually cast bundle after the runtime
+provenance guard was added. The fixture was corrected to traverse the real
+projector. Independent semantic review then found three real-emitter gaps:
+denied confirmations may carry null correlation IDs, pre-authority failed
+invocations may carry `mutating:null`, and non-denied confirmation states must
+be bound to the registry's confirm policy. Closed validation and positive/
+negative emitter-shape tests now cover all three.
+
+An independent concurrency review also proved that the former asynchronous
+stdout write could become visible before its callback while the `5s` deadline
+still won. The success sink was therefore replaced with the protected atomic
+artifact and a synchronous terminal commit boundary. The first build of that
+adapter failed only on two test-double `implicit-any` annotations; those test
+types were fixed and the clean build passed. A separate full Gateway-package
+diagnostic passed `483`, skipped `1`, and failed only
+`batchDispatch` and `northMcpEndpoint` because the local Node `22.22.2`
+installation had no `better-sqlite3` native binding. Neither failed file is in
+the slice diff; both failures stopped at native module load before their test
+logic. This unsupported local engine was not rerun or treated as release
+evidence; protected Gateway CI owns the repository-required Node `24.14.1`
+binding and must be green on the implementation head.
+
+**Forecast / actual / variance:** `2.00h` / `2.50h` / `+0.50h` (`+25%`)
+active effort, calibrated against the prior M2 `-72%` variance. Passive
+CI/review and operator waits are excluded.
 
 **DNS route binding carried forward:** A6 is permanently canceled. Gate G2
-uses operator-managed manual DNS only: `m4-gateway.revagent.app` A
-`192.168.90.154`, DNS-only/grey-cloud, plus the `_acme-challenge` TXT value
-generated and shown during the certificate order. No Cloudflare API token will
-be generated or requested. G7 must delete both A and TXT records and retain the
-operator's positive confirmation. No DNS mutation is authorized by A7.
+presents on one operator screen: `m4-gateway.revagent.app -> 192.168.90.154`
+as DNS-only (grey cloud), plus the exact `_acme-challenge` TXT value generated
+by the certificate order. No Cloudflare API token will be generated or
+requested. G7 must delete both A and TXT records and retain the operator's
+positive confirmation. No DNS mutation is authorized by A7.
 
 ## Closed credential gate and explicitly open gates
 
