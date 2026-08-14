@@ -974,8 +974,12 @@ Passive CI/review and operator waits are excluded.
 [CI 31799865959, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31799865959/attempts/1)
 and
 [Gateway CI 31799865960, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31799865960/attempts/1).
-The implementation exact-head runs are pending the first implementation push;
-`PR #379` remains draft and no Claude review or merge authorization is claimed.
+Implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8` passed
+[CI 31805770391, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770391/attempts/1),
+including both Engineering and Gateway gates, and
+[Gateway CI 31805770374, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31805770374/attempts/1).
+No rerun was used. `PR #379` remains draft; its Claude review is skipped until
+ready, and no merge authorization is claimed.
 
 **Red-attempt and review dispositions:**
 

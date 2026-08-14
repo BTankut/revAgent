@@ -227,9 +227,10 @@ every owned terminal path. The repo implementation is now
 `test-all` (exit `0`, `745.8s`; Contracts `308/308`, Bridge `850/850`) and
 `test-ci` (exit `0`, `752.1s`). Root `package-lock.json` remains byte-identical.
 Forecast was `2.00h`; actual active effort was `1.75h`, variance `-0.25h`
-(`-13%`). The scope-record head passed CI and Gateway CI at attempt `1`; the
-implementation exact-head protected runs, Claude review, and merge
-authorization remain pending.
+(`-13%`). Scope-record and implementation heads passed CI and Gateway CI at
+attempt `1`; implementation head `78bfd189113a7a3bc1d154e8b1100fcab7f7d1e8`
+passed both CI jobs and the separate Gateway CI without rerun. Claude review
+and merge authorization remain pending while `PR #379` stays draft.
 
 A5 may not alter Bridge auth/retry/observer behavior and opens no host or live
 gate. PETRUCCI stage/service/config mutation, real enrollment, Gateway image
