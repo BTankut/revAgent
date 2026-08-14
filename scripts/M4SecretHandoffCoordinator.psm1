@@ -996,7 +996,7 @@ function Invoke-RevAgentM4HandoffCore {
         # later cleanup and independent absence-probe budgets remain reserved.
         # Legacy receiver timing stays byte-for-byte compatible with A2.
         $destinationDeadline = if ($usesCurrentUserDpapiBroker) {
-            $brokerStageDeadlines.SourceProof
+            $brokerStageDeadlines.DestinationStop
         }
         else {
             $TimeoutMilliseconds

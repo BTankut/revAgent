@@ -185,11 +185,15 @@ attestation, bounded local Streamable HTTP proxy, explicit A2 north-destination
 disposition, and a Codex registration containing only the numeric-loopback URL.
 The repo-only implementation is complete locally in draft `PR #378`: focused
 broker, coordinator, and Codex registration/security suites are green; both
-canonical local gates passed (`test-all` exit `0`, `749.46s`; `test-ci` exit
-`0`, `744.11s`); and the root lockfile remains byte-identical. Forecast was
-`5.50h`; actual active effort was `1.50h`, variance `-4.00h` (`-73%`).
-Protected implementation checks remain pending, so A4 is not yet `passed` or
-merge-authorized.
+canonical local gates passed on the final common tree (`test-all` exit `0`,
+`777.50s`; `test-ci` exit `0`, `780.97s`); and the root lockfile remains byte-
+identical. Forecast was `5.50h`; actual active effort was `1.75h`, variance
+`-3.75h` (`-68%`). The first implementation head's protected Engineering job
+failed deterministically on its in-diff PowerShell 7 fixture compiler and
+exposed a missing destination abort-grace wiring; both defects are corrected
+locally without a same-head rerun. Its Gateway and separate Gateway CI jobs
+passed. Final-head protected checks remain pending, so A4 is not yet `passed`
+or merge-authorized.
 
 The authorization ceiling is unchanged. A4 may not access or mutate PETRUCCI,
 stage or run a broker, configure a real client, use a credential, or exercise

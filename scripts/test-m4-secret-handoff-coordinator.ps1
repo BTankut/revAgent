@@ -607,19 +607,59 @@ public static class RevAgentM4BrokerCoordinatorFixture
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-m4-coordinator-test-" + [Guid]::NewGuid().ToString("N"))
 $publishRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-m4-coordinator-receiver-" + [Guid]::NewGuid().ToString("N"))
 $fixturePath = Join-Path $tempRoot "fixture.ps1"
-$brokerFixturePath = Join-Path $tempRoot "broker-fixture.exe"
+$brokerFixtureProjectRoot = Join-Path $tempRoot "broker-fixture-project"
+$brokerFixturePublishRoot = Join-Path $tempRoot "broker-fixture-publish"
+$brokerFixtureProjectPath = Join-Path $brokerFixtureProjectRoot "broker-fixture.csproj"
+$brokerFixtureSourcePath = Join-Path $brokerFixtureProjectRoot "Program.cs"
+$brokerFixturePath = Join-Path $brokerFixturePublishRoot "broker-fixture.exe"
+$brokerFixtureProjectText = @'
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <PublishTrimmed>false</PublishTrimmed>
+    <PublishReadyToRun>false</PublishReadyToRun>
+    <DebugType>none</DebugType>
+    <DebugSymbols>false</DebugSymbols>
+    <AssemblyName>broker-fixture</AssemblyName>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+</Project>
+'@
 try {
     [System.IO.Directory]::CreateDirectory($tempRoot) | Out-Null
+    [System.IO.Directory]::CreateDirectory($brokerFixtureProjectRoot) | Out-Null
+    [System.IO.Directory]::CreateDirectory($brokerFixturePublishRoot) | Out-Null
     [System.IO.File]::WriteAllText(
         $fixturePath,
         $fixtureText,
         (New-Object System.Text.UTF8Encoding($false))
     )
-    Add-Type `
-        -TypeDefinition $brokerFixtureText `
-        -Language CSharp `
-        -OutputAssembly $brokerFixturePath `
-        -OutputType ConsoleApplication
+    [System.IO.File]::WriteAllText(
+        $brokerFixtureProjectPath,
+        $brokerFixtureProjectText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    [System.IO.File]::WriteAllText(
+        $brokerFixtureSourcePath,
+        $brokerFixtureText,
+        (New-Object System.Text.UTF8Encoding($false))
+    )
+    & dotnet publish $brokerFixtureProjectPath `
+        -c Release `
+        -r win-x64 `
+        --self-contained true `
+        --nologo `
+        -p:PublishSingleFile=true `
+        -p:PublishTrimmed=false `
+        -p:DebugType=None `
+        -p:DebugSymbols=false `
+        -o $brokerFixturePublishRoot
+    Assert-True ($LASTEXITCODE -eq 0) "Broker coordinator fixture publish failed."
     Assert-True (Test-Path -LiteralPath $brokerFixturePath -PathType Leaf) `
         "Broker coordinator fixture did not compile."
 

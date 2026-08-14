@@ -730,8 +730,8 @@ operation, reboot/persistence, write/confirm, production origin/deploy,
 workflow/runner/CD/signing/NAS changes, and implementation of the stdio
 fallback. Each remains behind its existing separate gate.
 
-**Forecast:** `5.50h` active effort. **Actual:** `1.50h` active effort.
-**Variance:** `-4.00h` (`-73%`). Passive CI/review and later live-gate waits
+**Forecast:** `5.50h` active effort. **Actual:** `1.75h` active effort.
+**Variance:** `-3.75h` (`-68%`). Passive CI/review and later live-gate waits
 are excluded.
 
 **Local implementation evidence:**
@@ -769,7 +769,8 @@ are excluded.
   pipe copy from bypassing those deadlines. Fifteen-second source and
   destination pipe-holder regressions remain below their `9.50s` ceiling, and a
   real operation timeout proves the source cleanup probe ran before destination
-  disposition. The final focused coordinator suite passed in `44.98s`.
+  disposition. The final focused coordinator suite passed under PowerShell 7
+  in `47.82s` and Windows PowerShell 5.1 in `48.59s`.
 - Codex registration preserves stdio as the default. The explicit A4 mode
   atomically replaces only the managed runtime table with the exact secretless
   numeric-loopback URL, retains the docs server on stdio, verifies the current
@@ -789,7 +790,7 @@ are excluded.
   merge is expected to trigger Signed Source-Free CD and its terminal result
   must be reported.
 - The final common local tree passed `scripts/test-all.ps1` with exit `0` in
-  `749.46s` and `scripts/test-ci.ps1` with exit `0` in `744.11s`. The latter
+  `777.50s` and `scripts/test-ci.ps1` with exit `0` in `780.97s`. The latter
   includes the same `13` broker scenarios, coordinator and Codex security
   regressions, Bridge suites, release guards, and CI-safe engineering gates.
 
@@ -833,13 +834,29 @@ are excluded.
   corrected fixtures now prove both the legacy stdio result shape and the exact
   secretless HTTP shape. Review also found a `1..1023` registration range that
   the broker would refuse; both layers now share the canonical
-  `1024..65535` contract. No protected CI attempt has failed for the
-  implementation head because that head has not yet been pushed.
+  `1024..65535` contract. The protected implementation-head failure and its
+  complete disposition are recorded below.
 - The first local `test-ci` launcher used a `5s` orchestration timeout. The
   tool returned `124` before any test result, left one child briefly running,
   and lost that child's exit/output; it is therefore not counted as a test
   attempt. The child was confirmed absent before the single evidence-bearing
   rerun above, which completed normally with exit `0`.
+- Implementation head `32237beadf7da3a61913725645b7e9dae7239f29` produced
+  one deterministic protected red in
+  [CI 31775848515, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848515/attempts/1):
+  [Engineering job 94691012437](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012437)
+  failed before the coordinator cases because PowerShell 7 does not support
+  `Add-Type -OutputType ConsoleApplication`. The failing test file was in this
+  slice's diff, so no same-head rerun was used. The fixture now compiles from a
+  temporary SDK project under both PowerShell editions. That portability fix
+  then exposed a real deadline-wiring defect: after a timed-out source absence
+  probe, the receiver wait reused the `65%` `SourceProof` deadline instead of
+  the distinct `70%` `DestinationStop` deadline, leaving no receiver abort
+  grace. The coordinator now uses the bound destination deadline; the
+  adversarial lifecycle case and both full local gates pass. The same protected
+  run's [Gateway job 94691012520](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012520)
+  passed, as did
+  [Gateway CI 31775848467, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848467/attempts/1).
 
 ## Closed credential gate and explicitly open gates
 
