@@ -55,6 +55,8 @@ internal sealed partial class RbpConnectionCoordinator
     /// is written anywhere. This makes which one happened observable.
     /// </summary>
     private readonly Action<string>? _onDispatchDiagnostic;
+    private readonly Func<RbpConnectionFailureObservation, ValueTask>?
+        _onConnectionFailureObservation;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -76,10 +78,13 @@ internal sealed partial class RbpConnectionCoordinator
         IRbpRandomSource? random = null,
         RbpDocContextWatcher? docContextWatcher = null,
         RbpBatchCoordinator? batchCoordinator = null,
-        Action<string>? onDispatchDiagnostic = null)
+        Action<string>? onDispatchDiagnostic = null,
+        Func<RbpConnectionFailureObservation, ValueTask>?
+            onConnectionFailureObservation = null)
     {
         _batchCoordinator = batchCoordinator;
         _onDispatchDiagnostic = onDispatchDiagnostic;
+        _onConnectionFailureObservation = onConnectionFailureObservation;
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??
@@ -209,6 +214,7 @@ internal sealed partial class RbpConnectionCoordinator
                             RetryAfterMilliseconds:
                                 failure.RetryAfterMilliseconds,
                             Failure: failure.Class));
+                    ObserveConnectionFailure(failure);
                 }
 
                 try

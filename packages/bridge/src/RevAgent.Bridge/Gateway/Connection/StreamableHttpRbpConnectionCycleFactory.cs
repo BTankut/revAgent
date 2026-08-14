@@ -74,15 +74,32 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
         try
         {
             RbpEnvelope hello = _helloFactory.Create(credential, profile);
-            (string connectionId, RbpHelloAckPayload acknowledgement) =
-                await CreateConnectionAsync(
-                        client,
-                        endpoint,
-                        credential,
-                        profile,
-                        hello,
-                        cancellationToken)
-                    .ConfigureAwait(false);
+            string connectionId;
+            RbpHelloAckPayload acknowledgement;
+            try
+            {
+                (connectionId, acknowledgement) =
+                    await CreateConnectionAsync(
+                            client,
+                            endpoint,
+                            credential,
+                            profile,
+                            hello,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+            }
+            catch (RbpGatewayTransportException exception)
+            {
+                // Only the create/hello exchange is correlatable to a
+                // Gateway opening-refusal observation. A later event-stream
+                // attach can fail authorization after hello_ack succeeded;
+                // carrying hello.id through that failure would falsely make
+                // it look like the same revoked-opening chain.
+                throw exception.WithOpeningContext(
+                    hello.Id,
+                    RbpOpeningBinding.HttpSse);
+            }
+
             (eventsResponse, eventsStream) =
                 await OpenEventsAsync(
                         client,

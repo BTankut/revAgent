@@ -14,6 +14,7 @@ import {
   type SessionRegisteredEnvelope,
 } from "@revagent/protocol";
 import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
 
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
@@ -27,7 +28,11 @@ import type {
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
-import { createProductionRbpIngressHost } from "./rbpIngress.js";
+import {
+  RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+  createProductionRbpIngressHost,
+  type RbpOpeningRefusalObservation,
+} from "./rbpIngress.js";
 import {
   createFailClosedPorts,
   startGatewayServer,
@@ -86,8 +91,16 @@ function identity(
     "transport_streamable_http",
     "partial_progress",
   ],
+  options: {
+    readonly deviceToken?: string;
+    readonly deviceId?: string;
+    readonly deviceStatus?: DeviceAuthContext["deviceStatus"];
+    readonly beforeDeviceResult?: () => Promise<void>;
+  } = {},
 ): IdentityPort {
-  const tokenDigest = `sha256:${createHash("sha256").update("device-token").digest("hex")}` as const;
+  const deviceToken = options.deviceToken ?? "device-token";
+  const deviceId = options.deviceId ?? "device-gw12";
+  const tokenDigest = `sha256:${createHash("sha256").update(deviceToken).digest("hex")}` as const;
   return {
     kind: "oidc" as const,
     async authenticateNorthRequest() {
@@ -99,7 +112,8 @@ function identity(
       };
     },
     async authenticateDevice(input) {
-      if (input.deviceToken !== "device-token") {
+      await options.beforeDeviceResult?.();
+      if (input.deviceToken !== deviceToken) {
         return {
           ok: false as const,
           port: "identity" as const,
@@ -113,11 +127,11 @@ function identity(
           type: "device",
           tenantId: "tenant-gw12",
           userId: "user-gw12",
-          deviceId: "device-gw12",
+          deviceId,
           seatId: "seat-gw12",
         },
         connectionId: input.connectionId,
-        deviceStatus: "active",
+        deviceStatus: options.deviceStatus ?? "active",
         grantedSessionCapabilities,
         deviceTokenDigest: tokenDigest,
       };
@@ -217,6 +231,76 @@ const config: GatewayConfig = {
   ingress: { northMcpMountPath: "/mcp", rbpMountPrefix: "/bridge/v1" },
 };
 
+const SYNTHETIC_REFUSAL_CANARIES = Object.freeze({
+  token: "SYNTHETIC-NORTH-BEARER-MUST-NOT-APPEAR",
+  device: "SYNTHETIC-DEVICE-MUST-NOT-APPEAR",
+  hostname: "SYNTHETIC-HOSTNAME-MUST-NOT-APPEAR",
+  endpoint: "SYNTHETIC-ENDPOINT-MUST-NOT-APPEAR",
+  header: "SYNTHETIC-HEADER-MUST-NOT-APPEAR",
+  message: "SYNTHETIC-MESSAGE-MUST-NOT-APPEAR",
+  error: "SYNTHETIC-ERROR-MUST-NOT-APPEAR",
+});
+
+function revokedHello(): HelloEnvelope {
+  const envelope = hello();
+  return {
+    ...envelope,
+    payload: {
+      ...envelope.payload,
+      bridge_version: SYNTHETIC_REFUSAL_CANARIES.endpoint,
+      device_id: SYNTHETIC_REFUSAL_CANARIES.device,
+      machine: {
+        hostname: SYNTHETIC_REFUSAL_CANARIES.hostname,
+        os: SYNTHETIC_REFUSAL_CANARIES.header,
+      },
+      addin_versions: [
+        SYNTHETIC_REFUSAL_CANARIES.message,
+        SYNTHETIC_REFUSAL_CANARIES.error,
+      ],
+    },
+  };
+}
+
+function expectedOpeningRefusal(
+  correlationId: string,
+  binding: RbpOpeningRefusalObservation["binding"],
+): RbpOpeningRefusalObservation {
+  return {
+    contractVersion: RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+    event: "gateway.rbp_opening_refused",
+    correlationId,
+    binding,
+    faultClass: "auth",
+    httpStatus: 403,
+    closeCode: 4403,
+    decision: "refused",
+  };
+}
+
+function assertValueFreeObservation(observation: RbpOpeningRefusalObservation): void {
+  expect(Object.isFrozen(observation)).toBe(true);
+  expect(Object.keys(observation)).toStrictEqual([
+    "contractVersion",
+    "event",
+    "correlationId",
+    "binding",
+    "faultClass",
+    "httpStatus",
+    "closeCode",
+    "decision",
+  ]);
+  const serialized = JSON.stringify(observation);
+  for (const canary of Object.values(SYNTHETIC_REFUSAL_CANARIES)) {
+    expect(serialized).not.toContain(canary);
+  }
+  expect(serialized).not.toContain("token");
+  expect(serialized).not.toContain("message");
+  expect(serialized).not.toContain("error");
+  expect(serialized).not.toContain("endpoint");
+  expect(serialized).not.toContain("device");
+  expect(serialized).not.toContain("header");
+}
+
 describe("GW-12 production RBP ingress", () => {
   const handles: GatewayServerHandle[] = [];
   const bindings: GatewayBinding[] = [];
@@ -224,6 +308,187 @@ describe("GW-12 production RBP ingress", () => {
   afterEach(async () => {
     await Promise.allSettled(bindings.splice(0).map(async (binding) => binding.close()));
     await Promise.allSettled(handles.splice(0).map(async (handle) => handle.close()));
+  });
+
+  it("emits one value-free correlated observer record for a revoked HTTP opening", async () => {
+    const restartable = createRestartableTestStore();
+    const revokedIdentity = identity(
+      ["transport_streamable_http", "partial_progress"],
+      {
+        deviceToken: SYNTHETIC_REFUSAL_CANARIES.token,
+        deviceId: SYNTHETIC_REFUSAL_CANARIES.device,
+        deviceStatus: "revoked",
+      },
+    );
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, revokedIdentity);
+    const observations: RbpOpeningRefusalObservation[] = [];
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: revokedIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onOpeningRefusalObservation: (observation) => observations.push(observation),
+        }),
+      },
+    });
+    handles.push(server);
+    const opening = revokedHello();
+
+    const response = await fetch(
+      `http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${SYNTHETIC_REFUSAL_CANARIES.token}`,
+          "Content-Type": "application/json",
+          "X-RBP-Versions": "1",
+          "X-Synthetic-Observer-Canary": SYNTHETIC_REFUSAL_CANARIES.header,
+        },
+        body: JSON.stringify(opening),
+      },
+    );
+
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({ fault_class: "auth" });
+    expect(observations).toStrictEqual([
+      expectedOpeningRefusal(opening.id, "http_sse"),
+    ]);
+    assertValueFreeObservation(observations[0]!);
+  });
+
+  it("emits one value-free correlated observer record for a revoked WSS opening", async () => {
+    const restartable = createRestartableTestStore();
+    const revokedIdentity = identity(
+      ["transport_streamable_http", "partial_progress"],
+      {
+        deviceToken: SYNTHETIC_REFUSAL_CANARIES.token,
+        deviceId: SYNTHETIC_REFUSAL_CANARIES.device,
+        deviceStatus: "revoked",
+      },
+    );
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, revokedIdentity);
+    const observations: RbpOpeningRefusalObservation[] = [];
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: revokedIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onOpeningRefusalObservation: (observation) => observations.push(observation),
+        }),
+      },
+    });
+    handles.push(server);
+    const opening = revokedHello();
+    const binding = new WssGatewayBinding({
+      baseUrl: `ws://127.0.0.1:${String(server.port)}/bridge/v1`,
+      deviceToken: SYNTHETIC_REFUSAL_CANARIES.token,
+      endpointPolicy: "loopback_test_readiness",
+    });
+    bindings.push(binding);
+
+    await expect(binding.open(opening)).rejects.toMatchObject({
+      faultClass: "auth",
+      closeCode: 4403,
+    });
+    expect(binding.closeInfo).toMatchObject({ code: 4403 });
+    expect(observations).toStrictEqual([expectedOpeningRefusal(opening.id, "wss")]);
+    assertValueFreeObservation(observations[0]!);
+  });
+
+  it("deduplicates concurrent WSS hello refusals and isolates observer failure", async () => {
+    const restartable = createRestartableTestStore();
+    let authenticateDeviceCalls = 0;
+    let releaseConcurrentAuthentications!: () => void;
+    const concurrentAuthentications = new Promise<void>((resolve) => {
+      releaseConcurrentAuthentications = resolve;
+    });
+    const revokedIdentity = identity(
+      ["transport_streamable_http", "partial_progress"],
+      {
+        deviceToken: SYNTHETIC_REFUSAL_CANARIES.token,
+        deviceId: SYNTHETIC_REFUSAL_CANARIES.device,
+        deviceStatus: "revoked",
+        beforeDeviceResult: async () => {
+          authenticateDeviceCalls += 1;
+          if (authenticateDeviceCalls === 2) releaseConcurrentAuthentications();
+          await concurrentAuthentications;
+        },
+      },
+    );
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, revokedIdentity);
+    const opening = revokedHello();
+    let observationCount = 0;
+    const serializedObservations: string[] = [];
+    let releaseObservationFailures!: () => void;
+    const observationFailures = new Promise<void>((resolve) => {
+      releaseObservationFailures = resolve;
+    });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: revokedIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          writeOpeningRefusalLog: async (serializedObservation) => {
+            serializedObservations.push(serializedObservation);
+            await observationFailures;
+            throw new Error(SYNTHETIC_REFUSAL_CANARIES.message);
+          },
+          onOpeningRefusalObservation: async () => {
+            observationCount += 1;
+            await observationFailures;
+            throw new Error(SYNTHETIC_REFUSAL_CANARIES.error);
+          },
+        }),
+      },
+    });
+    handles.push(server);
+    const socket = new WebSocket(
+      `ws://127.0.0.1:${String(server.port)}/bridge/v1`,
+      {
+        headers: {
+          Authorization: `Bearer ${SYNTHETIC_REFUSAL_CANARIES.token}`,
+          "X-RBP-Versions": "1",
+        },
+      },
+    );
+    const closed = new Promise<{ readonly code: number; readonly reason: string }>(
+      (resolve, reject) => {
+        socket.once("error", reject);
+        socket.once("close", (code, reason) => {
+          resolve({ code, reason: reason.toString("utf8") });
+        });
+      },
+    );
+    await new Promise<void>((resolve, reject) => {
+      socket.once("open", resolve);
+      socket.once("error", reject);
+    });
+
+    try {
+      socket.send(JSON.stringify(opening));
+      socket.send(JSON.stringify(opening));
+
+      await expect(closed).resolves.toMatchObject({ code: 4403 });
+      expect(authenticateDeviceCalls).toBe(2);
+      expect(observationCount).toBe(1);
+      expect(serializedObservations).toHaveLength(1);
+      expect(JSON.parse(serializedObservations[0]!)).toStrictEqual(
+        expectedOpeningRefusal(opening.id, "wss"),
+      );
+      expect(serializedObservations[0]).not.toContain("hostname");
+    } finally {
+      releaseObservationFailures();
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
   });
 
   for (const kind of ["wss", "http_sse"] as const) {
@@ -379,6 +644,7 @@ describe("GW-12 production RBP ingress", () => {
   it("refuses HTTP/SSE unless the fallback capability was provisioned and granted", async () => {
     const restartable = createRestartableTestStore();
     const noFallbackIdentity = identity([]);
+    const observations: RbpOpeningRefusalObservation[] = [];
     const authority = new GatewayBridgeSessionAuthority(
       restartable.store,
       noFallbackIdentity,
@@ -389,7 +655,10 @@ describe("GW-12 production RBP ingress", () => {
         ...createFailClosedPorts(),
         identity: noFallbackIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onOpeningRefusalObservation: (observation) => observations.push(observation),
+        }),
       },
     });
     handles.push(server);
@@ -409,6 +678,7 @@ describe("GW-12 production RBP ingress", () => {
     await expect(response.json()).resolves.toMatchObject({
       fault_class: "unsupported",
     });
+    expect(observations).toStrictEqual([]);
   });
 
   it("routes every bridge-bound runtime method and keeps discovery internal", async () => {

@@ -37,6 +37,39 @@ public sealed class WssGatewayBindingStubTests
     }
 
     [Fact]
+    public async Task PostHelloAuthorizationRefusalCarriesOnlyHelloCorrelation()
+    {
+        await using GatewayStubProcess stub =
+            await GatewayStubProcess.StartAsync();
+        const string syntheticDevice = "SYNTHETIC-REVOKED-DEVICE";
+        var binding = new WssGatewayBinding(
+            new ExactCertificateSocketFactory(stub));
+        var client = new RbpGatewayHandshakeClient(
+            new FixedEnrollmentProvider(
+                new RbpDeviceCredential(
+                    syntheticDevice,
+                    "test-device-token",
+                    $"sha256:{new string('0', 64)}")),
+            binding);
+
+        RbpGatewayTransportException exception =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => client.ConnectAsync(stub.WebSocketUri, Profile()));
+
+        Assert.Equal(RbpGatewayFailureKind.Authorization, exception.Kind);
+        Assert.Equal(4403, exception.CloseCode);
+        Assert.NotNull(exception.OpeningContext);
+        Assert.Equal(
+            RbpOpeningBinding.Wss,
+            exception.OpeningContext.Binding);
+        Assert.True(Guid.TryParse(exception.OpeningContext.CorrelationId, out _));
+        Assert.DoesNotContain(
+            syntheticDevice,
+            exception.OpeningContext.CorrelationId,
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task StubRejectsBadCredentialWithoutLeakingIt()
     {
         await using GatewayStubProcess stub =

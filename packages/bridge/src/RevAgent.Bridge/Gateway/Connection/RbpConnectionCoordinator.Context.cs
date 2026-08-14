@@ -35,7 +35,11 @@ internal sealed partial class RbpConnectionCoordinator
     private sealed record FailureTransition(
         RbpOpeningFailureClass Class,
         double ContinuousSteadyMilliseconds,
-        double RetryAfterMilliseconds);
+        double RetryAfterMilliseconds,
+        RbpGatewayFailureKind? GatewayFailure = null,
+        int? HttpStatus = null,
+        int? CloseCode = null,
+        RbpOpeningFailureContext? OpeningContext = null);
 
     private sealed class RbpWakeGapException : Exception
     {

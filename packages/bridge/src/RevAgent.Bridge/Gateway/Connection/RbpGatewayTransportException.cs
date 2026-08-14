@@ -1,3 +1,5 @@
+using RevAgent.Bridge.Gateway.Protocol;
+
 namespace RevAgent.Bridge.Gateway.Connection;
 
 internal enum RbpGatewayFailureKind
@@ -20,6 +22,39 @@ internal enum RbpRetryAfterDisposition
     IgnoredOutOfRange,
 }
 
+internal enum RbpOpeningBinding
+{
+    Wss,
+    HttpSse,
+}
+
+internal sealed class RbpOpeningFailureContext
+{
+    internal RbpOpeningFailureContext(
+        string correlationId,
+        RbpOpeningBinding binding)
+    {
+        if (!RbpRecoveryClearance.IsUuidV7(correlationId))
+        {
+            throw new ArgumentException(
+                "The RBP hello correlation id must be a canonical UUIDv7.",
+                nameof(correlationId));
+        }
+
+        if (!Enum.IsDefined(binding))
+        {
+            throw new ArgumentOutOfRangeException(nameof(binding));
+        }
+
+        CorrelationId = correlationId;
+        Binding = binding;
+    }
+
+    internal string CorrelationId { get; }
+
+    internal RbpOpeningBinding Binding { get; }
+}
+
 internal sealed record RbpVersionWindow(
     int MinimumProtocol,
     int MaximumProtocol,
@@ -37,7 +72,8 @@ internal sealed class RbpGatewayTransportException : Exception
         RbpRetryAfterDisposition retryAfterDisposition =
             RbpRetryAfterDisposition.Absent,
         RbpVersionWindow? versionWindow = null,
-        Exception? innerException = null)
+        Exception? innerException = null,
+        RbpOpeningFailureContext? openingContext = null)
         : base(message, innerException)
     {
         Kind = kind;
@@ -47,6 +83,7 @@ internal sealed class RbpGatewayTransportException : Exception
         RetryNotBeforeUtc = retryNotBeforeUtc;
         RetryAfterDisposition = retryAfterDisposition;
         VersionWindow = versionWindow;
+        OpeningContext = openingContext;
     }
 
     internal RbpGatewayFailureKind Kind { get; }
@@ -70,10 +107,39 @@ internal sealed class RbpGatewayTransportException : Exception
 
     internal RbpVersionWindow? VersionWindow { get; }
 
+    /// <summary>
+    /// A value-free pointer to the already-sent RBP hello. It is absent for
+    /// failures before hello send and never contains credential, endpoint, or
+    /// remote error text.
+    /// </summary>
+    internal RbpOpeningFailureContext? OpeningContext { get; }
+
     internal bool RetryPaused =>
         Kind is RbpGatewayFailureKind.EnrollmentRequired or
             RbpGatewayFailureKind.Authentication or
             RbpGatewayFailureKind.Authorization or
             RbpGatewayFailureKind.Version or
             RbpGatewayFailureKind.Trust;
+
+    internal RbpGatewayTransportException WithOpeningContext(
+        string correlationId,
+        RbpOpeningBinding binding)
+    {
+        if (OpeningContext is not null)
+        {
+            return this;
+        }
+
+        return new RbpGatewayTransportException(
+            Kind,
+            Message,
+            StatusCode,
+            CloseCode,
+            FallbackEligible,
+            RetryNotBeforeUtc,
+            RetryAfterDisposition,
+            VersionWindow,
+            this,
+            new RbpOpeningFailureContext(correlationId, binding));
+    }
 }

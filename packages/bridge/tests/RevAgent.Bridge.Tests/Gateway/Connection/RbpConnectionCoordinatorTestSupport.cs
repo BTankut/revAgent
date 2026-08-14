@@ -23,7 +23,9 @@ public sealed partial class RbpConnectionCoordinatorTests
         IRbpRandomSource? random = null,
         TimeSpan? closeTimeout = null,
         IRbpInvocationDispatcher? invocationDispatcher = null,
-        TimeSpan? invocationDrainTimeout = null) =>
+        TimeSpan? invocationDrainTimeout = null,
+        Func<RbpConnectionFailureObservation, ValueTask>?
+            onConnectionFailureObservation = null) =>
         new(
             factory,
             store,
@@ -40,7 +42,9 @@ public sealed partial class RbpConnectionCoordinatorTests
             invocationDispatcher ?? new StubInvocationDispatcher(),
             inbound,
             clock,
-            random ?? new FixedRandomSource(0));
+            random ?? new FixedRandomSource(0),
+            onConnectionFailureObservation:
+                onConnectionFailureObservation);
 
     private static RbpJournalStore OpenStore(
         RbpJournalTestDirectory directory,

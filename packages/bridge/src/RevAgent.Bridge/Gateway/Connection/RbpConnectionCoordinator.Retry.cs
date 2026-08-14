@@ -160,7 +160,14 @@ internal sealed partial class RbpConnectionCoordinator
                     RbpOpeningFailureClass.Protocol,
                 _ => RbpOpeningFailureClass.Environment,
             };
-            return new FailureTransition(failure, steady, retryAfter);
+            return new FailureTransition(
+                failure,
+                steady,
+                retryAfter,
+                transport.Kind,
+                transport.StatusCode,
+                transport.CloseCode,
+                transport.OpeningContext);
         }
 
         RbpOpeningFailureClass classified = cause switch
@@ -179,6 +186,62 @@ internal sealed partial class RbpConnectionCoordinator
             _ => RbpOpeningFailureClass.Environment,
         };
         return new FailureTransition(classified, steady, 0);
+    }
+
+    private void ObserveConnectionFailure(FailureTransition failure)
+    {
+        Func<RbpConnectionFailureObservation, ValueTask>? observer =
+            _onConnectionFailureObservation;
+        if (observer is null || failure.GatewayFailure is not { } gateway)
+        {
+            return;
+        }
+
+        RbpConnectionLifecycleState lifecycle;
+        lock (_sync)
+        {
+            lifecycle = _lifecycle;
+        }
+
+        RbpConnectionFailureObservation? observation =
+            RbpConnectionFailureObservation.TryCreate(
+                gateway,
+                failure.HttpStatus,
+                failure.CloseCode,
+                failure.OpeningContext,
+                lifecycle);
+        if (observation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            ValueTask completion = observer(observation);
+            if (!completion.IsCompletedSuccessfully)
+            {
+                _ = ObserveConnectionFailureCompletionAsync(completion);
+            }
+        }
+        catch
+        {
+            // Observation is best-effort only. It must never release retry
+            // authority, alter reducer state, or stop the worker.
+        }
+    }
+
+    private static async Task ObserveConnectionFailureCompletionAsync(
+        ValueTask completion)
+    {
+        try
+        {
+            await completion.ConfigureAwait(false);
+        }
+        catch
+        {
+            // Post-await observer faults are isolated exactly like synchronous
+            // callback faults. The detached observer never owns retry state.
+        }
     }
 
     private async Task DelayRetryAsync(
