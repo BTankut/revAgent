@@ -24,9 +24,12 @@
 ([`PR #376`](https://github.com/BTankut/revAgent/pull/376) merged as
 [`003fbc0d1a95be546c7b3ebdc36caa14e4f2b557`](https://github.com/BTankut/revAgent/commit/003fbc0d1a95be546c7b3ebdc36caa14e4f2b557))
 
-**M4-04/A3 slice state:** `implementation_complete_local`
-(draft [`PR #377`](https://github.com/BTankut/revAgent/pull/377); protected
-implementation checks pending)
+**M4-04/A3 slice state:** `passed_merged`
+([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
+[`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
+
+**M4-04/A4 slice state:** `scope_recorded`
+(planner-bound repo-only client-bearer route; implementation pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -40,8 +43,10 @@ client-feasibility inspection. `M4-04/A2` is the separately authorized
 repo-only credential generation and two-host secret-handoff seam. `M4-04/A3`
 is the separately authorized repo-only value-free refusal observer; it exposes
 the existing Gateway refusal and Bridge retry-pause decisions without changing
-their semantics. None of these bounded slices by itself satisfies or enlarges
-the M4 milestone gate.
+their semantics. `M4-04/A4` is the planner-bound repo-only CurrentUser-DPAPI
+numeric-loopback bearer-broker seam. It does not install or run the broker on
+PETRUCCI and does not open any M4-04/B execution gate. None of these bounded
+slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -57,6 +62,9 @@ the M4 milestone gate.
 
 **M4-04/A2 exact slice base:**
 [`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAgent/commit/6aa04593657fa2e3ee8a656ff97b553daf07f29e)
+
+**M4-04/A4 exact slice base:**
+[`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3)
 
 ## Authorization ceiling
 
@@ -544,7 +552,7 @@ Passive CI/review waits are excluded.
 
 ## M4-04/A3 observer disposition
 
-**Gate state:** `implementation_complete_local`
+**Gate state:** `passed_merged`
 
 **Planner decision:** `A3 bound` on 2026-08-13.
 
@@ -618,6 +626,18 @@ and A2 `-14%` variances. **Actual:** `1.00h` active effort. **Variance:**
   credential, container, DNS/TLS, client, Revit, or other live operation was
   performed.
 
+**Protected closure evidence:** final head
+`7701b1bfc914fa004f5f9008670b0163c80e16ec` passed
+[CI 31745814390, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31745814390/attempts/1),
+[Gateway CI 31745814348, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31745814348/attempts/1),
+and [Claude review 31769245073, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769245073/attempts/1).
+`PR #377` squash-merged as `50e6cd9d0028bd480a378fd1201859fbdcbc13f3`.
+Its merge-push [CI 31769428226, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769428226/attempts/1)
+passed Engineering and Gateway/RBP gates, and
+[Gateway CI 31769428229, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769428229/attempts/1)
+passed. Signed Source-Free CD did not trigger; the unrelated M0 Gateway CD stub
+was skipped. No rerun was used.
+
 **Red-attempt and review dispositions:**
 
 - The first fresh-worktree Gateway package attempt used Node 22 after an
@@ -656,6 +676,61 @@ plus a value-free Bridge `RetryPaused/Auth` observer. Any Bridge binary stage
 remains outside A3 implementation proof and requires its own operator-approved
 snapshot, service-stop/stage/start, rollback, and protected-surface equality
 card.
+
+## M4-04/A4 CurrentUser bearer-broker seam
+
+**Gate state:** `scope_recorded`
+
+**Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
+CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
+recorded by E4 is the fail-closed fallback, not an implicit second path.
+
+**Scope of record:** protected source is
+`50e6cd9d0028bd480a378fd1201859fbdcbc13f3` (`PR #377` squash merge). This
+repo-only slice owns an explicit `north_bearer` destination disposition, a
+self-contained Windows broker that retains only CurrentUser-DPAPI ciphertext,
+an exact numeric-loopback Streamable HTTP endpoint, and a secretless Codex
+registration containing only that local URL. The legacy A2 north refusal stays
+the default and remains valid history; only the explicit A4 disposition may
+retain the protected destination.
+
+The broker must authenticate the local caller before decrypting or injecting
+the bearer. The bound evidence chain is the exact established IPv4 tuple to one
+PID, an open process handle held through the request, `PETRUCCI\ws2` SID and
+account, exact protected Codex image path and SHA-256, exact package family and
+valid expected signer, followed by repeated tuple and process-identity checks.
+The TCP direction must resolve the accepted connection's remote endpoint as the
+client; resolving and attesting the broker's own listener PID is a refusal.
+Incoming authorization, cookie, proxy, forwarding, and hop-by-hop headers are
+discarded; the broker alone injects the bearer to the exact HTTPS test origin.
+
+Acceptance requires deterministic CurrentUser-DPAPI round-trip and cleanup,
+strict root/file ACL and identity checks, no plaintext file, exact
+numeric-loopback binding, bounded Streamable HTTP forwarding including SSE and
+cancellation, zero upstream calls for an unauthorized caller, secretless Codex
+TOML, unchanged stdio-default behavior, and explicit tests proving recognizable
+`SYNTHETIC-...` values and distinguishing fragments never enter argv, env,
+TOML, stdout/stderr, exceptions, logs, or evidence. The root npm lockfile must
+remain byte-identical.
+
+**Stop / fallback rule:** if the live PETRUCCI connection cannot be reliably
+bound to `PETRUCCI\ws2` and one exact Codex image/signer/package profile, Route
+1 stops. The allowlist must not broaden to a helper family, user-writable copy,
+or ambiguous owner. Route 3 then requires its own planner-bound implementation
+slice and operator-approved stage. This user-mode attribution is not claimed
+to isolate a fully compromised process already running as the same Windows
+user, administrator, or SYSTEM.
+
+**Explicitly out:** PETRUCCI or `revagent` access, broker build/stage/install or
+execution outside repository tests, real credential generation or use, Codex
+configuration mutation, Gateway/container or Bridge stage, DNS/TLS/UFW/tunnel
+work, enrollment/revoke, tenant/OAuth, external/live client, Revit/model
+operation, reboot/persistence, write/confirm, production origin/deploy,
+workflow/runner/CD/signing/NAS changes, and implementation of the stdio
+fallback. Each remains behind its existing separate gate.
+
+**Forecast:** `5.50h` active effort. Passive CI/review and later live-gate
+waits are excluded. Actual and variance remain pending implementation closure.
 
 ## Closed credential gate and explicitly open gates
 
