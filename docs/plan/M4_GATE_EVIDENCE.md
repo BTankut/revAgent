@@ -28,9 +28,9 @@
 ([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
 [`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
 
-**M4-04/A4 slice state:** `implementation_complete_local`
-(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); protected
-implementation checks pending)
+**M4-04/A4 slice state:** `implementation_checks_passed`
+(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); Claude review
+and merge authorization pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -680,7 +680,7 @@ card.
 
 ## M4-04/A4 CurrentUser bearer-broker seam
 
-**Gate state:** `implementation_complete_local`
+**Gate state:** `implementation_checks_passed`
 
 **Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
 CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
@@ -793,6 +793,18 @@ are excluded.
   `777.50s` and `scripts/test-ci.ps1` with exit `0` in `780.97s`. The latter
   includes the same `13` broker scenarios, coordinator and Codex security
   regressions, Bridge suites, release guards, and CI-safe engineering gates.
+
+**Protected implementation evidence:** final implementation head
+`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` passed
+[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1):
+[Engineering job 94701789935](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701789935)
+and [Gateway job 94701791035](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701791035)
+both passed. Separate
+[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1)
+([job 94701787582](https://github.com/BTankut/revAgent/actions/runs/31779441323/job/94701787582))
+passed. GitGuardian passed; no rerun was used. The PR remains draft, so Claude
+review is intentionally not yet triggered and this is not a merge or M4 gate
+closure.
 
 **Red-attempt and review dispositions:**
 

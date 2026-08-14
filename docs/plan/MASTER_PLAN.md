@@ -192,8 +192,13 @@ identical. Forecast was `5.50h`; actual active effort was `1.75h`, variance
 failed deterministically on its in-diff PowerShell 7 fixture compiler and
 exposed a missing destination abort-grace wiring; both defects are corrected
 locally without a same-head rerun. Its Gateway and separate Gateway CI jobs
-passed. Final-head protected checks remain pending, so A4 is not yet `passed`
-or merge-authorized.
+passed. Final implementation head
+`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` then passed
+[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1)
+for Engineering and Gateway/RBP plus
+[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1),
+without rerun. A4 remains draft; Claude review and planner merge authorization
+are pending, so the slice is not yet `passed` or merge-authorized.
 
 The authorization ceiling is unchanged. A4 may not access or mutate PETRUCCI,
 stage or run a broker, configure a real client, use a credential, or exercise
