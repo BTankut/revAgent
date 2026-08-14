@@ -13,6 +13,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   createPreProductionRuntimeAdapters,
 } from "./preProductionRuntimeAdapters.js";
+import type { GatewayEventEnvelope } from "./events.js";
 import {
   preparePreProductionServing,
   type PreparedPreProductionServing,
@@ -44,6 +45,14 @@ const KEY_PATH = "/run/revagent/m4/tls.key";
 const CERT_PATH = "/run/revagent/m4/tls.crt";
 const ARTIFACT_PATH = "/run/revagent/m4/enrollment.json";
 const MACHINE_FINGERPRINT = `sha256:${"4".repeat(64)}`;
+const AUDIT_CANARIES = Object.freeze({
+  tenantId: "SYNTHETIC-AUDIT-TENANT__HEAD__DO-NOT-EMIT",
+  userId: "SYNTHETIC-AUDIT-USER__MIDDLE__DO-NOT-EMIT",
+  sessionId: "SYNTHETIC-AUDIT-SESSION__TAIL__DO-NOT-EMIT",
+  oauthClientId: "SYNTHETIC-AUDIT-OAUTH__MIDDLE__DO-NOT-EMIT",
+  idempotencyKey: "SYNTHETIC-AUDIT-IDEMPOTENCY__TAIL__DO-NOT-EMIT",
+  mcpSessionId: "SYNTHETIC-AUDIT-MCP-SESSION__HEAD__DO-NOT-EMIT",
+});
 let rbpIdOffset = 0;
 const rbpId = (): string => gatewayUuidV7(NOW_MS + rbpIdOffset++);
 
@@ -157,6 +166,114 @@ function dependencies(): {
   };
 }
 
+function installEventProbe(
+  fixture: ReturnType<typeof dependencies>,
+  options: { readonly flushError?: Error } = {},
+) {
+  const originalCreate = fixture.value.createRuntimeAdapters;
+  let baseEvents:
+    | ReturnType<typeof createPreProductionRuntimeAdapters>["events"]
+    | undefined;
+  let flushCompleted = false;
+  const flush = vi.fn(async () => {
+    if (options.flushError !== undefined) throw options.flushError;
+    if (baseEvents === undefined) throw new Error("event probe unavailable");
+    const result = await baseEvents.flush();
+    flushCompleted = result.ok;
+    return result;
+  });
+  const snapshot = vi.fn(() => {
+    if (!flushCompleted || baseEvents === undefined) {
+      throw new Error("snapshot before successful flush");
+    }
+    return baseEvents.snapshot();
+  });
+  fixture.value.createRuntimeAdapters = ({ clock }) => {
+    const adapters = originalCreate({ clock });
+    baseEvents = adapters.events;
+    return Object.freeze({
+      ...adapters,
+      events: Object.freeze({
+        kind: adapters.events.kind,
+        emit: (event: GatewayEventEnvelope) => adapters.events.emit(event),
+        emitBatch: (events: readonly GatewayEventEnvelope[]) =>
+          adapters.events.emitBatch(events),
+        flush,
+        snapshot,
+      }),
+    });
+  };
+  return Object.freeze({ flush, snapshot });
+}
+
+function auditPrincipal(): PreProductionServingOptions["principal"] {
+  return Object.freeze({
+    tenantId: AUDIT_CANARIES.tenantId,
+    userId: AUDIT_CANARIES.userId,
+    role: "user" as const,
+    sessionId: AUDIT_CANARIES.sessionId,
+    oauthClientId: AUDIT_CANARIES.oauthClientId,
+  });
+}
+
+function auditInvocationEvent(): GatewayEventEnvelope {
+  const eventId = rbpId();
+  const attemptId = rbpId();
+  const invocationId = rbpId();
+  const recordedAt = new Date(NOW_MS).toISOString();
+  return {
+    schema: "revagent.event.v2",
+    event_id: eventId,
+    event_type: "tool.invocation",
+    occurred_at: recordedAt,
+    recorded_at: recordedAt,
+    tenant_id: AUDIT_CANARIES.tenantId,
+    source: {
+      component: "revagent-gateway",
+      version: "revagent.m4-preproduction-serving/v1",
+      instance: "m4-lan-test",
+    },
+    actor: { type: "user", user_id: AUDIT_CANARIES.userId },
+    session_id: AUDIT_CANARIES.sessionId,
+    seq: 1,
+    payload: {
+      dispatch_attempt_id: attemptId,
+      invocation_id: invocationId,
+      idempotency_key: AUDIT_CANARIES.idempotencyKey,
+      principal_key: `${AUDIT_CANARIES.tenantId}:${AUDIT_CANARIES.userId}`,
+      actor_role: "user",
+      gateway_session_id: AUDIT_CANARIES.sessionId,
+      oauth_client_id: AUDIT_CANARIES.oauthClientId,
+      mcp_session_id: AUDIT_CANARIES.mcpSessionId,
+      rsid: null,
+      tool_name: "core.ui.state",
+      tool_version: "1.0.0",
+      policy_class: "auto",
+      policy_decision: "auto",
+      confirmation_id: null,
+      originating_preview_invocation_id: null,
+      preview_digest: null,
+      preview_ref: null,
+      commit_args_digest: null,
+      confirmation_reason: null,
+      mutation_scope_policy: "none",
+      mutating: false,
+      executor: "bridge",
+      document_identity: null,
+      params_digest: `sha256:${"a".repeat(64)}`,
+      mutation_scope: null,
+      recovery_hold_ids: [],
+      recovery_resolution_ids: [],
+      outcome: "completed",
+      outcome_error_code: null,
+      executor_reached: true,
+      started_at_ms: NOW_MS - 25,
+      completed_at_ms: NOW_MS,
+      duration_ms: 25,
+    },
+  };
+}
+
 describe("M4 pre-production serving composition", () => {
   it("loads one credential and builds one inspectable identity/store/Bridge/north graph", async () => {
     const fixture = dependencies();
@@ -194,6 +311,116 @@ describe("M4 pre-production serving composition", () => {
         principalKey: "tenant-m4-serving:user-m4-serving",
       },
     });
+  });
+
+  it("flushes before projecting one registry-bound value-free audit snapshot", async () => {
+    const fixture = dependencies();
+    const probe = installEventProbe(fixture);
+    const prepared = await preparePreProductionServing(
+      options({ principal: auditPrincipal() }),
+      fixture.value,
+    );
+    await expect(
+      prepared.composition.ports.events.emit(auditInvocationEvent()),
+    ).resolves.toEqual({ ok: true, value: undefined });
+
+    const bundle = await prepared.exportAuditSnapshot();
+
+    expect(probe.flush).toHaveBeenCalledOnce();
+    expect(probe.snapshot).toHaveBeenCalledOnce();
+    expect(probe.flush.mock.invocationCallOrder[0]).toBeLessThan(
+      probe.snapshot.mock.invocationCallOrder[0] ?? Number.MAX_SAFE_INTEGER,
+    );
+    expect(bundle).toMatchObject({
+      contractVersion: "revagent.m4-value-free-audit-export/v1",
+      profile: "lan_test",
+      mode: "preproduction",
+      approvedLiveSelector: true,
+      complete: true,
+      selector: {
+        tenantBound: true,
+        userBound: true,
+        principalBound: true,
+        gatewaySessionBound: true,
+      },
+      recordCount: 1,
+      records: [
+        {
+          recordType: "invocation",
+          toolName: "core.ui.state",
+          toolVersion: "1.0.0",
+          policyClass: "auto",
+          mutationScopePolicy: "none",
+          executor: "bridge",
+          outcome: "completed",
+        },
+      ],
+    });
+    const retained = JSON.stringify(bundle);
+    for (const canary of Object.values(AUDIT_CANARIES)) {
+      expect(retained).not.toContain(canary);
+    }
+    for (const fragment of ["SYNTHETIC-", "HEAD", "MIDDLE", "TAIL"]) {
+      expect(retained).not.toContain(fragment);
+    }
+  });
+
+  it("transfers audit ownership before awaiting flush and refuses every later attempt", async () => {
+    const fixture = dependencies();
+    const probe = installEventProbe(fixture);
+    const prepared = await preparePreProductionServing(
+      options({ principal: auditPrincipal() }),
+      fixture.value,
+    );
+    await prepared.composition.ports.events.emit(auditInvocationEvent());
+
+    const first = prepared.exportAuditSnapshot();
+    await expect(prepared.exportAuditSnapshot()).rejects.toMatchObject({
+      code: "preproduction_audit_export_refused",
+      reason: "already_attempted",
+    });
+    await expect(first).resolves.toMatchObject({ recordCount: 1 });
+    await expect(prepared.exportAuditSnapshot()).rejects.toMatchObject({
+      code: "preproduction_audit_export_refused",
+      reason: "already_attempted",
+    });
+    expect(probe.flush).toHaveBeenCalledOnce();
+    expect(probe.snapshot).toHaveBeenCalledOnce();
+  });
+
+  it("maps source failure to a value-free refusal without taking a snapshot or retrying", async () => {
+    const sourceCanary =
+      "SYNTHETIC-AUDIT-SOURCE__HEAD__MIDDLE__TAIL__DO-NOT-EMIT";
+    const fixture = dependencies();
+    const probe = installEventProbe(fixture, {
+      flushError: new Error(sourceCanary),
+    });
+    const prepared = await preparePreProductionServing(
+      options({ principal: auditPrincipal() }),
+      fixture.value,
+    );
+
+    let caught: unknown;
+    try {
+      await prepared.exportAuditSnapshot();
+    } catch (error: unknown) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "preproduction_audit_export_refused",
+      reason: "source_unavailable",
+    });
+    const retained = `${JSON.stringify(caught)}${String(caught)}${String(
+      (caught as Error | undefined)?.stack,
+    )}`;
+    expect(retained).not.toContain(sourceCanary);
+    expect(retained).not.toContain("SYNTHETIC-");
+    expect(probe.flush).toHaveBeenCalledOnce();
+    expect(probe.snapshot).not.toHaveBeenCalled();
+    await expect(prepared.exportAuditSnapshot()).rejects.toMatchObject({
+      reason: "already_attempted",
+    });
+    expect(probe.flush).toHaveBeenCalledOnce();
   });
 
   it("mounts enrollment on the composed RBP host and exchanges through that same identity", async () => {

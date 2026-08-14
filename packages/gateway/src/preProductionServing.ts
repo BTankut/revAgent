@@ -11,6 +11,11 @@ import {
   type PreProductionLanTestComposition,
 } from "./preProductionComposition.js";
 import {
+  PreProductionAuditExportError,
+  projectPreProductionAudit,
+  type PreProductionAuditExportBundle,
+} from "./preProductionAuditExport.js";
+import {
   loadPreProductionCredentialFile,
   type PreProductionCredentialMaterial,
 } from "./preProductionCredentialFile.js";
@@ -100,6 +105,7 @@ export interface PreparedPreProductionServing {
   readonly enrollment: PreProductionEnrollmentIssue;
   start(tls: GatewayServerTlsMaterial): Promise<GatewayServerHandle>;
   revokeConfiguredDevice(): PreProductionIdentityResult<unknown>;
+  exportAuditSnapshot(): Promise<PreProductionAuditExportBundle>;
 }
 
 const DEFAULT_DEPENDENCIES: PreProductionServingDependencies = Object.freeze({
@@ -325,7 +331,26 @@ export async function preparePreProductionServing(
     return refused("enrollment_issue_refused");
   }
 
+  const auditSelector = Object.freeze({
+    tenantId: principal.tenantId,
+    userId: principal.userId,
+    principalKey: `${principal.tenantId}:${principal.userId}`,
+    gatewaySessionId: principal.sessionId,
+  });
+  const auditApprovedTools = Object.freeze(
+    registry.records().map((record) =>
+      Object.freeze({
+        name: record.name,
+        version: record.version,
+        policyClass: record.policyClass,
+        mutationScopePolicy: record.mutationScopePolicy,
+        executor: record.executor,
+      }),
+    ),
+  );
+
   let started = false;
+  let auditExportAttempted = false;
   return Object.freeze({
     contractVersion: PRE_PRODUCTION_SERVING_CONTRACT_VERSION,
     composition,
@@ -344,5 +369,42 @@ export async function preparePreProductionServing(
     },
     revokeConfiguredDevice: () =>
       composition.identity.revokeDevice(device.deviceId),
+    async exportAuditSnapshot(): Promise<PreProductionAuditExportBundle> {
+      if (auditExportAttempted) {
+        throw new PreProductionAuditExportError("already_attempted");
+      }
+      // Ownership is transferred before the first await so concurrent callers
+      // cannot flush, snapshot, or project a second process-lifetime export.
+      auditExportAttempted = true;
+
+      let events: readonly unknown[];
+      try {
+        const flushed = await adapters.events.flush();
+        if (!flushed.ok) {
+          throw new PreProductionAuditExportError("source_unavailable");
+        }
+        events = adapters.events.snapshot();
+      } catch (error: unknown) {
+        if (error instanceof PreProductionAuditExportError) {
+          throw error;
+        }
+        throw new PreProductionAuditExportError("source_unavailable");
+      }
+
+      try {
+        return projectPreProductionAudit({
+          profile: composition.profile,
+          mode: composition.mode,
+          selector: auditSelector,
+          approvedTools: auditApprovedTools,
+          events,
+        });
+      } catch (error: unknown) {
+        if (error instanceof PreProductionAuditExportError) {
+          throw error;
+        }
+        throw new PreProductionAuditExportError("source_unavailable");
+      }
+    },
   });
 }

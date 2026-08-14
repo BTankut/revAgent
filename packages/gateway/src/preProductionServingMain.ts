@@ -1,7 +1,38 @@
+import { writeSync } from "node:fs";
+
+import { createPreProductionAuditFileWriter } from "./preProductionAuditFile.js";
 import {
   launchPreProductionServingOwned,
   safePreProductionStartupReason,
 } from "./preProductionServingCli.js";
+import type { PreProductionAuditTextWriter } from "./preProductionAuditWriter.js";
+import { completePreProductionServingShutdown } from "./preProductionServingShutdown.js";
+
+function processStderrWriter(): PreProductionAuditTextWriter {
+  return Object.freeze({
+    write(
+      value: string,
+      options: { readonly signal: AbortSignal },
+      callback: (error?: unknown) => void,
+    ): void {
+      if (options.signal.aborted) {
+        callback(new Error("pre-production audit write aborted"));
+        return;
+      }
+      try {
+        writeSync(process.stderr.fd, value);
+        callback();
+      } catch (error: unknown) {
+        callback(error);
+      }
+    },
+  });
+}
+
+const PROCESS_SHUTDOWN_IO = Object.freeze({
+  stderr: processStderrWriter(),
+  createAuditArtifact: createPreProductionAuditFileWriter,
+});
 
 try {
   await launchPreProductionServingOwned(
@@ -12,10 +43,13 @@ try {
       const shutdown = (signal: NodeJS.Signals): void => {
         if (shuttingDown) return;
         shuttingDown = true;
-        void launch
-          .cleanup()
-          .then(() => process.exit(0))
-          .catch(() => {
+        void completePreProductionServingShutdown(
+          launch,
+          signal,
+          PROCESS_SHUTDOWN_IO,
+        ).then(
+          (exitCode) => process.exit(exitCode),
+          () => {
             process.stderr.write(
               `${JSON.stringify({
                 level: "fatal",
@@ -25,7 +59,8 @@ try {
               })}\n`,
             );
             process.exit(1);
-          });
+          },
+        );
       };
 
       process.on("SIGINT", shutdown);
