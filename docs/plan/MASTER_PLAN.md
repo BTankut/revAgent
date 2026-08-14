@@ -7,11 +7,11 @@
 its evidence remains `not_submitted`, and no milestone acceptance is recorded.
 The exact M2 code/evidence anchor remains
 `011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `9b7ead1396ac080ea90bf2923bd1ebe871847f3f` on `main`.
+anchor is `50e6cd9d0028bd480a378fd1201859fbdcbc13f3` on `main`.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-13
+**Last updated:** 2026-08-14
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -174,6 +174,42 @@ its active-session feasibility proof and the other six execution gates remain
 open; none is executed by A. `M4-WRITE-CONFIRM` remains a later separate gate.
 M4 stays `in_progress` / `not_submitted`; RES-30 remains open and the one-item
 Park List is unchanged.
+
+## 2026-08-14 M4-04 client-bearer route binding (M4-04/A4)
+
+After the A3 value-free refusal observer merged in `PR #377` as
+`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`, the planner bound Route 1 for the
+missing WP9 bearer sink: a CurrentUser-DPAPI numeric-loopback broker on
+PETRUCCI. The repo-only A4 slice may add the protected store, exact caller
+attestation, bounded local Streamable HTTP proxy, explicit A2 north-destination
+disposition, and a Codex registration containing only the numeric-loopback URL.
+The repo-only implementation is complete locally in draft `PR #378`: focused
+broker, coordinator, and Codex registration/security suites are green; both
+canonical local gates passed on the final common tree (`test-all` exit `0`,
+`777.50s`; `test-ci` exit `0`, `780.97s`); and the root lockfile remains byte-
+identical. Forecast was `5.50h`; actual active effort was `1.75h`, variance
+`-3.75h` (`-68%`). The first implementation head's protected Engineering job
+failed deterministically on its in-diff PowerShell 7 fixture compiler and
+exposed a missing destination abort-grace wiring; both defects are corrected
+locally without a same-head rerun. Its Gateway and separate Gateway CI jobs
+passed. Final implementation head
+`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` then passed
+[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1)
+for Engineering and Gateway/RBP plus
+[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1),
+without rerun. A4 remains draft; Claude review and planner merge authorization
+are pending, so the slice is not yet `passed` or merge-authorized.
+
+The authorization ceiling is unchanged. A4 may not access or mutate PETRUCCI,
+stage or run a broker, configure a real client, use a credential, or exercise
+Gateway, Bridge, Revit, DNS/TLS, ACL, enrollment, OAuth, or write/confirm
+surfaces. Broker stage and all M4-04/B operations remain separately operator-
+gated. If a future live connection cannot bind the accepted TCP peer to
+`PETRUCCI\ws2` plus one exact protected Codex image, package, hash, and signer,
+Route 1 stops without widening its allowlist. The E4 listenerless stdio route
+then requires a separate planner-bound fallback slice. A4 does not claim
+isolation from a process that has already compromised the same Windows user,
+administrator, or SYSTEM authority.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 

@@ -69,6 +69,7 @@ try {
     & (Join-Path $RepoRoot "scripts\test-os-path-security.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-m4-secret-handoff.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-m4-secret-handoff-coordinator.ps1") -RepoRoot $RepoRoot
+    & (Join-Path $RepoRoot "scripts\test-m4-client-bearer-broker.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-license-seat.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-source-free-migration.ps1") -RepoRoot $RepoRoot
     & (Join-Path $RepoRoot "scripts\test-desktop-launcher-evidence.ps1") -RepoRoot $RepoRoot

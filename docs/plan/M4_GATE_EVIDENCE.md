@@ -24,9 +24,13 @@
 ([`PR #376`](https://github.com/BTankut/revAgent/pull/376) merged as
 [`003fbc0d1a95be546c7b3ebdc36caa14e4f2b557`](https://github.com/BTankut/revAgent/commit/003fbc0d1a95be546c7b3ebdc36caa14e4f2b557))
 
-**M4-04/A3 slice state:** `implementation_complete_local`
-(draft [`PR #377`](https://github.com/BTankut/revAgent/pull/377); protected
-implementation checks pending)
+**M4-04/A3 slice state:** `passed_merged`
+([`PR #377`](https://github.com/BTankut/revAgent/pull/377) merged as
+[`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3))
+
+**M4-04/A4 slice state:** `implementation_checks_passed`
+(draft [`PR #378`](https://github.com/BTankut/revAgent/pull/378); Claude review
+and merge authorization pending)
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -40,8 +44,10 @@ client-feasibility inspection. `M4-04/A2` is the separately authorized
 repo-only credential generation and two-host secret-handoff seam. `M4-04/A3`
 is the separately authorized repo-only value-free refusal observer; it exposes
 the existing Gateway refusal and Bridge retry-pause decisions without changing
-their semantics. None of these bounded slices by itself satisfies or enlarges
-the M4 milestone gate.
+their semantics. `M4-04/A4` is the planner-bound repo-only CurrentUser-DPAPI
+numeric-loopback bearer-broker seam. It does not install or run the broker on
+PETRUCCI and does not open any M4-04/B execution gate. None of these bounded
+slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
 [`42f830ac89e447360a4ebc71120300d5f935fe34`](https://github.com/BTankut/revAgent/commit/42f830ac89e447360a4ebc71120300d5f935fe34)
@@ -57,6 +63,9 @@ the M4 milestone gate.
 
 **M4-04/A2 exact slice base:**
 [`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAgent/commit/6aa04593657fa2e3ee8a656ff97b553daf07f29e)
+
+**M4-04/A4 exact slice base:**
+[`50e6cd9d0028bd480a378fd1201859fbdcbc13f3`](https://github.com/BTankut/revAgent/commit/50e6cd9d0028bd480a378fd1201859fbdcbc13f3)
 
 ## Authorization ceiling
 
@@ -544,7 +553,7 @@ Passive CI/review waits are excluded.
 
 ## M4-04/A3 observer disposition
 
-**Gate state:** `implementation_complete_local`
+**Gate state:** `passed_merged`
 
 **Planner decision:** `A3 bound` on 2026-08-13.
 
@@ -618,6 +627,18 @@ and A2 `-14%` variances. **Actual:** `1.00h` active effort. **Variance:**
   credential, container, DNS/TLS, client, Revit, or other live operation was
   performed.
 
+**Protected closure evidence:** final head
+`7701b1bfc914fa004f5f9008670b0163c80e16ec` passed
+[CI 31745814390, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31745814390/attempts/1),
+[Gateway CI 31745814348, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31745814348/attempts/1),
+and [Claude review 31769245073, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769245073/attempts/1).
+`PR #377` squash-merged as `50e6cd9d0028bd480a378fd1201859fbdcbc13f3`.
+Its merge-push [CI 31769428226, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769428226/attempts/1)
+passed Engineering and Gateway/RBP gates, and
+[Gateway CI 31769428229, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31769428229/attempts/1)
+passed. Signed Source-Free CD did not trigger; the unrelated M0 Gateway CD stub
+was skipped. No rerun was used.
+
 **Red-attempt and review dispositions:**
 
 - The first fresh-worktree Gateway package attempt used Node 22 after an
@@ -656,6 +677,198 @@ plus a value-free Bridge `RetryPaused/Auth` observer. Any Bridge binary stage
 remains outside A3 implementation proof and requires its own operator-approved
 snapshot, service-stop/stage/start, rollback, and protected-surface equality
 card.
+
+## M4-04/A4 CurrentUser bearer-broker seam
+
+**Gate state:** `implementation_checks_passed`
+
+**Planner decision:** `A4 bound` on 2026-08-14. Route 1 is a
+CurrentUser-DPAPI numeric-loopback bearer broker; the listenerless stdio route
+recorded by E4 is the fail-closed fallback, not an implicit second path.
+
+**Scope of record:** protected source is
+`50e6cd9d0028bd480a378fd1201859fbdcbc13f3` (`PR #377` squash merge). This
+repo-only slice owns an explicit `north_bearer` destination disposition, a
+self-contained Windows broker that retains only CurrentUser-DPAPI ciphertext,
+an exact numeric-loopback Streamable HTTP endpoint, and a secretless Codex
+registration containing only that local URL. The legacy A2 north refusal stays
+the default and remains valid history; only the explicit A4 disposition may
+retain the protected destination.
+
+The broker must authenticate the local caller before decrypting or injecting
+the bearer. The bound evidence chain is the exact established IPv4 tuple to one
+PID, an open process handle held through the request, `PETRUCCI\ws2` SID and
+account, exact protected Codex image path and SHA-256, exact package family and
+valid expected signer, followed by repeated tuple and process-identity checks.
+The TCP direction must resolve the accepted connection's remote endpoint as the
+client; resolving and attesting the broker's own listener PID is a refusal.
+Incoming authorization, cookie, proxy, forwarding, and hop-by-hop headers are
+discarded; the broker alone injects the bearer to the exact HTTPS test origin.
+
+Acceptance requires deterministic CurrentUser-DPAPI round-trip and cleanup,
+strict root/file ACL and identity checks, no plaintext file, exact
+numeric-loopback binding, bounded Streamable HTTP forwarding including SSE and
+cancellation, zero upstream calls for an unauthorized caller, secretless Codex
+TOML, unchanged stdio-default behavior, and explicit tests proving recognizable
+`SYNTHETIC-...` values and distinguishing fragments never enter argv, env,
+TOML, stdout/stderr, exceptions, logs, or evidence. The root npm lockfile must
+remain byte-identical.
+
+**Stop / fallback rule:** if the live PETRUCCI connection cannot be reliably
+bound to `PETRUCCI\ws2` and one exact Codex image/signer/package profile, Route
+1 stops. The allowlist must not broaden to a helper family, user-writable copy,
+or ambiguous owner. Route 3 then requires its own planner-bound implementation
+slice and operator-approved stage. This user-mode attribution is not claimed
+to isolate a fully compromised process already running as the same Windows
+user, administrator, or SYSTEM.
+
+**Explicitly out:** PETRUCCI or `revagent` access, broker build/stage/install or
+execution outside repository tests, real credential generation or use, Codex
+configuration mutation, Gateway/container or Bridge stage, DNS/TLS/UFW/tunnel
+work, enrollment/revoke, tenant/OAuth, external/live client, Revit/model
+operation, reboot/persistence, write/confirm, production origin/deploy,
+workflow/runner/CD/signing/NAS changes, and implementation of the stdio
+fallback. Each remains behind its existing separate gate.
+
+**Forecast:** `5.50h` active effort. **Actual:** `1.75h` active effort.
+**Variance:** `-3.75h` (`-68%`). Passive CI/review and later live-gate waits
+are excluded.
+
+**Local implementation evidence:**
+
+- The self-contained `net8.0-windows` broker accepts the A2 handoff frame only
+  through standard input, retains only `CurrentUser` DPAPI ciphertext beneath a
+  protected, non-reparse, single-link root/file chain, and exposes fixed,
+  value-free receive, absence-probe, cleanup, and refusal metadata. Deterministic
+  negatives cover inherited or broad ACLs, hardlinks, reparse paths when the
+  host permits their creation, and a foreign/non-narrow replacement that cleanup
+  must not delete.
+- Every proxied request is authorized before decrypting the bearer. The caller
+  authority resolves the accepted IPv4 connection's reverse tuple to one
+  non-broker PID, opens and retains that process plus its protected image, and
+  checks exact SID/account, AppX package/full-name/path, image SHA-256, valid
+  OpenAI signer subject, and operator-pinned signer thumbprint before and after
+  forwarding. Unauthorized callers make zero upstream calls and trigger zero
+  decrypts. The mutable bearer buffer is zeroed after success, refusal,
+  cancellation, and upstream failure; no stronger claim is made about immutable
+  framework strings or a process already compromised under the same user,
+  Administrator, or SYSTEM authority.
+- The broker binds only canonical `http://127.0.0.1:1024..65535/mcp`, forwards
+  only `GET`/`POST`/`DELETE` to
+  `https://m4-gateway.revagent.app/mcp`, strips caller auth/cookie/proxy/
+  forwarding and unlisted headers, and preserves bounded MCP/SSE response
+  streaming and cancellation. Its `13` focused scenarios pass under both
+  PowerShell 7 and Windows PowerShell 5.1; the final root rerun was `4.70s` with
+  `0` build warnings and `0` build errors.
+- The A2 coordinator keeps `north_refusal_v1` as its exact default and exposes
+  `current_user_dpapi_broker_v1` only for `north_bearer`. The explicit route
+  reserves ordered absolute deadlines at `40/50/65/70/80/85/100%` for operation,
+  source stop, source absence proof, destination stop, destination cleanup,
+  cleanup stop, and positive destination absence proof. Native process-handle
+  waits and ownership guards prevent inherited stdout/stderr or an incomplete
+  pipe copy from bypassing those deadlines. Fifteen-second source and
+  destination pipe-holder regressions remain below their `9.50s` ceiling, and a
+  real operation timeout proves the source cleanup probe ran before destination
+  disposition. The final focused coordinator suite passed under PowerShell 7
+  in `47.82s` and Windows PowerShell 5.1 in `48.59s`.
+- Codex registration preserves stdio as the default. The explicit A4 mode
+  atomically replaces only the managed runtime table with the exact secretless
+  numeric-loopback URL, retains the docs server on stdio, verifies the current
+  `streamable_http` CLI readback shape with every bearer/header field absent,
+  and is wired through the hardened public installer entrypoint. Ports below
+  `1024`, aliases, wildcard/IPv6 hosts, and path/query/fragment drift fail before
+  mutation. The final Codex integration-security suite passed in `46.35s`.
+- The recognizable `64`-character synthetic bearer and distinct head/middle/
+  tail fragments are absent from DPAPI ciphertext and every exercised public
+  output/error/evidence surface. Registration tests separately prove their
+  absence from TOML, result/readback/error data, and observed child argv/env.
+  Root `package-lock.json` remains byte-identical at blob
+  `b3d8df2755b2ead322f36100bc1c0fb177af082c`; the new project has no
+  `PackageReference`. No host, credential, Codex user configuration, DNS/TLS,
+  Gateway, Bridge, Revit, workflow/runner, signing, CD, or NAS operation ran.
+  The implementation necessarily changes `installer/**`, so the later approved
+  merge is expected to trigger Signed Source-Free CD and its terminal result
+  must be reported.
+- The final common local tree passed `scripts/test-all.ps1` with exit `0` in
+  `777.50s` and `scripts/test-ci.ps1` with exit `0` in `780.97s`. The latter
+  includes the same `13` broker scenarios, coordinator and Codex security
+  regressions, Bridge suites, release guards, and CI-safe engineering gates.
+
+**Protected implementation evidence:** final implementation head
+`f65eb7053fd3090ba12c1d253e6f0fa6461459b7` passed
+[CI 31779441328, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441328/attempts/1):
+[Engineering job 94701789935](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701789935)
+and [Gateway job 94701791035](https://github.com/BTankut/revAgent/actions/runs/31779441328/job/94701791035)
+both passed. Separate
+[Gateway CI 31779441323, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31779441323/attempts/1)
+([job 94701787582](https://github.com/BTankut/revAgent/actions/runs/31779441323/job/94701787582))
+passed. GitGuardian passed; no rerun was used. The PR remains draft, so Claude
+review is intentionally not yet triggered and this is not a merge or M4 gate
+closure.
+
+**Red-attempt and review dispositions:**
+
+- Initial broker preparation failed on missing restore assets, three incorrect
+  framework API assumptions, a self-contained test/project mismatch, and the
+  test source being compiled as a second entrypoint. Restore, the pinned .NET 8
+  APIs, matching test RID, and explicit test-source exclusion closed these
+  build-only failures; the final build has no warning or error.
+- Early broker harness runs exposed Windows PowerShell 5.1 differences in ACL
+  extension discovery, `ProcessStartInfo.ArgumentList`, UTF-8 BOM handling,
+  `Span<byte>` binding, string overloads, and process-tree kill overloads. The
+  runner now uses bounded compatibility paths already supported by the repo;
+  both PowerShell editions pass the same `13` scenarios. A RID-dependent source-
+  root calculation also made the no-argv test scan its own `--bearer` fixture;
+  resolving from the repo working directory removed that harness-only false
+  positive. A separately attempted external symlink feasibility command was
+  blocked before execution by shell policy, so the final proof uses deterministic
+  identity policy plus native .NET symlink fixtures where the host permits them.
+- Independent review found that an early proxy loaded plaintext before caller
+  authorization and that its first caller policy was broader than the bound
+  exact image/package/signer identity. Decrypt was moved behind a retained
+  authorization lease, identity was pinned exactly, and deterministic native-
+  negative, tuple/process-sandwich, ACL, reparse, hardlink, replacement,
+  zero-decrypt, zeroization, and fragment-leak regressions were added.
+- Coordinator harness iterations exposed `OrderedDictionary` property lookup,
+  PowerShell 5.1 BOM and nullable binding, an unconsumed stop-helper boolean,
+  an undersized receiver-abort window, and a residue-negative expectation that
+  contradicted positive-absence semantics. These were respectively corrected
+  with dictionary-key lookup, the production receiver's exact optional-BOM
+  rule, direct integer binding, voided helper output, a distinct destination
+  stop window, and the required `exit 79` plus retained-residue expectation.
+  Review then found three boundedness defects:
+  synchronous stream harvest after uncertain stop, no source-proof budget after
+  an operation timeout, and a second synchronous commit/abort write while an
+  incomplete copy still owned the destination pipe. Fixed metadata harvesting,
+  distinct ordered deadlines, native handle waits, and the incomplete-copy
+  ownership guard close all three; the adversarial `45s` suite is green.
+- Registration tests initially had fixture-only scalar/name mismatches. The
+  corrected fixtures now prove both the legacy stdio result shape and the exact
+  secretless HTTP shape. Review also found a `1..1023` registration range that
+  the broker would refuse; both layers now share the canonical
+  `1024..65535` contract. The protected implementation-head failure and its
+  complete disposition are recorded below.
+- The first local `test-ci` launcher used a `5s` orchestration timeout. The
+  tool returned `124` before any test result, left one child briefly running,
+  and lost that child's exit/output; it is therefore not counted as a test
+  attempt. The child was confirmed absent before the single evidence-bearing
+  rerun above, which completed normally with exit `0`.
+- Implementation head `32237beadf7da3a61913725645b7e9dae7239f29` produced
+  one deterministic protected red in
+  [CI 31775848515, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848515/attempts/1):
+  [Engineering job 94691012437](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012437)
+  failed before the coordinator cases because PowerShell 7 does not support
+  `Add-Type -OutputType ConsoleApplication`. The failing test file was in this
+  slice's diff, so no same-head rerun was used. The fixture now compiles from a
+  temporary SDK project under both PowerShell editions. That portability fix
+  then exposed a real deadline-wiring defect: after a timed-out source absence
+  probe, the receiver wait reused the `65%` `SourceProof` deadline instead of
+  the distinct `70%` `DestinationStop` deadline, leaving no receiver abort
+  grace. The coordinator now uses the bound destination deadline; the
+  adversarial lifecycle case and both full local gates pass. The same protected
+  run's [Gateway job 94691012520](https://github.com/BTankut/revAgent/actions/runs/31775848515/job/94691012520)
+  passed, as did
+  [Gateway CI 31775848467, attempt 1](https://github.com/BTankut/revAgent/actions/runs/31775848467/attempts/1).
 
 ## Closed credential gate and explicitly open gates
 
