@@ -53,6 +53,31 @@ internal sealed class BridgeEnrollmentToken : IDisposable
     }
 
     /// <summary>
+    /// Validates and copies an already UTF-8-encoded enrollment token without
+    /// materializing the secret as an intermediate managed string. Visible
+    /// ASCII is a strict UTF-8 subset, so byte validation also rejects invalid
+    /// UTF-8, control characters, whitespace, and non-ASCII input.
+    /// </summary>
+    internal static BridgeEnrollmentToken ParseUtf8(
+        ReadOnlySpan<byte> utf8Value)
+    {
+        if (utf8Value.Length is < MinimumLength or > MaximumLength)
+        {
+            throw InvalidUtf8Token(nameof(utf8Value));
+        }
+
+        foreach (byte value in utf8Value)
+        {
+            if (value is < (byte)'!' or > (byte)'~')
+            {
+                throw InvalidUtf8Token(nameof(utf8Value));
+            }
+        }
+
+        return new BridgeEnrollmentToken(utf8Value.ToArray());
+    }
+
+    /// <summary>
     /// Reveals the token for its one exchange request and destroys the
     /// stored value in the same operation. A second consumption attempt
     /// fails closed instead of replaying the token.
@@ -92,4 +117,11 @@ internal sealed class BridgeEnrollmentToken : IDisposable
             CryptographicOperations.ZeroMemory(value);
         }
     }
+
+    private static ArgumentException InvalidUtf8Token(string parameterName) =>
+        new(
+            "The enrollment token must be an opaque bounded run of " +
+            $"{MinimumLength} through {MaximumLength} visible ASCII " +
+            "characters.",
+            parameterName);
 }

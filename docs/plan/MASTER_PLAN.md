@@ -221,7 +221,15 @@ contract. The planner therefore bound A5 as a `2.00h` repo-only hard blocker:
 one listenerless protected-file consumer validates path, owner/DACL, link,
 bounded schema, and expiry; calls the existing enrollment coordinator in
 memory; emits only value-free results; and positively unlinks the artifact on
-every path.
+every owned terminal path. The repo implementation is now
+`implementation_checks_passed` in draft `PR #379`: the focused A5 suite passed
+`57/57`, formatting verification passed, and the final common tree passed
+`test-all` (exit `0`, `745.8s`; Contracts `308/308`, Bridge `850/850`) and
+`test-ci` (exit `0`, `752.1s`). Root `package-lock.json` remains byte-identical.
+Forecast was `2.00h`; actual active effort was `1.75h`, variance `-0.25h`
+(`-13%`). The scope-record head passed CI and Gateway CI at attempt `1`; the
+implementation exact-head protected runs, Claude review, and merge
+authorization remain pending.
 
 A5 may not alter Bridge auth/retry/observer behavior and opens no host or live
 gate. PETRUCCI stage/service/config mutation, real enrollment, Gateway image
