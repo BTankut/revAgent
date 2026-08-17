@@ -1718,6 +1718,13 @@ docs/plan/M4_GATE_EVIDENCE.md
   already configured, so a local range scan would remove the dependency
   entirely. Real fragility, but it blocks nothing on the critical path: parked
   for reassessment at M4 close.
+  **Retroactively confirmed on 2026-08-17:** once the platform recovered, the
+  same step executed and passed against the same repository
+  (`Gateway CI` run `32051594276`, step `Scan tracked history for secrets` ->
+  success). That converts two earlier inferences into measurements: the
+  `14:00Z` red was purely infrastructural, and the tracker diff carries no
+  secret. The dependency on `/pulls/{n}/commits` is real and unchanged -- it
+  simply did not fire here.
 - An operator-specific SSH key path (`C:\Users\BT\.ssh\id_ed25519`) is documented
   as if it were general in six places across `docs/DEVELOPER_RUNBOOK.md`,
   `README.md`, and `installer/nas/README.md`. Cosmetic; parked.
