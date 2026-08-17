@@ -663,36 +663,75 @@ function Invoke-RevAgentMetadataProcess {
 }
 
 function New-RevAgentCleanupUncertainResult {
-    param([string]$Kind)
+    param([string]$Kind, [string]$DestinationReason)
 
+    # DestinationReason surfaces the destination's own refusal reason instead of
+    # collapsing every downstream failure into the single word
+    # "cleanup_uncertain". Four consecutive live invocations were spent blind
+    # because this coordinator held the destination's result internally and
+    # never emitted it, so a refused frame and a failed metadata shape were
+    # indistinguishable from the caller's side.
+    #
+    # This is value-free by construction: the secret travels on the
+    # destination's STDIN, and its STDOUT carries only the result JSON. Only the
+    # closed reason/code vocabulary is copied here -- never a payload, path, or
+    # raw stream.
+    $result = [ordered]@{
+        ok = $false
+        action = $script:CoordinatorAction
+        contractVersion = $script:ContractVersion
+        kind = $Kind
+        code = "cleanup_uncertain"
+        reason = "cleanup_uncertain"
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DestinationReason)) {
+        $result["destinationReason"] = $DestinationReason
+    }
     return [pscustomobject][ordered]@{
         ExitCode = 79
-        Result = [ordered]@{
-            ok = $false
-            action = $script:CoordinatorAction
-            contractVersion = $script:ContractVersion
-            kind = $Kind
-            code = "cleanup_uncertain"
-            reason = "cleanup_uncertain"
-        }
+        Result = $result
     }
 }
 
-function New-RevAgentHandoffFailureResult {
-    param([string]$Kind)
+function Get-RevAgentDestinationReason {
+    param($Metadata)
 
+    # Closed vocabulary only: a short token from the destination's own result
+    # JSON. Anything unexpected is reported as its shape, not its content.
+    if ($null -eq $Metadata) { return "destination_no_result" }
+    foreach ($field in @("reason", "code")) {
+        $value = $null
+        try { $value = $Metadata.$field } catch { $value = $null }
+        if ($value -is [string] -and
+            $value.Length -gt 0 -and $value.Length -le 64 -and
+            [regex]::IsMatch($value, '^[a-z0-9_]+$')) {
+            return $value
+        }
+    }
+    return "destination_reason_unavailable"
+}
+
+function New-RevAgentHandoffFailureResult {
+    param([string]$Kind, [string]$DestinationReason)
+
+    # See New-RevAgentCleanupUncertainResult for why the destination's own
+    # reason is surfaced and why doing so is value-free.
+    $result = [ordered]@{
+        ok = $false
+        action = $script:CoordinatorAction
+        contractVersion = $script:ContractVersion
+        kind = $Kind
+        code = "m4_secret_handoff_refused"
+        reason = "handoff_failed"
+        sourceAbsent = $true
+        destinationAbsent = $true
+    }
+    if (-not [string]::IsNullOrWhiteSpace($DestinationReason)) {
+        $result["destinationReason"] = $DestinationReason
+    }
     return [pscustomobject][ordered]@{
         ExitCode = 78
-        Result = [ordered]@{
-            ok = $false
-            action = $script:CoordinatorAction
-            contractVersion = $script:ContractVersion
-            kind = $Kind
-            code = "m4_secret_handoff_refused"
-            reason = "handoff_failed"
-            sourceAbsent = $true
-            destinationAbsent = $true
-        }
+        Result = $result
     }
 }
 
@@ -1159,10 +1198,12 @@ function Invoke-RevAgentM4HandoffCore {
     if ($terminalUncertain -or -not $sourceAbsent -or
         -not $destinationCleanupProved -or
         (-not $destinationMayBeRetained -and -not $destinationAbsent)) {
-        return New-RevAgentCleanupUncertainResult -Kind $Kind
+        return New-RevAgentCleanupUncertainResult -Kind $Kind `
+            -DestinationReason (Get-RevAgentDestinationReason -Metadata $destinationMetadata)
     }
     if (-not $operationSucceeded) {
-        return New-RevAgentHandoffFailureResult -Kind $Kind
+        return New-RevAgentHandoffFailureResult -Kind $Kind `
+            -DestinationReason (Get-RevAgentDestinationReason -Metadata $destinationMetadata)
     }
     if ($Kind -eq "north_bearer" -and -not $usesCurrentUserDpapiBroker) {
         return [pscustomobject][ordered]@{
