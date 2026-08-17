@@ -276,7 +276,8 @@ workflows, runners, CD/signing, NAS, host, image, credential, DNS/TLS/ACL,
 broker/client, Revit, enrollment/revoke execution, reboot, write/confirm, and
 production deploy/tunnel surfaces are outside the slice.
 Protected source is `8dcb664ee721d706e69ed70a17620ded73bec292`;
-state is `implementation_checks_passed` in draft `PR #380`. The final focused
+state is `passed_merged` — `PR #380` merged on 2026-08-14 as
+`e9246cd1d51791db970bad800e6d2de418f5fc02`. The final focused
 five-file A7/serving suite passes `91` with one POSIX permission test skipped
 on Windows; Gateway lint, type-check, and build pass; `test-all` exits `0` in
 `720.8s`; and `test-ci` exits `0` in `727.0s`. The writer accepts only runtime-
@@ -286,8 +287,9 @@ identical. Forecast was `2.00h`; actual active effort is `2.50h`, variance
 `+0.50h` (`+25%`). The scope checkpoint passed CI and Gateway CI at attempt `1`
 without rerun. Implementation candidate
 `66f0fd9264afb9165e0b868d49b83ff18239a6d2` passed CI `31825900958` and
-Gateway CI `31825900964`, both at attempt `1` without rerun. The docs-only
-evidence head, Claude review, and planner merge authorization remain open.
+Gateway CI `31825900964`, both at attempt `1` without rerun. Claude review and
+planner merge authorization were subsequently given, and the merged commit
+became the pinned protected source for the M4-04/B bounded live session.
 
 The manual DNS route is also final: A6 is permanently canceled and no
 Cloudflare API token will be generated or requested. G2 will show the operator
@@ -355,7 +357,10 @@ startup anomaly was never re-measured; an operator-specific SSH key path is
 documented as if general in six places. R1 (CONNECT proxy support) and R2
 (server-authoritative time plus nonce/challenge) are proposed for M5/M6 scope,
 and GAP-14's detection plus one-command re-registration belongs to WP3/WP8. The
-permanent source repair and the documentation sweep are separate slices.
+permanent source repair is the one remaining authorized closing slice; every
+other item above is parked and reassessed at M4 close, under the planner's rule
+that a finding surfaced during closure becomes a slice only if it opens the
+chain toward the milestone's acceptance criterion.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 

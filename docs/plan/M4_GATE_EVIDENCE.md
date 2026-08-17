@@ -1177,8 +1177,15 @@ positive confirmation. No DNS mutation is authorized by A7.
 
 **Planner decision:** the closing slices were assigned to the executor on
 2026-08-17 after the planner accepted the M4-04/B closing report. This tracker
-slice is the first of three; the permanent source fix and the documentation
-sweep are separate slices.
+slice is the first of **two** authorized closing slices; the permanent source
+fix is the second. Every other finding surfaced during closure is a Park item,
+not a slice.
+
+**Parking rule, set by the planner on 2026-08-17.** A finding surfaced during
+closure or review does not automatically become a slice. The test is whether it
+opens the chain toward the milestone's acceptance criterion; if it does not, it
+goes to the Park List and is reassessed at M4 close. This record follows that
+rule, and the Park List below is the destination for the items it names.
 
 **Scope of record:** protected source is
 `e9246cd1d51791db970bad800e6d2de418f5fc02` (`PR #380` squash merge), the exact
@@ -1211,6 +1218,33 @@ on the coordinator workstation `DESKTOP-OKNV128` as deliberately retained
 evidence, not repository content. This record cites its files by name and
 SHA-256 so the chain stays verifiable without importing any of its bytes. No
 secret value, credential byte, or DPAPI blob is reproduced here.
+
+### Session gate names mapped onto the repository's seven gates
+
+The live session ran under session-local card names (`T0`, `G2`–`G7`). Those
+names exist only in the session package; `G3`–`G6` appear in no repository file.
+The repository's canonical seven are enumerated earlier in this document. The
+mapping below is what makes this record readable without the session package.
+
+| Session name | Repository gate | Outcome |
+|---|---|---|
+| `T0` | baseline for `CLIENT-PLACEMENT/FEASIBILITY` | active-session feasibility proven — Revit open with a document, Codex running |
+| `G2` | `DNS/TLS-TRUST` | `passed`, then fully reversed at `G7` |
+| `G3` | `NETWORK/ACL` | `passed` as configured; never traversed |
+| `G4A` | `BRIDGE-STAGE` | `passed` on retry |
+| `G4B` | staging precondition of `CLIENT/LIVE` | broker staged and proven healthy; never run live |
+| `G5` | `CREDENTIAL/ENROLL` | **blocked** by a product defect |
+| `G6` | `CLIENT/LIVE` | **never opened** — out of scope once `G5` blocked |
+| `G7` | `CLEANUP/RESIDUE-EQUALITY` | `passed` |
+
+Two mappings are deliberately not one-to-one and are stated rather than forced.
+`T0` is a baseline snapshot, not one of the seven; it closed the active-session
+feasibility question that `CLIENT-PLACEMENT/FEASIBILITY` had left open. `G4B`
+staged the client-side broker, which belongs to `CLIENT/LIVE`, so it is a
+precondition of that gate rather than a gate of its own — `CLIENT/LIVE` itself
+remains untouched.
+
+`M4-WRITE-CONFIRM` was not approached at any point in this session.
 
 ### Gate chain outcome
 
@@ -1493,8 +1527,8 @@ unrevoked certificate recorded in the Park List.
    say what failed.
 4. **An operator-specific SSH key path is documented as if it were general.**
    Six occurrences across `docs/DEVELOPER_RUNBOOK.md`, `README.md`, and
-   `installer/nas/README.md`. A separate documentation slice owns the repo-wide
-   sweep and the replacement with a placeholder.
+   `installer/nas/README.md`. Cosmetic, blocks nothing; parked for reassessment
+   at M4 close rather than opened as a slice.
 
 **Forecast / actual / variance:** `1.50h` / `1.00h` / `-0.50h` (`-33%`) active
 effort for this tracker slice. Passive CI, review, and planner waits are
@@ -1590,6 +1624,18 @@ this slice opened.
   G5 did not reach the Bridge restart. It stays inside the `30s`
   `StartupTimeout`, so it is a non-blocking performance Park item; the next
   bounded session gets the measurement for free.
+- The `Gateway CI` secret-scan step is fail-closed on an API call it does not
+  need. `gitleaks-action`'s `ScanPullRequest` path calls
+  `/repos/{owner}/{repo}/pulls/{n}/commits`; when that endpoint is unavailable
+  the action crashes before scanning anything, every later step is skipped, and
+  the whole job fails while reporting a secrets-scan failure that never happened.
+  Observed on 2026-08-17 during a GitHub platform incident. `fetch-depth: 0` is
+  already configured, so a local range scan would remove the dependency
+  entirely. Real fragility, but it blocks nothing on the critical path: parked
+  for reassessment at M4 close.
+- An operator-specific SSH key path (`C:\Users\BT\.ssh\id_ed25519`) is documented
+  as if it were general in six places across `docs/DEVELOPER_RUNBOOK.md`,
+  `README.md`, and `installer/nas/README.md`. Cosmetic; parked.
 
 ## Submission rule
 
