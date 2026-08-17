@@ -36,7 +36,11 @@
 ([`PR #379`](https://github.com/BTankut/revAgent/pull/379) merged as
 [`8dcb664ee721d706e69ed70a17620ded73bec292`](https://github.com/BTankut/revAgent/commit/8dcb664ee721d706e69ed70a17620ded73bec292))
 
-**M4-04/A7 slice state:** `implementation_checks_passed`
+**M4-04/A7 slice state:** `passed_merged`
+([`PR #380`](https://github.com/BTankut/revAgent/pull/380) merged as
+[`e9246cd1d51791db970bad800e6d2de418f5fc02`](https://github.com/BTankut/revAgent/commit/e9246cd1d51791db970bad800e6d2de418f5fc02))
+
+**M4-04/B session state:** `blocked/partial`
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -59,7 +63,11 @@ without changing Bridge auth, retry, or observer semantics. `M4-04/A7` is the
 planner-bound repo-only bounded, value-free projection and atomic protected
 retained-artifact export of the pre-production Gateway's process-lifetime
 invocation/confirmation audit. Success writes no stdout; it opens no route or
-listener and never exports the raw event envelope. None of these
+listener and never exports the raw event envelope. `M4-04/B` is the separately
+authorized bounded live session that executed the two-host gate chain
+`T0 -> G2 -> G3 -> G4A -> G4B -> G5 -> G7` against the pinned A7 image; this
+tracker slice records its outcome and open items only and authorizes no further
+host, network, credential, client, or Revit action. None of these
 bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
@@ -82,6 +90,9 @@ bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-04/A5 exact slice base:**
 [`239de8d3826f25a12f858374f495d5ecfbd67e02`](https://github.com/BTankut/revAgent/commit/239de8d3826f25a12f858374f495d5ecfbd67e02)
+
+**M4-04/B exact session base:**
+[`e9246cd1d51791db970bad800e6d2de418f5fc02`](https://github.com/BTankut/revAgent/commit/e9246cd1d51791db970bad800e6d2de418f5fc02)
 
 ## Authorization ceiling
 
@@ -1015,7 +1026,9 @@ passed both Engineering and Gateway/RBP jobs. No rerun was used. No
 
 ## M4-04/A7 bounded value-free audit export
 
-**Gate state:** `implementation_checks_passed`
+**Gate state:** `passed_merged` — `PR #380` merged as
+`e9246cd1d51791db970bad800e6d2de418f5fc02`, which became the pinned protected
+source for the M4-04/B bounded live session.
 
 **Planner decision:** `A7 bound` on 2026-08-14 as a `2.00h` hard prerequisite
 for the single bounded M4-04/B live session.
@@ -1158,6 +1171,389 @@ by the certificate order. No Cloudflare API token will be generated or
 requested. G7 must delete both A and TXT records and retain the operator's
 positive confirmation. No DNS mutation is authorized by A7.
 
+## M4-04/B bounded live session
+
+**Gate state:** `blocked/partial`
+
+**Planner decision:** the closing slices were assigned to the executor on
+2026-08-17 after the planner accepted the M4-04/B closing report. This tracker
+slice is the first of **two** authorized closing slices; the permanent source
+fix is the second. Every other finding surfaced during closure is a Park item,
+not a slice.
+
+**Parking rule, set by the planner on 2026-08-17.** A finding surfaced during
+closure or review does not automatically become a slice. The test is whether it
+opens the chain toward the milestone's acceptance criterion; if it does not, it
+goes to the Park List and is reassessed at M4 close. This record follows that
+rule, and the Park List below is the destination for the items it names.
+
+**Scope of record:** protected source is
+`e9246cd1d51791db970bad800e6d2de418f5fc02` (`PR #380` squash merge), the exact
+commit the live session was pinned to. This slice records the outcome of the
+bounded live session that ran `T0 -> G2 -> G3 -> G4A -> G4B -> G5 -> G7` across
+`revagent` (Gateway) and `PETRUCCI` (client/Bridge/add-in/Revit): the gates that
+passed, the head finding that blocked `G5`, the acceptance-versus-reality and
+card-versus-code differences, the product-requirement outputs, the environment
+findings, the residue declaration for all three machines, and the open items.
+It sets `M4-04` to `blocked/partial` and leaves the `M4` milestone row at
+`in_progress`, because only the milestone decision owner may move a milestone
+state.
+
+**Explicitly out:** every executable surface. This slice performs no host,
+image, container, network, DNS/TLS/ACL, credential, enrollment, revoke, broker,
+client, Revit, reboot, write/confirm, workflow, runner, CD, signing, or NAS
+action, and changes no product source. The permanent source repair of the
+handoff read-then-assert ordering and the coordinator command construction is a
+separate slice and must not appear in this diff. The repaired coordinator copy
+staged on the coordinator workstation during the live session must not enter the
+repository through this or any tracker slice.
+
+The path allowlist is `docs/plan/M4_GATE_EVIDENCE.md` and
+`docs/plan/MASTER_PLAN.md` only. No source, test, manifest, lockfile, workflow,
+installer, or decision-record file is in scope. Root `package-lock.json` must
+remain blob-identical.
+
+**Evidence basis:** the live session's hash-chained evidence package is retained
+on the coordinator workstation `DESKTOP-OKNV128` as deliberately retained
+evidence, not repository content. This record cites its files by name and
+SHA-256 so the chain stays verifiable without importing any of its bytes. No
+secret value, credential byte, or DPAPI blob is reproduced here.
+
+### Session gate names mapped onto the repository's seven gates
+
+The live session ran under session-local card names (`T0`, `G2`–`G7`). Those
+names exist only in the session package; `G3`–`G6` appear in no repository file.
+The repository's canonical seven are enumerated earlier in this document. The
+mapping below is what makes this record readable without the session package.
+
+| Session name | Repository gate | Outcome |
+|---|---|---|
+| `T0` | baseline for `CLIENT-PLACEMENT/FEASIBILITY` | active-session feasibility proven — Revit open with a document, Codex running |
+| `G2` | `DNS/TLS-TRUST` | `passed`, then fully reversed at `G7` |
+| `G3` | `NETWORK/ACL` | `passed` as configured; never traversed |
+| `G4A` | `BRIDGE-STAGE` | `passed` on retry |
+| `G4B` | **not a repo gate** - session-local broker sub-step | broker staged and proven healthy; never run live |
+| `G5` | `CREDENTIAL/ENROLL` | **blocked** by a product defect |
+| `G6` | `CLIENT/LIVE` | **never opened** — out of scope once `G5` blocked |
+| `G7` | `CLEANUP/RESIDUE-EQUALITY` | `passed` |
+
+Two mappings are deliberately not one-to-one and are stated rather than forced.
+`T0` is a baseline snapshot, not one of the seven; it closed the active-session
+feasibility question that `CLIENT-PLACEMENT/FEASIBILITY` had left open. `G4B`
+staged the client-side broker, which belongs to `CLIENT/LIVE`, so it is a
+precondition of that gate rather than a gate of its own — `CLIENT/LIVE` itself
+remains untouched.
+
+`M4-WRITE-CONFIRM` was not approached at any point in this session.
+
+### Gate chain outcome
+
+| Gate | Outcome | Evidence record (SHA-256) |
+|---|---|---|
+| T0 | `passed` after two recorded stops (clock skew, Revit not open) | `T0-CLOSED-2026-08-15.md` `2a2d483a…` |
+| G2 DNS/TLS trust | `passed` | `G2-DNS-TLS-TRUST-2026-08-15.md` `6813f767…` |
+| G3 network/ACL | `passed` (configured; see the qualification below) | `G3-NETWORK-ACL-2026-08-15.md` `cc333b0b…` |
+| G4A Bridge stage | `passed` on retry, after two independent defects | `G4A-BRIDGE-STAGE-PASS-2026-08-15.md` `839659b6…` |
+| G4B broker stage | `passed` after Codex baseline re-anchoring | `G4B-BROKER-PASS-2026-08-15.md` `a70a8b35…` |
+| G5 credential/enroll | **blocked by a product defect; partial closure** | `G5-SOURCE-LEG-DEFECT-2026-08-16.md` `d4fb18f8…` |
+| G6 client/live | **out of scope; never opened** | — |
+| G7 teardown/residue | `passed` | `G7-RESIDUE-EVIDENCE-2026-08-17.md` `f0709d55…`, `G7-FINAL-RESIDUE-CLOSURE-2026-08-17.md` `8ead45ec…` |
+
+**M4-04 is therefore `blocked/partial`, not `passed`.** Two qualifications are
+part of the result and are not omitted:
+
+- **G3 is proven configured and never traversed, not proven effective under
+  load.** The final `DOCKER-USER` counters read `ACCEPT 0 pkts / 0 bytes` and
+  `REJECT 0 pkts / 0 bytes` immediately before the rules were deleted. No packet
+  ever reached `192.168.90.154:443`. The rules were verified by construction and
+  by a port-22 source-attribution proof, not by an allowed-versus-denied
+  connection on `443`.
+- **The four socket must-proves carried verbatim from G4A into G5 were never
+  exercised**, because no Gateway container was started and no socket was opened.
+  They remain must-proves and are entry conditions for the next bounded session.
+
+What G5 did complete: phase-1 generation succeeded and validated
+(`credentials.json` `852923bd…`, `north-bearer.bin` `f3b21432…`, three secrets of
+`48` bytes each), the pre-secret egress proof, the destination-root owner repair
+with `11/11` validator gates passing, and the coordinator repair. What it could
+not complete: any secret handoff, therefore no Gateway serving start, no A5, and
+no registration commit. The `600s` TTL never started.
+
+Ceiling accounting: five coordinator invocations, of which four were null under
+the planner's four-part test and the fifth (`2026-08-16T16:21:18Z`) spent
+ceiling slot `1`. Slots `2` and `3` were deliberately left unspent once the
+defect was proven deterministic.
+
+### Head finding — the handoff source destroys the secret and then refuses to emit it
+
+In `packages/gateway/src/preProductionSecretHandoff.ts`, the source main reads
+and unlinks the allowlisted leaf inside `readSourceBytes`, and only afterwards
+calls `assertRootUnchanged`. That check compares `mtimeMs`, `ctimeMs` and `size`
+of the handoff root through `sameState`. Removing a directory entry necessarily
+mutates all three, so **the check can never pass after a successful read**: the
+source consumes the secret, then refuses to emit it, on every invocation.
+
+Measured with a synthetic `64`-byte payload; the real bearer was not involved
+and the source's stdout was never retained:
+
+```text
+sourceExitCode      78
+sourceStdoutBytes   0
+sourceStdoutSha256  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  (empty)
+stderr              {"ok":false,…,"code":"preproduction_secret_handoff_source_refused",
+                     "reason":"root_changed_during_read"}
+leafAfter           ABSENT
+expected frame      91 bytes, sha e58857b9cd13bea4d3f253b476df51065bbe0720a25ec0834dcadbd2ca3b4e26
+expected stream     92 bytes  (frame + the trailing 0x01 control byte)
+observed            0 bytes
+```
+
+Both kinds are affected. The same `runSource` serves `north_bearer` and
+`enrollment_artifact`; `--kind` selects only the filename, so the identical
+ordering applies and the enrollment handoff would have failed the same way.
+
+The bearer **value** was not lost: `north-bearer.bin` is a copy of `secrets[0]`
+and the same value remained in `credentials.json`. What was destroyed is the
+dedicated handoff endpoint copy. The value-free constraint held throughout — the
+bearer was never tee'd, logged, or captured.
+
+The defect runs inside the immutable Gateway image, not as a script on disk, so
+repair requires a source change plus an image rebuild. That produces a new digest
+and invalidates the pinned `approvedLiveSelector` identity the whole M4-04/B
+package is bound to, which is why it was not repaired in-session.
+
+The minimal correct fix, recorded for the separate repair slice:
+`assertRootUnchanged` should compare only identity-stable root fields —
+`directory`, `symbolicLink`, `dev`, `ino`, `mode`, `uid` — and must exclude
+`mtimeMs`, `ctimeMs`, `size` and `nlink`, which the source's own authorised
+unlink necessarily changes; or the root recheck should be taken before the
+unlink. Either preserves the security intent without failing on the source's own
+side effect.
+
+### Three acceptance-versus-reality gaps
+
+Each is on the M4 critical path, each was invisible to a green suite, and each
+was visible on first contact with a real machine.
+
+1. **Protected-root owner rule.** `ProtectedStore.TryValidateNarrowAcl` requires
+   `owner == caller`, and the receiver carries the same rule. The broker calls
+   `SetOwner(current)` whenever it creates a root itself, so its own tests never
+   validate a root created by anyone else.
+   `G5-DESTINATION-ROOT-OWNER-STOP-2026-08-16.md` `2eeaa412…`.
+2. **Coordinator `System.Object[]` join.** `invoke-m4-secret-handoff.ps1` splices
+   an array into an array literal, so `-join` stringifies it and the remote
+   command begins with the literal `System.Object[]`. The A4 coordinator suite is
+   recorded passing under both engines, so it cannot have exercised this string
+   construction end to end. `G5-COORDINATOR-DEFECT-STOP-2026-08-16.md`
+   `7ca5f641…`.
+3. **Handoff source read-then-assert ordering** (the head finding). The injected
+   `io` fake does not model directory metadata changing on unlink, so the suite
+   passes green while the real filesystem fails every time.
+   `G5-SOURCE-LEG-DEFECT-2026-08-16.md` `d4fb18f8…`.
+
+### Five card-versus-code differences
+
+Items 4 and 5 carry the numbers already assigned in the evidence chain.
+
+1. **Four serving-container path literals.** The card's
+   `--credential-file`, `--tls-key-file`, `--tls-cert-file` and
+   `--enrollment-output-file` values resolve to paths that cannot exist; the
+   generator writes under `runtime/secrets`, and the enrollment artifact must land
+   at `runtime/handoff/enrollment.json` for the handoff to read it. Caught before
+   generation. `G5-CARD-PATH-DEFECT-STOP-2026-08-16.md` `e0f8fe2a…`; resolved by
+   the planner's Option B in `G5-PATH-AUTHORITY-2026-08-16.md` `37d9df2e…`.
+2. **Undeclared prerequisite.** `runtime/handoff` must already exist as
+   `0700 bt:bt`; the generator refuses to create or widen an unverified ancestor
+   and the card does not mention it. Same record.
+3. **Destination-root ownership.** The card specifies the DACL only; the code
+   requires `owner == calling user`, and the elevated SSH session produced
+   `O:BA`. Repaired under `G5-OWNER-AUTHORITY-2026-08-16.md` `2f793295…`.
+4. **DPAPI leaf location.** `BrokerContracts.StoreFileName` plus
+   `ProtectedStore.DestinationPath(root)` place the leaf at
+   `<root>\north-bearer.dpapi`, not `store\north-bearer.dpapi`; no `store\`
+   directory is ever created. G4B's absence proof had checked the wrong path and
+   held only because both were absent. G7's residue proof was retargeted.
+   `G5-GATE-CHAIN-AUDIT-2026-08-16.md` `6c42bae3…`. **Since proven by
+   execution, not only by source reading:** on 2026-08-17 the real broker binary
+   committed a synthetic handoff and created `north-bearer.dpapi` directly under
+   the protected root, with no `store\` directory created
+   (`SLICE2-E2E-PROOF-SUPPLEMENT-BROKER-2026-08-17.md`, `ea9cc6c3…`). An executed
+   proof outranks a source reading and is cited as such.
+5. **Coordinator source-command construction** (gap 2 above). Repaired under
+   `G5-COORDINATOR-AMENDMENT-2026-08-16.md` `b407dc7b…`, recording the old and new
+   SHA-256; confirmed by observation when the non-probe `docker run` count moved
+   from `0` to `1`.
+
+All five were found by verifying frozen-card literals against the protected
+source **before** an irreversible step. Items 1–3 cost nothing, item 4 cost only
+a mis-targeted proof, and item 5 cost four null invocations.
+
+### Product-requirement outputs
+
+**R1 — the client leg must speak an HTTP CONNECT proxy.** PETRUCCI reaches the
+internet only through `192.168.90.10:6588`, and .NET resolved that proxy for both
+attempt origins with `bypassed=False`. A port-22 A/B probe separated the paths by
+measurement: with the proxy honoured `revagent` saw `192.168.90.10` in `103ms`;
+with it bypassed it saw the allowlisted `192.168.90.122` in `17ms`
+(`G5-PREGEN-EGRESS-PROOF-2026-08-16.md` `4101b490…`). Had G5 fired as carded, the
+broker's traffic would have arrived from the proxy address, hit the G3 REJECT
+rule, and failed three must-proves **after** the single-shot secret had been
+generated. A pilot workstation with no direct `443` egress is the normal case, so
+the product client must transit a system- or WPAD-configured CONNECT proxy,
+including authenticated ones. The per-process `NO_PROXY` used in the session is a
+lab fix and is not a product requirement. Proposed for M5/M6 scope.
+
+**R2 — one client-clock dependency exists in the auth chain.**
+`packages/bridge/src/RevAgent.Bridge/Enrollment/BridgeEnrollmentArtifactConsumer.cs`
+refuses an enrollment artifact outside a two-sided window measured against the
+**consumer's own** clock: `MinimumRemainingLifetime` is `50s` and
+`MaximumRemainingLifetime` is `24h + 5s`, both compared to
+`_timeProvider.GetUtcNow()`. With the carded `600s` Gateway TTL a client running
+fast fails closed once its clock passes `TTL - 50s`; the absolute bound is
+`550s`, and after the elapsed time of the A5 step inside the `180s` window the
+real tolerance is roughly `370s`. This is not theoretical: the uncorrected client
+skew measured at T0 in this session was `228.97s`, within a factor of about `1.6`
+of that tolerance, on a machine that cannot reach NTP because UDP `123` is
+restricted.
+
+There is no second line of defence. `nonce` does not occur anywhere in
+`packages/gateway/src` under a case-insensitive search; the single `replay`
+occurrence is journal terminal-state handling, not auth replay protection.
+Freshness rests on the timestamp window alone.
+
+Clean by contrast, and recorded as positives: the north bearer is an opaque
+`64`-character token whose validator has no time component; the M4 handoff frame
+carries no timestamp; and `preProductionIdentity.ts` evaluates `issuedAtMs` and
+`expiresAtMs` against the Gateway's own clock, which is server-authoritative and
+correct as written.
+
+Proposed for M5/M6 scope: server-authoritative time plus a server-issued
+nonce/challenge, so no client-clock reading decides an authorization outcome.
+Until then the `<= 2s` two-host pair requirement remains an evidence-correlation
+convenience, never a product requirement. This audit covers the surfaces present
+in the pinned package; it is not a forward audit of M5/M6 OAuth.
+
+### GAP-14 — mechanism demonstrated
+
+A Codex Desktop self-update replaced `~\.codex\config.toml` wholesale at
+`2026-08-15T12:50:29Z` (`2d285a88…` -> `fd062771…`, creation equal to last-write).
+The AppX package full name, the Codex CLI image digest, and the Authenticode
+signer thumbprint were all byte-identical afterwards, so this was an in-app
+component refresh, not a package upgrade. The A4 caller-authorization tuple
+survived intact, and PETRUCCI lost no capability because the file held no
+revAgent sections there. `G4B-CODEX-BASELINE-ADDENDUM-2026-08-15.md` `a21c67b0…`.
+
+What outlives M4: on a fleet workstation that does carry
+`[mcp_servers.revAgent]` and `[mcp_servers.revAgent-api-docs]` — exactly what the
+WP9 remote MCP registration commits at M9 cutover — the same path drops them
+silently with no error surfaced to the user. GAP-14's existing emergency-patch
+mitigation should be extended with a detection step and a documented one-command
+idempotent re-registration. That disposition belongs to WP3/WP8 and is outside
+this slice's allowlist.
+
+### Environment findings for the lab-baseline lane
+
+These are office-lab facts. They are ops records and must not become product
+requirements.
+
+- PETRUCCI had no working DNS resolver at all; it was repaired permanently to
+  `192.168.90.3` (`OPS-PETRUCCI-DNS-2026-08-16.md` `50c58161…`).
+- All PETRUCCI internet traffic transits `192.168.90.10:6588`; product
+  consequence is R1.
+- UDP `123` is restricted, so W32Time cannot resync and the clock free-runs at
+  about `8ms/hour` after one manual set; product consequence is R2.
+- `@(<System.Collections.Generic.List[object]>)` throws `ArgumentException` on
+  both PETRUCCI and the coordinator workstation, under Windows PowerShell
+  `5.1` and PowerShell Core `7.6.5`, via `-File` and via stdin, under any
+  `StrictMode` and any culture. It is specific to a generic list whose element
+  type is exactly `System.Object`; an empty list fails too. `.ToArray()`,
+  `[object[]]`, `ArrayList` and typed lists are unaffected. Automation targeting
+  these hosts must not use that construct.
+- `-match` disagreed with `[regex]::IsMatch` on an identical string and pattern
+  (`-match=False`, `IsMatch=True`) for a string proven to be exactly `64`
+  characters of `[A-Za-z0-9_-]`. Any security-relevant use of `-match` on these
+  hosts should be reviewed. `G5-SYNTHETIC-DESTINATION-DIAG-2026-08-16.md`
+  `9136a3da…`.
+- Framed base64 over the SSH channel truncates silently past roughly `44KB`, and
+  the stdin channel went intermittently silent; both were resolved with an
+  archive plus `scp` and with file plus `-File`.
+
+### Three-machine residue declaration
+
+- **`revagent`:** clean. No attempt file, image, network, rule, listener, or DNS
+  record remains; images are exactly the two preserved tags, networks are exactly
+  `bridge host none`, `DOCKER-USER` is bare, UFW is inactive, and the four
+  `/opt/revagent/deploy/phase1` hashes are identical before and after. The one
+  deliberate retention is `timedatectl set-ntp true`, applied under T0 authority.
+- **`PETRUCCI`:** clean. All seven attempt paths absent, `C:\revagent-deploy`
+  intact at `45` children, `10` M3-era bundle directories preserved,
+  `revAgentBridge` `Running/Auto/LocalSystem`, all four baseline hashes equal,
+  listeners `0/0`, and no DPAPI leaf. The interface DNS repair to `192.168.90.3`
+  is deliberately permanent and is an ops record, not a product requirement.
+- **Coordinator workstation `DESKTOP-OKNV128`:** what remains is deliberately
+  retained evidence, not residue — the evidence chain, the automation scripts,
+  the value-free export, and the extracted comparison tree. **The repaired
+  coordinator copy staged there must not enter the repository**; the permanent
+  fix is a separate slice. No secret value, credential byte, or DPAPI blob was
+  ever written to this machine; the export rule excluded every backup byte and
+  recorded those files by hash only.
+
+DNS absence is proven from three vantages: the record resolved to
+`192.168.90.154` before deletion, then returned `NXDOMAIN` from the office
+resolver `192.168.90.3` at `2026-08-17T12:06:19Z` and from both `1.1.1.1` and
+`8.8.8.8` at `2026-08-17T12:11:33Z`, each against a control name that resolved
+normally. The Revit sample model hash is byte-identical to T0, which proves the
+model file was never rewritten.
+
+The only acknowledged remaining external residue is public CA/CT history and the
+unrevoked certificate recorded in the Park List.
+
+### Open items carried out of the session
+
+1. **The certificate was not revoked.** Serial
+   `067FEA2F97ED511AD57E74DEE5D8B0410507`, SAN `m4-gateway.revagent.app`, valid
+   through `2026-11-13T12:10:03Z`. The ACME account key was destroyed by an
+   ordering fault in the executor's teardown script before revocation was
+   attempted, and `lego` supports only account-key revocation. RFC 8555 §7.6
+   permits certificate-key revocation; that path was deliberately declined rather
+   than unavailable, to avoid installing unauthorized tooling on a host being torn
+   down. Residual risk is bounded: the private key is destroyed with positive
+   proof, the SAN returns `NXDOMAIN`, and the address it named is RFC 1918.
+2. **Bridge staged-worker startup anomaly, never re-measured.** In one identical
+   context the incumbent worker reaches `worker_ready` in `0.330s` while the
+   staged worker needs `12.519s`, and a first-sight scan cannot explain it. It was
+   carried into G5 as a free re-measurement item, but G5 never reached the Bridge
+   restart. `12.519s` stays inside the `30s` `StartupTimeout`, so this is a
+   performance question, not a correctness one.
+3. **Destination refusal shape at `16:21` is undetermined.** The coordinator holds
+   the destination's stdout internally and collapses every downstream failure to
+   `cleanup_uncertain`, so a refused frame and a failed metadata shape are
+   indistinguishable. Moot for this image, but the opacity itself is worth
+   repairing: four null invocations were spent because the coordinator could not
+   say what failed.
+4. **An operator-specific SSH key path is documented as if it were general.**
+   Six occurrences across `docs/DEVELOPER_RUNBOOK.md`, `README.md`, and
+   `installer/nas/README.md`. Cosmetic, blocks nothing; parked for reassessment
+   at M4 close rather than opened as a slice.
+
+**Forecast / actual / variance:** `1.50h` / `1.00h` / `-0.50h` (`-33%`) active
+effort for this tracker slice. Passive CI, review, and planner waits are
+excluded. The live session itself is not counted here; it ran under its own
+bounded authorization across 2026-08-15 to 2026-08-17.
+
+**Working-tree disposition recorded with this slice.** The repository had been
+left with one uncommitted and one untracked file since before the live session.
+`docs/plan/MASTER_PLAN.md` carried `82` insertions that were a superseded earlier
+state of the M2/M3 checkpoints already merged and accepted on `main`; keeping
+them would have reverted `235` lines of accepted content, so they were discarded
+after a byte-level comparison proved every unique line was an older form of
+content `main` already carries. `docs/REVAGENT_FIVE_RUNNER_WINDOWS_PILOT_RUNBOOK.md`
+is not on `main`, is not part of any M4 slice, and was left untracked and
+untouched for its own owner to dispose of. Both files were backed up before the
+working tree was returned to `main`. No commit, amend, reset, or push touched the
+repository during the live session itself; that was verified by reflog before
+this slice opened.
+
 ## Closed credential gate and explicitly open gates
 
 - **M4-CREDENTIAL/B:** exact-source build, target-host native Linux validation,
@@ -1176,13 +1572,23 @@ positive confirmation. No DNS mutation is authorized by A7.
 - **M4-DNS/TLS-TRUST:** the production-origin and stopped-connector baselines
   remain [`DP-04`](../decisions/DP-04-domain.md) and
   [`DP-03/DP-04`](../decisions/DP-03-04-cloudflare-staging.md). M4 does not use
-  `gateway.revagent.app` or start its connector. The separate test FQDN,
-  DNS-only private-address record, trusted-CA DNS-01 certificate, manual A/TXT
-  creation, and post-session A/TXT deletion remain operator-gated and
-  unexecuted. A6 is permanently canceled; no Cloudflare API token will be
-  generated or requested.
+  `gateway.revagent.app` or start its connector; the production tunnel records
+  were verified untouched and still proxied after the session. The separate test
+  FQDN, DNS-only private-address record, trusted-CA DNS-01 certificate, and
+  manual A/TXT creation were **executed and then reversed** in M4-04/B: the
+  operator created both records at G2 and deleted both at G7, and their absence
+  is proven from three independent resolvers. A6 remained permanently canceled
+  and no Cloudflare API token was generated or requested. The unrevoked
+  certificate is a Park item.
 - **M4-CLIENT/LIVE:** external client, real tenant/OAuth flow, live Gateway
-  exchange, and live Revit execution remain separately operator-gated.
+  exchange, and live Revit execution remain separately operator-gated. M4-04/B
+  did not reach them: G6 was taken out of scope when G5 blocked, no Gateway
+  container was ever started, and no packet reached the Gateway's `443`.
+- **M4-04/B handoff defect:** the pre-production secret handoff is non-functional
+  in the pinned image for both `north_bearer` and `enrollment_artifact`. Until
+  the separate repair slice lands and a rebuilt image is pinned, no bounded
+  session can complete G5. The rebuild produces a new digest and therefore a new
+  package with new frozen cards, not a continuation of M4-04/B.
 - **M4-WRITE-CONFIRM:** preview/confirm/write execution against a live target
   remains separately operator-gated.
 - **RES-30:** real Gateway token exchange, revoked-device refusal at handshake,
@@ -1203,6 +1609,55 @@ positive confirmation. No DNS mutation is authorized by A7.
   mutation was authorized or performed. Build-log evidence SHA-256 values:
   `269f3a10bfe8704773f5c1794774abea1ed79d436a4fb1e51ea3a3b2c03cd66d` and
   `0b113c3352dfe248637bbc2127032fbb692eb69d3414d5cf5123cd7834270841`.
+  The M4-04/B image built from exact source
+  `e9246cd1d51791db970bad800e6d2de418f5fc02` reports the same
+  `2 moderate / 1 high` in its shipped runtime stage, and `3 moderate / 4 high`
+  in its build stage. Build-log evidence SHA-256
+  `d8f66ee59817451c35e9273a3656a24a72804791595f0587ddf674255a0bc153`. The
+  disposition is unchanged and still requires a separate planner-bound decision
+  before the M5 security/auth lane; the runtime finding should be cleared as part
+  of the image rebuild that carries the handoff repair, rather than as an
+  independent dependency change.
+- The certificate issued for the M4-04/B session was **not revoked**. Serial
+  `067FEA2F97ED511AD57E74DEE5D8B0410507`, SAN `m4-gateway.revagent.app`, valid
+  through `2026-11-13T12:10:03Z`. Its private key was destroyed with positive
+  proof, its only SAN now returns `NXDOMAIN`, and the address it named is RFC
+  1918, so the residual exposure is bounded; public CT history is immutable and
+  is acknowledged as permanent external residue. This is a non-blocking Park item
+  and needs no further action unless the planner decides otherwise.
+- The Bridge staged-worker startup anomaly (`0.330s` incumbent versus `12.519s`
+  staged, same host and service) is unexplained and was never re-measured because
+  G5 did not reach the Bridge restart. It stays inside the `30s`
+  `StartupTimeout`, so it is a non-blocking performance Park item; the next
+  bounded session gets the measurement for free.
+- The `Gateway CI` secret-scan step is fail-closed on an API call it does not
+  need. `gitleaks-action`'s `ScanPullRequest` path calls
+  `/repos/{owner}/{repo}/pulls/{n}/commits`; when that endpoint is unavailable
+  the action crashes before scanning anything, every later step is skipped, and
+  the whole job fails while reporting a secrets-scan failure that never happened.
+  Observed on 2026-08-17 during a GitHub platform incident. `fetch-depth: 0` is
+  already configured, so a local range scan would remove the dependency
+  entirely. Real fragility, but it blocks nothing on the critical path: parked
+  for reassessment at M4 close.
+- An operator-specific SSH key path (`C:\Users\BT\.ssh\id_ed25519`) is documented
+  as if it were general in six places across `docs/DEVELOPER_RUNBOOK.md`,
+  `README.md`, and `installer/nas/README.md`. Cosmetic; parked.
+- **Cross-platform handoff gate.** The handoff source refuses to run on Windows
+  and the receiver is `net8.0-windows`, so the two legs cannot execute on one
+  host and no single CI lane can prove the wire contract end to end. Standing
+  in-repo coverage is the exact-stream assertion; a one-off two-environment
+  proof is recorded in `SLICE2-E2E-PROOF-2026-08-17.md`; the live end-to-end
+  belongs to the next bounded session. Unparking trigger, verbatim:
+  *"if either leg's framing changes again, or if a third cross-implementation
+  drift is found, build the two-lane CI gate."*
+- **Handoff destroy-then-deliver ordering - fail-closed by design; assess
+  retry/idempotent regeneration semantics before M5 OAuth.** The source unlinks
+  and proves absence of the leaf before the frame is written, so any failure
+  after the unlink destroys the secret rather than duplicating it. That is the
+  correct security direction and it is deliberately unchanged, but it is also
+  what burned the north bearer at `16:21` and forced an authorization-ceiling
+  raise. In production a secret that dies on any transport hiccup is an
+  availability problem, not only a security posture.
 
 ## Submission rule
 
@@ -1214,3 +1669,17 @@ The M4 milestone ledger stays `in_progress` / `not_submitted` because
 M4-CLIENT/LIVE, M4-WRITE-CONFIRM, RES-30, and the remaining planner-bound slices
 are still open. No evidence result becomes milestone acceptance without the
 milestone owner's explicit decision.
+
+M4-04/A7 has since merged as `e9246cd1`, and the bounded M4-04/B live session ran
+against exactly that source. M4-04/B is `blocked/partial`: T0, G2, G3, G4A and
+G4B passed, G5 was blocked by a product defect inside the pinned image, G6 was
+taken out of scope, and G7 completed with a proven-clean residue state on both
+live hosts. That result does **not** move the M4 milestone ledger, which remains
+`in_progress` / `not_submitted`; only the milestone decision owner may change a
+milestone state, and this record makes no such claim.
+
+The M4 live path cannot be completed on the pinned image. Closing it requires
+the separate repair slice, a rebuilt image with a newly pinned digest, and a new
+bounded session carrying the four unexercised socket must-proves, the corrected
+serving path literals, destination-root ownership set at creation, the
+`<root>\north-bearer.dpapi` leaf location, and the R1 proxy reality.
