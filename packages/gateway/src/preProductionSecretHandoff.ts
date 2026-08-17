@@ -245,6 +245,48 @@ function sameState(
   );
 }
 
+// Identity-stable root fields only, for the post-read root recheck.
+//
+// The source's own authorised unlink of the allowlisted leaf necessarily
+// advances the root directory's mtimeMs and ctimeMs, so those two cannot take
+// part in a comparison that runs after the read. Comparing them made the recheck
+// impossible to pass: the source consumed the secret and then refused to emit
+// it, on every invocation.
+//
+// nlink IS compared. Measured on ext4: a directory's link count is unchanged by
+// a file unlink but increments when a subdirectory is created, so including it
+// costs nothing and detects a foreign subdirectory appearing in the handoff root
+// during the read.
+//
+// size is NOT compared. This was a deliberate call, not an oversight -- please
+// do not "restore" it. The production handoff root is a host bind mount, so the
+// operative filesystem is the host's ext4, which is what was measured: there a
+// directory's size is stable across a file unlink, because directory blocks are
+// never reclaimed. Excluding it is a portability margin for tmpfs and overlayfs,
+// where directory-size semantics differ and were not measured. It also carries
+// no detection value here: identity is covered by dev+ino, protection by
+// mode+uid, foreign-subdirectory injection by nlink, and canonicality by
+// realpath plus validateRootStat.
+//
+// sameState stays strict and is deliberately not reused here: its other call
+// sites compare the leaf, including the swap detection immediately before the
+// unlink, and relaxing those would be a security regression.
+function sameRootIdentity(
+  left: PreProductionSecretHandoffSourceStat,
+  right: PreProductionSecretHandoffSourceStat,
+): boolean {
+  return (
+    left.file === right.file &&
+    left.directory === right.directory &&
+    left.symbolicLink === right.symbolicLink &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.uid === right.uid &&
+    left.nlink === right.nlink
+  );
+}
+
 function validateRootStat(
   value: PreProductionSecretHandoffSourceStat,
   uid: number,
@@ -312,7 +354,7 @@ async function assertRootUnchanged(
   if (canonical !== root.path) {
     refused("root_not_canonical");
   }
-  if (!sameState(root.initial, current)) {
+  if (!sameRootIdentity(root.initial, current)) {
     refused("root_changed_during_read");
   }
 }
