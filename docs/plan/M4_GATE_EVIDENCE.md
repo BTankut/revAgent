@@ -1373,7 +1373,12 @@ Items 4 and 5 carry the numbers already assigned in the evidence chain.
    `<root>\north-bearer.dpapi`, not `store\north-bearer.dpapi`; no `store\`
    directory is ever created. G4B's absence proof had checked the wrong path and
    held only because both were absent. G7's residue proof was retargeted.
-   `G5-GATE-CHAIN-AUDIT-2026-08-16.md` `6c42bae3…`.
+   `G5-GATE-CHAIN-AUDIT-2026-08-16.md` `6c42bae3…`. **Since proven by
+   execution, not only by source reading:** on 2026-08-17 the real broker binary
+   committed a synthetic handoff and created `north-bearer.dpapi` directly under
+   the protected root, with no `store\` directory created
+   (`SLICE2-E2E-PROOF-SUPPLEMENT-BROKER-2026-08-17.md`, `ea9cc6c3…`). An executed
+   proof outranks a source reading and is cited as such.
 5. **Coordinator source-command construction** (gap 2 above). Repaired under
    `G5-COORDINATOR-AMENDMENT-2026-08-16.md` `b407dc7b…`, recording the old and new
    SHA-256; confirmed by observation when the non-probe `docker run` count moved
