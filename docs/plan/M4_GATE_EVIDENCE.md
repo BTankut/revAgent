@@ -38,6 +38,8 @@
 
 **M4-04/A7 slice state:** `implementation_checks_passed`
 
+**M4-04/B session state:** `slice_record_open`
+
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
 operator-approved repo seam limited to a versioned credential-file loader and
@@ -59,7 +61,11 @@ without changing Bridge auth, retry, or observer semantics. `M4-04/A7` is the
 planner-bound repo-only bounded, value-free projection and atomic protected
 retained-artifact export of the pre-production Gateway's process-lifetime
 invocation/confirmation audit. Success writes no stdout; it opens no route or
-listener and never exports the raw event envelope. None of these
+listener and never exports the raw event envelope. `M4-04/B` is the separately
+authorized bounded live session that executed the two-host gate chain
+`T0 -> G2 -> G3 -> G4A -> G4B -> G5 -> G7` against the pinned A7 image; this
+tracker slice records its outcome and open items only and authorizes no further
+host, network, credential, client, or Revit action. None of these
 bounded slices by itself satisfies or enlarges the M4 milestone gate.
 
 **M4-02 exact slice base:**
@@ -1157,6 +1163,50 @@ as DNS-only (grey cloud), plus the exact `_acme-challenge` TXT value generated
 by the certificate order. No Cloudflare API token will be generated or
 requested. G7 must delete both A and TXT records and retain the operator's
 positive confirmation. No DNS mutation is authorized by A7.
+
+## M4-04/B bounded live session
+
+**Gate state:** `slice_record_open`
+
+**Planner decision:** the closing slices were assigned to the executor on
+2026-08-17 after the planner accepted the M4-04/B closing report. This tracker
+slice is the first of three; the permanent source fix and the documentation
+sweep are separate slices.
+
+**Scope of record:** protected source is
+`e9246cd1d51791db970bad800e6d2de418f5fc02` (`PR #380` squash merge), the exact
+commit the live session was pinned to. This slice records the outcome of the
+bounded live session that ran `T0 -> G2 -> G3 -> G4A -> G4B -> G5 -> G7` across
+`revagent` (Gateway) and `PETRUCCI` (client/Bridge/add-in/Revit): the gates that
+passed, the head finding that blocked `G5`, the acceptance-versus-reality and
+card-versus-code differences, the product-requirement outputs, the environment
+findings, the residue declaration for all three machines, and the open items.
+It sets `M4-04` to `blocked/partial` and leaves the `M4` milestone row at
+`in_progress`, because only the milestone decision owner may move a milestone
+state.
+
+**Explicitly out:** every executable surface. This slice performs no host,
+image, container, network, DNS/TLS/ACL, credential, enrollment, revoke, broker,
+client, Revit, reboot, write/confirm, workflow, runner, CD, signing, or NAS
+action, and changes no product source. The permanent source repair of the
+handoff read-then-assert ordering and the coordinator command construction is a
+separate slice and must not appear in this diff. The repaired coordinator copy
+staged on the coordinator workstation during the live session must not enter the
+repository through this or any tracker slice.
+
+The path allowlist is `docs/plan/M4_GATE_EVIDENCE.md` and
+`docs/plan/MASTER_PLAN.md` only. No source, test, manifest, lockfile, workflow,
+installer, or decision-record file is in scope. Root `package-lock.json` must
+remain blob-identical.
+
+**Evidence basis:** the live session's hash-chained evidence package is retained
+on the coordinator workstation `DESKTOP-OKNV128` as deliberately retained
+evidence, not repository content. This record cites its files by name and
+SHA-256 so the chain stays verifiable without importing any of its bytes. No
+secret value, credential byte, or DPAPI blob is reproduced here.
+
+**Forecast:** `1.50h` active effort. Passive CI/review and planner waits are
+excluded.
 
 ## Closed credential gate and explicitly open gates
 
