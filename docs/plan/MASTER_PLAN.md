@@ -7,11 +7,14 @@
 its evidence remains `not_submitted`, and no milestone acceptance is recorded.
 The exact M2 code/evidence anchor remains
 `011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `239de8d3826f25a12f858374f495d5ecfbd67e02` on `main`.
+anchor is `e9246cd1d51791db970bad800e6d2de418f5fc02` on `main`. The bounded
+M4-04/B live session ran against that anchor and closed `blocked/partial`; the
+milestone row is unchanged, because only the milestone decision owner may move a
+milestone state.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-14
+**Last updated:** 2026-08-17
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -292,6 +295,67 @@ Cloudflare API token will be generated or requested. G2 will show the operator
 certificate order's generated `_acme-challenge` TXT value on one screen. G7
 will delete both records and retain positive operator confirmation. A7 itself
 authorizes no DNS mutation.
+
+## 2026-08-17 M4-04/B bounded live session — `blocked/partial`
+
+The bounded two-host live session ran `T0 -> G2 -> G3 -> G4A -> G4B -> G5 -> G7`
+against the pinned A7 source `e9246cd1d51791db970bad800e6d2de418f5fc02`, with
+Gateway on `revagent` and the client, Bridge, add-in and Revit on `PETRUCCI`.
+T0, G2, G3, G4A and G4B passed. **G5 was blocked by a product defect inside the
+immutable Gateway image, G6 was taken out of scope, and G7 completed with a
+proven-clean residue state on both live hosts.** `M4-04` is therefore
+`blocked/partial`. The `M4` milestone row stays `in_progress`; this record
+promotes nothing, and only the milestone decision owner may move a milestone
+state.
+
+**Head finding.** In `preProductionSecretHandoff.ts` the source reads and unlinks
+the allowlisted secret inside `readSourceBytes`, then calls
+`assertRootUnchanged`, which compares the handoff root's `mtimeMs`, `ctimeMs` and
+`size`. Unlinking a directory entry necessarily changes all three, so the check
+can never pass after a successful read: the source destroys the secret and then
+refuses to emit it, on every invocation, for both handoff kinds. Measured with a
+synthetic payload, the source exits `78`, emits `0` bytes where a `92`-byte frame
+was expected, and leaves the leaf absent. The A4 suites stayed green because they
+inject an `io` fake that does not model directory metadata changing on unlink.
+The live vertical caught, before M5/OAuth, a defect that destroys a secret in
+transit.
+
+**Two qualifications kept in the verdict.** G3 is proven configured and never
+traversed — the final `DOCKER-USER` counters read `ACCEPT 0/0` and `REJECT 0/0`,
+so no packet ever reached the Gateway's `443` — not proven effective under load.
+And the four socket must-proves carried from G4A into G5 were never exercised,
+because no container was started. Both become entry conditions for the next
+bounded session.
+
+**Recorded alongside the outcome:** three acceptance-versus-reality gaps
+(protected-root owner rule, the coordinator's `System.Object[]` join, the
+read-then-assert ordering), five card-versus-code differences, the R1 finding
+that the pilot workstation has no direct `443` egress and reaches the internet
+only through an HTTP proxy, the R2 finding that the Bridge enrollment consumer
+gates on a two-sided window measured against the **client's** clock with no
+nonce anywhere in the Gateway source, GAP-14's demonstrated wholesale rewrite of
+`~\.codex\config.toml` by a Codex self-update, the lab-baseline environment
+findings, and the three-machine residue declaration. Full detail is in
+[`M4_GATE_EVIDENCE.md`](M4_GATE_EVIDENCE.md).
+
+**Residue.** `revagent` and `PETRUCCI` are clean and independently verified; the
+operator deleted both DNS records and their absence is proven from three
+resolvers; the Revit sample model hash is byte-identical to T0. Two deliberate
+retentions are recorded as ops items rather than residue: NTP enabled on
+`revagent`, and PETRUCCI's interface DNS permanently repaired to `192.168.90.3`
+because the machine previously had no working resolver. The hash-chained evidence
+package stays on the coordinator workstation as retained evidence, not repository
+content; the coordinator repair staged during the session must not enter the
+repository.
+
+**Open and parked:** the session certificate was not revoked (private key
+destroyed with proof, SAN now `NXDOMAIN`, RFC 1918 address); the runtime image
+still reports `2 moderate / 1 high` in `npm audit`; the Bridge staged-worker
+startup anomaly was never re-measured; an operator-specific SSH key path is
+documented as if general in six places. R1 (CONNECT proxy support) and R2
+(server-authoritative time plus nonce/challenge) are proposed for M5/M6 scope,
+and GAP-14's detection plus one-command re-registration belongs to WP3/WP8. The
+permanent source repair and the documentation sweep are separate slices.
 
 ## 2026-07-25 M1 closing and operator lane checkpoint
 
