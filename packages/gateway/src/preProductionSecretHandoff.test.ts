@@ -315,7 +315,12 @@ function expectRefusal(
 }
 
 function expectSingleFrame(output: Harness, payload: Uint8Array): void {
-  expect(output.stdout).toHaveLength(1);
+  // The accepted wire stream is magic || uint32BE(length) || payload || 0x01.
+  // The trailing control byte is written separately and is NOT optional: the
+  // receiver refuses a stream without it as handoff_aborted, so asserting only
+  // the frame would pass a source that can never be committed.
+  expect(output.stdout).toHaveLength(2);
+  expect(Array.from(output.stdout[1] ?? [])).toEqual([0x01]);
   const frame = output.stdout[0];
   expect(Buffer.isBuffer(frame)).toBe(true);
   expect(
@@ -846,8 +851,9 @@ describe("handoff source under real unlink semantics", () => {
       // 0 bytes is the precise failure this defect produced. Assert on the byte
       // count, not on a message, so the test fails on the real symptom.
       expect(emitted).toBeGreaterThan(0);
+      // Complete accepted stream: frame + the trailing control byte.
       expect(emitted).toBe(
-        FRAME_MAGIC_BYTES.byteLength + 4 + payload.byteLength,
+        FRAME_MAGIC_BYTES.byteLength + 4 + payload.byteLength + 1,
       );
       expectSingleFrame(output, payload);
 
@@ -857,7 +863,7 @@ describe("handoff source under real unlink semantics", () => {
     },
   );
 
-  it("emits a 91-byte frame for a 64-byte payload", async () => {
+  it("emits a 91-byte frame plus the commit byte for a 64-byte payload", async () => {
     const payload = new TextEncoder().encode("S".repeat(64));
     const output = northHarness({
       realisticUnlink: true,
@@ -874,11 +880,12 @@ describe("handoff source under real unlink semantics", () => {
     );
 
     expect(result).toBe(0);
-    // 23 magic + 4 big-endian length + 64 payload = 91. There is no trailing
-    // commit byte: frameHandoffPayload writes magic+length+payload, and the
-    // receiver reads exactly that (Program.cs reads the magic, a 4-byte length,
-    // then declaredLength payload bytes and nothing more).
+    // 23 magic + 4 big-endian length + 64 payload = 91 for the frame itself.
     expect(output.stdout[0]?.byteLength).toBe(91);
+    // Plus the separate 0x01 control byte: 92 bytes accepted by the receiver.
+    expect(Array.from(output.stdout[1] ?? [])).toEqual([0x01]);
+    const total = output.stdout.reduce((n, c) => n + c.byteLength, 0);
+    expect(total).toBe(92);
   });
 
   it("still refuses when the root is genuinely replaced", async () => {

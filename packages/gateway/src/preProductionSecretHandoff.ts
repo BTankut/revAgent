@@ -513,6 +513,10 @@ function sourcePath(
   return posix.join(root, ...PRE_PRODUCTION_SECRET_HANDOFF_SOURCE_PATHS[kind]);
 }
 
+// The single control byte the receiver requires after the frame. See the write
+// site in runPreProductionSecretHandoffSource for why it is written separately.
+const HANDOFF_COMMIT_BYTES = Buffer.from([0x01]);
+
 function frameHandoffPayload(payload: Uint8Array): Buffer {
   const frame = Buffer.alloc(
     FRAME_MAGIC_BYTES.byteLength + 4 + payload.byteLength,
@@ -695,6 +699,28 @@ export async function runPreProductionSecretHandoffSource(
       frame = frameHandoffPayload(bytes);
       try {
         await io.stdout.write(frame);
+        // Complete the wire contract. The receiver reads
+        // magic || uint32BE(length) || payload, then requires exactly one
+        // control byte 0x01 followed by EOF; a missing or non-0x01 byte is
+        // refused as handoff_aborted, and any trailing byte as invalid_frame.
+        // Emitting only the frame therefore delivers a stream the receiver can
+        // never commit.
+        //
+        // The control byte is a SEPARATE write, after the frame, on purpose. It
+        // is the source's assertion that its own copy is gone and the receiver
+        // may commit -- exactly-once move semantics. The receiver's
+        // handoff_aborted path exists precisely so that a frame which arrives
+        // without a commit signal leaves no destination copy, so bundling the
+        // byte into the frame would remove a real guarantee.
+        //
+        // The assertion is truthful at this point: readSourceBytes already
+        // unlinked the allowlisted leaf and positively proved its absence
+        // before returning, so by the time the frame is written the source copy
+        // no longer exists. That destroy-then-deliver ordering is the existing
+        // design and is deliberately NOT changed here; it means a failure after
+        // the unlink loses the secret rather than duplicating it, which is the
+        // fail-closed direction this contract chose.
+        await io.stdout.write(HANDOFF_COMMIT_BYTES);
       } catch {
         throw new PreProductionSecretHandoffSourceError("handoff_write_failed");
       }
