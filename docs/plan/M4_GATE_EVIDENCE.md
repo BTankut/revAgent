@@ -1232,7 +1232,7 @@ mapping below is what makes this record readable without the session package.
 | `G2` | `DNS/TLS-TRUST` | `passed`, then fully reversed at `G7` |
 | `G3` | `NETWORK/ACL` | `passed` as configured; never traversed |
 | `G4A` | `BRIDGE-STAGE` | `passed` on retry |
-| `G4B` | staging precondition of `CLIENT/LIVE` | broker staged and proven healthy; never run live |
+| `G4B` | **not a repo gate** - session-local broker sub-step | broker staged and proven healthy; never run live |
 | `G5` | `CREDENTIAL/ENROLL` | **blocked** by a product defect |
 | `G6` | `CLIENT/LIVE` | **never opened** — out of scope once `G5` blocked |
 | `G7` | `CLEANUP/RESIDUE-EQUALITY` | `passed` |
@@ -1303,8 +1303,9 @@ sourceStdoutSha256  e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852
 stderr              {"ok":false,…,"code":"preproduction_secret_handoff_source_refused",
                      "reason":"root_changed_during_read"}
 leafAfter           ABSENT
-expected frame      92 bytes, sha 3113d5c60ee33d7e269add3e9b6685144f156e18f298da1e4d278cc7580de947
-observed frame      0 bytes
+expected frame      91 bytes, sha e58857b9cd13bea4d3f253b476df51065bbe0720a25ec0834dcadbd2ca3b4e26
+expected stream     92 bytes  (frame + the trailing 0x01 control byte)
+observed            0 bytes
 ```
 
 Both kinds are affected. The same `runSource` serves `north_bearer` and
@@ -1636,6 +1637,22 @@ this slice opened.
 - An operator-specific SSH key path (`C:\Users\BT\.ssh\id_ed25519`) is documented
   as if it were general in six places across `docs/DEVELOPER_RUNBOOK.md`,
   `README.md`, and `installer/nas/README.md`. Cosmetic; parked.
+- **Cross-platform handoff gate.** The handoff source refuses to run on Windows
+  and the receiver is `net8.0-windows`, so the two legs cannot execute on one
+  host and no single CI lane can prove the wire contract end to end. Standing
+  in-repo coverage is the exact-stream assertion; a one-off two-environment
+  proof is recorded in `SLICE2-E2E-PROOF-2026-08-17.md`; the live end-to-end
+  belongs to the next bounded session. Unparking trigger, verbatim:
+  *"if either leg's framing changes again, or if a third cross-implementation
+  drift is found, build the two-lane CI gate."*
+- **Handoff destroy-then-deliver ordering - fail-closed by design; assess
+  retry/idempotent regeneration semantics before M5 OAuth.** The source unlinks
+  and proves absence of the leaf before the frame is written, so any failure
+  after the unlink destroys the secret rather than duplicating it. That is the
+  correct security direction and it is deliberately unchanged, but it is also
+  what burned the north bearer at `16:21` and forced an authorization-ceiling
+  raise. In production a secret that dies on any transport hiccup is an
+  availability problem, not only a security posture.
 
 ## Submission rule
 
