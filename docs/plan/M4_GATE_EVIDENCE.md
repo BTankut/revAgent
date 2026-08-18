@@ -1745,6 +1745,106 @@ docs/plan/M4_GATE_EVIDENCE.md
   raise. In production a secret that dies on any transport hiccup is an
   availability problem, not only a security posture.
 
+## M4-04/B TLS material timestamp guard
+
+**Gate state:** `slice_record_open`
+
+**Planner decision:** authorized on 2026-08-19 as the minimal slice that
+unblocks the pre-production Gateway start. Scope is deliberately one defect.
+Forecast `1.50h` active effort.
+
+**Scope of record:** protected source is
+`b53b54df90bda4c97ffa33d1586bac4b9fd20649`. This slice repairs exactly one
+defect in `packages/gateway/src/preProductionTlsMaterial.ts`, and nothing else.
+
+### The defect
+
+`snapshot` passes every stat field through `asNumber`, which refuses any value
+that is not a safe **integer**:
+
+```ts
+function asNumber(value: number | bigint): number {
+  const numeric = Number(value);
+  if (!Number.isSafeInteger(numeric)) refused("file_unavailable");
+  return numeric;
+}
+```
+
+`mtimeMs` and `ctimeMs` are legitimately fractional. ext4 and every other
+modern Linux filesystem record nanosecond resolution, so a millisecond figure
+carries a sub-millisecond remainder. The guard therefore refuses every real
+file, and the pre-production Gateway cannot start on a real Linux filesystem at
+all. Measured on the live host against the pinned image
+`sha256:9c736d5700696c6ebe8ba98fcf989c159bea523379c152a70d6f4231da7c595e`:
+
+```text
+m4-gateway.key            mtimeMs=1787049145372.064    ctimeMs=1787049145382.1755
+m4-gateway.fullchain.pem  mtimeMs=1787049145372.9998   ctimeMs=1787049145382.1755
+credentials.json          mtimeMs=1787060023689.845    ctimeMs=1787060023689.845
+non-integral fields: mtimeMs, ctimeMs      every other field integral
+```
+
+The Gateway exits `78` with
+`{"level":"fatal","msg":"gateway.preproduction_start_refused","reason":"file_unavailable"}`,
+and the image's own compiled loader, called directly against those files,
+refuses with `reason=file_unavailable`,
+`code=preproduction_tls_material_refused`. Isolating the single variable, with
+the shipped guard replicated and only the time fields truncated:
+
+```text
+truncateTimes=false  ->  REFUSED reason=file_unavailable
+truncateTimes=true   ->  LOADED OK (241 / 4840 bytes)
+```
+
+`preProductionCredentialFile.ts` is **not** affected: its own `snapshot` passes
+stat fields through with no safe-integer guard.
+
+### Why this shipped, and what that requires of the fix
+
+`preProductionTlsMaterial.test.ts` builds its stats from an injected fake whose
+`mtimeMs` and `ctimeMs` are the literal `10`. Integral by construction, so the
+defect was invisible to the suite. A regression test built on the same fake
+would ship it again.
+
+**Acceptance is behavioural and the regression test must use real filesystem
+stats**, obtained from the default `NODE_IO` against files this test creates on
+disk. The test must also assert that its own fixture is genuinely fractional, so
+it fails loudly rather than passing vacuously if a filesystem ever rounds.
+
+### Which fields keep the guard, and why
+
+The guard is narrowed, not removed.
+
+- **Keep the safe-integer guard on `dev`, `ino`, `mode`, `nlink`, `uid`,
+  `size`.** These are identity and policy fields, integral by definition. The
+  guard's real job here is precision: `sameState` compares them for equality to
+  detect a file swapped mid-read, so a `bigint` silently truncated past 2^53
+  could make two different inodes compare equal and defeat that check.
+- **Replace it for `mtimeMs` and `ctimeMs`** with a finite-and-in-range test
+  that permits a fraction. Precision still matters, because `sameState` compares
+  these too, so the value must remain inside the range where a double compares
+  exactly; it simply must not be required to be a whole number.
+
+### Explicitly out of scope
+
+Three other defects were found in the same live session and are **not** in this
+slice. Each is patched in the session-staged coordinator only; the repository
+still carries all three, and they are queued for a separate slice after
+teardown. None of them blocks the Gateway start.
+
+1. The generated POSIX cleanup-probe script inherits CRLF from the PowerShell
+   here-string, so `dash` refuses `set -eu\r`.
+2. `ConvertFrom-RevAgentMetadataBytes` discards any payload containing `\r`,
+   which silently voided every CRLF-terminated result from the Windows
+   destination.
+3. Slice 2 added a source-side commit byte while the coordinator already wrote
+   its own verdict byte, putting two control bytes into a one-byte receiver
+   contract. The follow-up slice must decide **ownership** of that byte rather
+   than preserve this session's holdback workaround, and its regression test
+   must exercise the relayed coordinator topology rather than a direct
+   source-to-destination pipe. Substituting that direct pipe for the real
+   topology is what allowed the defect through.
+
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
