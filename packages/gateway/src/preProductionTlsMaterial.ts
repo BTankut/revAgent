@@ -58,9 +58,31 @@ export interface PreProductionTlsMaterialIo {
   open(filePath: string, flags: number): Promise<PreProductionTlsFileHandle>;
 }
 
+/**
+ * Identity and policy fields are integral by definition, so requiring a whole
+ * number costs nothing and buys precision: `sameState` compares them for
+ * equality to detect a file swapped mid-read, and a `bigint` silently truncated
+ * past 2^53 could make two different inodes compare equal and defeat that.
+ */
 function asNumber(value: number | bigint): number {
   const numeric = Number(value);
   if (!Number.isSafeInteger(numeric)) refused("file_unavailable");
+  return numeric;
+}
+
+/**
+ * Timestamps are legitimately fractional: ext4 and every other filesystem with
+ * sub-millisecond resolution leave a remainder in `mtimeMs`/`ctimeMs`. Demanding
+ * a whole number here refused every real file, so the pre-production Gateway
+ * could not start at all. Precision still matters, because `sameState` compares
+ * these two fields as well, so the value must stay inside the range where a
+ * double compares exactly -- it simply must not be required to be an integer.
+ */
+function asTimestamp(value: number | bigint): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || Math.abs(numeric) > Number.MAX_SAFE_INTEGER) {
+    refused("file_unavailable");
+  }
   return numeric;
 }
 
@@ -74,8 +96,8 @@ function snapshot(value: Awaited<ReturnType<typeof lstat>>): PreProductionTlsFil
     nlink: asNumber(value.nlink),
     uid: asNumber(value.uid),
     size: asNumber(value.size),
-    mtimeMs: asNumber(value.mtimeMs),
-    ctimeMs: asNumber(value.ctimeMs),
+    mtimeMs: asTimestamp(value.mtimeMs),
+    ctimeMs: asTimestamp(value.ctimeMs),
   });
 }
 

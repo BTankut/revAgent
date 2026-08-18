@@ -1,5 +1,16 @@
-import { constants } from "node:fs";
-import { describe, expect, it } from "vitest";
+import {
+  chmodSync,
+  constants,
+  lstatSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   loadPreProductionTlsMaterial,
@@ -30,6 +41,7 @@ function stat(ino: number, size: number): PreProductionTlsFileStat {
 function io(overrides: {
   readonly platform?: NodeJS.Platform;
   readonly mutateAfterRead?: string;
+  readonly mutateDelta?: number;
   readonly mode?: number;
 } = {}): PreProductionTlsMaterialIo {
   const bytes = new Map([
@@ -58,7 +70,10 @@ function io(overrides: {
           reads += 1;
           const current = stats.get(value)!;
           return overrides.mutateAfterRead === value && reads > 1
-            ? { ...current, mtimeMs: current.mtimeMs + 1 }
+            ? {
+                ...current,
+                mtimeMs: current.mtimeMs + (overrides.mutateDelta ?? 1),
+              }
             : current;
         },
         readFile: async () => bytes.get(value)!,
@@ -97,5 +112,92 @@ describe("M4 pre-production TLS material", () => {
       reason,
     });
     expect(JSON.stringify(caught)).not.toContain("SYNTHETIC-M4-TLS");
+  });
+
+  it("still detects a sub-millisecond change while the file is open", async () => {
+    // Guards the repair against being "fixed" by truncating the time fields:
+    // 10 and 10.4 both truncate to 10, so a truncating implementation would
+    // call a file that changed mid-read unchanged.
+    let caught: unknown;
+    try {
+      await loadPreProductionTlsMaterial(
+        { keyFilePath: KEY_PATH, certificateFilePath: CERT_PATH },
+        io({ mutateAfterRead: KEY_PATH, mutateDelta: 0.4 }),
+      );
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      code: "preproduction_tls_material_refused",
+      reason: "changed_during_read",
+    });
+  });
+});
+
+// Every fixture above injects its own stats with whole-millisecond timestamps,
+// and that is exactly how the fractional-timestamp defect shipped: on ext4 and
+// on every other filesystem with sub-millisecond resolution `mtimeMs` and
+// `ctimeMs` carry a remainder, so the loader refused every real file with
+// `file_unavailable` and the pre-production Gateway could not start at all.
+// These cases therefore run through the default NODE_IO against real files.
+const describeOnPosix = process.platform === "win32" ? describe.skip : describe;
+
+describeOnPosix("M4 pre-production TLS material on a real filesystem", () => {
+  let directory: string;
+  let keyPath: string;
+  let certificatePath: string;
+
+  beforeAll(() => {
+    directory = realpathSync(mkdtempSync(join(tmpdir(), "revagent-m4-tls-")));
+    keyPath = join(directory, "tls.key");
+    certificatePath = join(directory, "tls.crt");
+    writeFileSync(keyPath, KEY);
+    writeFileSync(certificatePath, CERT);
+    // Pin a fractional millisecond so the case is exercised even where the
+    // filesystem would otherwise happen to land on a whole millisecond.
+    const fractionalSeconds = 1_700_000_000.123_456_7;
+    utimesSync(keyPath, fractionalSeconds, fractionalSeconds);
+    utimesSync(certificatePath, fractionalSeconds, fractionalSeconds);
+    chmodSync(keyPath, 0o400);
+    chmodSync(certificatePath, 0o400);
+  });
+
+  afterAll(() => {
+    rmSync(directory, { recursive: true, force: true });
+  });
+
+  it("has a genuinely fractional fixture", () => {
+    // Without this the next case could pass vacuously on a filesystem with
+    // whole-millisecond timestamps and would prove nothing.
+    expect(Number.isInteger(lstatSync(keyPath).mtimeMs)).toBe(false);
+  });
+
+  it("reads owner-only files whose timestamps are not whole milliseconds", async () => {
+    const loaded = await loadPreProductionTlsMaterial({
+      keyFilePath: keyPath,
+      certificateFilePath: certificatePath,
+    });
+    expect(loaded.key.toString("utf8")).toBe(KEY);
+    expect(loaded.cert.toString("utf8")).toBe(CERT);
+  });
+
+  it("still refuses a real file whose mode is wider than owner-read", async () => {
+    const widened = join(directory, "widened.key");
+    writeFileSync(widened, KEY);
+    chmodSync(widened, 0o640);
+    let caught: unknown;
+    try {
+      await loadPreProductionTlsMaterial({
+        keyFilePath: widened,
+        certificateFilePath: certificatePath,
+      });
+    } catch (error) {
+      caught = error;
+    }
+    rmSync(widened, { force: true });
+    expect(caught).toMatchObject({
+      code: "preproduction_tls_material_refused",
+      reason: "invalid_permissions",
+    });
   });
 });
