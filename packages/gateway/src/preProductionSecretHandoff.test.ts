@@ -35,6 +35,18 @@ interface HarnessOptions {
   readonly uid?: number | null;
   readonly rootInitial?: PreProductionSecretHandoffSourceStat;
   readonly rootAfter?: PreProductionSecretHandoffSourceStat;
+  // Model what a real filesystem does when the source unlinks the leaf: the
+  // parent directory's mtimeMs and ctimeMs advance, and nothing else moves.
+  //
+  // This fake advances ONLY mtimeMs/ctimeMs, because that is what was measured
+  // on ext4 -- unlinking a file leaves the parent's nlink and size untouched
+  // (directory blocks are never reclaimed, so size does not even shrink). Do
+  // not "improve" this fake by perturbing nlink or size as well. Doing so would
+  // manufacture false justification for narrowing the root comparison, and it
+  // would hide a real regression: if someone later dropped nlink from
+  // sameRootIdentity, a fake that moved nlink would keep the test green for the
+  // wrong reason.
+  readonly realisticUnlink?: boolean;
   readonly rootCanonical?: string;
   readonly sourceInitial?: PreProductionSecretHandoffSourceStat;
   readonly sourceBefore?: PreProductionSecretHandoffSourceStat;
@@ -123,6 +135,7 @@ function harness(options: HarnessOptions = {}): Harness {
   let rootLstatCount = 0;
   let sourceRealpathCount = 0;
   let handleStatCount = 0;
+  let leafUnlinked = false;
 
   const io: PreProductionSecretHandoffSourceIo = Object.freeze({
     platform: options.platform ?? "linux",
@@ -149,9 +162,19 @@ function harness(options: HarnessOptions = {}): Harness {
           throw new Error(`root failed near ${NORTH_SECRET}`);
         }
         rootLstatCount += 1;
-        return rootLstatCount === 1
-          ? (options.rootInitial ?? rootStat())
-          : (options.rootAfter ?? options.rootInitial ?? rootStat());
+        if (rootLstatCount === 1) {
+          return options.rootInitial ?? rootStat();
+        }
+        const base = options.rootAfter ?? options.rootInitial ?? rootStat();
+        if (options.realisticUnlink === true && leafUnlinked) {
+          // Layer the real unlink side effect ON TOP of whatever the test asked
+          // for, rather than replacing it. A negative test that also sets
+          // rootAfter must still see its identity change, otherwise it would
+          // pass merely because the timestamps moved -- which is the false-green
+          // this whole slice exists to eliminate.
+          return rootStat({ ...base, mtimeMs: 11, ctimeMs: 11 });
+        }
+        return base;
       }
       if (options.fail === "source_lstat") {
         throw new Error(`source failed near ${ENROLLMENT_TEXT}`);
@@ -217,6 +240,7 @@ function harness(options: HarnessOptions = {}): Harness {
       if (options.fail === "source_unlink") {
         throw new Error(`unlink failed near ${NORTH_SECRET}`);
       }
+      leafUnlinked = true;
     },
     async pathExists(filePath: string): Promise<boolean> {
       calls.pathExists.push(filePath);
@@ -291,7 +315,12 @@ function expectRefusal(
 }
 
 function expectSingleFrame(output: Harness, payload: Uint8Array): void {
-  expect(output.stdout).toHaveLength(1);
+  // The accepted wire stream is magic || uint32BE(length) || payload || 0x01.
+  // The trailing control byte is written separately and is NOT optional: the
+  // receiver refuses a stream without it as handoff_aborted, so asserting only
+  // the frame would pass a source that can never be committed.
+  expect(output.stdout).toHaveLength(2);
+  expect(Array.from(output.stdout[1] ?? [])).toEqual([0x01]);
   const frame = output.stdout[0];
   expect(Buffer.isBuffer(frame)).toBe(true);
   expect(
@@ -780,5 +809,121 @@ describe("pre-production secret handoff source", () => {
     expect(source).not.toContain("credentials.json");
     expect(source).not.toContain("server.js");
     expect(source).not.toContain("index.js");
+  });
+});
+
+describe("handoff source under real unlink semantics", () => {
+  // Regression cover for the defect that blocked CREDENTIAL/ENROLL in the
+  // M4-04/B bounded live session: readSourceBytes unlinks the allowlisted leaf,
+  // and assertRootUnchanged then compared the root's mtimeMs/ctimeMs, which the
+  // unlink had just moved. The source destroyed the secret and refused to emit
+  // it, on every invocation, for both kinds.
+  //
+  // These assertions are BEHAVIOURAL on purpose. The original defect survived a
+  // green suite because the fake returned an unchanged root stat forever, so a
+  // shape assertion could not see it. A test that is green both before and after
+  // the repair has not tested this defect.
+
+  it.each([
+    ["north_bearer", NORTH_BYTES] as const,
+    ["enrollment_artifact", ENROLLMENT_BYTES] as const,
+  ])(
+    "emits the full %s frame even though its own unlink moves the root timestamps",
+    async (kind, payload) => {
+      const output =
+        kind === "north_bearer"
+          ? northHarness({ realisticUnlink: true })
+          : harness({ realisticUnlink: true });
+
+      const result = await runPreProductionSecretHandoffSource(
+        argv(kind),
+        output.io,
+        { nodeEnv: "preproduction" },
+      );
+
+      expect(result).toBe(0);
+      expect(output.stderr).toEqual([]);
+
+      const emitted = output.stdout.reduce(
+        (total, chunk) => total + chunk.byteLength,
+        0,
+      );
+      // 0 bytes is the precise failure this defect produced. Assert on the byte
+      // count, not on a message, so the test fails on the real symptom.
+      expect(emitted).toBeGreaterThan(0);
+      // Complete accepted stream: frame + the trailing control byte.
+      expect(emitted).toBe(
+        FRAME_MAGIC_BYTES.byteLength + 4 + payload.byteLength + 1,
+      );
+      expectSingleFrame(output, payload);
+
+      // The leaf is consumed exactly once, and its absence is proven.
+      expect(output.calls.unlink).toHaveLength(1);
+      expect(output.calls.pathExists).toEqual(output.calls.unlink);
+    },
+  );
+
+  it("emits a 91-byte frame plus the commit byte for a 64-byte payload", async () => {
+    const payload = new TextEncoder().encode("S".repeat(64));
+    const output = northHarness({
+      realisticUnlink: true,
+      sourceBytes: payload,
+      sourceInitial: sourceStat({ size: payload.byteLength }),
+      sourceBefore: sourceStat({ size: payload.byteLength }),
+      sourceAfter: sourceStat({ size: payload.byteLength }),
+    });
+
+    const result = await runPreProductionSecretHandoffSource(
+      argv("north_bearer"),
+      output.io,
+      { nodeEnv: "preproduction" },
+    );
+
+    expect(result).toBe(0);
+    // 23 magic + 4 big-endian length + 64 payload = 91 for the frame itself.
+    expect(output.stdout[0]?.byteLength).toBe(91);
+    // Plus the separate 0x01 control byte: 92 bytes accepted by the receiver.
+    expect(Array.from(output.stdout[1] ?? [])).toEqual([0x01]);
+    const total = output.stdout.reduce((n, c) => n + c.byteLength, 0);
+    expect(total).toBe(92);
+  });
+
+  it("still refuses when the root is genuinely replaced", async () => {
+    // The narrowing must not disable swap detection: a different inode on the
+    // same path is still a refusal, even though the timestamps are untouched.
+    const output = northHarness({
+      realisticUnlink: true,
+      rootAfter: rootStat({ ino: 999 }),
+    });
+
+    const result = await runPreProductionSecretHandoffSource(
+      argv("north_bearer"),
+      output.io,
+      { nodeEnv: "preproduction" },
+    );
+
+    expect(result).not.toBe(0);
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr.join("")).toContain("root_changed_during_read");
+  });
+
+  it("still refuses when a foreign subdirectory appears in the root", async () => {
+    // nlink is compared precisely so this case is caught. Measured on ext4: a
+    // file unlink leaves nlink alone, while creating a subdirectory increments
+    // it, so nlink is free strictness rather than a volatile field.
+    const output = northHarness({
+      realisticUnlink: true,
+      rootAfter: rootStat({ nlink: 4, mtimeMs: 11, ctimeMs: 11 }),
+    });
+
+    const result = await runPreProductionSecretHandoffSource(
+      argv("north_bearer"),
+      output.io,
+      { nodeEnv: "preproduction" },
+    );
+
+    expect(result).not.toBe(0);
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr.join("")).toContain("root_changed_during_read");
   });
 });

@@ -1554,6 +1554,85 @@ working tree was returned to `main`. No commit, amend, reset, or push touched th
 repository during the live session itself; that was verified by reflog before
 this slice opened.
 
+## M4-04/B permanent handoff repair
+
+**Gate state:** `slice_record_open`
+
+**Planner decision:** authorized on 2026-08-17 as the second and last closing
+slice, and the only remaining item on the critical path before the Gateway image
+rebuild. Forecast `4.00h` active effort.
+
+**Ritual deviation, declared:** this slice record and its implementation commits
+were created while a GitHub platform incident made pushes and pull-request
+creation unreliable. The planner explicitly authorized creating the slice-record
+commit before the draft pull request, on the basis that the ritual's proof is the
+commit timeline. The draft PR is opened when the platform returns, and this
+paragraph is repeated in its body.
+
+**Scope of record:** protected source is
+`e9246cd1d51791db970bad800e6d2de418f5fc02`. This slice repairs the two defects
+that blocked `CREDENTIAL/ENROLL`, and nothing else.
+
+1. **The source must not compare volatile root fields after its own unlink.**
+   `readSourceBytes` unlinks the allowlisted leaf, and only afterwards does the
+   caller run `assertRootUnchanged`, which compares the root's `mtimeMs` and
+   `ctimeMs` through `sameState`. Those necessarily change, so the check can
+   never pass after a successful read.
+   The repair adds a root-only comparison used at that one site.
+   **`sameState` is left byte-unchanged**, because its three other call sites are
+   leaf-integrity checks — including the swap detection immediately before the
+   unlink — and relaxing it globally would be a security regression introduced
+   while fixing an availability defect.
+   Field set, settled by measurement rather than assumption:
+   `file`, `directory`, `symbolicLink`, `dev`, `ino`, `mode`, `uid`, `nlink` are
+   compared; `mtimeMs` and `ctimeMs` are excluded because the source's own
+   authorised unlink changes them; `size` is excluded as a portability margin.
+   The measurement and the reasoning are recorded in
+   `M4-04B-CLOSING-REPORT-ADDENDUM-2026-08-17.md` and its supplement.
+2. **The coordinator's source command is malformed by construction.**
+   `scripts/invoke-m4-secret-handoff.ps1` splices an array into an array literal,
+   so `-join` stringifies it and the remote command begins with the literal
+   `System.Object[]`. The repair is re-derived against `main` and then
+   cross-checked against the artefact whose effect was measured live.
+
+**Acceptance is behavioural, not shape-based.** A shape assertion is exactly what
+let the original defect through a green suite:
+
+- a `64`-byte payload produces a `92`-byte frame on stdout and exit `0`;
+- `stdoutBytes > 0` — `0` bytes is the precise observed failure;
+- the leaf is absent afterwards and the handoff root is empty;
+- both `north_bearer` and `enrollment_artifact` are covered;
+- a genuinely replaced root is still refused;
+- the leaf checks stay strict.
+
+**The test must fail before the repair.** The existing fake returns an unchanged
+root stat on every `lstat`, so a regression test written against it passes on the
+broken code — which is how this defect survived a green suite. The fake is
+corrected to advance only `mtimeMs` and `ctimeMs` on unlink, mirroring measured
+real behaviour, and a POSIX-only test exercises the same logic against a real
+filesystem. Red-before and green-after runs are both captured as evidence.
+**A test that is green both before and after has not tested this defect.**
+
+**Explicitly out:** every executable surface — host, image build, container,
+DNS/TLS/ACL, credential, enrollment, revoke, broker, client, Revit, reboot,
+write/confirm, production deploy. This slice ships source only; the image rebuild
+and re-pin is the separate next step, and the new bounded session follows it. The
+`npm audit` runtime finding is not in this slice; it keeps its existing
+pre-M5 Park disposition. No dependency, manifest, lockfile, workflow, runner, CD
+or NAS change is authorized here, and root `package-lock.json` must remain
+blob-identical.
+
+**Path allowlist:**
+
+```text
+packages/gateway/src/preProductionSecretHandoff.ts
+packages/gateway/src/preProductionSecretHandoff.test.ts
+scripts/invoke-m4-secret-handoff.ps1
+scripts/M4SecretHandoffCoordinator.psm1
+scripts/test-m4-secret-handoff-coordinator.ps1
+docs/plan/M4_GATE_EVIDENCE.md
+```
+
 ## Closed credential gate and explicitly open gates
 
 - **M4-CREDENTIAL/B:** exact-source build, target-host native Linux validation,
@@ -1639,6 +1718,13 @@ this slice opened.
   already configured, so a local range scan would remove the dependency
   entirely. Real fragility, but it blocks nothing on the critical path: parked
   for reassessment at M4 close.
+  **Retroactively confirmed on 2026-08-17:** once the platform recovered, the
+  same step executed and passed against the same repository
+  (`Gateway CI` run `32051594276`, step `Scan tracked history for secrets` ->
+  success). That converts two earlier inferences into measurements: the
+  `14:00Z` red was purely infrastructural, and the tracker diff carries no
+  secret. The dependency on `/pulls/{n}/commits` is real and unchanged -- it
+  simply did not fire here.
 - An operator-specific SSH key path (`C:\Users\BT\.ssh\id_ed25519`) is documented
   as if it were general in six places across `docs/DEVELOPER_RUNBOOK.md`,
   `README.md`, and `installer/nas/README.md`. Cosmetic; parked.

@@ -235,8 +235,13 @@ try {
         "--security-opt=no-new-privileges",
         "--user", $SourceUidGid
     )
-    $sourceCommand = @(
-        $commonDocker,
+    # $commonDocker is an array. PowerShell's array subexpression does not
+    # flatten a nested array here, so listing it inside @( ... ) leaves it as a
+    # single element and -join calls ToString() on it, emitting the literal
+    # "System.Object[]" as the first token of the remote command. The login shell
+    # then cannot find that command, exits 127, and no docker run is ever issued.
+    # Concatenate the arrays instead so the vector stays flat.
+    $sourceCommand = ($commonDocker + @(
         "--name", $sourceContainerName,
         "--mount", "type=bind,src=$SourceRoot/runtime/handoff,dst=$containerRoot",
         "--env", "NODE_ENV=preproduction",
@@ -245,7 +250,7 @@ try {
         "--contract", $contractVersion,
         "--kind", $Kind,
         "--root", $containerRoot
-    ) -join " "
+    )) -join " "
     $probeContainerName = $sourceContainerName + "-probe"
     $expectedSourceProbeJson = '{"ok":true,"action":"probe_preproduction_secret_handoff_source_absence","contractVersion":"revagent.m4-secret-handoff/v1","kind":"' + $Kind + '","sourceAbsent":true}'
     $combinedSourceProbeJson = '{"ok":true,"action":"probe_preproduction_secret_handoff_source_absence","contractVersion":"revagent.m4-secret-handoff/v1","kind":"' + $Kind + '","sourceAbsent":true,"containerAbsent":true}'
