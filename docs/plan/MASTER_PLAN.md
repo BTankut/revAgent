@@ -7,10 +7,12 @@
 its evidence remains `not_submitted`, and no milestone acceptance is recorded.
 The exact M2 code/evidence anchor remains
 `011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `e9246cd1d51791db970bad800e6d2de418f5fc02` on `main`. The bounded
-M4-04/B live session ran against that anchor and closed `blocked/partial`; the
-milestone row is unchanged, because only the milestone decision owner may move a
-milestone state.
+anchor is `e9246cd1d51791db970bad800e6d2de418f5fc02` on `main`. The first bounded
+M4-04/B live session ran against that anchor and closed `blocked/partial`. A second
+bounded session then ran against the rebuilt source `b9491e0919db` and closed **all
+seven M4-04/B gates**, so `M4-04/B` is `passed` against its own scope. The milestone
+row is unchanged: M4 acceptance names one read **and one confirm-class write**, and
+only the read is proven. Only the milestone decision owner may move a milestone state.
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
@@ -179,6 +181,44 @@ its active-session feasibility proof and the other six execution gates remain
 open; none is executed by A. `M4-WRITE-CONFIRM` remains a later separate gate.
 M4 stays `in_progress` / `not_submitted`; RES-30 remains open and the one-item
 Park List is unchanged.
+
+## 2026-08-20 M4-04/B session 2 — seven-gate closure
+
+The second bounded two-host live session ran 2026-08-18 to 2026-08-20 against the
+rebuilt source `b9491e0919db` and closed **all seven** `M4-04/B` gates:
+`CLIENT-PLACEMENT/FEASIBILITY`, `NETWORK/ACL`, `DNS/TLS-TRUST`, `BRIDGE-STAGE`,
+`CREDENTIAL/ENROLL`, `CLIENT/LIVE` and `CLEANUP/RESIDUE-EQUALITY`. **`M4-04/B` is
+therefore `passed` against its own scope.**
+
+**The `M4` milestone row stays `in_progress` / `not_submitted`.** M4 acceptance
+names *"one read **and one confirm-class write** with originating-preview/
+approval/commit audit evidence"*; the read is proven and the write is not. Those
+are different scopes. This record promotes nothing, and only the milestone
+decision owner may move a milestone state.
+
+**The carded confirm-class write was a card premise error, not a gate failure.**
+The pre-production serving path entitles exactly one callable, `core.ui.state`,
+by a hardcoded literal enforced at both advertisement and invocation. The
+registry seed feeds the catalog rather than the entitlement, no CLI pair scopes
+the surface, the broker proxies unmodified, and progressive disclosure cannot
+reach past it because the search corpus is the entitled set. The write was
+unreachable on this image and no configuration could widen it.
+`M4-WRITE-CONFIRM` was never inside `M4-04/B`'s seven-gate scope and remains a
+later separate gate. It is **recommended**, not decided, that it be sequenced
+with the M5 OAuth/entitlement lane rather than back-fitted onto a pre-production
+scaffold.
+
+**`RES-30` moves to two-thirds proven.** Real Gateway token exchange and
+revoked-device refusal at handshake are both now proven live, the latter
+correlated byte-for-byte at both ends under one RBP hello envelope id.
+**Device-token persistence across reboot remains unproven, and reboot is not
+authorized by any current card**, so `RES-30` must not be read as closed.
+
+Nine findings, the teardown lessons, the retained reproduction fixture, the two
+deliberate permanent deviations and the `R1`-`R6` queue are recorded in
+`docs/plan/M4_GATE_EVIDENCE.md` under "M4-04/B session 2 — seven-gate closure".
+The session-2 certificate was revoked and the CA confirmed it; the session-1
+certificate Park item is unchanged and is a different certificate.
 
 ## 2026-08-14 M4-04 client-bearer route binding (M4-04/A4)
 
