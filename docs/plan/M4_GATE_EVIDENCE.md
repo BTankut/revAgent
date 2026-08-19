@@ -40,7 +40,9 @@
 ([`PR #380`](https://github.com/BTankut/revAgent/pull/380) merged as
 [`e9246cd1d51791db970bad800e6d2de418f5fc02`](https://github.com/BTankut/revAgent/commit/e9246cd1d51791db970bad800e6d2de418f5fc02))
 
-**M4-04/B session state:** `blocked/partial`
+**M4-04/B session state:** `passed` against its seven-gate scope
+(session 1 `blocked/partial`; session 2 closed all seven gates — see
+"M4-04/B session 2 — seven-gate closure")
 
 **Plan binding:** `M4-02` is the planner-approved deterministic composition and
 bounded-host decomposition of the M4 Gateway live path. `M4-03/A` is the
@@ -1704,6 +1706,29 @@ docs/plan/M4_GATE_EVIDENCE.md
   1918, so the residual exposure is bounded; public CT history is immutable and
   is acknowledged as permanent external residue. This is a non-blocking Park item
   and needs no further action unless the planner decides otherwise.
+- **Certificate revocation, disambiguated.** The Park item above concerns the
+  **session-1** certificate, serial `067FEA2F97ED511AD57E74DEE5D8B0410507`,
+  which remains unrevoked and is now unrevokable because its ACME account key
+  was destroyed at G7. That disposition is unchanged. The **session-2**
+  certificate is a different certificate and was **revoked**: serial
+  `05FBDE9078CD4BC679AD94BEB6FBAEC25203`, SAN `m4-gateway.revagent.app`, valid
+  through `2026-11-16T09:32:53Z`, reason `5` (`cessationOfOperation`),
+  confirmed by the CA returning `alreadyRevoked` for that serial before the
+  account key was shredded. Session 2 therefore closes the class that session 1
+  parked, and does not add to it.
+- **GAP-14 — Codex configuration rewrites.** Two package-UPDATE samples
+  destroyed the managed `[mcp_servers.revAgent]` entry; one plain RESTART
+  preserved it, reformatting only and touching two Codex-owned runtime keys.
+  Two samples of one shape and one of the other is **not a rule**. Re-test
+  deliberately at the next Codex update. If it holds, the managed entry must be
+  re-asserted after an UPDATE rather than after every restart, which narrows
+  the mitigation considerably. Non-blocking.
+- **The pre-production identity store revokes in memory only.**
+  `revokeDevice` mutates one field and neither closes open connections nor
+  persists, so a Gateway restart loses the revocation and a revocation alone
+  does not disturb a held session. Correct for an M2 scaffold and recorded as
+  an observation rather than a defect claim; it belongs with the M5
+  entitlement work alongside the hardcoded single callable.
 - The Bridge staged-worker startup anomaly (`0.330s` incumbent versus `12.519s`
   staged, same host and service) is unexplained and was never re-measured because
   G5 did not reach the Bridge restart. It stays inside the `30s`
@@ -1847,7 +1872,9 @@ teardown. None of them blocks the Gateway start.
 
 ## M4-04/B session 2 — seven-gate closure
 
-**Slice state:** `slice_record_open`
+**Slice state:** `passed`
+
+**M4-04/B gate state:** `passed` **against its seven-gate scope**
 
 **Scope of record.** This slice records the outcome of the second bounded
 M4-04/B live session, which ran 2026-08-18 → 2026-08-20 against the rebuilt
@@ -1877,6 +1904,184 @@ milestone acceptance without the milestone owner's explicit decision, and this
 record makes no such claim.
 
 Docs-only.
+
+### The verdict, kept precise
+
+Two scopes must not be conflated, and this record does not conflate them.
+
+**`M4-04/B` passes against its own scope.** That scope is the seven gates named
+in this document at "The seven M4-04/B records/gates remain distinct", and it
+contains **no write gate**.
+
+**The M4 milestone stays `in_progress` / `not_submitted`**, because
+`MASTER_PLAN.md` M4 acceptance names *"an external MCP client (WP9 candidate) →
+Gateway → Bridge → live Revit executes one read **and one confirm-class write**
+with originating-preview/approval/commit audit evidence."* The read is proven;
+the write is not.
+
+| Gate | Session-2 record | Result |
+| --- | --- | --- |
+| `CLIENT-PLACEMENT/FEASIBILITY` | C0 preflight and supplement; PETRUCCI bound and proven | `pass` |
+| `NETWORK/ACL` | C1; `DOCKER-USER` allow and deny, both polarities exercised | `pass` |
+| `DNS/TLS-TRUST` | C2; A and TXT records, certificate issued, trust proven | `pass` |
+| `BRIDGE-STAGE` | C3; staged worker and config, backup and restore both proven | `pass` |
+| `CREDENTIAL/ENROLL` | C5; bearer delivered byte-faithfully, enrollment consumed, registration committed and survived a Codex restart | `pass` |
+| `CLIENT/LIVE` | C6; one non-mutating read traced hop by hop, operator-confirmed on screen | `pass` |
+| `CLEANUP/RESIDUE-EQUALITY` | C8; both live hosts proven clean | `pass` |
+
+Outside those seven, also completed: **C4** broker stage, and **C9**
+revoked-device refusal correlated at both ends, which belongs to `RES-30` rather
+than to `M4-04/B`.
+
+### C7 is a card premise error, not a gate failure
+
+The session card added a confirm-class write step, `C7`. It could not run, and
+the reason is a property of the build rather than a fault in it.
+
+The pre-production serving path entitles **exactly one callable**,
+`core.ui.state`, by a hardcoded literal — `EntitledCatalogView(catalog, entry =>
+entry.name === M2_NORTH_FIRST_SLICE_CALLABLE)` at advertisement, and
+`allowedToolNames: [M2_NORTH_FIRST_SLICE_CALLABLE]` at invocation. The registry
+seed carries all forty tools and feeds the catalog, not the entitlement; none of
+the seventeen CLI pairs scopes the surface; the broker proxies unmodified; and
+progressive disclosure cannot reach past it because the search corpus **is** the
+entitled set. `set_element_parameter` was unreachable on this image and no
+configuration could widen it.
+
+`M4-WRITE-CONFIRM` was never inside `M4-04/B`'s seven-gate scope. The card
+overreached; the code did exactly what it says, and the constant is named for it.
+
+The refusal to widen the entitlement in order to pass the gate is recorded
+deliberately:
+
+> Widening an entitlement to make a gate pass is exactly the class of change that
+> must never be made under gate pressure.
+
+**Recommendation to the plan owner**, not a decision: sequence
+`M4-WRITE-CONFIRM` with the M5 OAuth/entitlement lane rather than back-fitting it
+onto a pre-production scaffold. The pre-production entitlement is an M2 scaffold;
+M4 correctly built transport, identity, secret handling and the client path
+*around* that single slice.
+
+### RES-30 — two of three now proven
+
+This document's "explicitly open gates" section names three unproven `RES-30`
+items. Two are now proven live:
+
+| `RES-30` item | State after session 2 |
+| --- | --- |
+| real Gateway token exchange | **proven** (C5 and C6) |
+| revoked-device refusal at handshake | **proven** (C9, correlated at both ends) |
+| device-token persistence across reboot | **still unproven**, and reboot is not authorized by `M4-02`, `M4-HOST`, `M4-03/A` or `M4-CREDENTIAL/B` |
+
+**`RES-30` must not be read as closed.**
+
+C9's correlation, for the record: the Gateway emitted
+`gateway.rbp_opening_refused` and the Bridge emitted
+`worker.gateway_retry_paused`, both carrying correlation id
+`01a01bbc-ea91-78c6-b34c-7b75f22c766c` — the same RBP hello envelope id, so the
+correlation is structural rather than coincidental. The observer shipped in
+`M4-04/A3` (`PR #377`) and had never fired until this session.
+
+### The nine findings
+
+Each is recorded in full, with what it cost and how it was caught, in the
+off-repo closing record
+`M4-04B-SESSION-2-CLOSING-RECORD-2026-08-20.md`, SHA-256
+`d57f198754865cf59bfdedc9579787194bcf59934ce415e6cb8d8811127dcea0`.
+
+1. **The digest trap.** A build-engine digest is not a runtime-engine digest; the
+   authoritative digest is the one resolved by the engine that will *run* the
+   image.
+2. **Defect A — the Windows ssh/sshd launch context.** `ssh.exe` spawned inside
+   an *inbound* sshd session never exits when stdout is a pipe, which produced a
+   false `TIMEOUT` on both transport legs. Environmental, not a defect in the
+   binary. Queued as `R4`.
+3. **Defect B — CRLF in the generated POSIX cleanup-probe script.** Fixed at
+   generation time rather than normalised at the receiver. Queued as `R1`.
+4. **Defect C — the coordinator discarded the Windows destination's own
+   metadata.** Queued as `R1`.
+5. **Defect D — a duplicate control byte**, which would have corrupted the
+   delivered secret by one byte. Caught by the mandatory acceptance gate, and
+   fixed at the source rather than the receiver. Queued as `R2`, which must
+   exercise the relayed topology.
+6. **Defect E — the TLS material timestamp guard.** Repaired and merged as
+   `PR #383` / `b9491e0919db`.
+7. **The journal-state connection failure.** A journal in a particular state
+   leaves the Bridge unable to hold a Gateway session. Recorded as a **product
+   defect**, not a lab artefact. The failing statement is still unnamed; that is
+   `R6`, and it is gated behind `R5`.
+8. **The registration form premise error.** The previewed registration form could
+   never have worked with the broker it was meant to register, and would have
+   burned the broker's single-shot start. It was caught only on a second reading,
+   after an earlier note had been filed and accepted as harmless — **a premise
+   error can survive being noticed once.**
+9. **The advertised tool surface is one callable, by hardcoded design** — see
+   "C7 is a card premise error" above. **Addendum:** `revokeDevice` mutates one
+   in-memory field and does not persist, so a Gateway restart loses the
+   revocation. Same M2 scaffold; it belongs with the M5 entitlement work.
+
+### Teardown lessons
+
+1. **Unregistering a scheduled task does not stop the process it started.** The
+   broker survived its own task's removal and kept holding `127.0.0.1:18765`.
+2. **The restore source must outlive everything it restores.** The approved
+   restore script read from a backup inside the session root, and the session
+   root was itself on the deletion list. Session root last, and only after every
+   restore assertion returns true.
+3. **Secure deletion needs `chmod u+w` first.** Three of the five secret files
+   were mode `0400`, which is precisely where the previous attempt's `shred`
+   failed.
+4. **Revoke before you destroy the account key.** `lego` supports only
+   account-key revocation. The certificate issued for this session — serial
+   `05FBDE9078CD4BC679AD94BEB6FBAEC25203`, SAN `m4-gateway.revagent.app`, valid
+   through `2026-11-16T09:32:53Z` — was **revoked** with reason `5`
+   (`cessationOfOperation`) before any destruction, and the CA confirmed it by
+   returning `alreadyRevoked` naming that serial. The previous attempt's
+   empty-e-mail guard was both wrong and unnecessary: in `lego` v5.3.1 `revoke`
+   moved under `certificates`, and `--account-id` exists precisely because the
+   e-mail may be absent.
+5. **A proof obligation is only real if it can fail you.** The first config edit
+   produced a file whose only flaw was a trailing newline — a third difference
+   beyond the two exempted volatile keys — and it was caught against the
+   executor's own proof obligation before reporting.
+
+### Retained reproduction fixture — EXEMPT from teardown
+
+```text
+evidence\FIXTURE-rbp-journal-connection-failure\
+  journal.db      0e76ec8a18e52ea191b7e66ccceada4f0ec93a19b0c6f04bb9f5a17f8620b7a2
+  PROVENANCE.md   777067d9c8fbf82ed82371870996de0671542c0dfa169af9e0fd52a432052042
+```
+
+It is the only artefact that reproduces finding 7, and therefore **`R6`'s only
+validation path**. It was proven present at close. Archive, never delete.
+
+### Two deliberate permanent deviations
+
+1. **PETRUCCI's DNS setting is a permanent change, not residue.** Recorded so it
+   is not later read as an unreverted mutation.
+2. **The Bridge journal is left WORKING rather than left IDENTICAL.** The
+   pre-session journal is the defect; restoring it would knowingly return the
+   machine to a broken state. The original is archived as the fixture above. An
+   undocumented deviation would be a residue-proof failure; a documented one is a
+   decision.
+
+### Post-session slice queue
+
+| Slice | Subject | State |
+| --- | --- | --- |
+| `R1` | the CRLF pair — defects B and C, normalised at generation time | queued |
+| `R2` | control-byte ownership; **must exercise the relayed topology**, not a direct pipe | queued |
+| `R3` | the TLS material timestamp guard | **merged** (`PR #383`) |
+| `R4` | document the Windows ssh/sshd inbound-session launch-context defect | queued |
+| `R5` | **diagnosability** — the Bridge must be able to say *which* journal statement failed | queued |
+| `R6` | the journal defect itself | **blocked on `R5`** |
+
+**`R5` strictly before `R6`.** `R6` cannot be scoped against a defect whose
+failing statement has never been named, and the instrument that would name it
+does not yet exist. Scoping `R6` first would repeat finding 7's own mistake:
+reasoning from an instrument that cannot produce the evidence.
 
 ## Submission rule
 
