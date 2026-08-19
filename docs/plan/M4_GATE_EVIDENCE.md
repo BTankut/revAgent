@@ -1845,6 +1845,39 @@ teardown. None of them blocks the Gateway start.
    source-to-destination pipe. Substituting that direct pipe for the real
    topology is what allowed the defect through.
 
+## M4-04/B session 2 — seven-gate closure
+
+**Slice state:** `slice_record_open`
+
+**Scope of record.** This slice records the outcome of the second bounded
+M4-04/B live session, which ran 2026-08-18 → 2026-08-20 against the rebuilt
+image and closed every one of the seven M4-04/B gates. It is a tracker slice:
+it records a completed, separately authorized live session and changes no
+product code.
+
+It will record, and nothing beyond:
+
+- `M4-04/B` moving from `blocked/partial` to `passed` **against its own
+  seven-gate scope**, with a gate-by-gate mapping to the session's records.
+- The M4 milestone ledger staying `in_progress` / `not_submitted`, because
+  `MASTER_PLAN.md` M4 acceptance names one read **and one confirm-class write**
+  and only the read is proven.
+- `C7` as a **card premise error**, not a gate failure: the pre-production
+  profile entitles exactly one callable by hardcoded design, so the carded write
+  was unreachable on this image, and `M4-WRITE-CONFIRM` was never inside
+  `M4-04/B`'s seven-gate scope.
+- `RES-30` at two-thirds, with the remaining third named as unproven and
+  unauthorized.
+- The nine findings, the Park List additions, the R1–R6 queue, the retained
+  reproduction fixture, and the two deliberate permanent deviations.
+
+The evidence chain itself lives off-repo, hash-chained, 94 records. This section
+is the durable in-repo record that points at it. No evidence result becomes
+milestone acceptance without the milestone owner's explicit decision, and this
+record makes no such claim.
+
+Docs-only.
+
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
