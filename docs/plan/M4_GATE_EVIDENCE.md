@@ -2150,16 +2150,26 @@ M4-CLIENT/LIVE, M4-WRITE-CONFIRM, RES-30, and the remaining planner-bound slices
 are still open. No evidence result becomes milestone acceptance without the
 milestone owner's explicit decision.
 
-M4-04/A7 has since merged as `e9246cd1`, and the bounded M4-04/B live session ran
-against exactly that source. M4-04/B is `blocked/partial`: T0, G2, G3, G4A and
+M4-04/A7 merged as `e9246cd1`, and the **first** bounded M4-04/B live session ran
+against exactly that source and closed `blocked/partial`: T0, G2, G3, G4A and
 G4B passed, G5 was blocked by a product defect inside the pinned image, G6 was
 taken out of scope, and G7 completed with a proven-clean residue state on both
-live hosts. That result does **not** move the M4 milestone ledger, which remains
-`in_progress` / `not_submitted`; only the milestone decision owner may change a
-milestone state, and this record makes no such claim.
+live hosts.
 
-The M4 live path cannot be completed on the pinned image. Closing it requires
-the separate repair slice, a rebuilt image with a newly pinned digest, and a new
-bounded session carrying the four unexercised socket must-proves, the corrected
-serving path literals, destination-root ownership set at creation, the
-`<root>\north-bearer.dpapi` leaf location, and the R1 proxy reality.
+**That result is superseded.** The two repair slices merged — the permanent
+handoff repair as `PR #382` / `b53b54df`, and the TLS material timestamp guard as
+`PR #383` / `b9491e09` — and a **second** bounded session then ran against the
+rebuilt source `b9491e09` and closed **all seven** M4-04/B gates. `M4-04/B` is
+therefore `passed` **against its own seven-gate scope**; see "M4-04/B session 2 —
+seven-gate closure".
+
+**The M4 milestone ledger nonetheless stays `in_progress` / `not_submitted`,** and
+this is the distinction to carry away from this document: M4 acceptance in
+`MASTER_PLAN.md` names one read **and one confirm-class write**, and only the read
+is proven. `M4-WRITE-CONFIRM` is a separate gate that was never inside M4-04/B's
+seven-gate scope. Only the milestone decision owner may change a milestone state,
+and this record makes no such claim.
+
+The remaining work is tracked as the `S1`..`S6` post-session slice queue above,
+with `S5` strictly before `S6`. The product requirements raised by the live
+sessions — including the `R1` proxy reality — remain open in their own namespace.
