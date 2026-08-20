@@ -1944,6 +1944,53 @@ Outside those seven, also completed: **C4** broker stage, and **C9**
 revoked-device refusal correlated at both ends, which belongs to `RES-30` rather
 than to `M4-04/B`.
 
+### The session-2 pin triple
+
+This document treats digest identity as a first-class concern, so it records its
+own:
+
+| Anchor | Value |
+| --- | --- |
+| protected source commit | `b9491e0919db27008f50af2a43bfeccc6f13048b` (`PR #383`) |
+| OCI archive | `f1246520aa37ea34b9d35e715bf8333d2571c4e3696da9e3ca24220c22f7976a` |
+| image tag and digest | `localhost/revagent-gateway:m4-04-b9491e0919db` @ `sha256:c0d404cad2878102803bf6e1cd46ac76134196abad607b1b5dba1852575a5bdd` |
+
+**Finding 1 applies to this triple.** The digest above is the one resolved by the
+engine that RAN the image, not the one reported by the engine that built it.
+Those differ, and only the runtime-resolved digest is authoritative.
+
+### The four socket must-proves, enumerated with outcomes
+
+These are referenced repeatedly across this document and were never listed. All
+four were satisfied in session 2, both polarities where a polarity exists:
+
+| # | Must-prove | Session-2 outcome |
+| --- | --- | --- |
+| (i) | DNS from PETRUCCI resolves the Gateway name | `m4-gateway.revagent.app` → `192.168.90.154`, ttl 176 — **satisfied** |
+| (ii) | a real TCP/443 socket from the allowlisted client | connected in 5 ms, `192.168.90.122:57733` → `192.168.90.154:443` — **satisfied** |
+| (iii) | the ACL `ACCEPT` counter moves, and `REJECT` proves the deny rule | `ACCEPT` 10 → 19 on the allowlisted host; `REJECT` 0 → 5 on a NON-allowlisted host, which was reset — **satisfied, both polarities** |
+| (iv) | TLS plus an authenticated WSS session | TLS 1.3 `Aes256`, `CN=m4-gateway.revagent.app`, Let's Encrypt YE1 chain valid under **strict** validation, name match; `/healthz` → `200`; `/bridge/v1` upgrade → `426` with `X-RBP-Supported-Versions: 1`; then a held authenticated session proven from **both ends** — **satisfied** |
+
+Only (iv) could be closed after the single-shot secret was spent; (i)-(iii) were
+deliberately closed **before** generation, so that a proxy or ACL fault could not
+burn the secret.
+
+### What is held off-repo, and why — a labelled boundary, not a silence
+
+A reviewer working from this repository alone should know exactly what exists and
+is not here, rather than having to infer whether it was ever produced:
+
+| Held off-repo | What it is | Why |
+| --- | --- | --- |
+| 24 session-1 evidence records (`T0-…`, `G2-…`…`G7-…`, `G5-*`, `OPS-PETRUCCI-DNS-…`, `SLICE2-E2E-PROOF-…`) | the hash-chained evidence for the first bounded session | they contain live-host measurement detail from a bounded session; retained on the coordinator workstation, cited here by name and SHA-256 |
+| the session gate cards | the authorization instrument each gate was executed against | planner-issued per session; this document reasons against them but does not reproduce them |
+| the 94-record session-2 chain | per-gate records `C0`…`C9` | superseded for review purposes by the imported closing record above, which is the only session-2 record that needed to be resolvable |
+| the reproduction fixture | `FIXTURE-rbp-journal-connection-failure/` — `journal.db` `0e76ec8a…`, `PROVENANCE.md` `777067d9…` | it is a captured defective database, not source; it is `S6`'s only validation path and is retained, exempt from teardown |
+
+**The evidence exists and is retained; it is deliberately not repository
+content.** Anyone who needs a specific record can request it by name and
+SHA-256.
+
 ### C7 is a card premise error, not a gate failure
 
 The session card added a confirm-class write step, `C7`. It could not run, and
@@ -1996,10 +2043,13 @@ correlation is structural rather than coincidental. The observer shipped in
 
 ### The nine findings
 
-Each is recorded in full, with what it cost and how it was caught, in the
-off-repo closing record
-`M4-04B-SESSION-2-CLOSING-RECORD-2026-08-20.md`, SHA-256
-`d57f198754865cf59bfdedc9579787194bcf59934ce415e6cb8d8811127dcea0`.
+Each is recorded in full, with what it cost and how it was caught, in
+[`docs/plan/M4-04B-SESSION-2-CLOSING-RECORD.md`](M4-04B-SESSION-2-CLOSING-RECORD.md),
+imported into this repository byte-for-byte at SHA-256
+`d57f198754865cf59bfdedc9579787194bcf59934ce415e6cb8d8811127dcea0`. That hash is
+attested here deliberately: the file must never be edited in place, because any
+change — whitespace included — would turn this attestation into a false
+statement. Correct it by superseding it with a new record, never by editing it.
 
 1. **The digest trap.** A build-engine digest is not a runtime-engine digest; the
    authoritative digest is the one resolved by the engine that will *run* the
@@ -2132,12 +2182,61 @@ post-session slice queue is re-labelled `S1`..`S6` with the mapping preserved
 one-for-one, every reference is updated, and the text states explicitly that two
 namespaces exist and which is which.
 
-**Explicitly out of scope**, and reported separately for a decision rather than
-acted on here: the uncommitted `packages.lock.json` deltas in the working tree,
-the possible import of the off-repo closing record into `docs/plan/`, and the
-addition of a reviewer orientation entry point.
+### Convention — stale versus misleading-but-historical
 
-Docs-only.
+Adopted here and worth applying to every tracker in this repository:
+
+- A state line that **contradicts git reality** is *stale*. Fix the state, and
+  cite the PR number and merge commit.
+- A state line that was **true when written and has since been superseded** is
+  *historical*. Do **not** rewrite it — add a forward-pointer naming what
+  superseded it. Rewriting a dated record destroys the evidence of what was known
+  at the time, which is often the more valuable fact.
+
+Both kinds mislead a reviewer; only the first is an error.
+
+### Also corrected: the document's final section
+
+`## Submission rule`, the last thing a reader reaches, still delivered session 1's
+verdict as the current one — *"M4-04/B is `blocked/partial`"* and *"The M4 live
+path cannot be completed on the pinned image"*. Both were true when written and
+both were superseded by the two repair slices and session 2. A stale verdict in a
+closing section reframes everything above it.
+
+### Finding — an ad-hoc build silently broke the local Bridge gates
+
+Three `packages.lock.json` files sat modified in the working tree for two days and
+were reverted by this slice.
+
+```text
+what   RevAgent.Bridge gained an SDK-injected `Microsoft.NET.ILLink.Tasks` entry;
+       Bootstrap and Contracts each gained an empty `net8.0/win-x64` target.
+       Nothing else moved — no package removed, no version bumped, no contentHash
+       altered, no formatting change.
+when   all three stamped 2026-08-18 14:22:32, within ~6 ms — one process
+cause  an ad-hoc `dotnet publish -r win-x64` run WITHOUT `--no-restore`, during
+       the session-2 reproducibility test that proved a rebuild cannot reproduce
+       the staged worker `aca871a4`. Under SDK 9 that auto-references the ILLink
+       pack, and `win-x64` propagates down the ProjectReference graph.
+effect `dotnet restore --locked-mode` failed NU1004 — and that is the FIRST
+       command in both `scripts/test-bridge-contracts.ps1` and
+       `scripts/test-bridge-service.ps1`. The local Bridge gates could not run.
+```
+
+The reproducibility test itself was correct and valuable. The finding is the
+mechanism, not the author.
+
+**Operational rule.** Any `dotnet` command run in this repository outside the gate
+scripts must pass `--no-restore`, or it rewrites the lock files. The gate scripts
+already do this correctly.
+
+**Why it survived undetected for two days**, which is worth stating so a reviewer
+does not wonder how three broken lock files sat on a working machine: every
+restore in this repository's tooling uses `--locked-mode`, and locked-mode
+**fails rather than rewrites**. That is correct fail-closed design. Its
+consequence is that the breakage is invisible until someone runs the gates.
+
+Docs-only, apart from that lock-file revert.
 
 ## Submission rule
 
