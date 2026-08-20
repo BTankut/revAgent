@@ -2162,8 +2162,17 @@ reviewer has no access to the off-repo evidence chain and no access to the teams
 that produced it. Anything not in the repo does not exist for that review, and
 anything *wrong* in the repo will send it chasing ghosts.
 
-This slice makes two unambiguous factual corrections and nothing else. It is
-docs-only and touches no product code, no tests and no workflows.
+**Scope amendment.** This slice opened with two unambiguous factual corrections.
+Three further review-readiness items were investigated, reported with evidence,
+and separately approved before being folded in: the working-tree lock-file
+revert, the import of the session-2 closing record, and a reviewer entry point.
+The slice is docs-only apart from that lock-file revert, and touches no product
+code, no tests and no workflows.
+
+The five items are: (1) stale slice and gate states, (2) the `R1`..`R6` label
+namespace collision, (3) the lock-file drift that broke the local Bridge gates,
+(4) the closing-record import that makes an attested citation resolvable, and
+(5) `docs/plan/00-INDEX.md`, the entry point this repository did not have.
 
 **1 — Stale slice and gate states.** Sections of this document still record slices
 as `slice_record_open` whose implementation has merged. Those are factual errors
