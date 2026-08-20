@@ -2083,6 +2083,43 @@ failing statement has never been named, and the instrument that would name it
 does not yet exist. Scoping `R6` first would repeat finding 7's own mistake:
 reasoning from an instrument that cannot produce the evidence.
 
+## Repo review readiness — tracker accuracy and label namespaces
+
+**Slice state:** `slice_record_open`
+
+**Scope of record.** An expert deep review of everything up to M4 has been
+commissioned, and it will be conducted **through this repository only**. The
+reviewer has no access to the off-repo evidence chain and no access to the teams
+that produced it. Anything not in the repo does not exist for that review, and
+anything *wrong* in the repo will send it chasing ghosts.
+
+This slice makes two unambiguous factual corrections and nothing else. It is
+docs-only and touches no product code, no tests and no workflows.
+
+**1 — Stale slice and gate states.** Sections of this document still record slices
+as `slice_record_open` whose implementation has merged. Those are factual errors
+of the worst kind for a repo-only reviewer: they read as unfinished work. Every
+state line in this document and in `MASTER_PLAN.md` is swept against git reality,
+not only the two already known, and each stale one is corrected to its true state
+with the PR number and merge commit in the format already used at the top of this
+document.
+
+**2 — The `R1`..`R6` label namespace collision.** This document uses `R1`..`R6`
+for two different things: the **product requirements** raised by the live
+sessions, and the **post-session slice queue**. Same labels, different meanings,
+one file. The product-requirement namespace keeps `R1`..`R6`, because those
+labels are cited across sessions and in the operator's standing rules. The
+post-session slice queue is re-labelled `S1`..`S6` with the mapping preserved
+one-for-one, every reference is updated, and the text states explicitly that two
+namespaces exist and which is which.
+
+**Explicitly out of scope**, and reported separately for a decision rather than
+acted on here: the uncommitted `packages.lock.json` deltas in the working tree,
+the possible import of the off-repo closing record into `docs/plan/`, and the
+addition of a reviewer orientation entry point.
+
+Docs-only.
+
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
