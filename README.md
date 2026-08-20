@@ -6,6 +6,16 @@ companion Revit API docs MCP server, installer, NAS updater, and deployment
 documentation in one place.
 
 It is the single canonical source for production office deployment.
+
+> **Reviewing the Gateway/Bridge migration, or looking for current project
+> state? Start at [`docs/plan/00-INDEX.md`](docs/plan/00-INDEX.md).**
+>
+> This README documents the **legacy NAS-deployed workstation package**. The
+> in-progress migration to the Gateway / Bridge / RBP architecture — milestones
+> M0-M4, the frozen protocol, gate evidence, known issues and the follow-up
+> queue — is tracked under `docs/plan/` and `docs/implementation-plan/`, not
+> here.
+
 Published release ZIPs are user packs, not repo copies. A user pack contains
 only the files needed to run revAgent on a workstation: hardened runtime
 JavaScript bundles, runtime-only npm manifests, Revit DLL payloads,

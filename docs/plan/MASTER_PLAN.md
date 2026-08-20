@@ -7,7 +7,8 @@
 its evidence remains `not_submitted`, and no milestone acceptance is recorded.
 The exact M2 code/evidence anchor remains
 `011b17b0095e5190a4347fca81160cbb9138eae0`; the current protected M4 source
-anchor is `e9246cd1d51791db970bad800e6d2de418f5fc02` on `main`. The first bounded
+anchor is `b9491e0919db27008f50af2a43bfeccc6f13048b` on `main`
+(the rebuilt source carrying the TLS material timestamp repair, `PR #383`). The first bounded
 M4-04/B live session ran against that anchor and closed `blocked/partial`. A second
 bounded session then ran against the rebuilt source `b9491e0919db` and closed **all
 seven M4-04/B gates**, so `M4-04/B` is `passed` against its own scope. The milestone
@@ -16,7 +17,7 @@ only the read is proven. Only the milestone decision owner may move a milestone 
 
 **Phase-0 exit:** passed on 2026-07-22; milestone-owner acceptance is not yet recorded
 
-**Last updated:** 2026-08-17
+**Last updated:** 2026-08-20
 
 This file is the operational milestone tracker for the migration described by `docs/TARGET_ARCHITECTURE.md` and `docs/implementation-plan/00-INDEX.md`. The index and its RES-* amendments are authoritative when package documents disagree. A draft PR or written artifact is evidence, but it does not close a demo gate by itself.
 
@@ -215,7 +216,7 @@ correlated byte-for-byte at both ends under one RBP hello envelope id.
 authorized by any current card**, so `RES-30` must not be read as closed.
 
 Nine findings, the teardown lessons, the retained reproduction fixture, the two
-deliberate permanent deviations and the `R1`-`R6` queue are recorded in
+deliberate permanent deviations and the `S1`-`S6` queue are recorded in
 `docs/plan/M4_GATE_EVIDENCE.md` under "M4-04/B session 2 — seven-gate closure".
 The session-2 certificate was revoked and the CA confirmed it; the session-1
 certificate Park item is unchanged and is a different certificate.
@@ -469,7 +470,7 @@ record; this assistant will not continue, ready, or merge it.
 | WP9 designer-client matrix | ChatGPT/Codex Desktop selected by DP-10; the M0 comparison matrix merged through [#275](https://github.com/BTankut/revAgent/pull/275) | `passed` | Prove registration, auth, confirm, files, Turkish UX, and live-Revit compatibility in the separate DP-10 hands-on gate; selection alone is not conformance |
 | DP-8 host selection and live reachability evidence | BatchMode SSH evidence retained in PR [#268](https://github.com/BTankut/revAgent/pull/268): Ubuntu 26.04 LTS, 8 CPUs, 30 GiB RAM, 204 GiB free root storage, and 870 GiB free data storage; router has no dual-WAN/LTE and Barış Tankut accepted WAN-outage risk on 2026-07-22 | `passed` | M0 reachability is closed. Under R-G, the implementation assistant owns later Docker/Compose and tunnel/origin work; retain power/UPS and production-readiness evidence for M7 |
 | DP-3/DP-4 connector and domain staging | `cloudflared` 2026.7.2, matching tunnel credential hash, `gateway.revagent.app` → `http://127.0.0.1:8081` ingress validation, bounded QUIC/HTTP2 proof, Docker Engine 29.6.2/Compose v5.3.1, hash-matched PR #273 artifacts, and configuration validation are retained in `docs/decisions/DP-03-04-cloudflare-staging.md`; zero containers/listeners and connector disabled/inactive | `passed` | After the immutable Gateway image and root-owned environment exist, start the real origin, enable the connector, and retain public `/healthz`, TLS, restart, and reconnect evidence for pilot entry |
-| DP-12 PETRUCCI live-workstation readiness | Accepted M3 evidence proves the live PETRUCCI/Revit 2022 chain; 2026-08-13 read-only SSH and installed-surface evidence is retained in `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`. Bridge still targets the M3 loopback stub and real-Gateway enrollment is unproven; NET01 is outside the program | `in_progress` | Obtain separate M4-04 network/trust, Bridge-stage, credential/enrollment, and client/live approvals; operator names pilot user, dates, fallback, and communications owner |
+| DP-12 PETRUCCI live-workstation readiness | Accepted M3 evidence proves the live PETRUCCI/Revit 2022 chain; 2026-08-13 read-only SSH and installed-surface evidence is retained in `docs/decisions/DP-12-PETRUCCI-readiness-2026-08-13.md`. the seven M4-04/B live gates all closed in the 2026-08-18 to 2026-08-20 session, proving real-Gateway enrollment and one live read end to end; NET01 is outside the program | `in_progress` | Obtain separate M4-04 network/trust, Bridge-stage, credential/enrollment, and client/live approvals; operator names pilot user, dates, fallback, and communications owner |
 
 The core M0 exit defined by the Week-1 objective is evidenced by merged PRs #268-#275: the decisions are
 recorded, O1 v0.9 completed its closure review, the monorepo and Compose scaffolds exist, the 35-tool HTTP
@@ -497,7 +498,7 @@ separately from engineering effort.
 | Milestone | Outcome and executable exit demonstration | Depends on | Primary owner(s) | Planning effort forecast | Actual effort | Variance | State |
 |---|---|---|---|---|---|---|---|
 | M0 | Decisions + scaffolds; 35-tool HTTP demo; new-package CI green; Ubuntu host reachable | — | WP8 with WP1/WP2/WP5/WP9 | 5d | not recorded | not calculable | `passed` |
-| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and `rbp/v1.0.0` remains a separate non-blocking closure under RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
+| M1 | O1/RBP v1.0 frozen after conformance review of handshake, auth, resume, invoke/batch, journal, streaming, heartbeat, versioning, and faults; protected merge of PR #290 is the recorded mechanical close and the annotated tag `rbp/v1.0.0` (tag object `77ac4190`, resolving to anchor `a99f6051`) was created and identity-validated on 2026-07-31 under RES-36, closing RES-28 | M0 | WP1 | 3d | not recorded | not calculable | `accepted` |
 | M2 | External-client Gateway core serves a capability index and deferred schemas through `tool_search`/`tool_schema`, exposes a small pinned callable set over north MCP, loads immutable hash-bound runtime/docs handlers without frozen-source relocation, and proves registry/policy/confirmation plus bridge/internal executor dispatch and production RBP ingress; Mode B remains interface stubs only | M1 | WP2 with WP5 P5-T4 and WP6 P6-T1 | 38d | 11.60h recorded for #356–#365; four earlier slices not recorded | not calculable for complete milestone | `accepted` |
 | M3 | Bridge + pre-pilot add-in adaptations connect, journal redelivery, and demonstrate sequential then capability-gated atomic batch behavior | M1 | WP3 | 15d | not recorded | not calculable | `accepted` |
 | M4 | **Pre-production-auth vertical slice:** an external MCP client (WP9 candidate) → Gateway → Bridge → live Revit executes one read and one confirm-class write with originating-preview/approval/commit audit evidence; this slice does not pass DP-10 OAuth or hands-on conformance | M2, M3 | WP1/WP2/WP3/WP5/WP9 | 5d | not recorded | not calculable | `in_progress` |

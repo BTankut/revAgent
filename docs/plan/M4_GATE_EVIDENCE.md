@@ -417,7 +417,11 @@ as [`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAg
 
 ## M4-04 Gate 1 — PETRUCCI client-placement feasibility
 
-**Gate state:** `completed_with_blocker`
+**Gate state:** `completed_with_blocker` — **blocker later cleared.** The blocker
+recorded below is Codex Desktop's signed-in state being unproven by a read-only
+2026-08-13 collection. Session 2 proved it by execution: a signed-in Codex
+Desktop invoked through the broker to live Revit and back. This section stays as
+the dated record of what that collection could and could not show.
 
 The planner authorized one read-only collection from `DESKTOP-OKNV128` to
 `ws2@192.168.90.122`. The collection ran on 2026-08-13 between
@@ -1175,7 +1179,10 @@ positive confirmation. No DNS mutation is authorized by A7.
 
 ## M4-04/B bounded live session
 
-**Gate state:** `blocked/partial`
+**Gate state:** `blocked/partial` — **session 1, superseded.** This section is the
+historical record of the FIRST bounded session. A second bounded session closed
+all seven gates; see "M4-04/B session 2 — seven-gate closure" below. Read the two
+together: `M4-04/B` is `passed` against its seven-gate scope.
 
 **Planner decision:** the closing slices were assigned to the executor on
 2026-08-17 after the planner accepted the M4-04/B closing report. This tracker
@@ -1558,7 +1565,9 @@ this slice opened.
 
 ## M4-04/B permanent handoff repair
 
-**Gate state:** `slice_record_open`
+**Gate state:** `passed_merged`
+([`PR #382`](https://github.com/BTankut/revAgent/pull/382) merged as
+[`b53b54df90bda4c97ffa33d1586bac4b9fd20649`](https://github.com/BTankut/revAgent/commit/b53b54df90bda4c97ffa33d1586bac4b9fd20649))
 
 **Planner decision:** authorized on 2026-08-17 as the second and last closing
 slice, and the only remaining item on the critical path before the Gateway image
@@ -1772,7 +1781,9 @@ docs/plan/M4_GATE_EVIDENCE.md
 
 ## M4-04/B TLS material timestamp guard
 
-**Gate state:** `slice_record_open`
+**Gate state:** `passed_merged`
+([`PR #383`](https://github.com/BTankut/revAgent/pull/383) merged as
+[`b9491e0919db27008f50af2a43bfeccc6f13048b`](https://github.com/BTankut/revAgent/commit/b9491e0919db27008f50af2a43bfeccc6f13048b))
 
 **Planner decision:** authorized on 2026-08-19 as the minimal slice that
 unblocks the pre-production Gateway start. Scope is deliberately one defect.
@@ -1895,7 +1906,7 @@ It will record, and nothing beyond:
   `M4-04/B`'s seven-gate scope.
 - `RES-30` at two-thirds, with the remaining third named as unproven and
   unauthorized.
-- The nine findings, the Park List additions, the R1–R6 queue, the retained
+- The nine findings, the Park List additions, the S1–S6 queue, the retained
   reproduction fixture, and the two deliberate permanent deviations.
 
 The evidence chain itself lives off-repo, hash-chained, 94 records. This section
@@ -1932,6 +1943,53 @@ the write is not.
 Outside those seven, also completed: **C4** broker stage, and **C9**
 revoked-device refusal correlated at both ends, which belongs to `RES-30` rather
 than to `M4-04/B`.
+
+### The session-2 pin triple
+
+This document treats digest identity as a first-class concern, so it records its
+own:
+
+| Anchor | Value |
+| --- | --- |
+| protected source commit | `b9491e0919db27008f50af2a43bfeccc6f13048b` (`PR #383`) |
+| OCI archive | `f1246520aa37ea34b9d35e715bf8333d2571c4e3696da9e3ca24220c22f7976a` |
+| image tag and digest | `localhost/revagent-gateway:m4-04-b9491e0919db` @ `sha256:c0d404cad2878102803bf6e1cd46ac76134196abad607b1b5dba1852575a5bdd` |
+
+**Finding 1 applies to this triple.** The digest above is the one resolved by the
+engine that RAN the image, not the one reported by the engine that built it.
+Those differ, and only the runtime-resolved digest is authoritative.
+
+### The four socket must-proves, enumerated with outcomes
+
+These are referenced repeatedly across this document and were never listed. All
+four were satisfied in session 2, both polarities where a polarity exists:
+
+| # | Must-prove | Session-2 outcome |
+| --- | --- | --- |
+| (i) | DNS from PETRUCCI resolves the Gateway name | `m4-gateway.revagent.app` → `192.168.90.154`, ttl 176 — **satisfied** |
+| (ii) | a real TCP/443 socket from the allowlisted client | connected in 5 ms, `192.168.90.122:57733` → `192.168.90.154:443` — **satisfied** |
+| (iii) | the ACL `ACCEPT` counter moves, and `REJECT` proves the deny rule | `ACCEPT` 10 → 19 on the allowlisted host; `REJECT` 0 → 5 on a NON-allowlisted host, which was reset — **satisfied, both polarities** |
+| (iv) | TLS plus an authenticated WSS session | TLS 1.3 `Aes256`, `CN=m4-gateway.revagent.app`, Let's Encrypt YE1 chain valid under **strict** validation, name match; `/healthz` → `200`; `/bridge/v1` upgrade → `426` with `X-RBP-Supported-Versions: 1`; then a held authenticated session proven from **both ends** — **satisfied** |
+
+Only (iv) could be closed after the single-shot secret was spent; (i)-(iii) were
+deliberately closed **before** generation, so that a proxy or ACL fault could not
+burn the secret.
+
+### What is held off-repo, and why — a labelled boundary, not a silence
+
+A reviewer working from this repository alone should know exactly what exists and
+is not here, rather than having to infer whether it was ever produced:
+
+| Held off-repo | What it is | Why |
+| --- | --- | --- |
+| 24 session-1 evidence records (`T0-…`, `G2-…`…`G7-…`, `G5-*`, `OPS-PETRUCCI-DNS-…`, `SLICE2-E2E-PROOF-…`) | the hash-chained evidence for the first bounded session | they contain live-host measurement detail from a bounded session; retained on the coordinator workstation, cited here by name and SHA-256 |
+| the session gate cards | the authorization instrument each gate was executed against | planner-issued per session; this document reasons against them but does not reproduce them |
+| the 94-record session-2 chain | per-gate records `C0`…`C9` | superseded for review purposes by the imported closing record above, which is the only session-2 record that needed to be resolvable |
+| the reproduction fixture | `FIXTURE-rbp-journal-connection-failure/` — `journal.db` `0e76ec8a…`, `PROVENANCE.md` `777067d9…` | it is a captured defective database, not source; it is `S6`'s only validation path and is retained, exempt from teardown |
+
+**The evidence exists and is retained; it is deliberately not repository
+content.** Anyone who needs a specific record can request it by name and
+SHA-256.
 
 ### C7 is a card premise error, not a gate failure
 
@@ -1985,10 +2043,13 @@ correlation is structural rather than coincidental. The observer shipped in
 
 ### The nine findings
 
-Each is recorded in full, with what it cost and how it was caught, in the
-off-repo closing record
-`M4-04B-SESSION-2-CLOSING-RECORD-2026-08-20.md`, SHA-256
-`d57f198754865cf59bfdedc9579787194bcf59934ce415e6cb8d8811127dcea0`.
+Each is recorded in full, with what it cost and how it was caught, in
+[`docs/plan/M4-04B-SESSION-2-CLOSING-RECORD.md`](M4-04B-SESSION-2-CLOSING-RECORD.md),
+imported into this repository byte-for-byte at SHA-256
+`d57f198754865cf59bfdedc9579787194bcf59934ce415e6cb8d8811127dcea0`. That hash is
+attested here deliberately: the file must never be edited in place, because any
+change — whitespace included — would turn this attestation into a false
+statement. Correct it by superseding it with a new record, never by editing it.
 
 1. **The digest trap.** A build-engine digest is not a runtime-engine digest; the
    authoritative digest is the one resolved by the engine that will *run* the
@@ -1996,21 +2057,21 @@ off-repo closing record
 2. **Defect A — the Windows ssh/sshd launch context.** `ssh.exe` spawned inside
    an *inbound* sshd session never exits when stdout is a pipe, which produced a
    false `TIMEOUT` on both transport legs. Environmental, not a defect in the
-   binary. Queued as `R4`.
+   binary. Queued as `S4`.
 3. **Defect B — CRLF in the generated POSIX cleanup-probe script.** Fixed at
-   generation time rather than normalised at the receiver. Queued as `R1`.
+   generation time rather than normalised at the receiver. Queued as `S1`.
 4. **Defect C — the coordinator discarded the Windows destination's own
-   metadata.** Queued as `R1`.
+   metadata.** Queued as `S1`.
 5. **Defect D — a duplicate control byte**, which would have corrupted the
    delivered secret by one byte. Caught by the mandatory acceptance gate, and
-   fixed at the source rather than the receiver. Queued as `R2`, which must
+   fixed at the source rather than the receiver. Queued as `S2`, which must
    exercise the relayed topology.
 6. **Defect E — the TLS material timestamp guard.** Repaired and merged as
    `PR #383` / `b9491e0919db`.
 7. **The journal-state connection failure.** A journal in a particular state
    leaves the Bridge unable to hold a Gateway session. Recorded as a **product
    defect**, not a lab artefact. The failing statement is still unnamed; that is
-   `R6`, and it is gated behind `R5`.
+   `S6`, and it is gated behind `S5`.
 8. **The registration form premise error.** The previewed registration form could
    never have worked with the broker it was meant to register, and would have
    burned the broker's single-shot start. It was caught only on a second reading,
@@ -2054,7 +2115,7 @@ evidence\FIXTURE-rbp-journal-connection-failure\
   PROVENANCE.md   777067d9c8fbf82ed82371870996de0671542c0dfa169af9e0fd52a432052042
 ```
 
-It is the only artefact that reproduces finding 7, and therefore **`R6`'s only
+It is the only artefact that reproduces finding 7, and therefore **`S6`'s only
 validation path**. It was proven present at close. Archive, never delete.
 
 ### Two deliberate permanent deviations
@@ -2069,19 +2130,122 @@ validation path**. It was proven present at close. Archive, never delete.
 
 ### Post-session slice queue
 
+**Label namespace — read this first.** These `S1`..`S6` labels name the M4-04/B
+post-session slice queue and nothing else. The `R1`..`R6` labels used elsewhere
+in this document are the **product requirements** raised by the live sessions,
+and they are a different namespace. This queue was originally labelled
+`R1`..`R6` and was re-labelled one-for-one (`R1`→`S1` … `R6`→`S6`) so the two can
+never be conflated. Any record written before that rename which cites a queue
+item as `R`n means `S`n.
+
 | Slice | Subject | State |
 | --- | --- | --- |
-| `R1` | the CRLF pair — defects B and C, normalised at generation time | queued |
-| `R2` | control-byte ownership; **must exercise the relayed topology**, not a direct pipe | queued |
-| `R3` | the TLS material timestamp guard | **merged** (`PR #383`) |
-| `R4` | document the Windows ssh/sshd inbound-session launch-context defect | queued |
-| `R5` | **diagnosability** — the Bridge must be able to say *which* journal statement failed | queued |
-| `R6` | the journal defect itself | **blocked on `R5`** |
+| `S1` | the CRLF pair — defects B and C, normalised at generation time | queued |
+| `S2` | control-byte ownership; **must exercise the relayed topology**, not a direct pipe | queued |
+| `S3` | the TLS material timestamp guard | **merged** (`PR #383`) |
+| `S4` | document the Windows ssh/sshd inbound-session launch-context defect | queued |
+| `S5` | **diagnosability** — the Bridge must be able to say *which* journal statement failed | queued |
+| `S6` | the journal defect itself | **blocked on `S5`** |
 
-**`R5` strictly before `R6`.** `R6` cannot be scoped against a defect whose
+**`S5` strictly before `S6`.** `S6` cannot be scoped against a defect whose
 failing statement has never been named, and the instrument that would name it
-does not yet exist. Scoping `R6` first would repeat finding 7's own mistake:
+does not yet exist. Scoping `S6` first would repeat finding 7's own mistake:
 reasoning from an instrument that cannot produce the evidence.
+
+## Repo review readiness — tracker accuracy and label namespaces
+
+**Slice state:** `passed`
+
+**Scope of record.** An expert deep review of everything up to M4 has been
+commissioned, and it will be conducted **through this repository only**. The
+reviewer has no access to the off-repo evidence chain and no access to the teams
+that produced it. Anything not in the repo does not exist for that review, and
+anything *wrong* in the repo will send it chasing ghosts.
+
+**Scope amendment.** This slice opened with two unambiguous factual corrections.
+Three further review-readiness items were investigated, reported with evidence,
+and separately approved before being folded in: the working-tree lock-file
+revert, the import of the session-2 closing record, and a reviewer entry point.
+The slice is docs-only apart from that lock-file revert, and touches no product
+code, no tests and no workflows.
+
+The five items are: (1) stale slice and gate states, (2) the `R1`..`R6` label
+namespace collision, (3) the lock-file drift that broke the local Bridge gates,
+(4) the closing-record import that makes an attested citation resolvable, and
+(5) `docs/plan/00-INDEX.md`, the entry point this repository did not have.
+
+**1 — Stale slice and gate states.** Sections of this document still record slices
+as `slice_record_open` whose implementation has merged. Those are factual errors
+of the worst kind for a repo-only reviewer: they read as unfinished work. Every
+state line in this document and in `MASTER_PLAN.md` is swept against git reality,
+not only the two already known, and each stale one is corrected to its true state
+with the PR number and merge commit in the format already used at the top of this
+document.
+
+**2 — The `R1`..`R6` label namespace collision.** This document uses `R1`..`R6`
+for two different things: the **product requirements** raised by the live
+sessions, and the **post-session slice queue**. Same labels, different meanings,
+one file. The product-requirement namespace keeps `R1`..`R6`, because those
+labels are cited across sessions and in the operator's standing rules. The
+post-session slice queue is re-labelled `S1`..`S6` with the mapping preserved
+one-for-one, every reference is updated, and the text states explicitly that two
+namespaces exist and which is which.
+
+### Convention — stale versus misleading-but-historical
+
+Adopted here and worth applying to every tracker in this repository:
+
+- A state line that **contradicts git reality** is *stale*. Fix the state, and
+  cite the PR number and merge commit.
+- A state line that was **true when written and has since been superseded** is
+  *historical*. Do **not** rewrite it — add a forward-pointer naming what
+  superseded it. Rewriting a dated record destroys the evidence of what was known
+  at the time, which is often the more valuable fact.
+
+Both kinds mislead a reviewer; only the first is an error.
+
+### Also corrected: the document's final section
+
+`## Submission rule`, the last thing a reader reaches, still delivered session 1's
+verdict as the current one — *"M4-04/B is `blocked/partial`"* and *"The M4 live
+path cannot be completed on the pinned image"*. Both were true when written and
+both were superseded by the two repair slices and session 2. A stale verdict in a
+closing section reframes everything above it.
+
+### Finding — an ad-hoc build silently broke the local Bridge gates
+
+Three `packages.lock.json` files sat modified in the working tree for two days and
+were reverted by this slice.
+
+```text
+what   RevAgent.Bridge gained an SDK-injected `Microsoft.NET.ILLink.Tasks` entry;
+       Bootstrap and Contracts each gained an empty `net8.0/win-x64` target.
+       Nothing else moved — no package removed, no version bumped, no contentHash
+       altered, no formatting change.
+when   all three stamped 2026-08-18 14:22:32, within ~6 ms — one process
+cause  an ad-hoc `dotnet publish -r win-x64` run WITHOUT `--no-restore`, during
+       the session-2 reproducibility test that proved a rebuild cannot reproduce
+       the staged worker `aca871a4`. Under SDK 9 that auto-references the ILLink
+       pack, and `win-x64` propagates down the ProjectReference graph.
+effect `dotnet restore --locked-mode` failed NU1004 — and that is the FIRST
+       command in both `scripts/test-bridge-contracts.ps1` and
+       `scripts/test-bridge-service.ps1`. The local Bridge gates could not run.
+```
+
+The reproducibility test itself was correct and valuable. The finding is the
+mechanism, not the author.
+
+**Operational rule.** Any `dotnet` command run in this repository outside the gate
+scripts must pass `--no-restore`, or it rewrites the lock files. The gate scripts
+already do this correctly.
+
+**Why it survived undetected for two days**, which is worth stating so a reviewer
+does not wonder how three broken lock files sat on a working machine: every
+restore in this repository's tooling uses `--locked-mode`, and locked-mode
+**fails rather than rewrites**. That is correct fail-closed design. Its
+consequence is that the breakage is invisible until someone runs the gates.
+
+Docs-only, apart from that lock-file revert.
 
 ## Submission rule
 
@@ -2094,16 +2258,26 @@ M4-CLIENT/LIVE, M4-WRITE-CONFIRM, RES-30, and the remaining planner-bound slices
 are still open. No evidence result becomes milestone acceptance without the
 milestone owner's explicit decision.
 
-M4-04/A7 has since merged as `e9246cd1`, and the bounded M4-04/B live session ran
-against exactly that source. M4-04/B is `blocked/partial`: T0, G2, G3, G4A and
+M4-04/A7 merged as `e9246cd1`, and the **first** bounded M4-04/B live session ran
+against exactly that source and closed `blocked/partial`: T0, G2, G3, G4A and
 G4B passed, G5 was blocked by a product defect inside the pinned image, G6 was
 taken out of scope, and G7 completed with a proven-clean residue state on both
-live hosts. That result does **not** move the M4 milestone ledger, which remains
-`in_progress` / `not_submitted`; only the milestone decision owner may change a
-milestone state, and this record makes no such claim.
+live hosts.
 
-The M4 live path cannot be completed on the pinned image. Closing it requires
-the separate repair slice, a rebuilt image with a newly pinned digest, and a new
-bounded session carrying the four unexercised socket must-proves, the corrected
-serving path literals, destination-root ownership set at creation, the
-`<root>\north-bearer.dpapi` leaf location, and the R1 proxy reality.
+**That result is superseded.** The two repair slices merged — the permanent
+handoff repair as `PR #382` / `b53b54df`, and the TLS material timestamp guard as
+`PR #383` / `b9491e09` — and a **second** bounded session then ran against the
+rebuilt source `b9491e09` and closed **all seven** M4-04/B gates. `M4-04/B` is
+therefore `passed` **against its own seven-gate scope**; see "M4-04/B session 2 —
+seven-gate closure".
+
+**The M4 milestone ledger nonetheless stays `in_progress` / `not_submitted`,** and
+this is the distinction to carry away from this document: M4 acceptance in
+`MASTER_PLAN.md` names one read **and one confirm-class write**, and only the read
+is proven. `M4-WRITE-CONFIRM` is a separate gate that was never inside M4-04/B's
+seven-gate scope. Only the milestone decision owner may change a milestone state,
+and this record makes no such claim.
+
+The remaining work is tracked as the `S1`..`S6` post-session slice queue above,
+with `S5` strictly before `S6`. The product requirements raised by the live
+sessions — including the `R1` proxy reality — remain open in their own namespace.
