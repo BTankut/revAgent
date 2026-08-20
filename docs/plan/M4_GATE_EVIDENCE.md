@@ -417,7 +417,11 @@ as [`6aa04593657fa2e3ee8a656ff97b553daf07f29e`](https://github.com/BTankut/revAg
 
 ## M4-04 Gate 1 — PETRUCCI client-placement feasibility
 
-**Gate state:** `completed_with_blocker`
+**Gate state:** `completed_with_blocker` — **blocker later cleared.** The blocker
+recorded below is Codex Desktop's signed-in state being unproven by a read-only
+2026-08-13 collection. Session 2 proved it by execution: a signed-in Codex
+Desktop invoked through the broker to live Revit and back. This section stays as
+the dated record of what that collection could and could not show.
 
 The planner authorized one read-only collection from `DESKTOP-OKNV128` to
 `ws2@192.168.90.122`. The collection ran on 2026-08-13 between
@@ -1175,7 +1179,10 @@ positive confirmation. No DNS mutation is authorized by A7.
 
 ## M4-04/B bounded live session
 
-**Gate state:** `blocked/partial`
+**Gate state:** `blocked/partial` — **session 1, superseded.** This section is the
+historical record of the FIRST bounded session. A second bounded session closed
+all seven gates; see "M4-04/B session 2 — seven-gate closure" below. Read the two
+together: `M4-04/B` is `passed` against its seven-gate scope.
 
 **Planner decision:** the closing slices were assigned to the executor on
 2026-08-17 after the planner accepted the M4-04/B closing report. This tracker
@@ -1558,7 +1565,9 @@ this slice opened.
 
 ## M4-04/B permanent handoff repair
 
-**Gate state:** `slice_record_open`
+**Gate state:** `passed_merged`
+([`PR #382`](https://github.com/BTankut/revAgent/pull/382) merged as
+[`b53b54df90bda4c97ffa33d1586bac4b9fd20649`](https://github.com/BTankut/revAgent/commit/b53b54df90bda4c97ffa33d1586bac4b9fd20649))
 
 **Planner decision:** authorized on 2026-08-17 as the second and last closing
 slice, and the only remaining item on the critical path before the Gateway image
@@ -1772,7 +1781,9 @@ docs/plan/M4_GATE_EVIDENCE.md
 
 ## M4-04/B TLS material timestamp guard
 
-**Gate state:** `slice_record_open`
+**Gate state:** `passed_merged`
+([`PR #383`](https://github.com/BTankut/revAgent/pull/383) merged as
+[`b9491e0919db27008f50af2a43bfeccc6f13048b`](https://github.com/BTankut/revAgent/commit/b9491e0919db27008f50af2a43bfeccc6f13048b))
 
 **Planner decision:** authorized on 2026-08-19 as the minimal slice that
 unblocks the pre-production Gateway start. Scope is deliberately one defect.
@@ -1895,7 +1906,7 @@ It will record, and nothing beyond:
   `M4-04/B`'s seven-gate scope.
 - `RES-30` at two-thirds, with the remaining third named as unproven and
   unauthorized.
-- The nine findings, the Park List additions, the R1–R6 queue, the retained
+- The nine findings, the Park List additions, the S1–S6 queue, the retained
   reproduction fixture, and the two deliberate permanent deviations.
 
 The evidence chain itself lives off-repo, hash-chained, 94 records. This section
@@ -1996,21 +2007,21 @@ off-repo closing record
 2. **Defect A — the Windows ssh/sshd launch context.** `ssh.exe` spawned inside
    an *inbound* sshd session never exits when stdout is a pipe, which produced a
    false `TIMEOUT` on both transport legs. Environmental, not a defect in the
-   binary. Queued as `R4`.
+   binary. Queued as `S4`.
 3. **Defect B — CRLF in the generated POSIX cleanup-probe script.** Fixed at
-   generation time rather than normalised at the receiver. Queued as `R1`.
+   generation time rather than normalised at the receiver. Queued as `S1`.
 4. **Defect C — the coordinator discarded the Windows destination's own
-   metadata.** Queued as `R1`.
+   metadata.** Queued as `S1`.
 5. **Defect D — a duplicate control byte**, which would have corrupted the
    delivered secret by one byte. Caught by the mandatory acceptance gate, and
-   fixed at the source rather than the receiver. Queued as `R2`, which must
+   fixed at the source rather than the receiver. Queued as `S2`, which must
    exercise the relayed topology.
 6. **Defect E — the TLS material timestamp guard.** Repaired and merged as
    `PR #383` / `b9491e0919db`.
 7. **The journal-state connection failure.** A journal in a particular state
    leaves the Bridge unable to hold a Gateway session. Recorded as a **product
    defect**, not a lab artefact. The failing statement is still unnamed; that is
-   `R6`, and it is gated behind `R5`.
+   `S6`, and it is gated behind `S5`.
 8. **The registration form premise error.** The previewed registration form could
    never have worked with the broker it was meant to register, and would have
    burned the broker's single-shot start. It was caught only on a second reading,
@@ -2054,7 +2065,7 @@ evidence\FIXTURE-rbp-journal-connection-failure\
   PROVENANCE.md   777067d9c8fbf82ed82371870996de0671542c0dfa169af9e0fd52a432052042
 ```
 
-It is the only artefact that reproduces finding 7, and therefore **`R6`'s only
+It is the only artefact that reproduces finding 7, and therefore **`S6`'s only
 validation path**. It was proven present at close. Archive, never delete.
 
 ### Two deliberate permanent deviations
@@ -2069,23 +2080,31 @@ validation path**. It was proven present at close. Archive, never delete.
 
 ### Post-session slice queue
 
+**Label namespace — read this first.** These `S1`..`S6` labels name the M4-04/B
+post-session slice queue and nothing else. The `R1`..`R6` labels used elsewhere
+in this document are the **product requirements** raised by the live sessions,
+and they are a different namespace. This queue was originally labelled
+`R1`..`R6` and was re-labelled one-for-one (`R1`→`S1` … `R6`→`S6`) so the two can
+never be conflated. Any record written before that rename which cites a queue
+item as `R`n means `S`n.
+
 | Slice | Subject | State |
 | --- | --- | --- |
-| `R1` | the CRLF pair — defects B and C, normalised at generation time | queued |
-| `R2` | control-byte ownership; **must exercise the relayed topology**, not a direct pipe | queued |
-| `R3` | the TLS material timestamp guard | **merged** (`PR #383`) |
-| `R4` | document the Windows ssh/sshd inbound-session launch-context defect | queued |
-| `R5` | **diagnosability** — the Bridge must be able to say *which* journal statement failed | queued |
-| `R6` | the journal defect itself | **blocked on `R5`** |
+| `S1` | the CRLF pair — defects B and C, normalised at generation time | queued |
+| `S2` | control-byte ownership; **must exercise the relayed topology**, not a direct pipe | queued |
+| `S3` | the TLS material timestamp guard | **merged** (`PR #383`) |
+| `S4` | document the Windows ssh/sshd inbound-session launch-context defect | queued |
+| `S5` | **diagnosability** — the Bridge must be able to say *which* journal statement failed | queued |
+| `S6` | the journal defect itself | **blocked on `S5`** |
 
-**`R5` strictly before `R6`.** `R6` cannot be scoped against a defect whose
+**`S5` strictly before `S6`.** `S6` cannot be scoped against a defect whose
 failing statement has never been named, and the instrument that would name it
-does not yet exist. Scoping `R6` first would repeat finding 7's own mistake:
+does not yet exist. Scoping `S6` first would repeat finding 7's own mistake:
 reasoning from an instrument that cannot produce the evidence.
 
 ## Repo review readiness — tracker accuracy and label namespaces
 
-**Slice state:** `slice_record_open`
+**Slice state:** `passed`
 
 **Scope of record.** An expert deep review of everything up to M4 has been
 commissioned, and it will be conducted **through this repository only**. The
