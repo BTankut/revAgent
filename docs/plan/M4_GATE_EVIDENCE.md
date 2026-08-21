@@ -2247,6 +2247,34 @@ consequence is that the breakage is invisible until someone runs the gates.
 
 Docs-only, apart from that lock-file revert.
 
+## Repository topology annotation
+
+**Slice state:** `slice_record_open`
+
+**Scope of record.** Make the repository's retained Git topology reviewable
+without conflating branch mechanics with programme intent. This docs-only slice
+will:
+
+1. record the complete mechanical accounting of all 155 live remote heads;
+2. record Spatial Context Engine and Updater Closure status separately, with
+   tracked evidence distinguished from dated operator-confirmed intent;
+3. add the minimal attributed Spatial pause/resume note to the canonical plan;
+4. define the reproducible `129 + 12 = 141` Spatial ownership surface and the
+   corrected hybrid/internal executor mapping;
+5. record the preserved local recovery set and retained M4 reproduction fixture;
+6. link the topology record from the reviewer reading order; and
+7. extend the Rule-8 register with the operator-designated eighteenth instance,
+   the first produced by the planner reading an instrument's output as the
+   artefact itself.
+
+**Acceptance boundary.** English Markdown only under `docs/**`; no product code,
+tests, workflows, branch deletion, worktree cleanup, deployment, release or NAS
+publication. The operator-approved draft is implemented only after this slice
+record is committed and the draft PR exists.
+
+**Forecast:** two commits, four documentation files, approximately 550 added or
+changed lines, one fast Engineering gate and one ready-triggered Claude review.
+
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
