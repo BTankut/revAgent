@@ -29,19 +29,22 @@ this repository keeps them apart deliberately.
 ## Reading order for a reviewer
 
 1. **`docs/TARGET_ARCHITECTURE.md`** — what is being built and why.
-2. **`docs/plan/MASTER_PLAN.md`** — the living ledger: milestones, decision
+2. **[Repository Git topology and programme status](REPOSITORY_GIT_TOPOLOGY.md)**
+   — the mechanical 155-head inventory, the separate programme-status view,
+   and the preserved local recovery surface.
+3. **`docs/plan/MASTER_PLAN.md`** — the living ledger: milestones, decision
    points, status vocabulary. Read the "Status vocabulary" section first; the
    words are load-bearing.
-3. **`docs/implementation-plan/00-INDEX.md`** — the work-package breakdown and
+4. **`docs/implementation-plan/00-INDEX.md`** — the work-package breakdown and
    the frozen protocol specification (`01-protocol-O1.md`).
-4. **`docs/plan/M4_GATE_EVIDENCE.md`** — the deepest document here, and the main
+5. **`docs/plan/M4_GATE_EVIDENCE.md`** — the deepest document here, and the main
    subject of a review of "everything up to M4".
-5. **`docs/plan/M4-04B-SESSION-2-CLOSING-RECORD.md`** — the closing record of the
+6. **`docs/plan/M4-04B-SESSION-2-CLOSING-RECORD.md`** — the closing record of the
    last live session, imported byte-for-byte. Its SHA-256 is attested in
    `M4_GATE_EVIDENCE.md`; it must never be edited in place.
-6. Earlier milestones: `M1_O1_FREEZE_EVIDENCE.md`, `M2_GATE_EVIDENCE.md`,
+7. Earlier milestones: `M1_O1_FREEZE_EVIDENCE.md`, `M2_GATE_EVIDENCE.md`,
    `M3_BRIDGE_GATE_EVIDENCE.md`.
-7. **`AGENTS.md`** — the working discipline, including the slice ritual every
+8. **`AGENTS.md`** — the working discipline, including the slice ritual every
    change here follows.
 
 ---

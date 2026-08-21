@@ -4,6 +4,12 @@ Status: codex_execution; execution completed and accepted through Phase 1b.
 Phase 1c is not started or authorized by this record.
 Revision: v3.0 — Phase 1b Gates A-E complete; protected delivery, signed stable
 publication, and scoped rollout closure accepted (2026-07-12).
+
+**Operator-confirmed status (2026-08-21; current intent, not derived from
+earlier tracked evidence).** Accepted through Phase 1B; Phase 1C has not started.
+The programme is deliberately paused for architecture-migration sequencing and
+will resume when that sequencing permits.
+
 Supersedes draft v2.1, v2, and the draft previously named
 `REVAGENT_SPATIAL_DESIGN_ENGINE_PLAN.md`.
 

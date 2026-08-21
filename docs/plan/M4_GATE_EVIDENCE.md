@@ -2247,6 +2247,62 @@ consequence is that the breakage is invisible until someone runs the gates.
 
 Docs-only, apart from that lock-file revert.
 
+## Repository topology annotation
+
+**Slice state:** `passed`
+
+**Scope of record.** Make the repository's retained Git topology reviewable
+without conflating branch mechanics with programme intent. This docs-only slice
+will:
+
+1. record the complete mechanical accounting of all 155 live remote heads;
+2. record Spatial Context Engine and Updater Closure status separately, with
+   tracked evidence distinguished from dated operator-confirmed intent;
+3. add the minimal attributed Spatial pause/resume note to the canonical plan;
+4. define the reproducible `129 + 12 = 141` Spatial ownership surface and the
+   corrected hybrid/internal executor mapping;
+5. record the preserved local recovery set and retained M4 reproduction fixture;
+6. link the topology record from the reviewer reading order; and
+7. extend the Rule-8 register with the operator-designated eighteenth instance,
+   the first produced by the planner reading an instrument's output as the
+   artefact itself.
+
+**Acceptance boundary.** English Markdown only under `docs/**`; no product code,
+tests, workflows, branch deletion, worktree cleanup, deployment, release or NAS
+publication. The operator-approved draft is implemented only after this slice
+record is committed and the draft PR exists.
+
+**Forecast:** two commits, four documentation files, approximately 550 added or
+changed lines, one fast Engineering gate and one ready-triggered Claude review.
+
+**Implementation evidence.** The approved draft accounts for all 155 live
+remote heads under the mechanical `136 / 6 / 4 / 8 / main` split, reproduces the
+Spatial ownership surface as `129 + 12 = 141` with sorted-list SHA-256
+`f3f4d1915dfb8005cbac2d46668ff1135dfee53d1fe1423f9683a59179f0397c`,
+verifies `40` registry-seed tools and zero seed-owned executor fields, resolves
+all local Markdown links, and preserves the operator-owned runbook hash. An
+independent docs review found no remaining factual or structural blocker.
+
+**Operator authorization.** The operator approved the full draft and authorized
+the protected docs-only slice and green merge on 2026-08-21.
+
+**Park List:** none.
+
+### Rule-8 register continuation — operator-designated instance 18
+
+The session-2 closing record is hash-attested and immutable, so this section
+continues its Rule-8 register without editing that imported artefact.
+
+**18 — THE DIFF VIEW READ AS THE ARTEFACT (2026-08-21; the planner's first
+self-instance).** A diff view duplicates changed lines by construction: it shows
+the removed form and the added form together. The planner read that instrument
+as though it were final file content and reported duplicate entries in
+`docs/plan/00-INDEX.md`. The `+9 / -6` arithmetic and the resulting one-through-
+eight list proved the artefact was clean, and the finding was withdrawn.
+
+**Rule extension.** Before reading an instrument's output, establish what its
+output **means**, not only whether the instrument can show the positive.
+
 ## Submission rule
 
 M4-02's bounded repo and authorized-host evidence is complete, the slice is
