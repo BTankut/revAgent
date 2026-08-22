@@ -106,6 +106,18 @@ internal sealed record RbpMutationOutcomeEvidence(
             _ => RbpDispatchState.MayHaveReachedAddin,
         };
 
+        if (requestedMode == RbpTransactionMode.None &&
+            dispatchState != RbpDispatchState.NotStarted)
+        {
+            // Native-none code is caller-authored. Its returned JSON cannot
+            // prove commit or rollback; the declaration permits dispatch
+            // only and the wrapper-authored effect remains unknown.
+            return Uncertain(
+                dispatchState,
+                RbpTransactionMode.None,
+                "native_none_untrusted");
+        }
+
         if (TryReadAddinClaim(carrier, out AddinClaim? claim) &&
             claim is not null &&
             (requestedMode == RbpTransactionMode.NotApplicable ||
@@ -160,10 +172,20 @@ internal sealed record RbpMutationOutcomeEvidence(
         if (parameters.ValueKind == JsonValueKind.Object &&
             parameters.TryGetProperty(
                 "transactionMode",
-                out JsonElement transactionMode) &&
-            transactionMode.ValueKind == JsonValueKind.String)
+                out JsonElement transactionMode))
         {
-            return FromWireTransactionMode(transactionMode.GetString());
+            if (transactionMode.ValueKind != JsonValueKind.String ||
+                !TryReadTransactionMode(
+                    transactionMode.GetString(),
+                    out RbpTransactionMode parsed))
+            {
+                throw new RbpDispatchException(
+                    RbpDispatchErrorCode.Protocol,
+                    "transactionMode must be auto, none, native, or " +
+                    "not_applicable.");
+            }
+
+            return parsed;
         }
 
         return string.Equals(
@@ -331,11 +353,6 @@ internal sealed record RbpMutationOutcomeEvidence(
         return names.Count == expected.Length &&
                expected.All(names.Contains);
     }
-
-    private static RbpTransactionMode FromWireTransactionMode(string? value) =>
-        TryReadTransactionMode(value, out RbpTransactionMode parsed)
-            ? parsed
-            : RbpTransactionMode.NotApplicable;
 
     private static bool TryReadTransactionMode(
         string? value,

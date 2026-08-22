@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Storage;
@@ -219,6 +220,37 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
+                string rsid = IdempotencyKeyRsid(idempotencyKey);
+                if (HasOutcomeV3Cutover(context, rsid))
+                {
+                    RbpStoredInvocation existing =
+                        ReadOutcomeV3Invocation(context, idempotencyKey) ??
+                        throw new RbpJournalException(
+                            RbpJournalErrorCode.ProtocolConflict,
+                            "An unknown v3 invocation cannot dispatch.");
+                    if (existing.State != RbpInvocationState.Received)
+                    {
+                        throw new RbpJournalException(
+                            RbpJournalErrorCode.ProtocolConflict,
+                            "Only a received v3 invocation may dispatch.");
+                    }
+
+                    UpsertOutcomeV3(
+                        context,
+                        existing with
+                        {
+                            State = RbpInvocationState.Executing,
+                            StartedAtMilliseconds = now,
+                        },
+                        RbpMutationOutcomeEvidence.Uncertain(
+                            RbpDispatchState.MayHaveReachedAddin,
+                            RbpTransactionMode.NotApplicable,
+                            "legacy_dispatch_entry"),
+                        "executing",
+                        now);
+                    return true;
+                }
+
                 using SqliteCommand update = context.CreateCommand(
                     """
                     UPDATE rbp_invocations
@@ -247,7 +279,7 @@ internal sealed partial class RbpJournalStore
     /// indeterminate terminal installs its Section 6.2.1 scope hold in the
     /// same transaction when the invocation is mutating.
     /// </summary>
-    internal Task<string?> PersistInvocationTerminalAsync(
+    internal async Task<string?> PersistInvocationTerminalAsync(
         string idempotencyKey,
         RbpInvocationTerminal terminal,
         CancellationToken cancellationToken = default)
@@ -267,6 +299,45 @@ internal sealed partial class RbpJournalStore
             RequireSha256(terminal.ResultDigest, nameof(terminal));
         }
 
+        string rsid = IdempotencyKeyRsid(idempotencyKey);
+        bool v3 = await ReadAsync(
+                connection => HasOutcomeV3Cutover(connection, rsid),
+                cancellationToken)
+            .ConfigureAwait(false);
+        if (v3)
+        {
+            RbpStoredInvocation existing =
+                await GetInvocationAsync(idempotencyKey, cancellationToken)
+                    .ConfigureAwait(false) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.ProtocolConflict,
+                    "An unknown v3 invocation cannot be terminalized.");
+            RbpEffectState effect = existing.Identity.Mutating
+                ? RbpEffectState.Unknown
+                : RbpEffectState.ReadOnly;
+            var evidence = new RbpMutationOutcomeEvidence(
+                RbpDispatchState.ResponseObserved,
+                effect,
+                RbpTransactionMode.NotApplicable,
+                RbpMutationOutcomeEvidence.ForLegacyOutcome(
+                    terminal.State is RbpInvocationState.Completed or
+                        RbpInvocationState.Guarded
+                        ? RbpAddinOutcomeKind.Completed
+                        : RbpAddinOutcomeKind.PossiblyDispatched,
+                    RbpTransactionMode.NotApplicable,
+                    existing.Identity.Mutating).EvidenceJcs);
+            return await PersistInvocationOutcomeV3Async(
+                    idempotencyKey,
+                    terminal,
+                    evidence,
+                    error: terminal.State is
+                        RbpInvocationState.Failed or
+                        RbpInvocationState.Cancelled or
+                        RbpInvocationState.Indeterminate,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         // An indeterminate mutation carries no caller-supplied body: the store
         // mints it below, together with the hold it must reference.
         bool storeMintsOutcome =
@@ -277,7 +348,7 @@ internal sealed partial class RbpJournalStore
             : Rfc8785Json.Canonicalize(terminal.Outcome);
         string? resultDigest = terminal.ResultDigest;
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync<string?>(
+        return await ExecuteImmediateAsync<string?>(
             context =>
             {
                 RbpStoredInvocation existing =
@@ -362,7 +433,8 @@ internal sealed partial class RbpJournalStore
 
                 return holdId;
             },
-            cancellationToken);
+                cancellationToken)
+            .ConfigureAwait(false);
     }
 
     /// <summary>
@@ -375,7 +447,25 @@ internal sealed partial class RbpJournalStore
     {
         ValidateIdentifier(idempotencyKey, nameof(idempotencyKey), 293);
         return ReadAsync(
-            connection => ReadInvocation(connection, idempotencyKey),
+            connection =>
+            {
+                RbpStoredInvocation? legacy =
+                    ReadInvocation(connection, idempotencyKey);
+                if (legacy is null ||
+                    !HasOutcomeV3Cutover(
+                        connection,
+                        legacy.Identity.Rsid))
+                {
+                    return legacy;
+                }
+
+                return ReadOutcomeV3Invocation(
+                           connection,
+                           idempotencyKey) ??
+                       throw new RbpJournalException(
+                           RbpJournalErrorCode.IntegrityCheckFailed,
+                           "A post-cutover invocation is missing v3 state.");
+            },
             cancellationToken);
     }
 
@@ -392,7 +482,9 @@ internal sealed partial class RbpJournalStore
         ValidateIdentifier(rsid, nameof(rsid), 256);
         ArgumentException.ThrowIfNullOrWhiteSpace(scopeJcs);
         return ReadAsync(
-            connection => FindConflictingHold(connection, rsid, scopeJcs),
+            connection => HasOutcomeV3Cutover(connection, rsid)
+                ? FindConflictingHoldV3(connection, rsid, scopeJcs)
+                : FindConflictingHold(connection, rsid, scopeJcs),
             cancellationToken);
     }
 
@@ -443,6 +535,23 @@ internal sealed partial class RbpJournalStore
             throw new RbpJournalException(
                 RbpJournalErrorCode.IntegrityCheckFailed,
                 "The invocation journal did not accept the received row.");
+        }
+
+        if (HasOutcomeV3Cutover(context, identity.Rsid))
+        {
+            RbpStoredInvocation stored =
+                ReadLegacyInvocationV2(context, identity.IdempotencyKey) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "The v3 invocation identity disappeared after insert.");
+            UpsertOutcomeV3(
+                context,
+                stored,
+                RbpMutationOutcomeEvidence.NotDispatched(
+                    RbpTransactionMode.NotApplicable,
+                    "identity_insert"),
+                "received",
+                now);
         }
     }
 
@@ -498,6 +607,15 @@ internal sealed partial class RbpJournalStore
         RbpInvocationIdentity identity,
         long now)
     {
+        if (HasOutcomeV3Cutover(context, identity.Rsid))
+        {
+            return InstallHoldV3(
+                context,
+                identity,
+                new[] { identity.IdempotencyKey },
+                now);
+        }
+
         if (identity.MutationScopeJcs is not { } scopeJcs)
         {
             throw new RbpJournalException(
@@ -548,6 +666,22 @@ internal sealed partial class RbpJournalStore
         IReadOnlyList<string> orderedOriginIdempotencyKeys,
         long now)
     {
+        if (HasOutcomeV3Cutover(context, rsid))
+        {
+            RbpStoredInvocation origin =
+                ReadOutcomeV3Invocation(
+                    context,
+                    orderedOriginIdempotencyKeys[0]) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "A v3 hold origin invocation is missing.");
+            return InstallHoldV3(
+                context,
+                origin.Identity with { MutationScopeJcs = scopeJcs },
+                orderedOriginIdempotencyKeys,
+                now);
+        }
+
         RbpVerificationHold? existing =
             FindHoldByExactScope(context, rsid, scopeJcs);
         if (existing is not null)
@@ -612,6 +746,36 @@ internal sealed partial class RbpJournalStore
         string holdId,
         long now)
     {
+        if (HasOutcomeV3Cutover(context, identity.Rsid))
+        {
+            RbpStoredInvocation existing =
+                ReadOutcomeV3Invocation(context, identity.IdempotencyKey) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "The v3 invocation to promote is missing.");
+            (string v3Outcome, string v3Digest) =
+                BuildJournalIndeterminateOutcome(identity, holdId);
+            RbpStoredInvocation promoted = existing with
+            {
+                State = RbpInvocationState.Indeterminate,
+                TerminalOutcomeJson = v3Outcome,
+                ResultDigest = v3Digest,
+                VerificationHoldId = holdId,
+                FinishedAtMilliseconds =
+                    existing.FinishedAtMilliseconds ?? now,
+            };
+            UpsertOutcomeV3(
+                context,
+                promoted,
+                RbpMutationOutcomeEvidence.Uncertain(
+                    RbpDispatchState.MayHaveReachedAddin,
+                    RbpTransactionMode.NotApplicable,
+                    "recovery_promotion"),
+                "indeterminate",
+                now);
+            return;
+        }
+
         // Frozen Section 12.2 rule 4 defines the durable terminal body for a
         // refused mutating redelivery. The schema also requires every terminal
         // row to carry an outcome and a digest, so the same JSON is both the

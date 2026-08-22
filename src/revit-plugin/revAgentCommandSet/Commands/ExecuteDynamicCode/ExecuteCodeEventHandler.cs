@@ -101,21 +101,14 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
                             OutcomeEvidenceSchema,
                             StringComparison.Ordinal))
                     {
-                        if (!TryReadNativeOutcomeEvidence(
-                                result,
-                                out ExecutionOutcomeEvidence nativeEvidence))
-                        {
-                            ResultInfo.Success = false;
-                            ResultInfo.ErrorMessage =
-                                "Execution completed without exact native outcome evidence.";
-                            ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
-                                "unknown",
-                                TransactionModeNone,
-                                "unknown");
-                            return;
-                        }
-
-                        ResultInfo.OutcomeEvidence = nativeEvidence;
+                        // The declaration permits dispatch only. A snippet is
+                        // caller-authored and can never attest its own commit
+                        // or rollback, so the wrapper authors explicit
+                        // unknown regardless of the returned object.
+                        ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                            "unknown",
+                            TransactionModeNone,
+                            "unknown");
                     }
                     else
                     {
@@ -232,117 +225,6 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
                     TransactionStatus = transactionStatus
                 }
             };
-        }
-
-        private static bool TryReadNativeOutcomeEvidence(
-            object result,
-            out ExecutionOutcomeEvidence evidence)
-        {
-            evidence = null;
-            JToken token;
-            try
-            {
-                token = result as JToken ?? JToken.FromObject(result);
-            }
-            catch
-            {
-                return false;
-            }
-
-            JObject owner = token as JObject;
-            JObject candidate = owner?["outcomeEvidence"] as JObject;
-            if (candidate == null ||
-                !HasExactProperties(
-                    candidate,
-                    "schema",
-                    "effectState",
-                    "transactionMode",
-                    "evidence") ||
-                !string.Equals(
-                    candidate["schema"]?.Value<string>(),
-                    OutcomeEvidenceSchema,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    candidate["transactionMode"]?.Value<string>(),
-                    TransactionModeNone,
-                    StringComparison.Ordinal) ||
-                candidate["evidence"] is not JObject witness ||
-                !HasExactProperties(
-                    witness,
-                    "source",
-                    "transactionStatus"))
-            {
-                return false;
-            }
-
-            string effectState = candidate["effectState"]?.Value<string>();
-            string source = witness["source"]?.Value<string>();
-            string transactionStatus =
-                witness["transactionStatus"]?.Value<string>();
-            if (!IsEffectState(effectState) ||
-                !IsBoundedCode(source) ||
-                !string.Equals(
-                    effectState,
-                    transactionStatus,
-                    StringComparison.Ordinal))
-            {
-                return false;
-            }
-
-            string serialized = candidate.ToString(Formatting.None);
-            if (System.Text.Encoding.UTF8.GetByteCount(serialized) > 2048)
-            {
-                return false;
-            }
-
-            evidence = new ExecutionOutcomeEvidence
-            {
-                Schema = OutcomeEvidenceSchema,
-                EffectState = effectState,
-                TransactionMode = TransactionModeNone,
-                Evidence = new ExecutionOutcomeWitness
-                {
-                    Source = source,
-                    TransactionStatus = transactionStatus
-                }
-            };
-            return true;
-        }
-
-        private static bool HasExactProperties(
-            JObject value,
-            params string[] expected)
-        {
-            var actual = new HashSet<string>(
-                value.Properties().Select(property => property.Name),
-                StringComparer.Ordinal);
-            return actual.Count == expected.Length &&
-                expected.All(actual.Contains);
-        }
-
-        private static bool IsEffectState(string value)
-        {
-            return value == "not_started" ||
-                value == "read_only" ||
-                value == "rolled_back" ||
-                value == "committed" ||
-                value == "unknown";
-        }
-
-        private static bool IsBoundedCode(string value)
-        {
-            if (string.IsNullOrEmpty(value) ||
-                value.Length > 64 ||
-                value[0] < 'a' ||
-                value[0] > 'z')
-            {
-                return false;
-            }
-
-            return value.All(character =>
-                (character >= 'a' && character <= 'z') ||
-                (character >= '0' && character <= '9') ||
-                character == '_');
         }
 
         private static JToken CreateSafeResultToken(object result)

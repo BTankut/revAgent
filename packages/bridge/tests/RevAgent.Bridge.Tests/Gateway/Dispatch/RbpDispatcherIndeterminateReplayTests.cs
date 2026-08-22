@@ -115,7 +115,9 @@ public sealed class RbpDispatcherIndeterminateReplayTests
         Assert.Equal(0, channel.Calls);
         Assert.Equal("error", first.Type);
         Assert.Equal("error", replay.Type);
-        Assert.False(first.Payload.GetProperty("replayed").GetBoolean());
+        // Canonical v3 restart import promotes the executing mutation before
+        // admission, so the first delivery already replays durable v3 truth.
+        Assert.True(first.Payload.GetProperty("replayed").GetBoolean());
         Assert.True(replay.Payload.GetProperty("replayed").GetBoolean());
 
         // Byte-for-byte the same canonical body once the per-delivery replay

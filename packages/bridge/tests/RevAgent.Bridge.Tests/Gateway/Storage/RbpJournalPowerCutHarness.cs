@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -37,6 +38,12 @@ internal static class RbpJournalPowerCutMode
     /// handed the result, so the RBP answer was never sent.
     /// </summary>
     internal const string TerminalCommitted = "terminal-committed";
+
+    internal const string V3IndeterminateBeforeCommit =
+        "v3-indeterminate-before-commit";
+
+    internal const string V3IndeterminateAfterCommit =
+        "v3-indeterminate-after-commit";
 }
 
 /// <summary>
@@ -123,6 +130,12 @@ internal static class RbpJournalPowerCutData
             outcome,
             Rfc8785Json.Sha256Digest(outcome));
     }
+
+    internal static RbpMutationOutcomeEvidence UncertainWriteEvidence() =>
+        RbpMutationOutcomeEvidence.Uncertain(
+            RbpDispatchState.MayHaveReachedAddin,
+            RbpTransactionMode.Native,
+            "power_cut");
 
     internal static string CanonicalTerminalOutcomeJson() =>
         Rfc8785Json.Canonicalize(

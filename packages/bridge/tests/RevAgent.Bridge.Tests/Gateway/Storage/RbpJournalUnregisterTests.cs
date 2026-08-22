@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using System.Text.Json;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -198,9 +199,9 @@ public sealed class RbpJournalUnregisterTests
 
         clock -= (long)TimeSpan.FromHours(1).TotalMilliseconds;
         var migration = new RbpJournalMigration(
-            3,
+            4,
             "test",
-            "test_backward_clock_v3",
+            "test_backward_clock_v4",
             """
             CREATE TABLE test_backward_clock(
               singleton INTEGER PRIMARY KEY CHECK(singleton=1)
@@ -212,7 +213,7 @@ public sealed class RbpJournalUnregisterTests
             RbpJournalTestData.Options(
                 migrations: new[] { migration },
                 nowMilliseconds: now));
-        Assert.Equal(3, reopened.SchemaVersion);
+        Assert.Equal(4, reopened.SchemaVersion);
 
         DateTimeOffset renewed =
             RbpJournalTestData.Now.AddHours(48);
@@ -293,6 +294,133 @@ public sealed class RbpJournalUnregisterTests
             RbpJournalTestData.Now.ToUnixTimeMilliseconds());
         Assert.True(reader.GetInt64(2) >= reader.GetInt64(1));
         Assert.True(reader.GetInt64(4) >= reader.GetInt64(3));
+    }
+
+    [Fact]
+    public async Task ConfirmedUnregisterDeletesTerminalV3Dependencies()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        RbpInvocationIdentity identity = ReadIdentity(
+            "0197a3c2-0000-7000-8000-000000000531");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        _ = await store.PersistInvocationTerminalAsync(
+            identity.IdempotencyKey,
+            Terminal(RbpInvocationState.Completed));
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        await ConfirmUnregisterAsync(store, "rs-test");
+
+        Assert.True(await store.CompleteConfirmedUnregisterAsync("rs-test"));
+        Assert.Null(await store.GetStoredSessionAsync("rs-test"));
+        Assert.Equal(
+            0,
+            await store.ReadAsync(
+                connection => CountV3Rows(connection, "rs-test")));
+    }
+
+    [Fact]
+    public async Task ConfirmedUnregisterPreservesUnresolvedV3Authority()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        RbpInvocationIdentity identity = WriteIdentity(
+            "0197a3c2-0000-7000-8000-000000000532");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        await ConfirmUnregisterAsync(store, "rs-test");
+
+        RbpJournalException blocked =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.CompleteConfirmedUnregisterAsync("rs-test"));
+        Assert.Equal(RbpJournalErrorCode.CleanupIncomplete, blocked.ErrorCode);
+        Assert.NotNull(await store.GetStoredSessionAsync("rs-test"));
+        Assert.NotNull(await store.GetInvocationAsync(identity.IdempotencyKey));
+    }
+
+    private static async Task ConfirmUnregisterAsync(
+        RbpJournalStore store,
+        string rsid)
+    {
+        _ = await store.RecordUnregisterIntentAsync(
+            rsid,
+            RbpSessionUnregisterReason.OperatorRequested);
+        _ = await store.ActivateConnectionGenerationAsync(1);
+        _ = await store.ApplyHeartbeatFenceAcknowledgementAsync(
+            new RbpHeartbeatFence(
+                1,
+                Array.Empty<string>(),
+                Array.Empty<RbpSessionAcknowledgement>(),
+                new[] { rsid }));
+    }
+
+    private static long CountV3Rows(
+        SqliteConnection connection,
+        string rsid)
+    {
+        string[] tables =
+        [
+            "rbp_outcome_dispatch_v3",
+            "rbp_batches_v3",
+            "rbp_mutation_holds_v3",
+            "rbp_mutation_conflicts_v3",
+            "rbp_hold_cutover_v3",
+            "rbp_outcome_quarantine_v3",
+        ];
+        long total = 0;
+        foreach (string table in tables)
+        {
+            using SqliteCommand command = connection.CreateCommand();
+            command.CommandText =
+                $"SELECT COUNT(*) FROM {table} WHERE rsid=$rsid;";
+            command.Parameters.AddWithValue("$rsid", rsid);
+            total += (long)command.ExecuteScalar()!;
+        }
+
+        return total;
+    }
+
+    private static RbpInvocationIdentity ReadIdentity(string invocationId) =>
+        new(
+            "rs-test",
+            invocationId,
+            "get_current_view_info",
+            Mutating: false,
+            MutationScopeJcs: null,
+            ParamsDigest: "sha256:" + new string('a', 64),
+            PolicyJcs: "{}",
+            RecoveryClearancesJcs: "[]");
+
+    private static RbpInvocationIdentity WriteIdentity(string invocationId) =>
+        new(
+            "rs-test",
+            invocationId,
+            "create_wall",
+            Mutating: true,
+            MutationScopeJcs:
+                """{"document_id":"doc-1","kind":"document"}""",
+            ParamsDigest: "sha256:" + new string('a', 64),
+            PolicyJcs: "{}",
+            RecoveryClearancesJcs: "[]");
+
+    private static RbpInvocationTerminal Terminal(RbpInvocationState state)
+    {
+        using JsonDocument document = JsonDocument.Parse("{}");
+        return new RbpInvocationTerminal(
+            state,
+            document.RootElement.Clone(),
+            "sha256:" + new string('c', 64));
     }
 
     private static RbpHeartbeatFence FenceForLiveAndDead()

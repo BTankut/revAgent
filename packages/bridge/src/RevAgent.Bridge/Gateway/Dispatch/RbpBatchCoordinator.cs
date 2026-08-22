@@ -170,24 +170,31 @@ internal sealed partial class RbpBatchCoordinator
     {
         ArgumentNullException.ThrowIfNull(request);
 
-        foreach (RbpBatchStepRequest step in request.Steps)
+        try
         {
-            RbpTransactionMode mode =
-                RbpMutationOutcomeEvidence.ReadRequestedMode(
-                    step.Method,
-                    step.Parameters);
-            if (step.Mutating &&
-                mode == RbpTransactionMode.None &&
-                !RbpMutationOutcomeEvidence.HasNativeConformanceDeclaration(
-                    step.Parameters))
+            foreach (RbpBatchStepRequest step in request.Steps)
             {
-                return BatchFault(
-                    request.BatchId,
-                    "protocol",
-                    "A mutating transactionMode none batch step requires " +
-                    "the exact revagent.mutation-outcome/v1 native " +
-                    "outcome-evidence declaration before dispatch.");
+                RbpTransactionMode mode =
+                    RbpMutationOutcomeEvidence.ReadRequestedMode(
+                        step.Method,
+                        step.Parameters);
+                if (step.Mutating &&
+                    mode == RbpTransactionMode.None &&
+                    !RbpMutationOutcomeEvidence
+                        .HasNativeConformanceDeclaration(step.Parameters))
+                {
+                    return BatchFault(
+                        request.BatchId,
+                        "protocol",
+                        "A mutating transactionMode none batch step " +
+                        "requires exact outcome-evidence conformance.");
+                }
             }
+        }
+        catch (RbpDispatchException exception)
+            when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
+        {
+            return BatchFault(request.BatchId, "protocol", exception.Message);
         }
 
         RbpBatchCapability capability = await _capabilities
@@ -488,54 +495,47 @@ internal sealed partial class RbpBatchCoordinator
                 .ConfigureAwait(false);
         }
 
-        try
+        RbpBatchStepOutcome durable = outcome.Kind switch
         {
-            return outcome.Kind switch
-            {
-                RbpAddinOutcomeKind.Completed or
-                    RbpAddinOutcomeKind.Guarded =>
-                    await TerminalizeStepResultAsync(
-                            request,
-                            capability,
-                            index,
-                            outcome,
-                            remainingAggregateBytes)
-                        .ConfigureAwait(false),
+            RbpAddinOutcomeKind.Completed or
+                RbpAddinOutcomeKind.Guarded =>
+                await TerminalizeStepResultAsync(
+                        request,
+                        capability,
+                        index,
+                        outcome,
+                        remainingAggregateBytes)
+                    .ConfigureAwait(false),
 
-                RbpAddinOutcomeKind.KnownNotDispatched =>
-                    await TerminalizeKnownStepFailureAsync(
-                            request,
-                            index,
-                            outcome)
-                        .ConfigureAwait(false),
+            RbpAddinOutcomeKind.KnownNotDispatched =>
+                await TerminalizeKnownStepFailureAsync(
+                        request,
+                        index,
+                        outcome)
+                    .ConfigureAwait(false),
 
-                _ when ResolveStepOutcomeEvidence(step, outcome)
-                        .KnownNonCommittingError ||
-                    (!step.Mutating &&
-                     ResolveStepOutcomeEvidence(step, outcome).EffectState ==
-                        RbpEffectState.ReadOnly) =>
-                    await TerminalizeKnownStepFailureAsync(
-                            request,
-                            index,
-                            outcome)
-                        .ConfigureAwait(false),
+            _ when ResolveStepOutcomeEvidence(step, outcome)
+                    .KnownNonCommittingError ||
+                (!step.Mutating &&
+                 ResolveStepOutcomeEvidence(step, outcome).EffectState ==
+                    RbpEffectState.ReadOnly) =>
+                await TerminalizeKnownStepFailureAsync(
+                        request,
+                        index,
+                        outcome)
+                    .ConfigureAwait(false),
 
-                _ => await TerminalizeUncertainStepAsync(
-                            request,
-                            index,
-                            outcome.Message ??
-                                "The add-in dispatch outcome is unknown.",
-                            ResolveStepOutcomeEvidence(step, outcome))
-                        .ConfigureAwait(false),
-            };
-        }
-        finally
-        {
-            // Only after the step's fate is durable; releasing earlier would
-            // reopen the add-in session while the outcome lives solely in
-            // memory.
-            outcome.Lease?.ReleaseAfterDurableDecision();
-        }
+            _ => await TerminalizeUncertainStepAsync(
+                        request,
+                        index,
+                        outcome.Message ??
+                            "The add-in dispatch outcome is unknown.",
+                        ResolveStepOutcomeEvidence(step, outcome))
+                    .ConfigureAwait(false),
+        };
+
+        outcome.Lease?.ReleaseAfterDurableDecision();
+        return durable;
     }
 
     private async Task<RbpBatchStepOutcome> TerminalizeStepResultAsync(

@@ -1,4 +1,5 @@
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Tests.Gateway.Storage;
@@ -649,6 +650,63 @@ public sealed class RbpBatchRedeliveryTests
             await store.GetInvocationAsync(
                 RbpBatchTestData.StepKey(StepA)));
         Assert.Null(await store.GetBatchAsync(batch.BatchKey));
+    }
+
+    [Fact]
+    public async Task LegacyDispatchedAtomicBatchImportsEveryMutationScope()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-000000000471",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(
+                    "0197a3c2-0000-7000-8000-000000000472"),
+                RbpBatchTestData.ReadStep(
+                    "0197a3c2-0000-7000-8000-000000000473"),
+                RbpBatchTestData.WriteStep(
+                    "0197a3c2-0000-7000-8000-000000000474",
+                    RbpBatchTestData.DocumentTwoScope),
+            });
+        _ = await store.AdmitBatchAsync(
+            batch,
+            Array.Empty<RbpRecoveryClearance>());
+        await store.MarkBatchDispatchedAsync(batch.BatchKey);
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        RbpStoredInvocation first =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(
+                    "0197a3c2-0000-7000-8000-000000000472")))!;
+        RbpStoredInvocation second =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(
+                    "0197a3c2-0000-7000-8000-000000000474")))!;
+        Assert.Equal(RbpInvocationState.Indeterminate, first.State);
+        Assert.Equal(RbpInvocationState.Indeterminate, second.State);
+        Assert.NotEqual(first.VerificationHoldId, second.VerificationHoldId);
+        Assert.Equal(
+            RbpBatchState.Dispatched,
+            (await store.GetBatchAsync(batch.BatchKey))!.State);
+
+        RbpBatchGatedAdmission recovery =
+            await store.AdmitBatchOutcomeV3Async(
+                batch,
+                Array.Empty<RbpRecoveryClearance>(),
+                new[]
+                {
+                    RbpTransactionMode.Native,
+                    RbpTransactionMode.Native,
+                    RbpTransactionMode.Native,
+                });
+        Assert.Equal(
+            RbpBatchAdmission.DispatchLossArbitrated,
+            recovery.Admission!.Admission);
     }
 
     private static RbpJournalStore OpenStore(

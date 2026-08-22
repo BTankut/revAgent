@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -305,6 +306,139 @@ public sealed class RbpInvocationJournalTests
         Assert.Equal(
             RbpInvocationAdmission.RefuseIndeterminate,
             refused.Admission);
+    }
+
+    [Fact]
+    public async Task LegacyMutationStateMatrixImportsFailClosed()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        RbpInvocationIdentity failed = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000401",
+        };
+        RbpInvocationIdentity executing = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000402",
+        };
+        RbpInvocationIdentity cancelled = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000403",
+        };
+        RbpInvocationIdentity completed = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000404",
+        };
+        RbpInvocationIdentity guarded = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000405",
+        };
+        foreach (RbpInvocationIdentity identity in
+                 new[] { failed, executing, cancelled, completed, guarded })
+        {
+            _ = await store.AdmitInvocationAsync(identity);
+            await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        }
+
+        _ = await store.PersistInvocationTerminalAsync(
+            failed.IdempotencyKey,
+            Terminal(RbpInvocationState.Failed, """{"failed":true}"""));
+        _ = await store.PersistInvocationTerminalAsync(
+            cancelled.IdempotencyKey,
+            Terminal(
+                RbpInvocationState.Cancelled,
+                """{"cancelled":true}"""));
+        _ = await store.PersistInvocationTerminalAsync(
+            completed.IdempotencyKey,
+            Terminal(
+                RbpInvocationState.Completed,
+                """{"completed":true}"""));
+        _ = await store.PersistInvocationTerminalAsync(
+            guarded.IdempotencyKey,
+            Terminal(RbpInvocationState.Guarded, """{"guarded":true}"""));
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        foreach (RbpInvocationIdentity uncertain in
+                 new[] { failed, executing, cancelled })
+        {
+            RbpStoredInvocation row =
+                (await store.GetInvocationAsync(uncertain.IdempotencyKey))!;
+            Assert.Equal(RbpInvocationState.Indeterminate, row.State);
+            Assert.NotNull(row.VerificationHoldId);
+            Assert.NotNull(
+                await store.GetHoldAsync(
+                    "rs-test",
+                    row.VerificationHoldId!));
+        }
+
+        Assert.Equal(
+            RbpInvocationState.Completed,
+            (await store.GetInvocationAsync(completed.IdempotencyKey))!.State);
+        Assert.Equal(
+            RbpInvocationState.Guarded,
+            (await store.GetInvocationAsync(guarded.IdempotencyKey))!.State);
+    }
+
+    [Fact]
+    public async Task PostMarkerV2DriftIsIgnoredAndV3MismatchBlocks()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        RbpInvocationIdentity identity = WriteIdentity() with
+        {
+            InvocationId = "0197a3c2-0000-7000-8000-000000000406",
+        };
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        RbpStoredInvocation authoritative =
+            (await store.GetInvocationAsync(identity.IdempotencyKey))!;
+        Assert.Equal(RbpInvocationState.Indeterminate, authoritative.State);
+
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                using SqliteCommand drift = context.CreateCommand(
+                    """
+                    UPDATE rbp_invocations
+                    SET state='completed',terminal_outcome_json='{}',
+                        result_digest=$digest,finished_at_ms=9999999999999
+                    WHERE idempotency_key=$key;
+                    """);
+                drift.Parameters.AddWithValue(
+                    "$digest",
+                    "sha256:" + new string('d', 64));
+                drift.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+                Assert.Equal(1, drift.ExecuteNonQuery());
+                return true;
+            });
+        Assert.Equal(
+            RbpInvocationState.Indeterminate,
+            (await store.GetInvocationAsync(identity.IdempotencyKey))!.State);
+
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                using SqliteCommand corrupt = context.CreateCommand(
+                    """
+                    UPDATE rbp_outcome_dispatch_v3 SET effect_state='rolled_back'
+                    WHERE idempotency_key=$key;
+                    """);
+                corrupt.Parameters.AddWithValue("$key", identity.IdempotencyKey);
+                Assert.Equal(1, corrupt.ExecuteNonQuery());
+                return true;
+            });
+        RbpJournalException mismatch =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.GetInvocationAsync(identity.IdempotencyKey));
+        Assert.Equal(
+            RbpJournalErrorCode.IntegrityCheckFailed,
+            mismatch.ErrorCode);
     }
 
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>

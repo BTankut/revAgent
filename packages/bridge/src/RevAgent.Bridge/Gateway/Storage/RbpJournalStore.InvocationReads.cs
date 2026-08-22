@@ -41,7 +41,17 @@ internal sealed partial class RbpJournalStore
              WHERE idempotency_key=$key;
              """);
         command.Parameters.AddWithValue("$key", idempotencyKey);
-        return MaterializeInvocation(command);
+        RbpStoredInvocation? legacy = MaterializeInvocation(command);
+        if (legacy is null ||
+            !HasOutcomeV3Cutover(context, legacy.Identity.Rsid))
+        {
+            return legacy;
+        }
+
+        return ReadOutcomeV3Invocation(context, idempotencyKey) ??
+               throw new RbpJournalException(
+                   RbpJournalErrorCode.IntegrityCheckFailed,
+                   "A post-cutover invocation is missing v3 state.");
     }
 
     private RbpStoredInvocation? ReadInvocation(

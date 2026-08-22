@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Gateway.Storage;
@@ -106,6 +107,28 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
+                RbpStoredBatch? existing = ReadBatch(context, batchKey);
+                if (existing is not null &&
+                    HasOutcomeV3Cutover(context, existing.Rsid))
+                {
+                    if (existing.State != RbpBatchState.Received)
+                    {
+                        throw new RbpJournalException(
+                            RbpJournalErrorCode.ProtocolConflict,
+                            "Only a received v3 batch may dispatch.");
+                    }
+
+                    UpsertBatchV3(
+                        context,
+                        existing with
+                        {
+                            State = RbpBatchState.Dispatched,
+                            DispatchedAtMilliseconds = now,
+                        },
+                        now);
+                    return true;
+                }
+
                 using SqliteCommand update = context.CreateCommand(
                     """
                     UPDATE rbp_batches
@@ -133,7 +156,7 @@ internal sealed partial class RbpJournalStore
     /// carrier reaches the Gateway. A terminal batch outcome is immutable
     /// and replays with identical semantics on every later redelivery.
     /// </summary>
-    internal Task<RbpStoredBatch> PersistBatchTerminalAsync(
+    internal async Task<RbpStoredBatch> PersistBatchTerminalAsync(
         string batchKey,
         RbpBatchTerminal terminal,
         CancellationToken cancellationToken = default)
@@ -142,35 +165,90 @@ internal sealed partial class RbpJournalStore
         ArgumentNullException.ThrowIfNull(terminal);
         RequireSha256(terminal.ResultDigest, nameof(terminal));
         string outcomeJson = Rfc8785Json.Canonicalize(terminal.Outcome);
+        RbpStoredBatch? before =
+            await GetBatchAsync(batchKey, cancellationToken)
+                .ConfigureAwait(false);
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
-            context =>
-            {
-                RbpStoredBatch existing =
-                    ReadBatch(context, batchKey) ??
-                    throw new RbpJournalException(
-                        RbpJournalErrorCode.ProtocolConflict,
-                        "An unknown batch cannot be terminalized.");
-                if (existing.State == RbpBatchState.Terminal)
-                {
-                    throw new RbpJournalException(
-                        RbpJournalErrorCode.ProtocolConflict,
-                        "A terminal batch outcome is immutable.");
-                }
+        try
+        {
+            return await ExecuteImmediateAsync(
+                    context =>
+                    {
+                        RbpStoredBatch existing =
+                            ReadBatch(context, batchKey) ??
+                            throw new RbpJournalException(
+                                RbpJournalErrorCode.ProtocolConflict,
+                                "An unknown batch cannot be terminalized.");
+                        if (existing.State == RbpBatchState.Terminal)
+                        {
+                            throw new RbpJournalException(
+                                RbpJournalErrorCode.ProtocolConflict,
+                                "A terminal batch outcome is immutable.");
+                        }
 
-                UpdateBatchTerminal(
-                    context,
+                        UpdateBatchTerminal(
+                            context,
+                            batchKey,
+                            outcomeJson,
+                            terminal.ResultDigest,
+                            now);
+                        RbpStoredBatch readBack =
+                            ReadBatch(context, batchKey) ??
+                            throw new RbpJournalException(
+                                RbpJournalErrorCode.IntegrityCheckFailed,
+                                "The terminalized batch disappeared.");
+                        if (readBack.State != RbpBatchState.Terminal ||
+                            readBack.ResultDigest != terminal.ResultDigest ||
+                            readBack.TerminalOutcomeJson != outcomeJson)
+                        {
+                            throw new RbpJournalException(
+                                RbpJournalErrorCode.IntegrityCheckFailed,
+                                "The terminalized batch failed read-back.");
+                        }
+
+                        return readBack;
+                    },
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+        catch (RbpJournalException exception)
+            when (exception.ErrorCode ==
+                  RbpJournalErrorCode.PostCommitFailure)
+        {
+            RbpStoredBatch? recovered = await GetBatchAsync(
                     batchKey,
-                    outcomeJson,
-                    terminal.ResultDigest,
-                    now);
-                return ReadBatch(context, batchKey) ??
-                       throw new RbpJournalException(
-                           RbpJournalErrorCode.IntegrityCheckFailed,
-                           "The terminalized batch row disappeared inside " +
-                           "its own transaction.");
-            },
-            cancellationToken);
+                    CancellationToken.None)
+                .ConfigureAwait(false);
+            if (recovered is
+                {
+                    State: RbpBatchState.Terminal,
+                    ResultDigest: var digest,
+                    TerminalOutcomeJson: var outcome,
+                } &&
+                digest == terminal.ResultDigest &&
+                outcome == outcomeJson)
+            {
+                return recovered;
+            }
+
+            if (before is not null &&
+                await ReadAsync(
+                        connection => HasOutcomeV3Cutover(
+                            connection,
+                            before.Rsid),
+                        CancellationToken.None)
+                    .ConfigureAwait(false))
+            {
+                await QuarantineOutcomeV3Async(
+                        before.Rsid,
+                        "batch_persistence_uncertain",
+                        exception.Message,
+                        CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+
+            throw;
+        }
     }
 
     /// <summary>
@@ -194,7 +272,17 @@ internal sealed partial class RbpJournalStore
                      """);
                 command.CommandTimeout = _commandTimeoutSeconds;
                 command.Parameters.AddWithValue("$key", batchKey);
-                return MaterializeBatch(command);
+                RbpStoredBatch? legacy = MaterializeBatch(command);
+                if (legacy is null ||
+                    !HasOutcomeV3Cutover(connection, legacy.Rsid))
+                {
+                    return legacy;
+                }
+
+                return ReadBatchV3(connection, legacy) ??
+                       throw new RbpJournalException(
+                           RbpJournalErrorCode.IntegrityCheckFailed,
+                           "A post-cutover batch is missing v3 state.");
             },
             cancellationToken);
     }
@@ -816,6 +904,28 @@ internal sealed partial class RbpJournalStore
     {
         (string outcomeJson, string outcomeDigest) =
             BuildEnvironmentReadOutcome();
+        if (HasOutcomeV3Cutover(context, identity.Rsid))
+        {
+            RbpStoredInvocation existing =
+                ReadOutcomeV3Invocation(context, identity.IdempotencyKey) ??
+                throw MissingStepRow();
+            UpsertOutcomeV3(
+                context,
+                existing with
+                {
+                    State = RbpInvocationState.Failed,
+                    TerminalOutcomeJson = outcomeJson,
+                    ResultDigest = outcomeDigest,
+                    FinishedAtMilliseconds = now,
+                },
+                RbpMutationOutcomeEvidence.NativeResponse(
+                    RbpEffectState.ReadOnly,
+                    "atomic_read_recovery"),
+                "failed",
+                now);
+            return;
+        }
+
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_invocations
@@ -972,6 +1082,28 @@ internal sealed partial class RbpJournalStore
                 RbpJournalErrorCode.IntegrityCheckFailed,
                 "The batch journal did not accept the coordination row.");
         }
+
+        if (HasOutcomeV3Cutover(context, identity.Rsid))
+        {
+            UpsertBatchV3(
+                context,
+                new RbpStoredBatch(
+                    identity.Rsid,
+                    identity.BatchId,
+                    identity.BatchDigest,
+                    identity.Atomic,
+                    identity.TimeoutMilliseconds,
+                    identity.RecoveryClearancesJcs,
+                    stepsJcs,
+                    identity.Steps.Count,
+                    RbpBatchState.Received,
+                    TerminalOutcomeJson: null,
+                    ResultDigest: null,
+                    CreatedAtMilliseconds: now,
+                    DispatchedAtMilliseconds: null,
+                    FinishedAtMilliseconds: null),
+                now);
+        }
     }
 
     private static void UpdateBatchTerminal(
@@ -981,6 +1113,30 @@ internal sealed partial class RbpJournalStore
         string resultDigest,
         long now)
     {
+        RbpStoredBatch? authoritative = ReadBatch(context, batchKey);
+        if (authoritative is not null &&
+            HasOutcomeV3Cutover(context, authoritative.Rsid))
+        {
+            if (authoritative.State == RbpBatchState.Terminal)
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.ProtocolConflict,
+                    "A terminal v3 batch outcome is immutable.");
+            }
+
+            UpsertBatchV3(
+                context,
+                authoritative with
+                {
+                    State = RbpBatchState.Terminal,
+                    TerminalOutcomeJson = outcomeJson,
+                    ResultDigest = resultDigest,
+                    FinishedAtMilliseconds = now,
+                },
+                now);
+            return;
+        }
+
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_batches
@@ -1045,7 +1201,17 @@ internal sealed partial class RbpJournalStore
              WHERE batch_key=$key;
              """);
         command.Parameters.AddWithValue("$key", batchKey);
-        return MaterializeBatch(command);
+        RbpStoredBatch? legacy = MaterializeBatch(command);
+        if (legacy is null ||
+            !HasOutcomeV3Cutover(context, legacy.Rsid))
+        {
+            return legacy;
+        }
+
+        return ReadBatchV3(context, batchKey) ??
+               throw new RbpJournalException(
+                   RbpJournalErrorCode.IntegrityCheckFailed,
+                   "A post-cutover batch is missing v3 state.");
     }
 
     private static RbpStoredBatch? MaterializeBatch(SqliteCommand command)

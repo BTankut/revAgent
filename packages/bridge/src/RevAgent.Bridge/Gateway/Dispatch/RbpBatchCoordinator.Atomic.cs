@@ -57,46 +57,42 @@ internal sealed partial class RbpBatchCoordinator
                 .ConfigureAwait(false);
         }
 
-        try
+        RbpInvocationAnswer durable = outcome.Kind switch
         {
-            return outcome.Kind switch
-            {
-                // The add-in batch envelope carries its own `status`, so a
-                // clean guarded rollback reaches the channel as a guarded
-                // result. Both kinds carry the same success envelope.
-                RbpAddinOutcomeKind.Completed or
-                    RbpAddinOutcomeKind.Guarded =>
-                    await MapAtomicEnvelopeAsync(request, outcome)
-                        .ConfigureAwait(false),
+            // The add-in batch envelope carries its own `status`, so a
+            // clean guarded rollback reaches the channel as a guarded
+            // result. Both kinds carry the same success envelope.
+            RbpAddinOutcomeKind.Completed or
+                RbpAddinOutcomeKind.Guarded =>
+                await MapAtomicEnvelopeAsync(request, outcome)
+                    .ConfigureAwait(false),
 
-                // Spec ~1825-1827: parse, shape, unsupported-method,
-                // descriptor-mismatch, and parameter-profile failures
-                // detected before the group opens use a JSON-RPC error
-                // response and execute zero steps.
-                RbpAddinOutcomeKind.KnownNotDispatched =>
-                    await CleanAtomicRejectionAsync(request, outcome)
-                        .ConfigureAwait(false),
+            // Spec ~1825-1827: parse, shape, unsupported-method,
+            // descriptor-mismatch, and parameter-profile failures
+            // detected before the group opens use a JSON-RPC error
+            // response and execute zero steps.
+            RbpAddinOutcomeKind.KnownNotDispatched =>
+                await CleanAtomicRejectionAsync(request, outcome)
+                    .ConfigureAwait(false),
 
-                _ when ResolveAtomicOutcomeEvidence(outcome)
-                    .KnownNonCommittingError =>
-                    await CleanAtomicRejectionAsync(request, outcome)
-                        .ConfigureAwait(false),
+            _ when ResolveAtomicOutcomeEvidence(outcome)
+                .KnownNonCommittingError =>
+                await CleanAtomicRejectionAsync(request, outcome)
+                    .ConfigureAwait(false),
 
-                // Transport success is never commit evidence, and loss of
-                // the socket or process before a valid terminal response is
-                // promoted to the Section 11/12 indeterminate path.
-                _ => await IndeterminateDispatchedBatchAsync(
-                            request,
-                            outcome.Message ??
-                                "The atomic batch dispatch outcome is " +
-                                "unknown.")
-                        .ConfigureAwait(false),
-            };
-        }
-        finally
-        {
-            outcome.Lease?.ReleaseAfterDurableDecision();
-        }
+            // Transport success is never commit evidence, and loss of
+            // the socket or process before a valid terminal response is
+            // promoted to the Section 11/12 indeterminate path.
+            _ => await IndeterminateDispatchedBatchAsync(
+                        request,
+                        outcome.Message ??
+                            "The atomic batch dispatch outcome is " +
+                            "unknown.")
+                    .ConfigureAwait(false),
+        };
+
+        outcome.Lease?.ReleaseAfterDurableDecision();
+        return durable;
     }
 
     private static JObject BuildExecuteBatchParameters(

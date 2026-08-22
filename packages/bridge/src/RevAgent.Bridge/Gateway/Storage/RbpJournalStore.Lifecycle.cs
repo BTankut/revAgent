@@ -434,6 +434,7 @@ internal sealed partial class RbpJournalStore
                         }
 
                         EnsureTransportStateDeleted(context, rsid);
+                        CleanupOutcomeV3ForConfirmedUnregister(context, rsid);
                         using SqliteCommand delete = context.CreateCommand(
                             """
                             DELETE FROM rbp_sessions WHERE rsid=$rsid;
@@ -813,6 +814,60 @@ internal sealed partial class RbpJournalStore
         {
             using SqliteCommand delete = context.CreateCommand(
                 $"DELETE FROM {table} WHERE rsid=$rsid;");
+            delete.Parameters.AddWithValue("$rsid", rsid);
+            _ = delete.ExecuteNonQuery();
+        }
+    }
+
+    private static void CleanupOutcomeV3ForConfirmedUnregister(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        if (!HasOutcomeV3Cutover(context, rsid))
+        {
+            return;
+        }
+
+        using (SqliteCommand unresolved = context.CreateCommand(
+                   """
+                   SELECT
+                     (SELECT COUNT(*) FROM rbp_outcome_dispatch_v3
+                      WHERE rsid=$rsid
+                        AND terminal_state IN ('received','executing')) +
+                     (SELECT COUNT(*) FROM rbp_batches_v3
+                      WHERE rsid=$rsid AND state<>'terminal') +
+                     (SELECT COUNT(*) FROM rbp_mutation_holds_v3
+                      WHERE rsid=$rsid AND state<>'cleared');
+                   """))
+        {
+            unresolved.Parameters.AddWithValue("$rsid", rsid);
+            if (Convert.ToInt64(unresolved.ExecuteScalar()) != 0)
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.CleanupIncomplete,
+                    "Confirmed unregister preserves unresolved v3 outcome " +
+                    "authority.");
+            }
+        }
+
+        string[] v3Deletes =
+        [
+            "DELETE FROM rbp_outcome_dispatch_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_batches_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_mutation_resolutions_v3 WHERE hold_id IN " +
+                "(SELECT hold_id FROM rbp_mutation_holds_v3 " +
+                "WHERE rsid=$rsid);",
+            "DELETE FROM rbp_mutation_conflicts_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_mutation_holds_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_outcome_quarantine_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_hold_cutover_v3 WHERE rsid=$rsid;",
+            "DELETE FROM rbp_invocations WHERE rsid=$rsid;",
+            "DELETE FROM rbp_batches WHERE rsid=$rsid;",
+            "DELETE FROM rbp_verification_holds WHERE rsid=$rsid;",
+        ];
+        foreach (string sql in v3Deletes)
+        {
+            using SqliteCommand delete = context.CreateCommand(sql);
             delete.Parameters.AddWithValue("$rsid", rsid);
             _ = delete.ExecuteNonQuery();
         }

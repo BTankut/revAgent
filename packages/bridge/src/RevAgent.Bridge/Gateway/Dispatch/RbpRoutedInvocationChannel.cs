@@ -125,8 +125,9 @@ internal sealed class RbpRoutedInvocationChannel(
                 evidence,
                 body,
                 requestedMode);
-        bool reportedError =
-            !guarded && body?.Value<bool?>("success") == false;
+        string? applicationFailure =
+            guarded ? null : ReadApplicationFailure(body);
+        bool reportedError = applicationFailure is not null;
 
         return new RbpAddinOutcome(
             reportedError
@@ -143,8 +144,7 @@ internal sealed class RbpRoutedInvocationChannel(
             GuardedReason: guarded ? guardedReason : null,
             FaultClass: reportedError ? "revit_api" : null,
             Message: reportedError
-                ? body?["errorMessage"]?.Value<string>() ??
-                    "The add-in reported execution failure."
+                ? applicationFailure
                 : null,
             Lease: lease,
             Retryable: reportedError ? false : null,
@@ -288,6 +288,72 @@ internal sealed class RbpRoutedInvocationChannel(
         return (
             true,
             IsStableReasonCode(reason) ? reason : "unspecified_guarded");
+    }
+
+    internal static string? ReadApplicationFailure(JObject? body)
+    {
+        if (body is null)
+        {
+            return null;
+        }
+
+        if (body.Value<bool?>("success") == false)
+        {
+            return BoundedFailureText(body) ??
+                "The add-in reported execution failure.";
+        }
+
+        JToken? candidate = body["result"];
+        for (int decodeCount = 0; decodeCount <= 2 && candidate is not null;
+             decodeCount++)
+        {
+            if (candidate is JObject nested &&
+                nested.Value<bool?>("success") == false)
+            {
+                return BoundedFailureText(nested) ??
+                    "The nested application result reported failure.";
+            }
+
+            if (candidate.Type != JTokenType.String)
+            {
+                return null;
+            }
+
+            string text = candidate.Value<string>()?.Trim() ?? string.Empty;
+            if (text.StartsWith("ERROR", StringComparison.OrdinalIgnoreCase))
+            {
+                return text.Length <= 512 ? text : text[..512];
+            }
+
+            if (decodeCount == 2 ||
+                text.Length == 0 ||
+                text[0] is not ('{' or '[' or '"'))
+            {
+                return null;
+            }
+
+            try
+            {
+                candidate = JToken.Parse(text);
+            }
+            catch (JsonReaderException)
+            {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? BoundedFailureText(JObject value)
+    {
+        string? message =
+            value["error"]?.Value<string>() ??
+            value["errorMessage"]?.Value<string>() ??
+            value["message"]?.Value<string>();
+        return message is null || message.Length <= 512
+            ? message
+            : message[..512];
     }
 
     private static bool IsStableReasonCode(string? reason)

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -181,6 +182,52 @@ public sealed class RbpJournalStoreHoldClearanceTests
         Assert.Null(
             await store.GetInvocationAsync(
                 FreshMutationIdentity().IdempotencyKey));
+    }
+
+    [Fact]
+    public async Task V3ClearanceAdmissionPowerCutsAreAllOrNothing()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var faults = new ArmedJournalFaultInjector();
+        await using RbpJournalStore store = OpenStore(directory, faults);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        string holdId = await InstallIndeterminateHoldAsync(
+            store,
+            OriginIdentity());
+        _ = await store.RecordHoldVerificationEvidenceAsync(
+            "rs-test",
+            Evidence(holdId));
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        RbpInvocationIdentity first = FreshMutationIdentity(
+            invocationId: "0197a3c2-0000-7000-8000-000000000461");
+
+        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+        await Assert.ThrowsAsync<IOException>(
+            () => store.AdmitInvocationOutcomeV3Async(
+                first,
+                new[] { Clearance(holdId) },
+                RbpTransactionMode.Native));
+        Assert.Equal(
+            RbpHoldState.EvidenceRecorded,
+            (await store.GetHoldAsync("rs-test", holdId))!.State);
+        Assert.Null(await store.GetInvocationAsync(first.IdempotencyKey));
+
+        faults.Arm(RbpJournalFaultPoint.AfterCommitBeforeReturn);
+        RbpClearanceGatedAdmission recovered =
+            await store.AdmitInvocationOutcomeV3Async(
+                first,
+                new[] { Clearance(holdId) },
+                RbpTransactionMode.Native);
+        Assert.Equal(
+            RbpInvocationAdmission.Accepted,
+            recovered.Admission!.Admission);
+        Assert.Equal(
+            RbpHoldState.Cleared,
+            (await store.GetHoldAsync("rs-test", holdId))!.State);
+        Assert.Equal(
+            RbpInvocationState.Received,
+            (await store.GetInvocationAsync(first.IdempotencyKey))!.State);
     }
 
     [Fact]

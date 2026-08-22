@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -395,6 +396,61 @@ public sealed class RbpJournalPowerCutTests
 
         RbpJournalPowerCutFiles.AssertRecoveredFileSetIsSane(
             directory.JournalPath);
+    }
+
+    [Fact]
+    public async Task KillBeforeV3TerminalCommitLeavesNoPartialHold()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        _ = await RbpJournalPowerCutProcess.KillAtAsync(
+            RbpJournalPowerCutMode.V3IndeterminateBeforeCommit,
+            directory.JournalPath);
+
+        await using RbpJournalStore recovered =
+            await OpenRecoveredAsync(directory);
+        await AssertIntegrityCheckIsOkAsync(recovered);
+        RbpStoredInvocation row =
+            (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.WriteKey))!;
+        Assert.Equal(RbpInvocationState.Executing, row.State);
+        Assert.Null(
+            await recovered.FindConflictingHoldAsync(
+                RbpJournalPowerCutData.Rsid,
+                RbpJournalPowerCutData.DocumentScopeJcs));
+
+        RbpClearanceGatedAdmission promoted =
+            await recovered.AdmitInvocationOutcomeV3Async(
+                RbpJournalPowerCutData.WriteIdentity(),
+                Array.Empty<RbpRecoveryClearance>(),
+                RbpTransactionMode.Native);
+        Assert.Equal(
+            RbpInvocationAdmission.RefuseIndeterminate,
+            promoted.Admission!.Admission);
+        Assert.NotNull(promoted.Admission.VerificationHoldId);
+    }
+
+    [Fact]
+    public async Task KillAfterV3TerminalCommitRecoversOutcomeHoldAndConflict()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        _ = await RbpJournalPowerCutProcess.KillAtAsync(
+            RbpJournalPowerCutMode.V3IndeterminateAfterCommit,
+            directory.JournalPath);
+
+        await using RbpJournalStore recovered =
+            await OpenRecoveredAsync(directory);
+        await AssertIntegrityCheckIsOkAsync(recovered);
+        RbpStoredInvocation row =
+            (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.WriteKey))!;
+        Assert.Equal(RbpInvocationState.Indeterminate, row.State);
+        Assert.NotNull(row.VerificationHoldId);
+        RbpVerificationHold hold =
+            (await recovered.FindConflictingHoldAsync(
+                RbpJournalPowerCutData.Rsid,
+                RbpJournalPowerCutData.DocumentScopeJcs))!;
+        Assert.Equal(row.VerificationHoldId, hold.VerificationHoldId);
+        Assert.Equal(RbpHoldState.Active, hold.State);
     }
 
     [Fact]

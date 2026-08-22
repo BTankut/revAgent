@@ -154,6 +154,162 @@ public sealed class RbpInvocationJournalSchemaTests
                 }));
     }
 
+    [Fact]
+    public async Task OutcomeV3ImportAcceptsTheExactRowCap()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                InsertLegacyReads(context, 10_000);
+                return true;
+            });
+
+        RbpOutcomeV3Cutover marker =
+            await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        Assert.Equal(10_000, marker.ImportedDispatchCount);
+        Assert.InRange(marker.ImportedCanonicalBytes, 1, 16_777_216);
+        Assert.Equal(
+            10_000,
+            await store.ReadAsync(
+                connection =>
+                {
+                    using SqliteCommand command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT COUNT(*) FROM rbp_outcome_dispatch_v3 " +
+                        "WHERE rsid='rs-test';";
+                    return Convert.ToInt32(command.ExecuteScalar());
+                }));
+    }
+
+    [Fact]
+    public async Task OutcomeV3ImportLimitPlusOneRollsBackAndQuarantines()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                InsertLegacyReads(context, 10_001);
+                return true;
+            });
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(
+            () => store.EnsureOutcomeV3ForSessionAsync("rs-test"));
+
+        (long Marker, long Outcomes, long Quarantine) counts =
+            await store.ReadAsync(
+                connection =>
+                {
+                    static long Count(
+                        SqliteConnection connection,
+                        string table)
+                    {
+                        using SqliteCommand command =
+                            connection.CreateCommand();
+                        command.CommandText =
+                            $"SELECT COUNT(*) FROM {table} " +
+                            "WHERE rsid='rs-test';";
+                        return (long)command.ExecuteScalar()!;
+                    }
+
+                    return (
+                        Count(connection, "rbp_hold_cutover_v3"),
+                        Count(connection, "rbp_outcome_dispatch_v3"),
+                        Count(connection, "rbp_outcome_quarantine_v3"));
+                });
+        Assert.Equal(0, counts.Marker);
+        Assert.Equal(0, counts.Outcomes);
+        Assert.Equal(1, counts.Quarantine);
+    }
+
+    [Fact]
+    public async Task OutcomeV3ImportByteCapPlusOneRollsBackAndQuarantines()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options());
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        await store.ExecuteImmediateAsync(
+            context =>
+            {
+                InsertReceivedRead(
+                    context,
+                    "rs-test/0197a3c2-0000-7000-8000-000000000299",
+                    "0197a3c2-0000-7000-8000-000000000299");
+                using SqliteCommand expand = context.CreateCommand(
+                    """
+                    UPDATE rbp_invocations SET policy_jcs=$policy
+                    WHERE invocation_id=
+                      '0197a3c2-0000-7000-8000-000000000299';
+                    """);
+                expand.Parameters.AddWithValue(
+                    "$policy",
+                    new string('x', 16_777_217));
+                Assert.Equal(1, expand.ExecuteNonQuery());
+                return true;
+            });
+
+        _ = await Assert.ThrowsAnyAsync<Exception>(
+            () => store.EnsureOutcomeV3ForSessionAsync("rs-test"));
+        Assert.Null(await store.GetOutcomeV3CutoverAsync("rs-test"));
+        Assert.Equal(
+            1,
+            await store.ReadAsync(
+                connection =>
+                {
+                    using SqliteCommand command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT COUNT(*) FROM rbp_outcome_quarantine_v3 " +
+                        "WHERE rsid='rs-test';";
+                    return Convert.ToInt32(command.ExecuteScalar());
+                }));
+    }
+
+    private static void InsertLegacyReads(
+        RbpJournalWriteContext context,
+        int count)
+    {
+        using SqliteCommand insert = context.CreateCommand(
+            """
+            WITH RECURSIVE seq(i) AS (
+              SELECT 1
+              UNION ALL
+              SELECT i+1 FROM seq WHERE i<$count
+            )
+            INSERT INTO rbp_invocations(
+              idempotency_key,rsid,invocation_id,method,mutating,
+              mutation_scope_jcs,params_digest,policy_jcs,
+              recovery_clearances_jcs,state,created_at_ms
+            )
+            SELECT
+              'rs-test/' || printf(
+                '0197a3c2-0000-7000-8000-%012d',i),
+              'rs-test',
+              printf('0197a3c2-0000-7000-8000-%012d',i),
+              'get_ui_state',0,NULL,$digest,'{}','[]','received',1
+            FROM seq;
+            """);
+        insert.Parameters.AddWithValue("$count", count);
+        insert.Parameters.AddWithValue("$digest", Digest);
+        Assert.Equal(count, insert.ExecuteNonQuery());
+    }
+
     private static void InsertReceivedRead(
         RbpJournalWriteContext context,
         string idempotencyKey,

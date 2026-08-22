@@ -300,6 +300,49 @@ public sealed class RbpJournalStoreRetentionTests
         Assert.Equal(inbound.Id, handoff.Envelope.Id);
     }
 
+    [Fact]
+    public async Task V3TerminalOutcomePrunesBeforeLegacyIdentity()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        RbpInvocationIdentity identity = ReadIdentity(
+            "0197a3c2-0000-7000-8000-000000000451");
+        await CompleteReadAsync(store, identity);
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        AdvanceDays(15);
+        RbpJournalRetentionResult swept = await store.ApplyRetentionAsync();
+
+        Assert.Equal(1, swept.PrunedInvocations);
+        Assert.Null(await store.GetInvocationAsync(identity.IdempotencyKey));
+        Assert.NotNull(await store.GetOutcomeV3CutoverAsync("rs-test"));
+    }
+
+    [Fact]
+    public async Task V3UnresolvedHoldPreservesOutcomeAndIdentity()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(expiresInHours: 24 * 365));
+        RbpInvocationIdentity origin = WriteIdentity(
+            "0197a3c2-0000-7000-8000-000000000452");
+        string holdId = await InstallIndeterminateHoldAsync(store, origin);
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        AdvanceDays(40);
+        RbpJournalRetentionResult swept = await store.ApplyRetentionAsync();
+
+        Assert.Equal(0, swept.PrunedInvocations);
+        Assert.Equal(0, swept.PrunedClearedHolds);
+        Assert.NotNull(await store.GetInvocationAsync(origin.IdempotencyKey));
+        Assert.Equal(
+            RbpHoldState.Active,
+            (await store.GetHoldAsync("rs-test", holdId))!.State);
+    }
+
     private RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
         RbpJournalStore.Open(
             directory.JournalPath,

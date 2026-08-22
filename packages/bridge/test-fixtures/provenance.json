@@ -17,7 +17,7 @@
     "packages/protocol/conformance/fixtures/batch-digest.json": "ec69ab9e91ac1a4bef72923a18f5ebe9289f6796",
     "packages/protocol/conformance/fixtures/frame-limits.json": "440076af19e142b86e4a50989fbb621764fb95b3",
     "packages/protocol/conformance/fixtures/reconnect-backoff.json": "162e9b11de0e2b2a67a41aaf93f317f173ec86c2",
-    "packages/protocol/schemas/addin-loopback/v1/common.schema.json": "10be559ddd50912758fc6d24a5b40c7ef08d9a43",
+    "packages/protocol/schemas/addin-loopback/v1/common.schema.json": "d137b1d68c7dba9fa693c56e966203cb7813a86f",
     "packages/protocol/schemas/addin-loopback/v1/json-rpc-response.schema.json": "4d3ef40f391ddaa80bfb62b1cbb48ccdefaa4ec6",
     "packages/protocol/schemas/addin-loopback/v1/get-document-context.schema.json": "4f5704222c37377dfa4080c7e0d2f7669902c09d",
     "packages/protocol/schemas/addin-loopback/v1/mcp-status.schema.json": "2cfd4563c19c9db62fc39d80996f312485d39acf",

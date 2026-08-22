@@ -57,6 +57,15 @@ internal sealed partial class RbpJournalStore
             context =>
             {
                 RequireActiveSession(context, rsid);
+                if (HasOutcomeV3Cutover(context, rsid))
+                {
+                    return RecordHoldVerificationEvidenceV3(
+                        context,
+                        rsid,
+                        evidence,
+                        now);
+                }
+
                 RbpVerificationHold hold =
                     FindHoldById(
                         context,
@@ -218,6 +227,14 @@ internal sealed partial class RbpJournalStore
         return ReadAsync(
             connection =>
             {
+                if (HasOutcomeV3Cutover(connection, rsid))
+                {
+                    return ReadHoldV3(
+                        connection,
+                        rsid,
+                        verificationHoldId);
+                }
+
                 using SqliteCommand command = CreateCommand(
                     connection,
                     $"""
@@ -240,6 +257,17 @@ internal sealed partial class RbpJournalStore
         RbpRecoveryClearance clearance,
         long now)
     {
+        if (HasOutcomeV3Cutover(context, rsid))
+        {
+            AcceptClearanceV3(
+                context,
+                rsid,
+                envelopeScopeJcsList,
+                clearance,
+                now);
+            return;
+        }
+
         RbpVerificationHold hold =
             FindHoldById(context, rsid, clearance.HoldId) ??
             throw ClearanceFault(
@@ -481,6 +509,11 @@ internal sealed partial class RbpJournalStore
         string rsid,
         string verificationHoldId)
     {
+        if (HasOutcomeV3Cutover(context, rsid))
+        {
+            return ReadHoldV3(context, rsid, verificationHoldId);
+        }
+
         using SqliteCommand command = context.CreateCommand(
             $"""
              SELECT {HoldColumns}
@@ -503,6 +536,11 @@ internal sealed partial class RbpJournalStore
         string rsid,
         string scopeJcs)
     {
+        if (HasOutcomeV3Cutover(context, rsid))
+        {
+            return FindConflictingHoldV3(context, rsid, scopeJcs);
+        }
+
         (string scopeKind, _) = ReadScopeShape(scopeJcs);
         using SqliteCommand command = context.CreateCommand(
             $"""

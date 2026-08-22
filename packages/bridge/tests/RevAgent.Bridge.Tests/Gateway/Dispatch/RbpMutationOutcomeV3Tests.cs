@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using Microsoft.Data.Sqlite;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
@@ -17,6 +18,8 @@ public sealed class RbpMutationOutcomeV3Tests
         "0197a3c2-0000-7000-8000-000000000301";
     private const string SecondInvocation =
         "0197a3c2-0000-7000-8000-000000000302";
+    private const string ThirdInvocation =
+        "0197a3c2-0000-7000-8000-000000000303";
 
     [Fact]
     public async Task JsonRpcErrorWithoutEffectTruthInstallsHoldAndBlocksConflict()
@@ -152,6 +155,155 @@ public sealed class RbpMutationOutcomeV3Tests
             "committed",
             (await store.GetOutcomeV3Async(stored.Identity.IdempotencyKey))!
                 .EffectState);
+    }
+
+    [Fact]
+    public async Task NestedCommittedApplicationFailureInstallsHold()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory);
+        RbpAddinOutcome outcome = ReduceHandlerResult(
+            FirstInvocation,
+            success: true,
+            effectState: "committed",
+            nestedResult: new JObject
+            {
+                ["success"] = false,
+                ["error"] = "nested application failure",
+            });
+        var dispatcher = new RbpInvocationDispatcher(
+            store,
+            new CountingChannel(outcome),
+            new RbpInFlightGate());
+
+        RbpInvocationAnswer answer = await dispatcher.DispatchAsync(
+            DynamicWrite(FirstInvocation),
+            CancellationToken.None);
+
+        Assert.Equal("error", answer.Type);
+        Assert.Equal(
+            "journal_indeterminate",
+            answer.Payload.GetProperty("fault_class").GetString());
+        Assert.NotNull(
+            await store.GetHoldAsync(
+                Rsid,
+                answer.Payload
+                    .GetProperty("verification_hold_id")
+                    .GetString()!));
+    }
+
+    [Fact]
+    public async Task ForgedNativeNoneRollbackEvidenceRemainsUnknown()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory);
+        RbpAddinOutcome forged = ReduceHandlerResult(
+            FirstInvocation,
+            success: false,
+            effectState: "rolled_back",
+            errorMessage: "caller claims rollback",
+            transactionMode: "none");
+        Assert.Equal(RbpEffectState.Unknown, forged.OutcomeEvidence!.EffectState);
+        var dispatcher = new RbpInvocationDispatcher(
+            store,
+            new CountingChannel(forged),
+            new RbpInFlightGate());
+
+        RbpInvocationAnswer answer = await dispatcher.DispatchAsync(
+            DynamicWrite(
+                FirstInvocation,
+                transactionMode: "none"),
+            CancellationToken.None);
+
+        Assert.Equal(
+            "journal_indeterminate",
+            answer.Payload.GetProperty("fault_class").GetString());
+    }
+
+    [Fact]
+    public async Task UnknownExplicitTransactionModeFailsBeforeDispatch()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = await OpenAsync(directory);
+        var channel = new CountingChannel(
+            ReduceHandlerResult(
+                FirstInvocation,
+                success: true,
+                effectState: "committed"));
+        var dispatcher = new RbpInvocationDispatcher(
+            store,
+            channel,
+            new RbpInFlightGate());
+
+        RbpInvocationAnswer answer = await dispatcher.DispatchAsync(
+            DynamicWrite(
+                FirstInvocation,
+                transactionMode: "mystery"),
+            CancellationToken.None);
+
+        Assert.Equal("error", answer.Type);
+        Assert.Equal(
+            "protocol",
+            answer.Payload.GetProperty("fault_class").GetString());
+        Assert.Equal(0, channel.Calls);
+    }
+
+    [Theory]
+    [InlineData("ERROR: direct failure")]
+    [InlineData("\"ERROR: encoded once\"")]
+    [InlineData("\"\\\"ERROR: encoded twice\\\"\"")]
+    public void ErrorStringsAreDecodedAtMostTwice(string nested)
+    {
+        var body = new JObject
+        {
+            ["success"] = true,
+            ["result"] = nested,
+        };
+        Assert.StartsWith(
+            "ERROR:",
+            RbpRoutedInvocationChannel.ReadApplicationFailure(body));
+    }
+
+    [Fact]
+    public async Task PersistenceReadbackMismatchRetainsLeaseAndQuarantines()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var fault = new CorruptingPostCommitFault(
+            directory.JournalPath,
+            Rsid + "/" + FirstInvocation);
+        await using RbpJournalStore store =
+            await OpenAsync(directory, fault);
+        var lease = new TrackingLease();
+        RbpAddinOutcome outcome = ReduceHandlerResult(
+            FirstInvocation,
+            success: true,
+            effectState: "committed") with
+        {
+            Lease = lease,
+        };
+        var channel = new ArmingChannel(outcome, fault.Arm);
+        var dispatcher = new RbpInvocationDispatcher(
+            store,
+            channel,
+            new RbpInFlightGate());
+
+        _ = await Assert.ThrowsAsync<RbpJournalException>(
+            () => dispatcher.DispatchAsync(
+                DynamicWrite(FirstInvocation),
+                CancellationToken.None));
+
+        Assert.Equal(0, lease.Releases);
+        Assert.Equal(
+            1,
+            await store.ReadAsync(
+                connection =>
+                {
+                    using SqliteCommand command = connection.CreateCommand();
+                    command.CommandText =
+                        "SELECT COUNT(*) FROM rbp_outcome_quarantine_v3 " +
+                        "WHERE rsid='rs-test';";
+                    return Convert.ToInt32(command.ExecuteScalar());
+                }));
     }
 
     [Fact]
@@ -333,6 +485,27 @@ public sealed class RbpMutationOutcomeV3Tests
             RbpInvocationState.Completed,
             (await store.GetInvocationAsync(Rsid + "/" + SecondInvocation))!
                 .State);
+
+        var thirdDispatcher = new RbpInvocationDispatcher(
+            store,
+            new CountingChannel(ReduceJsonRpcError(ThirdInvocation)),
+            new RbpInFlightGate());
+        RbpInvocationAnswer third = await thirdDispatcher.DispatchAsync(
+            DynamicWrite(ThirdInvocation),
+            CancellationToken.None);
+        string nextHoldId = third.Payload
+            .GetProperty("verification_hold_id")
+            .GetString()!;
+        Assert.NotEqual(holdId, nextHoldId);
+        Assert.Equal(
+            RbpHoldState.Cleared,
+            (await store.GetHoldAsync(Rsid, holdId))!.State);
+        Assert.Equal(
+            RbpHoldState.Active,
+            (await store.GetHoldAsync(Rsid, nextHoldId))!.State);
+        Assert.Equal(
+            "accepted",
+            (await store.GetOutcomeV3ResolutionAsync(resolutionId))!.State);
     }
 
     [Theory]
@@ -409,19 +582,21 @@ public sealed class RbpMutationOutcomeV3Tests
         string invocationId,
         bool success,
         string effectState,
-        string? errorMessage = null)
+        string? errorMessage = null,
+        string transactionMode = "auto",
+        JToken? nestedResult = null)
     {
         var result = new JObject
         {
             ["resultContractVersion"] = 2,
             ["success"] = success,
-            ["result"] = new JObject { ["ok"] = success },
+            ["result"] = nestedResult ?? new JObject { ["ok"] = success },
             ["errorMessage"] = errorMessage ?? string.Empty,
             ["outcomeEvidence"] = new JObject
             {
                 ["schema"] = RbpMutationOutcomeEvidence.Schema,
                 ["effectState"] = effectState,
-                ["transactionMode"] = "auto",
+                ["transactionMode"] = transactionMode,
                 ["evidence"] = new JObject
                 {
                     ["source"] = "execute_dynamic_code",
@@ -438,18 +613,26 @@ public sealed class RbpMutationOutcomeV3Tests
         byte[] raw = Encoding.UTF8.GetBytes(envelope.ToString(Newtonsoft.Json.Formatting.None));
         AddinJsonRpcResponse response =
             AddinJsonRpcCodec.ParseResponse(raw, invocationId);
-        return Reduce(response, invocationId);
+        return Reduce(response, invocationId, transactionMode);
     }
 
     private static RbpAddinOutcome Reduce(
         AddinJsonRpcResponse response,
-        string invocationId)
+        string invocationId,
+        string transactionMode = "auto")
     {
         var call = new AddinCall(
             invocationId,
             "send_code_to_revit",
-            JObject.Parse(
-                """{"code":"return null;","transactionMode":"auto"}"""),
+            new JObject
+            {
+                ["code"] = "return null;",
+                ["transactionMode"] = transactionMode,
+                ["nativeOutcomeEvidenceConformance"] =
+                    transactionMode == "none"
+                        ? RbpMutationOutcomeEvidence.NativeConformance
+                        : null,
+            },
             TimeSpan.FromSeconds(30));
         var result = new AddinCallResult(
             response,
@@ -468,14 +651,15 @@ public sealed class RbpMutationOutcomeV3Tests
 
     private static RbpInvokeRequest DynamicWrite(
         string invocationId,
-        string recoveryClearances = "[]")
+        string recoveryClearances = "[]",
+        string transactionMode = "auto")
     {
         using JsonDocument document = JsonDocument.Parse(
             $$"""
             {
               "invocation_id":"{{invocationId}}",
               "method":"send_code_to_revit",
-              "params":{"code":"return null;","transactionMode":"auto"},
+              "params":{"code":"return null;","transactionMode":"{{transactionMode}}"{{(transactionMode == "none" ? ",\"nativeOutcomeEvidenceConformance\":\"revagent.mutation-outcome/v1\"" : string.Empty)}}},
               "timeout_ms":120000,
               "mutating":true,
               "mutation_scope":{"document_id":"doc-1","kind":"document"},
@@ -488,12 +672,16 @@ public sealed class RbpMutationOutcomeV3Tests
     }
 
     private static async Task<RbpJournalStore> OpenAsync(
-        RbpJournalTestDirectory directory)
+        RbpJournalTestDirectory directory,
+        IRbpJournalFaultInjector? faultInjector = null)
     {
         RbpJournalStore store = RbpJournalStore.Open(
             directory.JournalPath,
             new TestResumeTokenProtector(),
-            RbpJournalTestData.Options());
+            new RbpJournalOpenOptions(
+                NowMilliseconds: () =>
+                    RbpJournalTestData.Now.ToUnixTimeMilliseconds(),
+                FaultInjector: faultInjector));
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
         return store;
@@ -519,6 +707,65 @@ public sealed class RbpMutationOutcomeV3Tests
     {
         public void ReleaseAfterDurableDecision()
         {
+        }
+    }
+
+    private sealed class TrackingLease : IRbpDispatchLease
+    {
+        private int _releases;
+        internal int Releases => Volatile.Read(ref _releases);
+
+        public void ReleaseAfterDurableDecision() =>
+            Interlocked.Increment(ref _releases);
+    }
+
+    private sealed class ArmingChannel(
+        RbpAddinOutcome outcome,
+        Action arm) : IRbpInvocationChannel
+    {
+        public Task<RbpAddinOutcome> InvokeAsync(
+            string rsid,
+            AddinCall call,
+            CancellationToken cancellationToken)
+        {
+            arm();
+            return Task.FromResult(outcome);
+        }
+    }
+
+    private sealed class CorruptingPostCommitFault(
+        string journalPath,
+        string idempotencyKey) : IRbpJournalFaultInjector
+    {
+        private int _armed;
+        internal void Arm() => Interlocked.Exchange(ref _armed, 1);
+
+        public void Hit(RbpJournalFaultPoint point)
+        {
+            if (point != RbpJournalFaultPoint.AfterCommitBeforeReturn ||
+                Interlocked.Exchange(ref _armed, 0) == 0)
+            {
+                return;
+            }
+
+            using var connection = new SqliteConnection(
+                new SqliteConnectionStringBuilder
+                {
+                    DataSource = journalPath,
+                    Mode = SqliteOpenMode.ReadWrite,
+                    Pooling = false,
+                }.ToString());
+            connection.Open();
+            using SqliteCommand corrupt = connection.CreateCommand();
+            corrupt.CommandText =
+                "UPDATE rbp_outcome_dispatch_v3 SET result_digest=$digest " +
+                "WHERE idempotency_key=$key;";
+            corrupt.Parameters.AddWithValue(
+                "$digest",
+                "sha256:" + new string('e', 64));
+            corrupt.Parameters.AddWithValue("$key", idempotencyKey);
+            _ = corrupt.ExecuteNonQuery();
+            throw new IOException("Injected corrupt post-commit read-back.");
         }
     }
 }

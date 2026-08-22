@@ -112,10 +112,18 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         CancellationToken cancellationToken)
     {
-        RbpTransactionMode transactionMode =
-            RbpMutationOutcomeEvidence.ReadRequestedMode(
+        RbpTransactionMode transactionMode;
+        try
+        {
+            transactionMode = RbpMutationOutcomeEvidence.ReadRequestedMode(
                 request.Method,
                 request.Parameters);
+        }
+        catch (RbpDispatchException exception)
+            when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
+        {
+            return ProtocolFault(request, exception.Message);
+        }
         if (request.Mutating &&
             transactionMode == RbpTransactionMode.None &&
             !RbpMutationOutcomeEvidence.HasNativeConformanceDeclaration(
@@ -533,58 +541,54 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             outcome.RequestBytes,
             outcome.ResponseBytes);
 
-        try
+        RbpInvocationAnswer answer = outcome.Kind switch
         {
-            return outcome.Kind switch
-            {
-                RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
-                    await TerminalizeSuccessAsync(
-                            request,
-                            identity,
-                            outcome,
-                            metrics,
-                            cancellationToken)
-                        .ConfigureAwait(false),
+            RbpAddinOutcomeKind.Completed or RbpAddinOutcomeKind.Guarded =>
+                await TerminalizeSuccessAsync(
+                        request,
+                        identity,
+                        outcome,
+                        metrics,
+                        cancellationToken)
+                    .ConfigureAwait(false),
 
-                RbpAddinOutcomeKind.KnownNotDispatched =>
-                    await TerminalizeKnownFailureAsync(
-                            request,
-                            identity,
-                            outcome,
-                            cancellationToken)
-                        .ConfigureAwait(false),
+            RbpAddinOutcomeKind.KnownNotDispatched =>
+                await TerminalizeKnownFailureAsync(
+                        request,
+                        identity,
+                        outcome,
+                        cancellationToken)
+                    .ConfigureAwait(false),
 
-                _ when ResolveOutcomeEvidence(request, outcome)
-                        .KnownNonCommittingError ||
-                    (!request.Mutating &&
-                     ResolveOutcomeEvidence(request, outcome).EffectState ==
-                        RbpEffectState.ReadOnly) =>
-                    await TerminalizeKnownFailureAsync(
-                            request,
-                            identity,
-                            outcome,
-                            cancellationToken)
-                        .ConfigureAwait(false),
+            _ when ResolveOutcomeEvidence(request, outcome)
+                    .KnownNonCommittingError ||
+                (!request.Mutating &&
+                 ResolveOutcomeEvidence(request, outcome).EffectState ==
+                    RbpEffectState.ReadOnly) =>
+                await TerminalizeKnownFailureAsync(
+                        request,
+                        identity,
+                        outcome,
+                        cancellationToken)
+                    .ConfigureAwait(false),
 
-                _ => await TerminalizeUnknownAsync(
-                            request,
-                            identity,
-                            outcome.Message ??
-                                "The add-in dispatch outcome is unknown.",
-                            outcome.FaultClass,
-                            ResolveOutcomeEvidence(request, outcome),
-                            cancellationToken)
-                        .ConfigureAwait(false),
-            };
-        }
-        finally
-        {
-            // Only now. Releasing before the outcome is durable would reopen
-            // the add-in session while this invocation's fate lives solely in
-            // memory; a crash in that window lets a redelivery dispatch again
-            // against a row the journal still reports as `executing`.
-            outcome.Lease?.ReleaseAfterDurableDecision();
-        }
+            _ => await TerminalizeUnknownAsync(
+                        request,
+                        identity,
+                        outcome.Message ??
+                            "The add-in dispatch outcome is unknown.",
+                        outcome.FaultClass,
+                        ResolveOutcomeEvidence(request, outcome),
+                        cancellationToken)
+                    .ConfigureAwait(false),
+        };
+
+        // Release only after terminal persistence returned successfully or
+        // its exact post-commit read-back proved the same durable outcome.
+        // Any persistence uncertainty leaves the route quarantined and sends
+        // no terminal answer.
+        outcome.Lease?.ReleaseAfterDurableDecision();
+        return answer;
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeSuccessAsync(
