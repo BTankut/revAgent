@@ -2,8 +2,11 @@ import { createHash, createHmac } from "node:crypto";
 
 import {
   GATEWAY_AUTH_CONTRACT_VERSION,
+  isCanonicalMachineFingerprint,
+  machineFingerprintClaimsEqual,
   type AuthContext,
   type DeviceAuthContext,
+  type GatewayMachineFingerprint,
   type IdentityPort,
 } from "./authContext.js";
 import type { GatewayNodeEnv } from "./config.js";
@@ -18,7 +21,6 @@ const MIN_OPAQUE_SECRET_LENGTH = 32;
 const MAX_OPAQUE_SECRET_LENGTH = 4_096;
 const MAX_IDENTIFIER_LENGTH = 256;
 const MAX_CAPABILITY_LENGTH = 128;
-const SHA256_PATTERN = /^sha256:[a-f0-9]{64}$/u;
 const CAPABILITY_PATTERN = /^[a-z0-9_.:-]+$/u;
 
 export type PreProductionEnrollmentDeviceStatus = "active" | "seat_denied";
@@ -71,6 +73,7 @@ export interface PreProductionEnrollmentIssueInput {
   readonly deviceId: string;
   readonly seatId: string;
   readonly machineFingerprint: string;
+  readonly grantedConnectionCapabilities?: readonly string[];
   readonly grantedSessionCapabilities?: readonly string[];
   readonly deviceStatus?: PreProductionEnrollmentDeviceStatus;
 }
@@ -139,7 +142,8 @@ interface EnrollmentRecord {
   readonly userId: string;
   readonly deviceId: string;
   readonly seatId: string;
-  readonly machineFingerprint: string;
+  readonly machineFingerprint: GatewayMachineFingerprint;
+  readonly grantedConnectionCapabilities: readonly string[];
   readonly grantedSessionCapabilities: readonly string[];
   readonly deviceStatus: PreProductionEnrollmentDeviceStatus;
   readonly issuedAtMs: number;
@@ -152,8 +156,16 @@ interface DeviceRecord {
   readonly userId: string;
   readonly deviceId: string;
   readonly seatId: string;
+  readonly machineFingerprint: GatewayMachineFingerprint;
+  readonly grantedConnectionCapabilities: readonly string[];
   readonly grantedSessionCapabilities: readonly string[];
   readonly deviceTokenDigest: `sha256:${string}`;
+  authorizationVersion: number;
+  identityRecordVersion: number;
+  connectionCapabilityVersion: number;
+  sessionCapabilityVersion: number;
+  seatAuthorityVersion: number;
+  seatRecordVersion: number;
   deviceStatus: DeviceAuthContext["deviceStatus"];
 }
 
@@ -300,7 +312,7 @@ function validIssueInput(input: PreProductionEnrollmentIssueInput): boolean {
     isBoundedIdentifier(input.userId) &&
     isBoundedIdentifier(input.deviceId) &&
     isBoundedIdentifier(input.seatId) &&
-    SHA256_PATTERN.test(input.machineFingerprint) &&
+    isCanonicalMachineFingerprint(input.machineFingerprint) &&
     (input.deviceStatus === undefined ||
       input.deviceStatus === "active" ||
       input.deviceStatus === "seat_denied")
@@ -431,6 +443,25 @@ export function createPreProductionIdentityAuthority(
           "pre-production identity refused device authorization",
         );
       }
+      if (
+        input.machineFingerprint !== undefined &&
+        !machineFingerprintClaimsEqual(
+          record.machineFingerprint,
+          input.machineFingerprint,
+        )
+      ) {
+        return identityRefusal(
+          "pre-production identity refused device authorization",
+        );
+      }
+      if (
+        input.claimedDeviceId !== undefined &&
+        input.claimedDeviceId !== record.deviceId
+      ) {
+        return identityRefusal(
+          "pre-production identity refused device authorization",
+        );
+      }
       const context: DeviceAuthContext = Object.freeze({
         contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
         actor: Object.freeze({
@@ -442,6 +473,14 @@ export function createPreProductionIdentityAuthority(
         }),
         connectionId: input.connectionId,
         deviceStatus: record.deviceStatus,
+        machineFingerprint: record.machineFingerprint,
+        authorizationVersion: record.authorizationVersion,
+        identityRecordVersion: record.identityRecordVersion,
+        connectionCapabilityVersion: record.connectionCapabilityVersion,
+        sessionCapabilityVersion: record.sessionCapabilityVersion,
+        seatAuthorityVersion: record.seatAuthorityVersion,
+        seatRecordVersion: record.seatRecordVersion,
+        grantedConnectionCapabilities: record.grantedConnectionCapabilities,
         grantedSessionCapabilities: record.grantedSessionCapabilities,
         deviceTokenDigest: record.deviceTokenDigest,
       });
@@ -454,7 +493,14 @@ export function createPreProductionIdentityAuthority(
       const capabilities = canonicalCapabilities(
         input.grantedSessionCapabilities,
       );
-      if (!validIssueInput(input) || capabilities === null) {
+      const connectionCapabilities = canonicalCapabilities(
+        input.grantedConnectionCapabilities,
+      );
+      if (
+        !validIssueInput(input) ||
+        capabilities === null ||
+        connectionCapabilities === null
+      ) {
         return refusal(
           "invalid_request",
           "pre-production enrollment issue input is invalid",
@@ -501,6 +547,9 @@ export function createPreProductionIdentityAuthority(
         input.seatId,
         input.machineFingerprint,
         input.deviceStatus ?? "active",
+        "connection",
+        ...connectionCapabilities,
+        "session",
         ...capabilities,
       ]);
       const digest = tokenDigest(enrollmentToken);
@@ -517,7 +566,8 @@ export function createPreProductionIdentityAuthority(
         userId: input.userId,
         deviceId: input.deviceId,
         seatId: input.seatId,
-        machineFingerprint: input.machineFingerprint,
+        machineFingerprint: input.machineFingerprint as GatewayMachineFingerprint,
+        grantedConnectionCapabilities: connectionCapabilities,
         grantedSessionCapabilities: capabilities,
         deviceStatus: input.deviceStatus ?? "active",
         issuedAtMs,
@@ -545,7 +595,7 @@ export function createPreProductionIdentityAuthority(
       if (
         input.enrollmentToken === undefined ||
         !isOpaqueSecret(input.enrollmentToken) ||
-        !SHA256_PATTERN.test(input.machineFingerprint)
+        !isCanonicalMachineFingerprint(input.machineFingerprint)
       ) {
         return refusal(
           "invalid_request",
@@ -576,7 +626,12 @@ export function createPreProductionIdentityAuthority(
           "pre-production enrollment token has expired",
         );
       }
-      if (record.machineFingerprint !== input.machineFingerprint) {
+      if (
+        !machineFingerprintClaimsEqual(
+          record.machineFingerprint,
+          input.machineFingerprint,
+        )
+      ) {
         return refusal(
           "enrollment_denied",
           "pre-production enrollment fingerprint does not match the issue record",
@@ -605,8 +660,18 @@ export function createPreProductionIdentityAuthority(
         userId: record.userId,
         deviceId: record.deviceId,
         seatId: record.seatId,
+        machineFingerprint: record.machineFingerprint,
+        grantedConnectionCapabilities: record.grantedConnectionCapabilities,
         grantedSessionCapabilities: record.grantedSessionCapabilities,
         deviceTokenDigest,
+        authorizationVersion: (priorDevice?.authorizationVersion ?? 0) + 1,
+        identityRecordVersion: (priorDevice?.identityRecordVersion ?? 0) + 1,
+        connectionCapabilityVersion:
+          (priorDevice?.connectionCapabilityVersion ?? 0) + 1,
+        sessionCapabilityVersion:
+          (priorDevice?.sessionCapabilityVersion ?? 0) + 1,
+        seatAuthorityVersion: (priorDevice?.seatAuthorityVersion ?? 0) + 1,
+        seatRecordVersion: (priorDevice?.seatRecordVersion ?? 0) + 1,
         deviceStatus: record.deviceStatus,
       };
       devicesById.set(device.deviceId, device);
@@ -644,6 +709,14 @@ export function createPreProductionIdentityAuthority(
       }
       const priorStatus = record.deviceStatus;
       record.deviceStatus = "revoked";
+      if (priorStatus !== "revoked") {
+        record.authorizationVersion += 1;
+        record.identityRecordVersion += 1;
+        record.connectionCapabilityVersion += 1;
+        record.sessionCapabilityVersion += 1;
+        record.seatAuthorityVersion += 1;
+        record.seatRecordVersion += 1;
+      }
       return Object.freeze({
         ok: true as const,
         value: Object.freeze({

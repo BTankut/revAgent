@@ -1,8 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
+  GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+  PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA,
   GatewayCompositionError,
+  createProductionCredentialScopeLocator,
+  createProductionIdentityAuthority,
   gatewayScaffold,
+  isCanonicalMachineFingerprint,
+  machineFingerprintClaimsEqual,
   type GatewayCompositionErrorReason,
 } from "./index.js";
 
@@ -34,5 +40,22 @@ describe("gateway scaffold", () => {
       port: "rbp_ingress",
       reason,
     });
+  });
+
+  it("exports the WP-06 production identity and fingerprint contracts", () => {
+    const fingerprint = `sha256:${"a".repeat(64)}`;
+    expect(GATEWAY_CREDENTIAL_SCOPE_SCHEMA).toBe(
+      "gateway.credential-scope/v1",
+    );
+    expect(PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA).toBe(
+      "revagent.production-identity-port-trust/v1",
+    );
+    expect(createProductionCredentialScopeLocator).toBeTypeOf("function");
+    expect(createProductionIdentityAuthority).toBeTypeOf("function");
+    expect(isCanonicalMachineFingerprint(fingerprint)).toBe(true);
+    expect(machineFingerprintClaimsEqual(fingerprint, fingerprint)).toBe(true);
+    expect(
+      machineFingerprintClaimsEqual(fingerprint, `sha256:${"b".repeat(64)}`),
+    ).toBe(false);
   });
 });

@@ -1,3 +1,5 @@
+import { timingSafeEqual } from "node:crypto";
+
 import {
   portNotImplemented,
   type GatewayPortAdapterKind,
@@ -20,6 +22,39 @@ export const GATEWAY_AUTH_CONTRACT_VERSION = "revagent.auth-context/v1" as const
 export type GatewayRole = "user" | "tenant_admin" | "vendor_admin";
 
 export type GatewayClientType = "web" | "mcp" | "bridge";
+
+export type GatewayMachineFingerprint = `sha256:${string}`;
+
+const MACHINE_FINGERPRINT_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const EMPTY_SHA256 = Buffer.alloc(32);
+
+/** A machine claim is canonical only in the frozen `sha256:<64hex>` form. */
+export function isCanonicalMachineFingerprint(
+  value: unknown,
+): value is GatewayMachineFingerprint {
+  return typeof value === "string" && MACHINE_FINGERPRINT_PATTERN.test(value);
+}
+
+/**
+ * Compares two already bounded fingerprint claims without a data-dependent
+ * byte comparison. Invalid encodings still take the same 32-byte comparison
+ * path and can never compare equal.
+ */
+export function machineFingerprintClaimsEqual(
+  left: unknown,
+  right: unknown,
+): boolean {
+  const leftValid = isCanonicalMachineFingerprint(left);
+  const rightValid = isCanonicalMachineFingerprint(right);
+  const leftBytes = leftValid
+    ? Buffer.from(left.slice("sha256:".length), "hex")
+    : EMPTY_SHA256;
+  const rightBytes = rightValid
+    ? Buffer.from(right.slice("sha256:".length), "hex")
+    : EMPTY_SHA256;
+  const equal = timingSafeEqual(leftBytes, rightBytes);
+  return leftValid && rightValid && equal;
+}
 
 /** P-LIC-1. Closed rather than `string`, so a typo cannot mint a module. */
 export type GatewayModuleName = "core" | "mech" | "arch" | "struct" | "elec";
@@ -73,6 +108,19 @@ export interface DeviceAuthContext {
   };
   readonly connectionId: string;
   readonly deviceStatus: "active" | "revoked" | "seat_denied";
+  /**
+   * WP-06 production contexts always populate the versioned identity fields.
+   * They remain optional during the stacked migration so older deterministic
+   * test doubles cannot accidentally be represented as durable authority.
+   */
+  readonly machineFingerprint?: GatewayMachineFingerprint;
+  readonly authorizationVersion?: number;
+  readonly identityRecordVersion?: number;
+  readonly connectionCapabilityVersion?: number;
+  readonly sessionCapabilityVersion?: number;
+  readonly seatAuthorityVersion?: number;
+  readonly seatRecordVersion?: number;
+  readonly grantedConnectionCapabilities?: readonly string[];
   readonly grantedSessionCapabilities: readonly string[];
   readonly deviceTokenDigest: `sha256:${string}`;
 }
@@ -85,6 +133,20 @@ export interface IdentityPort {
   authenticateDevice(input: {
     readonly deviceToken: string | undefined;
     readonly connectionId: string;
+    /** Device id asserted by hello/register; it is never a tenant locator. */
+    readonly claimedDeviceId?: string;
+    /** Exact scope retained by the server after a prior authenticated lookup. */
+    readonly establishedScope?: {
+      readonly tenantId: string;
+      readonly deviceId: string;
+    };
+    /** Transitional compatibility fields; production initial auth rejects them. */
+    readonly tenantId?: string;
+    readonly deviceId?: string;
+    /** Required by the production adapter; legacy absence means re-enrolment. */
+    readonly machineFingerprint?: string;
+    /** Observational only and never participates in authority. */
+    readonly machineHostname?: string;
   }): Promise<GatewayPortResult<DeviceAuthContext>>;
 }
 
