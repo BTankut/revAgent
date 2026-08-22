@@ -378,12 +378,17 @@ Unknown sessions, cross-owner replays, and a replay whose `reason` differs from 
 with `4403`. A bridge with a durable pending-unregister tombstone MUST replay
 `session_unregister` directly on each fresh binding; it MUST NOT resume the revoked session first.
 
-The Gateway stores that v1 tombstone at the tenant-scoped key `(tenantId, rsid)` in
-`gateway.rbp-unregister/v1`. Its frozen DC-01 fields are `version`, authenticated owner, `reason`,
-`revokedAtMs`, `byConnectionId`, and the normalized pending disposition. Creation atomically writes the
-tombstone and changes the legacy `gateway.rbp-session/v1` row to non-resumable/non-dispatchable; readback of
-the exact tombstone is required before returning success. Until WP-10 owns a successor schema, admission reads
-the v1 session/tombstone union fail-closed and does not claim v2 normalization or migration.
+The Gateway stores that v1 tombstone at tenant-scoped key `rsid` in `gateway.rbp-unregister/v1`. Every logical
+record has `schema`, `tenantId`, `createdAtMs`, `updatedAtMs`, and CAS `recordVersion`; this tombstone also has
+`sessionBindingId`, authenticated `owner`, `closedReason`, `revokedAtMs`, `acceptedConnectionId`,
+`pendingDisposition`, sorted canonical `holdIds`, and `cleanupState`. `pendingDisposition` is one of `none`,
+`read_closed`, or `mutation_indeterminate`; `cleanupState` is `retained` or `cleanup_pending`. Creation atomically
+writes the tombstone, normalized `gateway.mutation-hold/v1` and `gateway.mutation-conflict/v1` authority for a
+possibly dispatched mutation, and changes the legacy `gateway.rbp-session/v1` row to non-resumable/non-dispatchable.
+Exact readback is required before return or acknowledgement. Until WP-10 writes the per-session
+`gateway.hold-cutover/v1` marker, admission reads legacy and normalized unresolved facts and denies if either
+remains active; after the marker it reads normalized authority only. WP-02 does not define v2 normalization or
+legacy deletion.
 
 The bridge revokes local dispatch as soon as it durably records unregister intent. It MUST NOT mutate local
 lifecycle or outbound-queue authority before that journal transaction commits. If a post-commit durability

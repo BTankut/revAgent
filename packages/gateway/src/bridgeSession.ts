@@ -6,7 +6,9 @@ import {
   dataEnvelopeImmutableDigest,
   createReceivedJournalRecord,
   makeBatchDigest,
+  makeMutationHoldId,
   makeParamsDigest,
+  mutationScopeKey,
   createConnectionLifecycle,
   createSessionLifecycle,
   handleJournalSessionUnregister,
@@ -33,6 +35,7 @@ import {
   type SessionRegister,
   type SessionLifecycleState,
   type SessionUnregister,
+  type MutationScope,
   type JsonValue,
 } from "@revagent/protocol";
 
@@ -56,6 +59,7 @@ import type {
   GatewayRecoveryPendingDispatch,
   GatewayVerifiedBridgeJournalEvidence,
 } from "./recoveryAuthority.js";
+import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
   StoreTransaction,
@@ -84,7 +88,14 @@ interface DurablePendingDispatch {
   readonly gatewaySequence: number;
   readonly invocationId: string;
   readonly mutating: boolean;
+  readonly mutationEntries: readonly DurablePendingMutation[];
   readonly journalRecords: readonly InvocationJournalRecord[];
+}
+
+interface DurablePendingMutation {
+  readonly invocationId: string;
+  readonly originIdempotencyKey: string;
+  readonly mutationScope: MutationScope;
 }
 
 interface DurableDispatchEvidence {
@@ -101,6 +112,8 @@ interface DurableLiveDocumentRoute {
 
 interface DurableRbpSession {
   readonly schema: typeof GATEWAY_RBP_SESSION_NAMESPACE;
+  /** Optional only for pre-WP-02 legacy rows; every new write carries it. */
+  readonly recordVersion?: number;
   readonly tenantId: string;
   readonly userId: string;
   readonly deviceId: string;
@@ -131,28 +144,56 @@ interface DurableRbpSession {
  */
 interface DurableUnregisterTombstone {
   readonly schema: typeof GATEWAY_RBP_UNREGISTER_NAMESPACE;
-  readonly version: 1;
+  readonly recordVersion: 1;
   readonly tenantId: string;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
   readonly rsid: string;
+  readonly sessionBindingId: string;
   readonly owner: {
-    readonly deviceId: string;
     readonly userId: string;
+    readonly deviceId: string;
     readonly seatId: string;
   };
-  readonly reason: SessionUnregister["reason"];
+  readonly closedReason: SessionUnregister["reason"];
   readonly revokedAtMs: number;
-  readonly byConnectionId: string;
-  readonly pendingDisposition:
-    | {
-        readonly kind: "none" | "read_closed";
-        readonly correlationId: string | null;
-        readonly verificationHoldIds: readonly [];
-      }
-    | {
-        readonly kind: "mutation_indeterminate";
-        readonly correlationId: string;
-        readonly verificationHoldIds: readonly string[];
-      };
+  readonly acceptedConnectionId: string;
+  readonly pendingDisposition: "none" | "read_closed" | "mutation_indeterminate";
+  readonly holdIds: readonly `vh:${string}`[];
+  readonly cleanupState: "retained" | "cleanup_pending";
+}
+
+const GATEWAY_MUTATION_HOLD_NAMESPACE = "gateway.mutation-hold/v1" as const;
+const GATEWAY_MUTATION_CONFLICT_NAMESPACE = "gateway.mutation-conflict/v1" as const;
+const GATEWAY_HOLD_CUTOVER_NAMESPACE = "gateway.hold-cutover/v1" as const;
+
+interface DurableMutationHold {
+  readonly schema: typeof GATEWAY_MUTATION_HOLD_NAMESPACE;
+  readonly tenantId: string;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+  readonly recordVersion: 1;
+  readonly holdId: `vh:${string}`;
+  readonly rsid: string;
+  readonly mutationScopeJcs: string;
+  readonly originIdempotencyKeys: readonly string[];
+  readonly state: "active" | "evidence_recorded" | "resolved_pending_bridge" | "cleared";
+  readonly evidenceIds: readonly string[];
+  readonly evidenceDigests: readonly string[];
+  readonly resolutionIds: readonly string[];
+}
+
+interface DurableMutationConflict {
+  readonly schema: typeof GATEWAY_MUTATION_CONFLICT_NAMESPACE;
+  readonly tenantId: string;
+  readonly createdAtMs: number;
+  readonly updatedAtMs: number;
+  readonly recordVersion: 1;
+  readonly rsid: string;
+  readonly scopeDigest: `sha256:${string}`;
+  readonly holdId: `vh:${string}`;
+  readonly mutationScopeJcs: string;
+  readonly active: boolean;
 }
 
 type DurableUnregisterWrite =
@@ -305,56 +346,84 @@ function parseUnregisterTombstone(value: unknown): DurableUnregisterTombstone {
   }
   const candidate = value as Record<string, unknown>;
   const owner = candidate.owner;
-  const disposition = candidate.pendingDisposition;
-  const verificationHoldIds =
-    disposition !== null && typeof disposition === "object" && !Array.isArray(disposition)
-      ? (disposition as Record<string, unknown>).verificationHoldIds
-      : undefined;
+  const holdIds = Array.isArray(candidate.holdIds) ? candidate.holdIds : [];
   if (
     candidate.schema !== GATEWAY_RBP_UNREGISTER_NAMESPACE ||
-    candidate.version !== 1 ||
+    candidate.recordVersion !== 1 ||
     typeof candidate.tenantId !== "string" ||
     candidate.tenantId.length === 0 ||
+    !Number.isSafeInteger(candidate.createdAtMs) ||
+    !Number.isSafeInteger(candidate.updatedAtMs) ||
     typeof candidate.rsid !== "string" ||
     candidate.rsid.length === 0 ||
+    typeof candidate.sessionBindingId !== "string" ||
+    candidate.sessionBindingId.length === 0 ||
     owner === null ||
     typeof owner !== "object" ||
     Array.isArray(owner) ||
     typeof (owner as Record<string, unknown>).deviceId !== "string" ||
     typeof (owner as Record<string, unknown>).userId !== "string" ||
     typeof (owner as Record<string, unknown>).seatId !== "string" ||
-    !isUnregisterReason(candidate.reason) ||
+    !isUnregisterReason(candidate.closedReason) ||
     !Number.isSafeInteger(candidate.revokedAtMs) ||
     (candidate.revokedAtMs as number) < 0 ||
-    typeof candidate.byConnectionId !== "string" ||
-    candidate.byConnectionId.length === 0 ||
-    disposition === null ||
-    typeof disposition !== "object" ||
-    Array.isArray(disposition) ||
-    !Array.isArray(verificationHoldIds)
-  ) {
-    throw new Error("malformed unregister tombstone");
-  }
-  const parsedDisposition = disposition as Record<string, unknown>;
-  if (
-    (parsedDisposition.kind !== "none" &&
-      parsedDisposition.kind !== "read_closed" &&
-      parsedDisposition.kind !== "mutation_indeterminate") ||
-    (parsedDisposition.correlationId !== null &&
-      typeof parsedDisposition.correlationId !== "string") ||
-    verificationHoldIds.some(
-      (holdId: unknown) => typeof holdId !== "string" || holdId.length === 0,
+    typeof candidate.acceptedConnectionId !== "string" ||
+    candidate.acceptedConnectionId.length === 0 ||
+    (candidate.pendingDisposition !== "none" &&
+      candidate.pendingDisposition !== "read_closed" &&
+      candidate.pendingDisposition !== "mutation_indeterminate") ||
+    !Array.isArray(candidate.holdIds) ||
+    holdIds.some(
+      (holdId: unknown) =>
+        typeof holdId !== "string" || !/^vh:[0-9a-f]{64}$/u.test(holdId),
     ) ||
-    (parsedDisposition.kind === "mutation_indeterminate" &&
-      (typeof parsedDisposition.correlationId !== "string" ||
-        parsedDisposition.correlationId.length === 0 ||
-        verificationHoldIds.length === 0)) ||
-    (parsedDisposition.kind !== "mutation_indeterminate" &&
-      verificationHoldIds.length !== 0)
+    [...holdIds].sort().some((holdId, index) =>
+      typeof holdId !== "string" ||
+      index > 0 && holdId <= holdIds[index - 1]!,
+    ) ||
+    (candidate.pendingDisposition === "mutation_indeterminate" &&
+      holdIds.length === 0) ||
+    (candidate.pendingDisposition !== "mutation_indeterminate" &&
+      holdIds.length !== 0) ||
+    (candidate.cleanupState !== "retained" &&
+      candidate.cleanupState !== "cleanup_pending")
   ) {
     throw new Error("malformed unregister tombstone");
   }
   return candidate as unknown as DurableUnregisterTombstone;
+}
+
+interface NormalizedHoldCandidate {
+  readonly holdId: `vh:${string}`;
+  readonly mutationScope: MutationScope;
+  readonly mutationScopeJcs: string;
+  readonly originIdempotencyKeys: readonly string[];
+}
+
+function normalizedHoldCandidates(
+  rsid: string,
+  entries: readonly DurablePendingMutation[],
+): readonly NormalizedHoldCandidate[] {
+  if (entries.length === 0) return [];
+  const allOrigins = [...new Set(entries.map((entry) => entry.originIdempotencyKey))].sort();
+  const groups = entries.some((entry) => entry.mutationScope.kind === "session")
+    ? [{ mutationScope: { kind: "session" } as MutationScope, origins: allOrigins }]
+    : [...new Map(entries.map((entry) => [
+        mutationScopeKey(entry.mutationScope),
+        entry.mutationScope,
+      ])).entries()].map(([scopeJcs, mutationScope]) => ({
+        mutationScope,
+        origins: entries
+          .filter((entry) => mutationScopeKey(entry.mutationScope) === scopeJcs)
+          .map((entry) => entry.originIdempotencyKey)
+          .sort(),
+      }));
+  return groups.map(({ mutationScope, origins }) => ({
+    holdId: makeMutationHoldId(rsid, mutationScope, origins),
+    mutationScope,
+    mutationScopeJcs: mutationScopeKey(mutationScope),
+    originIdempotencyKeys: origins,
+  })).sort((left, right) => left.holdId.localeCompare(right.holdId));
 }
 
 function immutableEnvelopeDigest(envelope: RbpEnvelope): `sha256:${string}` {
@@ -362,6 +431,23 @@ function immutableEnvelopeDigest(envelope: RbpEnvelope): `sha256:${string}` {
     throw new GatewayRbpFault("protocol", "data envelope required", 400, 4400);
   }
   return dataEnvelopeImmutableDigest(envelope as DataEnvelopeSnapshot);
+}
+
+function pendingMutationEntries(
+  envelope: InvokeEnvelope | InvokeBatchEnvelope,
+): readonly DurablePendingMutation[] {
+  const steps = envelope.type === "invoke"
+    ? [envelope.payload]
+    : envelope.payload.steps;
+  return steps.flatMap((step) =>
+    step.mutating && step.mutation_scope !== null
+      ? [{
+          invocationId: step.invocation_id,
+          originIdempotencyKey: `${envelope.rsid}/${step.invocation_id}`,
+          mutationScope: step.mutation_scope,
+        }]
+      : [],
+  );
 }
 
 function liveDocumentRouteFrom(
@@ -661,6 +747,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #active = new Map<string, ActiveSession>();
   readonly #waiters = new Map<string, PendingWaiter>();
   readonly #receiveTails = new Map<string, Promise<void>>();
+  readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #clock: () => number;
 
   public constructor(
@@ -842,6 +929,27 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       release();
       if (this.#receiveTails.get(connectionId) === tail) {
         this.#receiveTails.delete(connectionId);
+      }
+    }
+  }
+
+  async #withSessionAuthorization<T>(
+    rsid: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.#sessionAuthorizationTails.get(rsid) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#sessionAuthorizationTails.set(rsid, tail);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#sessionAuthorizationTails.get(rsid) === tail) {
+        this.#sessionAuthorizationTails.delete(rsid);
       }
     }
   }
@@ -1154,18 +1262,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
   }): Promise<GatewayExecutorOutcome> {
+    const started = await this.#withSessionAuthorization(input.rsid, async () =>
+      this.#beginDispatch(input),
+    );
+    return await started.outcome;
+  }
+
+  async #beginDispatch(input: {
+    readonly tenantId: string;
+    readonly rsid: string;
+    readonly correlationId: string;
+    readonly mutating: boolean;
+    readonly envelope: unknown;
+    readonly journalRecords: readonly InvocationJournalRecord[];
+  }): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
     const active = this.#active.get(input.rsid);
     if (active === undefined || active.tenantId !== input.tenantId) {
-      return {
-        state: "failed",
-        error: { code: "executor_unavailable", message: "registered rsid is not active" },
-      };
+      return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
     }
-    if (await this.#readUnregisterTombstone(input.tenantId, input.rsid) !== null) {
-      return {
-        state: "failed",
-        error: { code: "executor_unavailable", message: "registered rsid is revoked" },
-      };
+    if (await this.#hasUnresolvedAdmission(input.tenantId, input.rsid)) {
+      return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid has unresolved durable authority" } }) };
     }
     const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
@@ -1205,6 +1321,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           gatewaySequence: envelope.seq,
           invocationId: input.correlationId,
           mutating: input.mutating,
+          mutationEntries: pendingMutationEntries(envelope),
           journalRecords: journals,
         },
         updatedAtMs: this.#clock(),
@@ -1214,7 +1331,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
     const connection = this.#connections.get(persisted.connectionId);
     if (connection === undefined) {
-      return this.#indeterminateOutcome(input.mutating);
+      return { outcome: Promise.resolve(this.#indeterminateOutcome(input.mutating)) };
     }
 
     const outcome = new Promise<GatewayExecutorOutcome>((resolve) => {
@@ -1229,6 +1346,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         mutating: input.mutating,
       });
     });
+    // This is the only additional dispatch-store round trip.  It is measured
+    // by the injected monotonic test clock and occurs immediately before the
+    // irreversible transport send so a remote CAS revocation cannot race a
+    // locally prepared envelope into the add-in.
+    const revocationCheckStartedAt = this.#clock();
+    const revokedBeforeSend =
+      await this.#readUnregisterTombstone(input.tenantId, input.rsid) !== null;
+    const revocationCheckElapsedMs = Math.max(0, this.#clock() - revocationCheckStartedAt);
+    if (revocationCheckElapsedMs > 0) {
+      // Kept value-free and process-local; no request data enters telemetry.
+      void revocationCheckElapsedMs;
+    }
+    if (revokedBeforeSend) {
+      const waiter = this.#waiters.get(input.correlationId);
+      if (waiter !== undefined) {
+        clearTimeout(waiter.timer);
+        this.#waiters.delete(input.correlationId);
+      }
+      return { outcome: Promise.resolve(this.#indeterminateOutcome(input.mutating)) };
+    }
     try {
       await connection.send(JSON.stringify(envelope));
     } catch {
@@ -1239,7 +1376,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         waiter.resolve(this.#indeterminateOutcome(input.mutating));
       }
     }
-    return await outcome;
+    return { outcome };
   }
 
   public async inspectDispatch(
@@ -1312,6 +1449,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       return { kind: "not_authorized", reason: "session_unregistered" };
     }
+    const normalizedConflicts = await tx.list(GATEWAY_MUTATION_CONFLICT_NAMESPACE);
+    if (
+      normalizedConflicts.some((stored) => {
+        const candidate = stored.value as Record<string, unknown>;
+        return candidate.rsid === expected.rsid && candidate.active === true;
+      })
+    ) {
+      return { kind: "not_authorized", reason: "mutation_hold" };
+    }
     const stored = await tx.read<GatewayJsonValue>(
       GATEWAY_RBP_SESSION_NAMESPACE,
       expected.rsid,
@@ -1344,6 +1490,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
     const record: DurableRbpSession = {
       schema: GATEWAY_RBP_SESSION_NAMESPACE,
+      recordVersion: 1,
       tenantId: connection.auth.actor.tenantId,
       userId: connection.auth.actor.userId,
       deviceId: connection.auth.actor.deviceId,
@@ -1412,6 +1559,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
   ): Promise<void> {
+    await this.#withSessionAuthorization(payload.rsid, async () =>
+      this.#resumeNow(connection, payload),
+    );
+  }
+
+  async #resumeNow(
+    connection: LiveConnection,
+    payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+  ): Promise<void> {
     if (
       await this.#readUnregisterTombstone(
         connection.auth.actor.tenantId,
@@ -1464,7 +1620,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         updatedAtMs: this.#clock(),
       };
     });
+    if (await this.#readUnregisterTombstone(stored.tenantId, stored.rsid) !== null) {
+      throw new GatewayRbpFault("auth", "resume authorization rejected", 403, 4403);
+    }
     await this.#activate(resumed);
+    if (await this.#readUnregisterTombstone(stored.tenantId, stored.rsid) !== null) {
+      this.#active.delete(stored.rsid);
+      throw new GatewayRbpFault("auth", "resume authorization rejected", 403, 4403);
+    }
     await connection.send(
       JSON.stringify({
         v: 1,
@@ -1490,6 +1653,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     payload: SessionUnregister,
   ): Promise<void> {
+    await this.#withSessionAuthorization(payload.rsid, async () =>
+      this.#unregisterNow(connection, payload),
+    );
+  }
+
+  async #unregisterNow(
+    connection: LiveConnection,
+    payload: SessionUnregister,
+  ): Promise<void> {
     const tenantId = connection.auth.actor.tenantId;
     const owner = {
       deviceId: connection.auth.actor.deviceId,
@@ -1511,7 +1683,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         if (
           tombstone.tenantId !== tenantId ||
           !sameTombstoneOwner(tombstone.owner, owner) ||
-          tombstone.reason !== payload.reason
+          tombstone.closedReason !== payload.reason
         ) {
           return { kind: "rejected", reason: "unregister_owner_or_reason_mismatch" } as const;
         }
@@ -1541,15 +1713,87 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
       const nowMs = this.#clock();
       const pending = record.pending;
-      const holdIds: string[] = [];
+      const pendingMutations = pending?.mutationEntries ??
+        pending?.journalRecords.flatMap((journal) =>
+          journal.binding.mutating && journal.binding.mutationScope !== null
+            ? [{
+                invocationId: journal.binding.invocationId,
+                originIdempotencyKey: `${record.rsid}/${journal.binding.invocationId}`,
+                mutationScope: journal.binding.mutationScope,
+              }]
+            : [],
+        ) ?? [];
+      const candidates = normalizedHoldCandidates(record.rsid, pendingMutations);
+      const holdIds: `vh:${string}`[] = [];
+      for (const candidate of candidates) {
+        const conflictKey = `${record.rsid}/${digest(candidate.mutationScopeJcs)}`;
+        const existingConflict = await tx.read<GatewayJsonValue>(
+          GATEWAY_MUTATION_CONFLICT_NAMESPACE,
+          conflictKey,
+        );
+        if (existingConflict !== null) {
+          const value = existingConflict.value as unknown as DurableMutationConflict;
+          if (value.active !== true || typeof value.holdId !== "string") {
+            return { kind: "rejected", reason: "mutation_conflict_corrupt" } as const;
+          }
+          holdIds.push(value.holdId as `vh:${string}`);
+          continue;
+        }
+        const existingHold = await tx.read<GatewayJsonValue>(
+          GATEWAY_MUTATION_HOLD_NAMESPACE,
+          candidate.holdId,
+        );
+        if (existingHold === null) {
+          const hold: DurableMutationHold = {
+            schema: GATEWAY_MUTATION_HOLD_NAMESPACE,
+            tenantId,
+            createdAtMs: nowMs,
+            updatedAtMs: nowMs,
+            recordVersion: 1,
+            holdId: candidate.holdId,
+            rsid: record.rsid,
+            mutationScopeJcs: candidate.mutationScopeJcs,
+            originIdempotencyKeys: candidate.originIdempotencyKeys,
+            state: "active",
+            evidenceIds: [],
+            evidenceDigests: [],
+            resolutionIds: [],
+          };
+          tx.stage({
+            namespace: GATEWAY_MUTATION_HOLD_NAMESPACE,
+            key: hold.holdId,
+            value: asJson(hold),
+            expect: { kind: "absent" },
+          });
+        }
+        const conflict: DurableMutationConflict = {
+          schema: GATEWAY_MUTATION_CONFLICT_NAMESPACE,
+          tenantId,
+          createdAtMs: nowMs,
+          updatedAtMs: nowMs,
+          recordVersion: 1,
+          rsid: record.rsid,
+          scopeDigest: digest(candidate.mutationScopeJcs),
+          holdId: candidate.holdId,
+          mutationScopeJcs: candidate.mutationScopeJcs,
+          active: true,
+        };
+        tx.stage({
+          namespace: GATEWAY_MUTATION_CONFLICT_NAMESPACE,
+          key: conflictKey,
+          value: asJson(conflict),
+          expect: { kind: "absent" },
+        });
+        holdIds.push(candidate.holdId);
+      }
       const journals = pending?.journalRecords.map((journal) => {
         const nonExecutionProven =
           journal.state === "received" && !journal.dispatchMayHaveStarted;
-        const holdId =
-          journal.binding.mutating && !nonExecutionProven
-            ? gatewayUuidV7(nowMs)
-            : null;
-        if (holdId !== null) holdIds.push(holdId);
+        const holdId = journal.binding.mutating && !nonExecutionProven
+          ? candidates.find((candidate) =>
+              candidate.mutationScopeJcs === mutationScopeKey(journal.binding.mutationScope!),
+            )?.holdId ?? null
+          : null;
         return handleJournalSessionUnregister(
           journal,
           nonExecutionProven,
@@ -1560,34 +1804,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       // journal carrier yet.  The durable tombstone still records a normalized
       // hold identity so a possibly dispatched mutation never degrades into a
       // known failure during this pre-WP10 compatibility window.
-      if (pending?.mutating && holdIds.length === 0) {
-        holdIds.push(gatewayUuidV7(nowMs));
-      }
       const nextSessionVersion = record.sessionVersion + 1;
       const pendingDisposition: DurableUnregisterTombstone["pendingDisposition"] =
         holdIds.length > 0 && pending !== null
-          ? {
-              kind: "mutation_indeterminate",
-              correlationId: pending.invocationId,
-              verificationHoldIds: [...new Set(holdIds)].sort(),
-            }
-          : {
-              kind: pending === null ? "none" : "read_closed",
-              correlationId: pending?.invocationId ?? null,
-              verificationHoldIds: [],
-            };
+          ? "mutation_indeterminate"
+          : pending === null ? "none" : "read_closed";
       const journalKind: GatewayVerifiedBridgeJournalEvidence["kind"] =
         holdIds.length > 0 ? "indeterminate" : "known_terminal";
       const tombstone: DurableUnregisterTombstone = {
         schema: GATEWAY_RBP_UNREGISTER_NAMESPACE,
-        version: 1,
+        recordVersion: 1,
         tenantId,
+        createdAtMs: nowMs,
+        updatedAtMs: nowMs,
         rsid: payload.rsid,
+        sessionBindingId: record.sessionBindingId,
         owner,
-        reason: payload.reason,
+        closedReason: payload.reason,
         revokedAtMs: nowMs,
-        byConnectionId: connection.connectionId,
+        acceptedConnectionId: connection.connectionId,
         pendingDisposition,
+        holdIds: [...new Set(holdIds)].sort(),
+        cleanupState: "retained",
       };
       const evidence: readonly DurableDispatchEvidence[] = pending === null || journals.length === 0
         ? record.evidence
@@ -1656,7 +1894,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         observed === null ||
         observed.tenantId !== tenantId ||
         !sameTombstoneOwner(observed.owner, owner) ||
-        observed.reason !== payload.reason
+        observed.closedReason !== payload.reason
       ) {
         throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
       }
@@ -1671,11 +1909,49 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readBack === null ||
       readBack.tenantId !== tenantId ||
       !sameTombstoneOwner(readBack.owner, owner) ||
-      readBack.reason !== payload.reason
+      readBack.closedReason !== payload.reason
     ) {
       throw new GatewayRbpFault(
         "unavailable",
         "unregister tombstone was not durably readable",
+        503,
+        1011,
+      );
+    }
+    const reconciliation = await this.store.transact({ tenantId }, async (tx) => {
+      for (const holdId of readBack.holdIds) {
+        const hold = await tx.read<GatewayJsonValue>(
+          GATEWAY_MUTATION_HOLD_NAMESPACE,
+          holdId,
+        );
+        if (hold === null) return false;
+        const parsed = hold.value as Record<string, unknown>;
+        if (
+          parsed.schema !== GATEWAY_MUTATION_HOLD_NAMESPACE ||
+          parsed.tenantId !== tenantId ||
+          parsed.rsid !== payload.rsid ||
+          parsed.holdId !== holdId ||
+          parsed.state === "cleared"
+        ) return false;
+      }
+      const conflicts = await tx.list(GATEWAY_MUTATION_CONFLICT_NAMESPACE);
+      return readBack.holdIds.every((holdId) =>
+        conflicts.some((stored) => {
+          const conflict = stored.value as Record<string, unknown>;
+          return (
+            conflict.rsid === payload.rsid &&
+            conflict.holdId === holdId &&
+            conflict.active === true
+          );
+        }),
+      );
+    });
+    if (!reconciliation.ok || !reconciliation.value) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        reconciliation.ok
+          ? "unregister hold readback was incomplete"
+          : reconciliation.message,
         503,
         1011,
       );
@@ -1941,6 +2217,54 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
+  async #hasUnresolvedAdmission(
+    tenantId: string,
+    rsid: string,
+  ): Promise<boolean> {
+    const result = await this.store.transact({ tenantId }, async (tx) => {
+      const tombstone = await tx.read<GatewayJsonValue>(
+        GATEWAY_RBP_UNREGISTER_NAMESPACE,
+        rsid,
+      );
+      if (tombstone !== null) return true;
+      const marker = await tx.read<GatewayJsonValue>(
+        GATEWAY_HOLD_CUTOVER_NAMESPACE,
+        rsid,
+      );
+      const conflicts = await tx.list(GATEWAY_MUTATION_CONFLICT_NAMESPACE);
+      const normalizedUnresolved = conflicts.some((stored) => {
+        const candidate = stored.value as Record<string, unknown>;
+        return candidate.rsid === rsid && candidate.active === true;
+      });
+      if (normalizedUnresolved || marker !== null) return normalizedUnresolved;
+
+      // Pre-WP10 is a legacy-union authority: unresolved state in either
+      // representation wins.  Corrupt legacy data is therefore a denial.
+      const session = await tx.read<GatewayJsonValue>(
+        GATEWAY_RBP_SESSION_NAMESPACE,
+        rsid,
+      );
+      const recovery = await tx.read<GatewayJsonValue>(
+        GATEWAY_RECOVERY_NAMESPACE,
+        rsid,
+      );
+      const legacyPending = session?.value as unknown as { pending?: { mutating?: unknown } } | undefined;
+      if (legacyPending?.pending?.mutating === true) return true;
+      if (recovery === null) return false;
+      const ledger = (recovery.value as Record<string, unknown>).ledger;
+      if (ledger === null || typeof ledger !== "object" || Array.isArray(ledger)) return true;
+      const holds = (ledger as Record<string, unknown>).holds;
+      return !Array.isArray(holds) || holds.some((hold) =>
+        hold !== null && typeof hold === "object" &&
+        (hold as Record<string, unknown>).state !== "cleared",
+      );
+    });
+    if (!result.ok) {
+      throw new GatewayRbpFault("unavailable", result.message, 503, 1011);
+    }
+    return result.value;
+  }
+
   async #readSession(tenantId: string, rsid: string): Promise<DurableRbpSession> {
     const result = await this.store.transact({ tenantId }, async (tx) =>
       tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid),
@@ -1964,13 +2288,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
       if (stored === null) throw new Error("unknown durable rsid");
       const next = mutate(stored.value as unknown as DurableRbpSession);
+      const current = stored.value as unknown as DurableRbpSession;
+      const version = (current.recordVersion ?? stored.version) + 1;
       tx.stage({
         namespace: GATEWAY_RBP_SESSION_NAMESPACE,
         key: rsid,
-        value: asJson(next),
+        value: asJson({ ...next, recordVersion: version }),
         expect: { kind: "version", version: stored.version },
       });
-      return next;
+      return { ...next, recordVersion: version };
     });
     if (!result.ok) throw new GatewayRbpFault("unavailable", result.message, 503, 1011);
     return result.value;

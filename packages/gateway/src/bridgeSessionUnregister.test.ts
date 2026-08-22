@@ -315,7 +315,8 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     );
     expect(readTombstone?.value).toMatchObject({
-      pendingDisposition: { kind: "read_closed", verificationHoldIds: [] },
+      pendingDisposition: "read_closed",
+      holdIds: [],
     });
 
     const second = await register(authority);
@@ -330,12 +331,19 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     );
     expect(tombstones.at(-1)?.value).toMatchObject({
-      pendingDisposition: {
-        kind: "mutation_indeterminate",
-        correlationId: expect.any(String),
-        verificationHoldIds: [expect.any(String)],
-      },
+      pendingDisposition: "mutation_indeterminate",
+      holdIds: [expect.stringMatching(/^vh:[0-9a-f]{64}$/)],
+      recordVersion: 1,
+      sessionBindingId: expect.any(String),
+      acceptedConnectionId: second.connectionId,
+      cleanupState: "retained",
     });
+    expect(store.snapshot().records.some(
+      (record) => record.namespace === "gateway.mutation-hold/v1",
+    )).toBe(true);
+    expect(store.snapshot().records.some(
+      (record) => record.namespace === "gateway.mutation-conflict/v1",
+    )).toBe(true);
   });
 
   it("adds a tombstone beside a legacy v1 session row without requiring v2 normalization", async () => {
@@ -358,6 +366,6 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       GATEWAY_RBP_UNREGISTER_NAMESPACE,
     ]);
     expect(rows.find((record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE)?.value)
-      .toMatchObject({ version: 1, tenantId: TENANT_ID, rsid: session.rsid });
+      .toMatchObject({ recordVersion: 1, tenantId: TENANT_ID, rsid: session.rsid });
   });
 });
