@@ -2276,19 +2276,282 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     },
   );
 
-  it("accepts exact normalized-only cutover authority after legacy deletion and restart", async () => {
+  it("retains nonempty WP-10 import proof after real legacy deletion and restart", async () => {
     const store = new ControlledStoreHarness();
     const original = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(original);
     await original.open();
     const session = await register(original);
-    seedNormalizedHold(
+    const observations = new Map<string, GatewayBridgeEvidenceLookup>();
+    const bridgeEvidence: GatewayDurableBridgeEvidencePort = {
+      inspectDispatch: async (_tx, expected) =>
+        observations.get(expected.envelopeDigest) ?? {
+          kind: "not_durable_yet" as const,
+        },
+      authorizeDispatchTarget: async (tx, expected) =>
+        original.authorizeDispatchTarget(tx, expected),
+      authorizeResumeTarget: async (tx, expected) =>
+        original.authorizeResumeTarget(tx, expected),
+    };
+    const recovery = await createComposedRecovery(
       store,
-      session.rsid,
-      { kind: "document", document_id: "doc-normalized-only" },
-      [`${session.rsid}/${id()}`],
+      original,
+      bridgeEvidence,
+      "postcondition_verified",
     );
+    const attemptId = id();
+    await recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId,
+    });
+    const receiptFor = (pending: GatewayRecoveryPendingDispatch, version: number) => ({
+      source: "durable_rbp_sequence" as const,
+      rsid: session.rsid,
+      sessionBindingId: pending.sessionBindingId,
+      acceptedConnectionId: pending.preparedConnectionId,
+      authorizedSessionVersion: pending.authorizedSessionVersion,
+      gatewaySequence: pending.gatewaySequence,
+      cumulativeAck: pending.gatewaySequence,
+      envelopeDigest: pending.envelopeDigest,
+      durableSequenceVersion: version,
+      acceptedAtMs: Date.now(),
+    });
+    const installActive = async (
+      scope: MutationScope,
+      label: string,
+    ): Promise<{
+      readonly holdId: string;
+      readonly origin: string;
+      readonly scope: MutationScope;
+    }> => {
+      const mutationRequest = request(session.rsid, true, scope);
+      const draft = original.buildEnvelope(mutationRequest);
+      const prepared = await recovery.authority.prepareMutationDispatch({
+        tenantId: TENANT_ID,
+        attemptId,
+        sessionBindingId: draft.sessionBindingId,
+        connectionId: draft.connectionId,
+        envelope: draft.envelope,
+        expected: draft.expected,
+      });
+      if (prepared.kind !== "prepared") {
+        throw new Error(`${label} hold was not prepared: ${prepared.kind}`);
+      }
+      const origin = `${session.rsid}/${mutationRequest.context.invocationId}`;
+      const holdId = makeMutationHoldId(session.rsid, scope, [origin]);
+      observations.set(prepared.dispatch.envelopeDigest, {
+        kind: "found",
+        observation: {
+          acceptance: receiptFor(prepared.dispatch, 1),
+          journal: {
+            kind: "indeterminate",
+            rsid: session.rsid,
+            sessionBindingId: prepared.dispatch.sessionBindingId,
+            envelopeDigest: prepared.dispatch.envelopeDigest,
+            journalRecords: prepared.dispatch.journalRecords.map((journal) =>
+              markJournalIndeterminate(markJournalExecuting(journal), holdId),
+            ),
+            batchTerminal: null,
+            durableJournalVersion: 1,
+            recordedAtMs: Date.now(),
+          },
+        },
+      });
+      const reconciled = await recovery.authority.reconcilePendingDispatch({
+        tenantId: TENANT_ID,
+        rsid: session.rsid,
+        envelopeDigest: prepared.dispatch.envelopeDigest,
+      });
+      if (reconciled.kind !== "indeterminate_recorded") {
+        throw new Error(`${label} hold was not installed: ${reconciled.kind}`);
+      }
+      return { holdId, origin, scope };
+    };
+    const cleared = await installActive(
+      { kind: "document", document_id: "doc-cleared-history" },
+      "cleared",
+    );
+    const verificationRequest = request(session.rsid, false);
+    const verificationDraft = original.buildEnvelope(verificationRequest);
+    const verification = {
+      hold_id: cleared.holdId,
+      mutation_scope: cleared.scope,
+      purpose: "resolve_indeterminate" as const,
+    };
+    const verificationEnvelope = {
+      ...verificationDraft.envelope,
+      payload: { ...verificationDraft.envelope.payload, verification },
+    } as unknown as InvokeEnvelope;
+    const verificationPrepared = await recovery.authority.prepareVerificationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: verificationDraft.sessionBindingId,
+      connectionId: verificationDraft.connectionId,
+      envelope: verificationEnvelope,
+      expected: {
+        rsid: session.rsid,
+        invocationId: verificationRequest.context.invocationId,
+        binding: {
+          ...verificationDraft.expected.bindings[0]!,
+          verification,
+        },
+      },
+    });
+    if (verificationPrepared.kind !== "prepared") {
+      throw new Error(`selected evidence was not prepared: ${verificationPrepared.kind}`);
+    }
+    observations.set(verificationPrepared.dispatch.envelopeDigest, {
+      kind: "found",
+      observation: {
+        acceptance: receiptFor(verificationPrepared.dispatch, 2),
+        journal: {
+          kind: "known_terminal",
+          rsid: session.rsid,
+          sessionBindingId: verificationPrepared.dispatch.sessionBindingId,
+          envelopeDigest: verificationPrepared.dispatch.envelopeDigest,
+          journalRecords: verificationPrepared.dispatch.journalRecords.map(
+            (journal) => recordJournalTerminal(markJournalExecuting(journal), {
+              status: "completed",
+              resultDigest: makeParamsDigest({ selected: true }),
+              payloadRetained: true,
+              payload: { selected: true },
+            }),
+          ),
+          batchTerminal: null,
+          durableJournalVersion: 2,
+          recordedAtMs: Date.now(),
+        },
+      },
+    });
+    await recovery.authority.reconcilePendingDispatch({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      envelopeDigest: verificationPrepared.dispatch.envelopeDigest,
+    });
+    await recovery.authority.recordVerificationEvidence({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      envelopeDigest: verificationPrepared.dispatch.envelopeDigest,
+    });
+    const planned = await recovery.authority.planRecoveryClearances({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      mutationScopes: [cleared.scope],
+      decisions: [{
+        holdId: cleared.holdId,
+        decision: "postcondition_verified",
+      }],
+    });
+    if (planned.kind !== "planned") {
+      throw new Error(`selected clearance was not planned: ${planned.kind}`);
+    }
+    const clearanceRequest = request(session.rsid, true, cleared.scope);
+    const clearanceDraft = original.buildEnvelope(clearanceRequest);
+    const clearanceEnvelope = {
+      ...clearanceDraft.envelope,
+      payload: {
+        ...clearanceDraft.envelope.payload,
+        recovery_clearances: planned.plan.clearances,
+      },
+    } as unknown as InvokeEnvelope;
+    const clearancePrepared = await recovery.authority.prepareMutationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: clearanceDraft.sessionBindingId,
+      connectionId: clearanceDraft.connectionId,
+      envelope: clearanceEnvelope,
+      expected: {
+        ...clearanceDraft.expected,
+        bindings: clearanceDraft.expected.bindings.map((binding) => ({
+          ...binding,
+          recoveryClearances: planned.plan.clearances,
+        })),
+        recoveryClearances: planned.plan.clearances,
+      },
+    });
+    if (clearancePrepared.kind !== "prepared") {
+      throw new Error(`selected clearance was not prepared: ${clearancePrepared.kind}`);
+    }
+    observations.set(clearancePrepared.dispatch.envelopeDigest, {
+      kind: "found",
+      observation: {
+        acceptance: receiptFor(clearancePrepared.dispatch, 3),
+        journal: {
+          kind: "known_terminal",
+          rsid: session.rsid,
+          sessionBindingId: clearancePrepared.dispatch.sessionBindingId,
+          envelopeDigest: clearancePrepared.dispatch.envelopeDigest,
+          journalRecords: clearancePrepared.dispatch.journalRecords.map(
+            (journal) => recordJournalTerminal(markJournalExecuting(journal), {
+              status: "completed",
+              resultDigest: makeParamsDigest({ cleared: true }),
+              payloadRetained: true,
+              payload: { cleared: true },
+            }),
+          ),
+          batchTerminal: null,
+          durableJournalVersion: 3,
+          recordedAtMs: Date.now(),
+        },
+      },
+    });
+    await expect(recovery.authority.reconcilePendingDispatch({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      envelopeDigest: clearancePrepared.dispatch.envelopeDigest,
+    })).resolves.toMatchObject({
+      kind: "terminal_recorded",
+      clearedHoldIds: [cleared.holdId],
+    });
+    const active = await installActive(
+      { kind: "document", document_id: "doc-active-history" },
+      "active",
+    );
+    const recoveryRecord = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.recovery-authority/v1" &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    const legacyHolds = ((recoveryRecord.ledger as GatewayJsonObject).holds ?? []) as GatewayJsonObject[];
+    const clearedRecord = legacyHolds.find((hold) => hold.holdId === cleared.holdId)!;
+    const activeRecord = legacyHolds.find((hold) => hold.holdId === active.holdId)!;
+    seedNormalizedHold(store, session.rsid, active.scope, [active.origin], {
+      index: false,
+      hold: (value) => ({ ...value, state: activeRecord.state }),
+    });
+    seedNormalizedHold(store, session.rsid, cleared.scope, [cleared.origin], {
+      index: false,
+      hold: (value) => ({
+        ...value,
+        state: clearedRecord.state,
+        resolutionIds: [
+          (clearedRecord.resolution as GatewayJsonObject).resolutionId,
+        ],
+      }),
+      conflict: (value) => ({ ...value, active: false }),
+    });
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+      ...(value as GatewayJsonObject),
+      normalizedConflictIndex: {
+        version: 1,
+        state: "complete",
+        scopeDigests: [scopeDigest(active.scope)],
+      },
+    }));
     seedValidCutover(store, session.rsid);
+    const retainedMarker = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.hold-cutover/v1" &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    expect(retainedMarker).toMatchObject({
+      importedHoldCount: 2,
+      importedConflictCount: 2,
+      importedResolutionCount: 1,
+      legacyDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+    });
+    store.remove(TENANT_ID, "gateway.recovery-authority/v1", session.rsid);
     await original.detach(session.connectionId);
     const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(restarted);
@@ -2298,11 +2561,14 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       restartedConnection.connectionId,
       resume(session.rsid, session.resumeToken),
     );
-    const execution = restarted.createExecutor().execute(
+    await expect(
+      restarted.createExecutor().execute(request(session.rsid, true, active.scope)),
+    ).resolves.toMatchObject({ error: { code: "executor_unavailable" } });
+    const disjoint = restarted.createExecutor().execute(
       request(
         session.rsid,
         true,
-        { kind: "document", document_id: "doc-disjoint-after-cutover" },
+        { kind: "document", document_id: "doc-disjoint-after-delete" },
       ),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -2313,10 +2579,11 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       restartedConnection.connectionId,
       unregister(session.rsid),
     );
-    await expect(execution).resolves.toMatchObject({ state: "failed" });
+    await expect(disjoint).resolves.toMatchObject({ state: "failed" });
+    await recovery.port.close();
   });
 
-  it.each(["count", "resolution", "dangling"] as const)(
+  it.each(["marker", "dangling"] as const)(
     "fails closed for normalized-only cutover disagreement: %s",
     async (target) => {
       const store = new ControlledStoreHarness();
@@ -2331,20 +2598,10 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
         [`${session.rsid}/${id()}`],
       );
       seedValidCutover(store, session.rsid);
-      if (target === "count") {
+      if (target === "marker") {
         store.rewrite(TENANT_ID, "gateway.hold-cutover/v1", session.rsid, (value) => ({
           ...(value as GatewayJsonObject),
-          importedHoldCount: 2,
-        }));
-      } else if (target === "resolution") {
-        const resolutionId = id();
-        store.rewrite(TENANT_ID, "gateway.mutation-hold/v1", seeded.holdId, (value) => ({
-          ...(value as GatewayJsonObject),
-          resolutionIds: [resolutionId],
-        }));
-        store.rewrite(TENANT_ID, "gateway.hold-cutover/v1", session.rsid, (value) => ({
-          ...(value as GatewayJsonObject),
-          importedResolutionCount: 1,
+          rsid: "different-rsid",
         }));
       } else {
         store.remove(TENANT_ID, "gateway.mutation-hold/v1", seeded.holdId);

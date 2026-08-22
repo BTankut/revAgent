@@ -4430,10 +4430,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (index.state !== "complete") {
       throw new Error("cutover marker requires a complete normalized index");
     }
-    const proof = legacyCutoverFacts(record, legacyHolds);
-    if (marker.legacyDigest !== proof.legacyDigest) {
-      throw new Error("cutover marker does not match canonical legacy facts");
-    }
     const indexedPairs = new Map<string, {
       readonly hold: DurableMutationHold;
       readonly conflict: DurableMutationConflict;
@@ -4452,21 +4448,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       indexedPairs.set(scopeDigest, pair);
     }
     if (!legacyAuthorityExists) {
-      const normalizedResolutionCount = [...indexedPairs.values()].reduce(
-        (count, pair) => count + pair.hold.resolutionIds.length,
-        0,
-      );
-      if (
-        marker.importedHoldCount !== indexedPairs.size ||
-        marker.importedConflictCount !== indexedPairs.size ||
-        marker.importedResolutionCount !== normalizedResolutionCount ||
-        normalizedResolutionCount !== 0
-      ) {
-        throw new Error(
-          "normalized-only cutover counts or resolution records are incomplete",
-        );
-      }
       return;
+    }
+    const proof = legacyCutoverFacts(record, legacyHolds);
+    if (marker.legacyDigest !== proof.legacyDigest) {
+      throw new Error("cutover marker does not match canonical legacy facts");
     }
     if (
       marker.importedHoldCount !== proof.importedHoldCount ||

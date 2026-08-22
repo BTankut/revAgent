@@ -421,10 +421,12 @@ hold/conflict/resolution counts must equal those bounded facts. The session inde
 legacy hold must have an identical normalized pair, every imported active scope must be indexed, every imported
 cleared scope must be absent from the active index, and any additional indexed pair must post-date `cutoverAtMs`.
 While any bounded legacy row exists, only that semantic `normalized_authoritative` proof suppresses legacy reads.
-After verified legacy deletion, normalized-only authority is accepted only when the marker remains schema-valid,
-the index is complete, every indexed hold/conflict pair is exact, imported hold/conflict/resolution counts equal
-those pairs, and every resolution id has its required durable record; a dangling id, missing pair, or mismatch
-fails closed. WP-02 does not write the marker, define v2 normalization, clear holds, or delete legacy authority.
+After exact legacy-row absence is verified, the strict schema-valid WP-10 marker is retained import proof: WP-02
+does not recompute an empty `legacyDigest` or reconstruct deleted cleared/resolved history. It requires a complete
+normalized active-conflict index and an exact hold/conflict pair for every indexed scope; a dangling or mismatched
+active pair fails closed. The marker's imported hold/conflict/resolution counts and nonempty digest remain
+type/provenance-validated fields, while verification of total deleted history and resolution records belongs to
+WP-10. WP-02 does not write the marker, define v2 normalization, clear holds, or delete legacy authority.
 
 The generic durable target check validates only tombstone/fence, binding, sequence, lifecycle, and capability.
 It never applies a session-wide hold denial because it does not know the trusted operation scope. Hold union
