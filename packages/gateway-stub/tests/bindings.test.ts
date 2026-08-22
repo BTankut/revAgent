@@ -419,6 +419,45 @@ for (const [binding, connect] of [
 }
 
 describe("opening and proxy fault controls", () => {
+  it("closes an actively revoked WSS credential with 4403 after durable session invalidation", async () => {
+    const handle = await start("active-wss-credential-revocation");
+    const socket = await openRawWebSocket(handle);
+    try {
+      socket.send(JSON.stringify(hello(330)));
+      await expect(nextRawMessage(socket)).resolves.toMatchObject({
+        type: "hello_ack",
+      });
+      socket.send(JSON.stringify(controlEnvelope(
+        "session_register",
+        sessionRegister(),
+        331,
+      )));
+      const registered = await nextRawMessage(socket) as Extract<
+        RbpEnvelope,
+        { type: "session_registered" }
+      >;
+      const closed = nextClose(socket);
+
+      const response = await postControl(handle, {
+        action: "set_auth_status",
+        token: TOKEN,
+        status: "revoked",
+      });
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        status: "revoked",
+        disconnected: [expect.any(String)],
+      });
+      await expect(closed).resolves.toMatchObject({ code: 4403 });
+      expect(handle.core.snapshot().sessions[registered.payload.rsid]).toMatchObject({
+        revoked: true,
+        liveness: "disconnected",
+      });
+    } finally {
+      if (socket.readyState !== WebSocket.CLOSED) socket.terminate();
+    }
+  });
+
   it("rejects bridge-claimed seat and user authority on authenticated WSS paths without retaining values", async () => {
     const handle = await start("authorization-audit-server-path");
     const spoofVectors = [
@@ -803,8 +842,9 @@ describe("opening and proxy fault controls", () => {
       expect(await queuedHold.json()).toEqual({ queued: true });
       const bytes = Buffer.from("hello world", "utf8");
       const chunks = [bytes.subarray(0, 5), bytes.subarray(5)];
-      const pendingChunkPosts = chunks.map(async (chunk, chunkIndex) =>
-        peer.send({
+      const pendingChunkPosts: Array<Promise<void>> = [];
+      for (const [chunkIndex, chunk] of chunks.entries()) {
+        pendingChunkPosts.push(peer.send({
           v: 1,
           type: "partial",
           id: uuid7(113 + chunkIndex),
@@ -822,7 +862,14 @@ describe("opening and proxy fault controls", () => {
             data: chunk.toString("base64"),
           },
         }));
-      await waitFor(() => handle.core.snapshot().runtime.heldInboundFrames === 2);
+        // Capture the frozen sequence in wire order. Concurrent POST startup
+        // can invert seq 1/2 before the hold controller owns either request,
+        // turning this fault-control test into a scheduler race.
+        await waitFor(
+          () => handle.core.snapshot().runtime.heldInboundFrames ===
+            chunkIndex + 1,
+        );
+      }
       expect(handle.core.snapshot().sessions[rsid]).toMatchObject({
         inFlight: { correlationId: invocationId },
         sequence: { lastRxSeq: 0 },

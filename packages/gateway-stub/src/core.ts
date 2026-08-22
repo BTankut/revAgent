@@ -104,6 +104,7 @@ import type {
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const PENDING_HOLD_MS = 10 * 60 * 1000;
 const AUTHORIZATION_AUDIT_CAPACITY = 256;
+const SHA256_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const RESERVED_IDENTITY_FIELDS = new Set([
   "tenant_id",
   "user_id",
@@ -387,11 +388,17 @@ export class GatewayStubCore {
 
   authenticate(token: string): AuthenticatedDevice {
     const identity = this.tokenTable.get(token);
-    if (identity === undefined || identity.status === "revoked") {
+    if (identity === undefined) {
       throw new GatewayStubFault("device credential rejected", "auth", 4401);
     }
-    if (identity.status === "seat_denied") {
-      throw new GatewayStubFault("device seat authorization rejected", "auth", 4403);
+    if (identity.status !== "active") {
+      throw new GatewayStubFault(
+        identity.status === "revoked"
+          ? "device credential revoked"
+          : "device seat authorization rejected",
+        "auth",
+        4403,
+      );
     }
     return cloneIdentity(identity, token);
   }
@@ -425,17 +432,38 @@ export class GatewayStubCore {
     return { deviceId: grant.deviceId, deviceToken: grant.deviceToken };
   }
 
-  setAuthStatus(token: string, status: AuthStatus): string[] {
+  async setAuthStatus(token: string, status: AuthStatus): Promise<string[]> {
     const identity = this.tokenTable.get(token);
     if (identity === undefined) {
       throw new Error("unknown static test token");
     }
+    const affected = [...this.connections.entries()]
+      .filter(([, runtime]) => runtime.transport.device.deviceId === identity.deviceId)
+      .map(([connectionId]) => connectionId);
+    if (status !== "active") {
+      const now = this.clock.nowMs();
+      const revokedRsids = await this.store.update((draft) => {
+        const revoked: string[] = [];
+        for (const session of Object.values(draft.sessions)) {
+          if (session.deviceId !== identity.deviceId || session.revoked) continue;
+          if (session.inFlight !== null) this.expireInFlight(draft, session, now);
+          session.revoked = true;
+          session.liveness = "disconnected";
+          session.disconnectedAtMs = now;
+          session.lifecycle = advanceSession(session.lifecycle, {
+            type: "unregister",
+            reason: "operator_requested",
+          });
+          revoked.push(session.rsid);
+        }
+        return revoked;
+      });
+      for (const rsid of revokedRsids) this.sessionBindings.delete(rsid);
+    }
     identity.status = status;
-    const affected: string[] = [];
-    for (const [connectionId, runtime] of this.connections) {
+    for (const runtime of this.connections.values()) {
       if (runtime.transport.device.deviceId === identity.deviceId) {
         runtime.transport.device.status = status;
-        affected.push(connectionId);
       }
     }
     return affected;
@@ -472,6 +500,22 @@ export class GatewayStubCore {
     if (!secureStringEqual(hello.payload.device_id, runtime.transport.device.deviceId)) {
       this.recordAuthorizationAudit(runtime, "hello", "rejected", "connection_or_session_authority", []);
       throw new GatewayStubFault("hello device_id does not match authenticated enrollment", "auth", 4403);
+    }
+    const helloFingerprint = hello.payload.machine.fingerprint;
+    if (
+      typeof helloFingerprint !== "string" ||
+      !SHA256_PATTERN.test(helloFingerprint) ||
+      !secureStringEqual(
+        helloFingerprint,
+        runtime.transport.device.machineFingerprint,
+      )
+    ) {
+      this.recordAuthorizationAudit(runtime, "hello", "rejected", "machine_fingerprint_mismatch", []);
+      throw new GatewayStubFault(
+        "hello machine fingerprint does not match enrollment",
+        "auth",
+        4403,
+      );
     }
 
     let selected: number;
@@ -1491,6 +1535,10 @@ export class GatewayStubCore {
         session.tenantId !== runtime.transport.device.tenantId ||
         session.userId !== runtime.transport.device.userId ||
         session.seatId !== runtime.transport.device.seatId ||
+        !secureStringEqual(
+          session.machine.fingerprint,
+          runtime.transport.device.machineFingerprint,
+        ) ||
         session.resumeExpiresAtMs <= now ||
         !secureStringEqual(session.resumeToken, payload.resume_token)
       ) {
@@ -2384,7 +2432,7 @@ export class GatewayStubCore {
       throw new GatewayStubFault(
         "device credential is no longer active",
         "auth",
-        runtime.transport.device.status === "seat_denied" ? 4403 : 4401,
+        4403,
       );
     }
     return runtime;

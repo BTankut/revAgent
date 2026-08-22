@@ -72,6 +72,7 @@ internal sealed class WorkerAddinSessionCatalog :
         _localSessionKeyLookup;
     private readonly string _bridgeVersion;
     private readonly string _hostname;
+    private readonly RbpCredentialClaimBinding? _credentialClaims;
 
     /// <summary>
     /// Receives the evidence of every discovery pass. Discovery computes an
@@ -90,8 +91,6 @@ internal sealed class WorkerAddinSessionCatalog :
     private readonly ConcurrentDictionary<string, byte> _bindingsInFlight =
         new(StringComparer.Ordinal);
 
-    private string? _machineFingerprint;
-
     internal WorkerAddinSessionCatalog(
         AddinDiscovery discovery,
         AddinSessionRouter router,
@@ -100,7 +99,8 @@ internal sealed class WorkerAddinSessionCatalog :
         Func<string, CancellationToken, Task<string?>> localSessionKeyLookup,
         string bridgeVersion,
         string? hostname = null,
-        Action<AddinDiscoveryEvidence>? onDiscovered = null)
+        Action<AddinDiscoveryEvidence>? onDiscovered = null,
+        RbpCredentialClaimBinding? credentialClaims = null)
     {
         _onDiscovered = onDiscovered;
         _discovery = discovery ??
@@ -117,6 +117,7 @@ internal sealed class WorkerAddinSessionCatalog :
         _hostname = string.IsNullOrWhiteSpace(hostname)
             ? Environment.MachineName
             : hostname;
+        _credentialClaims = credentialClaims;
     }
 
     /// <summary>
@@ -276,11 +277,6 @@ internal sealed class WorkerAddinSessionCatalog :
 
     private string ReadMachineFingerprint()
     {
-        if (_machineFingerprint is { Length: > 0 } cached)
-        {
-            return cached;
-        }
-
         using BridgeGatewayCredential credential =
             _credentials().GetRequired();
         if (!FingerprintPattern.IsMatch(credential.MachineFingerprint))
@@ -291,8 +287,11 @@ internal sealed class WorkerAddinSessionCatalog :
                 "sha256 digest.");
         }
 
-        _machineFingerprint = credential.MachineFingerprint;
-        return _machineFingerprint;
+        return _credentialClaims?.RequireSessionClaim(
+                   credential.DeviceId,
+                   credential.DeviceToken.Reveal(),
+                   credential.MachineFingerprint) ??
+               credential.MachineFingerprint;
     }
 
     private RbpLocalSessionSnapshot? TryProject(
