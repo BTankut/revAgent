@@ -1,16 +1,17 @@
 {
   "schema": "revagent-remediation-artifact-manifest/v1",
   "work_package": "WP-02",
-  "cycle": "egress-fence-rework",
+  "cycle": "egress-fence-rework-cycle-3",
   "base_sha": "e2f3d52ff19eac01f93ff7060965f213f8625486",
+  "cycle_3_base_sha": "420a0344b7f5033e6c57787fe39bdf6643be6f6d",
   "runtime": {
     "node": "v24.19.0",
     "npm_config_ignore_scripts": "false",
     "lifecycle_override_scope": "process"
   },
   "final_results": {
-    "focused_unregister": "58 passed",
-    "gateway": "42 files passed; 571 tests passed; 5 skipped",
+    "focused_unregister": "72 passed",
+    "gateway": "42 files passed; 585 tests passed; 5 skipped",
     "protocol": "303 tests passed",
     "protocol_conformance": "success"
   },
@@ -45,6 +46,26 @@
     { "file": "29-gateway-full-test-candidate.log", "exit": 0, "sha256": "c37ca20f04020909eccc00fdd38f5e64d768285c56f9e77e8d01e55c2754ba9d", "status": "superseded" },
     { "file": "30-gateway-typecheck-final-candidate.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "candidate-pass" },
     { "file": "31-gateway-lint-final-candidate.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "candidate-pass" },
-    { "file": "32-gateway-full-test-final-candidate.log", "exit": 0, "sha256": "2d20d2152f2b001b137c5dee0352b342d901b2d3b925128f208c7c5276288755", "status": "candidate-pass" }
+    { "file": "32-gateway-full-test-final-candidate.log", "exit": 0, "sha256": "2d20d2152f2b001b137c5dee0352b342d901b2d3b925128f208c7c5276288755", "status": "superseded" },
+    { "file": "33-cycle3-typecheck-structural.log", "exit": 2, "sha256": "79ef438938e313afc5b113bba07a4298b57eb5102213b4c1b88b33f0c9c96e87", "status": "superseded" },
+    { "file": "34-cycle3-typecheck-structural-rerun.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "35-cycle3-focused-initial.log", "exit": 1, "sha256": "008de8dbbb391f3f85bd1d7461fe0d9dc338f7c15cd9894300693f712690fdb0", "status": "superseded" },
+    { "file": "36-cycle3-typecheck-test-adjust.log", "exit": 2, "sha256": "188f6c5693c1bbb6d5a2b7514c9c5cc69a5b8d74f1a69921b51e0c2b70142e35", "status": "superseded" },
+    { "file": "38-cycle3-typecheck-test-adjust-rerun.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "39-cycle3-focused-adjust-rerun.log", "exit": 1, "sha256": "24e6393e5219ce5c5cdea50490797ca8c666d72b10a75355523a998ffdef45c3", "status": "superseded" },
+    { "file": "40-cycle3-focused-baseline-green.log", "exit": 0, "sha256": "c6deb05d01f78ea3414697910d87ba85f6df98feb9fc6d870d1d9ae2d829b22a", "status": "pass" },
+    { "file": "41-cycle3-typecheck-new-oracles.log", "exit": 2, "sha256": "559c23e7cb926d4d5460220f0cdc6c4e11127158b1a5b68ba6b3ea803db9ae50", "status": "superseded" },
+    { "file": "42-cycle3-typecheck-new-oracles-rerun.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "43-cycle3-focused-new-oracles.log", "exit": 1, "sha256": "0afce0834a986372ce99dfcb00b3640206934c56b48ceee0a94c3d9ef89d6efc", "status": "superseded" },
+    { "file": "44-cycle3-typecheck-oracles.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "45-cycle3-focused-oracles.log", "exit": 0, "sha256": "4e185f50b8e3672d57bab7ebab215d796a79ec08c1feb426c23f790ebe946370", "status": "pass" },
+    { "file": "46-cycle3-typecheck-complete.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "candidate-pass" },
+    { "file": "47-cycle3-focused-complete.log", "exit": 0, "sha256": "b3f99f1a2dd61f7aff1fa9aead0927c3d0772e769578cdbe8cc0d0c8e595d22c", "status": "candidate-pass" },
+    { "file": "48-cycle3-gateway-lint.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "candidate-pass" },
+    { "file": "49-cycle3-gateway-full-test.log", "exit": 0, "sha256": "f4b7b58f67a85797cddec964115b5140f8845338e73505c5381d193801baaa12", "status": "candidate-pass" },
+    { "file": "50-cycle3-protocol-typecheck.log", "exit": 0, "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc", "status": "candidate-pass" },
+    { "file": "51-cycle3-protocol-lint.log", "exit": 0, "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27", "status": "candidate-pass" },
+    { "file": "52-cycle3-protocol-full-test.log", "exit": 0, "sha256": "cab48915f5d933052e096ae21db34fdd3a1cb0f534e72cfb8b92e1f22b100076", "status": "candidate-pass" },
+    { "file": "53-cycle3-protocol-conformance.log", "exit": 0, "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c", "status": "candidate-pass" }
   ]
 }

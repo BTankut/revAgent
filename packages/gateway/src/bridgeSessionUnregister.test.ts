@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
 
 import {
+  canonicalizeJson,
   makeMutationHoldId,
+  makeParamsDigest,
+  markJournalExecuting,
+  markJournalIndeterminate,
   mutationScopeKey,
   type HelloEnvelope,
   type InvokeEnvelope,
+  type JsonValue,
   type MutationScope,
   type RbpEnvelope,
   type SessionRegisteredEnvelope,
@@ -22,12 +27,17 @@ import {
   type BridgeConnectionChannel,
 } from "./bridgeSession.js";
 import type {
+  GatewayAtomicBatchExecutorRequest,
   GatewayExecutorRequest,
   GatewayJsonObject,
   GatewayJsonValue,
 } from "./dispatch.js";
 import { gatewayUuidV7 } from "./identifiers.js";
-import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
+import {
+  GatewayRecoveryAuthority,
+  type GatewayDurableBridgeEvidencePort,
+  type GatewayRecoveryPendingDispatch,
+} from "./recoveryAuthority.js";
 import {
   GATEWAY_STORE_CONTRACT_VERSION,
   type GatewayProtocolStore,
@@ -90,7 +100,7 @@ function identity(tenantId = TENANT_ID): IdentityPort {
         actor: { type: "device", tenantId, ...actor },
         connectionId: input.connectionId,
         deviceStatus: "active",
-        grantedSessionCapabilities: ["partial_progress"],
+        grantedSessionCapabilities: ["partial_progress", "batch_atomic"],
         deviceTokenDigest: tokenDigest(authenticatedToken),
       };
       return { ok: true as const, value: context };
@@ -106,7 +116,7 @@ function hello(deviceId = DEVICE_ID): HelloEnvelope {
     payload: {
       min_protocol: 1,
       max_protocol: 1,
-      capabilities: ["partial_progress"],
+      capabilities: ["partial_progress", "batch_atomic"],
       bridge_version: "wp02-unregister-test",
       device_id: deviceId,
       machine: { hostname: "petrucci", os: "windows" },
@@ -131,7 +141,7 @@ function registration(): Extract<RbpEnvelope, { type: "session_register" }> {
       revit: { version: "2022", build: "fixture", pid: 4321 },
       addin_version: "wp02-unregister-test",
       result_contract_version: 1,
-      session_capabilities: ["partial_progress"],
+      session_capabilities: ["partial_progress", "batch_atomic"],
       bridge_version: "wp02-unregister-test",
       documents: [],
       port: 48884,
@@ -222,6 +232,38 @@ async function register(authority: GatewayBridgeSessionAuthority) {
   };
 }
 
+async function createComposedRecovery(
+  store: ControlledStoreHarness,
+  bridge: GatewayBridgeSessionAuthority,
+  bridgeEvidence: GatewayDurableBridgeEvidencePort = bridge,
+): Promise<{
+  readonly authority: GatewayRecoveryAuthority;
+  readonly port: GatewayProtocolStore;
+}> {
+  const port = store.createPort();
+  const opened = await port.open();
+  if (!opened.ok) throw new Error(opened.message);
+  return {
+    port,
+    authority: new GatewayRecoveryAuthority(port, {
+      bridgeEvidence,
+      evidenceDecision: {
+        async decideEvidence() {
+          return {
+            kind: "decided" as const,
+            conclusion: "inconclusive" as const,
+            authorityReference: "wp02-composed-recovery",
+            decisionVersion: 1,
+            decidedAtMs: Date.now(),
+          };
+        },
+      },
+      clock: Date.now,
+      newId: gatewayUuidV7,
+    }),
+  };
+}
+
 function request(
   rsid: string,
   mutating: boolean,
@@ -259,7 +301,7 @@ function request(
       mutating,
       executor: "bridge",
       documentIdentity: { kind: "live", session_document_id: "document-unregister" },
-      paramsDigest: `sha256:${"1".repeat(64)}`,
+      paramsDigest: makeParamsDigest(args as unknown as JsonValue),
       mutationScope,
       startedAtMs: Date.now(),
     },
@@ -502,6 +544,10 @@ class ControlledStoreHarness {
       updatedAtMs: 0,
     });
   }
+
+  public remove(tenantId: string, namespace: string, key: string): void {
+    this.#records.delete(this.#recordKey(namespace, tenantId, key));
+  }
 }
 
 function sessionWrite(
@@ -650,6 +696,11 @@ function seedLegacyHold(
   rsid: string,
   scope: MutationScope,
   origins: readonly string[],
+  options: {
+    readonly state?: "active" | "evidence_recorded" | "resolved_pending_bridge" | "cleared";
+    readonly resolution?: GatewayJsonObject | null;
+    readonly clearedBy?: string | null;
+  } = {},
 ): string {
   const holdId = makeMutationHoldId(rsid, scope, origins);
   store.seed(TENANT_ID, "gateway.recovery-authority/v1", rsid, {
@@ -664,11 +715,11 @@ function seedLegacyHold(
         scopeKey: mutationScopeKey(scope),
         holdId,
         originIdempotencyKeys: [...origins],
-        state: "active",
+        state: options.state ?? "active",
         evidenceAttempts: [],
         selectedEvidence: null,
-        resolution: null,
-        clearedBy: null,
+        resolution: options.resolution ?? null,
+        clearedBy: options.clearedBy ?? null,
       }],
     },
     resolutionPlan: null,
@@ -684,6 +735,39 @@ function seedValidCutover(
   mutate?: (value: Record<string, unknown>) => Record<string, unknown>,
 ): void {
   const nowMs = Date.now();
+  const session = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.rbp-session/v1" &&
+      record.tenantId === TENANT_ID &&
+      record.key === rsid,
+  )?.value as GatewayJsonObject | undefined;
+  if (session === undefined || session.pending !== null) {
+    throw new Error("cutover fixture requires an idle durable session");
+  }
+  const recovery = store.snapshot().find(
+    (record) =>
+      record.namespace === "gateway.recovery-authority/v1" &&
+      record.tenantId === TENANT_ID &&
+      record.key === rsid,
+  )?.value as GatewayJsonObject | undefined;
+  const ledger = recovery?.ledger as GatewayJsonObject | undefined;
+  const holds = ((ledger?.holds ?? []) as GatewayJsonObject[])
+    .map((hold) => ({
+      cleared_by: hold.clearedBy,
+      evidence_attempts: hold.evidenceAttempts,
+      hold_id: hold.holdId,
+      mutation_scope: hold.mutationScope,
+      origin_idempotency_keys: hold.originIdempotencyKeys,
+      resolution: hold.resolution,
+      selected_evidence: hold.selectedEvidence,
+      state: hold.state,
+    }))
+    .sort((left, right) => String(left.hold_id).localeCompare(String(right.hold_id)));
+  const legacyDigest = tokenDigest(canonicalizeJson({
+    holds,
+    pending: null,
+    rsid,
+  } as unknown as JsonValue));
   const marker = {
     schema: "gateway.hold-cutover/v1",
     tenantId: TENANT_ID,
@@ -691,10 +775,10 @@ function seedValidCutover(
     createdAtMs: nowMs,
     updatedAtMs: nowMs,
     recordVersion: 1,
-    legacyDigest: `sha256:${"a".repeat(64)}`,
-    importedHoldCount: 1,
-    importedConflictCount: 0,
-    importedResolutionCount: 0,
+    legacyDigest,
+    importedHoldCount: holds.length,
+    importedConflictCount: holds.length,
+    importedResolutionCount: holds.filter((hold) => hold.resolution !== null).length,
     targetGeneration: "normalized-v1",
     state: "normalized_authoritative",
     cutoverAtMs: nowMs,
@@ -895,7 +979,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       .toMatchObject({ recordVersion: 1, tenantId: TENANT_ID, rsid: session.rsid });
   });
 
-  it("cancels a remote dispatch reservation when revocation commits before promotion", async () => {
+  it("cancels a reserved mutation as known-not-dispatched without creating a hold", async () => {
     const store = new ControlledStoreHarness();
     const sender = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     const revoker = new GatewayBridgeSessionAuthority(store.createPort(), identity());
@@ -906,7 +990,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     const revokerConnection = await openConnection(revoker);
     const reservation = store.holdAfterCommit(leaseTransition("dispatch", "reserved"));
 
-    const execution = sender.createExecutor().execute(request(session.rsid, false));
+    const execution = sender.createExecutor().execute(request(session.rsid, true));
     await reservation.entered;
     await revoker.receive(
       revokerConnection.connectionId,
@@ -916,12 +1000,21 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
 
     await expect(execution).resolves.toMatchObject({
       state: "failed",
-      error: { code: "revit_timeout" },
+      error: { code: "executor_unavailable" },
     });
     expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(0);
     expect(store.snapshot().some(
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     )).toBe(true);
+    expect(store.snapshot().some(
+      (record) =>
+        record.namespace === "gateway.mutation-hold/v1" ||
+        record.namespace === "gateway.mutation-conflict/v1",
+    )).toBe(false);
+    const tombstone = store.snapshot().find(
+      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+    )?.value as GatewayJsonObject;
+    expect(tombstone).toMatchObject({ pendingDisposition: "none", holdIds: [] });
   });
 
   it("does not finalize a tombstone until a remotely started dispatch send releases", async () => {
@@ -971,6 +1064,31 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await sender.close();
     authorities.splice(authorities.indexOf(sender), 1);
     await expect(execution).resolves.toMatchObject({ state: "failed" });
+  });
+
+  it("keeps the active map and waiter until final tombstone commit is exactly read back", async () => {
+    const store = new ControlledStoreHarness();
+    const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(authority);
+    await authority.open();
+    const session = await register(authority);
+    let outcomeResolved = false;
+    const execution = authority.createExecutor().execute(request(session.rsid, false));
+    void execution.then(() => { outcomeResolved = true; });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const finalCommit = store.holdAfterCommit(tombstoneWrite);
+    const unregistering = authority.receive(
+      session.connectionId,
+      unregister(session.rsid),
+    );
+    await finalCommit.entered;
+    expect(outcomeResolved).toBe(false);
+    expect(() => authority.buildEnvelope(request(session.rsid, false))).not.toThrow();
+    finalCommit.release();
+    await unregistering;
+    await expect(execution).resolves.toMatchObject({ state: "failed" });
+    expect(outcomeResolved).toBe(true);
+    expect(() => authority.buildEnvelope(request(session.rsid, false))).toThrow();
   });
 
   it("fences resume_ack when revocation wins after its reservation", async () => {
@@ -1172,6 +1290,27 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       phase: "started",
     });
 
+    const staleRestart = new GatewayBridgeSessionAuthority(
+      store.createPort(),
+      identity(),
+      {
+        clock: () => nowMs,
+        wait: async (milliseconds) => { nowMs += milliseconds; },
+      },
+    );
+    authorities.push(staleRestart);
+    await staleRestart.open();
+    const staleConnection = await openConnection(staleRestart);
+    await expect(
+      staleRestart.receive(
+        staleConnection.connectionId,
+        unregister(registered.payload.rsid),
+      ),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    expect(store.snapshot().some(
+      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+    )).toBe(false);
+
     sendRelease.resolve();
     await new Promise((resolve) => setTimeout(resolve, 0));
     const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity(), {
@@ -1229,6 +1368,52 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(firstResume).rejects.toMatchObject({ closeCode: 1011 });
     expect(firstChannel.frames.some((frame) => frame.type === "resume_ack")).toBe(false);
     expect(secondChannel.frames.some((frame) => frame.type === "resume_ack")).toBe(true);
+  });
+
+  it("rejects a started lease whose start exceeds its reservation lifetime", async () => {
+    const store = new ControlledStoreHarness();
+    const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(authority);
+    await authority.open();
+    const session = await register(authority);
+    const reservedAtMs = Date.now();
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+      ...(value as GatewayJsonObject),
+      egressFence: {
+        version: 1,
+        state: "open",
+        epoch: 1,
+        nextTicket: 2,
+        lease: {
+          leaseId: id(),
+          ticket: 1,
+          holderInstanceId: id(),
+          connectionId: session.connectionId,
+          operation: "dispatch",
+          envelopeDigest: tokenDigest("invalid-start-time"),
+          phase: "started",
+          reservedAtMs,
+          reserveExpiresAtMs: reservedAtMs + 5_000,
+          startedAtMs: reservedAtMs + 5_001,
+        },
+        revocation: null,
+      },
+    }));
+    await expect(
+      authority.createExecutor().execute(request(session.rsid, false)),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+      ...(value as GatewayJsonObject),
+      egressFence: {
+        version: 1,
+        state: "open",
+        epoch: 2,
+        nextTicket: 2,
+        lease: null,
+        revocation: null,
+      },
+      recordVersion: 1,
+    }));
   });
 
   it("accepts commit-applied uncertainty only after exact keyed readback", async () => {
@@ -1384,7 +1569,12 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     const session = await register(authority);
     const execution = authority.createExecutor().execute(request(session.rsid, true));
     await new Promise((resolve) => setTimeout(resolve, 0));
-    store.armFault("partial_applied", revocationPendingWrite);
+    store.armFault(
+      "partial_applied",
+      (writes) => writes.some(
+        (write) => write.namespace === "gateway.mutation-hold/v1",
+      ),
+    );
 
     await expect(
       authority.receive(session.connectionId, unregister(session.rsid)),
@@ -1395,6 +1585,36 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     expect(store.snapshot().filter(
       (record) => record.namespace === "gateway.mutation-conflict/v1",
     )).toHaveLength(0);
+    expect(store.snapshot().some(
+      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+    )).toBe(false);
+    const poisoned = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.rbp-session/v1" &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    expect((poisoned.egressFence as GatewayJsonObject).state).toBe(
+      "revocation_pending",
+    );
+    await expect(
+      authority.createExecutor().execute(request(session.rsid, true)),
+    ).resolves.toMatchObject({ error: { code: "executor_unavailable" } });
+    const restarted = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(restarted);
+    await restarted.open();
+    const restartedConnection = await openConnection(restarted);
+    await expect(
+      restarted.receive(
+        restartedConnection.connectionId,
+        resume(session.rsid, session.resumeToken),
+      ),
+    ).rejects.toMatchObject({ closeCode: 4403 });
+    await expect(
+      restarted.receive(
+        restartedConnection.connectionId,
+        unregister(session.rsid),
+      ),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
     expect(store.snapshot().some(
       (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
     )).toBe(false);
@@ -1492,6 +1712,119 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     }));
   });
 
+  it("recovers a true legacy pending mutation with absent mutationEntries from journal bindings", async () => {
+    const store = new ControlledStoreHarness();
+    const bridge = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(bridge);
+    await bridge.open();
+    const session = await register(bridge);
+    const recovery = await createComposedRecovery(store, bridge);
+    const mutationRequest = request(
+      session.rsid,
+      true,
+      { kind: "document", document_id: "doc-legacy-pending" },
+    );
+    const draft = bridge.buildEnvelope(mutationRequest);
+    const attemptId = id();
+    await recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId,
+    });
+    const prepared = await recovery.authority.prepareMutationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: draft.sessionBindingId,
+      connectionId: draft.connectionId,
+      envelope: draft.envelope,
+      expected: draft.expected,
+    });
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") {
+      throw new Error(`legacy pending was not prepared: ${prepared.kind}`);
+    }
+    const execution = bridge.execute(mutationRequest, prepared.dispatch);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => {
+      const sessionValue = value as GatewayJsonObject;
+      const pending = { ...(sessionValue.pending as GatewayJsonObject) };
+      delete pending.mutationEntries;
+      return { ...sessionValue, pending };
+    });
+    await bridge.receive(session.connectionId, unregister(session.rsid));
+    await expect(execution).resolves.toMatchObject({
+      error: { code: "journal_indeterminate" },
+    });
+    const tombstone = store.snapshot().find(
+      (record) =>
+        record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    expect(tombstone).toMatchObject({
+      pendingDisposition: "mutation_indeterminate",
+      holdIds: [expect.stringMatching(/^vh:[0-9a-f]{64}$/u)],
+    });
+    for (const commit of store.commits) {
+      for (const write of commit) {
+        if (
+          write.namespace === "gateway.rbp-session/v1" &&
+          write.value !== null &&
+          write.expect.kind === "version"
+        ) {
+          expect((write.value as GatewayJsonObject).recordVersion).toBe(
+            write.expect.version + 1,
+          );
+        }
+        if (
+          (write.namespace === "gateway.mutation-hold/v1" ||
+            write.namespace === "gateway.mutation-conflict/v1" ||
+            write.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE) &&
+          write.value !== null &&
+          write.expect.kind === "absent"
+        ) {
+          expect((write.value as GatewayJsonObject).recordVersion).toBe(1);
+        }
+      }
+    }
+    await recovery.port.close();
+  });
+
+  it("poisons an unclassifiable legacy mutation before refusing companion installation", async () => {
+    const store = new ControlledStoreHarness();
+    const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(authority);
+    await authority.open();
+    const session = await register(authority);
+    const execution = authority.createExecutor().execute(request(session.rsid, true));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => {
+      const sessionValue = value as GatewayJsonObject;
+      const pending = { ...(sessionValue.pending as GatewayJsonObject) };
+      delete pending.mutationEntries;
+      return { ...sessionValue, pending };
+    });
+    await expect(
+      authority.receive(session.connectionId, unregister(session.rsid)),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    const poisoned = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.rbp-session/v1" &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    expect((poisoned.egressFence as GatewayJsonObject).state).toBe(
+      "revocation_pending",
+    );
+    expect((poisoned.normalizedConflictIndex as GatewayJsonObject).state).toBe(
+      "overflow",
+    );
+    expect(store.snapshot().some(
+      (record) => record.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+    )).toBe(false);
+    await authority.close();
+    authorities.splice(authorities.indexOf(authority), 1);
+    await expect(execution).resolves.toMatchObject({ state: "failed" });
+  });
+
   it("allows reads and disjoint documents through valid normalized holds", async () => {
     const store = new ControlledStoreHarness();
     const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
@@ -1572,12 +1905,36 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(read).resolves.toMatchObject({ state: "failed" });
 
     const cutover = await register(authority);
+    const cutoverOrigin = `${cutover.rsid}/${id()}`;
     seedLegacyHold(
       store,
       cutover.rsid,
       { kind: "session" },
-      [`${cutover.rsid}/${id()}`],
+      [cutoverOrigin],
+      {
+        state: "cleared",
+        resolution: { resolution_id: id() },
+        clearedBy: tokenDigest("cutover-cleared"),
+      },
     );
+    seedNormalizedHold(
+      store,
+      cutover.rsid,
+      { kind: "session" },
+      [cutoverOrigin],
+      {
+        hold: (value) => ({ ...value, state: "cleared" }),
+        conflict: (value) => ({ ...value, active: false }),
+      },
+    );
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", cutover.rsid, (value) => ({
+      ...(value as GatewayJsonObject),
+      normalizedConflictIndex: {
+        version: 1,
+        state: "complete",
+        scopeDigests: [],
+      },
+    }));
     seedValidCutover(store, cutover.rsid);
     const mutation = authority.createExecutor().execute(
       request(cutover.rsid, true, { kind: "document", document_id: "doc-b" }),
@@ -1588,6 +1945,30 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     await expect(mutation).resolves.toMatchObject({
       error: { code: "journal_indeterminate" },
     });
+  });
+
+  it("fails closed on non-canonical legacy origin ordering", async () => {
+    const store = new ControlledStoreHarness();
+    const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(authority);
+    await authority.open();
+    const session = await register(authority);
+    seedLegacyHold(
+      store,
+      session.rsid,
+      { kind: "document", document_id: "doc-origin-order" },
+      [`${session.rsid}/z-origin`, `${session.rsid}/a-origin`],
+    );
+    await expect(
+      authority.createExecutor().execute(
+        request(
+          session.rsid,
+          true,
+          { kind: "document", document_id: "doc-origin-order" },
+        ),
+      ),
+    ).rejects.toMatchObject({ httpStatus: 503, closeCode: 1011 });
+    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
   });
 
   it.each(CUTOVER_CORRUPTIONS)(
@@ -1607,7 +1988,83 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     },
   );
 
-  it("keeps overflow bounded, denies session scope, and permits exact disjoint document checks", async () => {
+  it.each(["digest", "count", "index", "pair", "missing_pair"] as const)(
+    "fails closed for shape-valid cutover semantic disagreement: %s",
+    async (target) => {
+      const store = new ControlledStoreHarness();
+      const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+      authorities.push(authority);
+      await authority.open();
+      const session = await register(authority);
+      const scope = { kind: "document", document_id: "doc-cutover" } as const;
+      const origin = `${session.rsid}/${id()}`;
+      const holdId = seedLegacyHold(store, session.rsid, scope, [origin], {
+        state: "cleared",
+        resolution: { resolution_id: id() },
+        clearedBy: tokenDigest("semantic-cutover"),
+      });
+      seedNormalizedHold(store, session.rsid, scope, [origin], {
+        hold: (value) => ({ ...value, state: "cleared" }),
+        conflict: (value) => ({ ...value, active: false }),
+      });
+      store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+        ...(value as GatewayJsonObject),
+        normalizedConflictIndex: {
+          version: 1,
+          state: "complete",
+          scopeDigests: [],
+        },
+      }));
+      seedValidCutover(store, session.rsid);
+      if (target === "digest") {
+        store.rewrite(TENANT_ID, "gateway.hold-cutover/v1", session.rsid, (value) => ({
+          ...(value as GatewayJsonObject),
+          legacyDigest: `sha256:${"b".repeat(64)}`,
+        }));
+      } else if (target === "count") {
+        store.rewrite(TENANT_ID, "gateway.hold-cutover/v1", session.rsid, (value) => ({
+          ...(value as GatewayJsonObject),
+          importedConflictCount: 2,
+        }));
+      } else if (target === "index") {
+        store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => ({
+          ...(value as GatewayJsonObject),
+          normalizedConflictIndex: {
+            version: 1,
+            state: "overflow",
+            scopeDigests: [],
+          },
+        }));
+      } else if (target === "pair") {
+        store.rewrite(TENANT_ID, "gateway.mutation-hold/v1", holdId, (value) => ({
+          ...(value as GatewayJsonObject),
+          state: "active",
+        }));
+      } else {
+        store.remove(
+          TENANT_ID,
+          "gateway.mutation-conflict/v1",
+          `${session.rsid}/${scopeDigest(scope)}`,
+        );
+      }
+      const attempt = authority.createExecutor().execute(
+        request(session.rsid, true, { kind: "document", document_id: "doc-free" }),
+      );
+      if (target === "index") {
+        await expect(attempt).resolves.toMatchObject({
+          error: { code: "executor_unavailable" },
+        });
+      } else {
+        await expect(attempt).rejects.toMatchObject({
+          httpStatus: 503,
+          closeCode: 1011,
+        });
+      }
+      expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
+    },
+  );
+
+  it("keeps overflow bounded and refuses a new unrecoverable document scope before send", async () => {
     const store = new ControlledStoreHarness();
     const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(authority);
@@ -1637,15 +2094,64 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     ).resolves.toMatchObject({
       error: { code: "executor_unavailable" },
     });
-    const disjoint = authority.createExecutor().execute(
-      request(session.rsid, true, { kind: "document", document_id: "doc-free" }),
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(true);
+    await expect(
+      authority.createExecutor().execute(
+        request(session.rsid, true, { kind: "document", document_id: "doc-free" }),
+      ),
+    ).resolves.toMatchObject({ error: { code: "executor_unavailable" } });
+    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
     await authority.receive(session.connectionId, unregister(session.rsid));
-    await expect(disjoint).resolves.toMatchObject({
-      error: { code: "journal_indeterminate" },
+  });
+
+  it("refuses a 65-scope mutation batch before reserving or sending", async () => {
+    const store = new ControlledStoreHarness();
+    const bridge = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(bridge);
+    await bridge.open();
+    const session = await register(bridge);
+    const recovery = await createComposedRecovery(store, bridge);
+    const batch: GatewayAtomicBatchExecutorRequest = {
+      batchId: id(),
+      atomic: true,
+      steps: Array.from({ length: 65 }, (_, index) =>
+        request(
+          session.rsid,
+          true,
+          { kind: "document", document_id: `doc-capacity-${index.toString().padStart(2, "0")}` },
+        ),
+      ),
+    };
+    const draft = bridge.buildAtomicBatchEnvelope(batch);
+    const attemptId = id();
+    await recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId,
     });
+    const prepared = await recovery.authority.prepareMutationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: draft.sessionBindingId,
+      connectionId: draft.connectionId,
+      envelope: draft.envelope,
+      expected: draft.expected,
+    });
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") {
+      throw new Error(`capacity batch was not prepared: ${prepared.kind}`);
+    }
+    await expect(
+      bridge.executeAtomicBatch(batch, prepared.dispatch),
+    ).resolves.toMatchObject({ error: { code: "executor_unavailable" } });
+    expect(session.channel.frames.some((frame) => frame.type === "invoke_batch")).toBe(false);
+    const durable = store.snapshot().find(
+      (record) =>
+        record.namespace === "gateway.rbp-session/v1" &&
+        record.key === session.rsid,
+    )?.value as GatewayJsonObject;
+    expect(durable.pending).toBeNull();
+    expect((durable.egressFence as GatewayJsonObject).lease).toBeNull();
+    await recovery.port.close();
   });
 
   it("uses no tenant-wide list for dispatch or unregister authority", async () => {
@@ -1662,7 +2168,241 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
     expect(store.listCalls).toBe(0);
   });
 
-  it("exempts only an authenticated exact origin redelivery and ignores clearance bytes", async () => {
+  it("composes GatewayRecoveryAuthority verification reads through a live scoped hold", async () => {
+    const store = new ControlledStoreHarness();
+    const bridge = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(bridge);
+    await bridge.open();
+    const session = await register(bridge);
+    const scope = { kind: "document", document_id: "doc-verify" } as const;
+    const origin = `${session.rsid}/${id()}`;
+    const holdId = seedLegacyHold(store, session.rsid, scope, [origin]);
+    seedNormalizedHold(store, session.rsid, scope, [origin]);
+    const recovery = await createComposedRecovery(store, bridge);
+    const attemptId = id();
+    await expect(recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId,
+    })).resolves.toMatchObject({ kind: "acquired" });
+    const readRequest = request(session.rsid, false);
+    const draft = bridge.buildEnvelope(readRequest);
+    const verification = {
+      hold_id: holdId,
+      mutation_scope: scope,
+      purpose: "resolve_indeterminate" as const,
+    };
+    const envelope = {
+      ...draft.envelope,
+      payload: { ...draft.envelope.payload, verification },
+    } as unknown as InvokeEnvelope;
+    const binding = {
+      ...draft.expected.bindings[0]!,
+      verification,
+    };
+    const prepared = await recovery.authority.prepareVerificationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: draft.sessionBindingId,
+      connectionId: draft.connectionId,
+      envelope,
+      expected: {
+        rsid: session.rsid,
+        invocationId: readRequest.context.invocationId,
+        binding,
+      },
+    });
+    expect(prepared.kind).toBe("prepared");
+    if (prepared.kind !== "prepared") {
+      throw new Error(`verification was not prepared: ${prepared.kind}`);
+    }
+    const execution = bridge.execute(readRequest, prepared.dispatch);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(true);
+    await bridge.receive(session.connectionId, unregister(session.rsid));
+    await expect(execution).resolves.toMatchObject({ state: "failed" });
+    await recovery.port.close();
+  });
+
+  it("composes exact retained origin redelivery without generic session-wide denial", async () => {
+    const store = new ControlledStoreHarness();
+    const bridge = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(bridge);
+    await bridge.open();
+    const session = await register(bridge);
+    let retained: GatewayRecoveryPendingDispatch | null = null;
+    const bridgeEvidence: GatewayDurableBridgeEvidencePort = {
+      inspectDispatch: async () => {
+        if (retained === null) return { kind: "not_durable_yet" as const };
+        const pending = retained;
+        const originKey = `${session.rsid}/${originalRequest.context.invocationId}`;
+        const holdId = makeMutationHoldId(session.rsid, { kind: "session" }, [originKey]);
+        return {
+          kind: "found" as const,
+          observation: {
+            acceptance: {
+              source: "durable_rbp_sequence" as const,
+              rsid: session.rsid,
+              sessionBindingId: pending.sessionBindingId,
+              acceptedConnectionId: pending.preparedConnectionId,
+              authorizedSessionVersion: pending.authorizedSessionVersion,
+              gatewaySequence: pending.gatewaySequence,
+              cumulativeAck: pending.gatewaySequence,
+              envelopeDigest: pending.envelopeDigest,
+              durableSequenceVersion: 1,
+              acceptedAtMs: Date.now(),
+            },
+            journal: {
+              kind: "indeterminate" as const,
+              rsid: session.rsid,
+              sessionBindingId: pending.sessionBindingId,
+              envelopeDigest: pending.envelopeDigest,
+              journalRecords: pending.journalRecords.map((journal) =>
+                markJournalIndeterminate(markJournalExecuting(journal), holdId),
+              ),
+              batchTerminal: null,
+              durableJournalVersion: 1,
+              recordedAtMs: Date.now(),
+            },
+          },
+        };
+      },
+      authorizeDispatchTarget: async (tx, expected) =>
+        bridge.authorizeDispatchTarget(tx, expected),
+      authorizeResumeTarget: async (tx, expected) =>
+        bridge.authorizeResumeTarget(tx, expected),
+    };
+    const recovery = await createComposedRecovery(store, bridge, bridgeEvidence);
+    const originalRequest = request(session.rsid, true, { kind: "session" });
+    const originalDraft = bridge.buildEnvelope(originalRequest);
+    const firstAttempt = id();
+    await recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId: firstAttempt,
+    });
+    const first = await recovery.authority.prepareMutationDispatch({
+      tenantId: TENANT_ID,
+      attemptId: firstAttempt,
+      sessionBindingId: originalDraft.sessionBindingId,
+      connectionId: originalDraft.connectionId,
+      envelope: originalDraft.envelope,
+      expected: originalDraft.expected,
+    });
+    expect(first.kind).toBe("prepared");
+    if (first.kind !== "prepared") throw new Error(`origin not prepared: ${first.kind}`);
+    retained = first.dispatch;
+    const originKey = `${session.rsid}/${originalRequest.context.invocationId}`;
+    const holdId = makeMutationHoldId(session.rsid, { kind: "session" }, [originKey]);
+    await expect(recovery.authority.reconcilePendingDispatch({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      envelopeDigest: first.dispatch.envelopeDigest,
+    })).resolves.toMatchObject({
+      kind: "indeterminate_recorded",
+      installedHoldIds: [holdId],
+    });
+    seedNormalizedHold(store, session.rsid, { kind: "session" }, [originKey]);
+    store.rewrite(TENANT_ID, "gateway.rbp-session/v1", session.rsid, (value) => {
+      const sessionValue = value as GatewayJsonObject;
+      const sequence = sessionValue.sequence as GatewayJsonObject;
+      return {
+        ...sessionValue,
+        sequence: {
+          ...sequence,
+          nextTxSeq: 2,
+          highestTxSeq: 1,
+          outbox: [],
+        },
+      };
+    });
+    const redeliveryEnvelope: InvokeEnvelope = {
+      ...originalDraft.envelope,
+      id: id(),
+      seq: 2,
+      ts: new Date().toISOString(),
+    };
+    const redeliveryAttempt = firstAttempt;
+    const redelivery = await recovery.authority.prepareOriginRedelivery({
+      tenantId: TENANT_ID,
+      attemptId: redeliveryAttempt,
+      rsid: session.rsid,
+      idempotencyKey: originKey,
+      sessionBindingId: originalDraft.sessionBindingId,
+      connectionId: originalDraft.connectionId,
+      envelope: redeliveryEnvelope,
+      expected: originalDraft.expected,
+    });
+    if (redelivery.kind !== "prepared") {
+      throw new Error(`redelivery was not prepared: ${JSON.stringify(redelivery)}`);
+    }
+    expect(redelivery.kind).toBe("prepared");
+    const execution = bridge.execute(originalRequest, redelivery.dispatch);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.channel.frames.filter((frame) => frame.type === "invoke")).toHaveLength(1);
+    await bridge.receive(session.connectionId, unregister(session.rsid));
+    await expect(execution).resolves.toMatchObject({ state: "failed" });
+    await recovery.port.close();
+  });
+
+  it("has GatewayRecoveryAuthority refuse caller clearance bytes without a resolution plan", async () => {
+    const store = new ControlledStoreHarness();
+    const bridge = new GatewayBridgeSessionAuthority(store.createPort(), identity());
+    authorities.push(bridge);
+    await bridge.open();
+    const session = await register(bridge);
+    const scope = { kind: "document", document_id: "doc-clearance" } as const;
+    const origin = `${session.rsid}/${id()}`;
+    const holdId = seedLegacyHold(store, session.rsid, scope, [origin]);
+    seedNormalizedHold(store, session.rsid, scope, [origin]);
+    const recovery = await createComposedRecovery(store, bridge);
+    const attemptId = id();
+    await recovery.authority.acquireInvocationWindow({
+      tenantId: TENANT_ID,
+      rsid: session.rsid,
+      attemptId,
+    });
+    const mutationRequest = request(session.rsid, true, scope);
+    const draft = bridge.buildEnvelope(mutationRequest);
+    const clearance = {
+      hold_id: holdId,
+      mutation_scope: scope,
+      resolution_id: id(),
+      basis: "verification_read" as const,
+      verification_invocation_id: id(),
+      evidence_digest: makeParamsDigest({ caller: "untrusted" }),
+      decision: "postcondition_verified" as const,
+      audit_id: id(),
+    };
+    const envelope = {
+      ...draft.envelope,
+      payload: {
+        ...draft.envelope.payload,
+        recovery_clearances: [clearance],
+      },
+    } as unknown as InvokeEnvelope;
+    const expected = {
+      ...draft.expected,
+      bindings: draft.expected.bindings.map((binding) => ({
+        ...binding,
+        recoveryClearances: [clearance],
+      })),
+      recoveryClearances: [clearance],
+    };
+    const prepared = await recovery.authority.prepareMutationDispatch({
+      tenantId: TENANT_ID,
+      attemptId,
+      sessionBindingId: draft.sessionBindingId,
+      connectionId: draft.connectionId,
+      envelope,
+      expected,
+    });
+    expect(prepared.kind).not.toBe("prepared");
+    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
+    await recovery.port.close();
+  });
+
+  it("rejects forged redelivery metadata and caller-authored clearance bytes", async () => {
     const store = new ControlledStoreHarness();
     const authority = new GatewayBridgeSessionAuthority(store.createPort(), identity());
     authorities.push(authority);
@@ -1682,18 +2422,18 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
       [`${exact.rsid}/${exactInvocationId}`],
     );
     const exactDraft = authority.buildEnvelope(exactRequest);
-    const exactExecution = authority.execute(
-      exactRequest,
-      {
-        envelope: exactDraft.envelope,
-        journalRecords: [],
-        originRedelivery: true,
-      } as unknown as GatewayRecoveryPendingDispatch,
-    );
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(exact.channel.frames.some((frame) => frame.type === "invoke")).toBe(true);
+    await expect(
+      authority.execute(
+        exactRequest,
+        {
+          envelope: exactDraft.envelope,
+          journalRecords: [],
+          originRedelivery: true,
+        } as unknown as GatewayRecoveryPendingDispatch,
+      ),
+    ).rejects.toMatchObject({ code: "protocol", closeCode: 4400 });
+    expect(exact.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
     await authority.receive(exact.connectionId, unregister(exact.rsid));
-    await expect(exactExecution).resolves.toMatchObject({ state: "failed" });
 
     const fresh = await register(authority);
     seedNormalizedHold(
@@ -1719,7 +2459,7 @@ describe("GatewayBridgeSessionAuthority durable unregister", () => {
           originRedelivery: false,
         } as unknown as GatewayRecoveryPendingDispatch,
       ),
-    ).resolves.toMatchObject({ error: { code: "executor_unavailable" } });
+    ).rejects.toMatchObject({ code: "protocol", closeCode: 4400 });
   });
 
   it.each(NORMALIZED_CORRUPTIONS)(

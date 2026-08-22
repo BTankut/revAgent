@@ -80,6 +80,9 @@ const SEND_RESERVATION_TTL_MS = 5_000;
 const UNREGISTER_DRAIN_TIMEOUT_MS = 5_000;
 const MAX_AUTHORIZATION_CAS_ATTEMPTS = 8;
 const MAX_NORMALIZED_CONFLICT_INDEX_ENTRIES = 256;
+const PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT = 128;
+const MAX_RECOVERABLE_MUTATION_SCOPES =
+  PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT / 2;
 const MAX_HOLD_AUDIT_ENTRIES = 256;
 const MAX_DURABLE_STRING_LENGTH = 4_096;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
@@ -99,7 +102,8 @@ interface DurablePendingDispatch {
   readonly gatewaySequence: number;
   readonly invocationId: string;
   readonly mutating: boolean;
-  readonly mutationEntries: readonly DurablePendingMutation[];
+  /** Optional only for true pre-WP-02 rows; journal bindings are the fallback. */
+  readonly mutationEntries?: readonly DurablePendingMutation[];
   readonly journalRecords: readonly InvocationJournalRecord[];
 }
 
@@ -323,6 +327,12 @@ interface PendingRevocationAuthority {
   readonly candidates: readonly NormalizedHoldCandidate[];
 }
 
+interface TrustedRecoveryAdmission {
+  readonly dispatch: GatewayRecoveryPendingDispatch | null;
+  readonly holdIds: ReadonlySet<string>;
+  readonly originRedelivery: boolean;
+}
+
 export interface BridgeConnectionChannel {
   send(serialized: string): Promise<void>;
   close(code: number, reason: string): Promise<void>;
@@ -472,7 +482,8 @@ function parseEgressLease(value: unknown): DurableEgressLease {
     (phase === "reserved"
       ? value.startedAtMs !== null
       : !isSafeNonNegativeInteger(value.startedAtMs) ||
-        value.startedAtMs < value.reservedAtMs)
+        value.startedAtMs < value.reservedAtMs ||
+        value.startedAtMs > value.reserveExpiresAtMs)
   ) {
     throw new Error("malformed egress lease");
   }
@@ -678,6 +689,24 @@ function extendConflictIndex(
     state: missing.length > accepted.length ? "overflow" : "complete",
     scopeDigests: [...existing, ...accepted].sort(),
   };
+}
+
+function hasRecoverableMutationCapacity(
+  record: DurableRbpSession,
+  candidates: readonly NormalizedHoldCandidate[],
+): boolean {
+  if (candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES) return false;
+  const index = sessionConflictIndex(record);
+  const candidateDigests = candidates.map((candidate) =>
+    conflictScopeDigest(candidate.mutationScopeJcs),
+  );
+  if (index.state === "overflow") {
+    return candidateDigests.every((scopeDigest) =>
+      index.scopeDigests.includes(scopeDigest),
+    );
+  }
+  return new Set([...index.scopeDigests, ...candidateDigests]).size <=
+    MAX_NORMALIZED_CONFLICT_INDEX_ENTRIES;
 }
 
 function connectionTransition(
@@ -1017,6 +1046,8 @@ interface ValidatedLegacyHold {
   readonly state: "active" | "evidence_recorded" | "resolved_pending_bridge" | "cleared";
   readonly mutationScope: MutationScope;
   readonly originIdempotencyKeys: readonly string[];
+  readonly hasResolution: boolean;
+  readonly digestFact: JsonValue;
 }
 
 function parseLegacyRecoveryHolds(
@@ -1035,8 +1066,23 @@ function parseLegacyRecoveryHolds(
   if (!Array.isArray(holds) || holds.length > MAX_HOLD_AUDIT_ENTRIES) {
     throw new Error("malformed legacy recovery authority");
   }
-  return holds.map((raw) => {
-    if (!isRecord(raw) || !isRecord(raw.mutationScope)) {
+  const parsed = holds.map((raw) => {
+    if (
+      !isRecord(raw) ||
+      !hasExactKeys(raw, [
+        "rsid",
+        "mutationScope",
+        "scopeKey",
+        "holdId",
+        "originIdempotencyKeys",
+        "state",
+        "evidenceAttempts",
+        "selectedEvidence",
+        "resolution",
+        "clearedBy",
+      ]) ||
+      !isRecord(raw.mutationScope)
+    ) {
       throw new Error("malformed legacy recovery hold");
     }
     let scope: MutationScope;
@@ -1060,16 +1106,19 @@ function parseLegacyRecoveryHolds(
       raw.scopeKey !== mutationScopeKey(scope) ||
       typeof raw.holdId !== "string" ||
       !HOLD_ID_PATTERN.test(raw.holdId) ||
-      !Array.isArray(raw.originIdempotencyKeys) ||
-      raw.originIdempotencyKeys.length === 0 ||
-      raw.originIdempotencyKeys.length > MAX_HOLD_AUDIT_ENTRIES ||
-      (raw.originIdempotencyKeys as unknown[]).some(
-        (origin, index) =>
-          typeof origin !== "string" ||
-          !origin.startsWith(`${rsid}/`) ||
-          origin.length <= rsid.length + 1 ||
-          (raw.originIdempotencyKeys as unknown[]).indexOf(origin) !== index,
+      !isStrictSortedUniqueStrings(
+        raw.originIdempotencyKeys,
+        MAX_HOLD_AUDIT_ENTRIES,
+        (origin) =>
+          origin.startsWith(`${rsid}/`) && origin.length > rsid.length + 1,
       ) ||
+      !Array.isArray(raw.evidenceAttempts) ||
+      raw.evidenceAttempts.length > MAX_HOLD_AUDIT_ENTRIES ||
+      (raw.selectedEvidence !== null && !isRecord(raw.selectedEvidence)) ||
+      (raw.resolution !== null && !isRecord(raw.resolution)) ||
+      (raw.clearedBy !== null &&
+        (typeof raw.clearedBy !== "string" ||
+          !DIGEST_PATTERN.test(raw.clearedBy))) ||
       makeMutationHoldId(
         rsid,
         scope,
@@ -1082,13 +1131,111 @@ function parseLegacyRecoveryHolds(
     ) {
       throw new Error("malformed legacy recovery hold");
     }
+    const state = raw.state as ValidatedLegacyHold["state"];
     return {
       holdId: raw.holdId,
-      state: raw.state,
+      state,
       mutationScope: scope,
       originIdempotencyKeys: [...raw.originIdempotencyKeys] as string[],
+      hasResolution: raw.resolution !== null,
+      digestFact: {
+        cleared_by: raw.clearedBy as JsonValue,
+        evidence_attempts: structuredClone(raw.evidenceAttempts) as JsonValue,
+        hold_id: raw.holdId,
+        mutation_scope: structuredClone(scope) as unknown as JsonValue,
+        origin_idempotency_keys: [...raw.originIdempotencyKeys] as string[],
+        resolution: structuredClone(raw.resolution) as JsonValue,
+        selected_evidence: structuredClone(raw.selectedEvidence) as JsonValue,
+        state,
+      },
     };
   });
+  if (
+    parsed.some(
+      (hold, index) => index > 0 && hold.holdId <= parsed[index - 1]!.holdId,
+    )
+  ) {
+    throw new Error("legacy recovery holds are not strictly sorted");
+  }
+  return parsed;
+}
+
+interface LegacyCutoverFacts {
+  readonly holds: readonly ValidatedLegacyHold[];
+  readonly legacyDigest: `sha256:${string}`;
+  readonly importedHoldCount: number;
+  readonly importedConflictCount: number;
+  readonly importedResolutionCount: number;
+  readonly activeScopeDigests: readonly `sha256:${string}`[];
+}
+
+function legacyPendingDigestFact(record: DurableRbpSession): JsonValue {
+  if (record.pending === null) return null;
+  if (
+    typeof record.pending.mutating !== "boolean" ||
+    !isBoundedNonEmptyString(record.pending.envelopeDigest) ||
+    !DIGEST_PATTERN.test(record.pending.envelopeDigest) ||
+    !isBoundedNonEmptyString(record.pending.invocationId)
+  ) {
+    throw new Error("legacy pending dispatch is malformed");
+  }
+  const entries = durablePendingMutationEntries(record)
+    .map((entry) => ({
+      invocation_id: entry.invocationId,
+      mutation_scope_jcs: mutationScopeKey(entry.mutationScope),
+      origin_idempotency_key: entry.originIdempotencyKey,
+    }))
+    .sort((left, right) =>
+      left.origin_idempotency_key.localeCompare(right.origin_idempotency_key),
+    );
+  if (
+    entries.some(
+      (entry, index) =>
+        !entry.origin_idempotency_key.startsWith(`${record.rsid}/`) ||
+        (index > 0 &&
+          entry.origin_idempotency_key ===
+            entries[index - 1]!.origin_idempotency_key),
+    )
+  ) {
+    throw new Error("legacy pending mutation identities are malformed");
+  }
+  return {
+    envelope_digest: record.pending.envelopeDigest,
+    invocation_id: record.pending.invocationId,
+    mutating: record.pending.mutating,
+    mutation_entries: entries,
+  };
+}
+
+function legacyCutoverFacts(
+  record: DurableRbpSession,
+  holds: readonly ValidatedLegacyHold[],
+): LegacyCutoverFacts {
+  const activeScopeDigests = holds
+    .filter((hold) => hold.state !== "cleared")
+    .map((hold) => conflictScopeDigest(mutationScopeKey(hold.mutationScope)))
+    .sort();
+  if (
+    activeScopeDigests.some(
+      (scopeDigest, index) =>
+        index > 0 && scopeDigest === activeScopeDigests[index - 1],
+    )
+  ) {
+    throw new Error("legacy recovery has duplicate active conflict scopes");
+  }
+  const material: JsonValue = {
+    holds: holds.map((hold) => hold.digestFact),
+    pending: legacyPendingDigestFact(record),
+    rsid: record.rsid,
+  };
+  return {
+    holds,
+    legacyDigest: digest(canonicalizeJson(material)),
+    importedHoldCount: holds.length,
+    importedConflictCount: holds.length,
+    importedResolutionCount: holds.filter((hold) => hold.hasResolution).length,
+    activeScopeDigests,
+  };
 }
 
 interface NormalizedHoldCandidate {
@@ -1153,7 +1300,15 @@ function durablePendingMutationEntries(
 ): readonly DurablePendingMutation[] {
   const pending = record.pending;
   if (pending === null) return [];
-  if (pending.mutationEntries.length > 0) return pending.mutationEntries;
+  if (pending.mutationEntries !== undefined) {
+    if (!Array.isArray(pending.mutationEntries)) {
+      throw new Error("legacy pending mutation entries are malformed");
+    }
+    if (pending.mutationEntries.length > 0) return pending.mutationEntries;
+  }
+  if (!Array.isArray(pending.journalRecords)) {
+    throw new Error("legacy pending journal records are malformed");
+  }
   return pending.journalRecords.flatMap((journal) =>
     journal.binding.mutating && journal.binding.mutationScope !== null
       ? [{
@@ -1163,6 +1318,79 @@ function durablePendingMutationEntries(
         }]
       : [],
   );
+}
+
+function trustedRecoveryAdmission(
+  dispatch: GatewayRecoveryPendingDispatch | null,
+  envelope: InvokeEnvelope | InvokeBatchEnvelope,
+  entries: readonly DurablePendingMutation[],
+  envelopeDigest: `sha256:${string}`,
+  mutating: boolean,
+): TrustedRecoveryAdmission {
+  if (dispatch === null) {
+    if (envelope.payload.recovery_clearances.length !== 0) {
+      throw new GatewayRbpFault(
+        "protocol",
+        "caller-authored recovery clearances are not dispatch authority",
+        409,
+        4400,
+      );
+    }
+    return {
+      dispatch: null,
+      holdIds: new Set<string>(),
+      originRedelivery: false,
+    };
+  }
+  if (
+    !Array.isArray(dispatch.mutationEntries) ||
+    !Array.isArray(dispatch.recoveryHoldIds) ||
+    !Array.isArray(dispatch.recoveryClearances)
+  ) {
+    throw new GatewayRbpFault(
+      "protocol",
+      "recovery dispatch metadata is incomplete",
+      409,
+      4400,
+    );
+  }
+  const projected = dispatch.mutationEntries.map((entry) => ({
+    invocationId: entry.invocationId,
+    mutationScope: entry.mutationScope,
+    originIdempotencyKey: entry.idempotencyKey,
+  }));
+  const clearanceHoldIds = envelope.payload.recovery_clearances.map(
+    (clearance) => clearance.hold_id,
+  );
+  if (
+    dispatch.envelopeDigest !== envelopeDigest ||
+    dispatch.gatewaySequence !== envelope.seq ||
+    !sameJson(dispatch.envelope, envelope) ||
+    !sameJson(projected, entries) ||
+    !sameJson(dispatch.recoveryClearances, envelope.payload.recovery_clearances) ||
+    !isStrictSortedUniqueStrings(
+      dispatch.recoveryHoldIds,
+      MAX_HOLD_AUDIT_ENTRIES,
+      (holdId) => HOLD_ID_PATTERN.test(holdId),
+    ) ||
+    (mutating ? dispatch.kind !== "mutation" : dispatch.kind !== "verification") ||
+    (!mutating &&
+      (dispatch.originRedelivery || dispatch.recoveryHoldIds.length !== 0)) ||
+    (!dispatch.originRedelivery &&
+      !sameJson(dispatch.recoveryHoldIds, clearanceHoldIds))
+  ) {
+    throw new GatewayRbpFault(
+      "protocol",
+      "recovery dispatch metadata is not internally authorized",
+      409,
+      4400,
+    );
+  }
+  return {
+    dispatch,
+    holdIds: new Set(dispatch.recoveryHoldIds),
+    originRedelivery: dispatch.originRedelivery,
+  };
 }
 
 function liveDocumentRouteFrom(
@@ -1956,7 +2184,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       rsid: request.context.rsid,
       correlationId: request.context.invocationId,
       mutating: request.context.mutating,
-      originRedelivery: prepared?.originRedelivery ?? false,
+      recoveryDispatch: prepared ?? null,
       envelope: prepared?.envelope ?? draft!.envelope,
       journalRecords: prepared?.journalRecords ?? [],
     });
@@ -1978,7 +2206,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       rsid: first.context.rsid,
       correlationId: request.batchId,
       mutating: request.steps.some((step) => step.context.mutating),
-      originRedelivery: prepared.originRedelivery,
+      recoveryDispatch: prepared,
       envelope: prepared.envelope,
       journalRecords: prepared.journalRecords,
     });
@@ -1989,7 +2217,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly rsid: string;
     readonly correlationId: string;
     readonly mutating: boolean;
-    readonly originRedelivery: boolean;
+    readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
   }): Promise<GatewayExecutorOutcome> {
@@ -2004,7 +2232,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly rsid: string;
     readonly correlationId: string;
     readonly mutating: boolean;
-    readonly originRedelivery: boolean;
+    readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
   }): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
@@ -2018,7 +2246,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
-    const journals = input.journalRecords.map(markJournalExecuting);
+    const journals = input.recoveryDispatch?.originRedelivery === true
+      ? input.journalRecords
+      : input.journalRecords.map(markJournalExecuting);
     const mutationEntries = pendingMutationEntries(envelope);
     if (input.mutating && mutationEntries.length === 0) {
       throw new GatewayRbpFault(
@@ -2034,10 +2264,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         entry.mutationScope,
       ]),
     ).values()];
-    const ownHoldIds = new Set(
-      normalizedHoldCandidates(input.rsid, mutationEntries).map(
-        (candidate) => candidate.holdId,
-      ),
+    const holdCandidates = normalizedHoldCandidates(
+      input.rsid,
+      mutationEntries,
+    );
+    const ownHoldIds = new Set(holdCandidates.map((candidate) => candidate.holdId));
+    const recovery = trustedRecoveryAdmission(
+      input.recoveryDispatch,
+      envelope,
+      mutationEntries,
+      expectedDigest,
+      input.mutating,
     );
     const leaseId = gatewayUuidV7(this.#clock());
     let reservation: DurableEgressReservation | null = null;
@@ -2077,21 +2314,27 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           record.connectionId !== active.record.connectionId ||
           record.sessionBindingId !== active.record.sessionBindingId ||
           !record.sessionLifecycle.dispatchAllowed ||
-          record.pending !== null
+          record.pending !== null ||
+          (recovery.dispatch !== null &&
+            (recovery.dispatch.sessionBindingId !== record.sessionBindingId ||
+              recovery.dispatch.preparedConnectionId !== record.connectionId ||
+              recovery.dispatch.authorizedSessionVersion !== record.sessionVersion))
         ) {
           return { kind: "blocked" as const };
         }
         if (
           input.mutating &&
-          !(await this.#assertMutationAdmission(
-            tx,
-            input.tenantId,
-            input.rsid,
-            record,
-            mutationScopes,
-            ownHoldIds,
-            input.originRedelivery,
-          ))
+          (!hasRecoverableMutationCapacity(record, holdCandidates) ||
+            !(await this.#assertMutationAdmission(
+              tx,
+              input.tenantId,
+              input.rsid,
+              record,
+              mutationScopes,
+              ownHoldIds,
+              recovery.holdIds,
+              recovery.originRedelivery,
+            )))
         ) {
           return { kind: "blocked" as const };
         }
@@ -2199,25 +2442,42 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     active.record = reservation.record;
 
-    const outcome = new Promise<GatewayExecutorOutcome>((resolve) => {
-      const timer = setTimeout(() => {
-        this.#waiters.delete(input.correlationId);
-        resolve(this.#indeterminateOutcome(input.mutating));
-      }, INVOCATION_TIMEOUT_MS);
-      timer.unref();
-      this.#waiters.set(input.correlationId, {
-        resolve,
-        timer,
-        mutating: input.mutating,
-      });
-    });
+    const outcome: { current: Promise<GatewayExecutorOutcome> | null } = {
+      current: null,
+    };
     try {
       await this.#sendWithDurableReservation(
         connection,
         reservation,
         JSON.stringify(envelope),
+        () => {
+          outcome.current = new Promise<GatewayExecutorOutcome>((resolve) => {
+            const timer = setTimeout(() => {
+              this.#waiters.delete(input.correlationId);
+              resolve(this.#indeterminateOutcome(input.mutating));
+            }, INVOCATION_TIMEOUT_MS);
+            timer.unref();
+            this.#waiters.set(input.correlationId, {
+              resolve,
+              timer,
+              mutating: input.mutating,
+            });
+          });
+        },
       );
     } catch {
+      if (outcome.current === null) {
+        await this.#awaitFinalTombstoneIfRevoking(input.tenantId, input.rsid);
+        return {
+          outcome: Promise.resolve({
+            state: "failed",
+            error: {
+              code: "executor_unavailable",
+              message: "dispatch did not begin before durable revocation",
+            },
+          }),
+        };
+      }
       const waiter = this.#waiters.get(input.correlationId);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
@@ -2225,7 +2485,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         waiter.resolve(this.#indeterminateOutcome(input.mutating));
       }
     }
-    return { outcome };
+    if (outcome.current === null) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "dispatch send did not install its waiter",
+        503,
+        1011,
+      );
+    }
+    return { outcome: outcome.current };
   }
 
   async #promoteEgressReservation(
@@ -2445,6 +2713,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     reservation: DurableEgressReservation,
     serialized: string,
+    beforeSend?: () => void,
   ): Promise<void> {
     const started = await this.#promoteEgressReservation(reservation);
     let sendFailure: unknown = null;
@@ -2453,6 +2722,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       // Do not insert an await between the successful durable promotion and
       // invoking the transport: the started lease is the cross-process proof
       // that any final tombstone must wait for this send call to begin.
+      beforeSend?.();
       const sendOperation = connection.send(serialized);
       await sendOperation;
     } catch (error) {
@@ -2865,19 +3135,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       if (stored === null) return { kind: "not_authorized", reason: "unknown_rsid" };
       const session = parseStoredSession(stored, stored.tenantId, expected.rsid);
       const fence = sessionEgressFence(session);
-      if (
-        fence.state !== "open" ||
-        !(await this.#assertMutationAdmission(
-          tx,
-          stored.tenantId,
-          expected.rsid,
-          session,
-          [{ kind: "session" }],
-          new Set<string>(),
-          false,
-        ))
-      ) {
-        return { kind: "not_authorized", reason: "mutation_hold" };
+      if (fence.state !== "open" || fence.revocation !== null) {
+        return { kind: "not_authorized", reason: "session_revoking" };
       }
       if (
         session.sessionBindingId !== expected.sessionBindingId ||
@@ -3048,6 +3307,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       userId: connection.auth.actor.userId,
       seatId: connection.auth.actor.seatId,
     };
+    const localPendingAtStart = this.#active.get(payload.rsid)?.record.pending ?? null;
+    let canceledBeforeSend = false;
     let phaseOne: PendingRevocationAuthority | null = null;
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
       const attempted: { current: {
@@ -3093,10 +3354,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           ) {
             return { kind: "rejected" as const, reason: "unregister_owner_or_reason_mismatch" };
           }
-          const authority = await this.#assertPendingRevocationAuthority(
-            tx,
-            tenantId,
-            payload.rsid,
+          const authority = await this.#pendingRevocationSnapshot(
             record,
             owner,
             payload.reason,
@@ -3110,23 +3368,64 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           return { kind: "rejected" as const, reason: "unregister_legacy_state_invalid" };
         }
         const nowMs = this.#clock();
-        const candidates = normalizedHoldCandidates(
-          record.rsid,
-          durablePendingMutationEntries(record),
-        );
-        if (candidates.length > MAX_NORMALIZED_CONFLICT_INDEX_ENTRIES) {
-          throw new Error("pending unregister exceeds the bounded hold set");
+        const pendingBeforeRevocation = record.pending;
+        const canceledBeforeSend =
+          fence.lease?.phase === "reserved" &&
+          fence.lease.operation === "dispatch" &&
+          pendingBeforeRevocation !== null &&
+          fence.lease.envelopeDigest === pendingBeforeRevocation.envelopeDigest;
+        let pending = pendingBeforeRevocation;
+        let evidence = record.evidence;
+        if (canceledBeforeSend && pendingBeforeRevocation !== null) {
+          const journals = pendingBeforeRevocation.journalRecords.map((journal) =>
+            handleJournalSessionUnregister(journal, true, null).record,
+          );
+          if (journals.length > 0) {
+            evidence = [
+              ...record.evidence.filter(
+                (candidate) =>
+                  candidate.envelopeDigest !== pendingBeforeRevocation.envelopeDigest,
+              ),
+              {
+                envelopeDigest: pendingBeforeRevocation.envelopeDigest,
+                acceptance:
+                  record.evidence.find(
+                    (candidate) =>
+                      candidate.envelopeDigest === pendingBeforeRevocation.envelopeDigest,
+                  )?.acceptance ?? null,
+                journal: {
+                  kind: "known_terminal",
+                  rsid: record.rsid,
+                  sessionBindingId: record.sessionBindingId,
+                  envelopeDigest: pendingBeforeRevocation.envelopeDigest,
+                  journalRecords: journals,
+                  batchTerminal: null,
+                  durableJournalVersion: record.sessionVersion,
+                  recordedAtMs: nowMs,
+                },
+              },
+            ];
+          }
+          pending = null;
         }
-        const scopeDigests: `sha256:${string}`[] = [];
-        for (const candidate of candidates) {
-          scopeDigests.push(await this.#ensureNormalizedConflictPair(
-            tx,
-            tenantId,
+        let candidates: readonly NormalizedHoldCandidate[] = [];
+        let unclassifiable = false;
+        try {
+          candidates = normalizedHoldCandidates(
             record.rsid,
-            candidate,
-            nowMs,
-          ));
+            pending === null
+              ? []
+              : durablePendingMutationEntries({ ...record, pending }),
+          );
+          unclassifiable =
+            (pending?.mutating === true && candidates.length === 0) ||
+            candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES;
+        } catch {
+          unclassifiable = true;
         }
+        const scopeDigests = candidates.map((candidate) =>
+          conflictScopeDigest(candidate.mutationScopeJcs),
+        );
         const revocation: DurableEgressRevocation = {
           owner,
           reason: payload.reason,
@@ -3146,6 +3445,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             sessionVersion: record.sessionVersion + 1,
             resumeExpiresAtMs: nowMs,
             sessionLifecycle,
+            pending,
+            evidence,
             egressFence: {
               version: 1,
               state: "revocation_pending",
@@ -3154,10 +3455,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               lease: fence.lease?.phase === "started" ? fence.lease : null,
               revocation,
             },
-            normalizedConflictIndex: extendConflictIndex(
-              sessionConflictIndex(record),
-              scopeDigests,
-            ),
+            normalizedConflictIndex: unclassifiable
+              ? {
+                  ...sessionConflictIndex(record),
+                  state: "overflow",
+                }
+              : extendConflictIndex(sessionConflictIndex(record), scopeDigests),
           },
           nowMs,
         );
@@ -3174,6 +3477,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           record: next,
           revocation,
           candidates,
+          canceledBeforeSend,
         };
       });
       if (persisted.ok) {
@@ -3195,14 +3499,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               1011,
             );
           }
+          this.#completeLocalUnregister(
+            payload.rsid,
+            localPendingAtStart,
+            false,
+          );
           return;
         }
-        phaseOne = await this.#verifyPendingRevocation(
-          tenantId,
-          payload.rsid,
-          owner,
-          payload.reason,
-        );
+        phaseOne = {
+          stored: persisted.value.stored,
+          record: persisted.value.record,
+          revocation: persisted.value.revocation,
+          candidates: persisted.value.candidates,
+        };
+        canceledBeforeSend =
+          ("canceledBeforeSend" in persisted.value &&
+            persisted.value.canceledBeforeSend === true) ||
+          (localPendingAtStart !== null && persisted.value.record.pending === null);
         break;
       }
       if (persisted.code === "conflict") continue;
@@ -3210,12 +3523,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         const evidence = attempted.current;
         const readBack = await this.#readStoredSession(tenantId, payload.rsid);
         if (readBack !== null && sameJson(readBack.value, evidence.next)) {
-          phaseOne = await this.#verifyPendingRevocation(
-            tenantId,
-            payload.rsid,
+          const record = parseStoredSession(readBack, tenantId, payload.rsid);
+          const authority = await this.#pendingRevocationSnapshot(
+            record,
             owner,
             payload.reason,
           );
+          phaseOne = { stored: readBack, record, ...authority };
+          canceledBeforeSend =
+            localPendingAtStart !== null && record.pending === null;
           break;
         }
         if (
@@ -3244,16 +3560,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
     }
 
-    this.#active.delete(payload.rsid);
-    const pendingAtRevocation = phaseOne.record.pending;
-    if (pendingAtRevocation !== null) {
-      const waiter = this.#waiters.get(pendingAtRevocation.invocationId);
-      if (waiter !== undefined) {
-        clearTimeout(waiter.timer);
-        this.#waiters.delete(pendingAtRevocation.invocationId);
-        waiter.resolve(this.#indeterminateOutcome(pendingAtRevocation.mutating));
-      }
-    }
+    phaseOne = await this.#installPendingRevocationCompanions(
+      tenantId,
+      payload.rsid,
+      owner,
+      payload.reason,
+    );
 
     while (sessionEgressFence(phaseOne.record).lease !== null) {
       const revocation = sessionEgressFence(phaseOne.record).revocation!;
@@ -3498,6 +3810,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         1011,
       );
     }
+    this.#completeLocalUnregister(
+      payload.rsid,
+      localPendingAtStart,
+      canceledBeforeSend,
+    );
   }
 
   async #heartbeat(
@@ -3768,6 +4085,53 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return result.value;
   }
 
+  async #awaitFinalTombstoneIfRevoking(
+    tenantId: string,
+    rsid: string,
+  ): Promise<void> {
+    let remainingMs = UNREGISTER_DRAIN_TIMEOUT_MS;
+    while (true) {
+      const observed = await this.store.transact({ tenantId }, async (tx) => {
+        const tombstone = await tx.read<GatewayJsonValue>(
+          GATEWAY_RBP_UNREGISTER_NAMESPACE,
+          rsid,
+        );
+        if (tombstone !== null) {
+          parseUnregisterTombstone(tombstone.value, {
+            tenantId,
+            rsid,
+            stored: tombstone,
+          });
+          return "final" as const;
+        }
+        const session = await tx.read<GatewayJsonValue>(
+          GATEWAY_RBP_SESSION_NAMESPACE,
+          rsid,
+        );
+        if (session === null) return "open" as const;
+        const record = parseStoredSession(session, tenantId, rsid);
+        return sessionEgressFence(record).state === "revocation_pending"
+          ? "pending" as const
+          : "open" as const;
+      });
+      if (!observed.ok) {
+        throw new GatewayRbpFault("unavailable", observed.message, 503, 1011);
+      }
+      if (observed.value !== "pending") return;
+      if (remainingMs <= 0) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "dispatch revocation did not reach a final tombstone",
+          503,
+          1011,
+        );
+      }
+      const waitMs = Math.min(25, remainingMs);
+      await this.#wait(waitMs);
+      remainingMs -= waitMs;
+    }
+  }
+
   async #readConflictPairByDigest(
     tx: Pick<StoreTransaction, "read">,
     tenantId: string,
@@ -3931,6 +4295,76 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return scopeDigest;
   }
 
+  async #assertCutoverSemanticProof(
+    tx: Pick<StoreTransaction, "read">,
+    tenantId: string,
+    rsid: string,
+    record: DurableRbpSession,
+    marker: DurableHoldCutover,
+    legacyHolds: readonly ValidatedLegacyHold[],
+  ): Promise<void> {
+    if (record.normalizedConflictIndex === undefined) {
+      throw new Error("cutover marker lacks a normalized conflict index");
+    }
+    const index = sessionConflictIndex(record);
+    if (index.state !== "complete") {
+      throw new Error("cutover marker requires a complete normalized index");
+    }
+    const proof = legacyCutoverFacts(record, legacyHolds);
+    if (
+      marker.legacyDigest !== proof.legacyDigest ||
+      marker.importedHoldCount !== proof.importedHoldCount ||
+      marker.importedConflictCount !== proof.importedConflictCount ||
+      marker.importedResolutionCount !== proof.importedResolutionCount
+    ) {
+      throw new Error("cutover marker does not match canonical legacy facts");
+    }
+    const indexedPairs = new Map<string, {
+      readonly hold: DurableMutationHold;
+      readonly conflict: DurableMutationConflict;
+      readonly scope: MutationScope;
+    }>();
+    for (const scopeDigest of index.scopeDigests) {
+      const pair = await this.#readConflictPairByDigest(
+        tx,
+        tenantId,
+        rsid,
+        scopeDigest,
+      );
+      if (pair === null || pair.conflict.active !== true) {
+        throw new Error("cutover index has no exact active conflict pair");
+      }
+      indexedPairs.set(scopeDigest, pair);
+    }
+    for (const legacy of legacyHolds) {
+      const pair = await this.#readConflictPairByHoldId(
+        tx,
+        tenantId,
+        rsid,
+        legacy.holdId as `vh:${string}`,
+      );
+      const active = legacy.state !== "cleared";
+      if (
+        pair.hold.state !== legacy.state ||
+        pair.conflict.active !== active ||
+        mutationScopeKey(pair.scope) !== mutationScopeKey(legacy.mutationScope) ||
+        !sameJson(
+          pair.hold.originIdempotencyKeys,
+          legacy.originIdempotencyKeys,
+        ) ||
+        index.scopeDigests.includes(pair.scopeDigest) !== active
+      ) {
+        throw new Error("cutover import disagrees with normalized authority");
+      }
+      indexedPairs.delete(pair.scopeDigest);
+    }
+    for (const pair of indexedPairs.values()) {
+      if (pair.hold.createdAtMs <= marker.cutoverAtMs) {
+        throw new Error("cutover index contains an unaccounted imported pair");
+      }
+    }
+  }
+
   async #assertMutationAdmission(
     tx: Pick<StoreTransaction, "read">,
     tenantId: string,
@@ -3938,6 +4372,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     record: DurableRbpSession,
     scopes: readonly MutationScope[],
     ownHoldIds: ReadonlySet<string>,
+    trustedHoldIds: ReadonlySet<string>,
     originRedelivery: boolean,
   ): Promise<boolean> {
     if (scopes.length === 0) return true;
@@ -3949,9 +4384,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const cutover = markerStored === null
       ? null
       : parseHoldCutover(markerStored, tenantId, rsid);
-    if (cutover !== null && record.normalizedConflictIndex === undefined) {
-      throw new Error("cutover marker lacks a normalized conflict index");
-    }
 
     const sessionScoped = scopes.some((scope) => scope.kind === "session");
     if (sessionScoped && index.state === "overflow") return false;
@@ -3975,7 +4407,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }
         continue;
       }
-      if (index.state === "complete" && !indexed) {
+      if (index.state === "complete" && pair.conflict.active && !indexed) {
         throw new Error("normalized active conflict is absent from its index");
       }
       if (indexed && pair.conflict.active !== true) {
@@ -3983,44 +4415,71 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       if (
         pair.conflict.active &&
-        !(originRedelivery && ownHoldIds.has(pair.hold.holdId))
+        !(
+          originRedelivery &&
+          ownHoldIds.has(pair.hold.holdId) &&
+          trustedHoldIds.has(pair.hold.holdId)
+        ) &&
+        !(
+          !originRedelivery &&
+          pair.hold.state === "resolved_pending_bridge" &&
+          trustedHoldIds.has(pair.hold.holdId)
+        )
       ) {
         return false;
       }
     }
 
-    if (cutover !== null) return true;
     const recovery = await tx.read<GatewayJsonValue>(
       GATEWAY_RECOVERY_NAMESPACE,
       rsid,
     );
-    if (recovery === null) return true;
-    if (
-      recovery.namespace !== GATEWAY_RECOVERY_NAMESPACE ||
-      recovery.tenantId !== tenantId ||
-      recovery.key !== rsid
-    ) {
-      throw new Error("legacy recovery authority key or tenant mismatch");
+    let legacyHolds: readonly ValidatedLegacyHold[] = [];
+    if (recovery !== null) {
+      if (
+        recovery.namespace !== GATEWAY_RECOVERY_NAMESPACE ||
+        recovery.tenantId !== tenantId ||
+        recovery.key !== rsid
+      ) {
+        throw new Error("legacy recovery authority key or tenant mismatch");
+      }
+      legacyHolds = parseLegacyRecoveryHolds(recovery.value, rsid);
     }
-    const legacyHolds = parseLegacyRecoveryHolds(recovery.value, rsid);
+    if (cutover !== null) {
+      await this.#assertCutoverSemanticProof(
+        tx,
+        tenantId,
+        rsid,
+        record,
+        cutover,
+        legacyHolds,
+      );
+      return true;
+    }
     return !legacyHolds.some((hold) =>
       hold.state !== "cleared" &&
       scopes.some((scope) => mutationScopesConflict(hold.mutationScope, scope)) &&
-      !(originRedelivery && ownHoldIds.has(hold.holdId)),
+      !(
+        originRedelivery &&
+        ownHoldIds.has(hold.holdId) &&
+        trustedHoldIds.has(hold.holdId)
+      ) &&
+      !(
+        !originRedelivery &&
+        hold.state === "resolved_pending_bridge" &&
+        trustedHoldIds.has(hold.holdId)
+      ),
     );
   }
 
-  async #assertPendingRevocationAuthority(
-    tx: Pick<StoreTransaction, "read">,
-    tenantId: string,
-    rsid: string,
+  #pendingRevocationSnapshot(
     record: DurableRbpSession,
     owner: DurableEgressRevocation["owner"],
     reason: SessionUnregister["reason"],
-  ): Promise<{
+  ): {
     readonly revocation: DurableEgressRevocation;
     readonly candidates: readonly NormalizedHoldCandidate[];
-  }> {
+  } {
     const fence = sessionEgressFence(record);
     const revocation = fence.revocation;
     if (
@@ -4035,10 +4494,32 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new Error("pending unregister authority is inconsistent");
     }
     const candidates = normalizedHoldCandidates(
-      rsid,
+      record.rsid,
       durablePendingMutationEntries(record),
     );
-    if (candidates.length > MAX_NORMALIZED_CONFLICT_INDEX_ENTRIES) {
+    return { revocation, candidates };
+  }
+
+  async #assertPendingRevocationAuthority(
+    tx: Pick<StoreTransaction, "read">,
+    tenantId: string,
+    rsid: string,
+    record: DurableRbpSession,
+    owner: DurableEgressRevocation["owner"],
+    reason: SessionUnregister["reason"],
+  ): Promise<{
+    readonly revocation: DurableEgressRevocation;
+    readonly candidates: readonly NormalizedHoldCandidate[];
+  }> {
+    const { revocation, candidates } = await this.#pendingRevocationSnapshot(
+      record,
+      owner,
+      reason,
+    );
+    if (record.pending?.mutating === true && candidates.length === 0) {
+      throw new Error("pending mutation has no recoverable legacy scope");
+    }
+    if (candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES) {
       throw new Error("pending unregister exceeds the bounded hold set");
     }
     const index = sessionConflictIndex(record);
@@ -4105,6 +4586,136 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return verified.value;
   }
 
+  async #installPendingRevocationCompanions(
+    tenantId: string,
+    rsid: string,
+    owner: DurableEgressRevocation["owner"],
+    reason: SessionUnregister["reason"],
+  ): Promise<PendingRevocationAuthority> {
+    for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
+      const installed = await this.store.transact({ tenantId }, async (tx) => {
+        const stored = await tx.read<GatewayJsonValue>(
+          GATEWAY_RBP_SESSION_NAMESPACE,
+          rsid,
+        );
+        if (stored === null) throw new Error("pending unregister session is missing");
+        const record = parseStoredSession(stored, tenantId, rsid);
+        const authority = await this.#pendingRevocationSnapshot(
+          record,
+          owner,
+          reason,
+        );
+        if (
+          (record.pending?.mutating === true && authority.candidates.length === 0) ||
+          authority.candidates.length > MAX_RECOVERABLE_MUTATION_SCOPES
+        ) {
+          throw new Error("pending mutation exceeds recoverable companion capacity");
+        }
+        for (const candidate of authority.candidates) {
+          await this.#ensureNormalizedConflictPair(
+            tx,
+            tenantId,
+            rsid,
+            candidate,
+            this.#clock(),
+          );
+        }
+        return authority.candidates.length;
+      });
+      if (installed.ok) {
+        return await this.#verifyPendingRevocation(
+          tenantId,
+          rsid,
+          owner,
+          reason,
+        );
+      }
+      if (installed.code === "conflict") continue;
+      if (installed.code === "durability_uncertain") {
+        const classified = await this.store.transact({ tenantId }, async (tx) => {
+          const stored = await tx.read<GatewayJsonValue>(
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            rsid,
+          );
+          if (stored === null) return "partial" as const;
+          const record = parseStoredSession(stored, tenantId, rsid);
+          const authority = await this.#pendingRevocationSnapshot(
+            record,
+            owner,
+            reason,
+          );
+          let observed = 0;
+          for (const candidate of authority.candidates) {
+            const hold = await tx.read<GatewayJsonValue>(
+              GATEWAY_MUTATION_HOLD_NAMESPACE,
+              candidate.holdId,
+            );
+            const scopeDigest = conflictScopeDigest(candidate.mutationScopeJcs);
+            const conflict = await tx.read<GatewayJsonValue>(
+              GATEWAY_MUTATION_CONFLICT_NAMESPACE,
+              conflictRecordKey(rsid, scopeDigest),
+            );
+            if (hold === null && conflict === null) continue;
+            observed += 1;
+            if (hold === null || conflict === null) return "partial" as const;
+            const pair = await this.#readConflictPairByDigest(
+              tx,
+              tenantId,
+              rsid,
+              scopeDigest,
+            );
+            if (
+              pair === null ||
+              pair.hold.holdId !== candidate.holdId ||
+              pair.hold.mutationScopeJcs !== candidate.mutationScopeJcs ||
+              !sameJson(
+                pair.hold.originIdempotencyKeys,
+                candidate.originIdempotencyKeys,
+              )
+            ) {
+              return "partial" as const;
+            }
+          }
+          return observed === 0
+            ? "absent" as const
+            : observed === authority.candidates.length
+              ? "complete" as const
+              : "partial" as const;
+        });
+        if (!classified.ok) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            classified.message,
+            503,
+            1011,
+          );
+        }
+        if (classified.value === "complete") {
+          return await this.#verifyPendingRevocation(
+            tenantId,
+            rsid,
+            owner,
+            reason,
+          );
+        }
+        if (classified.value === "absent") continue;
+        throw new GatewayRbpFault(
+          "unavailable",
+          "pending unregister companion write is partial",
+          503,
+          1011,
+        );
+      }
+      throw new GatewayRbpFault("unavailable", installed.message, 503, 1011);
+    }
+    throw new GatewayRbpFault(
+      "unavailable",
+      "pending unregister companion retry bound was exhausted",
+      503,
+      1011,
+    );
+  }
+
   async #verifyFinalTombstone(
     tenantId: string,
     rsid: string,
@@ -4150,6 +4761,17 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         throw new Error("final unregister session authority is inconsistent");
       }
       const index = sessionConflictIndex(session);
+      for (const scopeDigest of index.scopeDigests) {
+        const pair = await this.#readConflictPairByDigest(
+          tx,
+          tenantId,
+          rsid,
+          scopeDigest,
+        );
+        if (pair === null || pair.conflict.active !== true) {
+          throw new Error("final session index has no exact active pair");
+        }
+      }
       for (const holdId of tombstone.holdIds) {
         const pair = await this.#readConflictPairByHoldId(
           tx,
@@ -4164,6 +4786,24 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           throw new Error("tombstone hold is absent from the session index");
         }
       }
+      const journalHoldIds = [...new Set(
+        session.evidence.flatMap((entry) =>
+          entry.journal !== null &&
+          entry.journal.recordedAtMs >= tombstone.createdAtMs
+            ? entry.journal.journalRecords.flatMap((journal) =>
+                journal.verificationHoldId === null
+                  ? []
+                  : [journal.verificationHoldId],
+              )
+            : [],
+        ),
+      )].sort();
+      if (
+        journalHoldIds.length > 0 &&
+        !sameJson(journalHoldIds, tombstone.holdIds)
+      ) {
+        throw new Error("tombstone holds disagree with durable journal evidence");
+      }
       return tombstone;
     });
     if (!verified.ok) {
@@ -4177,6 +4817,30 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (active !== undefined && active.tenantId === record.tenantId) {
       active.record = record;
     }
+  }
+
+  #completeLocalUnregister(
+    rsid: string,
+    pending: DurablePendingDispatch | null,
+    knownNotDispatched: boolean,
+  ): void {
+    this.#active.delete(rsid);
+    if (pending === null) return;
+    const waiter = this.#waiters.get(pending.invocationId);
+    if (waiter === undefined) return;
+    clearTimeout(waiter.timer);
+    this.#waiters.delete(pending.invocationId);
+    waiter.resolve(
+      knownNotDispatched
+        ? {
+            state: "failed",
+            error: {
+              code: "executor_unavailable",
+              message: "dispatch was revoked before transport send",
+            },
+          }
+        : this.#indeterminateOutcome(pending.mutating),
+    );
   }
 
   async #readSession(tenantId: string, rsid: string): Promise<DurableRbpSession> {
