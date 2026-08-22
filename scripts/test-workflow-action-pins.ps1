@@ -110,11 +110,54 @@ function Test-UnsupportedExplicitMappingKeySyntax {
         if ($character -ne '?') { continue }
         $previousIsBoundary = $index -eq 0 -or [char]::IsWhiteSpace($Line[$index - 1]) -or $Line[$index - 1] -in @('{', ',')
         if (-not $previousIsBoundary) { continue }
-        $next = $index + 1
-        while ($next -lt $Line.Length -and [char]::IsWhiteSpace($Line[$next])) { $next++ }
-        if ($next -lt $Line.Length -and $Line[$next] -ne '#') { return $true }
+        return $true
     }
     return $false
+}
+
+function Test-PotentialQuotedMappingKeyStart {
+    param([string]$Line, [int]$Start)
+
+    $previous = $Start - 1
+    while ($previous -ge 0 -and [char]::IsWhiteSpace($Line[$previous])) { $previous-- }
+    if ($previous -lt 0) { return $true }
+    $previousCharacter = [string]$Line[$previous]
+    return (($previousCharacter -eq '{') -or ($previousCharacter -eq ',') -or ($previousCharacter -eq '-') -or ($previousCharacter -eq '?'))
+}
+
+function Get-UnsupportedYamlIndirectionReason {
+    param([string]$Line)
+
+    for ($index = 0; $index -lt $Line.Length; $index++) {
+        $character = $Line[$index]
+        if ($character -in @("'", '"')) {
+            if ($character -eq '"' -and ($index + 1) -lt $Line.Length -and $Line[$index + 1] -eq '@') {
+                continue
+            }
+            $isPotentialKey = Test-PotentialQuotedMappingKeyStart -Line $Line -Start $index
+            $quoted = Read-YamlQuotedScalar -Text $Line -Start $index
+            if (-not $quoted.success) {
+                if ($isPotentialKey) { return 'quoted mapping keys must open and close on one physical line' }
+                return $null
+            }
+            if ($isPotentialKey) {
+                $tail = $quoted.next
+                while ($tail -lt $Line.Length -and [char]::IsWhiteSpace($Line[$tail])) { $tail++ }
+                if ($tail -lt $Line.Length -and $Line[$tail] -eq ':') {
+                    if ($quoted.hasEscape) { return 'backslash escapes in double-quoted mapping keys are unsupported' }
+                }
+            }
+            $index = $quoted.next - 1
+            continue
+        }
+        if ($character -in @('&', '*') -and ($index + 1) -lt $Line.Length -and $Line[$index + 1] -match '[A-Za-z0-9_-]') {
+            return 'YAML anchors and aliases are unsupported'
+        }
+        if ($character -eq '<' -and ($index + 2) -lt $Line.Length -and $Line.Substring($index, 3) -eq '<<:') {
+            return 'YAML merge keys are unsupported'
+        }
+    }
+    return $null
 }
 
 function Read-YamlUsesValue {
@@ -198,6 +241,11 @@ foreach ($relativePath in $relativeFiles) {
     foreach ($rawLine in @(Get-Content -LiteralPath $absolutePath -ErrorAction Stop)) {
         $lineNumber++
         $line = Remove-YamlComment -Line $rawLine
+        $indirectionReason = Get-UnsupportedYamlIndirectionReason -Line $line
+        if ($null -ne $indirectionReason) {
+            $violations.Add(('{0}:{1} {2}' -f $relativePath, $lineNumber, $indirectionReason))
+            continue
+        }
         if (Test-UnsupportedExplicitMappingKeySyntax -Line $line) {
             $violations.Add(('{0}:{1} explicit YAML mapping-key syntax is unsupported' -f $relativePath, $lineNumber))
             continue

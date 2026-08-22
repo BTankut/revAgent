@@ -20,6 +20,11 @@ Docker actions, tags, branches, uppercase SHAs, short SHAs, and ambiguous
 tails. Backslash escapes in *any* double-quoted mapping key and YAML explicit
 mapping-key syntax (`? key`, quoted explicit keys, and flow explicit keys) are
 rejected globally as unsupported, even when the key is unrelated to `uses`.
+An explicit-key indicator is rejected even when bare or comment-only and its
+key/value continues on a later line. Outside quoted scalars/comments, YAML
+anchors, aliases, and merge tokens (`&name`, `*name`, `<<:`) are also rejected.
+Quoted mapping keys must open and close on the same physical line; escaped or
+continued double-quoted keys and multiline single-quoted keys fail closed.
 Workflow YAML syntax is checked separately. The fixture matrix at
 `scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
 rejected forms.
