@@ -15,6 +15,8 @@ import {
 } from "../utils/telemetry.js";
 import { runtimeGuarded } from "../utils/runtimeResult.js";
 
+export const NATIVE_OUTCOME_EVIDENCE_CONFORMANCE = "revagent.mutation-outcome/v1" as const;
+
 function findUnsupportedMethodBodySnippet(code: string) {
     const source = String(code || "");
     const typeDeclaration = source.match(/^\s*(?:public|private|protected|internal|static|sealed|abstract|partial|\s)*\b(?:class|struct|interface|enum|record)\s+[A-Za-z_][A-Za-z0-9_]*/m);
@@ -34,6 +36,38 @@ function findUnsupportedMethodBodySnippet(code: string) {
     }
 
     return null;
+}
+
+export function containsManualTransaction(code: string) {
+    return /new\s+(?:Autodesk\.Revit\.DB\.)?(?:Transaction|SubTransaction|TransactionGroup)\s*\(/i
+        .test(String(code || ""));
+}
+
+export function nativeOutcomeEvidencePreflight(input: {
+    code: string;
+    transactionMode?: "auto" | "none";
+    nativeOutcomeEvidenceConformance?: typeof NATIVE_OUTCOME_EVIDENCE_CONFORMANCE;
+}) {
+    const invalidDeclaration =
+        input.nativeOutcomeEvidenceConformance !== undefined &&
+        input.transactionMode !== "none";
+    if (invalidDeclaration) {
+        return {
+            reason: "native_outcome_evidence_requires_transaction_mode_none",
+            message: "nativeOutcomeEvidenceConformance is valid only with transactionMode none.",
+        };
+    }
+
+    const missingDeclaration =
+        containsManualTransaction(input.code) &&
+        input.transactionMode === "none" &&
+        input.nativeOutcomeEvidenceConformance !== NATIVE_OUTCOME_EVIDENCE_CONFORMANCE;
+    return missingDeclaration
+        ? {
+            reason: "native_outcome_evidence_conformance_required",
+            message: "Manual Revit transaction code in transactionMode none requires nativeOutcomeEvidenceConformance=revagent.mutation-outcome/v1 before dispatch.",
+        }
+        : null;
 }
 
 function findErrorLikeResult(value: any) {
@@ -71,6 +105,10 @@ export function registerSendCodeToRevitTool(server: ToolServer) {
             .enum(["auto", "none"])
             .optional()
             .describe("Transaction handling mode forwarded to the Revit wrapper. In the bundled plugin build, snippets should not open their own Transaction unless that exact build has been verified."),
+        nativeOutcomeEvidenceConformance: z
+            .literal(NATIVE_OUTCOME_EVIDENCE_CONFORMANCE)
+            .optional()
+            .describe("Exact native outcome-evidence declaration required before transactionMode none may run manual Revit transaction code. The snippet must return a matching bounded outcomeEvidence object; missing or invalid evidence fails closed."),
         timeoutMs: z
             .number()
             .int()
@@ -92,6 +130,9 @@ export function registerSendCodeToRevitTool(server: ToolServer) {
             transactionMode: args.transactionMode || "auto",
             taskName: args.taskName || "Run Revit code",
         };
+        if (args.nativeOutcomeEvidenceConformance) {
+            params.nativeOutcomeEvidenceConformance = args.nativeOutcomeEvidenceConformance;
+        }
         if (args.taskId) {
             params.taskId = args.taskId;
         }
@@ -142,6 +183,36 @@ export function registerSendCodeToRevitTool(server: ToolServer) {
                     {
                         type: "text",
                         text: `Code execution guarded: ${unsupportedSnippet.message}`,
+                    },
+                ],
+            };
+        }
+        const outcomePreflight = nativeOutcomeEvidencePreflight(args);
+        if (outcomePreflight) {
+            const durationMs = Math.max(0, Date.now() - startedAtMs);
+            const guardedResponse = runtimeGuarded({
+                action: "dynamic_snippet_preflight",
+                reason: outcomePreflight.reason,
+                error: outcomePreflight.message,
+            });
+            recordRevitCommandTelemetry({
+                commandName: "send_code_to_revit",
+                logicalToolName: "send_code_to_revit",
+                executionKind: "dynamicCode",
+                params,
+                options,
+                response: guardedResponse,
+                startedAtMs,
+            });
+            recordLiveActivityFinished(liveTask, {
+                response: guardedResponse,
+                durationMs,
+            });
+            return {
+                content: [
+                    {
+                        type: "text",
+                        text: `Code execution guarded: ${outcomePreflight.message}`,
                     },
                 ],
             };

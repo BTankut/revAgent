@@ -16,6 +16,7 @@ import {
   type MutationScope,
   type RecoveryClearance,
 } from "@revagent/protocol";
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -52,6 +53,33 @@ const TEST_ATTEMPT_ID = uuid7(42);
 const DOC_A: MutationScope = { kind: "document", document_id: "doc-a" };
 const DOC_B: MutationScope = { kind: "document", document_id: "doc-b" };
 const SESSION_SCOPE: MutationScope = { kind: "session" };
+
+interface GatewayVerificationReadClearanceFixture {
+  readonly rsid: string;
+  readonly admission_mutation_scope: MutationScope;
+  readonly holds: readonly {
+    readonly hold_id: string;
+    readonly mutation_scope: MutationScope;
+    readonly ordered_origin_idempotency_keys: readonly string[];
+    readonly verification: {
+      readonly terminal_result_digest: string;
+      readonly decision: "non_execution_proven" | "postcondition_verified";
+    };
+  }[];
+  readonly clearances: readonly RecoveryClearance[];
+}
+
+function readGatewayVerificationReadClearanceFixture(): GatewayVerificationReadClearanceFixture {
+  return JSON.parse(
+    readFileSync(
+      new URL(
+        "../../protocol/conformance/fixtures/gateway-verification-read-clearances.json",
+        import.meta.url,
+      ),
+      "utf8",
+    ),
+  ) as GatewayVerificationReadClearanceFixture;
+}
 
 function uuid7(value: number): string {
   return `0197a3c2-0000-7000-8000-${String(value).padStart(12, "0")}`;
@@ -718,6 +746,10 @@ async function recordVerification(input: {
 async function twoEvidenceRecordedHolds(
   authority: GatewayRecoveryAuthority,
   bridgeEvidence: TestBridgeEvidence,
+  conclusions: readonly [
+    "non_execution_proven" | "postcondition_verified",
+    "non_execution_proven" | "postcondition_verified",
+  ] = ["postcondition_verified", "postcondition_verified"],
 ): Promise<{
   readonly holds: readonly InstalledHold[];
   readonly plan: GatewayRecoveryResolutionPlan;
@@ -748,7 +780,7 @@ async function twoEvidenceRecordedHolds(
     holdId: first.installed.holdId,
     scope: first.installed.scope,
     seq: 20,
-    conclusion: "postcondition_verified",
+    conclusion: conclusions[0],
   });
   await recordVerification({
     authority,
@@ -756,15 +788,21 @@ async function twoEvidenceRecordedHolds(
     holdId: second.installed.holdId,
     scope: second.installed.scope,
     seq: 21,
-    conclusion: "postcondition_verified",
+    conclusion: conclusions[1],
   });
   const snapshot = requireRecord(
     await authority.snapshot({ tenantId: TENANT_A, rsid: RSID_A }),
   );
-  const decisions = snapshot.ledger.holds.map((hold) => ({
-    holdId: hold.holdId,
-    decision: "postcondition_verified" as const,
-  }));
+  const decisions = snapshot.ledger.holds.map((hold) => {
+    const decision = hold.selectedEvidence?.conclusion;
+    if (
+      decision !== "non_execution_proven" &&
+      decision !== "postcondition_verified"
+    ) {
+      throw new Error("recovery hold has no resolution decision");
+    }
+    return { holdId: hold.holdId, decision };
+  });
   const planned = await authority.planRecoveryClearances({
     tenantId: TENANT_A,
     rsid: RSID_A,
@@ -778,6 +816,40 @@ async function twoEvidenceRecordedHolds(
 }
 
 describe("GatewayRecoveryAuthority durable safety", () => {
+  it("matches the portable verification-read clearance fixture for document holds admitted by session scope", async () => {
+    const fixture = readGatewayVerificationReadClearanceFixture();
+    const { authority, bridgeEvidence } = await createHarness();
+    const { plan } = await twoEvidenceRecordedHolds(authority, bridgeEvidence, [
+      "non_execution_proven",
+      "postcondition_verified",
+    ]);
+    const snapshot = requireRecord(
+      await authority.snapshot({ tenantId: TENANT_A, rsid: RSID_A }),
+    );
+
+    expect(fixture.rsid).toBe(RSID_A);
+    expect(fixture.admission_mutation_scope).toEqual(SESSION_SCOPE);
+    expect(
+      snapshot.ledger.holds.map((hold) => ({
+        hold_id: hold.holdId,
+        mutation_scope: hold.mutationScope,
+        ordered_origin_idempotency_keys: hold.originIdempotencyKeys,
+        verification: {
+          terminal_result_digest: hold.selectedEvidence?.evidenceDigest,
+          decision: hold.selectedEvidence?.conclusion,
+        },
+      })),
+    ).toEqual(fixture.holds);
+    expect(plan.clearances).toEqual(fixture.clearances);
+    expect(
+      plan.clearances.map((clearance) => clearance.evidence_digest),
+    ).toEqual(
+      fixture.holds.map(
+        (hold) => hold.verification.terminal_result_digest,
+      ),
+    );
+  });
+
   it("persists one invocation window across restart and acquires the same attempt idempotently", async () => {
     const harness = await createHarness();
     const attemptId = uuid7(900_001);

@@ -1,0 +1,177 @@
+{
+  "schema": "revagent-remediation-artifact-manifest/v1",
+  "workPackage": "WP-03",
+  "cycle": "rework-3",
+  "agent": "critical_csharp_worker_surrogate",
+  "baseSha": "29dcb3c8c27f2b762557124d992ebb9d3822030d",
+  "productCommit": "69a5467f",
+  "branch": "remediation/wp-03-mutation-outcome-holds",
+  "pullRequest": 388,
+  "pullRequestState": "open_draft",
+  "generatedAtUtc": "2026-08-22T15:34:08.4454460+00:00",
+  "toolchain": {
+    "node": "24.19.0",
+    "dotnet": "9.0.102",
+    "powershell": "7.6.4"
+  },
+  "gates": {
+    "cycle3Focused": "51/51 pass",
+    "bridgeFull": "902/902 pass",
+    "contractsProvenance": "308/308 pass",
+    "protocol": "311/311 plus typecheck lint conformance pass",
+    "runtime": "full pass",
+    "gateway": "593 pass 5 skip plus typecheck lint",
+    "commandset": "Release R25 build pass",
+    "scope": "11 product/test paths 0 violations",
+    "diffCheck": "pass",
+    "format": "pass",
+    "independentReview": "pass after carrier rework"
+  },
+  "coverage": {
+    "durableCarrier": "hold-authored canonical scope, derived grouped origins/hold id, digest-validated live/refusal/replay",
+    "atomic": "live legacy restart and power-cut session subsumption",
+    "fanout": "zero-owned and completed-prefix admit without false hold; executing step blocks"
+  },
+  "artifacts": [
+    {
+      "path": "bridge-full-01.log",
+      "bytes": 4090,
+      "sha256": "c11d58de794de883bec89265ca6503cdce8c73302e812ca238fd3862afa230f9"
+    },
+    {
+      "path": "bridge-full-after-review.log",
+      "bytes": 1458,
+      "sha256": "93ac85e4230a1d67944f585b2c41bac102c8c7c08cc7025417493d7d3b9edaed"
+    },
+    {
+      "path": "bridge-full-final.log",
+      "bytes": 1458,
+      "sha256": "93ac85e4230a1d67944f585b2c41bac102c8c7c08cc7025417493d7d3b9edaed"
+    },
+    {
+      "path": "build-01.log",
+      "bytes": 1052,
+      "sha256": "b166cc931c466f3a56d16a056023e70bd3c97c2f4cf28bc0f4035df833c5c638"
+    },
+    {
+      "path": "build-02.log",
+      "bytes": 1052,
+      "sha256": "16b4ff16b53ff2c2d0761595909ff0955f47cbcab62be660f58eab78cd295433"
+    },
+    {
+      "path": "build-03.log",
+      "bytes": 1443,
+      "sha256": "21145090a5c0bcadc0cd1d3878a7b8d9e056d71a3b0f3e12bc83b62ae7e4fd1d"
+    },
+    {
+      "path": "build-focused-final.log",
+      "bytes": 1443,
+      "sha256": "f533f3be8775dcea90a46a8dc6ed36c896372911dd46091c9cc34e8dc1f81475"
+    },
+    {
+      "path": "build-review-fix.log",
+      "bytes": 1443,
+      "sha256": "6d547ea6915136bea7ca723e90d893fa93230f0532cd87fce4d1a32d96db3c98"
+    },
+    {
+      "path": "commandset-r25.log",
+      "bytes": 21755,
+      "sha256": "a27d8b5cd1ca27c71eda432b9b257c46f169f7073e516b4977c6e39cac838986"
+    },
+    {
+      "path": "contracts-full.log",
+      "bytes": 961,
+      "sha256": "9bc3c5f8c5461410e244da95b34c3d308ed8b92182b6266ce6ba1d442063c2b9"
+    },
+    {
+      "path": "cycle3-focused-01.log",
+      "bytes": 591,
+      "sha256": "f1697224ea289f9e0f0f6e605fe4e5c662c42eafc3d57b629e0b93319da52c28"
+    },
+    {
+      "path": "cycle3-focused-02.log",
+      "bytes": 1453,
+      "sha256": "3d3e0ac9aef5f865c8210dbf47239775a5facf9241815783d08147b9a07e903b"
+    },
+    {
+      "path": "cycle3-review-fix-focused.log",
+      "bytes": 1453,
+      "sha256": "bb409af0a816ea74d80933e78b0ebeb2896d686e38f90a11c81165cde0cf0f88"
+    },
+    {
+      "path": "dotnet-format-verify-01.log",
+      "bytes": 167,
+      "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147"
+    },
+    {
+      "path": "dotnet-format-verify-after-review.log",
+      "bytes": 167,
+      "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147"
+    },
+    {
+      "path": "dotnet-format-verify-final.log",
+      "bytes": 167,
+      "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147"
+    },
+    {
+      "path": "git-diff-check-after-review.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "git-diff-check-final.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "node-gates/gateway-full-test.log",
+      "bytes": 11396,
+      "sha256": "2fbb5538a1bc169655f40c091a2b2c8261797659dfe00086c3997cfcfacf77fe"
+    },
+    {
+      "path": "node-gates/gateway-lint.log",
+      "bytes": 58,
+      "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77"
+    },
+    {
+      "path": "node-gates/gateway-typecheck.log",
+      "bytes": 74,
+      "sha256": "a5c825ba051431de38926cea057827446a6cd6daf37ea7c05541db300a6fd9f8"
+    },
+    {
+      "path": "node-gates/protocol-conformance.log",
+      "bytes": 232,
+      "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c"
+    },
+    {
+      "path": "node-gates/protocol-lint.log",
+      "bytes": 57,
+      "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27"
+    },
+    {
+      "path": "node-gates/protocol-test.log",
+      "bytes": 1504,
+      "sha256": "46bb1201ba6e77539e5d38d21194890a08900bfc21972085c1d66c730213f771"
+    },
+    {
+      "path": "node-gates/protocol-typecheck.log",
+      "bytes": 236,
+      "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc"
+    },
+    {
+      "path": "node-gates/runtime-full-test.log",
+      "bytes": 6207,
+      "sha256": "d0a5c219fd6c5e9986ad5e5cc72d2b9ffd8d9d389e912f97b42fe624c6acb347"
+    },
+    {
+      "path": "node-gates/summary.json",
+      "bytes": 5977,
+      "sha256": "056cfdbde7fc637e2e082e6ba593104f34492de476cf64473769e8553c4d457c"
+    },
+    {
+      "path": "scope-audit-final.log",
+      "bytes": 1137,
+      "sha256": "63537ecbdee9f52a8711e7ffe64bc5d4583dcd9ffa64f89707023820f4bacbb7"
+    }
+  ]
+}

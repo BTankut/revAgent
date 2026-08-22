@@ -154,7 +154,9 @@ public sealed class RbpInvocationConflictGateTests
         Assert.Equal(
             holdId,
             refused.Payload.GetProperty("verification_hold_id").GetString());
-        Assert.False(refused.Payload.GetProperty("replayed").GetBoolean());
+        // Canonical v3 import promoted the pre-existing executing row before
+        // admission; this answer is therefore already a durable replay.
+        Assert.True(refused.Payload.GetProperty("replayed").GetBoolean());
 
         // Rule 1 unchanged: the second redelivery replays the durable row
         // with `replayed:true`, which only the Section 12.2 rules produce —

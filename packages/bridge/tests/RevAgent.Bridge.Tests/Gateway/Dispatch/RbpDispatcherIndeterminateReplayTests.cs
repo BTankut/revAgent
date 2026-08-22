@@ -82,6 +82,23 @@ public sealed class RbpDispatcherIndeterminateReplayTests
             Canonical(ScopeJson),
             Rfc8785Json.Canonicalize(
                 replay.Payload.GetProperty("mutation_scope")));
+        Assert.Equal(
+            Canonical(ScopeJson),
+            first.Payload.GetProperty("mutation_scope").GetRawText());
+        Assert.Equal(
+            Canonical(ScopeJson),
+            replay.Payload.GetProperty("mutation_scope").GetRawText());
+        using (JsonDocument durable = JsonDocument.Parse(
+                   stored.TerminalOutcomeJson!))
+        {
+            Assert.Equal(
+                Canonical(ScopeJson),
+                durable.RootElement.GetProperty("mutation_scope")
+                    .GetRawText());
+            Assert.Equal(
+                Rfc8785Json.Sha256Digest(durable.RootElement),
+                stored.ResultDigest);
+        }
 
         // Section 15 forbids a result digest on this class.
         Assert.False(replay.Payload.TryGetProperty("result_digest", out _));
@@ -115,7 +132,9 @@ public sealed class RbpDispatcherIndeterminateReplayTests
         Assert.Equal(0, channel.Calls);
         Assert.Equal("error", first.Type);
         Assert.Equal("error", replay.Type);
-        Assert.False(first.Payload.GetProperty("replayed").GetBoolean());
+        // Canonical v3 restart import promotes the executing mutation before
+        // admission, so the first delivery already replays durable v3 truth.
+        Assert.True(first.Payload.GetProperty("replayed").GetBoolean());
         Assert.True(replay.Payload.GetProperty("replayed").GetBoolean());
 
         // Byte-for-byte the same canonical body once the per-delivery replay

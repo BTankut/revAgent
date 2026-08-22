@@ -81,9 +81,15 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
-                int invocations = PruneTerminalInvocations(context, cutoff);
-                int batches = PruneTerminalBatches(context, cutoff);
-                int holds = PruneClearedHolds(context, cutoff);
+                int invocations =
+                    PruneTerminalInvocationsV3(context, cutoff) +
+                    PruneTerminalInvocations(context, cutoff);
+                int batches =
+                    PruneTerminalBatchesV3(context, cutoff) +
+                    PruneTerminalBatches(context, cutoff);
+                int holds =
+                    PruneClearedHoldsV3(context, cutoff) +
+                    PruneClearedHolds(context, cutoff);
                 int receipts = PruneTransportRows(
                     context,
                     "rbp_inbound_receipts",
@@ -127,6 +133,10 @@ internal sealed partial class RbpJournalStore
               )
               AND finished_at_ms<=$cutoff
               AND NOT EXISTS(
+                SELECT 1 FROM rbp_hold_cutover_v3 AS cutover
+                WHERE cutover.rsid=rbp_invocations.rsid
+              )
+              AND NOT EXISTS(
                 SELECT 1
                 FROM rbp_verification_holds AS holds
                 WHERE holds.state<>'cleared'
@@ -160,6 +170,73 @@ internal sealed partial class RbpJournalStore
         return delete.ExecuteNonQuery();
     }
 
+    private static int PruneTerminalInvocationsV3(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        using (SqliteCommand stage = context.CreateCommand(
+                   """
+                   CREATE TEMP TABLE IF NOT EXISTS wp03_prunable_invocations(
+                     idempotency_key TEXT PRIMARY KEY
+                   ) WITHOUT ROWID;
+                   DELETE FROM wp03_prunable_invocations;
+                   INSERT INTO wp03_prunable_invocations(idempotency_key)
+                   SELECT outcome.idempotency_key
+                   FROM rbp_outcome_dispatch_v3 AS outcome
+                   JOIN rbp_invocations AS identity
+                     ON identity.idempotency_key=outcome.idempotency_key
+                   WHERE outcome.terminal_state IN (
+                       'completed','failed','guarded','cancelled','indeterminate'
+                     )
+                     AND outcome.finished_at_ms<=$cutoff
+                     AND NOT EXISTS(
+                       SELECT 1 FROM rbp_mutation_holds_v3 AS hold
+                       WHERE hold.state<>'cleared'
+                         AND (
+                           hold.hold_id=outcome.verification_hold_id OR
+                           hold.verification_invocation_id=
+                             identity.invocation_id OR
+                           hold.ordered_origin_keys_json LIKE
+                             '%"' || identity.idempotency_key || '"%'
+                         )
+                     )
+                     AND (
+                       identity.batch_id IS NULL OR
+                       EXISTS(
+                         SELECT 1 FROM rbp_batches_v3 AS batch
+                         WHERE batch.rsid=identity.rsid
+                           AND substr(batch.batch_key,
+                               length(batch.rsid)+2)=identity.batch_id
+                           AND batch.state='terminal'
+                       )
+                     );
+                   """))
+        {
+            stage.Parameters.AddWithValue("$cutoff", cutoff);
+            _ = stage.ExecuteNonQuery();
+        }
+
+        using (SqliteCommand deleteOutcomes = context.CreateCommand(
+                   """
+                   DELETE FROM rbp_outcome_dispatch_v3
+                   WHERE idempotency_key IN (
+                     SELECT idempotency_key FROM wp03_prunable_invocations
+                   );
+                   """))
+        {
+            _ = deleteOutcomes.ExecuteNonQuery();
+        }
+
+        using SqliteCommand deleteIdentity = context.CreateCommand(
+            """
+            DELETE FROM rbp_invocations
+            WHERE idempotency_key IN (
+              SELECT idempotency_key FROM wp03_prunable_invocations
+            );
+            """);
+        return deleteIdentity.ExecuteNonQuery();
+    }
+
     private static int PruneTerminalBatches(
         RbpJournalWriteContext context,
         long cutoff)
@@ -172,6 +249,10 @@ internal sealed partial class RbpJournalStore
             """
             DELETE FROM rbp_batches
             WHERE state='terminal'
+              AND NOT EXISTS(
+                SELECT 1 FROM rbp_hold_cutover_v3 AS cutover
+                WHERE cutover.rsid=rbp_batches.rsid
+              )
               AND finished_at_ms<=$cutoff
               AND NOT EXISTS(
                 SELECT 1
@@ -182,6 +263,49 @@ internal sealed partial class RbpJournalStore
             """);
         delete.Parameters.AddWithValue("$cutoff", cutoff);
         return delete.ExecuteNonQuery();
+    }
+
+    private static int PruneTerminalBatchesV3(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        using (SqliteCommand deleteV3 = context.CreateCommand(
+                   """
+                   DELETE FROM rbp_batches_v3
+                   WHERE state='terminal' AND finished_at_ms<=$cutoff
+                     AND NOT EXISTS(
+                       SELECT 1 FROM rbp_invocations AS steps
+                       WHERE steps.rsid=rbp_batches_v3.rsid
+                         AND steps.batch_id=substr(
+                           rbp_batches_v3.batch_key,
+                           length(rbp_batches_v3.rsid)+2)
+                     );
+                   """))
+        {
+            deleteV3.Parameters.AddWithValue("$cutoff", cutoff);
+            _ = deleteV3.ExecuteNonQuery();
+        }
+
+        using SqliteCommand deleteLegacy = context.CreateCommand(
+            """
+            DELETE FROM rbp_batches
+            WHERE NOT EXISTS(
+              SELECT 1 FROM rbp_batches_v3 AS v3
+              WHERE v3.batch_key=rbp_batches.batch_key
+            )
+              AND state='terminal' AND finished_at_ms<=$cutoff
+              AND NOT EXISTS(
+                SELECT 1 FROM rbp_invocations AS steps
+                WHERE steps.rsid=rbp_batches.rsid
+                  AND steps.batch_id=rbp_batches.batch_id
+              )
+              AND EXISTS(
+                SELECT 1 FROM rbp_hold_cutover_v3 AS cutover
+                WHERE cutover.rsid=rbp_batches.rsid
+              );
+            """);
+        deleteLegacy.Parameters.AddWithValue("$cutoff", cutoff);
+        return deleteLegacy.ExecuteNonQuery();
     }
 
     private static int PruneClearedHolds(
@@ -195,6 +319,10 @@ internal sealed partial class RbpJournalStore
             """
             DELETE FROM rbp_verification_holds
             WHERE state='cleared'
+              AND NOT EXISTS(
+                SELECT 1 FROM rbp_hold_cutover_v3 AS cutover
+                WHERE cutover.rsid=rbp_verification_holds.rsid
+              )
               AND cleared_at_ms<=$cutoff
               AND updated_at_ms<=$cutoff
               AND NOT EXISTS(
@@ -206,6 +334,97 @@ internal sealed partial class RbpJournalStore
             """);
         delete.Parameters.AddWithValue("$cutoff", cutoff);
         return delete.ExecuteNonQuery();
+    }
+
+    private static int PruneClearedHoldsV3(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        using (SqliteCommand deleteResolutions = context.CreateCommand(
+                   """
+                   DELETE FROM rbp_mutation_resolutions_v3 AS resolution
+                   WHERE EXISTS (
+                     SELECT 1 FROM rbp_mutation_holds_v3 AS hold
+                     WHERE hold.rsid=resolution.rsid
+                       AND hold.hold_id=resolution.hold_id
+                       AND hold.state='cleared'
+                       AND hold.cleared_at_ms<=$cutoff
+                       AND hold.updated_at_ms<=$cutoff
+                       AND NOT EXISTS(
+                          SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                          WHERE outcome.rsid=hold.rsid
+                            AND outcome.verification_hold_id=hold.hold_id
+                        )
+                   );
+                   """))
+        {
+            deleteResolutions.Parameters.AddWithValue("$cutoff", cutoff);
+            _ = deleteResolutions.ExecuteNonQuery();
+        }
+
+        using (SqliteCommand deleteConflicts = context.CreateCommand(
+                   """
+                   DELETE FROM rbp_mutation_conflicts_v3 AS conflict
+                   WHERE conflict.active=0 AND EXISTS (
+                     SELECT 1 FROM rbp_mutation_holds_v3 AS hold
+                     WHERE hold.rsid=conflict.rsid
+                       AND hold.hold_id=conflict.hold_id
+                       AND hold.state='cleared'
+                       AND hold.cleared_at_ms<=$cutoff
+                       AND hold.updated_at_ms<=$cutoff
+                       AND NOT EXISTS(
+                          SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                          WHERE outcome.rsid=hold.rsid
+                            AND outcome.verification_hold_id=hold.hold_id
+                        )
+                   );
+                   """))
+        {
+            deleteConflicts.Parameters.AddWithValue("$cutoff", cutoff);
+            _ = deleteConflicts.ExecuteNonQuery();
+        }
+
+        using (SqliteCommand deleteHolds = context.CreateCommand(
+                   """
+                   DELETE FROM rbp_mutation_holds_v3
+                   WHERE state='cleared' AND cleared_at_ms<=$cutoff
+                     AND updated_at_ms<=$cutoff
+                     AND NOT EXISTS(
+                        SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                        WHERE outcome.rsid=rbp_mutation_holds_v3.rsid
+                          AND outcome.verification_hold_id=
+                            rbp_mutation_holds_v3.hold_id
+                     );
+                   """))
+        {
+            deleteHolds.Parameters.AddWithValue("$cutoff", cutoff);
+            int deleted = deleteHolds.ExecuteNonQuery();
+
+            using SqliteCommand deleteLegacy = context.CreateCommand(
+                """
+                DELETE FROM rbp_verification_holds
+                WHERE state='cleared' AND cleared_at_ms<=$cutoff
+                  AND updated_at_ms<=$cutoff
+                  AND EXISTS(
+                    SELECT 1 FROM rbp_hold_cutover_v3 AS cutover
+                    WHERE cutover.rsid=rbp_verification_holds.rsid
+                  )
+                  AND NOT EXISTS(
+                    SELECT 1 FROM rbp_mutation_holds_v3 AS v3
+                    WHERE v3.rsid=rbp_verification_holds.rsid
+                      AND v3.hold_id=
+                      rbp_verification_holds.verification_hold_id
+                  )
+                  AND NOT EXISTS(
+                    SELECT 1 FROM rbp_invocations
+                    WHERE rbp_invocations.verification_hold_id=
+                      rbp_verification_holds.verification_hold_id
+                  );
+                """);
+            deleteLegacy.Parameters.AddWithValue("$cutoff", cutoff);
+            _ = deleteLegacy.ExecuteNonQuery();
+            return deleted;
+        }
     }
 
     private static int PruneTransportRows(

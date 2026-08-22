@@ -76,6 +76,21 @@ interface FrameLimitFixture {
   doc_context_update_frame: ByteLimitVector;
 }
 
+interface GatewayVerificationReadClearanceFixture {
+  rsid: string;
+  admission_mutation_scope: Record<string, unknown>;
+  holds: Array<{
+    hold_id: string;
+    mutation_scope: Record<string, unknown>;
+    ordered_origin_idempotency_keys: string[];
+    verification: {
+      terminal_result_digest: string;
+      decision: "non_execution_proven" | "postcondition_verified";
+    };
+  }>;
+  clearances: Array<Record<string, unknown>>;
+}
+
 interface ByteLimitVector {
   limit_bytes: number;
   accepted_bytes: number;
@@ -346,6 +361,22 @@ describe("RBP/1 envelope and payload schemas", () => {
         }),
       ]),
     );
+  });
+
+  it("accepts the portable Gateway verification-read clearance fixture on a mutating session admission", () => {
+    const fixture = readFixture<GatewayVerificationReadClearanceFixture>(
+      "gateway-verification-read-clearances.json",
+    );
+    const invoke = clone(positiveByName.get("mutating_clearance_invoke"));
+    expect(invoke).toBeDefined();
+    if (invoke === undefined) return;
+
+    invoke.rsid = fixture.rsid;
+    const payload = invoke.payload as Record<string, unknown>;
+    payload.mutation_scope = fixture.admission_mutation_scope;
+    payload.recovery_clearances = fixture.clearances;
+    expect(validateRbpEnvelope(invoke)).toBe(true);
+    expect(rbpEnvelopeErrors()).toEqual([]);
   });
 });
 

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
@@ -106,10 +107,12 @@ internal sealed partial class RbpBatchCoordinator
     /// Rebuilds one step body from its durable invocation row.
     /// </summary>
     /// <remarks>
-    /// An indeterminate row stores only the Section 12.2 rule 4 evidence, so
-    /// its nested Section 15 error is rebuilt complete from the row exactly
-    /// as the first refusal built it. Every other terminal row already stores
-    /// the step body verbatim, including the journal's own narrow
+    /// An indeterminate row stores the Section 12.2 rule 4 evidence authored
+    /// from its canonical hold. Its nested Section 15 error is rebuilt from
+    /// that durable body rather than from immutable step identity, because a
+    /// session-scoped atomic hold may subsume a document-scoped step. Every
+    /// other terminal row already stores the step body verbatim, including
+    /// the journal's own narrow
     /// <c>environment</c> body for a read lost with an atomic carrier.
     /// </remarks>
     private static RbpBatchStepOutcome FromStoredRow(
@@ -117,7 +120,8 @@ internal sealed partial class RbpBatchCoordinator
         string invocationId,
         RbpStoredInvocation row,
         bool replayed,
-        bool lateAfterIndeterminate = false)
+        bool lateAfterIndeterminate = false,
+        string? indeterminateMessage = null)
     {
         if (row.State == RbpInvocationState.Indeterminate)
         {
@@ -129,15 +133,44 @@ internal sealed partial class RbpBatchCoordinator
                     "Section 6.2.1 verification hold id.");
             }
 
-            if (row.Identity.MutationScopeJcs is not { Length: > 0 } scopeJcs)
+            if (row.TerminalOutcomeJson is not { Length: > 0 } outcomeJson ||
+                row.ResultDigest is not { Length: > 0 } outcomeDigest)
             {
                 throw new RbpDispatchException(
                     RbpDispatchErrorCode.Environment,
-                    "An indeterminate batch step requires its durable " +
-                    "mutation scope.");
+                    "An indeterminate batch step requires its durable hold " +
+                    "evidence and digest.");
             }
 
-            using JsonDocument scope = JsonDocument.Parse(scopeJcs);
+            using JsonDocument outcome = JsonDocument.Parse(outcomeJson);
+            JsonElement durable = outcome.RootElement;
+            if (durable.ValueKind != JsonValueKind.Object ||
+                !durable.TryGetProperty(
+                    "mutation_scope",
+                    out JsonElement scope) ||
+                scope.ValueKind != JsonValueKind.Object ||
+                !durable.TryGetProperty(
+                    "verification_hold_id",
+                    out JsonElement durableHold) ||
+                durableHold.ValueKind != JsonValueKind.String ||
+                durableHold.GetString() != holdId ||
+                !durable.TryGetProperty("outcome", out JsonElement state) ||
+                state.ValueKind != JsonValueKind.String ||
+                state.GetString() != "indeterminate" ||
+                !durable.TryGetProperty(
+                    "verification_required",
+                    out JsonElement required) ||
+                required.ValueKind != JsonValueKind.True ||
+                !durable.TryGetProperty("retryable", out JsonElement retryable) ||
+                retryable.ValueKind != JsonValueKind.False ||
+                Rfc8785Json.Sha256Digest(durable) != outcomeDigest)
+            {
+                throw new RbpDispatchException(
+                    RbpDispatchErrorCode.Environment,
+                    "An indeterminate batch step has contradictory durable " +
+                    "hold evidence.");
+            }
+
             return new RbpBatchStepOutcome(
                 index,
                 invocationId,
@@ -147,9 +180,10 @@ internal sealed partial class RbpBatchCoordinator
                         RbpInvocationPayloads.JournalIndeterminateError(
                             invocationId,
                             holdId,
-                            scope.RootElement,
-                            RbpInvocationPayloads
-                                .MutationMayHaveExecutedMessage,
+                            scope,
+                            indeterminateMessage ??
+                                RbpInvocationPayloads
+                                    .MutationMayHaveExecutedMessage,
                             replayed),
                         replayed,
 

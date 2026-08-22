@@ -1,0 +1,46 @@
+{
+  "rsid": "rsid-a",
+  "admission_mutation_scope": { "kind": "session" },
+  "holds": [
+    {
+      "hold_id": "vh:09ba26db96ddcc389a0771091cc6c27ba59aa93b759b878e3ca9fbfa4c39adb3",
+      "mutation_scope": { "kind": "document", "document_id": "doc-b" },
+      "ordered_origin_idempotency_keys": ["rsid-a/0197a3c2-0000-7000-8000-000000000011"],
+      "verification": {
+        "terminal_result_digest": "sha256:64e905f0e1a659084dc0b7fd9d24e1cb95a86512acc4cf7345ac5f8b622bcd51",
+        "decision": "postcondition_verified"
+      }
+    },
+    {
+      "hold_id": "vh:7060ad7fc5b783084a5467aaef1a89471bbffd4b4838562753d0187278b4c05d",
+      "mutation_scope": { "kind": "document", "document_id": "doc-a" },
+      "ordered_origin_idempotency_keys": ["rsid-a/0197a3c2-0000-7000-8000-000000000010"],
+      "verification": {
+        "terminal_result_digest": "sha256:955fc87aabd40cc1807d2adf9a6de27211ce53fd65a4bdbd29605a443f7f0368",
+        "decision": "non_execution_proven"
+      }
+    }
+  ],
+  "clearances": [
+    {
+      "hold_id": "vh:09ba26db96ddcc389a0771091cc6c27ba59aa93b759b878e3ca9fbfa4c39adb3",
+      "mutation_scope": { "kind": "document", "document_id": "doc-b" },
+      "resolution_id": "0197a3c2-0000-7000-8000-000000800003",
+      "basis": "verification_read",
+      "verification_invocation_id": "0197a3c2-0000-7000-8000-000000600021",
+      "evidence_digest": "sha256:64e905f0e1a659084dc0b7fd9d24e1cb95a86512acc4cf7345ac5f8b622bcd51",
+      "decision": "postcondition_verified",
+      "audit_id": "0197a3c2-0000-7000-8000-000000800002"
+    },
+    {
+      "hold_id": "vh:7060ad7fc5b783084a5467aaef1a89471bbffd4b4838562753d0187278b4c05d",
+      "mutation_scope": { "kind": "document", "document_id": "doc-a" },
+      "resolution_id": "0197a3c2-0000-7000-8000-000000800004",
+      "basis": "verification_read",
+      "verification_invocation_id": "0197a3c2-0000-7000-8000-000000600020",
+      "evidence_digest": "sha256:955fc87aabd40cc1807d2adf9a6de27211ce53fd65a4bdbd29605a443f7f0368",
+      "decision": "non_execution_proven",
+      "audit_id": "0197a3c2-0000-7000-8000-000000800001"
+    }
+  ]
+}

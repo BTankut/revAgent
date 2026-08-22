@@ -1,5 +1,7 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -395,6 +397,149 @@ public sealed class RbpJournalPowerCutTests
 
         RbpJournalPowerCutFiles.AssertRecoveredFileSetIsSane(
             directory.JournalPath);
+    }
+
+    [Fact]
+    public async Task KillBeforeV3TerminalCommitLeavesNoPartialHold()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        _ = await RbpJournalPowerCutProcess.KillAtAsync(
+            RbpJournalPowerCutMode.V3IndeterminateBeforeCommit,
+            directory.JournalPath);
+
+        await using RbpJournalStore recovered =
+            await OpenRecoveredAsync(directory);
+        await AssertIntegrityCheckIsOkAsync(recovered);
+        RbpStoredInvocation row =
+            (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.WriteKey))!;
+        Assert.Equal(RbpInvocationState.Executing, row.State);
+        Assert.Null(
+            await recovered.FindConflictingHoldAsync(
+                RbpJournalPowerCutData.Rsid,
+                RbpJournalPowerCutData.DocumentScopeJcs));
+
+        RbpClearanceGatedAdmission promoted =
+            await recovered.AdmitInvocationOutcomeV3Async(
+                RbpJournalPowerCutData.WriteIdentity(),
+                Array.Empty<RbpRecoveryClearance>(),
+                RbpTransactionMode.Native);
+        Assert.Equal(
+            RbpInvocationAdmission.ReplayTerminal,
+            promoted.Admission!.Admission);
+        Assert.NotNull(promoted.Admission.VerificationHoldId);
+    }
+
+    [Fact]
+    public async Task KillAfterV3TerminalCommitRecoversOutcomeHoldAndConflict()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        _ = await RbpJournalPowerCutProcess.KillAtAsync(
+            RbpJournalPowerCutMode.V3IndeterminateAfterCommit,
+            directory.JournalPath);
+
+        await using RbpJournalStore recovered =
+            await OpenRecoveredAsync(directory);
+        await AssertIntegrityCheckIsOkAsync(recovered);
+        RbpStoredInvocation row =
+            (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.WriteKey))!;
+        Assert.Equal(RbpInvocationState.Indeterminate, row.State);
+        Assert.NotNull(row.VerificationHoldId);
+        RbpVerificationHold hold =
+            (await recovered.FindConflictingHoldAsync(
+                RbpJournalPowerCutData.Rsid,
+                RbpJournalPowerCutData.DocumentScopeJcs))!;
+        Assert.Equal(row.VerificationHoldId, hold.VerificationHoldId);
+        Assert.Equal(RbpHoldState.Active, hold.State);
+    }
+
+    [Fact]
+    public async Task
+        KillInsideAtomicBatchLossRecoveryLeavesNoPartialOutcomeAuthority()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        _ = await RbpJournalPowerCutProcess.KillAtAsync(
+            RbpJournalPowerCutMode.V3AtomicBatchLossBeforeCommit,
+            directory.JournalPath);
+
+        await using RbpJournalStore recovered =
+            await OpenRecoveredAsync(directory);
+        await AssertIntegrityCheckIsOkAsync(recovered);
+        RbpBatchIdentity batch =
+            RbpJournalPowerCutData.AtomicBatchIdentity();
+        Assert.Equal(
+            RbpBatchState.Dispatched,
+            (await recovered.GetBatchAsync(batch.BatchKey))!.State);
+        foreach (RbpBatchStepIdentity step in batch.Steps)
+        {
+            Assert.Equal(
+                RbpInvocationState.Received,
+                (await recovered.GetInvocationAsync(
+                    RbpJournalPowerCutData.Rsid + "/" + step.InvocationId))!
+                .State);
+        }
+        Assert.Null(
+            await recovered.FindConflictingHoldAsync(
+                RbpJournalPowerCutData.Rsid,
+                RbpJournalPowerCutData.DocumentScopeJcs));
+
+        var fresh = new RbpInvocationIdentity(
+            RbpJournalPowerCutData.Rsid,
+            "0197a3c2-0000-7000-8000-0000000000d9",
+            "set_element_parameter",
+            Mutating: true,
+            MutationScopeJcs: RbpJournalPowerCutData.DocumentScopeJcs,
+            ParamsDigest: RbpJournalPowerCutData.ParamsDigest,
+            PolicyJcs: "{\"decision\":\"allow\"}",
+            RecoveryClearancesJcs: "[]");
+        RbpClearanceGatedAdmission gated =
+            await recovered.AdmitInvocationOutcomeV3Async(
+                fresh,
+                Array.Empty<RbpRecoveryClearance>(),
+                RbpTransactionMode.Native);
+
+        Assert.Null(gated.Admission);
+        RbpVerificationHold hold = gated.BlockingHold!;
+        Assert.Equal(
+            new[]
+            {
+                RbpJournalPowerCutData.Rsid + "/" +
+                    RbpJournalPowerCutData.AtomicBatchFirstWriteStepId,
+                RbpJournalPowerCutData.Rsid + "/" +
+                    RbpJournalPowerCutData.AtomicBatchSecondWriteStepId,
+            },
+            hold.OrderedOriginIdempotencyKeys);
+        Assert.Equal("session", hold.ScopeKind);
+        using (JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs))
+        {
+            Assert.Equal(
+                Rfc8785Json.MakeVerificationHoldId(
+                    RbpJournalPowerCutData.Rsid,
+                    scope.RootElement,
+                    hold.OrderedOriginIdempotencyKeys),
+                hold.VerificationHoldId);
+        }
+        foreach (RbpBatchStepIdentity step in batch.Steps)
+        {
+            RbpStoredInvocation promoted = (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.Rsid + "/" + step.InvocationId))!;
+            Assert.Equal(RbpInvocationState.Indeterminate, promoted.State);
+            Assert.Equal(hold.VerificationHoldId, promoted.VerificationHoldId);
+            using JsonDocument outcome = JsonDocument.Parse(
+                promoted.TerminalOutcomeJson!);
+            Assert.Equal(
+                hold.ScopeJcs,
+                Rfc8785Json.Canonicalize(
+                    outcome.RootElement.GetProperty("mutation_scope")));
+            Assert.Equal(
+                Rfc8785Json.Sha256Digest(outcome.RootElement),
+                promoted.ResultDigest);
+        }
+        Assert.Equal(
+            RbpBatchState.Terminal,
+            (await recovered.GetBatchAsync(batch.BatchKey))!.State);
+        Assert.Null(await recovered.GetInvocationAsync(fresh.IdempotencyKey));
     }
 
     [Fact]

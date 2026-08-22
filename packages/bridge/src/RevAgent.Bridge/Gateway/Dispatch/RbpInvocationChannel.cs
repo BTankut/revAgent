@@ -48,7 +48,8 @@ internal sealed record RbpAddinOutcome(
     string? Message = null,
     AddinErrorDetail? AddinError = null,
     IRbpDispatchLease? Lease = null,
-    bool? Retryable = null);
+    bool? Retryable = null,
+    RbpMutationOutcomeEvidence? OutcomeEvidence = null);
 
 /// <summary>
 /// Ownership of an add-in session for the duration of one invocation.

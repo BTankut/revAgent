@@ -1,4 +1,5 @@
 using System.Globalization;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -125,6 +126,57 @@ public static class RbpJournalPowerCutChild
                 _ = await store.PersistInvocationTerminalAsync(
                     RbpJournalPowerCutData.WriteKey,
                     RbpJournalPowerCutData.CompletedTerminal());
+                return;
+
+            case RbpJournalPowerCutMode.V3IndeterminateBeforeCommit:
+            case RbpJournalPowerCutMode.V3IndeterminateAfterCommit:
+                _ = await store.EnsureOutcomeV3ForSessionAsync(
+                    RbpJournalPowerCutData.Rsid);
+                _ = await store.AdmitInvocationOutcomeV3Async(
+                    RbpJournalPowerCutData.WriteIdentity(),
+                    Array.Empty<RbpRecoveryClearance>(),
+                    RbpTransactionMode.Native);
+                await store.MarkInvocationExecutingOutcomeV3Async(
+                    RbpJournalPowerCutData.WriteKey,
+                    RbpTransactionMode.Native);
+                suspender.Arm(
+                    mode ==
+                        RbpJournalPowerCutMode.V3IndeterminateBeforeCommit
+                        ? RbpJournalFaultPoint.BeforeCommit
+                        : RbpJournalFaultPoint.AfterCommitBeforeReturn);
+                _ = await store.PersistInvocationOutcomeV3Async(
+                    RbpJournalPowerCutData.WriteKey,
+                    new RbpInvocationTerminal(
+                        RbpInvocationState.Indeterminate,
+                        Outcome: default,
+                        ResultDigest: null),
+                    RbpJournalPowerCutData.UncertainWriteEvidence(),
+                    error: true);
+                return;
+
+            case RbpJournalPowerCutMode.V3AtomicBatchLossBeforeCommit:
+                _ = await store.EnsureOutcomeV3ForSessionAsync(
+                    RbpJournalPowerCutData.Rsid);
+                RbpBatchIdentity atomicBatch =
+                    RbpJournalPowerCutData.AtomicBatchIdentity();
+                _ = await store.AdmitBatchOutcomeV3Async(
+                    atomicBatch,
+                    Array.Empty<RbpRecoveryClearance>(),
+                    new[]
+                    {
+                        RbpTransactionMode.Native,
+                        RbpTransactionMode.Native,
+                    });
+                await store.MarkBatchDispatchedOutcomeV3Async(
+                    atomicBatch.BatchKey,
+                    new[]
+                    {
+                        RbpTransactionMode.Native,
+                        RbpTransactionMode.Native,
+                    });
+                suspender.Arm(RbpJournalFaultPoint.BeforeCommit);
+                _ = await store.RecoverAtomicBatchLossOutcomeV3Async(
+                    atomicBatch);
                 return;
 
             default:
