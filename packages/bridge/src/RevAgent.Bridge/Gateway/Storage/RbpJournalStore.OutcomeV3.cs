@@ -570,8 +570,6 @@ internal sealed partial class RbpJournalStore
                 "a resolved or cleared v3 hold accepts no evidence");
         }
 
-        ValidateGroupedHoldVerificationEvidence(hold, evidence);
-
         RbpVerificationHold updated = hold with
         {
             State = evidence.Conclusive
@@ -2729,32 +2727,9 @@ internal sealed partial class RbpJournalStore
         RbpVerificationHold hold,
         long now)
     {
-        if (hold.OrderedOriginIdempotencyKeys.Count > 1 &&
-            hold.EvidenceDigest is { Length: > 0 } groupedDigest)
+        if (hold.OrderedOriginIdempotencyKeys.Count > 1)
         {
-            string verificationInvocationId =
-                hold.VerificationInvocationId ??
-                throw new RbpOutcomeV3ImportException(
-                    "import_grouped_evidence_identity",
-                    "Grouped legacy evidence lacks verification identity.");
-            if (!RbpRecoveryClearance.IsUuidV7(verificationInvocationId))
-            {
-                throw new RbpOutcomeV3ImportException(
-                    "import_grouped_evidence_identity",
-                    "Grouped legacy evidence identity is not UUIDv7.");
-            }
-
-            string expected = MakeGroupedHoldVerificationEvidenceDigest(
-                hold,
-                verificationInvocationId,
-                conclusive: hold.State != RbpHoldState.Active);
-            if (groupedDigest != expected)
-            {
-                throw new RbpOutcomeV3ImportException(
-                    "import_grouped_evidence_binding",
-                    "Grouped legacy evidence is not bound to exact hold " +
-                    "material.");
-            }
+            ValidateGroupedHoldMaterial(hold);
         }
 
         WriteHoldHistoryV3(context, hold, now);
@@ -3377,13 +3352,7 @@ internal sealed partial class RbpJournalStore
         }
 
         if (hold.OrderedOriginIdempotencyKeys.Count > 1 &&
-            (basis != "verification_read" ||
-             hold.VerificationInvocationId is not { Length: > 0 } groupedVid ||
-             hold.EvidenceDigest !=
-             MakeGroupedHoldVerificationEvidenceDigest(
-                 hold,
-                 groupedVid,
-                 conclusive: true)))
+            basis != "verification_read")
         {
             throw new RbpJournalException(
                 RbpJournalErrorCode.IntegrityCheckFailed,

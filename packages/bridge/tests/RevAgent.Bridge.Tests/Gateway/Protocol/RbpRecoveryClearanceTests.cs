@@ -59,6 +59,76 @@ public sealed class RbpRecoveryClearanceTests
     }
 
     [Fact]
+    public void ParsePreservesTheGatewayVerificationReadFixtureExactly()
+    {
+        using JsonDocument fixture = RbpFixtureReader.Load(
+            "gateway-verification-read-clearances.json");
+        JsonElement root = fixture.RootElement;
+        JsonElement[] holds = root.GetProperty("holds")
+            .EnumerateArray()
+            .Select(value => value.Clone())
+            .ToArray();
+        JsonElement[] clearances = root.GetProperty("clearances")
+            .EnumerateArray()
+            .Select(value => value.Clone())
+            .ToArray();
+
+        Assert.Equal(holds.Length, clearances.Length);
+        Assert.Equal(
+            clearances
+                .Select(value => value.GetProperty("hold_id").GetString())
+                .ToArray(),
+            clearances
+                .Select(value => value.GetProperty("hold_id").GetString())
+                .OrderBy(value => value, StringComparer.Ordinal)
+                .ToArray());
+        for (int index = 0; index < clearances.Length; index++)
+        {
+            RbpRecoveryClearance parsed =
+                RbpRecoveryClearance.Parse(clearances[index]);
+            JsonElement hold = holds[index];
+            Assert.Equal(
+                hold.GetProperty("hold_id").GetString(),
+                parsed.HoldId);
+            Assert.Equal(
+                Rfc8785Json.Canonicalize(
+                    hold.GetProperty("mutation_scope")),
+                parsed.MutationScopeJcs);
+            Assert.Equal(
+                hold.GetProperty("verification")
+                    .GetProperty("terminal_result_digest")
+                    .GetString(),
+                parsed.EvidenceDigest);
+            Assert.Equal(
+                clearances[index].GetProperty("evidence_digest").GetString(),
+                parsed.EvidenceDigest);
+            Assert.Equal(RbpClearanceBasis.VerificationRead, parsed.Basis);
+            Assert.Equal(
+                hold.GetProperty("verification")
+                        .GetProperty("decision")
+                        .GetString() == "non_execution_proven"
+                    ? RbpClearanceDecision.NonExecutionProven
+                    : RbpClearanceDecision.PostconditionVerified,
+                parsed.Decision);
+            Assert.True(
+                RbpRecoveryClearance.IsUuidV7(
+                    parsed.VerificationInvocationId));
+        }
+
+        Assert.Equal(
+            new[]
+            {
+                RbpClearanceDecision.NonExecutionProven,
+                RbpClearanceDecision.PostconditionVerified,
+            },
+            clearances
+                .Select(RbpRecoveryClearance.Parse)
+                .Select(clearance => clearance.Decision)
+                .OrderBy(value => value)
+                .ToArray());
+    }
+
+    [Fact]
     public void ParseAcceptsALateTerminalClearanceWithExplicitNull()
     {
         using JsonDocument document = JsonDocument.Parse(

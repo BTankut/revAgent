@@ -2,6 +2,7 @@ using System.Text.Json;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
+using RevAgent.Bridge.Tests.Gateway.Protocol;
 
 namespace RevAgent.Bridge.Tests.Gateway.Storage;
 
@@ -579,24 +580,27 @@ public sealed class RbpJournalStoreHoldClearanceTests
                 "rs-test",
                 hold.ScopeJcs))!.VerificationHoldId);
 
-        RbpJournalException unboundVerification =
+        RbpJournalException callerOnlyClearance =
             await Assert.ThrowsAsync<RbpJournalException>(
-                () => store.RecordHoldVerificationEvidenceAsync(
-                    "rs-test",
-                    new RbpHoldVerificationEvidence(
-                        hold.VerificationHoldId,
-                        VerificationId,
-                        EvidenceDigest,
-                        Conclusive: true)));
+                () => store.AdmitInvocationOutcomeV3Async(
+                    FreshMutationIdentity(
+                        invocationId:
+                            "0197a3c2-0000-7000-8000-0000000005a7"),
+                    new[]
+                    {
+                        Clearance(
+                            hold.VerificationHoldId,
+                            hold.ScopeJcs,
+                            RbpClearanceBasis.VerificationRead,
+                            VerificationId,
+                            EvidenceDigest),
+                    },
+                    RbpTransactionMode.Native));
         Assert.Equal(
             RbpJournalErrorCode.ProtocolConflict,
-            unboundVerification.ErrorCode);
+            callerOnlyClearance.ErrorCode);
 
-        string groupedEvidence =
-            RbpJournalStore.MakeGroupedHoldVerificationEvidenceDigest(
-                hold,
-                VerificationId,
-                conclusive: true);
+        string groupedEvidence = EvidenceDigest;
         _ = await store.RecordHoldVerificationEvidenceAsync(
             "rs-test",
             new RbpHoldVerificationEvidence(
@@ -626,6 +630,127 @@ public sealed class RbpJournalStoreHoldClearanceTests
         Assert.Equal(
             RbpHoldState.Cleared,
             (await store.GetHoldAsync("rs-test", hold.VerificationHoldId))!.State);
+    }
+
+    [Fact]
+    public async Task GatewayFixtureClearancesClearBothExactConflictsAtomically()
+    {
+        using JsonDocument fixture = RbpFixtureReader.Load(
+            "gateway-verification-read-clearances.json");
+        JsonElement root = fixture.RootElement;
+        string rsid = root.GetProperty("rsid").GetString()!;
+        string admissionScope = Rfc8785Json.Canonicalize(
+            root.GetProperty("admission_mutation_scope"));
+        JsonElement[] fixtureHolds = root.GetProperty("holds")
+            .EnumerateArray()
+            .Select(value => value.Clone())
+            .ToArray();
+        RbpRecoveryClearance[] clearances = root.GetProperty("clearances")
+            .EnumerateArray()
+            .Select(RbpRecoveryClearance.Parse)
+            .ToArray();
+
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: rsid,
+                localSessionKey: "port:5151:pid:5151",
+                resumeToken: "gateway-fixture-resume-token"));
+        foreach (JsonElement fixtureHold in fixtureHolds)
+        {
+            string holdId = fixtureHold.GetProperty("hold_id").GetString()!;
+            string scopeJcs = Rfc8785Json.Canonicalize(
+                fixtureHold.GetProperty("mutation_scope"));
+            string[] origins = fixtureHold
+                .GetProperty("ordered_origin_idempotency_keys")
+                .EnumerateArray()
+                .Select(value => value.GetString()!)
+                .ToArray();
+            Assert.Single(origins);
+            string invocationId = origins[0][(rsid.Length + 1)..];
+            var origin = new RbpInvocationIdentity(
+                rsid,
+                invocationId,
+                WriteMethod,
+                Mutating: true,
+                MutationScopeJcs: scopeJcs,
+                ParamsDigest: "sha256:" + new string('a', 64),
+                PolicyJcs: "{\"decision\":\"allow\"}",
+                RecoveryClearancesJcs: "[]");
+            Assert.Equal(holdId, await InstallIndeterminateHoldAsync(store, origin));
+        }
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync(rsid);
+        Assert.Equal(
+            fixtureHolds
+                .Select(value => value.GetProperty("hold_id").GetString())
+                .ToArray(),
+            clearances.Select(clearance => clearance.HoldId).ToArray());
+        var callerOnly = new RbpInvocationIdentity(
+            rsid,
+            "0197a3c2-0000-7000-8000-000000900000",
+            WriteMethod,
+            Mutating: true,
+            MutationScopeJcs: admissionScope,
+            ParamsDigest: "sha256:" + new string('b', 64),
+            PolicyJcs: "{\"decision\":\"allow\"}",
+            RecoveryClearancesJcs: "[]");
+        RbpJournalException untrusted =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.AdmitInvocationWithClearancesAsync(
+                    callerOnly,
+                    clearances));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, untrusted.ErrorCode);
+        Assert.Null(await store.GetInvocationAsync(callerOnly.IdempotencyKey));
+        foreach (RbpRecoveryClearance clearance in clearances)
+        {
+            Assert.Equal(
+                RbpHoldState.Active,
+                (await store.GetHoldAsync(rsid, clearance.HoldId))!.State);
+        }
+
+        foreach (RbpRecoveryClearance clearance in clearances)
+        {
+            await store.RecordHoldVerificationEvidenceAsync(
+                rsid,
+                new RbpHoldVerificationEvidence(
+                    clearance.HoldId,
+                    clearance.VerificationInvocationId!,
+                    clearance.EvidenceDigest,
+                    Conclusive: true));
+        }
+
+        var next = new RbpInvocationIdentity(
+            rsid,
+            "0197a3c2-0000-7000-8000-000000900001",
+            WriteMethod,
+            Mutating: true,
+            MutationScopeJcs: admissionScope,
+            ParamsDigest: "sha256:" + new string('b', 64),
+            PolicyJcs: "{\"decision\":\"allow\"}",
+            RecoveryClearancesJcs: "[]");
+        RbpClearanceGatedAdmission admitted =
+            await store.AdmitInvocationWithClearancesAsync(next, clearances);
+
+        Assert.Equal(RbpInvocationAdmission.Accepted, admitted.Admission?.Admission);
+        Assert.NotNull(await store.GetInvocationAsync(next.IdempotencyKey));
+        foreach (RbpRecoveryClearance clearance in clearances)
+        {
+            RbpVerificationHold cleared =
+                (await store.GetHoldAsync(rsid, clearance.HoldId))!;
+            Assert.Equal(RbpHoldState.Cleared, cleared.State);
+            Assert.Equal(clearance.EvidenceDigest, cleared.EvidenceDigest);
+            Assert.Equal(
+                clearance.VerificationInvocationId,
+                cleared.VerificationInvocationId);
+            Assert.Equal(
+                clearance.Decision ==
+                    RbpClearanceDecision.NonExecutionProven
+                    ? "non_execution_proven"
+                    : "postcondition_verified",
+                cleared.ResolutionDecision);
+        }
     }
 
     [Fact]
