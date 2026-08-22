@@ -92,6 +92,8 @@ function device(
     machineFingerprint: `sha256:${"1".repeat(64)}`,
     authorizationVersion: 1,
     identityRecordVersion: 1,
+    connectionCapabilityVersion: 1,
+    sessionCapabilityVersion: 1,
     seatAuthorityVersion: 1,
     seatRecordVersion: 1,
     grantedConnectionCapabilities: Object.freeze([]),

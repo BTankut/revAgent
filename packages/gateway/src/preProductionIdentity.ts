@@ -162,6 +162,8 @@ interface DeviceRecord {
   readonly deviceTokenDigest: `sha256:${string}`;
   authorizationVersion: number;
   identityRecordVersion: number;
+  connectionCapabilityVersion: number;
+  sessionCapabilityVersion: number;
   seatAuthorityVersion: number;
   seatRecordVersion: number;
   deviceStatus: DeviceAuthContext["deviceStatus"];
@@ -452,6 +454,14 @@ export function createPreProductionIdentityAuthority(
           "pre-production identity refused device authorization",
         );
       }
+      if (
+        input.claimedDeviceId !== undefined &&
+        input.claimedDeviceId !== record.deviceId
+      ) {
+        return identityRefusal(
+          "pre-production identity refused device authorization",
+        );
+      }
       const context: DeviceAuthContext = Object.freeze({
         contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
         actor: Object.freeze({
@@ -466,6 +476,8 @@ export function createPreProductionIdentityAuthority(
         machineFingerprint: record.machineFingerprint,
         authorizationVersion: record.authorizationVersion,
         identityRecordVersion: record.identityRecordVersion,
+        connectionCapabilityVersion: record.connectionCapabilityVersion,
+        sessionCapabilityVersion: record.sessionCapabilityVersion,
         seatAuthorityVersion: record.seatAuthorityVersion,
         seatRecordVersion: record.seatRecordVersion,
         grantedConnectionCapabilities: record.grantedConnectionCapabilities,
@@ -654,6 +666,10 @@ export function createPreProductionIdentityAuthority(
         deviceTokenDigest,
         authorizationVersion: (priorDevice?.authorizationVersion ?? 0) + 1,
         identityRecordVersion: (priorDevice?.identityRecordVersion ?? 0) + 1,
+        connectionCapabilityVersion:
+          (priorDevice?.connectionCapabilityVersion ?? 0) + 1,
+        sessionCapabilityVersion:
+          (priorDevice?.sessionCapabilityVersion ?? 0) + 1,
         seatAuthorityVersion: (priorDevice?.seatAuthorityVersion ?? 0) + 1,
         seatRecordVersion: (priorDevice?.seatRecordVersion ?? 0) + 1,
         deviceStatus: record.deviceStatus,
@@ -696,6 +712,8 @@ export function createPreProductionIdentityAuthority(
       if (priorStatus !== "revoked") {
         record.authorizationVersion += 1;
         record.identityRecordVersion += 1;
+        record.connectionCapabilityVersion += 1;
+        record.sessionCapabilityVersion += 1;
         record.seatAuthorityVersion += 1;
         record.seatRecordVersion += 1;
       }

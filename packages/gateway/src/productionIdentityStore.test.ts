@@ -3,14 +3,18 @@ import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 
 import {
+  GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
   GATEWAY_REVOCATION_CURSOR_SCHEMA,
   IDENTITY_DEVICE_SCHEMA,
   IDENTITY_REVOCATION_EVENT_SCHEMA,
   IDENTITY_REVOCATION_HEAD_SCHEMA,
   IDENTITY_TENANT_SEAT_SCHEMA,
+  createProductionCredentialScopeLocator,
   createProductionIdentityAuthority,
+  type CredentialScopeLookupResult,
   type IdentityMutationResult,
   type ProductionIdentityAuthority,
+  type ProductionCredentialScopeLocator,
   type ProductionIdentityStoreOptions,
   type ProvisionIdentityDeviceInput,
 } from "./productionIdentityStore.js";
@@ -59,10 +63,14 @@ function provisionInput(
 
 function authority(
   store: GatewayProtocolStore,
-  overrides: Partial<ProductionIdentityStoreOptions> = {},
+  credentialLocator: ProductionCredentialScopeLocator,
+  overrides: Partial<
+    Omit<ProductionIdentityStoreOptions, "store" | "credentialLocator">
+  > = {},
 ): ProductionIdentityAuthority {
   return createProductionIdentityAuthority({
     store,
+    credentialLocator,
     subscriberId: "gateway-subscriber-1",
     clock: () => NOW_MS,
     ...overrides,
@@ -71,13 +79,20 @@ function authority(
 
 async function openAuthority(
   fixture: RestartableTestStore = createRestartableTestStore(),
+  locatorFixture: RestartableTestStore = createRestartableTestStore(),
 ): Promise<{
   readonly fixture: RestartableTestStore;
+  readonly locatorFixture: RestartableTestStore;
+  readonly locator: ProductionCredentialScopeLocator;
   readonly identity: ProductionIdentityAuthority;
 }> {
-  const identity = authority(fixture.store);
+  const locator = createProductionCredentialScopeLocator({
+    store: locatorFixture.store,
+    clock: () => NOW_MS,
+  });
+  const identity = authority(fixture.store, locator);
   expect(await identity.open()).toEqual({ ok: true, value: undefined });
-  return { fixture, identity };
+  return { fixture, locatorFixture, locator, identity };
 }
 
 function committed(result: IdentityMutationResult) {
@@ -103,8 +118,11 @@ async function consumeAll(
 async function exactAuth(
   identity: ProductionIdentityAuthority,
   input: {
-    readonly tenantId?: string;
-    readonly deviceId?: string;
+    readonly claimedDeviceId?: string;
+    readonly establishedScope?: {
+      readonly tenantId: string;
+      readonly deviceId: string;
+    };
     readonly token?: string;
     readonly fingerprint?: string;
     readonly hostname?: string;
@@ -113,8 +131,10 @@ async function exactAuth(
   return identity.authenticateDevice({
     deviceToken: input.token ?? TOKEN_A,
     connectionId: "connection-1",
-    tenantId: input.tenantId ?? TENANT_A,
-    deviceId: input.deviceId ?? DEVICE_ID,
+    claimedDeviceId: input.claimedDeviceId ?? DEVICE_ID,
+    ...(input.establishedScope === undefined
+      ? {}
+      : { establishedScope: input.establishedScope }),
     machineFingerprint: input.fingerprint ?? FINGERPRINT_A,
     machineHostname: input.hostname ?? "workstation-a",
   });
@@ -156,9 +176,171 @@ function uncertainAfter(
   };
 }
 
+function failFirstLocatorMutation(
+  delegate: ProductionCredentialScopeLocator,
+  method: "bind" | "retire",
+): {
+  readonly locator: ProductionCredentialScopeLocator;
+  attempts(): number;
+} {
+  let attempts = 0;
+  const unavailable = () => ({
+    ok: false as const,
+    kind: "unavailable" as const,
+    code: "unavailable" as const,
+    message: "injected locator outage",
+  });
+  return {
+    locator: {
+      kind: delegate.kind,
+      open: () => delegate.open(),
+      close: () => delegate.close(),
+      lookup: (input) => delegate.lookup(input),
+      async bind(input) {
+        if (method === "bind" && attempts++ === 0) return unavailable();
+        return delegate.bind(input);
+      },
+      async retire(input) {
+        if (method === "retire" && attempts++ === 0) return unavailable();
+        return delegate.retire(input);
+      },
+    },
+    attempts: () => attempts,
+  };
+}
+
+function fixedLookupLocator(
+  result: CredentialScopeLookupResult,
+): ProductionCredentialScopeLocator {
+  const unavailable = {
+    ok: false as const,
+    kind: "unavailable" as const,
+    code: "unavailable" as const,
+    message: "fixed lookup locator is read only",
+  };
+  return {
+    kind: "memory",
+    async open() {
+      return { ok: true as const, value: undefined };
+    },
+    async close() {
+      return { ok: true as const, value: undefined };
+    },
+    async lookup() {
+      return structuredClone(result);
+    },
+    async bind() {
+      return unavailable;
+    },
+    async retire() {
+      return unavailable;
+    },
+  };
+}
+
+describe("production credential scope locator", () => {
+  it("binds only absent/exact replay, retires by exact CAS, and never rebinds retired digests", async () => {
+    const fixture = createRestartableTestStore();
+    const locator = createProductionCredentialScopeLocator({
+      store: fixture.store,
+      clock: () => NOW_MS,
+    });
+    await locator.open();
+    const bind = {
+      operationId: "locator-bind-1",
+      deviceTokenDigest: sha256(TOKEN_A),
+      tenantId: TENANT_A,
+      deviceId: DEVICE_ID,
+    };
+    expect(await locator.lookup({ deviceTokenDigest: bind.deviceTokenDigest })).toEqual({
+      ok: true,
+      kind: "missing",
+    });
+    expect(await locator.bind(bind)).toMatchObject({
+      ok: true,
+      kind: "committed",
+      record: { state: "active", recordVersion: 1 },
+    });
+    expect(await locator.bind(bind)).toMatchObject({ ok: true, kind: "replay" });
+    expect(
+      await locator.bind({ ...bind, operationId: "locator-bind-2" }),
+    ).toMatchObject({ ok: false, kind: "conflict" });
+    expect(
+      await locator.bind({
+        ...bind,
+        operationId: "locator-other-owner",
+        tenantId: TENANT_B,
+      }),
+    ).toMatchObject({ ok: false, kind: "conflict" });
+    const retire = {
+      operationId: "locator-retire-1",
+      deviceTokenDigest: bind.deviceTokenDigest,
+      expectedRecordVersion: 1,
+    };
+    expect(
+      await locator.retire({ ...retire, expectedRecordVersion: 2 }),
+    ).toMatchObject({ ok: false, kind: "conflict" });
+    expect(await locator.retire(retire)).toMatchObject({
+      ok: true,
+      kind: "committed",
+      record: { state: "retired", recordVersion: 2 },
+    });
+    expect(await locator.retire(retire)).toMatchObject({
+      ok: true,
+      kind: "replay",
+    });
+    expect(await locator.bind(bind)).toMatchObject({
+      ok: false,
+      kind: "conflict",
+    });
+    expect(JSON.stringify(fixture.snapshot())).not.toContain(TOKEN_A);
+  });
+
+  it("fails closed on malformed global records and keeps exact missing distinct for reconciliation", async () => {
+    const fixture = createRestartableTestStore();
+    const locator = createProductionCredentialScopeLocator({
+      store: fixture.store,
+      clock: () => NOW_MS,
+    });
+    await locator.open();
+    const digest = sha256(TOKEN_A);
+    expect(await locator.lookup({ deviceTokenDigest: digest })).toEqual({
+      ok: true,
+      kind: "missing",
+    });
+    await fixture.store.transact(
+      { tenantId: "gateway-credential-scope-global" },
+      (tx) => {
+        tx.stage({
+          namespace: GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          key: digest,
+          value: {
+            schema: GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+            tenantId: TENANT_A,
+            deviceTokenDigest: digest,
+            deviceId: DEVICE_ID,
+            state: "active",
+            lastOperationId: "malformed-locator",
+            lastOperationDigest: digest,
+            createdAtMs: NOW_MS,
+            updatedAtMs: NOW_MS,
+            recordVersion: 1,
+            rawToken: TOKEN_A,
+          },
+          expect: { kind: "absent" },
+        });
+      },
+    );
+    expect(await locator.lookup({ deviceTokenDigest: digest })).toMatchObject({
+      ok: false,
+      kind: "corrupt",
+    });
+  });
+});
+
 describe("production identity durable records", () => {
   it("creates versioned records, reopens after restart, and returns the full auth authority", async () => {
-    const { fixture, identity } = await openAuthority();
+    const { fixture, locatorFixture, identity } = await openAuthority();
     const change = committed(await identity.provisionDevice(provisionInput()));
 
     expect(change).toMatchObject({
@@ -172,6 +354,8 @@ describe("production identity durable records", () => {
         deviceTokenDigest: sha256(TOKEN_A),
         status: "active",
         authorizationVersion: 1,
+        connectionCapabilityVersion: 1,
+        sessionCapabilityVersion: 1,
         recordVersion: 1,
       },
       seat: {
@@ -203,6 +387,8 @@ describe("production identity durable records", () => {
         machineFingerprint: FINGERPRINT_A,
         authorizationVersion: 1,
         identityRecordVersion: 1,
+        connectionCapabilityVersion: 1,
+        sessionCapabilityVersion: 1,
         seatAuthorityVersion: 1,
         seatRecordVersion: 1,
         grantedConnectionCapabilities: [
@@ -218,51 +404,148 @@ describe("production identity durable records", () => {
 
     await identity.close();
     const restartedStore = fixture.restart();
-    const restarted = authority(restartedStore);
+    const restartedLocator = createProductionCredentialScopeLocator({
+      store: locatorFixture.restart(),
+      clock: () => NOW_MS,
+    });
+    const restarted = authority(restartedStore, restartedLocator);
     await restarted.open();
-    expect(
-      await exactAuth(restarted, { hostname: "renamed-workstation" }),
-    ).toEqual(authenticated);
+    const reopenedHelloCredential = {
+      deviceToken: TOKEN_A,
+      connectionId: "connection-1",
+      claimedDeviceId: DEVICE_ID,
+      machineFingerprint: FINGERPRINT_A,
+      machineHostname: "renamed-workstation",
+    };
+    expect(await restarted.authenticateDevice(reopenedHelloCredential)).toEqual(
+      authenticated,
+    );
   });
 
-  it("uses a digest-only exact credential locator and never authorizes a cross-scope guess", async () => {
-    const fixture = createRestartableTestStore();
-    const observed: string[] = [];
-    const identity = authority(fixture.store, {
-      credentialScopeResolver: {
-        async resolveCredentialScope(input) {
-          observed.push(input.deviceTokenDigest);
-          return input.deviceTokenDigest === sha256(TOKEN_A)
-            ? { tenantId: TENANT_A, deviceId: DEVICE_ID }
-            : null;
-        },
-      },
-    });
-    await identity.open();
+  it("uses a digest-only durable locator and never authorizes a cross-scope guess", async () => {
+    const { locatorFixture, identity } = await openAuthority();
     committed(await identity.provisionDevice(provisionInput()));
     await consumeAll(identity);
 
     const resolved = await identity.authenticateDevice({
       deviceToken: TOKEN_A,
       connectionId: "connection-resolved",
-      deviceId: DEVICE_ID,
+      claimedDeviceId: DEVICE_ID,
       machineFingerprint: FINGERPRINT_A,
     });
     expect(resolved).toMatchObject({ ok: true });
-    expect(observed).toEqual([sha256(TOKEN_A)]);
-    expect(JSON.stringify(observed)).not.toContain(TOKEN_A);
+    const locatorRecords = locatorFixture.snapshot().records;
+    expect(locatorRecords).toHaveLength(1);
+    expect(locatorRecords[0]).toMatchObject({
+      namespace: "gateway.credential-scope/v1",
+      key: sha256(TOKEN_A),
+      value: {
+        deviceTokenDigest: sha256(TOKEN_A),
+        tenantId: TENANT_A,
+        deviceId: DEVICE_ID,
+        state: "active",
+      },
+    });
+    expect(JSON.stringify(locatorRecords)).not.toContain(TOKEN_A);
     expect(
       await identity.authenticateDevice({
         deviceToken: TOKEN_A,
         connectionId: "connection-wrong-device",
-        deviceId: "device-other",
+        claimedDeviceId: "device-other",
         machineFingerprint: FINGERPRINT_A,
       }),
     ).toMatchObject({ ok: false });
+    const wireTenantHint = {
+      deviceToken: TOKEN_A,
+      connectionId: "connection-wire-tenant-hint",
+      claimedDeviceId: DEVICE_ID,
+      machineFingerprint: FINGERPRINT_A,
+      machineHostname: "wire-host",
+      tenantId: TENANT_A,
+      deviceId: DEVICE_ID,
+    } as unknown as Parameters<
+      ProductionIdentityAuthority["authenticateDevice"]
+    >[0];
+    expect(await identity.authenticateDevice(wireTenantHint)).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("maps missing, retired, ambiguous, corrupt, wrong-owner, and claimed-device locator states to one denial", async () => {
+    const { fixture, locator, identity } = await openAuthority();
+    committed(await identity.provisionDevice(provisionInput()));
+    await consumeAll(identity);
+    const located = await locator.lookup({ deviceTokenDigest: sha256(TOKEN_A) });
+    expect(located).toMatchObject({ ok: true, kind: "active" });
+    if (!located.ok || located.kind !== "active") return;
+    await identity.close();
+    const variants: readonly {
+      readonly result: CredentialScopeLookupResult;
+      readonly claimedDeviceId?: string;
+    }[] = [
+      { result: { ok: true, kind: "missing" } },
+      { result: { ok: true, kind: "ambiguous" } },
+      {
+        result: {
+          ok: true,
+          kind: "retired",
+          record: { ...located.record, state: "retired" },
+        },
+      },
+      {
+        result: {
+          ok: false,
+          kind: "corrupt",
+          code: "credential_scope_corrupt",
+          message: "malformed locator",
+        },
+      },
+      {
+        result: {
+          ok: true,
+          kind: "active",
+          record: { ...located.record, tenantId: TENANT_B },
+        },
+      },
+      {
+        result: {
+          ok: true,
+          kind: "active",
+          record: {
+            ...located.record,
+            deviceTokenDigest: sha256(TOKEN_B),
+          },
+        },
+      },
+      { result: located, claimedDeviceId: "device-other" },
+    ];
+    const denials: unknown[] = [];
+    for (const variant of variants) {
+      const candidate = authority(
+        fixture.restart(),
+        fixedLookupLocator(variant.result),
+      );
+      await candidate.open();
+      denials.push(
+        await exactAuth(candidate, {
+          claimedDeviceId: variant.claimedDeviceId ?? DEVICE_ID,
+        }),
+      );
+      await candidate.close();
+    }
+    expect(denials.every((denial) => JSON.stringify(denial) === JSON.stringify(denials[0]))).toBe(
+      true,
+    );
+    expect(denials[0]).toEqual({
+      ok: false,
+      port: "identity",
+      code: "unavailable",
+      message: "production identity refused device authorization",
+    });
   });
 
   it("retains durable revoked status across restart", async () => {
-    const { fixture, identity } = await openAuthority();
+    const { fixture, locatorFixture, identity } = await openAuthority();
     const provisioned = committed(
       await identity.provisionDevice(provisionInput()),
     );
@@ -286,15 +569,31 @@ describe("production identity durable records", () => {
       recordVersion: 2,
     });
     await consumeAll(identity);
-    expect(await exactAuth(identity)).toMatchObject({
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await exactAuth(identity, {
+        establishedScope: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+      }),
+    ).toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked", authorizationVersion: 2 },
     });
 
     await identity.close();
-    const restarted = authority(fixture.restart());
+    const restarted = authority(
+      fixture.restart(),
+      createProductionCredentialScopeLocator({
+        store: locatorFixture.restart(),
+        clock: () => NOW_MS,
+      }),
+    );
     await restarted.open();
-    expect(await exactAuth(restarted)).toMatchObject({
+    expect(await exactAuth(restarted)).toMatchObject({ ok: false });
+    expect(
+      await exactAuth(restarted, {
+        establishedScope: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+      }),
+    ).toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked", authorizationVersion: 2 },
     });
@@ -333,6 +632,222 @@ describe("production identity CAS and atomic event allocation", () => {
       head: { lastSequence: 2 },
       event: { sequence: 2 },
     });
+  });
+
+  it("rotates locator authority by binding new digest before retiring old", async () => {
+    const { identity, locator } = await openAuthority();
+    const initial = committed(await identity.provisionDevice(provisionInput()));
+    committed(
+      await identity.provisionDevice(
+        provisionInput({
+          operationId: "operation-rotate-success",
+          deviceToken: TOKEN_B,
+          expectedDeviceRecordVersion: initial.device!.recordVersion,
+          expectedSeatRecordVersion: initial.seat.recordVersion,
+        }),
+      ),
+    );
+    expect(await locator.lookup({ deviceTokenDigest: sha256(TOKEN_B) })).toMatchObject({
+      ok: true,
+      kind: "active",
+      record: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+    });
+    expect(await locator.lookup({ deviceTokenDigest: sha256(TOKEN_A) })).toMatchObject({
+      ok: true,
+      kind: "retired",
+    });
+    await consumeAll(identity);
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(await exactAuth(identity, { token: TOKEN_B })).toMatchObject({
+      ok: true,
+      value: {
+        authorizationVersion: 2,
+        connectionCapabilityVersion: 2,
+        sessionCapabilityVersion: 2,
+      },
+    });
+  });
+
+  it("returns reconciliation_required without retry or rollback when new locator bind fails", async () => {
+    const authorityFixture = createRestartableTestStore();
+    const locatorFixture = createRestartableTestStore();
+    const firstLocator = createProductionCredentialScopeLocator({
+      store: locatorFixture.store,
+      clock: () => NOW_MS,
+    });
+    const first = authority(authorityFixture.store, firstLocator);
+    await first.open();
+    const initial = committed(await first.provisionDevice(provisionInput()));
+    await first.close();
+
+    const durableLocator = createProductionCredentialScopeLocator({
+      store: locatorFixture.restart(),
+      clock: () => NOW_MS,
+    });
+    const injected = failFirstLocatorMutation(durableLocator, "bind");
+    const restarted = authority(authorityFixture.restart(), injected.locator);
+    await restarted.open();
+    const rotation = provisionInput({
+      operationId: "operation-rotate-bind-cut",
+      deviceToken: TOKEN_B,
+      expectedDeviceRecordVersion: initial.device!.recordVersion,
+      expectedSeatRecordVersion: initial.seat.recordVersion,
+    });
+    const partial = await restarted.provisionDevice(rotation);
+    expect(partial).toMatchObject({
+      ok: false,
+      kind: "reconciliation_required",
+      change: {
+        device: { deviceTokenDigest: sha256(TOKEN_B) },
+        head: { lastSequence: 2 },
+      },
+    });
+    expect(injected.attempts()).toBe(1);
+    expect(await durableLocator.lookup({ deviceTokenDigest: sha256(TOKEN_B) })).toEqual({
+      ok: true,
+      kind: "missing",
+    });
+    expect(await durableLocator.lookup({ deviceTokenDigest: sha256(TOKEN_A) })).toMatchObject({
+      ok: true,
+      kind: "active",
+    });
+    expect(await restarted.provisionDevice(rotation)).toMatchObject({
+      ok: true,
+      kind: "replay",
+    });
+    expect(injected.attempts()).toBe(2);
+    expect(await durableLocator.lookup({ deviceTokenDigest: sha256(TOKEN_A) })).toMatchObject({
+      ok: true,
+      kind: "retired",
+    });
+  });
+
+  it("keeps committed rotation/revoke truth when locator retirement crosses a cutpoint", async () => {
+    const authorityFixture = createRestartableTestStore();
+    const locatorFixture = createRestartableTestStore();
+    const durableLocator = createProductionCredentialScopeLocator({
+      store: locatorFixture.store,
+      clock: () => NOW_MS,
+    });
+    const injected = failFirstLocatorMutation(durableLocator, "retire");
+    const identity = authority(authorityFixture.store, injected.locator);
+    await identity.open();
+    const initial = committed(await identity.provisionDevice(provisionInput()));
+    const rotationInput = provisionInput({
+      operationId: "operation-rotate-retire-cut",
+      deviceToken: TOKEN_B,
+      expectedDeviceRecordVersion: initial.device!.recordVersion,
+      expectedSeatRecordVersion: initial.seat.recordVersion,
+    });
+    expect(await identity.provisionDevice(rotationInput)).toMatchObject({
+      ok: false,
+      kind: "reconciliation_required",
+      change: { head: { lastSequence: 2 } },
+    });
+    expect(injected.attempts()).toBe(1);
+    expect(await durableLocator.lookup({ deviceTokenDigest: sha256(TOKEN_B) })).toMatchObject({
+      ok: true,
+      kind: "active",
+    });
+    expect(await durableLocator.lookup({ deviceTokenDigest: sha256(TOKEN_A) })).toMatchObject({
+      ok: true,
+      kind: "active",
+    });
+    await consumeAll(identity);
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(await exactAuth(identity, { token: TOKEN_B })).toMatchObject({
+      ok: true,
+      value: { authorizationVersion: 2 },
+    });
+    expect(await identity.provisionDevice(rotationInput)).toMatchObject({
+      ok: true,
+      kind: "replay",
+    });
+    expect(injected.attempts()).toBe(2);
+
+    const rotated = await identity.prepareTenantResync({ tenantId: TENANT_A });
+    expect(rotated.ok).toBe(true);
+    if (!rotated.ok) return;
+    const device = rotated.snapshot.devices[0]!;
+    const seat = rotated.snapshot.seats[0]!;
+    const revokeInput = {
+      operationId: "operation-revoke-retire-cut",
+      tenantId: TENANT_A,
+      deviceId: DEVICE_ID,
+      expectedDeviceRecordVersion: device.recordVersion,
+      expectedSeatRecordVersion: seat.recordVersion,
+    };
+    const secondInjected = failFirstLocatorMutation(durableLocator, "retire");
+    const revokeAuthority = authority(authorityFixture.store, secondInjected.locator);
+    // Both adapters share already-open stores; no second lifecycle open is needed.
+    expect(await revokeAuthority.revokeDevice(revokeInput)).toMatchObject({
+      ok: false,
+      kind: "reconciliation_required",
+      change: { device: { status: "revoked" }, head: { lastSequence: 3 } },
+    });
+    expect(secondInjected.attempts()).toBe(1);
+    expect(await revokeAuthority.revokeDevice(revokeInput)).toMatchObject({
+      ok: true,
+      kind: "replay",
+    });
+  });
+
+  it("reports digest collision after tenant commit and leaves the other owner unchanged", async () => {
+    const { identity, locator } = await openAuthority();
+    expect(
+      await locator.bind({
+        operationId: "other-owner-bind",
+        deviceTokenDigest: sha256(TOKEN_B),
+        tenantId: TENANT_B,
+        deviceId: DEVICE_ID,
+      }),
+    ).toMatchObject({ ok: true, kind: "committed" });
+    const initial = committed(await identity.provisionDevice(provisionInput()));
+    const collision = await identity.provisionDevice(
+      provisionInput({
+        operationId: "operation-digest-collision",
+        deviceToken: TOKEN_B,
+        expectedDeviceRecordVersion: initial.device!.recordVersion,
+        expectedSeatRecordVersion: initial.seat.recordVersion,
+      }),
+    );
+    expect(collision).toMatchObject({
+      ok: false,
+      kind: "reconciliation_required",
+      change: {
+        device: { deviceTokenDigest: sha256(TOKEN_B) },
+        head: { lastSequence: 2 },
+      },
+    });
+    expect(await locator.lookup({ deviceTokenDigest: sha256(TOKEN_B) })).toMatchObject({
+      ok: true,
+      kind: "active",
+      record: { tenantId: TENANT_B, deviceId: DEVICE_ID },
+    });
+    await consumeAll(identity);
+    expect(await exactAuth(identity, { token: TOKEN_B })).toMatchObject({
+      ok: false,
+    });
+  });
+
+  it("rejects existing-device seat drift without tenant or locator writes", async () => {
+    const { fixture, locatorFixture, identity } = await openAuthority();
+    const initial = committed(await identity.provisionDevice(provisionInput()));
+    const beforeAuthority = JSON.stringify(fixture.snapshot());
+    const beforeLocator = JSON.stringify(locatorFixture.snapshot());
+    expect(
+      await identity.provisionDevice(
+        provisionInput({
+          operationId: "operation-seat-drift",
+          seatId: "seat-other",
+          deviceToken: TOKEN_B,
+          expectedDeviceRecordVersion: initial.device!.recordVersion,
+          expectedSeatRecordVersion: null,
+        }),
+      ),
+    ).toMatchObject({ ok: false, kind: "conflict" });
+    expect(JSON.stringify(fixture.snapshot())).toBe(beforeAuthority);
+    expect(JSON.stringify(locatorFixture.snapshot())).toBe(beforeLocator);
   });
 
   it("serializes issue versus revoke by CAS so only one stale writer wins", async () => {
@@ -404,6 +919,50 @@ describe("production identity CAS and atomic event allocation", () => {
     });
   });
 
+  it("allows an unrelated same-tenant pair to lag the current tenant head", async () => {
+    const { identity } = await openAuthority();
+    const first = committed(
+      await identity.provisionDevice(
+        provisionInput({
+          operationId: "operation-unrelated-a",
+          deviceId: "device-a",
+          seatId: "seat-a",
+          deviceToken: TOKEN_A,
+        }),
+      ),
+    );
+    committed(
+      await identity.provisionDevice(
+        provisionInput({
+          operationId: "operation-unrelated-b",
+          deviceId: "device-b",
+          seatId: "seat-b",
+          deviceToken: TOKEN_B,
+        }),
+      ),
+    );
+    expect(first.device).toMatchObject({ lastAuthoritySequence: 1 });
+    await consumeAll(identity);
+    expect(
+      await exactAuth(identity, {
+        claimedDeviceId: "device-a",
+        token: TOKEN_A,
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { actor: { deviceId: "device-a" } },
+    });
+    expect(
+      await exactAuth(identity, {
+        claimedDeviceId: "device-b",
+        token: TOKEN_B,
+      }),
+    ).toMatchObject({
+      ok: true,
+      value: { actor: { deviceId: "device-b" } },
+    });
+  });
+
   it("revokes a seat and its attached device in the same head/event transaction", async () => {
     const { identity } = await openAuthority();
     const initial = committed(await identity.provisionDevice(provisionInput()));
@@ -440,8 +999,13 @@ describe("production identity CAS and atomic event allocation", () => {
 
   it("recovers an exact post-commit acknowledgement loss and leaves no partial pre-commit state", async () => {
     const committedFixture = createRestartableTestStore();
+    const committedLocatorFixture = createRestartableTestStore();
     const recoveredAuthority = authority(
       uncertainAfter(committedFixture.store, "after"),
+      createProductionCredentialScopeLocator({
+        store: committedLocatorFixture.store,
+        clock: () => NOW_MS,
+      }),
     );
     await recoveredAuthority.open();
     expect(await recoveredAuthority.provisionDevice(provisionInput())).toMatchObject({
@@ -455,8 +1019,13 @@ describe("production identity CAS and atomic event allocation", () => {
     expect(committedFixture.snapshot().records).toHaveLength(4);
 
     const uncommittedFixture = createRestartableTestStore();
+    const uncommittedLocatorFixture = createRestartableTestStore();
     const uncertainAuthority = authority(
       uncertainAfter(uncommittedFixture.store, "before"),
+      createProductionCredentialScopeLocator({
+        store: uncommittedLocatorFixture.store,
+        clock: () => NOW_MS,
+      }),
     );
     await uncertainAuthority.open();
     expect(await uncertainAuthority.provisionDevice(provisionInput())).toMatchObject({
@@ -546,7 +1115,12 @@ describe("revocation cursor, gap block, and bounded digest resync", () => {
     expect(
       await identity.consumeRevocationEvents({ tenantId: TENANT_A }),
     ).toMatchObject({ ok: true, kind: "current", complete: true });
-    expect(await exactAuth(identity)).toMatchObject({
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await exactAuth(identity, {
+        establishedScope: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+      }),
+    ).toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked" },
     });
@@ -577,6 +1151,22 @@ describe("revocation cursor, gap block, and bounded digest resync", () => {
       cursor: { lastContiguousSequence: 0 },
     });
 
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+    const corruptEvent = fixture
+      .snapshot()
+      .records.find(
+        (record) => record.namespace === IDENTITY_REVOCATION_EVENT_SCHEMA,
+      )!;
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: event.namespace,
+        key: event.key,
+        value: event.value,
+        expect: { kind: "version", version: corruptEvent.version },
+      });
+    });
     const prepared = await identity.prepareTenantResync({ tenantId: TENANT_A });
     expect(prepared.ok).toBe(true);
     if (!prepared.ok) return;
@@ -650,8 +1240,7 @@ describe("fingerprint claim consistency and tenant isolation", () => {
       await identity.authenticateDevice({
         deviceToken: TOKEN_A,
         connectionId: "connection-missing-legacy-claim",
-        tenantId: TENANT_A,
-        deviceId: DEVICE_ID,
+        claimedDeviceId: DEVICE_ID,
       }),
     ).toMatchObject({ ok: false });
     for (const fingerprint of [
@@ -686,7 +1275,7 @@ describe("fingerprint claim consistency and tenant isolation", () => {
   });
 
   it("keeps identical device and seat ids isolated by tenant", async () => {
-    const { identity } = await openAuthority();
+    const { fixture, identity } = await openAuthority();
     const a = committed(await identity.provisionDevice(provisionInput()));
     committed(
       await identity.provisionDevice(
@@ -700,13 +1289,26 @@ describe("fingerprint claim consistency and tenant isolation", () => {
     );
     await consumeAll(identity, TENANT_A);
     await consumeAll(identity, TENANT_B);
+    const initialHeads = fixture
+      .snapshot()
+      .records.filter(
+        (record) => record.namespace === IDENTITY_REVOCATION_HEAD_SCHEMA,
+      )
+      .map((record) => ({
+        tenantId: record.tenantId,
+        lastSequence: (record.value as { lastSequence: number }).lastSequence,
+      }))
+      .sort((left, right) => left.tenantId.localeCompare(right.tenantId));
+    expect(initialHeads).toEqual([
+      { tenantId: TENANT_A, lastSequence: 1 },
+      { tenantId: TENANT_B, lastSequence: 1 },
+    ]);
     expect(await exactAuth(identity)).toMatchObject({
       ok: true,
       value: { actor: { tenantId: TENANT_A } },
     });
     expect(
       await exactAuth(identity, {
-        tenantId: TENANT_B,
         token: TOKEN_B,
         fingerprint: FINGERPRINT_B,
       }),
@@ -716,9 +1318,9 @@ describe("fingerprint claim consistency and tenant isolation", () => {
     });
     expect(
       await exactAuth(identity, {
-        tenantId: TENANT_B,
         token: TOKEN_A,
         fingerprint: FINGERPRINT_A,
+        establishedScope: { tenantId: TENANT_B, deviceId: DEVICE_ID },
       }),
     ).toMatchObject({ ok: false });
 
@@ -732,13 +1334,31 @@ describe("fingerprint claim consistency and tenant isolation", () => {
       }),
     );
     await consumeAll(identity, TENANT_A);
-    expect(await exactAuth(identity)).toMatchObject({
+    const finalHeads = fixture
+      .snapshot()
+      .records.filter(
+        (record) => record.namespace === IDENTITY_REVOCATION_HEAD_SCHEMA,
+      )
+      .map((record) => ({
+        tenantId: record.tenantId,
+        lastSequence: (record.value as { lastSequence: number }).lastSequence,
+      }))
+      .sort((left, right) => left.tenantId.localeCompare(right.tenantId));
+    expect(finalHeads).toEqual([
+      { tenantId: TENANT_A, lastSequence: 2 },
+      { tenantId: TENANT_B, lastSequence: 1 },
+    ]);
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await exactAuth(identity, {
+        establishedScope: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+      }),
+    ).toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked" },
     });
     expect(
       await exactAuth(identity, {
-        tenantId: TENANT_B,
         token: TOKEN_B,
         fingerprint: FINGERPRINT_B,
       }),
@@ -761,6 +1381,44 @@ describe("fingerprint claim consistency and tenant isolation", () => {
           machineFingerprint: `sha256:${"A".repeat(64)}`,
         } as never,
         expect: { kind: "version", version: device.version },
+      });
+    });
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
+  it("rejects a coherent-looking device/seat pair whose sequence is ahead of head", async () => {
+    const { fixture, identity } = await openAuthority();
+    committed(await identity.provisionDevice(provisionInput()));
+    await consumeAll(identity);
+    const device = fixture
+      .snapshot()
+      .records.find((record) => record.namespace === IDENTITY_DEVICE_SCHEMA)!;
+    const seat = fixture
+      .snapshot()
+      .records.find(
+        (record) => record.namespace === IDENTITY_TENANT_SEAT_SCHEMA,
+      )!;
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: device.namespace,
+        key: device.key,
+        value: {
+          ...(device.value as Record<string, unknown>),
+          lastAuthoritySequence: 2,
+        } as never,
+        expect: { kind: "version", version: device.version },
+      });
+      tx.stage({
+        namespace: seat.namespace,
+        key: seat.key,
+        value: {
+          ...(seat.value as Record<string, unknown>),
+          lastAuthoritySequence: 2,
+        } as never,
+        expect: { kind: "version", version: seat.version },
       });
     });
     expect(await exactAuth(identity)).toMatchObject({ ok: false });

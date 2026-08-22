@@ -27,6 +27,8 @@ export const IDENTITY_REVOCATION_EVENT_SCHEMA =
   "identity.revocation-event/v1" as const;
 export const GATEWAY_REVOCATION_CURSOR_SCHEMA =
   "gateway.revocation-cursor/v1" as const;
+export const GATEWAY_CREDENTIAL_SCOPE_SCHEMA =
+  "gateway.credential-scope/v1" as const;
 
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:@-]+$/u;
 const CAPABILITY_PATTERN = /^[a-z0-9_.:-]+$/u;
@@ -38,6 +40,7 @@ const DEFAULT_MAX_RESYNC_DEVICES = 10_000;
 const DEFAULT_MAX_RESYNC_SEATS = 10_000;
 const DEFAULT_MAX_CONSUME_EVENTS = 1_000;
 const EMPTY_SHA256 = Buffer.alloc(32);
+const CREDENTIAL_SCOPE_STORE_TENANT = "gateway-credential-scope-global";
 
 type Sha256Digest = `sha256:${string}`;
 
@@ -73,6 +76,8 @@ export interface IdentityDeviceV2 extends VersionedIdentityRecord {
   readonly deviceTokenDigest: Sha256Digest;
   readonly status: IdentityDeviceStatus;
   readonly authorizationVersion: number;
+  readonly connectionCapabilityVersion: number;
+  readonly sessionCapabilityVersion: number;
   readonly allowedConnectionCapabilities: readonly string[];
   readonly allowedSessionCapabilities: readonly string[];
   readonly lastAuthorityOperationId: string;
@@ -105,6 +110,8 @@ export interface IdentityRevocationEventV1 extends VersionedIdentityRecord {
   readonly action: IdentityRevocationAction;
   readonly authorizationVersion: number | null;
   readonly seatAuthorityVersion: number | null;
+  readonly priorDeviceTokenDigest: Sha256Digest | null;
+  readonly deviceTokenDigest: Sha256Digest | null;
   readonly operationId: string;
   readonly operationDigest: Sha256Digest;
   readonly committedAtMs: number;
@@ -120,28 +127,82 @@ export interface GatewayRevocationCursorV1 extends VersionedIdentityRecord {
   readonly blockedReason: IdentityCursorBlockReason | null;
 }
 
+export interface GatewayCredentialScopeV1 extends VersionedIdentityRecord {
+  readonly schema: typeof GATEWAY_CREDENTIAL_SCOPE_SCHEMA;
+  readonly deviceTokenDigest: Sha256Digest;
+  readonly deviceId: string;
+  readonly state: "active" | "retired";
+  readonly lastOperationId: string;
+  readonly lastOperationDigest: Sha256Digest;
+}
+
 export interface ProductionCredentialScope {
   readonly tenantId: string;
   readonly deviceId: string;
 }
 
 /**
- * Resolves a digest to one exact tenant/device key. It is a credential-boundary
- * injection, not a broad identity scan; the loaded record must still match the
- * digest and every enrolled claim before it is authoritative.
+ * Durable global digest index. It is a credential-boundary hint, never final
+ * authority: the tenant device/seat/head/cursor transaction must still agree.
  */
-export interface ProductionCredentialScopeResolver {
-  resolveCredentialScope(input: {
-    readonly deviceTokenDigest: Sha256Digest;
-    readonly claimedDeviceId: string | undefined;
-  }): Promise<ProductionCredentialScope | null>;
+export interface CredentialScopeFailure {
+  readonly ok: false;
+  readonly kind: "invalid_input" | "conflict" | "unavailable" | "corrupt";
+  readonly code:
+    | "invalid_input"
+    | "credential_scope_conflict"
+    | "credential_scope_corrupt"
+    | StoreErrorCode;
+  readonly message: string;
+}
+
+export type CredentialScopeLookupResult =
+  | {
+      readonly ok: true;
+      readonly kind: "active" | "retired";
+      readonly record: GatewayCredentialScopeV1;
+    }
+  | { readonly ok: true; readonly kind: "missing" | "ambiguous" }
+  | CredentialScopeFailure;
+
+export type CredentialScopeMutationResult =
+  | {
+      readonly ok: true;
+      readonly kind: "committed" | "replay";
+      readonly record: GatewayCredentialScopeV1;
+    }
+  | CredentialScopeFailure;
+
+export interface ProductionCredentialScopeLocator {
+  readonly kind: GatewayProtocolStore["kind"];
+  open(): Promise<StoreOutcome<void>>;
+  close(): Promise<StoreOutcome<void>>;
+  lookup(input: {
+    readonly deviceTokenDigest: string;
+  }): Promise<CredentialScopeLookupResult>;
+  bind(input: {
+    readonly operationId: string;
+    readonly deviceTokenDigest: string;
+    readonly tenantId: string;
+    readonly deviceId: string;
+  }): Promise<CredentialScopeMutationResult>;
+  retire(input: {
+    readonly operationId: string;
+    readonly deviceTokenDigest: string;
+    readonly expectedRecordVersion: number;
+  }): Promise<CredentialScopeMutationResult>;
+}
+
+export interface ProductionCredentialScopeLocatorOptions {
+  readonly store: GatewayProtocolStore;
+  readonly clock: () => number;
 }
 
 export interface ProductionIdentityStoreOptions {
   readonly store: GatewayProtocolStore;
+  readonly credentialLocator: ProductionCredentialScopeLocator;
   readonly subscriberId: string;
   readonly clock: () => number;
-  readonly credentialScopeResolver?: ProductionCredentialScopeResolver;
   readonly northIdentity?: Pick<IdentityPort, "authenticateNorthRequest">;
   readonly maxResyncDevices?: number;
   readonly maxResyncSeats?: number;
@@ -152,6 +213,8 @@ export interface ProductionDeviceAuthContext extends DeviceAuthContext {
   readonly machineFingerprint: GatewayMachineFingerprint;
   readonly authorizationVersion: number;
   readonly identityRecordVersion: number;
+  readonly connectionCapabilityVersion: number;
+  readonly sessionCapabilityVersion: number;
   readonly seatAuthorityVersion: number;
   readonly seatRecordVersion: number;
   readonly grantedConnectionCapabilities: readonly string[];
@@ -206,12 +269,21 @@ export interface IdentityOperationFailure {
   readonly message: string;
 }
 
+export interface IdentityReconciliationRequired {
+  readonly ok: false;
+  readonly kind: "reconciliation_required";
+  readonly code: "credential_scope_reconciliation_required";
+  readonly message: string;
+  readonly change: IdentityAuthorityChange;
+}
+
 export type IdentityMutationResult =
   | {
       readonly ok: true;
       readonly kind: "committed" | "replay" | "recovered";
       readonly change: IdentityAuthorityChange;
     }
+  | IdentityReconciliationRequired
   | IdentityOperationFailure;
 
 export interface IdentityResyncSnapshot {
@@ -258,8 +330,8 @@ export interface ProductionIdentityAuthority extends IdentityPort {
   authenticateDevice(input: {
     readonly deviceToken: string | undefined;
     readonly connectionId: string;
-    readonly tenantId?: string;
-    readonly deviceId?: string;
+    readonly claimedDeviceId?: string;
+    readonly establishedScope?: ProductionCredentialScope;
     readonly machineFingerprint?: string;
     readonly machineHostname?: string;
   }): Promise<GatewayPortResult<ProductionDeviceAuthContext>>;
@@ -515,6 +587,8 @@ function parseDevice(
     "deviceTokenDigest",
     "status",
     "authorizationVersion",
+    "connectionCapabilityVersion",
+    "sessionCapabilityVersion",
     "allowedConnectionCapabilities",
     "allowedSessionCapabilities",
     "lastAuthorityOperationId",
@@ -537,6 +611,8 @@ function parseDevice(
     !isSha256Digest(value.deviceTokenDigest) ||
     (value.status !== "active" && value.status !== "revoked") ||
     !isSafePositiveInteger(value.authorizationVersion) ||
+    !isSafePositiveInteger(value.connectionCapabilityVersion) ||
+    !isSafePositiveInteger(value.sessionCapabilityVersion) ||
     connectionCapabilities === null ||
     sessionCapabilities === null ||
     !isIdentifier(value.lastAuthorityOperationId) ||
@@ -644,6 +720,8 @@ function parseEvent(
     "action",
     "authorizationVersion",
     "seatAuthorityVersion",
+    "priorDeviceTokenDigest",
+    "deviceTokenDigest",
     "operationId",
     "operationDigest",
     "committedAtMs",
@@ -664,21 +742,41 @@ function parseEvent(
       !isSafePositiveInteger(value.authorizationVersion)) ||
     (value.seatAuthorityVersion !== null &&
       !isSafePositiveInteger(value.seatAuthorityVersion)) ||
+    (value.priorDeviceTokenDigest !== null &&
+      !isSha256Digest(value.priorDeviceTokenDigest)) ||
+    (value.deviceTokenDigest !== null &&
+      !isSha256Digest(value.deviceTokenDigest)) ||
     !isIdentifier(value.operationId) ||
     !isSha256Digest(value.operationDigest) ||
     !isSafeNonNegativeInteger(value.committedAtMs) ||
     value.createdAtMs !== value.committedAtMs ||
     value.updatedAtMs !== value.committedAtMs ||
+    (value.deviceId === null &&
+      (value.authorizationVersion !== null ||
+        value.priorDeviceTokenDigest !== null ||
+        value.deviceTokenDigest !== null)) ||
+    (value.deviceId !== null &&
+      (value.authorizationVersion === null || value.deviceTokenDigest === null)) ||
     (value.action === "device_revoked" &&
       (value.deviceId === null ||
         value.seatId === null ||
         value.authorizationVersion === null ||
-        value.seatAuthorityVersion === null)) ||
+        value.seatAuthorityVersion === null ||
+        value.deviceTokenDigest === null)) ||
     (value.action === "seat_reassigned" &&
       (value.deviceId === null ||
         value.seatId === null ||
         value.authorizationVersion === null ||
-        value.seatAuthorityVersion === null)) ||
+        value.seatAuthorityVersion === null ||
+        value.deviceTokenDigest === null)) ||
+    (value.action === "seat_reassigned" &&
+      ((value.authorizationVersion === 1 &&
+        value.priorDeviceTokenDigest !== null) ||
+        ((value.authorizationVersion as number) > 1 &&
+          value.priorDeviceTokenDigest === null))) ||
+    (value.action !== "seat_reassigned" &&
+      value.deviceId !== null &&
+      !digestEqual(value.priorDeviceTokenDigest, value.deviceTokenDigest)) ||
     (value.action === "seat_revoked" &&
       (value.seatId === null || value.seatAuthorityVersion === null))
   ) {
@@ -737,6 +835,43 @@ function parseCursor(
   return Object.freeze(value as unknown as GatewayRevocationCursorV1);
 }
 
+function parseCredentialScope(
+  stored: StoredRecord,
+  expectedDigest: Sha256Digest,
+): GatewayCredentialScopeV1 {
+  const value = stored.value;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      ...VERSIONED_KEYS,
+      "schema",
+      "deviceTokenDigest",
+      "deviceId",
+      "state",
+      "lastOperationId",
+      "lastOperationDigest",
+    ]) ||
+    !isIdentifier(value.tenantId) ||
+    !validVersioned(value, value.tenantId) ||
+    value.schema !== GATEWAY_CREDENTIAL_SCOPE_SCHEMA ||
+    value.deviceTokenDigest !== expectedDigest ||
+    !isSha256Digest(value.deviceTokenDigest) ||
+    !isIdentifier(value.deviceId) ||
+    (value.state !== "active" && value.state !== "retired") ||
+    !isIdentifier(value.lastOperationId) ||
+    !isSha256Digest(value.lastOperationDigest)
+  ) {
+    throw new CorruptIdentityAuthorityError("malformed credential scope record");
+  }
+  assertStoredEnvelope(
+    stored,
+    GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+    CREDENTIAL_SCOPE_STORE_TENANT,
+    expectedDigest,
+  );
+  return Object.freeze(value as unknown as GatewayCredentialScopeV1);
+}
+
 function stageRecord(
   tx: StoreTransaction,
   namespace: string,
@@ -757,6 +892,273 @@ function stageRecord(
 
 function operationDigest(kind: string, value: unknown): Sha256Digest {
   return sha256(JSON.stringify({ schema: "identity.authority-operation/v1", kind, value }));
+}
+
+function credentialFailure(
+  kind: CredentialScopeFailure["kind"],
+  code: CredentialScopeFailure["code"],
+  message: string,
+): CredentialScopeFailure {
+  return Object.freeze({ ok: false as const, kind, code, message });
+}
+
+function credentialStoreFailure(
+  code: StoreErrorCode,
+  message: string,
+): CredentialScopeFailure {
+  if (code === "conflict") {
+    return credentialFailure(
+      "conflict",
+      "credential_scope_conflict",
+      "credential scope CAS conflict",
+    );
+  }
+  if (code === "invalid_record" || code === "tenant_isolation_violation") {
+    return credentialFailure(
+      "corrupt",
+      "credential_scope_corrupt",
+      "credential scope authority is corrupt",
+    );
+  }
+  return credentialFailure("unavailable", code, message);
+}
+
+class StoreBackedProductionCredentialScopeLocator
+  implements ProductionCredentialScopeLocator
+{
+  public readonly kind: GatewayProtocolStore["kind"];
+
+  readonly #store: GatewayProtocolStore;
+  readonly #clock: () => number;
+
+  constructor(options: ProductionCredentialScopeLocatorOptions) {
+    if (typeof options.clock !== "function") {
+      throw new TypeError("credential scope locator configuration is invalid");
+    }
+    this.#store = options.store;
+    this.#clock = options.clock;
+    this.kind = options.store.kind;
+  }
+
+  public open(): Promise<StoreOutcome<void>> {
+    return this.#store.open();
+  }
+
+  public close(): Promise<StoreOutcome<void>> {
+    return this.#store.close();
+  }
+
+  #now(): number {
+    const value = this.#clock();
+    if (!isSafeNonNegativeInteger(value)) {
+      throw new TypeError("credential scope locator clock is invalid");
+    }
+    return value;
+  }
+
+  public async lookup(input: {
+    readonly deviceTokenDigest: string;
+  }): Promise<CredentialScopeLookupResult> {
+    if (!isRecord(input) || !isSha256Digest(input.deviceTokenDigest)) {
+      return credentialFailure(
+        "invalid_input",
+        "invalid_input",
+        "credential scope input is invalid",
+      );
+    }
+    const deviceTokenDigest = input.deviceTokenDigest as Sha256Digest;
+    const outcome = await this.#store.transact(
+      { tenantId: CREDENTIAL_SCOPE_STORE_TENANT },
+      async (tx): Promise<CredentialScopeLookupResult> => {
+        const stored = await tx.read(
+          GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          deviceTokenDigest,
+        );
+        if (stored === null) {
+          return Object.freeze({ ok: true as const, kind: "missing" as const });
+        }
+        const record = parseCredentialScope(stored, deviceTokenDigest);
+        return Object.freeze({
+          ok: true as const,
+          kind: record.state,
+          record,
+        });
+      },
+    );
+    return outcome.ok
+      ? outcome.value
+      : credentialStoreFailure(outcome.code, outcome.message);
+  }
+
+  public async bind(input: {
+    readonly operationId: string;
+    readonly deviceTokenDigest: string;
+    readonly tenantId: string;
+    readonly deviceId: string;
+  }): Promise<CredentialScopeMutationResult> {
+    if (
+      !isRecord(input) ||
+      !isIdentifier(input.operationId) ||
+      !isSha256Digest(input.deviceTokenDigest) ||
+      !isIdentifier(input.tenantId) ||
+      !isIdentifier(input.deviceId)
+    ) {
+      return credentialFailure(
+        "invalid_input",
+        "invalid_input",
+        "credential scope input is invalid",
+      );
+    }
+    const deviceTokenDigest = input.deviceTokenDigest as Sha256Digest;
+    const requestDigest = operationDigest("credential_scope_bind", {
+      deviceTokenDigest,
+      tenantId: input.tenantId,
+      deviceId: input.deviceId,
+    });
+    const outcome = await this.#store.transact(
+      { tenantId: CREDENTIAL_SCOPE_STORE_TENANT },
+      async (tx): Promise<CredentialScopeMutationResult> => {
+        const stored = await tx.read(
+          GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          deviceTokenDigest,
+        );
+        if (stored !== null) {
+          const current = parseCredentialScope(stored, deviceTokenDigest);
+          if (
+            current.state === "active" &&
+            current.tenantId === input.tenantId &&
+            current.deviceId === input.deviceId &&
+            current.lastOperationId === input.operationId &&
+            digestEqual(current.lastOperationDigest, requestDigest)
+          ) {
+            return Object.freeze({
+              ok: true as const,
+              kind: "replay" as const,
+              record: current,
+            });
+          }
+          return credentialFailure(
+            "conflict",
+            "credential_scope_conflict",
+            "credential scope is already bound or retired",
+          );
+        }
+        const nowMs = this.#now();
+        const record: GatewayCredentialScopeV1 = Object.freeze({
+          schema: GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          tenantId: input.tenantId,
+          deviceTokenDigest,
+          deviceId: input.deviceId,
+          state: "active",
+          lastOperationId: input.operationId,
+          lastOperationDigest: requestDigest,
+          createdAtMs: nowMs,
+          updatedAtMs: nowMs,
+          recordVersion: 1,
+        });
+        stageRecord(
+          tx,
+          GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          deviceTokenDigest,
+          record,
+          null,
+        );
+        return Object.freeze({
+          ok: true as const,
+          kind: "committed" as const,
+          record,
+        });
+      },
+    );
+    return outcome.ok
+      ? outcome.value
+      : credentialStoreFailure(outcome.code, outcome.message);
+  }
+
+  public async retire(input: {
+    readonly operationId: string;
+    readonly deviceTokenDigest: string;
+    readonly expectedRecordVersion: number;
+  }): Promise<CredentialScopeMutationResult> {
+    if (
+      !isRecord(input) ||
+      !isIdentifier(input.operationId) ||
+      !isSha256Digest(input.deviceTokenDigest) ||
+      !isSafePositiveInteger(input.expectedRecordVersion)
+    ) {
+      return credentialFailure(
+        "invalid_input",
+        "invalid_input",
+        "credential scope input is invalid",
+      );
+    }
+    const deviceTokenDigest = input.deviceTokenDigest as Sha256Digest;
+    const requestDigest = operationDigest("credential_scope_retire", {
+      deviceTokenDigest,
+      expectedRecordVersion: input.expectedRecordVersion,
+    });
+    const outcome = await this.#store.transact(
+      { tenantId: CREDENTIAL_SCOPE_STORE_TENANT },
+      async (tx): Promise<CredentialScopeMutationResult> => {
+        const stored = await tx.read(
+          GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          deviceTokenDigest,
+        );
+        if (stored === null) {
+          return credentialFailure(
+            "conflict",
+            "credential_scope_conflict",
+            "credential scope is missing",
+          );
+        }
+        const current = parseCredentialScope(stored, deviceTokenDigest);
+        if (
+          current.state === "retired" &&
+          current.lastOperationId === input.operationId &&
+          digestEqual(current.lastOperationDigest, requestDigest)
+        ) {
+          return Object.freeze({
+            ok: true as const,
+            kind: "replay" as const,
+            record: current,
+          });
+        }
+        if (
+          current.state !== "active" ||
+          current.recordVersion !== input.expectedRecordVersion
+        ) {
+          return credentialFailure(
+            "conflict",
+            "credential_scope_conflict",
+            "credential scope retire CAS conflict",
+          );
+        }
+        const record: GatewayCredentialScopeV1 = Object.freeze({
+          ...current,
+          state: "retired",
+          lastOperationId: input.operationId,
+          lastOperationDigest: requestDigest,
+          updatedAtMs: this.#now(),
+          recordVersion: safeIncrement(current.recordVersion),
+        });
+        stageRecord(
+          tx,
+          GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+          deviceTokenDigest,
+          record,
+          stored,
+        );
+        return Object.freeze({
+          ok: true as const,
+          kind: "committed" as const,
+          record,
+        });
+      },
+    );
+    return outcome.ok
+      ? outcome.value
+      : credentialStoreFailure(outcome.code, outcome.message);
+  }
 }
 
 function requestIsExactReplay(
@@ -791,7 +1193,80 @@ function deepEqual(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+function assertPairCoherence(
+  device: IdentityDeviceV2,
+  seat: IdentityTenantSeatV1,
+  headSequence: number,
+): void {
+  if (
+    device.seatId !== seat.seatId ||
+    device.userId !== seat.userId ||
+    seat.deviceId !== device.deviceId ||
+    device.lastAuthoritySequence !== seat.lastAuthoritySequence ||
+    device.lastAuthoritySequence > headSequence
+  ) {
+    throw new CorruptIdentityAuthorityError(
+      "device and seat authority versions are incoherent",
+    );
+  }
+}
+
+function assertChangeCoherence(change: IdentityAuthorityChange): void {
+  const { device, seat, head, event } = change;
+  assertSeatEventCoherence(seat, event, head.lastSequence);
+  if (device === null) {
+    if (event.deviceId !== null || event.authorizationVersion !== null) {
+      throw new CorruptIdentityAuthorityError(
+        "device-free authority event carries device state",
+      );
+    }
+    return;
+  }
+  assertPairCoherence(device, seat, head.lastSequence);
+  assertDeviceEventCoherence(device, event, head.lastSequence);
+}
+
+function assertSeatEventCoherence(
+  seat: IdentityTenantSeatV1,
+  event: IdentityRevocationEventV1,
+  headSequence: number,
+): void {
+  if (
+    seat.lastAuthoritySequence !== event.sequence ||
+    event.sequence > headSequence ||
+    seat.seatAuthorityVersion !== event.seatAuthorityVersion ||
+    seat.lastAuthorityOperationId !== event.operationId ||
+    !digestEqual(seat.lastAuthorityOperationDigest, event.operationDigest)
+  ) {
+    throw new CorruptIdentityAuthorityError(
+      "seat authority does not match its event",
+    );
+  }
+}
+
+function assertDeviceEventCoherence(
+  device: IdentityDeviceV2,
+  event: IdentityRevocationEventV1,
+  headSequence: number,
+): void {
+  if (
+    device.lastAuthoritySequence !== event.sequence ||
+    event.sequence > headSequence ||
+    event.deviceId !== device.deviceId ||
+    event.seatId !== device.seatId ||
+    device.authorizationVersion !== event.authorizationVersion ||
+    !digestEqual(device.deviceTokenDigest, event.deviceTokenDigest) ||
+    device.lastAuthorityOperationId !== event.operationId ||
+    !digestEqual(device.lastAuthorityOperationDigest, event.operationDigest)
+  ) {
+    throw new CorruptIdentityAuthorityError(
+      "device authority does not match its event",
+    );
+  }
+}
+
 function frozenChange(change: IdentityAuthorityChange): IdentityAuthorityChange {
+  assertChangeCoherence(change);
   return Object.freeze({
     device: change.device === null ? null : Object.freeze(structuredClone(change.device)),
     seat: Object.freeze(structuredClone(change.seat)),
@@ -805,6 +1280,19 @@ function mutationSuccess(
   change: IdentityAuthorityChange,
 ): IdentityMutationResult {
   return Object.freeze({ ok: true as const, kind, change: frozenChange(change) });
+}
+
+function reconciliationRequired(
+  change: IdentityAuthorityChange,
+): IdentityReconciliationRequired {
+  return Object.freeze({
+    ok: false as const,
+    kind: "reconciliation_required" as const,
+    code: "credential_scope_reconciliation_required" as const,
+    message:
+      "tenant identity authority committed but credential scope reconciliation is required",
+    change: frozenChange(change),
+  });
 }
 
 function makeHead(
@@ -870,6 +1358,8 @@ function authorityDigest(
     deviceTokenDigest: record.deviceTokenDigest,
     status: record.status,
     authorizationVersion: record.authorizationVersion,
+    connectionCapabilityVersion: record.connectionCapabilityVersion,
+    sessionCapabilityVersion: record.sessionCapabilityVersion,
     allowedConnectionCapabilities: record.allowedConnectionCapabilities,
     allowedSessionCapabilities: record.allowedSessionCapabilities,
     lastAuthorityOperationId: record.lastAuthorityOperationId,
@@ -928,11 +1418,34 @@ async function loadAuthoritySnapshot(
   }
   const devicesById = new Map(devices.map((record) => [record.deviceId, record]));
   const seatsById = new Map(seats.map((record) => [record.seatId, record]));
+  const headSequence = head?.lastSequence ?? 0;
+  const eventsBySequence = new Map<number, IdentityRevocationEventV1>();
+  const eventFor = async (sequence: number): Promise<IdentityRevocationEventV1> => {
+    const cached = eventsBySequence.get(sequence);
+    if (cached !== undefined) return cached;
+    const stored = await tx.read(
+      IDENTITY_REVOCATION_EVENT_SCHEMA,
+      eventKey(tenantId, sequence),
+    );
+    if (stored === null) {
+      throw new CorruptIdentityAuthorityError(
+        "identity authority record event is missing",
+      );
+    }
+    const event = parseEvent(stored, tenantId, sequence);
+    eventsBySequence.set(sequence, event);
+    return event;
+  };
   let highestAuthoritySequence = 0;
   for (const device of devices) {
     highestAuthoritySequence = Math.max(
       highestAuthoritySequence,
       device.lastAuthoritySequence,
+    );
+    assertDeviceEventCoherence(
+      device,
+      await eventFor(device.lastAuthoritySequence),
+      headSequence,
     );
     const seat = seatsById.get(device.seatId);
     if (
@@ -951,12 +1464,25 @@ async function loadAuthoritySnapshot(
     ) {
       throw new CorruptIdentityAuthorityError("revoked device retains an active seat");
     }
+    if (seat?.deviceId === device.deviceId) {
+      assertPairCoherence(device, seat, headSequence);
+    }
   }
   for (const seat of seats) {
     highestAuthoritySequence = Math.max(
       highestAuthoritySequence,
       seat.lastAuthoritySequence,
     );
+    assertSeatEventCoherence(
+      seat,
+      await eventFor(seat.lastAuthoritySequence),
+      headSequence,
+    );
+    if (seat.deviceId !== null && !devicesById.has(seat.deviceId)) {
+      throw new CorruptIdentityAuthorityError(
+        "seat references a missing device authority",
+      );
+    }
     if (seat.status !== "active") continue;
     const device = seat.deviceId === null ? undefined : devicesById.get(seat.deviceId);
     if (
@@ -968,7 +1494,6 @@ async function loadAuthoritySnapshot(
       throw new CorruptIdentityAuthorityError("active seat has no active device");
     }
   }
-  const headSequence = head?.lastSequence ?? 0;
   if (highestAuthoritySequence > headSequence) {
     throw new CorruptIdentityAuthorityError("identity authority sequence exceeds head");
   }
@@ -998,9 +1523,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public readonly kind: GatewayProtocolStore["kind"];
 
   readonly #store: GatewayProtocolStore;
+  readonly #credentialLocator: ProductionCredentialScopeLocator;
   readonly #subscriberId: string;
   readonly #clock: () => number;
-  readonly #credentialScopeResolver: ProductionCredentialScopeResolver | undefined;
   readonly #northIdentity: Pick<IdentityPort, "authenticateNorthRequest"> | undefined;
   readonly #maxResyncDevices: number;
   readonly #maxResyncSeats: number;
@@ -1009,27 +1534,42 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     if (
       !isIdentifier(options.subscriberId) ||
       typeof options.clock !== "function" ||
+      !isRecord(options.credentialLocator) ||
+      typeof options.credentialLocator.open !== "function" ||
+      typeof options.credentialLocator.close !== "function" ||
+      typeof options.credentialLocator.lookup !== "function" ||
+      typeof options.credentialLocator.bind !== "function" ||
+      typeof options.credentialLocator.retire !== "function" ||
       !isSafePositiveInteger(options.maxResyncDevices ?? DEFAULT_MAX_RESYNC_DEVICES) ||
       !isSafePositiveInteger(options.maxResyncSeats ?? DEFAULT_MAX_RESYNC_SEATS)
     ) {
       throw new TypeError("production identity configuration is invalid");
     }
     this.#store = options.store;
+    this.#credentialLocator = options.credentialLocator;
     this.kind = options.store.kind;
     this.#subscriberId = options.subscriberId;
     this.#clock = options.clock;
-    this.#credentialScopeResolver = options.credentialScopeResolver;
     this.#northIdentity = options.northIdentity;
     this.#maxResyncDevices = options.maxResyncDevices ?? DEFAULT_MAX_RESYNC_DEVICES;
     this.#maxResyncSeats = options.maxResyncSeats ?? DEFAULT_MAX_RESYNC_SEATS;
   }
 
-  public open(): Promise<StoreOutcome<void>> {
-    return this.#store.open();
+  public async open(): Promise<StoreOutcome<void>> {
+    const authority = await this.#store.open();
+    if (!authority.ok) return authority;
+    const locator = await this.#credentialLocator.open();
+    if (!locator.ok) {
+      await this.#store.close();
+      return locator;
+    }
+    return Object.freeze({ ok: true as const, value: undefined });
   }
 
-  public close(): Promise<StoreOutcome<void>> {
-    return this.#store.close();
+  public async close(): Promise<StoreOutcome<void>> {
+    const locator = await this.#credentialLocator.close();
+    const authority = await this.#store.close();
+    return !locator.ok ? locator : authority;
   }
 
   public async authenticateNorthRequest(input: {
@@ -1048,35 +1588,65 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
 
   async #resolveScope(input: {
     readonly deviceTokenDigest: Sha256Digest;
-    readonly tenantId?: string;
-    readonly deviceId?: string;
+    readonly claimedDeviceId: string;
+    readonly establishedScope?: ProductionCredentialScope;
   }): Promise<ProductionCredentialScope | null> {
-    if (input.tenantId !== undefined) {
-      if (!isIdentifier(input.tenantId) || !isIdentifier(input.deviceId)) return null;
-      return Object.freeze({ tenantId: input.tenantId, deviceId: input.deviceId });
+    if (input.establishedScope !== undefined) {
+      if (
+        !isIdentifier(input.establishedScope.tenantId) ||
+        !isIdentifier(input.establishedScope.deviceId) ||
+        input.establishedScope.deviceId !== input.claimedDeviceId
+      ) {
+        return null;
+      }
+      return Object.freeze({
+        tenantId: input.establishedScope.tenantId,
+        deviceId: input.establishedScope.deviceId,
+      });
     }
-    if (input.deviceId !== undefined && !isIdentifier(input.deviceId)) return null;
-    const resolved = await this.#credentialScopeResolver?.resolveCredentialScope({
+    const resolved = await this.#credentialLocator.lookup({
       deviceTokenDigest: input.deviceTokenDigest,
-      claimedDeviceId: input.deviceId,
     });
+    const locatorRecord = resolved.ok && "record" in resolved
+      ? resolved.record
+      : null;
     if (
-      resolved === null ||
-      resolved === undefined ||
-      !isIdentifier(resolved.tenantId) ||
-      !isIdentifier(resolved.deviceId) ||
-      (input.deviceId !== undefined && resolved.deviceId !== input.deviceId)
+      !resolved.ok ||
+      resolved.kind !== "active" ||
+      locatorRecord === null ||
+      !isRecord(locatorRecord) ||
+      !hasExactKeys(locatorRecord, [
+        ...VERSIONED_KEYS,
+        "schema",
+        "deviceTokenDigest",
+        "deviceId",
+        "state",
+        "lastOperationId",
+        "lastOperationDigest",
+      ]) ||
+      locatorRecord.schema !== GATEWAY_CREDENTIAL_SCOPE_SCHEMA ||
+      locatorRecord.state !== "active" ||
+      !isIdentifier(locatorRecord.tenantId) ||
+      !validVersioned(locatorRecord, locatorRecord.tenantId) ||
+      !digestEqual(locatorRecord.deviceTokenDigest, input.deviceTokenDigest) ||
+      !isIdentifier(locatorRecord.deviceId) ||
+      locatorRecord.deviceId !== input.claimedDeviceId ||
+      !isIdentifier(locatorRecord.lastOperationId) ||
+      !isSha256Digest(locatorRecord.lastOperationDigest)
     ) {
       return null;
     }
-    return Object.freeze({ tenantId: resolved.tenantId, deviceId: resolved.deviceId });
+    return Object.freeze({
+      tenantId: locatorRecord.tenantId,
+      deviceId: locatorRecord.deviceId,
+    });
   }
 
   public async authenticateDevice(input: {
     readonly deviceToken: string | undefined;
     readonly connectionId: string;
-    readonly tenantId?: string;
-    readonly deviceId?: string;
+    readonly claimedDeviceId?: string;
+    readonly establishedScope?: ProductionCredentialScope;
     readonly machineFingerprint?: string;
     readonly machineHostname?: string;
   }): Promise<GatewayPortResult<ProductionDeviceAuthContext>> {
@@ -1084,6 +1654,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     if (
       !isOpaqueToken(input.deviceToken) ||
       !isIdentifier(input.connectionId) ||
+      !isIdentifier(input.claimedDeviceId) ||
+      "tenantId" in input ||
+      "deviceId" in input ||
       !isCanonicalMachineFingerprint(input.machineFingerprint)
     ) {
       return identityRefusal();
@@ -1093,8 +1666,10 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     try {
       scope = await this.#resolveScope({
         deviceTokenDigest: digest,
-        ...(input.tenantId === undefined ? {} : { tenantId: input.tenantId }),
-        ...(input.deviceId === undefined ? {} : { deviceId: input.deviceId }),
+        claimedDeviceId: input.claimedDeviceId,
+        ...(input.establishedScope === undefined
+          ? {}
+          : { establishedScope: input.establishedScope }),
       });
     } catch {
       return identityRefusal();
@@ -1132,6 +1707,22 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         );
         if (seatStored === null) return null;
         const seat = parseSeat(seatStored, scope.tenantId, device.seatId);
+        assertPairCoherence(device, seat, head.lastSequence);
+        const eventStored = await tx.read(
+          IDENTITY_REVOCATION_EVENT_SCHEMA,
+          eventKey(scope.tenantId, device.lastAuthoritySequence),
+        );
+        if (eventStored === null) return null;
+        assertChangeCoherence({
+          device,
+          seat,
+          head,
+          event: parseEvent(
+            eventStored,
+            scope.tenantId,
+            device.lastAuthoritySequence,
+          ),
+        });
         if (
           cursor.status !== "current" ||
           cursor.lastContiguousSequence !== head.lastSequence ||
@@ -1166,6 +1757,8 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           machineFingerprint: device.machineFingerprint,
           authorizationVersion: device.authorizationVersion,
           identityRecordVersion: device.recordVersion,
+          connectionCapabilityVersion: device.connectionCapabilityVersion,
+          sessionCapabilityVersion: device.sessionCapabilityVersion,
           seatAuthorityVersion: seat.seatAuthorityVersion,
           seatRecordVersion: seat.recordVersion,
           grantedConnectionCapabilities: device.allowedConnectionCapabilities,
@@ -1281,6 +1874,93 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     return storeFailure(outcome.code, outcome.message);
   }
 
+  async #retireCredentialScope(input: {
+    readonly operationId: string;
+    readonly deviceTokenDigest: Sha256Digest;
+    readonly tenantId: string;
+    readonly deviceId: string;
+  }): Promise<boolean> {
+    const located = await this.#credentialLocator.lookup({
+      deviceTokenDigest: input.deviceTokenDigest,
+    });
+    if (
+      !located.ok ||
+      (located.kind !== "active" && located.kind !== "retired") ||
+      located.record.tenantId !== input.tenantId ||
+      located.record.deviceId !== input.deviceId
+    ) {
+      return false;
+    }
+    const expectedRecordVersion =
+      located.record.state === "retired"
+        ? located.record.recordVersion - 1
+        : located.record.recordVersion;
+    if (!isSafePositiveInteger(expectedRecordVersion)) return false;
+    const retired = await this.#credentialLocator.retire({
+      operationId: input.operationId,
+      deviceTokenDigest: input.deviceTokenDigest,
+      expectedRecordVersion,
+    });
+    return retired.ok;
+  }
+
+  async #reconcileCredentialScope(
+    result: IdentityMutationResult,
+  ): Promise<IdentityMutationResult> {
+    if (!result.ok) return result;
+    const { change } = result;
+    const { event, device } = change;
+    if (device === null || event.deviceTokenDigest === null) return result;
+    const scope = {
+      tenantId: event.tenantId,
+      deviceId: device.deviceId,
+    };
+    if (event.action === "seat_reassigned") {
+      if (
+        event.priorDeviceTokenDigest === null ||
+        !digestEqual(event.priorDeviceTokenDigest, event.deviceTokenDigest)
+      ) {
+        const bound = await this.#credentialLocator.bind({
+          operationId: event.operationId,
+          deviceTokenDigest: event.deviceTokenDigest,
+          ...scope,
+        });
+        if (!bound.ok) return reconciliationRequired(change);
+      } else {
+        const located = await this.#credentialLocator.lookup({
+          deviceTokenDigest: event.deviceTokenDigest,
+        });
+        if (
+          !located.ok ||
+          located.kind !== "active" ||
+          located.record.tenantId !== scope.tenantId ||
+          located.record.deviceId !== scope.deviceId
+        ) {
+          return reconciliationRequired(change);
+        }
+      }
+      if (
+        event.priorDeviceTokenDigest !== null &&
+        !digestEqual(event.priorDeviceTokenDigest, event.deviceTokenDigest) &&
+        !(await this.#retireCredentialScope({
+          operationId: event.operationId,
+          deviceTokenDigest: event.priorDeviceTokenDigest,
+          ...scope,
+        }))
+      ) {
+        return reconciliationRequired(change);
+      }
+      return result;
+    }
+    return (await this.#retireCredentialScope({
+      operationId: event.operationId,
+      deviceTokenDigest: event.deviceTokenDigest,
+      ...scope,
+    }))
+      ? result
+      : reconciliationRequired(change);
+  }
+
   public async provisionDevice(
     input: ProvisionIdentityDeviceInput,
   ): Promise<IdentityMutationResult> {
@@ -1379,7 +2059,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         if (
           (device?.recordVersion ?? null) !== frozen.expectedDeviceRecordVersion ||
           (seat?.recordVersion ?? null) !== frozen.expectedSeatRecordVersion ||
-          (device !== null && device.status === "revoked" && device.seatId !== frozen.seatId) ||
+          (device !== null && device.seatId !== frozen.seatId) ||
           (seat !== null &&
             seat.deviceId !== null &&
             seat.deviceId !== frozen.deviceId)
@@ -1388,6 +2068,12 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         }
         if (head === null && (device !== null || seat !== null)) {
           throw new CorruptIdentityAuthorityError("identity record exists without head");
+        }
+        if (device !== null && seat === null) {
+          throw new CorruptIdentityAuthorityError("device seat record is missing");
+        }
+        if (device !== null && seat !== null) {
+          assertPairCoherence(device, seat, head?.lastSequence ?? 0);
         }
         const nowMs = this.#now();
         const sequence = safeIncrement(head?.lastSequence ?? 0);
@@ -1403,6 +2089,14 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           status: "active",
           authorizationVersion:
             device === null ? 1 : safeIncrement(device.authorizationVersion),
+          connectionCapabilityVersion:
+            device === null
+              ? 1
+              : safeIncrement(device.connectionCapabilityVersion),
+          sessionCapabilityVersion:
+            device === null
+              ? 1
+              : safeIncrement(device.sessionCapabilityVersion),
           allowedConnectionCapabilities: connectionCapabilities,
           allowedSessionCapabilities: sessionCapabilities,
           lastAuthorityOperationId: frozen.operationId,
@@ -1438,6 +2132,8 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           action: "seat_reassigned",
           authorizationVersion: nextDevice.authorizationVersion,
           seatAuthorityVersion: nextSeat.seatAuthorityVersion,
+          priorDeviceTokenDigest: device?.deviceTokenDigest ?? null,
+          deviceTokenDigest: nextDevice.deviceTokenDigest,
           operationId: frozen.operationId,
           operationDigest: requestDigest,
           committedAtMs: nowMs,
@@ -1477,7 +2173,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         return mutationSuccess("committed", planned);
       },
     );
-    return this.#finishMutation(frozen.tenantId, outcome, planned);
+    return this.#reconcileCredentialScope(
+      await this.#finishMutation(frozen.tenantId, outcome, planned),
+    );
   }
 
   public async revokeDevice(
@@ -1523,6 +2221,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         }
         const seat = parseSeat(storedSeat, frozen.tenantId, device.seatId);
         const head = parseHead(storedHead, frozen.tenantId);
+        assertPairCoherence(device, seat, head.lastSequence);
         if (
           requestIsExactReplay(frozen.operationId, requestDigest, device) &&
           requestIsExactReplay(frozen.operationId, requestDigest, seat)
@@ -1579,6 +2278,8 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           action: "device_revoked",
           authorizationVersion: nextDevice.authorizationVersion,
           seatAuthorityVersion: nextSeat.seatAuthorityVersion,
+          priorDeviceTokenDigest: device.deviceTokenDigest,
+          deviceTokenDigest: nextDevice.deviceTokenDigest,
           operationId: frozen.operationId,
           operationDigest: requestDigest,
           committedAtMs: nowMs,
@@ -1618,7 +2319,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         return mutationSuccess("committed", planned);
       },
     );
-    return this.#finishMutation(frozen.tenantId, outcome, planned);
+    return this.#reconcileCredentialScope(
+      await this.#finishMutation(frozen.tenantId, outcome, planned),
+    );
   }
 
   public async revokeSeat(
@@ -1668,6 +2371,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           storedDevice === null
             ? null
             : parseDevice(storedDevice, frozen.tenantId, seat.deviceId ?? undefined);
+        if (device !== null) {
+          assertPairCoherence(device, seat, head.lastSequence);
+        }
         if (
           requestIsExactReplay(frozen.operationId, requestDigest, seat) &&
           (device === null || requestIsExactReplay(frozen.operationId, requestDigest, device))
@@ -1729,6 +2435,8 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
           action: "seat_revoked",
           authorizationVersion: nextDevice?.authorizationVersion ?? null,
           seatAuthorityVersion: nextSeat.seatAuthorityVersion,
+          priorDeviceTokenDigest: device?.deviceTokenDigest ?? null,
+          deviceTokenDigest: nextDevice?.deviceTokenDigest ?? null,
           operationId: frozen.operationId,
           operationDigest: requestDigest,
           committedAtMs: nowMs,
@@ -1770,7 +2478,9 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         return mutationSuccess("committed", planned);
       },
     );
-    return this.#finishMutation(frozen.tenantId, outcome, planned);
+    return this.#reconcileCredentialScope(
+      await this.#finishMutation(frozen.tenantId, outcome, planned),
+    );
   }
 
   public async consumeRevocationEvents(input: {
@@ -2006,6 +2716,17 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     );
     return outcome.ok ? outcome.value : storeFailure(outcome.code, outcome.message);
   }
+}
+
+/**
+ * Creates the required durable global digest-to-scope locator over a store
+ * separate from the tenant identity authority. The adapter accepts digests
+ * only; raw bearer/device tokens cannot enter its API or records.
+ */
+export function createProductionCredentialScopeLocator(
+  options: ProductionCredentialScopeLocatorOptions,
+): ProductionCredentialScopeLocator {
+  return new StoreBackedProductionCredentialScopeLocator(options);
 }
 
 /**

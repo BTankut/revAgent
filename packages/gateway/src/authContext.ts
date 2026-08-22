@@ -116,6 +116,8 @@ export interface DeviceAuthContext {
   readonly machineFingerprint?: GatewayMachineFingerprint;
   readonly authorizationVersion?: number;
   readonly identityRecordVersion?: number;
+  readonly connectionCapabilityVersion?: number;
+  readonly sessionCapabilityVersion?: number;
   readonly seatAuthorityVersion?: number;
   readonly seatRecordVersion?: number;
   readonly grantedConnectionCapabilities?: readonly string[];
@@ -131,7 +133,14 @@ export interface IdentityPort {
   authenticateDevice(input: {
     readonly deviceToken: string | undefined;
     readonly connectionId: string;
-    /** Exact scope hints avoid any broad identity-store scan. */
+    /** Device id asserted by hello/register; it is never a tenant locator. */
+    readonly claimedDeviceId?: string;
+    /** Exact scope retained by the server after a prior authenticated lookup. */
+    readonly establishedScope?: {
+      readonly tenantId: string;
+      readonly deviceId: string;
+    };
+    /** Transitional compatibility fields; production initial auth rejects them. */
     readonly tenantId?: string;
     readonly deviceId?: string;
     /** Required by the production adapter; legacy absence means re-enrolment. */
