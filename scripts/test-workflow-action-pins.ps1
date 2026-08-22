@@ -101,6 +101,13 @@ function Test-UnsupportedExplicitMappingKeySyntax {
 
     for ($index = 0; $index -lt $Line.Length; $index++) {
         $character = $Line[$index]
+        if ($character -eq '$' -and ($index + 2) -lt $Line.Length -and $Line.Substring($index, 3) -eq '${{') {
+            $expressionEnd = $Line.IndexOf('}}', $index + 3, [System.StringComparison]::Ordinal)
+            if ($expressionEnd -ge 0) {
+                $index = $expressionEnd + 1
+                continue
+            }
+        }
         if ($character -in @("'", '"')) {
             $quoted = Read-YamlQuotedScalar -Text $Line -Start $index
             if (-not $quoted.success) { return $false }
@@ -130,6 +137,13 @@ function Get-UnsupportedYamlIndirectionReason {
 
     for ($index = 0; $index -lt $Line.Length; $index++) {
         $character = $Line[$index]
+        if ($character -eq '$' -and ($index + 2) -lt $Line.Length -and $Line.Substring($index, 3) -eq '${{') {
+            $expressionEnd = $Line.IndexOf('}}', $index + 3, [System.StringComparison]::Ordinal)
+            if ($expressionEnd -ge 0) {
+                $index = $expressionEnd + 1
+                continue
+            }
+        }
         if ($character -in @("'", '"')) {
             if ($character -eq '"' -and ($index + 1) -lt $Line.Length -and $Line[$index + 1] -eq '@') {
                 continue
@@ -150,8 +164,12 @@ function Get-UnsupportedYamlIndirectionReason {
             $index = $quoted.next - 1
             continue
         }
-        if ($character -in @('&', '*') -and ($index + 1) -lt $Line.Length -and $Line[$index + 1] -match '[A-Za-z0-9_-]') {
-            return 'YAML anchors and aliases are unsupported'
+        if ($character -in @('&', '*')) {
+            $previousIsBoundary = $index -eq 0 -or [char]::IsWhiteSpace($Line[$index - 1]) -or $Line[$index - 1] -in @(':', '[', '{', ',')
+            $nextIsAnchorName = ($index + 1) -lt $Line.Length -and -not [char]::IsWhiteSpace($Line[$index + 1]) -and $Line[$index + 1] -notin @('[', ']', '{', '}', ',')
+            if ($previousIsBoundary -and $nextIsAnchorName) {
+                return 'YAML anchors and aliases are unsupported'
+            }
         }
         if ($character -eq '<' -and ($index + 2) -lt $Line.Length -and $Line.Substring($index, 3) -eq '<<:') {
             return 'YAML merge keys are unsupported'
@@ -238,17 +256,29 @@ $localCount = 0
 foreach ($relativePath in $relativeFiles) {
     $absolutePath = Join-Path $resolvedRoot ($relativePath.Replace('/', '\'))
     $lineNumber = 0
+    $blockScalarIndent = $null
     foreach ($rawLine in @(Get-Content -LiteralPath $absolutePath -ErrorAction Stop)) {
         $lineNumber++
-        $line = Remove-YamlComment -Line $rawLine
-        $indirectionReason = Get-UnsupportedYamlIndirectionReason -Line $line
-        if ($null -ne $indirectionReason) {
-            $violations.Add(('{0}:{1} {2}' -f $relativePath, $lineNumber, $indirectionReason))
-            continue
+        $indent = ([regex]::Match($rawLine, '^\s*')).Length
+        $trimmedRawLine = $rawLine.Trim()
+        if ($null -ne $blockScalarIndent) {
+            if ([string]::IsNullOrWhiteSpace($trimmedRawLine) -or $indent -gt $blockScalarIndent) {
+                continue
+            }
+            $blockScalarIndent = $null
         }
-        if (Test-UnsupportedExplicitMappingKeySyntax -Line $line) {
-            $violations.Add(('{0}:{1} explicit YAML mapping-key syntax is unsupported' -f $relativePath, $lineNumber))
-            continue
+        $line = Remove-YamlComment -Line $rawLine
+        $isRunScalarLine = $line -match '^\s*run\s*:'
+        if (-not $isRunScalarLine) {
+            $indirectionReason = Get-UnsupportedYamlIndirectionReason -Line $line
+            if ($null -ne $indirectionReason) {
+                $violations.Add(('{0}:{1} {2}' -f $relativePath, $lineNumber, $indirectionReason))
+                continue
+            }
+            if (Test-UnsupportedExplicitMappingKeySyntax -Line $line) {
+                $violations.Add(('{0}:{1} explicit YAML mapping-key syntax is unsupported' -f $relativePath, $lineNumber))
+                continue
+            }
         }
         $flowDepth = 0
         for ($index = 0; $index -lt $line.Length; $index++) {
@@ -316,6 +346,9 @@ foreach ($relativePath in $relativeFiles) {
                 $externalCount++
             }
             $index = [Math]::Max($index, $valueResult.next - 1)
+        }
+        if ($line -match ':\s*[>|][+-]?\s*$') {
+            $blockScalarIndent = $indent
         }
     }
 }

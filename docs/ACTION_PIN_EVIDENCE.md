@@ -25,6 +25,14 @@ key/value continues on a later line. Outside quoted scalars/comments, YAML
 anchors, aliases, and merge tokens (`&name`, `*name`, `<<:`) are also rejected.
 Quoted mapping keys must open and close on the same physical line; escaped or
 continued double-quoted keys and multiline single-quoted keys fail closed.
+In YAML structural content, an anchor or alias indicator at a token boundary
+followed by any non-whitespace, non-flow-delimiter character is rejected; this
+covers punctuation and Unicode names rather than only ASCII names. Quoted
+scalar contents and literal/folded block-scalar payload lines are excluded so
+ordinary shell `&&` and glob text remain valid in `run: |`/`run: >` payloads.
+Inline `run:` scalar command text is likewise excluded from this YAML
+indirection check; the scanner continues to inspect every structural mapping
+line and every `uses` value.
 Workflow YAML syntax is checked separately. The fixture matrix at
 `scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
 rejected forms.
