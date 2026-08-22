@@ -33,7 +33,11 @@ import type {
   IdentityTenantSeatV1,
   ProductionIdentityAuthority,
 } from "./productionIdentityStore.js";
-import type { GatewayProtocolStore, StoreOutcome } from "./store.js";
+import type {
+  GatewayProtocolStore,
+  StoreOutcome,
+  StoreTransaction,
+} from "./store.js";
 import { createRestartableTestStore } from "./testAdapters.js";
 
 const TENANT_A = "tenant-revocation-a";
@@ -58,6 +62,98 @@ const ok = (): StoreOutcome<void> => ({ ok: true, value: undefined });
 interface CapturingChannel extends BridgeConnectionChannel {
   readonly frames: RbpEnvelope[];
   readonly closes: { readonly code: number; readonly reason: string }[];
+}
+
+interface Deferred<T = void> {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+}
+
+function deferred<T = void>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
+function gatedStore(fixture: ReturnType<typeof createRestartableTestStore>): {
+  readonly store: GatewayProtocolStore;
+  holdAfterCommit(predicate: (value: unknown) => boolean): {
+    readonly entered: Promise<void>;
+    release(): void;
+  };
+} {
+  let pending: {
+    readonly predicate: (value: unknown) => boolean;
+    readonly entered: Deferred;
+    readonly release: Deferred;
+  } | null = null;
+  const store: GatewayProtocolStore = {
+    ...fixture.store,
+    async transact<T>(
+      scope: { readonly tenantId: string },
+      operation: (tx: StoreTransaction) => Promise<T> | T,
+    ): Promise<StoreOutcome<T>> {
+      const result = await fixture.store.transact<T>(scope, operation);
+      const gate = pending;
+      if (gate !== null && result.ok && gate.predicate(result.value)) {
+        pending = null;
+        gate.entered.resolve();
+        await gate.release.promise;
+      }
+      return result;
+    },
+  };
+  return {
+    store,
+    holdAfterCommit(predicate) {
+      if (pending !== null) throw new Error("a store gate is already armed");
+      const entered = deferred();
+      const release = deferred();
+      pending = { predicate, entered, release };
+      return {
+        entered: entered.promise,
+        release: () => release.resolve(),
+      };
+    },
+  };
+}
+
+async function bounded<T>(operation: Promise<T>, label: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded the lock-order watchdog`)),
+          2_000,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer !== null) clearTimeout(timer);
+  }
+}
+
+async function waitForOutboundFence(
+  authority: GatewayBridgeSessionAuthority,
+  connectionId: string,
+): Promise<void> {
+  await bounded(
+    (async () => {
+      while (true) {
+        try {
+          authority.assertConnectionOutbound(connectionId);
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        } catch {
+          return;
+        }
+      }
+    })(),
+    "revocation phase-one fence",
+  );
 }
 
 function channel(): CapturingChannel {
@@ -402,6 +498,15 @@ function productionIdentityFixture(
         cursor: cursorFor(tenant, "current"),
       };
     },
+    async provisionDevice() {
+      return { ok: false as const, kind: "invalid_input" as const };
+    },
+    async revokeDevice() {
+      return { ok: false as const, kind: "invalid_input" as const };
+    },
+    async revokeSeat() {
+      return { ok: false as const, kind: "invalid_input" as const };
+    },
   };
   return identity as unknown as ProductionIdentityAuthority;
 }
@@ -504,6 +609,45 @@ function terminalResult(input: {
 }
 
 describe("WP-06 Gateway identity composition and active revocation", () => {
+  it("fails closed before store open for an incomplete OIDC authority", async () => {
+    const fixture = createRestartableTestStore();
+    let storeOpenCalls = 0;
+    const store: GatewayProtocolStore = {
+      ...fixture.store,
+      async open() {
+        storeOpenCalls += 1;
+        return fixture.store.open();
+      },
+    };
+    const incomplete: IdentityPort = {
+      kind: "oidc",
+      async authenticateNorthRequest() {
+        return {
+          ok: false as const,
+          port: "identity" as const,
+          code: "unavailable" as const,
+          message: "incomplete OIDC authority",
+        };
+      },
+      async authenticateDevice() {
+        return {
+          ok: false as const,
+          port: "identity" as const,
+          code: "unavailable" as const,
+          message: "incomplete OIDC authority",
+        };
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(store, incomplete);
+    await expect(authority.open()).rejects.toMatchObject({
+      code: "unavailable",
+      httpStatus: 503,
+      closeCode: 1011,
+    });
+    expect(storeOpenCalls).toBe(0);
+    expect(authority.lifecycle().state).toBe("closed");
+  });
+
   it("opens a shared external store once and closes identity before the store", async () => {
     const fixture = createRestartableTestStore();
     const lifecycleEvents: string[] = [];
@@ -866,8 +1010,286 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await authority.close();
   });
 
+  it("fences a register that commits across the revocation scan without lock inversion", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const openedChannel = channel();
+    const opened = await authority.openConnection({
+      deviceToken: preproduction.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: openedChannel,
+    });
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "gateway.rbp-session/v1" &&
+        "sessionVersion" in value &&
+        value.sessionVersion === 1,
+    );
+    const registering = authority.receive(
+      opened.connectionId,
+      registration(FINGERPRINT_A),
+    );
+    await gate.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    expect(revoked.ok).toBe(true);
+    const revocation = authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+    });
+    await waitForOutboundFence(authority, opened.connectionId);
+    gate.release();
+    const [registerResult, revokeResult] = await bounded(
+      Promise.allSettled([registering, revocation]),
+      "register versus revoke",
+    );
+    expect(registerResult.status).toBe("rejected");
+    expect(revokeResult.status).toBe("fulfilled");
+    expect(
+      openedChannel.frames.some((frame) => frame.type === "session_registered"),
+    ).toBe(false);
+    expect(
+      fixture.snapshot().records.some(
+        (row) => row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      ),
+    ).toBe(true);
+    await authority.close();
+  });
+
+  it("fences resume_ack when device and seat revocation wins its committed reservation", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const original = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    await authority.detach(original.connectionId);
+    const replacementChannel = channel();
+    const replacement = await authority.openConnection({
+      deviceToken: preproduction.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: replacementChannel,
+    });
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "lease" in value &&
+        typeof value.lease === "object" &&
+        value.lease !== null &&
+        "operation" in value.lease &&
+        value.lease.operation === "resume_ack",
+    );
+    const resuming = authority.receive(replacement.connectionId, {
+      v: 1,
+      type: "session_resume",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        rsid: original.registered.payload.rsid,
+        resume_token: original.registered.payload.resume_token,
+        last_rx_seq: 0,
+      },
+    });
+    await gate.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    expect(revoked.ok).toBe(true);
+    const revocation = authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+    });
+    await waitForOutboundFence(authority, replacement.connectionId);
+    gate.release();
+    const [resumeResult, revokeResult] = await bounded(
+      Promise.allSettled([resuming, revocation]),
+      "resume versus revoke",
+    );
+    expect(resumeResult.status).toBe("rejected");
+    expect(revokeResult.status).toBe("fulfilled");
+    expect(
+      replacementChannel.frames.some((frame) => frame.type === "resume_ack"),
+    ).toBe(false);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === original.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    await authority.close();
+  });
+
+  it("fences a dispatch reservation before transport send and completes without deadlock", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "lease" in value &&
+        typeof value.lease === "object" &&
+        value.lease !== null &&
+        "operation" in value.lease &&
+        value.lease.operation === "dispatch",
+    );
+    const execution = authority.execute(
+      executorRequest(session.registered.payload.rsid),
+    );
+    await gate.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    expect(revoked.ok).toBe(true);
+    const revocation = authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+    });
+    await waitForOutboundFence(authority, session.connectionId);
+    gate.release();
+    const [executionResult, revokeResult] = await bounded(
+      Promise.all([execution, revocation]),
+      "dispatch versus revoke",
+    );
+    expect(executionResult).toMatchObject({
+      state: "failed",
+      error: { code: "executor_unavailable" },
+    });
+    expect(revokeResult).toBeUndefined();
+    expect(session.channel.frames.some((frame) => frame.type === "invoke")).toBe(false);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === session.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    await authority.close();
+  });
+
+  it("suppresses heartbeat_ack when the authority epoch changes after its durable update", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    const heartbeatAcksBefore = session.channel.frames.filter(
+      (frame) => frame.type === "heartbeat_ack",
+    ).length;
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "gateway.rbp-session/v1" &&
+        "lastHeartbeatAtMs" in value,
+    );
+    const heartbeat = authority.receive(session.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "wp06-s2-test",
+        acks: [{ rsid: session.registered.payload.rsid, seq: 0 }],
+        sessions: [],
+      },
+    });
+    await gate.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    expect(revoked.ok).toBe(true);
+    const revocation = authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+    });
+    await waitForOutboundFence(authority, session.connectionId);
+    gate.release();
+    const [heartbeatResult, revokeResult] = await bounded(
+      Promise.allSettled([heartbeat, revocation]),
+      "heartbeat versus revoke",
+    );
+    expect(heartbeatResult.status).toBe("rejected");
+    expect(revokeResult.status).toBe("fulfilled");
+    expect(
+      session.channel.frames.filter((frame) => frame.type === "heartbeat_ack"),
+    ).toHaveLength(heartbeatAcksBefore);
+    await authority.close();
+  });
+
   it("retains terminal truth but suppresses delivery when revocation wins the post-terminal check", async () => {
     const fixture = createRestartableTestStore();
+    const terminalCommitted = deferred();
+    const releaseTerminalReadback = deferred();
+    let holdTerminalReadback = false;
+    const store: GatewayProtocolStore = {
+      ...fixture.store,
+      async transact<T>(
+        scope: { readonly tenantId: string },
+        operation: (tx: StoreTransaction) => Promise<T> | T,
+      ): Promise<StoreOutcome<T>> {
+        const result = await fixture.store.transact<T>(scope, operation);
+        if (
+          holdTerminalReadback &&
+          result.ok &&
+          typeof result.value === "object" &&
+          result.value !== null &&
+          "evidence" in result.value &&
+          Array.isArray(result.value.evidence) &&
+          result.value.evidence.some(
+            (entry) =>
+              typeof entry === "object" &&
+              entry !== null &&
+              "terminalTruth" in entry &&
+              entry.terminalTruth !== null,
+          )
+        ) {
+          holdTerminalReadback = false;
+          terminalCommitted.resolve();
+          await releaseTerminalReadback.promise;
+        }
+        return result;
+      },
+    };
     const tenant: MutableIdentityTenant = {
       tenantId: TENANT_A,
       userId: USER_A,
@@ -881,8 +1303,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       revoked: false,
       cursorBlocked: false,
     };
-    const identity = productionIdentityFixture(fixture.store, [tenant]);
-    const authority = new GatewayBridgeSessionAuthority(fixture.store, identity);
+    const identity = productionIdentityFixture(store, [tenant]);
+    const authority = new GatewayBridgeSessionAuthority(store, identity);
     await authority.open();
     const session = await openAndRegister({
       authority,
@@ -898,8 +1320,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
         frame.type === "invoke",
     );
     if (invoke === undefined) throw new Error("invoke was not emitted");
-    tenant.revokeOnConsumeCall = tenant.consumeCalls + 2;
-    await authority.receive(
+    holdTerminalReadback = true;
+    const terminalReceive = authority.receive(
       session.connectionId,
       terminalResult({
         rsid: session.registered.payload.rsid,
@@ -907,6 +1329,22 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
         ack: invoke.seq,
       }),
     );
+    await terminalCommitted.promise;
+    tenant.revoked = true;
+    tenant.generation += 1;
+    tenant.cursorBlocked = true;
+    const revocation = authority.synchronizeIdentityRevocations(TENANT_A);
+    while (true) {
+      try {
+        authority.assertConnectionOutbound(session.connectionId);
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      } catch {
+        break;
+      }
+    }
+    releaseTerminalReadback.resolve();
+    await terminalReceive;
+    await revocation;
     await expect(execution).resolves.toMatchObject({
       state: "failed",
       error: { code: "executor_unavailable" },

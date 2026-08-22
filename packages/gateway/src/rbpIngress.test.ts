@@ -111,7 +111,7 @@ function identity(
   const deviceId = options.deviceId ?? "device-gw12";
   const tokenDigest = `sha256:${createHash("sha256").update(deviceToken).digest("hex")}` as const;
   return {
-    kind: "oidc" as const,
+    kind: "fake" as const,
     async authenticateNorthRequest() {
       return {
         ok: false as const,
@@ -2054,6 +2054,204 @@ describe("GW-12 production RBP ingress", () => {
       }
     });
   }
+
+  it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 403", async () => {
+    const restartable = createRestartableTestStore();
+    let revoked = false;
+    const baseIdentity = identity();
+    const activeIdentity: IdentityPort = {
+      ...baseIdentity,
+      async authenticateDevice(input) {
+        const result = await baseIdentity.authenticateDevice(input);
+        return !result.ok
+          ? result
+          : {
+              ok: true as const,
+              value: {
+                ...result.value,
+                deviceStatus: revoked ? ("revoked" as const) : ("active" as const),
+              },
+            };
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(
+      restartable.store,
+      activeIdentity,
+    );
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hello()),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("RBP-Connection-Id");
+    if (connectionId === null) throw new Error("HTTP create omitted connection id");
+    const events = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
+      { headers: { Authorization: headers.Authorization, Accept: "text/event-stream" } },
+    );
+    expect(events.status).toBe(200);
+    if (events.body === null) throw new Error("SSE response omitted its body");
+    const reader = events.body.getReader();
+    const registered = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`,
+      { method: "POST", headers, body: JSON.stringify(registration()) },
+    );
+    expect(registered.status).toBe(202);
+
+    revoked = true;
+    await authority.revokeIdentityAuthority({
+      tenantId: "tenant-gw12",
+      deviceId: "device-gw12",
+      seatId: "seat-gw12",
+    });
+    let streamClosed = false;
+    for (let reads = 0; reads < 4 && !streamClosed; reads += 1) {
+      const result = await Promise.race([
+        reader.read(),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("revoked SSE stream did not close")), 2_000),
+        ),
+      ]);
+      streamClosed = result.done;
+    }
+    expect(streamClosed).toBe(true);
+
+    const messageAfterRevoke = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`,
+      { method: "POST", headers, body: JSON.stringify(registration()) },
+    );
+    expect(messageAfterRevoke.status).toBe(403);
+    const eventsAfterRevoke = await fetch(
+      `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
+      { headers: { Authorization: headers.Authorization, Accept: "text/event-stream" } },
+    );
+    expect(eventsAfterRevoke.status).toBe(403);
+  });
+
+  it("closes an active WSS binding with 4403 after durable identity revoke", async () => {
+    const restartable = createRestartableTestStore();
+    let revoked = false;
+    const baseIdentity = identity();
+    const activeIdentity: IdentityPort = {
+      ...baseIdentity,
+      async authenticateDevice(input) {
+        const result = await baseIdentity.authenticateDevice(input);
+        return !result.ok
+          ? result
+          : {
+              ok: true as const,
+              value: {
+                ...result.value,
+                deviceStatus: revoked ? ("revoked" as const) : ("active" as const),
+              },
+            };
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(
+      restartable.store,
+      activeIdentity,
+    );
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    client.socket.send(JSON.stringify(registration()));
+    await vi.waitFor(() =>
+      expect(client.messages.some((message) => message.type === "session_registered")).toBe(true),
+    );
+
+    revoked = true;
+    await authority.revokeIdentityAuthority({
+      tenantId: "tenant-gw12",
+      deviceId: "device-gw12",
+      seatId: "seat-gw12",
+    });
+    await expect(client.closed).resolves.toMatchObject({
+      code: 4403,
+      reason: "RBP authorization failed",
+    });
+  });
+
+  it.each(["wss", "http_sse"] as const)(
+    "suppresses %s hello_ack when revocation wins after openConnection",
+    async (kind) => {
+      const restartable = createRestartableTestStore();
+      const activeIdentity = identity();
+      const authority = new GatewayBridgeSessionAuthority(
+        restartable.store,
+        activeIdentity,
+      );
+      const originalOpen = authority.openConnection.bind(authority);
+      vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+        const opened = await originalOpen(input);
+        await authority.revokeIdentityAuthority({
+          tenantId: "tenant-gw12",
+          deviceId: "device-gw12",
+          seatId: "seat-gw12",
+        });
+        return opened;
+      });
+      const server = await startGatewayServer({
+        config,
+        ports: {
+          ...createFailClosedPorts(),
+          identity: activeIdentity,
+          protocolStore: restartable.store,
+          rbpIngress: createProductionRbpIngressHost({ authority }),
+        },
+      });
+      handles.push(server);
+      if (kind === "wss") {
+        const client = await openRawWss(server.port);
+        client.socket.send(JSON.stringify(hello()));
+        await expect(client.closed).resolves.toMatchObject({ code: 4403 });
+        expect(client.messages.some((message) => message.type === "hello_ack")).toBe(false);
+        return;
+      }
+      const response = await fetch(
+        `http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer device-token",
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-RBP-Versions": "1",
+          },
+          body: JSON.stringify(hello()),
+        },
+      );
+      expect(response.status).toBe(403);
+      expect(response.headers.get("RBP-Connection-Id")).toBeNull();
+    },
+  );
 
   it("keeps progress non-terminal and maps an acknowledged cancellation without duplicate dispatch", async () => {
     const restartable = createRestartableTestStore();
