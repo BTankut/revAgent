@@ -2,11 +2,12 @@
   "schema": "revagent-remediation-artifact-manifest/v1",
   "workPackage": "WP-04",
   "baseSha": "5daf37a51a10024be54bd3b2237d496fbae01d05",
-  "codeCommit": "e098f7671ca2a9b3b937da1627aa06852989755b",
+  "codeCommit": "062e1301c49aaa717e0730d9aa2b44cf1fdabbb2",
+  "reworkCycle": 1,
   "branch": "remediation/wp-04-wss-serialized-teardown",
   "pullRequest": 389,
   "pullRequestState": "open_draft",
-  "generatedAtUtc": "2026-08-22T18:25:09.0771618+00:00",
+  "generatedAtUtc": "2026-08-22T18:50:56.1942535+00:00",
   "portableRoot": ".orchestration/artifacts/WP-04/critical_ts_worker",
   "rawLogsCommitted": false,
   "rawLogLocation": "local_writer_worktree",
@@ -18,13 +19,39 @@
   "gates": {
     "gatewayTypecheck": "pass on Node 24.19.0",
     "gatewayLint": "pass on Node 24.19.0",
-    "focusedIngress": "29/29 pass on Node 24.19.0",
-    "gatewayFull": "42/42 files; 611 pass; 5 skip on Node 24.19.0",
+    "focusedIngress": "34/34 pass on Node 24.19.0",
+    "gatewayFull": "42/42 files; 616 pass; 5 skip on Node 24.19.0, including post-native-restore rerun",
     "protocolFull": "8/8 files; 303/303 pass; protocol conformance success on Node 24.19.0",
     "relevantRawBindingConformance": "8/8 pass on canonical Node 22.22.2",
     "node24NativeRestoreSmoke": "pass",
     "diffCheck": "pass",
-    "productScope": "2/2 allowlisted paths"
+    "productScope": "2/2 allowlisted paths in rework cycle 1"
+  },
+  "rework1": {
+    "reviewIssuesClosed": [
+      "wire and close fault text is constant-safe; detailed canaries are protected diagnostics only",
+      "terminal egress is one ordered attempt before close and later normal egress is refused",
+      "outbound guard measures preexisting backlog only; exact 1 MiB plus exact 4 MiB current frame passes",
+      "real detach rejection is caught, diagnosed, called once, and produces no unhandled rejection",
+      "raw schema and internal terminal error frames are observed before close"
+    ],
+    "artifacts": [
+      { "file": "rework1/00-node-version.log", "exit": 0, "bytes": 10, "sha256": "bc697de995dc791df53d688ef69c08994cdffc8ce30c906b1ffc65b131ccd0eb" },
+      { "file": "rework1/01-gateway-typecheck.log", "exit": 0, "bytes": 896, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970" },
+      { "file": "rework1/02-gateway-lint.log", "exit": 0, "bytes": 58, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77" },
+      { "file": "rework1/03-focused-rbp-ingress.log", "exit": 0, "bytes": 13070, "sha256": "5be6c6ac1fe3859f91ee5c9842265f4cf58245af7fe0d4182624288b484789cd" },
+      { "file": "rework1/04-gateway-full.log", "exit": 0, "bytes": 17683, "sha256": "31448d5e2fb8c9cd216340e2d182b63ff7db1db3ad89c0bd10f3a2f42fae84ab" },
+      { "file": "rework1/05-protocol-full.log", "exit": 0, "bytes": 1562, "sha256": "b0bdc4ae96eb0c97c85e01267685b8553ed760552de9a76d5696c68d2b6baaf7" },
+      { "file": "rework1/06-diff-check-precommit.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework1/07-scope-precommit.log", "exit": 0, "bytes": 77, "sha256": "8f40ed941330c1d38fa85944f1731d9737e734e8144c72971ee72e2a22e52174" },
+      { "file": "rework1/08-native-rebuild-node22.log", "exit": 0, "bytes": 35, "sha256": "735478f546fc7efd5952d03fea585fa26a33f96eaff79116fd33442d6f7d23e2" },
+      { "file": "rework1/09-raw-binding-canonical.log", "exit": 0, "bytes": 1726, "sha256": "d3723525d43e3c797f843615c6e9ed62ab4c7fd3dbdcd55d4d8854477df679d5" },
+      { "file": "rework1/10-native-restore-node24.log", "exit": 0, "bytes": 35, "sha256": "735478f546fc7efd5952d03fea585fa26a33f96eaff79116fd33442d6f7d23e2" },
+      { "file": "rework1/11-native-smoke-node24.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework1/12-gateway-full-post-restore.log", "exit": 0, "bytes": 17839, "sha256": "1d63ab86c0118d53f6916ba0c73dd197133407488384d887fca5631feaad919c" },
+      { "file": "rework1/13-diff-check-final.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework1/14-scope-final.log", "exit": 0, "bytes": 77, "sha256": "8f40ed941330c1d38fa85944f1731d9737e734e8144c72971ee72e2a22e52174" }
+    ]
   },
   "classifiedAttempts": [
     {
