@@ -43,6 +43,22 @@ internal sealed partial class RbpJournalStore
         }
     }
 
+    private static void RequireGroupedHoldMaterialForClearance(
+        RbpVerificationHold hold)
+    {
+        try
+        {
+            ValidateGroupedHoldMaterial(hold);
+        }
+        catch (RbpJournalException exception)
+            when (exception.ErrorCode ==
+                  RbpJournalErrorCode.IntegrityCheckFailed)
+        {
+            throw ClearanceFault(
+                "grouped clearance disagrees with durable scope or origins");
+        }
+    }
+
     private static void RequireGroupedHoldClearanceAuthority(
         RbpVerificationHold hold,
         RbpRecoveryClearance clearance)
@@ -59,7 +75,6 @@ internal sealed partial class RbpJournalStore
                 "attestation and requires verification_read");
         }
 
-        ValidateGroupedHoldMaterial(hold);
         if (clearance.VerificationInvocationId is not { Length: > 0 } vid ||
             !RbpRecoveryClearance.IsUuidV7(vid) ||
             hold.State is not (RbpHoldState.EvidenceRecorded or
@@ -358,7 +373,7 @@ internal sealed partial class RbpJournalStore
 
         string basis = ToStorageBasis(clearance.Basis);
         string decision = ToStorageDecision(clearance.Decision);
-        RequireGroupedHoldClearanceAuthority(hold, clearance);
+        RequireGroupedHoldMaterialForClearance(hold);
         if (hold.State == RbpHoldState.Cleared)
         {
             bool identical =
@@ -396,6 +411,8 @@ internal sealed partial class RbpJournalStore
             // Duplicate delivery of the identical envelope is idempotent.
             return;
         }
+
+        RequireGroupedHoldClearanceAuthority(hold, clearance);
 
         if (clearance.Basis == RbpClearanceBasis.VerificationRead)
         {

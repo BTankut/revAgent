@@ -486,12 +486,20 @@ internal sealed partial class RbpJournalStore
                 "postcondition_verified",
             _ => throw ClearanceFault("unknown clearance decision"),
         };
-        RequireGroupedHoldClearanceAuthority(hold, clearance);
+        RequireGroupedHoldMaterialForClearance(hold);
         if (hold.State == RbpHoldState.Cleared)
         {
             RbpOutcomeV3ResolutionSnapshot? existing =
                 ReadResolutionV3(context, clearance.ResolutionId);
             if (existing is null ||
+                hold.VerificationHoldId != clearance.HoldId ||
+                hold.ResolutionId != clearance.ResolutionId ||
+                hold.ResolutionBasis != basis ||
+                hold.VerificationInvocationId !=
+                    clearance.VerificationInvocationId ||
+                hold.EvidenceDigest != clearance.EvidenceDigest ||
+                hold.ResolutionDecision != decision ||
+                hold.AuditId != clearance.AuditId ||
                 existing.Rsid != rsid ||
                 existing.HoldId != clearance.HoldId ||
                 existing.Basis != basis ||
@@ -508,6 +516,8 @@ internal sealed partial class RbpJournalStore
 
             return;
         }
+
+        RequireGroupedHoldClearanceAuthority(hold, clearance);
 
         if (clearance.Basis == RbpClearanceBasis.VerificationRead)
         {
