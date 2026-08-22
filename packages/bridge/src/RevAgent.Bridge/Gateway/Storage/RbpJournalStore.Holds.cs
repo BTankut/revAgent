@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Protocol;
 
@@ -21,6 +22,128 @@ namespace RevAgent.Bridge.Gateway.Storage;
 /// </summary>
 internal sealed partial class RbpJournalStore
 {
+    private const string GroupedHoldVerificationSchema =
+        "revagent.grouped-hold-verification/v1";
+
+    internal static string MakeGroupedHoldVerificationEvidenceDigest(
+        RbpVerificationHold hold,
+        string verificationInvocationId,
+        bool conclusive)
+    {
+        ArgumentNullException.ThrowIfNull(hold);
+        if (hold.OrderedOriginIdempotencyKeys.Count <= 1 ||
+            !RbpRecoveryClearance.IsUuidV7(verificationInvocationId))
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.ProtocolConflict,
+                "Grouped verification requires multiple ordered origins and " +
+                "a UUIDv7 verification invocation id.");
+        }
+
+        using JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs);
+        if (Rfc8785Json.Canonicalize(scope.RootElement) != hold.ScopeJcs ||
+            Rfc8785Json.MakeVerificationHoldId(
+                hold.Rsid,
+                scope.RootElement,
+                hold.OrderedOriginIdempotencyKeys) !=
+            hold.VerificationHoldId)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Grouped verification hold material is contradictory.");
+        }
+
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            writer.WriteBoolean("conclusive", conclusive);
+            writer.WritePropertyName("mutation_scope");
+            scope.RootElement.WriteTo(writer);
+            writer.WriteStartArray("ordered_origin_idempotency_keys");
+            foreach (string origin in hold.OrderedOriginIdempotencyKeys)
+            {
+                writer.WriteStringValue(origin);
+            }
+
+            writer.WriteEndArray();
+            writer.WriteString(
+                "postcondition",
+                conclusive ? "verified" : "inconclusive");
+            writer.WriteString("schema", GroupedHoldVerificationSchema);
+            writer.WriteString(
+                "verification_hold_id",
+                hold.VerificationHoldId);
+            writer.WriteString(
+                "verification_invocation_id",
+                verificationInvocationId);
+            writer.WriteEndObject();
+        }
+
+        using JsonDocument material = JsonDocument.Parse(buffer.ToArray());
+        return Rfc8785Json.Sha256Digest(material.RootElement);
+    }
+
+    private static void ValidateGroupedHoldVerificationEvidence(
+        RbpVerificationHold hold,
+        RbpHoldVerificationEvidence evidence)
+    {
+        if (hold.OrderedOriginIdempotencyKeys.Count <= 1)
+        {
+            return;
+        }
+
+        string expected = MakeGroupedHoldVerificationEvidenceDigest(
+            hold,
+            evidence.VerificationInvocationId,
+            evidence.Conclusive);
+        if (evidence.EvidenceDigest != expected)
+        {
+            throw ClearanceFault(
+                "grouped verification evidence is not bound to the exact " +
+                "hold scope, ordered origins, and postcondition");
+        }
+    }
+
+    private static void RequireGroupedHoldClearanceAuthority(
+        RbpVerificationHold hold,
+        RbpRecoveryClearance clearance)
+    {
+        if (hold.OrderedOriginIdempotencyKeys.Count <= 1)
+        {
+            return;
+        }
+
+        if (clearance.Basis == RbpClearanceBasis.LateTerminal)
+        {
+            throw ClearanceFault(
+                "a grouped hold has no atomic aggregate late-terminal " +
+                "attestation and requires verification_read");
+        }
+
+        if (clearance.Decision !=
+            RbpClearanceDecision.PostconditionVerified)
+        {
+            throw ClearanceFault(
+                "a grouped hold requires a verified aggregate postcondition");
+        }
+
+        string verificationInvocationId =
+            clearance.VerificationInvocationId ??
+            throw ClearanceFault(
+                "grouped verification_read requires a UUIDv7 invocation id");
+        string expected = MakeGroupedHoldVerificationEvidenceDigest(
+            hold,
+            verificationInvocationId,
+            conclusive: true);
+        if (clearance.EvidenceDigest != expected)
+        {
+            throw ClearanceFault(
+                "grouped verification_read is not bound to the exact hold " +
+                "scope, ordered origins, and verified postcondition");
+        }
+    }
+
     /// <summary>
     /// Journals a verification attempt against an uncleared hold. A
     /// successful read is evidence, not clearance, so the hold keeps
@@ -81,6 +204,8 @@ internal sealed partial class RbpJournalStore
                         "a resolved or cleared hold accepts no further " +
                         "verification evidence");
                 }
+
+                ValidateGroupedHoldVerificationEvidence(hold, evidence);
 
                 if (evidence.Conclusive)
                 {
@@ -303,6 +428,7 @@ internal sealed partial class RbpJournalStore
 
         string basis = ToStorageBasis(clearance.Basis);
         string decision = ToStorageDecision(clearance.Decision);
+        RequireGroupedHoldClearanceAuthority(hold, clearance);
         if (hold.State == RbpHoldState.Cleared)
         {
             bool identical =

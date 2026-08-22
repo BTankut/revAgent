@@ -486,6 +486,7 @@ internal sealed partial class RbpJournalStore
                 "postcondition_verified",
             _ => throw ClearanceFault("unknown clearance decision"),
         };
+        RequireGroupedHoldClearanceAuthority(hold, clearance);
         if (hold.State == RbpHoldState.Cleared)
         {
             RbpOutcomeV3ResolutionSnapshot? existing =
@@ -568,6 +569,8 @@ internal sealed partial class RbpJournalStore
             throw ClearanceFault(
                 "a resolved or cleared v3 hold accepts no evidence");
         }
+
+        ValidateGroupedHoldVerificationEvidence(hold, evidence);
 
         RbpVerificationHold updated = hold with
         {
@@ -2726,6 +2729,34 @@ internal sealed partial class RbpJournalStore
         RbpVerificationHold hold,
         long now)
     {
+        if (hold.OrderedOriginIdempotencyKeys.Count > 1 &&
+            hold.EvidenceDigest is { Length: > 0 } groupedDigest)
+        {
+            string verificationInvocationId =
+                hold.VerificationInvocationId ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_grouped_evidence_identity",
+                    "Grouped legacy evidence lacks verification identity.");
+            if (!RbpRecoveryClearance.IsUuidV7(verificationInvocationId))
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_grouped_evidence_identity",
+                    "Grouped legacy evidence identity is not UUIDv7.");
+            }
+
+            string expected = MakeGroupedHoldVerificationEvidenceDigest(
+                hold,
+                verificationInvocationId,
+                conclusive: hold.State != RbpHoldState.Active);
+            if (groupedDigest != expected)
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_grouped_evidence_binding",
+                    "Grouped legacy evidence is not bound to exact hold " +
+                    "material.");
+            }
+        }
+
         WriteHoldHistoryV3(context, hold, now);
         SynchronizeConflictV3(context, hold, now);
         bool hasResolution = hold.ResolutionId is { Length: > 0 };
@@ -3343,6 +3374,21 @@ internal sealed partial class RbpJournalStore
             throw new RbpJournalException(
                 RbpJournalErrorCode.IntegrityCheckFailed,
                 "A durable hold resolution violates DC-02 evidence shape.");
+        }
+
+        if (hold.OrderedOriginIdempotencyKeys.Count > 1 &&
+            (basis != "verification_read" ||
+             hold.VerificationInvocationId is not { Length: > 0 } groupedVid ||
+             hold.EvidenceDigest !=
+             MakeGroupedHoldVerificationEvidenceDigest(
+                 hold,
+                 groupedVid,
+                 conclusive: true)))
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "A grouped legacy hold lacks aggregate verification_read " +
+                "authority.");
         }
 
         using SqliteCommand resolution = context.CreateCommand(
