@@ -103,6 +103,19 @@
       "command": "npm run typecheck --workspace @revagent/gateway",
       "exit": 0,
       "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970"
+    },
+    {
+      "file": "16-rework-lint-final.log",
+      "command": "npm run lint --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77"
+    },
+    {
+      "file": "17-rework-protocol-final.log",
+      "command": "npm test --workspace @revagent/protocol",
+      "exit": 0,
+      "sha256": "459b8d87a2817580252ae6b9d7e2a3109906c93a3d3f051c786bb4271d22f2b1",
+      "result": "303 tests passed; protocol conformance success"
     }
   ]
 }
