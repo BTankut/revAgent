@@ -53,6 +53,19 @@ export interface RbpWssQueueConfig {
   readonly queuedBytes?: number;
 }
 
+export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
+  "revagent.gateway-rbp-wss-internal-diagnostic/v1" as const;
+
+export interface RbpWssInternalDiagnostic {
+  readonly contractVersion: typeof RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT;
+  readonly event: "gateway.rbp_wss_internal_diagnostic";
+  readonly phase: "opening" | "receive" | "egress" | "transport" | "queue" | "teardown";
+  readonly faultClass: "protocol" | "auth" | "authorization" | "version" | "internal";
+  readonly closeCode: number;
+  /** Protected diagnostic detail. It must never be copied to a wire response. */
+  readonly detail: string;
+}
+
 export interface ProductionRbpIngressOptions {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly wssQueue?: RbpWssQueueConfig;
@@ -60,6 +73,62 @@ export interface ProductionRbpIngressOptions {
   readonly onOpeningRefusalObservation?: (
     observation: RbpOpeningRefusalObservation,
   ) => void;
+  readonly onWssInternalDiagnostic?: (diagnostic: RbpWssInternalDiagnostic) => void;
+}
+
+interface PublicWssFault {
+  readonly closeCode: number;
+  readonly closeReason: string;
+  readonly message: string;
+  readonly wireFaultClass: "protocol" | "auth";
+  readonly diagnosticFaultClass: RbpWssInternalDiagnostic["faultClass"];
+}
+
+function publicWssFault(fault: GatewayRbpFault): PublicWssFault {
+  switch (fault.closeCode) {
+    case 4401:
+      return {
+        closeCode: 4401,
+        closeReason: "RBP authentication failed",
+        message: "RBP authentication failed",
+        wireFaultClass: "auth",
+        diagnosticFaultClass: "auth",
+      };
+    case 4403:
+      return {
+        closeCode: 4403,
+        closeReason: "RBP authorization failed",
+        message: "RBP authorization failed",
+        wireFaultClass: "auth",
+        diagnosticFaultClass: "authorization",
+      };
+    case 4426:
+      return {
+        closeCode: 4426,
+        closeReason: "RBP version negotiation failed",
+        message: "RBP version negotiation failed",
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "version",
+      };
+    case 1011:
+      return {
+        closeCode: 1011,
+        closeReason: "RBP internal error",
+        message: "RBP internal error",
+        // RBP/1 permits only protocol/auth on connection-level error frames.
+        // The protected diagnostic below carries the truthful internal class.
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "internal",
+      };
+    default:
+      return {
+        closeCode: 4400,
+        closeReason: "RBP protocol error",
+        message: "RBP protocol error",
+        wireFaultClass: "protocol",
+        diagnosticFaultClass: "protocol",
+      };
+  }
 }
 
 function wssFrameBudget(ceilings: WssFrameCeilings): number {
@@ -339,6 +408,13 @@ export function createProductionRbpIngressHost(
     }
   };
 
+  const observeWssInternalDiagnostic = (
+    diagnostic: RbpWssInternalDiagnostic,
+  ): void => {
+    if (options.onWssInternalDiagnostic === undefined) return;
+    bestEffort(() => options.onWssInternalDiagnostic!(Object.freeze(diagnostic)));
+  };
+
   const host: ProductionRbpIngressHost = {
     kind: "postgres" as const,
     mountPrefix: RBP_INGRESS_MOUNT_PREFIX,
@@ -505,6 +581,9 @@ export function createProductionRbpIngressHost(
           let resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
           let readsPaused = false;
           let serialTail: Promise<void> = Promise.resolve();
+          let egressTail: Promise<void> = Promise.resolve();
+          let terminalEgressClaimed = false;
+          let terminalErrorAttempted = false;
           let teardownTask: Promise<void> | null = null;
 
           const internalFault = (error: unknown): GatewayRbpFault =>
@@ -524,14 +603,38 @@ export function createProductionRbpIngressHost(
             return task;
           };
 
-          const sendSerialized = async (serialized: string): Promise<void> => {
+          const appendEgress = (operation: () => Promise<void>): Promise<void> => {
+            const task = egressTail.then(operation);
+            egressTail = task.catch(() => {
+              // The caller owns the observed task; the tail remains fulfilled
+              // so one failed write cannot create an unhandled rejection.
+            });
+            return task;
+          };
+
+          const observeDiagnostic = (
+            phase: RbpWssInternalDiagnostic["phase"],
+            faultClass: RbpWssInternalDiagnostic["faultClass"],
+            closeCode: number,
+            error: unknown,
+          ): void => {
+            observeWssInternalDiagnostic({
+              contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+              event: "gateway.rbp_wss_internal_diagnostic",
+              phase,
+              faultClass,
+              closeCode,
+              detail: error instanceof Error ? error.message : String(error),
+            });
+          };
+
+          const sendRaw = async (serialized: string): Promise<void> => {
             if (websocket.readyState !== WebSocket.OPEN) {
               throw new Error("WSS transport is not open");
             }
-            if (
-              websocket.bufferedAmount + Buffer.byteLength(serialized) >
-              MAX_PENDING_TRANSPORT_BYTES
-            ) {
+            // The negotiated current frame owns its own protocol byte limit.
+            // This guard measures only backlog that existed before this send.
+            if (websocket.bufferedAmount > MAX_PENDING_TRANSPORT_BYTES) {
               throw new Error("WSS backlog exceeds the bounded transport window");
             }
             await new Promise<void>((resolve, reject) => {
@@ -541,13 +644,62 @@ export function createProductionRbpIngressHost(
             });
           };
 
+          const sendSerialized = async (serialized: string): Promise<void> => {
+            if (
+              terminalEgressClaimed ||
+              state === "closing" ||
+              state === "faulted" ||
+              state === "closed"
+            ) {
+              throw new Error("WSS normal egress is closed");
+            }
+            try {
+              await appendEgress(async () => {
+                if (
+                  terminalEgressClaimed ||
+                  state === "closing" ||
+                  state === "faulted" ||
+                  state === "closed"
+                ) {
+                  throw new Error("WSS normal egress is closed");
+                }
+                await sendRaw(serialized);
+              });
+            } catch (error) {
+              observeDiagnostic("egress", "internal", 1011, error);
+              throw error;
+            }
+          };
+
+          const sendTerminalError = async (serialized: string): Promise<void> => {
+            if (terminalErrorAttempted) return;
+            terminalErrorAttempted = true;
+            await appendEgress(async () => {
+              await sendRaw(serialized);
+            });
+          };
+
+          const safeChannelCloseReason = (code: number): string =>
+            code === 1001
+              ? "server draining"
+              : code === 4401
+                ? "RBP authentication failed"
+                : code === 4403
+                  ? "RBP authorization failed"
+                  : code === 4426
+                    ? "RBP version negotiation failed"
+                    : code === 1011
+                      ? "RBP internal error"
+                      : "RBP connection closed";
+
           const scheduleTeardown = (input: {
             readonly closeCode: number | null;
-            readonly reason: string;
-            readonly fault: GatewayRbpFault | null;
+            readonly closeReason: string;
+            readonly publicFault: PublicWssFault | null;
             readonly sendFaultFrame: boolean;
           }): Promise<void> => {
             if (teardownTask !== null) return teardownTask;
+            terminalEgressClaimed = true;
             if (state !== "faulted" && state !== "closed") state = "closing";
             const task = append(async () => {
               try {
@@ -561,12 +713,12 @@ export function createProductionRbpIngressHost(
                   readsPaused = false;
                 }
                 if (
-                  input.fault !== null &&
+                  input.publicFault !== null &&
                   input.sendFaultFrame &&
                   websocket.readyState === WebSocket.OPEN
                 ) {
                   try {
-                    await sendSerialized(
+                    await sendTerminalError(
                       JSON.stringify({
                         v: 1,
                         type: "error",
@@ -574,16 +726,20 @@ export function createProductionRbpIngressHost(
                         ts: new Date().toISOString(),
                         payload: {
                           retryable: false,
-                          fault_class: input.fault.code === "auth" ? "auth" : "protocol",
+                          fault_class: input.publicFault.wireFaultClass,
                           outcome: "known",
                           verification_required: false,
-                          message: input.fault.message,
+                          message: input.publicFault.message,
                         },
                       } satisfies RbpEnvelope),
                     );
-                  } catch {
-                    // The close code remains authoritative if the peer cannot
-                    // accept the final authenticated control frame.
+                  } catch (error) {
+                    observeDiagnostic(
+                      "egress",
+                      "internal",
+                      input.closeCode ?? 1011,
+                      error,
+                    );
                   }
                 }
                 if (
@@ -591,8 +747,9 @@ export function createProductionRbpIngressHost(
                   websocket.readyState === WebSocket.OPEN
                 ) {
                   try {
-                    websocket.close(input.closeCode, input.reason.slice(0, 123));
-                  } catch {
+                    websocket.close(input.closeCode, input.closeReason.slice(0, 123));
+                  } catch (error) {
+                    observeDiagnostic("teardown", "internal", 1011, error);
                     websocket.terminate();
                   }
                 }
@@ -600,23 +757,34 @@ export function createProductionRbpIngressHost(
                 if (authorityConnectionId !== null) {
                   try {
                     await authority.detach(authorityConnectionId);
-                  } catch {
-                    // Detach failure is contained by this one caught teardown
-                    // task; it must never become an unhandled rejection.
+                  } catch (error) {
+                    observeDiagnostic("teardown", "internal", 1011, error);
                   }
                 }
                 state = "closed";
               }
             });
-            teardownTask = task.catch(() => {
+            teardownTask = task.catch((error: unknown) => {
+              observeDiagnostic("teardown", "internal", 1011, error);
               state = "closed";
+              if (websocket.readyState !== WebSocket.CLOSED) websocket.terminate();
             });
             return teardownTask;
           };
 
-          const fail = (fault: GatewayRbpFault): void => {
+          const fail = (
+            fault: GatewayRbpFault,
+            phase: RbpWssInternalDiagnostic["phase"],
+          ): void => {
             if (state === "closing" || state === "closed" || state === "faulted") return;
             const sendFaultFrame = state === "open";
+            const publicFault = publicWssFault(fault);
+            observeDiagnostic(
+              phase,
+              publicFault.diagnosticFaultClass,
+              publicFault.closeCode,
+              fault,
+            );
             const observation =
               state === "opening" && openingCorrelationId !== null
                 ? openingRefusalObservation(fault, openingCorrelationId, "wss")
@@ -625,22 +793,24 @@ export function createProductionRbpIngressHost(
               openingRefusalObserved = true;
               observeOpeningRefusal(observation);
             }
+            terminalEgressClaimed = true;
             state = "faulted";
             void scheduleTeardown({
-              closeCode: fault.closeCode,
-              reason: fault.message,
-              fault,
+              closeCode: publicFault.closeCode,
+              closeReason: publicFault.closeReason,
+              publicFault,
               sendFaultFrame,
             });
           };
 
           const overload = (): void => {
             if (state === "closing" || state === "closed" || state === "faulted") return;
+            terminalEgressClaimed = true;
             state = "faulted";
             void scheduleTeardown({
               closeCode: 1013,
-              reason: "WSS inbound queue overloaded",
-              fault: null,
+              closeReason: "RBP inbound queue overloaded",
+              publicFault: null,
               sendFaultFrame: false,
             });
           };
@@ -657,7 +827,7 @@ export function createProductionRbpIngressHost(
                 websocket.resume();
                 readsPaused = false;
               } catch (error) {
-                fail(internalFault(error));
+                fail(internalFault(error), "queue");
               }
             }
           };
@@ -694,11 +864,18 @@ export function createProductionRbpIngressHost(
           const channel: BridgeConnectionChannel = {
             send: sendSerialized,
             async close(code, reason): Promise<void> {
+              observeDiagnostic(
+                "teardown",
+                code === 1011 ? "internal" : "protocol",
+                code,
+                reason,
+              );
+              terminalEgressClaimed = true;
               if (state !== "faulted" && state !== "closed") state = "closing";
               await scheduleTeardown({
                 closeCode: code,
-                reason,
-                fault: null,
+                closeReason: safeChannelCloseReason(code),
+                publicFault: null,
                 sendFaultFrame: false,
               });
             },
@@ -771,7 +948,7 @@ export function createProductionRbpIngressHost(
             try {
               bytes = rawFrame(raw);
             } catch (error) {
-              fail(internalFault(error));
+              fail(internalFault(error), "queue");
               return;
             }
             const nextFrames = queuedFrames + 1;
@@ -788,7 +965,7 @@ export function createProductionRbpIngressHost(
                 readsPaused = true;
               } catch (error) {
                 releaseQueueCharge(bytes.byteLength);
-                fail(internalFault(error));
+                fail(internalFault(error), "queue");
                 return;
               }
             }
@@ -797,7 +974,10 @@ export function createProductionRbpIngressHost(
                 if (state !== "opening" && state !== "open") return;
                 await processFrame(bytes, binary);
               } catch (error) {
-                fail(error instanceof GatewayRbpFault ? error : internalFault(error));
+                fail(
+                  error instanceof GatewayRbpFault ? error : internalFault(error),
+                  state === "opening" ? "opening" : "receive",
+                );
               } finally {
                 releaseQueueCharge(bytes.byteLength);
               }
@@ -808,23 +988,30 @@ export function createProductionRbpIngressHost(
           };
 
           websocket.on("error", (error) => {
-            fail(internalFault(error));
+            fail(internalFault(error), "transport");
           });
           websocket.once("close", () => {
+            terminalEgressClaimed = true;
             if (state !== "faulted" && state !== "closed") state = "closing";
             void scheduleTeardown({
               closeCode: null,
-              reason: "WSS transport closed",
-              fault: null,
+              closeReason: "WSS transport closed",
+              publicFault: null,
               sendFaultFrame: false,
             });
           });
           websocket.on("message", enqueueFrame);
         });
       })().catch((error: unknown) => {
-        rawResponse(socket, 503, {
-          error: error instanceof Error ? error.message : String(error),
+        observeWssInternalDiagnostic({
+          contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+          event: "gateway.rbp_wss_internal_diagnostic",
+          phase: "opening",
+          faultClass: "internal",
+          closeCode: 1011,
+          detail: error instanceof Error ? error.message : String(error),
         });
+        rawResponse(socket, 503, { error: "RBP upgrade unavailable" });
       });
     },
     beginDrain(): void {

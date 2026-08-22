@@ -24,7 +24,11 @@ import {
   type DeviceAuthContext,
   type IdentityPort,
 } from "./authContext.js";
-import { GatewayBridgeSessionAuthority, GatewayRbpFault } from "./bridgeSession.js";
+import {
+  GatewayBridgeSessionAuthority,
+  GatewayRbpFault,
+  type BridgeConnectionChannel,
+} from "./bridgeSession.js";
 import type {
   GatewayExecutorRequest,
   GatewayJsonObject,
@@ -33,8 +37,10 @@ import { gatewayUuidV7 } from "./identifiers.js";
 import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
 import {
   RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+  RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
   createProductionRbpIngressHost,
   type RbpOpeningRefusalObservation,
+  type RbpWssInternalDiagnostic,
 } from "./rbpIngress.js";
 import {
   createFailClosedPorts,
@@ -307,6 +313,27 @@ const LOCAL_WSS_FRAME_BUDGET_BYTES =
     4 * Math.ceil(RBP_MAX_DECODED_CHUNK_BYTES / 3),
     RBP_MAX_INLINE_RESULT_BYTES,
   );
+
+function jsonObjectWithExactBytes(byteSize: number): string {
+  const prefix = '{"payload":"';
+  const suffix = '"}';
+  const fixedBytes = Buffer.byteLength(prefix) + Buffer.byteLength(suffix);
+  if (byteSize < fixedBytes) throw new RangeError("byteSize is smaller than JSON framing");
+  const serialized = `${prefix}${"x".repeat(byteSize - fixedBytes)}${suffix}`;
+  if (Buffer.byteLength(serialized) !== byteSize) {
+    throw new Error("exact JSON byte fixture drifted");
+  }
+  return serialized;
+}
+
+function assertCanaryAbsentFromRemote(
+  client: RawWssClient,
+  closed: { readonly code: number; readonly reason: string },
+  canary: string,
+): void {
+  expect(JSON.stringify(client.messages)).not.toContain(canary);
+  expect(closed.reason).not.toContain(canary);
+}
 
 const config: GatewayConfig = {
   nodeEnv: "development",
@@ -890,11 +917,16 @@ describe("GW-12 production RBP ingress", () => {
     }
   });
 
-  it("contains synthetic socket errors, detaches once, and keeps the Gateway alive", async () => {
+  it("allows a 4 MiB current frame at exact backlog and blocks only over backlog", async () => {
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
-    const detach = vi.spyOn(authority, "detach");
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
     const accepted = captureNextServerSocket();
     const server = await startGatewayServer({
       config,
@@ -908,14 +940,238 @@ describe("GW-12 production RBP ingress", () => {
     handles.push(server);
     const client = await openRawWss(server.port);
     const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const backlog = vi
+      .spyOn(serverSocket, "bufferedAmount", "get")
+      .mockReturnValue(1024 * 1024);
+    const transportSend = vi.spyOn(serverSocket, "send");
+    const fourMiBFrame = jsonObjectWithExactBytes(4 * 1024 * 1024);
+
+    await expect(channel.send(fourMiBFrame)).resolves.toBeUndefined();
+    expect(transportSend).toHaveBeenCalledTimes(1);
+    backlog.mockReturnValue(1024 * 1024 + 1);
+    await expect(channel.send(JSON.stringify({ blocked: true }))).rejects.toThrow(
+      "backlog exceeds",
+    );
+    expect(transportSend).toHaveBeenCalledTimes(1);
+    backlog.mockRestore();
+    client.socket.close(1000, "test complete");
+    await client.closed;
+  });
+
+  it("sends one safe schema error before close and rejects every later normal frame", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const eventOrder: string[] = [];
+    client.socket.on("message", (raw) => {
+      eventOrder.push((JSON.parse(raw.toString()) as { readonly type?: string }).type ?? "unknown");
+    });
+    client.socket.once("close", () => eventOrder.push("close"));
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    client.socket.send('{"v":1,"type":"session_register","id":"malformed"');
+
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 4400, reason: "RBP protocol error" });
+    expect(eventOrder).toStrictEqual(["hello_ack", "error", "close"]);
+    expect(client.messages[1]).toMatchObject({
+      type: "error",
+      payload: { fault_class: "protocol", message: "RBP protocol error" },
+    });
+    expect(client.messages.filter((message) => message.type === "error")).toHaveLength(1);
+    await expect(channel.send(JSON.stringify({ late: true }))).rejects.toThrow(
+      "normal egress is closed",
+    );
+  });
+
+  it("observes a normal send callback failure without putting its detail on the wire", async () => {
+    const canary = "SYNTHETIC-NORMAL-SEND-CALLBACK-CANARY";
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const failingSend = ((
+      _data: unknown,
+      optionsOrCallback?: unknown,
+      callback?: unknown,
+    ): void => {
+      const completion =
+        typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+      if (typeof completion === "function") {
+        (completion as (error?: Error) => void)(new Error(canary));
+      }
+    }) as typeof serverSocket.send;
+    const send = vi.spyOn(serverSocket, "send").mockImplementation(failingSend);
+
+    await expect(channel.send(JSON.stringify({ callback: "failure" }))).rejects.toThrow(canary);
+    expect(JSON.stringify(client.messages)).not.toContain(canary);
+    expect(diagnostics).toContainEqual({
+      contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+      event: "gateway.rbp_wss_internal_diagnostic",
+      phase: "egress",
+      faultClass: "internal",
+      closeCode: 1011,
+      detail: canary,
+    });
+    send.mockRestore();
+    client.socket.close(1000, "test complete");
+    await client.closed;
+  });
+
+  it("closes safely when the one terminal error send callback fails", async () => {
+    const canary = "SYNTHETIC-TERMINAL-SEND-CALLBACK-CANARY";
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const failingSend = ((
+      _data: unknown,
+      optionsOrCallback?: unknown,
+      callback?: unknown,
+    ): void => {
+      const completion =
+        typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+      if (typeof completion === "function") {
+        (completion as (error?: Error) => void)(new Error(canary));
+      }
+    }) as typeof serverSocket.send;
+    vi.spyOn(serverSocket, "send").mockImplementation(failingSend);
+    client.socket.send('{"v":1,"type":"session_register","id":"malformed"');
+
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 4400, reason: "RBP protocol error" });
+    expect(client.messages.map((message) => message.type)).toStrictEqual(["hello_ack"]);
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics).toContainEqual({
+      contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+      event: "gateway.rbp_wss_internal_diagnostic",
+      phase: "egress",
+      faultClass: "internal",
+      closeCode: 4400,
+      detail: canary,
+    });
+  });
+
+  it("contains synthetic socket errors, detaches once, and keeps the Gateway alive", async () => {
+    const canary = "SYNTHETIC-INTERNAL-SOCKET-CANARY";
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const detach = vi.spyOn(authority, "detach");
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
 
     client.socket.send(JSON.stringify(hello()));
     await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
-    expect(() => serverSocket.emit("error", new Error("synthetic socket fault"))).not.toThrow();
+    expect(() => serverSocket.emit("error", new Error(canary))).not.toThrow();
     expect(() => serverSocket.emit("error", new Error("duplicate socket fault"))).not.toThrow();
 
-    await expect(client.closed).resolves.toMatchObject({ code: 1011 });
+    const closed = await client.closed;
+    expect(closed.code).toBe(1011);
+    expect(client.messages.map((message) => message.type)).toStrictEqual([
+      "hello_ack",
+      "error",
+    ]);
+    expect(client.messages[1]).toMatchObject({
+      type: "error",
+      payload: { fault_class: "protocol", message: "RBP internal error" },
+    });
+    expect(client.messages.filter((message) => message.type === "error")).toHaveLength(1);
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics).toContainEqual({
+      contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+      event: "gateway.rbp_wss_internal_diagnostic",
+      phase: "transport",
+      faultClass: "internal",
+      closeCode: 1011,
+      detail: canary,
+    });
     expect(detach).toHaveBeenCalledTimes(1);
+    await expect(channel.send(JSON.stringify({ late: true }))).rejects.toThrow(
+      "normal egress is closed",
+    );
 
     const survivor = new WssGatewayBinding({
       baseUrl: `ws://127.0.0.1:${String(server.port)}/bridge/v1`,
@@ -976,6 +1232,52 @@ describe("GW-12 production RBP ingress", () => {
     await expect(client.closed).resolves.toMatchObject({ code: expectedCode });
   });
 
+  it("keeps an authentication canary only in the protected diagnostic", async () => {
+    const canary = "SYNTHETIC-AUTH-DETAIL-CANARY";
+    const restartable = createRestartableTestStore();
+    const baseIdentity = identity();
+    const canaryIdentity: IdentityPort = {
+      ...baseIdentity,
+      async authenticateDevice() {
+        return {
+          ok: false as const,
+          port: "identity" as const,
+          code: "unavailable" as const,
+          message: canary,
+        };
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, canaryIdentity);
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: canaryIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    client.socket.send(JSON.stringify(hello()));
+
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 4401, reason: "RBP authentication failed" });
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics).toContainEqual({
+      contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+      event: "gateway.rbp_wss_internal_diagnostic",
+      phase: "opening",
+      faultClass: "auth",
+      closeCode: 4401,
+      detail: canary,
+    });
+  });
+
   it("uses 1001 for controlled drain", async () => {
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
@@ -999,14 +1301,12 @@ describe("GW-12 production RBP ingress", () => {
   });
 
   it("contains a rejecting detach without an unhandled rejection", async () => {
+    const canary = "SYNTHETIC-REAL-DETACH-REJECTION-CANARY";
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
-    const originalDetach = authority.detach.bind(authority);
-    const detach = vi.spyOn(authority, "detach").mockImplementation(async (connectionId) => {
-      await originalDetach(connectionId);
-      throw new Error("synthetic detach rejection");
-    });
+    const detach = vi.spyOn(authority, "detach").mockRejectedValue(new Error(canary));
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown): void => {
       unhandled.push(reason);
@@ -1018,23 +1318,41 @@ describe("GW-12 production RBP ingress", () => {
         ...createFailClosedPorts(),
         identity: activeIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
       },
     });
     handles.push(server);
     const client = await openRawWss(server.port);
+    let connectionId: string | null = null;
 
     try {
       client.socket.send(JSON.stringify(hello()));
       await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+      connectionId = (
+        client.messages[0] as Extract<RbpEnvelope, { type: "hello_ack" }>
+      ).payload.connection_id;
       client.socket.close(1000, "test close");
-      await client.closed;
+      const closed = await client.closed;
       await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));
       await new Promise<void>((resolve) => setImmediate(resolve));
       expect(unhandled).toStrictEqual([]);
+      assertCanaryAbsentFromRemote(client, closed, canary);
+      expect(diagnostics).toContainEqual({
+        contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+        event: "gateway.rbp_wss_internal_diagnostic",
+        phase: "teardown",
+        faultClass: "internal",
+        closeCode: 1011,
+        detail: canary,
+      });
     } finally {
       process.off("unhandledRejection", onUnhandled);
       if (client.socket.readyState !== WebSocket.CLOSED) client.socket.terminate();
+      detach.mockRestore();
+      if (connectionId !== null) await authority.detach(connectionId);
     }
   });
 
@@ -1093,26 +1411,34 @@ describe("GW-12 production RBP ingress", () => {
   );
 
   it("maps an unexpected opening-handler failure to 1011 and survives", async () => {
+    const canary = "SYNTHETIC-OPENING-HANDLER-CANARY";
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const openConnection = vi
       .spyOn(authority, "openConnection")
-      .mockRejectedValueOnce(new Error("synthetic opening handler failure"));
+      .mockRejectedValueOnce(new Error(canary));
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
     const server = await startGatewayServer({
       config,
       ports: {
         ...createFailClosedPorts(),
         identity: activeIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
       },
     });
     handles.push(server);
     const client = await openRawWss(server.port);
     client.socket.send(JSON.stringify(hello()));
 
-    await expect(client.closed).resolves.toMatchObject({ code: 1011 });
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1011, reason: "RBP internal error" });
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics.some((diagnostic) => diagnostic.detail === canary)).toBe(true);
     expect(openConnection).toHaveBeenCalledTimes(1);
     openConnection.mockRestore();
 
@@ -1126,19 +1452,24 @@ describe("GW-12 production RBP ingress", () => {
   });
 
   it("maps an unexpected steady-state handler failure to 1011", async () => {
+    const canary = "SYNTHETIC-RECEIVE-HANDLER-CANARY";
     const restartable = createRestartableTestStore();
     const activeIdentity = identity();
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
     const receive = vi
       .spyOn(authority, "receive")
-      .mockRejectedValueOnce(new Error("synthetic receive handler failure"));
+      .mockRejectedValueOnce(new Error(canary));
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
     const server = await startGatewayServer({
       config,
       ports: {
         ...createFailClosedPorts(),
         identity: activeIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
       },
     });
     handles.push(server);
@@ -1147,26 +1478,49 @@ describe("GW-12 production RBP ingress", () => {
     await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
     client.socket.send(JSON.stringify(registration()));
 
-    await expect(client.closed).resolves.toMatchObject({ code: 1011 });
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1011, reason: "RBP internal error" });
+    expect(client.messages.map((message) => message.type)).toStrictEqual([
+      "hello_ack",
+      "error",
+    ]);
+    expect(client.messages[1]).toMatchObject({
+      type: "error",
+      payload: { fault_class: "protocol", message: "RBP internal error" },
+    });
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics).toContainEqual({
+      contractVersion: RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
+      event: "gateway.rbp_wss_internal_diagnostic",
+      phase: "receive",
+      faultClass: "internal",
+      closeCode: 1011,
+      detail: canary,
+    });
     expect(receive).toHaveBeenCalledTimes(1);
   });
 
   it("maps a durable store registration failure to 1011", async () => {
+    const canary = "SYNTHETIC-STORE-FAILURE-CANARY";
     const restartable = createRestartableTestStore();
     vi.spyOn(restartable.store, "transact").mockResolvedValueOnce({
       ok: false,
       code: "unavailable",
-      message: "synthetic store failure",
+      message: canary,
     } as never);
     const activeIdentity = identity();
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
     const server = await startGatewayServer({
       config,
       ports: {
         ...createFailClosedPorts(),
         identity: activeIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
       },
     });
     handles.push(server);
@@ -1175,7 +1529,14 @@ describe("GW-12 production RBP ingress", () => {
     await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
     client.socket.send(JSON.stringify(registration()));
 
-    await expect(client.closed).resolves.toMatchObject({ code: 1011 });
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1011, reason: "RBP internal error" });
+    expect(client.messages.map((message) => message.type)).toStrictEqual([
+      "hello_ack",
+      "error",
+    ]);
+    assertCanaryAbsentFromRemote(client, closed, canary);
+    expect(diagnostics.some((diagnostic) => diagnostic.detail === canary)).toBe(true);
   });
 
   it("survives a transport-level oversize frame and accepts the next socket", async () => {
