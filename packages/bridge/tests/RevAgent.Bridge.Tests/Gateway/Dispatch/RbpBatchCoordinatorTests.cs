@@ -712,7 +712,7 @@ public sealed class RbpBatchCoordinatorTests
         JsonElement payload = Payload(
             BatchId,
             atomic: true,
-            [Write(StepOne), Read(StepTwo)]);
+            [Write(StepOne), Read(StepTwo), Write(StepThree)]);
 
         // The bridge dies after the one atomic dispatch and before a durable
         // terminal batch outcome.
@@ -750,16 +750,74 @@ public sealed class RbpBatchCoordinatorTests
         Assert.Equal(
             "journal_indeterminate",
             mutation.GetProperty("fault_class").GetString());
-        Assert.NotNull(
-            await store.GetHoldAsync(
-                Rsid,
-                mutation.GetProperty("verification_hold_id").GetString()!));
+        string holdId =
+            mutation.GetProperty("verification_hold_id").GetString()!;
+        Assert.Equal(
+            holdId,
+            Step(answer, 2)
+                .GetProperty("error")
+                .GetProperty("verification_hold_id")
+                .GetString());
+        RbpVerificationHold hold = (await store.GetHoldAsync(Rsid, holdId))!;
+        Assert.Equal(
+            new[] { Rsid + "/" + StepOne, Rsid + "/" + StepThree },
+            hold.OrderedOriginIdempotencyKeys);
 
         // Spec ~985-994: a read lost with the missing carrier is the narrow
         // known environment failure, never a synthetic success.
         JsonElement read = Step(answer, 1).GetProperty("error");
         Assert.Equal("environment", read.GetProperty("fault_class").GetString());
         Assert.True(read.GetProperty("retryable").GetBoolean());
+    }
+
+    [Fact]
+    public async Task
+        LiveAtomicLossSessionScopeSubsumesDocumentScopesInOneHold()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = Open(directory);
+        await RegisterAsync(store);
+        JsonElement payload = Payload(
+            BatchId,
+            atomic: true,
+            [
+                Write(StepOne),
+                Write(StepTwo) with
+                {
+                    MutationScopeJson = "{\"kind\":\"session\"}",
+                },
+                Read(StepThree),
+            ]);
+        var lost = new StubBatchChannel()
+            .Then(_ => throw new IOException("transport lost"));
+
+        RbpInvocationAnswer answer = await Coordinator(
+                store,
+                lost,
+                StubBatchCapabilities.Standard(batchAtomicGranted: true))
+            .DispatchAsync(Rsid, payload, CancellationToken.None);
+
+        Assert.Single(lost.Calls);
+        Assert.Equal("indeterminate", Status(answer));
+        string firstHold = Step(answer, 0)
+            .GetProperty("error")
+            .GetProperty("verification_hold_id")
+            .GetString()!;
+        Assert.Equal(
+            firstHold,
+            Step(answer, 1)
+                .GetProperty("error")
+                .GetProperty("verification_hold_id")
+                .GetString());
+        RbpVerificationHold hold =
+            (await store.GetHoldAsync(Rsid, firstHold))!;
+        Assert.Equal("session", hold.ScopeKind);
+        Assert.Equal(
+            new[] { Rsid + "/" + StepOne, Rsid + "/" + StepTwo },
+            hold.OrderedOriginIdempotencyKeys);
+        Assert.Equal(
+            RbpBatchState.Terminal,
+            (await store.GetBatchAsync(Rsid + "/" + BatchId))!.State);
     }
 
     [Fact]

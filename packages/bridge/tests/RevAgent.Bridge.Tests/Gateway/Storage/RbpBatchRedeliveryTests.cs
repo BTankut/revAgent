@@ -534,6 +534,128 @@ public sealed class RbpBatchRedeliveryTests
     }
 
     [Fact]
+    public async Task
+        FreshMutationAdmissionRecoversDispatchedAtomicBatchBeforeKeyCheck()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-000000000490",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(
+                    "0197a3c2-0000-7000-8000-000000000491"),
+                RbpBatchTestData.WriteStep(
+                    "0197a3c2-0000-7000-8000-000000000492"),
+            });
+        _ = await store.AdmitBatchOutcomeV3Async(
+            batch,
+            Array.Empty<RbpRecoveryClearance>(),
+            new[] { RbpTransactionMode.Native, RbpTransactionMode.Native });
+        await store.MarkBatchDispatchedOutcomeV3Async(
+            batch.BatchKey,
+            new[] { RbpTransactionMode.Native, RbpTransactionMode.Native });
+        var fresh = new RbpInvocationIdentity(
+            "rs-test",
+            "0197a3c2-0000-7000-8000-000000000493",
+            "set_element_parameter",
+            Mutating: true,
+            MutationScopeJcs: RbpBatchTestData.DocumentOneScope,
+            ParamsDigest: RbpBatchTestData.EmptyObjectDigest,
+            PolicyJcs: "{\"decision\":\"allow\"}",
+            RecoveryClearancesJcs: "[]");
+
+        RbpClearanceGatedAdmission gated =
+            await store.AdmitInvocationOutcomeV3Async(
+                fresh,
+                Array.Empty<RbpRecoveryClearance>(),
+                RbpTransactionMode.Native);
+
+        Assert.Null(gated.Admission);
+        RbpVerificationHold hold = gated.BlockingHold!;
+        Assert.Equal(
+            new[]
+            {
+                RbpBatchTestData.StepKey(
+                    "0197a3c2-0000-7000-8000-000000000491"),
+                RbpBatchTestData.StepKey(
+                    "0197a3c2-0000-7000-8000-000000000492"),
+            },
+            hold.OrderedOriginIdempotencyKeys);
+        Assert.Null(await store.GetInvocationAsync(fresh.IdempotencyKey));
+        Assert.Equal(
+            RbpBatchState.Terminal,
+            (await store.GetBatchAsync(batch.BatchKey))!.State);
+    }
+
+    [Fact]
+    public async Task
+        FreshMutationAdmissionRecoversOnlyTheDispatchedFanOutStep()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+        const string firstId = "0197a3c2-0000-7000-8000-000000000494";
+        const string secondId = "0197a3c2-0000-7000-8000-000000000495";
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: false,
+            "0197a3c2-0000-7000-8000-000000000496",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(firstId),
+                RbpBatchTestData.WriteStep(secondId),
+            });
+        _ = await store.AdmitBatchOutcomeV3Async(
+            batch,
+            Array.Empty<RbpRecoveryClearance>(),
+            new[] { RbpTransactionMode.Native, RbpTransactionMode.Native });
+        await store.MarkBatchDispatchedOutcomeV3Async(
+            batch.BatchKey,
+            new[] { RbpTransactionMode.Native, RbpTransactionMode.Native });
+        await store.MarkInvocationExecutingOutcomeV3Async(
+            RbpBatchTestData.StepKey(firstId),
+            RbpTransactionMode.Native);
+        var fresh = new RbpInvocationIdentity(
+            "rs-test",
+            "0197a3c2-0000-7000-8000-000000000497",
+            "set_element_parameter",
+            Mutating: true,
+            MutationScopeJcs: RbpBatchTestData.DocumentOneScope,
+            ParamsDigest: RbpBatchTestData.EmptyObjectDigest,
+            PolicyJcs: "{\"decision\":\"allow\"}",
+            RecoveryClearancesJcs: "[]");
+
+        RbpClearanceGatedAdmission gated =
+            await store.AdmitInvocationOutcomeV3Async(
+                fresh,
+                Array.Empty<RbpRecoveryClearance>(),
+                RbpTransactionMode.Native);
+
+        Assert.Null(gated.Admission);
+        Assert.Equal(
+            new[] { RbpBatchTestData.StepKey(firstId) },
+            gated.BlockingHold!.OrderedOriginIdempotencyKeys);
+        Assert.Equal(
+            RbpInvocationState.Indeterminate,
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(firstId)))!.State);
+        Assert.Equal(
+            RbpInvocationState.Received,
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(secondId)))!.State);
+        Assert.Equal(
+            RbpBatchState.Dispatched,
+            (await store.GetBatchAsync(batch.BatchKey))!.State);
+        Assert.Null(await store.GetInvocationAsync(fresh.IdempotencyKey));
+    }
+
+    [Fact]
     public async Task AnAllReadAtomicDispatchLossIsTheKnownEnvironmentFailure()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -691,7 +813,7 @@ public sealed class RbpBatchRedeliveryTests
         Assert.Equal(RbpInvocationState.Indeterminate, second.State);
         Assert.NotEqual(first.VerificationHoldId, second.VerificationHoldId);
         Assert.Equal(
-            RbpBatchState.Dispatched,
+            RbpBatchState.Terminal,
             (await store.GetBatchAsync(batch.BatchKey))!.State);
 
         RbpBatchGatedAdmission recovery =
@@ -705,8 +827,162 @@ public sealed class RbpBatchRedeliveryTests
                     RbpTransactionMode.Native,
                 });
         Assert.Equal(
-            RbpBatchAdmission.DispatchLossArbitrated,
+            RbpBatchAdmission.ReplayTerminal,
             recovery.Admission!.Admission);
+    }
+
+    [Fact]
+    public async Task LegacyDispatchedAtomicBatchImportsOneOrderedHoldPerDocumentScope()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        const string first = "0197a3c2-0000-7000-8000-000000000481";
+        const string second = "0197a3c2-0000-7000-8000-000000000482";
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-000000000480",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(first),
+                RbpBatchTestData.WriteStep(second),
+            });
+        _ = await store.AdmitBatchAsync(batch, Array.Empty<RbpRecoveryClearance>());
+        await store.MarkBatchDispatchedAsync(batch.BatchKey);
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        RbpStoredInvocation one = (await store.GetInvocationAsync(
+            RbpBatchTestData.StepKey(first)))!;
+        RbpStoredInvocation two = (await store.GetInvocationAsync(
+            RbpBatchTestData.StepKey(second)))!;
+        Assert.Equal(RbpInvocationState.Indeterminate, one.State);
+        Assert.Equal(one.VerificationHoldId, two.VerificationHoldId);
+        RbpVerificationHold hold = (await store.GetHoldAsync(
+            "rs-test", one.VerificationHoldId!))!;
+        Assert.Equal(
+            new[]
+            {
+                RbpBatchTestData.StepKey(first),
+                RbpBatchTestData.StepKey(second),
+            },
+            hold.OrderedOriginIdempotencyKeys);
+    }
+
+    [Fact]
+    public async Task LegacyDispatchedAtomicBatchSessionScopeSubsumesDocumentScopes()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        const string first = "0197a3c2-0000-7000-8000-000000000491";
+        const string second = "0197a3c2-0000-7000-8000-000000000492";
+        const string third = "0197a3c2-0000-7000-8000-000000000493";
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-000000000490",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(first),
+                RbpBatchTestData.WriteStep(
+                    second,
+                    "{\"kind\":\"session\"}"),
+                RbpBatchTestData.WriteStep(
+                    third,
+                    RbpBatchTestData.DocumentTwoScope),
+            });
+        _ = await store.AdmitBatchAsync(batch, Array.Empty<RbpRecoveryClearance>());
+        await store.MarkBatchDispatchedAsync(batch.BatchKey);
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        RbpStoredInvocation one = (await store.GetInvocationAsync(
+            RbpBatchTestData.StepKey(first)))!;
+        RbpStoredInvocation two = (await store.GetInvocationAsync(
+            RbpBatchTestData.StepKey(second)))!;
+        RbpStoredInvocation three = (await store.GetInvocationAsync(
+            RbpBatchTestData.StepKey(third)))!;
+        Assert.Equal(one.VerificationHoldId, two.VerificationHoldId);
+        Assert.Equal(one.VerificationHoldId, three.VerificationHoldId);
+        RbpVerificationHold hold = (await store.GetHoldAsync(
+            "rs-test", one.VerificationHoldId!))!;
+        Assert.Equal("session", hold.ScopeKind);
+        Assert.Equal(
+            new[]
+            {
+                RbpBatchTestData.StepKey(first),
+                RbpBatchTestData.StepKey(second),
+                RbpBatchTestData.StepKey(third),
+            },
+            hold.OrderedOriginIdempotencyKeys);
+    }
+
+    [Fact]
+    public async Task
+        LegacyAtomicPerStepHoldIsReplacedByGroupedBatchAuthority()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
+        const string firstId = "0197a3c2-0000-7000-8000-000000000486";
+        const string secondId = "0197a3c2-0000-7000-8000-000000000487";
+        RbpBatchIdentity batch = RbpBatchTestData.Batch(
+            atomic: true,
+            "0197a3c2-0000-7000-8000-000000000485",
+            new[]
+            {
+                RbpBatchTestData.WriteStep(firstId),
+                RbpBatchTestData.WriteStep(secondId),
+            });
+        _ = await store.AdmitBatchAsync(
+            batch,
+            Array.Empty<RbpRecoveryClearance>());
+        await store.MarkBatchDispatchedAsync(batch.BatchKey);
+        RbpStoredInvocation firstSource =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(firstId)))!;
+        RbpStoredInvocation secondSource =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(secondId)))!;
+        RbpInvocationAdmissionResult firstLegacy =
+            await store.AdmitInvocationAsync(firstSource.Identity);
+        RbpInvocationAdmissionResult secondLegacy =
+            await store.AdmitInvocationAsync(secondSource.Identity);
+        Assert.Equal(
+            firstLegacy.VerificationHoldId,
+            secondLegacy.VerificationHoldId);
+
+        _ = await store.EnsureOutcomeV3ForSessionAsync("rs-test");
+
+        RbpStoredInvocation first =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(firstId)))!;
+        RbpStoredInvocation second =
+            (await store.GetInvocationAsync(
+                RbpBatchTestData.StepKey(secondId)))!;
+        Assert.NotEqual(firstLegacy.VerificationHoldId, first.VerificationHoldId);
+        Assert.Equal(first.VerificationHoldId, second.VerificationHoldId);
+        RbpVerificationHold grouped =
+            (await store.GetHoldAsync(
+                "rs-test",
+                first.VerificationHoldId!))!;
+        Assert.Equal(
+            new[]
+            {
+                RbpBatchTestData.StepKey(firstId),
+                RbpBatchTestData.StepKey(secondId),
+            },
+            grouped.OrderedOriginIdempotencyKeys);
+        Assert.Null(
+            await store.GetHoldAsync(
+                "rs-test",
+                firstLegacy.VerificationHoldId!));
+        Assert.Equal(
+            RbpBatchState.Terminal,
+            (await store.GetBatchAsync(batch.BatchKey))!.State);
     }
 
     private static RbpJournalStore OpenStore(

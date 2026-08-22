@@ -342,16 +342,19 @@ internal sealed partial class RbpJournalStore
     {
         using (SqliteCommand deleteResolutions = context.CreateCommand(
                    """
-                   DELETE FROM rbp_mutation_resolutions_v3
-                   WHERE hold_id IN (
-                     SELECT hold_id FROM rbp_mutation_holds_v3
-                     WHERE state='cleared' AND cleared_at_ms<=$cutoff
-                       AND updated_at_ms<=$cutoff
+                   DELETE FROM rbp_mutation_resolutions_v3 AS resolution
+                   WHERE EXISTS (
+                     SELECT 1 FROM rbp_mutation_holds_v3 AS hold
+                     WHERE hold.rsid=resolution.rsid
+                       AND hold.hold_id=resolution.hold_id
+                       AND hold.state='cleared'
+                       AND hold.cleared_at_ms<=$cutoff
+                       AND hold.updated_at_ms<=$cutoff
                        AND NOT EXISTS(
-                         SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
-                         WHERE outcome.verification_hold_id=
-                           rbp_mutation_holds_v3.hold_id
-                       )
+                          SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                          WHERE outcome.rsid=hold.rsid
+                            AND outcome.verification_hold_id=hold.hold_id
+                        )
                    );
                    """))
         {
@@ -361,16 +364,19 @@ internal sealed partial class RbpJournalStore
 
         using (SqliteCommand deleteConflicts = context.CreateCommand(
                    """
-                   DELETE FROM rbp_mutation_conflicts_v3
-                   WHERE active=0 AND hold_id IN (
-                     SELECT hold_id FROM rbp_mutation_holds_v3
-                     WHERE state='cleared' AND cleared_at_ms<=$cutoff
-                       AND updated_at_ms<=$cutoff
+                   DELETE FROM rbp_mutation_conflicts_v3 AS conflict
+                   WHERE conflict.active=0 AND EXISTS (
+                     SELECT 1 FROM rbp_mutation_holds_v3 AS hold
+                     WHERE hold.rsid=conflict.rsid
+                       AND hold.hold_id=conflict.hold_id
+                       AND hold.state='cleared'
+                       AND hold.cleared_at_ms<=$cutoff
+                       AND hold.updated_at_ms<=$cutoff
                        AND NOT EXISTS(
-                         SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
-                         WHERE outcome.verification_hold_id=
-                           rbp_mutation_holds_v3.hold_id
-                       )
+                          SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                          WHERE outcome.rsid=hold.rsid
+                            AND outcome.verification_hold_id=hold.hold_id
+                        )
                    );
                    """))
         {
@@ -384,9 +390,10 @@ internal sealed partial class RbpJournalStore
                    WHERE state='cleared' AND cleared_at_ms<=$cutoff
                      AND updated_at_ms<=$cutoff
                      AND NOT EXISTS(
-                       SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
-                       WHERE outcome.verification_hold_id=
-                         rbp_mutation_holds_v3.hold_id
+                        SELECT 1 FROM rbp_outcome_dispatch_v3 AS outcome
+                        WHERE outcome.rsid=rbp_mutation_holds_v3.rsid
+                          AND outcome.verification_hold_id=
+                            rbp_mutation_holds_v3.hold_id
                      );
                    """))
         {
@@ -404,7 +411,8 @@ internal sealed partial class RbpJournalStore
                   )
                   AND NOT EXISTS(
                     SELECT 1 FROM rbp_mutation_holds_v3 AS v3
-                    WHERE v3.hold_id=
+                    WHERE v3.rsid=rbp_verification_holds.rsid
+                      AND v3.hold_id=
                       rbp_verification_holds.verification_hold_id
                   )
                   AND NOT EXISTS(

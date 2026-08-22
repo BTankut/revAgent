@@ -154,6 +154,31 @@ public static class RbpJournalPowerCutChild
                     error: true);
                 return;
 
+            case RbpJournalPowerCutMode.V3AtomicBatchLossBeforeCommit:
+                _ = await store.EnsureOutcomeV3ForSessionAsync(
+                    RbpJournalPowerCutData.Rsid);
+                RbpBatchIdentity atomicBatch =
+                    RbpJournalPowerCutData.AtomicBatchIdentity();
+                _ = await store.AdmitBatchOutcomeV3Async(
+                    atomicBatch,
+                    Array.Empty<RbpRecoveryClearance>(),
+                    new[]
+                    {
+                        RbpTransactionMode.Native,
+                        RbpTransactionMode.Native,
+                    });
+                await store.MarkBatchDispatchedOutcomeV3Async(
+                    atomicBatch.BatchKey,
+                    new[]
+                    {
+                        RbpTransactionMode.Native,
+                        RbpTransactionMode.Native,
+                    });
+                suspender.Arm(RbpJournalFaultPoint.BeforeCommit);
+                _ = await store.RecoverAtomicBatchLossOutcomeV3Async(
+                    atomicBatch);
+                return;
+
             default:
                 throw new ArgumentOutOfRangeException(
                     nameof(mode),

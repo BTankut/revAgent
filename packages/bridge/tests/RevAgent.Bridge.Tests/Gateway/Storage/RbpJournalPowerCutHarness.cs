@@ -44,6 +44,9 @@ internal static class RbpJournalPowerCutMode
 
     internal const string V3IndeterminateAfterCommit =
         "v3-indeterminate-after-commit";
+
+    internal const string V3AtomicBatchLossBeforeCommit =
+        "v3-atomic-batch-loss-before-commit";
 }
 
 /// <summary>
@@ -70,6 +73,15 @@ internal static class RbpJournalPowerCutData
     internal const string BatchReadStepId =
         "0197a3c2-0000-7000-8000-0000000000d5";
 
+    internal const string AtomicBatchId =
+        "0197a3c2-0000-7000-8000-0000000000d6";
+
+    internal const string AtomicBatchFirstWriteStepId =
+        "0197a3c2-0000-7000-8000-0000000000d7";
+
+    internal const string AtomicBatchSecondWriteStepId =
+        "0197a3c2-0000-7000-8000-0000000000d8";
+
     internal const string DocumentScopeJcs =
         """{"document_id":"doc-1","kind":"document"}""";
 
@@ -86,6 +98,9 @@ internal static class RbpJournalPowerCutData
 
     internal static string BatchKey =>
         Rsid + "/" + BatchId;
+
+    internal static string AtomicBatchKey =>
+        Rsid + "/" + AtomicBatchId;
 
     internal static RbpInvocationIdentity ReadIdentity() =>
         new(
@@ -119,6 +134,20 @@ internal static class RbpJournalPowerCutData
                     BatchWriteStepId,
                     DocumentScopeJcs),
                 RbpBatchTestData.ReadStep(BatchReadStepId),
+            });
+
+    internal static RbpBatchIdentity AtomicBatchIdentity() =>
+        RbpBatchTestData.Batch(
+            atomic: true,
+            AtomicBatchId,
+            new[]
+            {
+                RbpBatchTestData.WriteStep(
+                    AtomicBatchFirstWriteStepId,
+                    DocumentScopeJcs),
+                RbpBatchTestData.WriteStep(
+                    AtomicBatchSecondWriteStepId,
+                    DocumentScopeJcs),
             });
 
     internal static RbpInvocationTerminal CompletedTerminal()

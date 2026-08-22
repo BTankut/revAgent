@@ -17,6 +17,13 @@ internal sealed record RbpOutcomeV3Snapshot(
     string TerminalState,
     long RecordVersion);
 
+internal sealed record RbpOutcomeV3EvidenceSnapshot(
+    RbpDispatchState DispatchState,
+    RbpEffectState EffectState,
+    RbpTransactionMode TransactionMode,
+    string EvidenceJcs,
+    string? LateProvenanceDigest);
+
 internal sealed record RbpOutcomeV3Cutover(
     string Rsid,
     string LegacyDigest,
@@ -30,6 +37,7 @@ internal sealed record RbpOutcomeV3Cutover(
 
 internal sealed record RbpOutcomeV3ResolutionSnapshot(
     string ResolutionId,
+    string Rsid,
     string HoldId,
     string Basis,
     string? VerificationInvocationId,
@@ -157,6 +165,10 @@ internal sealed partial class RbpJournalStore
                         RequireActiveSession(context, identity.Rsid);
                         RequireOutcomeV3Schema();
                         ThrowIfOutcomeV3Quarantined(context, identity.Rsid);
+                        RecoverUnresolvedOutcomeV3ForSession(
+                            context,
+                            identity.Rsid,
+                            now);
                         return AdmitInvocationV3(
                             context,
                             identity,
@@ -476,6 +488,7 @@ internal sealed partial class RbpJournalStore
             RbpOutcomeV3ResolutionSnapshot? existing =
                 ReadResolutionV3(context, clearance.ResolutionId);
             if (existing is null ||
+                existing.Rsid != rsid ||
                 existing.HoldId != clearance.HoldId ||
                 existing.Basis != basis ||
                 existing.VerificationInvocationId !=
@@ -609,6 +622,10 @@ internal sealed partial class RbpJournalStore
                 RequireActiveSession(context, normalized.Rsid);
                 RequireOutcomeV3Schema();
                 ThrowIfOutcomeV3Quarantined(context, normalized.Rsid);
+                RecoverUnresolvedOutcomeV3ForSession(
+                    context,
+                    normalized.Rsid,
+                    now);
 
                 RbpBatchGatedAdmission gated;
                 RbpStoredBatch? existing =
@@ -691,6 +708,198 @@ internal sealed partial class RbpJournalStore
             .ConfigureAwait(false);
     }
 
+    internal async Task<RbpBatchAdmissionResult>
+        RecoverAtomicBatchLossOutcomeV3Async(
+            RbpBatchIdentity identity,
+            CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(identity);
+        if (!identity.Atomic)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.ProtocolConflict,
+                "Atomic loss recovery requires an atomic batch.");
+        }
+
+        _ = await EnsureOutcomeV3ForSessionAsync(
+                identity.Rsid,
+                cancellationToken)
+            .ConfigureAwait(false);
+        long now = NowMilliseconds();
+        return await ExecuteImmediateAsync(
+                context =>
+                {
+                    RequireActiveSession(context, identity.Rsid);
+                    ThrowIfOutcomeV3Quarantined(context, identity.Rsid);
+                    RbpStoredBatch batch =
+                        ReadBatchV3(context, identity.BatchKey) ??
+                        throw new RbpJournalException(
+                            RbpJournalErrorCode.ProtocolConflict,
+                            "The dispatched v3 atomic batch is missing.");
+                    RequireIdenticalBatch(
+                        batch,
+                        NormalizeBatchIdentity(identity),
+                        BuildStepsJcs(NormalizeBatchIdentity(identity)));
+                    if (batch.State != RbpBatchState.Dispatched)
+                    {
+                        throw new RbpJournalException(
+                            RbpJournalErrorCode.ProtocolConflict,
+                            "Only a dispatched v3 atomic batch can recover loss.");
+                    }
+
+                    // The existing storage arbitration first computes the
+                    // complete batch-index-ordered hold plan (including
+                    // session-scope subsumption), then writes every grouped
+                    // hold/conflict, every affected step, and the batch
+                    // terminal inside this one BEGIN IMMEDIATE transaction.
+                    return ArbitrateAtomicDispatchLoss(
+                        context,
+                        batch,
+                        NormalizeBatchIdentity(identity),
+                        now);
+                },
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    private static void RecoverUnresolvedOutcomeV3ForSession(
+        RbpJournalWriteContext context,
+        string rsid,
+        long now)
+    {
+        using SqliteCommand batches = context.CreateCommand(
+            """
+            SELECT outcome.batch_key
+            FROM rbp_batches_v3 AS outcome
+            JOIN rbp_batches AS identity
+              ON identity.batch_key=outcome.batch_key
+             AND identity.rsid=outcome.rsid
+            WHERE outcome.rsid=$rsid AND outcome.state='dispatched'
+            ORDER BY identity.created_at_ms,identity.batch_key
+            LIMIT 10001;
+            """);
+        batches.Parameters.AddWithValue("$rsid", rsid);
+        var atomicBatchKeys = new List<string>();
+        using (SqliteDataReader reader = batches.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                atomicBatchKeys.Add(reader.GetString(0));
+            }
+        }
+
+        if (atomicBatchKeys.Count > OutcomeV3ImportMaximumRows)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Outcome-v3 restart recovery exceeded its bounded batch set.");
+        }
+
+        foreach (string batchKey in atomicBatchKeys)
+        {
+            RbpStoredBatch batch = ReadBatchV3(context, batchKey) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "A dispatched v3 batch disappeared during recovery.");
+            RbpBatchIdentity identity;
+            try
+            {
+                identity = RehydrateBatchIdentity(batch);
+            }
+            catch (RbpOutcomeV3ImportException exception)
+            {
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "A dispatched v3 batch has corrupt identity evidence.",
+                    exception);
+            }
+
+            _ = batch.Atomic
+                ? ArbitrateAtomicDispatchLoss(
+                    context,
+                    batch,
+                    identity,
+                    now)
+                : ArbitrateRedelivery(context, batch, identity, now);
+        }
+
+        using SqliteCommand pending = context.CreateCommand(
+            """
+            SELECT outcome.idempotency_key
+            FROM rbp_outcome_dispatch_v3 AS outcome
+            JOIN rbp_invocations AS identity
+              ON identity.idempotency_key=outcome.idempotency_key
+             AND identity.rsid=outcome.rsid
+            WHERE outcome.rsid=$rsid AND identity.mutating=1
+              AND outcome.terminal_state IN ('received','executing')
+              AND outcome.dispatch_state IN (
+                'may_have_reached_addin','response_observed'
+              )
+              AND NOT EXISTS(
+                SELECT 1 FROM rbp_batches_v3 AS batch
+                WHERE batch.rsid=outcome.rsid
+                  AND batch.batch_key=outcome.rsid || '/' || identity.batch_id
+                  AND batch.state='dispatched'
+              )
+            ORDER BY identity.created_at_ms,identity.idempotency_key
+            LIMIT 10001;
+            """);
+        pending.Parameters.AddWithValue("$rsid", rsid);
+        var keys = new List<string>();
+        using (SqliteDataReader reader = pending.ExecuteReader())
+        {
+            while (reader.Read())
+            {
+                keys.Add(reader.GetString(0));
+            }
+        }
+
+        if (keys.Count > OutcomeV3ImportMaximumRows)
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Outcome-v3 restart recovery exceeded its bounded row set.");
+        }
+
+        foreach (string key in keys)
+        {
+            RbpStoredInvocation row =
+                ReadOutcomeV3Invocation(context, key) ??
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "A pending v3 mutation disappeared during recovery.");
+            RbpOutcomeV3EvidenceSnapshot provenance =
+                ReadOutcomeV3Evidence(context, key);
+            string holdId = InstallHoldV3(
+                context,
+                row.Identity,
+                new[] { row.Identity.IdempotencyKey },
+                now);
+            (string outcomeJson, string outcomeDigest) =
+                BuildJournalIndeterminateOutcome(row.Identity, holdId);
+            UpsertOutcomeV3(
+                context,
+                row with
+                {
+                    State = RbpInvocationState.Indeterminate,
+                    TerminalOutcomeJson = outcomeJson,
+                    ResultDigest = outcomeDigest,
+                    VerificationHoldId = holdId,
+                    FinishedAtMilliseconds = now,
+                },
+                new RbpMutationOutcomeEvidence(
+                    provenance.DispatchState,
+                    RbpEffectState.Unknown,
+                    provenance.TransactionMode,
+                    SerializeOutcomeEvidenceV3(
+                        provenance.DispatchState,
+                        RbpEffectState.Unknown,
+                        provenance.TransactionMode)),
+                "indeterminate",
+                now);
+        }
+    }
+
     internal Task MarkBatchDispatchedOutcomeV3Async(
         string batchKey,
         IReadOnlyList<RbpTransactionMode> transactionModes,
@@ -732,6 +941,15 @@ internal sealed partial class RbpJournalStore
                         DispatchedAtMilliseconds = now,
                     },
                     now);
+
+                // Atomic dispatch is one add-in envelope, so every step may
+                // have reached the add-in. Ordered fan-out claims ownership
+                // per step in MarkInvocationExecutingOutcomeV3Async; marking
+                // its untouched suffix here would manufacture uncertainty.
+                if (!batch.Atomic)
+                {
+                    return true;
+                }
 
                 IReadOnlyList<string> keys =
                     BatchInvocationKeys(context, batch.Rsid, batch.BatchId);
@@ -803,6 +1021,7 @@ internal sealed partial class RbpJournalStore
         string? expectedHoldId = null;
         string? expectedDigest = resultDigest;
         string? expectedLateDigest = null;
+        string? expectedLateProvenance = null;
         long now = NowMilliseconds();
         try
         {
@@ -828,6 +1047,48 @@ internal sealed partial class RbpJournalStore
                                     "Late terminal evidence requires a digest.");
                             }
 
+                            RbpOutcomeV3EvidenceSnapshot durableProvenance =
+                                ReadOutcomeV3Evidence(context, idempotencyKey);
+                            string incomingEvidenceJcs =
+                                SerializeOutcomeEvidenceV3(
+                                    evidence.DispatchState,
+                                    evidence.EffectState,
+                                    evidence.TransactionMode);
+                            string incomingProvenanceDigest =
+                                Sha256(evidence.EvidenceJcs);
+                            if (existing.LateTerminalOutcomeJson is not null)
+                            {
+                                if (existing.LateTerminalOutcomeJson !=
+                                        outcomeJson ||
+                                    existing.LateResultDigest !=
+                                        terminal.ResultDigest ||
+                                    durableProvenance.DispatchState !=
+                                        evidence.DispatchState ||
+                                    durableProvenance.EffectState !=
+                                        evidence.EffectState ||
+                                    durableProvenance.TransactionMode !=
+                                        evidence.TransactionMode ||
+                                    durableProvenance.EvidenceJcs !=
+                                        incomingEvidenceJcs ||
+                                    durableProvenance.LateProvenanceDigest !=
+                                        incomingProvenanceDigest)
+                                {
+                                    throw new RbpJournalException(
+                                        RbpJournalErrorCode.ProtocolConflict,
+                                        "Late terminal evidence is immutable.");
+                                }
+
+                                expectedState =
+                                    RbpInvocationState.Indeterminate;
+                                expectedHoldId = existing.VerificationHoldId;
+                                expectedDigest = existing.ResultDigest;
+                                expectedLateDigest =
+                                    existing.LateResultDigest;
+                                expectedLateProvenance =
+                                    durableProvenance.LateProvenanceDigest;
+                                return existing.VerificationHoldId;
+                            }
+
                             RbpStoredInvocation late = existing with
                             {
                                 LateTerminalOutcomeJson = outcomeJson,
@@ -838,11 +1099,14 @@ internal sealed partial class RbpJournalStore
                                 late,
                                 evidence,
                                 "indeterminate",
-                                now);
+                                now,
+                                incomingProvenanceDigest);
                             expectedState = RbpInvocationState.Indeterminate;
                             expectedHoldId = existing.VerificationHoldId;
                             expectedDigest = existing.ResultDigest;
                             expectedLateDigest = terminal.ResultDigest;
+                            expectedLateProvenance =
+                                incomingProvenanceDigest;
                             return existing.VerificationHoldId;
                         }
 
@@ -926,6 +1190,7 @@ internal sealed partial class RbpJournalStore
                     expectedDigest,
                     expectedHoldId,
                     expectedLateDigest,
+                    expectedLateProvenance,
                     CancellationToken.None)
                 .ConfigureAwait(false);
             if (recovered)
@@ -949,6 +1214,7 @@ internal sealed partial class RbpJournalStore
         string? expectedDigest,
         string? expectedHoldId,
         string? expectedLateDigest,
+        string? expectedLateProvenance,
         CancellationToken cancellationToken) =>
         ReadAsync(
             connection =>
@@ -957,7 +1223,8 @@ internal sealed partial class RbpJournalStore
                     connection,
                     """
                     SELECT terminal_state,result_digest,
-                           verification_hold_id,late_result_digest
+                           verification_hold_id,late_result_digest,
+                           late_provenance_digest
                     FROM rbp_outcome_dispatch_v3
                     WHERE idempotency_key=$key;
                     """);
@@ -975,7 +1242,9 @@ internal sealed partial class RbpJournalStore
                        (reader.IsDBNull(2) ? null : reader.GetString(2)) ==
                            expectedHoldId &&
                        (reader.IsDBNull(3) ? null : reader.GetString(3)) ==
-                           expectedLateDigest &&
+                            expectedLateDigest &&
+                       (reader.IsDBNull(4) ? null : reader.GetString(4)) ==
+                            expectedLateProvenance &&
                        !reader.Read();
             },
             cancellationToken);
@@ -1069,7 +1338,7 @@ internal sealed partial class RbpJournalStore
                 using SqliteCommand command = CreateCommand(
                     connection,
                     """
-                    SELECT resolution_id,hold_id,basis,
+                    SELECT resolution_id,rsid,hold_id,basis,
                            verification_invocation_id,evidence_digest,
                            decision,audit_id,state,record_version
                     FROM rbp_mutation_resolutions_v3
@@ -1089,12 +1358,13 @@ internal sealed partial class RbpJournalStore
                     reader.GetString(0),
                     reader.GetString(1),
                     reader.GetString(2),
-                    reader.IsDBNull(3) ? null : reader.GetString(3),
-                    reader.GetString(4),
+                    reader.GetString(3),
+                    reader.IsDBNull(4) ? null : reader.GetString(4),
                     reader.GetString(5),
                     reader.GetString(6),
                     reader.GetString(7),
-                    reader.GetInt64(8));
+                    reader.GetString(8),
+                    reader.GetInt64(9));
             },
             cancellationToken);
     }
@@ -1243,33 +1513,18 @@ internal sealed partial class RbpJournalStore
                 "The per-session outcome-v3 import exceeds 10000 rows.");
         }
 
-        var legacyCanonicalRows = new List<string>((int)totalRows);
-        var invocations = new List<RbpStoredInvocation>(invocationKeys.Count);
-        foreach (string key in invocationKeys)
-        {
-            RbpStoredInvocation stored =
-                ReadInvocation(context, key) ??
-                throw new RbpOutcomeV3ImportException(
-                    "import_missing_invocation",
-                    "A legacy invocation disappeared during outcome import.");
-            invocations.Add(stored);
-            legacyCanonicalRows.Add(
-                "invocation|" + CanonicalLegacyInvocation(stored));
-        }
+        // Reject an oversized source row in SQL before any large legacy text
+        // value is materialized. The exact RFC 8785 byte budget is then
+        // accumulated one canonical row at a time below, so cumulative +1 is
+        // rejected without retaining the preceding canonical strings.
+        PreflightLegacyImportRowBytes(context, rsid);
+        using IncrementalHash legacyHash =
+            IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        long canonicalBytes = 0;
+        bool hasDigestRow = false;
 
-        var batches = new List<RbpStoredBatch>(batchKeys.Count);
-        foreach (string key in batchKeys)
-        {
-            RbpStoredBatch stored =
-                ReadBatch(context, key) ??
-                throw new RbpOutcomeV3ImportException(
-                    "import_missing_batch",
-                    "A legacy batch disappeared during outcome import.");
-            batches.Add(stored);
-            legacyCanonicalRows.Add("batch|" + CanonicalLegacyBatch(stored));
-        }
-
-        var holds = new List<RbpVerificationHold>(holdIds.Count);
+        // Holds are mirrored first so every imported indeterminate outcome can
+        // be checked against a same-session composite parent.
         foreach (string holdId in holdIds)
         {
             RbpVerificationHold hold =
@@ -1277,37 +1532,102 @@ internal sealed partial class RbpJournalStore
                 throw new RbpOutcomeV3ImportException(
                     "import_missing_hold",
                     "A legacy hold disappeared during outcome import.");
-            holds.Add(hold);
-            legacyCanonicalRows.Add("hold|" + CanonicalLegacyHold(hold));
-        }
-
-        legacyCanonicalRows.Sort(StringComparer.Ordinal);
-        long canonicalBytes = 0;
-        foreach (string row in legacyCanonicalRows)
-        {
-            canonicalBytes = checked(
-                canonicalBytes + Encoding.UTF8.GetByteCount(row) + 1L);
-            if (canonicalBytes > OutcomeV3ImportMaximumCanonicalBytes)
-            {
-                throw new RbpOutcomeV3ImportException(
-                    "import_max_bytes",
-                    "The per-session outcome-v3 import exceeds 16777216 bytes.");
-            }
-        }
-
-        foreach (RbpVerificationHold hold in holds)
-        {
+            AppendLegacyImportDigest(
+                legacyHash,
+                "hold|" + CanonicalLegacyHold(hold),
+                ref canonicalBytes,
+                ref hasDigestRow);
             MirrorLegacyHoldV3(context, hold, now);
         }
 
-        foreach (RbpStoredInvocation invocation in invocations)
+        var batches = new List<RbpStoredBatch>(batchKeys.Count);
+        var batchIdentities =
+            new Dictionary<string, RbpBatchIdentity>(StringComparer.Ordinal);
+        var atomicHoldByInvocation =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        var supersededAtomicLegacyHolds =
+            new HashSet<string>(StringComparer.Ordinal);
+        var atomicDispatchKeys = new HashSet<string>(StringComparer.Ordinal);
+        foreach (string key in batchKeys)
         {
-            ImportLegacyInvocation(context, invocation, now);
+            RbpStoredBatch stored =
+                ReadLegacyBatchV2(context, key) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_missing_batch",
+                    "A legacy batch disappeared during outcome import.");
+            AppendLegacyImportDigest(
+                legacyHash,
+                "batch|" + CanonicalLegacyBatch(stored),
+                ref canonicalBytes,
+                ref hasDigestRow);
+            batches.Add(stored);
+            if (stored.Atomic && stored.State == RbpBatchState.Dispatched)
+            {
+                RbpBatchIdentity identity = RehydrateBatchIdentity(stored);
+                batchIdentities.Add(stored.BatchKey, identity);
+                IReadOnlyDictionary<string, string> planned =
+                    InstallLegacyAtomicBatchHoldsV3(
+                        context,
+                        identity,
+                        supersededAtomicLegacyHolds,
+                        now);
+                foreach ((string invocationKey, string holdId) in planned)
+                {
+                    atomicHoldByInvocation.Add(invocationKey, holdId);
+                }
+
+                foreach (RbpBatchStepIdentity step in identity.Steps)
+                {
+                    atomicDispatchKeys.Add(
+                        identity.Rsid + "/" + step.InvocationId);
+                }
+            }
+        }
+
+        foreach (string key in invocationKeys)
+        {
+            RbpStoredInvocation stored =
+                ReadLegacyInvocationV2(context, key) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_missing_invocation",
+                    "A legacy invocation disappeared during outcome import.");
+            AppendLegacyImportDigest(
+                legacyHash,
+                "invocation|" + CanonicalLegacyInvocation(stored),
+                ref canonicalBytes,
+                ref hasDigestRow);
+            ImportLegacyInvocation(
+                context,
+                stored,
+                atomicHoldByInvocation,
+                supersededAtomicLegacyHolds,
+                atomicDispatchKeys.Contains(key),
+                now);
+            _ = ReadOutcomeV3Invocation(context, key) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_readback_mismatch",
+                    "An imported outcome failed exact v3 read-back.");
         }
 
         foreach (RbpStoredBatch batch in batches)
         {
-            ImportLegacyBatch(context, batch, now);
+            if (batchIdentities.TryGetValue(
+                    batch.BatchKey,
+                    out RbpBatchIdentity? identity))
+            {
+                ImportLegacyBatch(
+                    context,
+                    BuildImportedAtomicBatchTerminal(
+                        context,
+                        batch,
+                        identity,
+                        now),
+                    now);
+            }
+            else
+            {
+                ImportLegacyBatch(context, batch, now);
+            }
         }
 
         long dispatchCount =
@@ -1319,26 +1639,18 @@ internal sealed partial class RbpJournalStore
         long conflictCount =
             CountRowsForSession(context, "rbp_mutation_conflicts_v3", rsid);
         long resolutionCount = CountResolutionsForSession(context, rsid);
-        if (dispatchCount != invocations.Count ||
-            batchCount != batches.Count ||
-            holdCount < holds.Count)
+        if (dispatchCount != invocationKeys.Count ||
+            batchCount != batchKeys.Count ||
+            holdCount < holdIds.Count - supersededAtomicLegacyHolds.Count)
         {
             throw new RbpOutcomeV3ImportException(
                 "import_count_mismatch",
                 "Outcome-v3 import read-back counts do not match its source.");
         }
 
-        foreach (RbpStoredInvocation invocation in invocations)
-        {
-            _ = ReadOutcomeV3Invocation(
-                    context,
-                    invocation.Identity.IdempotencyKey) ??
-                throw new RbpOutcomeV3ImportException(
-                    "import_readback_mismatch",
-                    "An imported outcome failed exact v3 read-back.");
-        }
-
-        string legacyDigest = Sha256(string.Join("\n", legacyCanonicalRows));
+        string legacyDigest = "sha256:" +
+            Convert.ToHexString(legacyHash.GetHashAndReset())
+                .ToLowerInvariant();
         using SqliteCommand insert = context.CreateCommand(
             """
             INSERT INTO rbp_hold_cutover_v3(
@@ -1388,35 +1700,462 @@ internal sealed partial class RbpJournalStore
         return marker;
     }
 
+    private static void PreflightLegacyImportRowBytes(
+        RbpJournalWriteContext context,
+        string rsid)
+    {
+        string[] queries =
+        [
+            "SELECT COALESCE(MAX(" +
+            "length(CAST(idempotency_key AS BLOB))+" +
+            "length(CAST(rsid AS BLOB))+" +
+            "length(CAST(invocation_id AS BLOB))+" +
+            "COALESCE(length(CAST(batch_id AS BLOB)),0)+" +
+            "length(CAST(method AS BLOB))+" +
+            "COALESCE(length(CAST(mutation_scope_jcs AS BLOB)),0)+" +
+            "length(CAST(params_digest AS BLOB))+" +
+            "length(CAST(policy_jcs AS BLOB))+" +
+            "length(CAST(recovery_clearances_jcs AS BLOB))+" +
+            "length(CAST(state AS BLOB))+" +
+            "COALESCE(length(CAST(terminal_outcome_json AS BLOB)),0)+" +
+            "COALESCE(length(CAST(result_digest AS BLOB)),0)+" +
+            "COALESCE(length(CAST(verification_hold_id AS BLOB)),0)+" +
+            "COALESCE(length(CAST(verification_correlation_json AS BLOB)),0)+" +
+            "COALESCE(length(CAST(late_terminal_outcome_json AS BLOB)),0)+" +
+            "COALESCE(length(CAST(late_result_digest AS BLOB)),0)),0) " +
+            "FROM rbp_invocations WHERE rsid=$rsid;",
+            "SELECT COALESCE(MAX(" +
+            "length(CAST(batch_key AS BLOB))+" +
+            "length(CAST(rsid AS BLOB))+" +
+            "length(CAST(batch_id AS BLOB))+" +
+            "length(CAST(batch_digest AS BLOB))+" +
+            "length(CAST(recovery_clearances_jcs AS BLOB))+" +
+            "length(CAST(steps_jcs AS BLOB))+" +
+            "length(CAST(state AS BLOB))+" +
+            "COALESCE(length(CAST(terminal_outcome_json AS BLOB)),0)+" +
+            "COALESCE(length(CAST(result_digest AS BLOB)),0)),0) " +
+            "FROM rbp_batches WHERE rsid=$rsid;",
+            "SELECT COALESCE(MAX(" +
+            "length(CAST(verification_hold_id AS BLOB))+" +
+            "length(CAST(rsid AS BLOB))+" +
+            "length(CAST(scope_kind AS BLOB))+" +
+            "COALESCE(length(CAST(document_id AS BLOB)),0)+" +
+            "length(CAST(scope_jcs AS BLOB))+" +
+            "length(CAST(ordered_origin_idempotency_keys_json AS BLOB))+" +
+            "length(CAST(state AS BLOB))+" +
+            "COALESCE(length(CAST(verification_invocation_id AS BLOB)),0)+" +
+            "COALESCE(length(CAST(evidence_digest AS BLOB)),0)+" +
+            "COALESCE(length(CAST(resolution_id AS BLOB)),0)+" +
+            "COALESCE(length(CAST(resolution_basis AS BLOB)),0)+" +
+            "COALESCE(length(CAST(resolution_decision AS BLOB)),0)+" +
+            "COALESCE(length(CAST(audit_id AS BLOB)),0)),0) " +
+            "FROM rbp_verification_holds WHERE rsid=$rsid;",
+        ];
+        foreach (string sql in queries)
+        {
+            using SqliteCommand command = context.CreateCommand(sql);
+            command.Parameters.AddWithValue("$rsid", rsid);
+            if (Convert.ToInt64(command.ExecuteScalar()) >
+                OutcomeV3ImportMaximumCanonicalBytes)
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_max_bytes",
+                    "A legacy outcome row exceeds the bounded import size.");
+            }
+        }
+    }
+
+    internal static void ValidateOutcomeV3ImportByteAddition(
+        ref long canonicalBytes,
+        long nextRowBytes)
+    {
+        if (nextRowBytes < 0 ||
+            nextRowBytes >= OutcomeV3ImportMaximumCanonicalBytes ||
+            canonicalBytes >
+                OutcomeV3ImportMaximumCanonicalBytes - nextRowBytes - 1L)
+        {
+            throw new RbpOutcomeV3ImportException(
+                "import_max_bytes",
+                "The per-session outcome-v3 import exceeds 16777216 bytes.");
+        }
+
+        canonicalBytes += nextRowBytes + 1L;
+    }
+
+    private static void AppendLegacyImportDigest(
+        IncrementalHash hash,
+        string row,
+        ref long canonicalBytes,
+        ref bool hasDigestRow)
+    {
+        long rowBytes = Encoding.UTF8.GetByteCount(row);
+        ValidateOutcomeV3ImportByteAddition(ref canonicalBytes, rowBytes);
+        if (hasDigestRow)
+        {
+            hash.AppendData([(byte)'\n']);
+        }
+
+        byte[] encoded = Encoding.UTF8.GetBytes(row);
+        hash.AppendData(encoded);
+        CryptographicOperations.ZeroMemory(encoded);
+        hasDigestRow = true;
+    }
+
+    private static RbpBatchIdentity RehydrateBatchIdentity(
+        RbpStoredBatch stored)
+    {
+        try
+        {
+            using JsonDocument document = JsonDocument.Parse(stored.StepsJcs);
+            if (document.RootElement.ValueKind != JsonValueKind.Array ||
+                document.RootElement.GetArrayLength() != stored.StepCount)
+            {
+                throw new JsonException();
+            }
+
+            var steps = new List<RbpBatchStepIdentity>((int)stored.StepCount);
+            foreach (JsonElement value in document.RootElement.EnumerateArray())
+            {
+                JsonElement scope = value.GetProperty("mutation_scope");
+                JsonElement policy = value.GetProperty("policy");
+                JsonElement confirmation =
+                    policy.GetProperty("confirmation_id");
+                steps.Add(
+                    new RbpBatchStepIdentity(
+                        value.GetProperty("invocation_id").GetString()!,
+                        value.GetProperty("method").GetString()!,
+                        value.GetProperty("mutating").GetBoolean(),
+                        scope.ValueKind == JsonValueKind.Null
+                            ? null
+                            : Rfc8785Json.Canonicalize(scope),
+                        value.GetProperty("params_digest").GetString()!,
+                        policy.GetProperty("class").GetString()!,
+                        confirmation.ValueKind == JsonValueKind.Null
+                            ? null
+                            : confirmation.GetString(),
+                        policy.GetProperty("decision").GetString()!));
+            }
+
+            RbpBatchIdentity identity = NormalizeBatchIdentity(
+                new RbpBatchIdentity(
+                    stored.Rsid,
+                    stored.BatchId,
+                    stored.BatchDigest,
+                    stored.Atomic,
+                    stored.TimeoutMilliseconds,
+                    stored.RecoveryClearancesJcs,
+                    steps.AsReadOnly()));
+            RequireIdenticalBatch(stored, identity, BuildStepsJcs(identity));
+            VerifyBatchDigestBinding(identity);
+            return identity;
+        }
+        catch (Exception exception) when (
+            exception is JsonException or InvalidOperationException or
+                KeyNotFoundException or ArgumentException or
+                RbpJournalException)
+        {
+            throw new RbpOutcomeV3ImportException(
+                "import_batch_identity_corrupt",
+                "A legacy atomic batch identity is contradictory.");
+        }
+    }
+
+    private static IReadOnlyDictionary<string, string>
+        InstallLegacyAtomicBatchHoldsV3(
+            RbpJournalWriteContext context,
+            RbpBatchIdentity identity,
+            ISet<string> supersededLegacyHoldIds,
+            long now)
+    {
+        var uncertain = new List<RbpStoredInvocation>();
+        for (int index = 0; index < identity.Steps.Count; index++)
+        {
+            RbpInvocationIdentity stepIdentity =
+                StepInvocationIdentity(identity, index);
+            RbpStoredInvocation row =
+                ReadLegacyInvocationV2(
+                    context,
+                    stepIdentity.IdempotencyKey) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_missing_batch_step",
+                    "A legacy atomic batch step is missing.");
+            try
+            {
+                RequireIdenticalIdentity(row.Identity, stepIdentity);
+            }
+            catch (RbpJournalException)
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_batch_step_identity",
+                    "A legacy atomic batch step identity is contradictory.");
+            }
+            if (stepIdentity.Mutating &&
+                row.State is not (RbpInvocationState.Completed or
+                    RbpInvocationState.Guarded))
+            {
+                uncertain.Add(row);
+            }
+        }
+
+        var holdByKey =
+            new Dictionary<string, string>(StringComparer.Ordinal);
+        if (uncertain.Count == 0)
+        {
+            return holdByKey;
+        }
+
+        RbpStoredInvocation? sessionOrigin = uncertain.FirstOrDefault(
+            row => ReadScopeShape(row.Identity.MutationScopeJcs!).ScopeKind ==
+                   "session");
+        if (sessionOrigin is not null)
+        {
+            string[] origins = uncertain
+                .Select(row => row.Identity.IdempotencyKey)
+                .ToArray();
+            SupersedeLegacyAtomicHoldsV3(
+                context,
+                sessionOrigin.Identity.MutationScopeJcs!,
+                uncertain,
+                origins,
+                supersededLegacyHoldIds);
+            string holdId = InstallHoldV3(
+                context,
+                sessionOrigin.Identity,
+                origins,
+                now);
+            foreach (string origin in origins)
+            {
+                holdByKey.Add(origin, holdId);
+            }
+
+            return holdByKey;
+        }
+
+        foreach (IGrouping<string, RbpStoredInvocation> group in uncertain
+                     .GroupBy(
+                         row => row.Identity.MutationScopeJcs!,
+                         StringComparer.Ordinal))
+        {
+            RbpStoredInvocation first = group.First();
+            string[] origins = group
+                .Select(row => row.Identity.IdempotencyKey)
+                .ToArray();
+            RbpStoredInvocation[] groupedRows = group.ToArray();
+            SupersedeLegacyAtomicHoldsV3(
+                context,
+                first.Identity.MutationScopeJcs!,
+                groupedRows,
+                origins,
+                supersededLegacyHoldIds);
+            string holdId = InstallHoldV3(
+                context,
+                first.Identity,
+                origins,
+                now);
+            foreach (string origin in origins)
+            {
+                holdByKey.Add(origin, holdId);
+            }
+        }
+
+        return holdByKey;
+    }
+
+    private static void SupersedeLegacyAtomicHoldsV3(
+        RbpJournalWriteContext context,
+        string targetScopeJcs,
+        IReadOnlyCollection<RbpStoredInvocation> groupedRows,
+        IReadOnlyList<string> groupedOrigins,
+        ISet<string> supersededLegacyHoldIds)
+    {
+        string rsid = groupedRows.First().Identity.Rsid;
+        var groupedOriginSet = new HashSet<string>(
+            groupedOrigins,
+            StringComparer.Ordinal);
+        string targetScopeKind = ReadScopeShape(targetScopeJcs).ScopeKind;
+        foreach (string legacyHoldId in groupedRows
+                     .Select(row => row.VerificationHoldId)
+                     .Where(id => id is { Length: > 0 })
+                     .Cast<string>()
+                     .Distinct(StringComparer.Ordinal))
+        {
+            RbpVerificationHold legacy =
+                FindHoldById(context, rsid, legacyHoldId) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_cross_session_hold",
+                    "An atomic legacy step references no same-session hold.");
+            bool alreadyGrouped =
+                legacy.ScopeJcs == targetScopeJcs &&
+                legacy.OrderedOriginIdempotencyKeys.SequenceEqual(
+                    groupedOrigins,
+                    StringComparer.Ordinal);
+            if (alreadyGrouped)
+            {
+                continue;
+            }
+
+            bool scopeIsSubsumed = targetScopeKind == "session" ||
+                                   legacy.ScopeJcs == targetScopeJcs;
+            bool simpleUnresolvedAuthority =
+                legacy.State == RbpHoldState.Active &&
+                legacy.VerificationInvocationId is null &&
+                legacy.EvidenceDigest is null &&
+                legacy.ResolutionId is null &&
+                legacy.ResolutionBasis is null &&
+                legacy.ResolutionDecision is null &&
+                legacy.AuditId is null &&
+                legacy.OrderedOriginIdempotencyKeys.Count > 0 &&
+                legacy.OrderedOriginIdempotencyKeys.All(
+                    groupedOriginSet.Contains);
+            if (!scopeIsSubsumed || !simpleUnresolvedAuthority)
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_atomic_hold_mismatch",
+                    "Legacy atomic hold evidence cannot be grouped safely.");
+            }
+
+            if (!supersededLegacyHoldIds.Add(legacyHoldId))
+            {
+                continue;
+            }
+
+            using (SqliteCommand conflicts = context.CreateCommand(
+                       "DELETE FROM rbp_mutation_conflicts_v3 " +
+                       "WHERE rsid=$rsid AND hold_id=$hold;"))
+            {
+                conflicts.Parameters.AddWithValue("$rsid", rsid);
+                conflicts.Parameters.AddWithValue("$hold", legacyHoldId);
+                _ = conflicts.ExecuteNonQuery();
+            }
+
+            using (SqliteCommand resolutions = context.CreateCommand(
+                       "DELETE FROM rbp_mutation_resolutions_v3 " +
+                       "WHERE rsid=$rsid AND hold_id=$hold;"))
+            {
+                resolutions.Parameters.AddWithValue("$rsid", rsid);
+                resolutions.Parameters.AddWithValue("$hold", legacyHoldId);
+                _ = resolutions.ExecuteNonQuery();
+            }
+
+            using SqliteCommand hold = context.CreateCommand(
+                "DELETE FROM rbp_mutation_holds_v3 " +
+                "WHERE rsid=$rsid AND hold_id=$hold;");
+            hold.Parameters.AddWithValue("$rsid", rsid);
+            hold.Parameters.AddWithValue("$hold", legacyHoldId);
+            if (hold.ExecuteNonQuery() != 1)
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_atomic_hold_replace",
+                    "A superseded legacy atomic hold could not be replaced.");
+            }
+        }
+    }
+
+    private static RbpStoredBatch BuildImportedAtomicBatchTerminal(
+        RbpJournalWriteContext context,
+        RbpStoredBatch batch,
+        RbpBatchIdentity identity,
+        long now)
+    {
+        var holdIds = new List<string>();
+        int? firstNonSuccess = null;
+        bool anyIndeterminateMutation = false;
+        for (int index = 0; index < identity.Steps.Count; index++)
+        {
+            RbpStoredInvocation row =
+                ReadOutcomeV3Invocation(
+                    context,
+                    StepInvocationIdentity(identity, index).IdempotencyKey) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_missing_batch_step_outcome",
+                    "An atomic batch step outcome failed v3 import.");
+            if (row.State != RbpInvocationState.Completed)
+            {
+                firstNonSuccess ??= index;
+            }
+
+            if (row.State == RbpInvocationState.Indeterminate)
+            {
+                anyIndeterminateMutation = true;
+                AppendDistinct(holdIds, row.VerificationHoldId);
+            }
+        }
+
+        (string outcomeJson, string outcomeDigest) = BuildDispatchLossOutcome(
+            identity,
+            anyIndeterminateMutation,
+            holdIds,
+            firstNonSuccess);
+        return batch with
+        {
+            State = RbpBatchState.Terminal,
+            TerminalOutcomeJson = outcomeJson,
+            ResultDigest = outcomeDigest,
+            FinishedAtMilliseconds = now,
+        };
+    }
+
     private static void ImportLegacyInvocation(
         RbpJournalWriteContext context,
         RbpStoredInvocation stored,
+        IReadOnlyDictionary<string, string> atomicHoldByInvocation,
+        ISet<string> supersededAtomicLegacyHolds,
+        bool dispatchedAtomicStep,
         long now)
     {
         RbpStoredInvocation imported = stored;
-        bool dispatchedAtomicStep =
-            stored.Identity.BatchId is { Length: > 0 } batchId &&
-            LegacyAtomicBatchWasDispatched(
-                context,
-                stored.Identity.Rsid,
-                batchId);
         bool uncertainMutation =
             stored.Identity.Mutating &&
-            (stored.State is
-                 RbpInvocationState.Failed or
-                 RbpInvocationState.Executing or
-                 RbpInvocationState.Cancelled ||
-             stored.State == RbpInvocationState.Received &&
-             dispatchedAtomicStep);
+            stored.State is not (RbpInvocationState.Completed or
+                RbpInvocationState.Guarded or
+                RbpInvocationState.Received) ||
+            stored.Identity.Mutating &&
+            stored.State == RbpInvocationState.Received &&
+            dispatchedAtomicStep;
 
         RbpMutationOutcomeEvidence evidence;
         if (uncertainMutation)
         {
-            string holdId = InstallHoldV3(
-                context,
-                stored.Identity,
-                new[] { stored.Identity.IdempotencyKey },
-                now);
+            string holdId;
+            if (!atomicHoldByInvocation.TryGetValue(
+                    stored.Identity.IdempotencyKey,
+                    out holdId!))
+            {
+                if (stored.State == RbpInvocationState.Indeterminate)
+                {
+                    holdId = stored.VerificationHoldId ??
+                        throw new RbpOutcomeV3ImportException(
+                            "import_indeterminate_without_hold",
+                            "A legacy indeterminate mutation has no hold.");
+                }
+                else
+                {
+                    holdId = InstallHoldV3(
+                        context,
+                        stored.Identity,
+                        new[] { stored.Identity.IdempotencyKey },
+                        now);
+                }
+            }
+
+            RbpVerificationHold hold =
+                ReadHoldV3(context, stored.Identity.Rsid, holdId) ??
+                throw new RbpOutcomeV3ImportException(
+                    "import_cross_session_hold",
+                    "A legacy outcome references no same-session hold.");
+            if (!hold.OrderedOriginIdempotencyKeys.Contains(
+                    stored.Identity.IdempotencyKey,
+                    StringComparer.Ordinal) ||
+                stored.State == RbpInvocationState.Indeterminate &&
+                stored.VerificationHoldId != holdId &&
+                !supersededAtomicLegacyHolds.Contains(
+                    stored.VerificationHoldId!))
+            {
+                throw new RbpOutcomeV3ImportException(
+                    "import_hold_origin_mismatch",
+                    "A legacy hold does not contain this uncertain origin.");
+            }
+
             (string outcomeJson, string outcomeDigest) =
                 BuildJournalIndeterminateOutcome(stored.Identity, holdId);
             imported = stored with
@@ -1435,25 +2174,33 @@ internal sealed partial class RbpJournalStore
                     ? "legacy_atomic_dispatch"
                     : "legacy_missing_truth");
         }
+        else if (dispatchedAtomicStep &&
+                 !stored.Identity.Mutating &&
+                 !stored.IsTerminal)
+        {
+            (string outcomeJson, string outcomeDigest) =
+                BuildEnvironmentReadOutcome();
+            imported = stored with
+            {
+                State = RbpInvocationState.Failed,
+                TerminalOutcomeJson = outcomeJson,
+                ResultDigest = outcomeDigest,
+                FinishedAtMilliseconds = now,
+            };
+            evidence = new RbpMutationOutcomeEvidence(
+                RbpDispatchState.MayHaveReachedAddin,
+                RbpEffectState.ReadOnly,
+                RbpTransactionMode.NotApplicable,
+                SerializeOutcomeEvidenceV3(
+                    RbpDispatchState.MayHaveReachedAddin,
+                    RbpEffectState.ReadOnly,
+                    RbpTransactionMode.NotApplicable));
+        }
         else if (stored.State == RbpInvocationState.Received)
         {
             evidence = RbpMutationOutcomeEvidence.NotDispatched(
                 RbpTransactionMode.NotApplicable,
                 "legacy_received");
-        }
-        else if (stored.State == RbpInvocationState.Indeterminate)
-        {
-            if (stored.VerificationHoldId is not { Length: > 0 })
-            {
-                throw new RbpOutcomeV3ImportException(
-                    "import_indeterminate_without_hold",
-                    "A legacy indeterminate mutation has no hold.");
-            }
-
-            evidence = RbpMutationOutcomeEvidence.Uncertain(
-                RbpDispatchState.MayHaveReachedAddin,
-                RbpTransactionMode.NotApplicable,
-                "legacy_indeterminate");
         }
         else if (!stored.Identity.Mutating)
         {
@@ -1725,6 +2472,11 @@ internal sealed partial class RbpJournalStore
                 ["verification_hold_id"] = value.VerificationHoldId,
             });
 
+    internal static long OutcomeV3CanonicalInvocationImportBytes(
+        RbpStoredInvocation value) =>
+        Encoding.UTF8.GetByteCount(
+            "invocation|" + CanonicalLegacyInvocation(value)) + 1L;
+
     private static string CanonicalLegacyBatch(RbpStoredBatch value) =>
         CanonicalizeImportValue(
             new SortedDictionary<string, object?>(StringComparer.Ordinal)
@@ -1777,22 +2529,6 @@ internal sealed partial class RbpJournalStore
         return Rfc8785Json.Canonicalize(document.RootElement);
     }
 
-    private static bool LegacyAtomicBatchWasDispatched(
-        RbpJournalWriteContext context,
-        string rsid,
-        string batchId)
-    {
-        using SqliteCommand command = context.CreateCommand(
-            """
-            SELECT COUNT(*) FROM rbp_batches
-            WHERE rsid=$rsid AND batch_id=$batch AND atomic=1
-              AND state='dispatched';
-            """);
-        command.Parameters.AddWithValue("$rsid", rsid);
-        command.Parameters.AddWithValue("$batch", batchId);
-        return Convert.ToInt32(command.ExecuteScalar()) == 1;
-    }
-
     private static long CountRowsForSession(
         RbpJournalWriteContext context,
         string tableName,
@@ -1818,11 +2554,8 @@ internal sealed partial class RbpJournalStore
     {
         using SqliteCommand command = context.CreateCommand(
             """
-            SELECT COUNT(*)
-            FROM rbp_mutation_resolutions_v3 AS resolution
-            JOIN rbp_mutation_holds_v3 AS hold
-              ON hold.hold_id=resolution.hold_id
-            WHERE hold.rsid=$rsid;
+            SELECT COUNT(*) FROM rbp_mutation_resolutions_v3
+            WHERE rsid=$rsid;
             """);
         command.Parameters.AddWithValue("$rsid", rsid);
         return Convert.ToInt64(command.ExecuteScalar());
@@ -1853,9 +2586,14 @@ internal sealed partial class RbpJournalStore
         RbpStoredInvocation invocation,
         RbpMutationOutcomeEvidence evidence,
         string terminalState,
-        long now)
+        long now,
+        string? lateProvenanceDigest = null)
     {
         ValidateOutcomeEvidence(evidence);
+        string? effectiveLateProvenance =
+            invocation.LateTerminalOutcomeJson is null
+                ? null
+                : lateProvenanceDigest ?? Sha256("legacy_late_terminal");
         using SqliteCommand upsert = context.CreateCommand(
             """
             INSERT INTO rbp_outcome_dispatch_v3(
@@ -1863,12 +2601,14 @@ internal sealed partial class RbpJournalStore
               transaction_mode,evidence_jcs,terminal_state,
               terminal_outcome_json,result_digest,verification_hold_id,
               verification_correlation_json,late_terminal_outcome_json,
-              late_result_digest,started_at_ms,finished_at_ms,record_version,
+              late_result_digest,late_provenance_digest,started_at_ms,
+              finished_at_ms,record_version,
               created_at_ms,updated_at_ms
             ) VALUES(
               $key,'bridge.rbp-dispatch/v3',$rsid,$dispatch,$effect,$mode,
               $evidence,$terminal,$outcome,$result_digest,$hold,
-              $verification,$late_outcome,$late_digest,$started,$finished,
+              $verification,$late_outcome,$late_digest,$late_provenance,
+              $started,$finished,
               1,$created,$now
             )
             ON CONFLICT(idempotency_key) DO UPDATE SET
@@ -1882,8 +2622,15 @@ internal sealed partial class RbpJournalStore
               verification_hold_id=excluded.verification_hold_id,
               verification_correlation_json=
                 excluded.verification_correlation_json,
-              late_terminal_outcome_json=excluded.late_terminal_outcome_json,
-              late_result_digest=excluded.late_result_digest,
+              late_terminal_outcome_json=COALESCE(
+                rbp_outcome_dispatch_v3.late_terminal_outcome_json,
+                excluded.late_terminal_outcome_json),
+              late_result_digest=COALESCE(
+                rbp_outcome_dispatch_v3.late_result_digest,
+                excluded.late_result_digest),
+              late_provenance_digest=COALESCE(
+                rbp_outcome_dispatch_v3.late_provenance_digest,
+                excluded.late_provenance_digest),
               started_at_ms=excluded.started_at_ms,
               finished_at_ms=excluded.finished_at_ms,
               record_version=rbp_outcome_dispatch_v3.record_version+1,
@@ -1891,7 +2638,19 @@ internal sealed partial class RbpJournalStore
                                 excluded.updated_at_ms)
             WHERE rbp_outcome_dispatch_v3.record_schema=
                     'bridge.rbp-dispatch/v3'
-              AND rbp_outcome_dispatch_v3.rsid=excluded.rsid;
+              AND rbp_outcome_dispatch_v3.rsid=excluded.rsid
+              AND (
+                rbp_outcome_dispatch_v3.late_terminal_outcome_json IS NULL OR
+                excluded.late_terminal_outcome_json IS NULL OR
+                (
+                  rbp_outcome_dispatch_v3.late_terminal_outcome_json=
+                    excluded.late_terminal_outcome_json AND
+                  rbp_outcome_dispatch_v3.late_result_digest=
+                    excluded.late_result_digest AND
+                  rbp_outcome_dispatch_v3.late_provenance_digest=
+                    excluded.late_provenance_digest
+                )
+              );
             """);
         upsert.Parameters.AddWithValue(
             "$key",
@@ -1931,6 +2690,9 @@ internal sealed partial class RbpJournalStore
         upsert.Parameters.AddWithValue(
             "$late_digest",
             (object?)invocation.LateResultDigest ?? DBNull.Value);
+        upsert.Parameters.AddWithValue(
+            "$late_provenance",
+            (object?)effectiveLateProvenance ?? DBNull.Value);
         upsert.Parameters.AddWithValue(
             "$started",
             (object?)invocation.StartedAtMilliseconds ?? DBNull.Value);
@@ -1981,6 +2743,22 @@ internal sealed partial class RbpJournalStore
             FindExactActiveHoldV3(context, identity.Rsid, scopeJcs);
         if (existing is not null)
         {
+            if (!existing.OrderedOriginIdempotencyKeys.SequenceEqual(
+                    orderedOriginIdempotencyKeys,
+                    StringComparer.Ordinal))
+            {
+                if (!HasOutcomeV3Cutover(context, identity.Rsid))
+                {
+                    throw new RbpOutcomeV3ImportException(
+                        "import_independent_scope_collision",
+                        "Independent legacy uncertainties share one scope.");
+                }
+
+                throw new RbpJournalException(
+                    RbpJournalErrorCode.ProtocolConflict,
+                    "An active v3 scope hold has different ordered origins.");
+            }
+
             return existing.VerificationHoldId;
         }
 
@@ -2331,6 +3109,7 @@ internal sealed partial class RbpJournalStore
             FROM rbp_mutation_holds_v3 AS hold
             LEFT JOIN rbp_mutation_resolutions_v3 AS resolution
               ON resolution.resolution_id=hold.resolution_id
+             AND resolution.rsid=hold.rsid
             WHERE hold.hold_id=$hold AND hold.rsid=$rsid;
             """);
         command.Parameters.AddWithValue("$hold", holdId);
@@ -2392,6 +3171,7 @@ internal sealed partial class RbpJournalStore
             FROM rbp_mutation_holds_v3 AS hold
             LEFT JOIN rbp_mutation_resolutions_v3 AS resolution
               ON resolution.resolution_id=hold.resolution_id
+             AND resolution.rsid=hold.rsid
             WHERE hold.hold_id=$hold AND hold.rsid=$rsid;
             """);
         command.CommandTimeout = _commandTimeoutSeconds;
@@ -2435,7 +3215,7 @@ internal sealed partial class RbpJournalStore
     {
         using SqliteCommand command = context.CreateCommand(
             """
-            SELECT resolution_id,hold_id,basis,verification_invocation_id,
+            SELECT resolution_id,rsid,hold_id,basis,verification_invocation_id,
                    evidence_digest,decision,audit_id,state,record_version
             FROM rbp_mutation_resolutions_v3
             WHERE resolution_id=$resolution;
@@ -2447,12 +3227,13 @@ internal sealed partial class RbpJournalStore
                 reader.GetString(0),
                 reader.GetString(1),
                 reader.GetString(2),
-                reader.IsDBNull(3) ? null : reader.GetString(3),
-                reader.GetString(4),
+                reader.GetString(3),
+                reader.IsDBNull(4) ? null : reader.GetString(4),
                 reader.GetString(5),
                 reader.GetString(6),
                 reader.GetString(7),
-                reader.GetInt64(8))
+                reader.GetString(8),
+                reader.GetInt64(9))
             : null;
     }
 
@@ -2485,11 +3266,12 @@ internal sealed partial class RbpJournalStore
         using SqliteCommand insert = context.CreateCommand(
             """
             INSERT INTO rbp_mutation_resolutions_v3(
-              resolution_id,record_schema,hold_id,basis,
+              resolution_id,record_schema,rsid,hold_id,basis,
               verification_invocation_id,evidence_digest,decision,audit_id,
               state,record_version,created_at_ms,updated_at_ms
             ) VALUES(
-              $resolution,'bridge.mutation-resolution/v1',$hold,$basis,$vid,
+              $resolution,'bridge.mutation-resolution/v1',$rsid,$hold,$basis,
+              $vid,
               $evidence,$decision,$audit,'accepted',1,$now,$now
             )
             ON CONFLICT(resolution_id) DO UPDATE SET
@@ -2498,7 +3280,8 @@ internal sealed partial class RbpJournalStore
               updated_at_ms=MAX(
                 rbp_mutation_resolutions_v3.updated_at_ms,
                 excluded.updated_at_ms)
-            WHERE rbp_mutation_resolutions_v3.hold_id=excluded.hold_id
+            WHERE rbp_mutation_resolutions_v3.rsid=excluded.rsid
+              AND rbp_mutation_resolutions_v3.hold_id=excluded.hold_id
               AND rbp_mutation_resolutions_v3.basis=excluded.basis
               AND rbp_mutation_resolutions_v3.verification_invocation_id
                     IS excluded.verification_invocation_id
@@ -2510,6 +3293,7 @@ internal sealed partial class RbpJournalStore
         insert.Parameters.AddWithValue(
             "$resolution",
             clearance.ResolutionId);
+        insert.Parameters.AddWithValue("$rsid", hold.Rsid);
         insert.Parameters.AddWithValue("$hold", hold.VerificationHoldId);
         insert.Parameters.AddWithValue("$basis", basis);
         insert.Parameters.AddWithValue(
@@ -2554,11 +3338,12 @@ internal sealed partial class RbpJournalStore
         using SqliteCommand resolution = context.CreateCommand(
             """
             INSERT INTO rbp_mutation_resolutions_v3(
-              resolution_id,record_schema,hold_id,basis,
+              resolution_id,record_schema,rsid,hold_id,basis,
               verification_invocation_id,evidence_digest,decision,audit_id,
               state,record_version,created_at_ms,updated_at_ms
             ) VALUES(
-              $resolution,'bridge.mutation-resolution/v1',$hold,$basis,$vid,
+              $resolution,'bridge.mutation-resolution/v1',$rsid,$hold,$basis,
+              $vid,
               $evidence,$decision,$audit,$state,1,$created,$now
             )
             ON CONFLICT(resolution_id) DO UPDATE SET
@@ -2568,6 +3353,7 @@ internal sealed partial class RbpJournalStore
                                 excluded.updated_at_ms)
             WHERE rbp_mutation_resolutions_v3.record_schema=
                     'bridge.mutation-resolution/v1'
+              AND rbp_mutation_resolutions_v3.rsid=excluded.rsid
               AND rbp_mutation_resolutions_v3.hold_id=excluded.hold_id
               AND rbp_mutation_resolutions_v3.basis=excluded.basis
               AND rbp_mutation_resolutions_v3.verification_invocation_id
@@ -2578,6 +3364,7 @@ internal sealed partial class RbpJournalStore
               AND rbp_mutation_resolutions_v3.audit_id=excluded.audit_id;
             """);
         resolution.Parameters.AddWithValue("$resolution", resolutionId);
+        resolution.Parameters.AddWithValue("$rsid", hold.Rsid);
         resolution.Parameters.AddWithValue("$hold", hold.VerificationHoldId);
         resolution.Parameters.AddWithValue("$basis", basis);
         resolution.Parameters.AddWithValue(
@@ -2793,6 +3580,48 @@ internal sealed partial class RbpJournalStore
         }
 
         return stored;
+    }
+
+    private static RbpOutcomeV3EvidenceSnapshot ReadOutcomeV3Evidence(
+        RbpJournalWriteContext context,
+        string idempotencyKey)
+    {
+        using SqliteCommand command = context.CreateCommand(
+            """
+            SELECT dispatch_state,effect_state,transaction_mode,evidence_jcs,
+                   late_provenance_digest
+            FROM rbp_outcome_dispatch_v3
+            WHERE idempotency_key=$key;
+            """);
+        command.Parameters.AddWithValue("$key", idempotencyKey);
+        using SqliteDataReader reader = command.ExecuteReader();
+        if (!reader.Read())
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Outcome-v3 evidence disappeared during read-back.");
+        }
+
+        RbpDispatchState dispatch = ParseDispatchStateV3(reader.GetString(0));
+        RbpEffectState effect = ParseEffectStateV3(reader.GetString(1));
+        RbpTransactionMode mode = ParseTransactionModeV3(reader.GetString(2));
+        string evidenceJcs = reader.GetString(3);
+        string? lateProvenance =
+            reader.IsDBNull(4) ? null : reader.GetString(4);
+        if (evidenceJcs != SerializeOutcomeEvidenceV3(dispatch, effect, mode) ||
+            reader.Read())
+        {
+            throw new RbpJournalException(
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "Outcome-v3 typed evidence is contradictory.");
+        }
+
+        return new RbpOutcomeV3EvidenceSnapshot(
+            dispatch,
+            effect,
+            mode,
+            evidenceJcs,
+            lateProvenance);
     }
 
     private static RbpStoredInvocation? ReadLegacyInvocationV2(

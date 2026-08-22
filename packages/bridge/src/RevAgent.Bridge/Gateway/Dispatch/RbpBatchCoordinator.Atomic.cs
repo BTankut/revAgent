@@ -301,103 +301,48 @@ internal sealed partial class RbpBatchCoordinator
         RbpBatchRequest request,
         string reason)
     {
-        var steps = new List<RbpBatchStepOutcome>(request.Steps.Count);
-        bool anyIndeterminateMutation = false;
-        for (int index = 0; index < request.Steps.Count; index++)
-        {
-            RbpBatchStepRequest step = request.Steps[index];
-            RbpStoredInvocation? row = await _journal
-                .GetInvocationAsync(request.StepKey(index))
+        _ = reason;
+        RbpBatchAdmissionResult recovery =
+            await _journal.RecoverAtomicBatchLossOutcomeV3Async(
+                    request.ToIdentity(),
+                    DurableDecisionToken)
                 .ConfigureAwait(false);
-            if (row is { IsTerminal: true })
+        var steps = new List<RbpBatchStepOutcome>(recovery.Steps.Count);
+        foreach (RbpBatchStepArbitration step in recovery.Steps)
+        {
+            if (step.Stored is { IsTerminal: true } stored)
             {
-                anyIndeterminateMutation |=
-                    row.State == RbpInvocationState.Indeterminate;
                 steps.Add(
-                    FromStoredRow(index, step.InvocationId, row, replayed: false));
-                continue;
+                    FromStoredRow(
+                        step.BatchIndex,
+                        step.InvocationId,
+                        stored,
+                        replayed: false));
             }
-
-            if (step.Mutating)
+            else
             {
-                string? holdId = await _journal
-                    .PersistInvocationOutcomeV3Async(
-                        request.StepKey(index),
-                        new RbpInvocationTerminal(
-                            RbpInvocationState.Indeterminate,
-                            Outcome: default,
-                            ResultDigest: null),
-                        RbpMutationOutcomeEvidence.Uncertain(
-                            RbpDispatchState.MayHaveReachedAddin,
-                            RbpTransactionMode.Native,
-                            "atomic_batch_missing_terminal"),
-                        error: true,
-                        DurableDecisionToken)
-                    .ConfigureAwait(false);
-                if (holdId is not { Length: > 0 })
-                {
-                    throw new RbpDispatchException(
-                        RbpDispatchErrorCode.Environment,
-                        "A possibly executed atomic batch mutation must " +
-                        "install a Section 6.2.1 scope hold.");
-                }
-
-                anyIndeterminateMutation = true;
-                steps.Add(
-                    new RbpBatchStepOutcome(
-                        index,
-                        step.InvocationId,
-                        RbpBatchPayloads.ErrorEvidence(
-                            RbpBatchStepStatus.Indeterminate,
-                            RbpBatchPayloads.NestedError(
-                                RbpInvocationPayloads
-                                    .JournalIndeterminateError(
-                                        step.InvocationId,
-                                        holdId,
-                                        step.MutationScope,
-                                        reason,
-                                        replayed: false),
-                                replayed: false)),
-                        Replayed: false));
-                continue;
+                steps.Add(NotStarted(request, step.BatchIndex));
             }
-
-            JsonElement readEvidence = RbpBatchPayloads.ErrorEvidence(
-                RbpBatchStepStatus.Failed,
-                RbpBatchPayloads.NestedError(
-                    RbpInvocationPayloads.KnownError(
-                        step.InvocationId,
-                        faultClass: "environment",
-                        retryable: true,
-                        reason),
-                    replayed: false),
-                effectState: "read_only");
-            steps.Add(await PersistStepAsync(
-                    request,
-                    index,
-                    RbpInvocationState.Failed,
-                    readEvidence,
-                    Rfc8785Json.Sha256Digest(readEvidence),
-                    RbpMutationOutcomeEvidence.NativeResponse(
-                        RbpEffectState.ReadOnly,
-                        "atomic_batch_missing_terminal"),
-                    error: true,
-                    reason)
-                .ConfigureAwait(false));
         }
 
-        return await TerminalizeAtomicAsync(
-                request,
-                anyIndeterminateMutation
-                    ? RbpBatchStepStatus.Indeterminate
-                    : RbpBatchStepStatus.Failed,
-                anyIndeterminateMutation
-                    ? RbpBatchTransactionState.Indeterminate
-                    : RbpBatchTransactionState.RolledBack,
-                RbpBatchPayloads.FirstNonSuccessIndex(steps),
-                steps,
-                replayed: false)
-            .ConfigureAwait(false);
+        using JsonDocument terminal = JsonDocument.Parse(
+            recovery.Stored.TerminalOutcomeJson ??
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "Recovered atomic loss has no durable batch outcome."));
+        return RbpInvocationAnswer.Result(
+            RbpBatchPayloads.Carrier(
+                request.BatchId,
+                atomic: true,
+                ReadRequiredString(terminal.RootElement, "status"),
+                ReadRequiredString(
+                    terminal.RootElement,
+                    "transaction_state"),
+                ReadNullableInt32(
+                    terminal.RootElement,
+                    "failed_step_index"),
+                steps.AsReadOnly(),
+                replayed: false));
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeAtomicAsync(

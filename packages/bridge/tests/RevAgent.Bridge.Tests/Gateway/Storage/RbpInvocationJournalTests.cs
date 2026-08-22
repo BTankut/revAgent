@@ -315,15 +315,18 @@ public sealed class RbpInvocationJournalTests
         await using RbpJournalStore store = OpenStore(directory);
         _ = await store.PersistRegisteredSessionAsync(
             RbpJournalTestData.Registration());
-        RbpInvocationIdentity failed = WriteIdentity() with
+        RbpInvocationIdentity failed = WriteIdentity(
+            "{\"document_id\":\"doc-1\",\"kind\":\"document\"}") with
         {
             InvocationId = "0197a3c2-0000-7000-8000-000000000401",
         };
-        RbpInvocationIdentity executing = WriteIdentity() with
+        RbpInvocationIdentity executing = WriteIdentity(
+            "{\"document_id\":\"doc-2\",\"kind\":\"document\"}") with
         {
             InvocationId = "0197a3c2-0000-7000-8000-000000000402",
         };
-        RbpInvocationIdentity cancelled = WriteIdentity() with
+        RbpInvocationIdentity cancelled = WriteIdentity(
+            "{\"document_id\":\"doc-3\",\"kind\":\"document\"}") with
         {
             InvocationId = "0197a3c2-0000-7000-8000-000000000403",
         };

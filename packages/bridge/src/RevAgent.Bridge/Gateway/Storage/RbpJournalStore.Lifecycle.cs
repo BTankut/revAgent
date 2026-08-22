@@ -854,9 +854,7 @@ internal sealed partial class RbpJournalStore
         [
             "DELETE FROM rbp_outcome_dispatch_v3 WHERE rsid=$rsid;",
             "DELETE FROM rbp_batches_v3 WHERE rsid=$rsid;",
-            "DELETE FROM rbp_mutation_resolutions_v3 WHERE hold_id IN " +
-                "(SELECT hold_id FROM rbp_mutation_holds_v3 " +
-                "WHERE rsid=$rsid);",
+            "DELETE FROM rbp_mutation_resolutions_v3 WHERE rsid=$rsid;",
             "DELETE FROM rbp_mutation_conflicts_v3 WHERE rsid=$rsid;",
             "DELETE FROM rbp_mutation_holds_v3 WHERE rsid=$rsid;",
             "DELETE FROM rbp_outcome_quarantine_v3 WHERE rsid=$rsid;",

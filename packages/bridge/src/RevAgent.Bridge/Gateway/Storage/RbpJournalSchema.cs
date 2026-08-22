@@ -397,7 +397,8 @@ internal static class RbpJournalSchema
             substr(evidence_digest,8) NOT GLOB '*[^0-9a-f]*'
           )),
           CHECK((state='cleared' AND cleared_at_ms IS NOT NULL) OR
-                (state<>'cleared' AND cleared_at_ms IS NULL))
+                (state<>'cleared' AND cleared_at_ms IS NULL)),
+          UNIQUE(rsid,hold_id)
         ) STRICT;
 
         CREATE INDEX ix_rbp_mutation_holds_v3_session
@@ -409,8 +410,7 @@ internal static class RbpJournalSchema
             CHECK(record_schema='bridge.mutation-conflict/v1'),
           rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
           scope_digest TEXT NOT NULL,
-          hold_id TEXT NOT NULL
-            REFERENCES rbp_mutation_holds_v3(hold_id) ON DELETE RESTRICT,
+          hold_id TEXT NOT NULL,
           mutation_scope_jcs TEXT NOT NULL CHECK(length(mutation_scope_jcs)>0),
           active INTEGER NOT NULL CHECK(active IN (0,1)),
           record_version INTEGER NOT NULL CHECK(record_version>=1),
@@ -419,7 +419,10 @@ internal static class RbpJournalSchema
           UNIQUE(rsid,scope_digest),
           CHECK(length(scope_digest)=71 AND
                 substr(scope_digest,1,7)='sha256:' AND
-                substr(scope_digest,8) NOT GLOB '*[^0-9a-f]*')
+                substr(scope_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          FOREIGN KEY(rsid,hold_id)
+            REFERENCES rbp_mutation_holds_v3(rsid,hold_id)
+            ON DELETE RESTRICT
         ) STRICT;
 
         CREATE INDEX ix_rbp_mutation_conflicts_v3_active
@@ -429,8 +432,8 @@ internal static class RbpJournalSchema
           resolution_id TEXT PRIMARY KEY,
           record_schema TEXT NOT NULL
             CHECK(record_schema='bridge.mutation-resolution/v1'),
-          hold_id TEXT NOT NULL
-            REFERENCES rbp_mutation_holds_v3(hold_id) ON DELETE RESTRICT,
+          rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
+          hold_id TEXT NOT NULL,
           basis TEXT NOT NULL CHECK(basis IN (
             'verification_read','late_terminal'
           )),
@@ -450,7 +453,10 @@ internal static class RbpJournalSchema
                  verification_invocation_id IS NULL)),
           CHECK(length(evidence_digest)=71 AND
                 substr(evidence_digest,1,7)='sha256:' AND
-                substr(evidence_digest,8) NOT GLOB '*[^0-9a-f]*')
+                substr(evidence_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          FOREIGN KEY(rsid,hold_id)
+            REFERENCES rbp_mutation_holds_v3(rsid,hold_id)
+            ON DELETE RESTRICT
         ) STRICT;
 
         CREATE TABLE rbp_outcome_dispatch_v3(
@@ -476,11 +482,11 @@ internal static class RbpJournalSchema
           )),
           terminal_outcome_json TEXT,
           result_digest TEXT,
-          verification_hold_id TEXT
-            REFERENCES rbp_mutation_holds_v3(hold_id) ON DELETE RESTRICT,
+          verification_hold_id TEXT,
           verification_correlation_json TEXT,
           late_terminal_outcome_json TEXT,
           late_result_digest TEXT,
+          late_provenance_digest TEXT,
           started_at_ms INTEGER,
           finished_at_ms INTEGER,
           record_version INTEGER NOT NULL CHECK(record_version>=1),
@@ -495,10 +501,20 @@ internal static class RbpJournalSchema
           CHECK(terminal_state<>'indeterminate' OR
                 verification_hold_id IS NOT NULL),
           CHECK((late_terminal_outcome_json IS NULL AND
-                 late_result_digest IS NULL) OR
+                 late_result_digest IS NULL AND
+                 late_provenance_digest IS NULL) OR
                 (terminal_state='indeterminate' AND
                  late_terminal_outcome_json IS NOT NULL AND
-                 late_result_digest IS NOT NULL))
+                 late_result_digest IS NOT NULL AND
+                 late_provenance_digest IS NOT NULL)),
+          CHECK(late_provenance_digest IS NULL OR (
+            length(late_provenance_digest)=71 AND
+            substr(late_provenance_digest,1,7)='sha256:' AND
+            substr(late_provenance_digest,8) NOT GLOB '*[^0-9a-f]*'
+          )),
+          FOREIGN KEY(rsid,verification_hold_id)
+            REFERENCES rbp_mutation_holds_v3(rsid,hold_id)
+            ON DELETE RESTRICT
         ) STRICT;
 
         CREATE INDEX ix_rbp_outcome_dispatch_v3_session
