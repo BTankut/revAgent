@@ -1,11 +1,25 @@
 # Immutable GitHub Action pin evidence
 
 WP-05 implements RA-GW-013 / DC-11. Every external `uses:` reference in the
-seven workflow files is pinned to one reviewed lowercase 40-hex commit. The
-scanner at `scripts/test-workflow-action-pins.ps1` fails closed unless a use is
-either a local `./` path or an `owner/repo@` reference ending in one exact,
-lowercase 40-hex commit. It rejects tags, branches, uppercase or short object
-names, quoted/dynamic values, and multiline or ambiguous YAML values.
+seven workflow files is pinned to one reviewed lowercase 40-hex commit.
+
+`scripts/test-workflow-action-pins.ps1` scans recursive workflow YAML and any
+repository `action.yml`/`action.yaml` manifest (excluding `.git` and
+`node_modules`). Its bounded YAML lexer recognizes lowercase `uses` keys in
+block mappings and flow mappings, with unquoted, single-quoted, or
+double-quoted keys; it processes multiple flow keys on one line. A value may be
+a plain or single/double-quoted scalar, but after decoding it must be exactly
+either `./` plus a local relative path (without `..`) or
+`owner/repo@` plus a lowercase 40-hex commit. The lexer strips a comment only
+when its `#` is outside a quoted scalar and starts after whitespace.
+
+This is an intentionally narrow fail-closed lexer, not a general YAML parser.
+It rejects every recognized `uses` key that lacks one exact scalar, including
+multiline values, anchors, aliases, dynamic expressions, reusable workflows,
+Docker actions, tags, branches, uppercase SHAs, short SHAs, and ambiguous
+tails. Workflow YAML syntax is checked separately. The fixture matrix at
+`scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
+rejected forms.
 
 | Action tag | Reviewed commit |
 | --- | --- |

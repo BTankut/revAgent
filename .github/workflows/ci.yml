@@ -35,6 +35,10 @@ jobs:
         shell: pwsh
         run: .\scripts\test-workflow-action-pins.ps1
 
+      - name: Test immutable GitHub Action pin scanner
+        shell: pwsh
+        run: .\scripts\test-workflow-action-pins-fixtures.ps1
+
       - name: Materialize exact protected source bytes
         shell: cmd
         run: git archive --format=tar HEAD | tar -xf - && git add --update && git diff --cached --quiet HEAD -- && git diff --quiet --

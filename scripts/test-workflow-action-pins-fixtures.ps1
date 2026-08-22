@@ -1,0 +1,72 @@
+[CmdletBinding()]
+param(
+    [string]$RepoRoot = (Split-Path -Parent $PSScriptRoot)
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = 'Stop'
+
+$root = (Resolve-Path -LiteralPath $RepoRoot -ErrorAction Stop).Path
+$scanner = Join-Path $root 'scripts\test-workflow-action-pins.ps1'
+if (-not (Test-Path -LiteralPath $scanner -PathType Leaf)) {
+    throw "Scanner is missing: $scanner"
+}
+
+function Assert-True {
+    param([bool]$Condition, [string]$Message)
+    if (-not $Condition) { throw $Message }
+}
+
+function Invoke-ScannerFixture {
+    param([string]$Name, [string]$Content, [bool]$ExpectedSuccess)
+
+    $fixtureRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("revagent-action-pin-$Name-" + [Guid]::NewGuid().ToString('N'))
+    try {
+        $workflowDirectory = Join-Path $fixtureRoot '.github\workflows'
+        New-Item -ItemType Directory -Path $workflowDirectory -ErrorAction Stop | Out-Null
+        [System.IO.File]::WriteAllText(
+            (Join-Path $workflowDirectory 'fixture.yml'),
+            $Content,
+            [System.Text.UTF8Encoding]::new($false))
+
+        $succeeded = $true
+        try {
+            & $scanner -RepoRoot $fixtureRoot *>$null
+        }
+        catch {
+            $succeeded = $false
+        }
+        Assert-True ($succeeded -eq $ExpectedSuccess) "Fixture $Name expected success=$ExpectedSuccess, actual=$succeeded."
+    }
+    finally {
+        if (Test-Path -LiteralPath $fixtureRoot) {
+            Remove-Item -LiteralPath $fixtureRoot -Recurse -Force -ErrorAction Stop
+        }
+    }
+}
+
+$sha = 'd23441a48e516b6c34aea4fa41551a30e30af803'
+$fixtures = @(
+    [pscustomobject]@{ name = 'quoted-pinned'; success = $true; content = "jobs:`n  sample:`n    'uses': 'actions/checkout@$sha'`n" },
+    [pscustomobject]@{ name = 'quoted-tag'; success = $false; content = "jobs:`n  sample:`n    `"uses`": actions/checkout@v6`n" },
+    [pscustomobject]@{ name = 'flow-pinned'; success = $true; content = "job: { `"uses`": `"actions/checkout@$sha`", local: { 'uses': ./local-action } }`n" },
+    [pscustomobject]@{ name = 'flow-tag'; success = $false; content = 'job: { uses: actions/checkout@v6 }' },
+    [pscustomobject]@{ name = 'flow-dynamic'; success = $false; content = 'job: { uses: ${{ github.repository }}/action@main }' },
+    [pscustomobject]@{ name = 'flow-docker'; success = $false; content = 'job: { uses: docker://alpine:3.20 }' },
+    [pscustomobject]@{ name = 'flow-reusable'; success = $false; content = "job: { uses: owner/repo/.github/workflows/release.yml@$sha }" },
+    [pscustomobject]@{ name = 'multiple-uses'; success = $true; content = "first: { uses: actions/checkout@$sha }`nsecond: { 'uses': ./local-action }`n" },
+    [pscustomobject]@{ name = 'ambiguous'; success = $false; content = "uses: actions/checkout@$sha extra`n" },
+    [pscustomobject]@{ name = 'multiline'; success = $false; content = "uses: >`n  actions/checkout@$sha`n" },
+    [pscustomobject]@{ name = 'malformed-quoted-key'; success = $false; content = "'uses: actions/checkout@$sha`n" },
+    [pscustomobject]@{ name = 'comment'; success = $true; content = "uses: actions/checkout@$sha # reviewed comment`n" },
+    [pscustomobject]@{ name = 'quoted-comment-content'; success = $false; content = "uses: `"actions/checkout@$sha # not a comment`"`n" },
+    [pscustomobject]@{ name = 'uppercase'; success = $false; content = "uses: actions/checkout@$($sha.ToUpperInvariant())`n" },
+    [pscustomobject]@{ name = 'anchor'; success = $false; content = "uses: &immutable actions/checkout@$sha`n" },
+    [pscustomobject]@{ name = 'alias'; success = $false; content = 'uses: *immutable' }
+)
+
+foreach ($fixture in $fixtures) {
+    Invoke-ScannerFixture -Name $fixture.name -Content $fixture.content -ExpectedSuccess $fixture.success
+}
+
+Write-Host "Workflow action pin scanner fixture tests passed: cases=$($fixtures.Count)."
