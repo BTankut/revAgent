@@ -89,7 +89,7 @@ jobs:
 
     steps:
       - name: Checkout main
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -103,6 +103,10 @@ jobs:
               -not [string]::Equals($checkedOutSha, $env:GITHUB_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Checked out build commit does not equal GITHUB_SHA. expected=$env:GITHUB_SHA actual=$checkedOutSha"
           }
+
+      - name: Verify immutable GitHub Action pins before signing
+        shell: pwsh
+        run: .\scripts\test-workflow-action-pins.ps1
 
       - name: Enforce migration release freeze (fail fast before build)
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
@@ -330,7 +334,7 @@ jobs:
       - name: Upload immutable signed release artifact
         id: signed-release-artifact
         if: ${{ github.event_name == 'workflow_dispatch' && (inputs.publish_to_nas || inputs.publish_to_pilot) }}
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # actions/upload-artifact@v7
         with:
           name: revagent-signed-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ env.REVAGENT_SIGNED_BUILD_ROOT }}
@@ -366,7 +370,7 @@ jobs:
           }
 
       - name: Checkout main
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -380,6 +384,10 @@ jobs:
               -not [string]::Equals($checkedOutSha, $env:GITHUB_SHA, [System.StringComparison]::OrdinalIgnoreCase)) {
             throw "Checked out publisher commit does not equal GITHUB_SHA. expected=$env:GITHUB_SHA actual=$checkedOutSha"
           }
+
+      - name: Verify immutable GitHub Action pins before publish
+        shell: pwsh
+        run: .\scripts\test-workflow-action-pins.ps1
 
       - name: Verify exact signed artifact REST binding
         shell: pwsh
@@ -493,7 +501,7 @@ jobs:
 
       - name: Download exact signed release artifact
         id: signed-release-download
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # actions/download-artifact@v8
         with:
           artifact-ids: ${{ needs.build-signed-release.outputs.artifact_id }}
           path: ${{ steps.artifact-landing.outputs.landing_root }}
