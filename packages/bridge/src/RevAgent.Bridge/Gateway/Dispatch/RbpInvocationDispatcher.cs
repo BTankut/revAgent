@@ -112,6 +112,22 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvokeRequest request,
         CancellationToken cancellationToken)
     {
+        RbpTransactionMode transactionMode =
+            RbpMutationOutcomeEvidence.ReadRequestedMode(
+                request.Method,
+                request.Parameters);
+        if (request.Mutating &&
+            transactionMode == RbpTransactionMode.None &&
+            !RbpMutationOutcomeEvidence.HasNativeConformanceDeclaration(
+                request.Parameters))
+        {
+            return ProtocolFault(
+                request,
+                "A mutating transactionMode none invocation requires the " +
+                "exact revagent.mutation-outcome/v1 native outcome-evidence " +
+                "declaration before dispatch.");
+        }
+
         RbpInvocationIdentity identity = request.ToIdentity();
         (RbpInvocationAdmissionResult? admitted, RbpInvocationAnswer? answered)
             = await AdmitAsync(request, identity, cancellationToken)
@@ -226,35 +242,16 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             return (null, ProtocolFault(request, exception.Message));
         }
 
-        if (clearances.Count == 0)
-        {
-            // Durability step 1. Section 12.2 rule 5 (a changed digest,
-            // method, scope, policy, or clearance under the same key)
-            // surfaces here as a journal protocol conflict, before any add-in
-            // contact.
-            try
-            {
-                return (
-                    await _journal
-                        .AdmitInvocationAsync(identity, cancellationToken)
-                        .ConfigureAwait(false),
-                    null);
-            }
-            catch (RbpJournalException exception)
-                when (exception.ErrorCode ==
-                      RbpJournalErrorCode.ProtocolConflict)
-            {
-                return (null, ProtocolFault(request, exception.Message));
-            }
-        }
-
         RbpClearanceGatedAdmission gated;
         try
         {
             gated = await _journal
-                .AdmitInvocationWithClearancesAsync(
+                .AdmitInvocationOutcomeV3Async(
                     identity,
                     clearances,
+                    RbpMutationOutcomeEvidence.ReadRequestedMode(
+                        request.Method,
+                        request.Parameters),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -484,8 +481,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         if (claimDispatchOwnership)
         {
             await _journal
-                .MarkInvocationExecutingAsync(
+                .MarkInvocationExecutingOutcomeV3Async(
                     identity.IdempotencyKey,
+                    RbpMutationOutcomeEvidence.ReadRequestedMode(
+                        request.Method,
+                        request.Parameters),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -516,6 +516,12 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                     identity,
                     exception.Message,
                     faultClassHint: null,
+                    RbpMutationOutcomeEvidence.Uncertain(
+                        RbpDispatchState.MayHaveReachedAddin,
+                        RbpMutationOutcomeEvidence.ReadRequestedMode(
+                            request.Method,
+                            request.Parameters),
+                        "channel_exception"),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -548,12 +554,25 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                             cancellationToken)
                         .ConfigureAwait(false),
 
+                _ when ResolveOutcomeEvidence(request, outcome)
+                        .KnownNonCommittingError ||
+                    (!request.Mutating &&
+                     ResolveOutcomeEvidence(request, outcome).EffectState ==
+                        RbpEffectState.ReadOnly) =>
+                    await TerminalizeKnownFailureAsync(
+                            request,
+                            identity,
+                            outcome,
+                            cancellationToken)
+                        .ConfigureAwait(false),
+
                 _ => await TerminalizeUnknownAsync(
                             request,
                             identity,
                             outcome.Message ??
                                 "The add-in dispatch outcome is unknown.",
                             outcome.FaultClass,
+                            ResolveOutcomeEvidence(request, outcome),
                             cancellationToken)
                         .ConfigureAwait(false),
             };
@@ -601,7 +620,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 
         // Durability step 3, before the answer leaves the bridge.
         await _journal
-            .PersistInvocationTerminalAsync(
+            .PersistInvocationOutcomeV3Async(
                 identity.IdempotencyKey,
                 new RbpInvocationTerminal(
                     guarded
@@ -609,6 +628,8 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                         : RbpInvocationState.Completed,
                     body,
                     digest),
+                ResolveOutcomeEvidence(request, outcome),
+                error: false,
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
@@ -639,13 +660,34 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             message,
             outcome.AddinError);
 
+        RbpMutationOutcomeEvidence evidence =
+            ResolveOutcomeEvidence(request, outcome);
+        bool knownFailureEvidence =
+            evidence.KnownNotDispatched ||
+            evidence.KnownNonCommittingError ||
+            (!request.Mutating &&
+             evidence.EffectState == RbpEffectState.ReadOnly);
+        if (!knownFailureEvidence)
+        {
+            return await TerminalizeUnknownAsync(
+                    request,
+                    identity,
+                    message,
+                    faultClass,
+                    evidence,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         await _journal
-            .PersistInvocationTerminalAsync(
+            .PersistInvocationOutcomeV3Async(
                 identity.IdempotencyKey,
                 new RbpInvocationTerminal(
                     RbpInvocationState.Failed,
                     body,
                     JournalEvidenceDigest(body)),
+                evidence,
+                error: true,
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
@@ -657,9 +699,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         RbpInvocationIdentity identity,
         string message,
         string? faultClassHint,
+        RbpMutationOutcomeEvidence evidence,
         CancellationToken cancellationToken)
     {
-        if (!request.Mutating)
+        if (!request.Mutating || evidence.KnownNonCommittingError)
         {
             // A read whose dispatch is uncertain is still a known-outcome
             // failure: re-running it cannot commit anything. The channel's
@@ -680,12 +723,16 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 retryable,
                 enrichedMessage);
             await _journal
-                .PersistInvocationTerminalAsync(
+                .PersistInvocationOutcomeV3Async(
                     identity.IdempotencyKey,
                     new RbpInvocationTerminal(
                         RbpInvocationState.Failed,
                         readBody,
                         JournalEvidenceDigest(readBody)),
+                    request.Mutating
+                        ? evidence
+                        : NormalizeReadEvidence(evidence),
+                    error: true,
                     DurableDecisionToken)
                 .ConfigureAwait(false);
             return RbpInvocationAnswer.Error(readBody);
@@ -696,12 +743,14 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         // class and activates the Section 6.2.1 scope hold. The store mints and
         // installs the hold as part of persisting the indeterminate terminal.
         string? holdId = await _journal
-            .PersistInvocationTerminalAsync(
+            .PersistInvocationOutcomeV3Async(
                 identity.IdempotencyKey,
                 new RbpInvocationTerminal(
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
                     ResultDigest: null),
+                evidence,
+                error: true,
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
@@ -799,6 +848,38 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         "sha256:" +
         Convert.ToHexString(SHA256.HashData(rawResponsePayload))
             .ToLowerInvariant();
+
+    private static RbpMutationOutcomeEvidence ResolveOutcomeEvidence(
+        RbpInvokeRequest request,
+        RbpAddinOutcome outcome) =>
+        outcome.OutcomeEvidence ??
+        RbpMutationOutcomeEvidence.ForLegacyOutcome(
+            outcome.Kind,
+            RbpMutationOutcomeEvidence.ReadRequestedMode(
+                request.Method,
+                request.Parameters),
+            request.Mutating);
+
+    private static RbpMutationOutcomeEvidence NormalizeReadEvidence(
+        RbpMutationOutcomeEvidence evidence)
+    {
+        if (evidence.DispatchState == RbpDispatchState.NotStarted)
+        {
+            return evidence;
+        }
+
+        return new RbpMutationOutcomeEvidence(
+            evidence.DispatchState,
+            RbpEffectState.ReadOnly,
+            evidence.TransactionMode,
+            evidence.EvidenceJcs.Replace(
+                "\"effectState\":\"unknown\"",
+                "\"effectState\":\"read_only\"",
+                StringComparison.Ordinal).Replace(
+                "\"transactionStatus\":\"unknown\"",
+                "\"transactionStatus\":\"read_only\"",
+                StringComparison.Ordinal));
+    }
 
     private static JsonElement RequireOutcome(string? json, string what)
     {

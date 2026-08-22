@@ -20,6 +20,61 @@
       "type": "string",
       "pattern": "^sha256:[0-9a-f]{64}$"
     },
+    "mutationOutcomeEvidence": {
+      "type": "object",
+      "required": [
+        "schema",
+        "effectState",
+        "transactionMode",
+        "evidence"
+      ],
+      "properties": {
+        "schema": {
+          "const": "revagent.mutation-outcome/v1"
+        },
+        "effectState": {
+          "enum": [
+            "not_started",
+            "read_only",
+            "rolled_back",
+            "committed",
+            "unknown"
+          ]
+        },
+        "transactionMode": {
+          "enum": [
+            "auto",
+            "none",
+            "native",
+            "not_applicable"
+          ]
+        },
+        "evidence": {
+          "type": "object",
+          "required": [
+            "source",
+            "transactionStatus"
+          ],
+          "properties": {
+            "source": {
+              "type": "string",
+              "pattern": "^[a-z][a-z0-9_]{0,63}$"
+            },
+            "transactionStatus": {
+              "enum": [
+                "not_started",
+                "read_only",
+                "rolled_back",
+                "committed",
+                "unknown"
+              ]
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      "additionalProperties": false
+    },
     "loopbackAddress": {
       "type": "string",
       "anyOf": [

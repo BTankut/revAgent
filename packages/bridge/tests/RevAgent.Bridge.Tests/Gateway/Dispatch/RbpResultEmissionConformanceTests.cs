@@ -392,7 +392,7 @@ public sealed class RbpResultEmissionConformanceTests
         int code,
         string message) =>
         new(
-            RbpAddinOutcomeKind.KnownNotDispatched,
+            RbpAddinOutcomeKind.PossiblyDispatched,
             default,
             [],
             RequestBytes: 128,
@@ -400,7 +400,11 @@ public sealed class RbpResultEmissionConformanceTests
             FaultClass: faultClass,
             Message: message,
             AddinError: new AddinErrorDetail(code, message),
-            Retryable: false);
+            Retryable: false,
+            OutcomeEvidence:
+                RbpMutationOutcomeEvidence.NativeResponse(
+                    RbpEffectState.ReadOnly,
+                    "test_addin_error"));
 
     private static JsonElement Json(string json)
     {

@@ -77,6 +77,11 @@ internal sealed partial class RbpBatchCoordinator
                     await CleanAtomicRejectionAsync(request, outcome)
                         .ConfigureAwait(false),
 
+                _ when ResolveAtomicOutcomeEvidence(outcome)
+                    .KnownNonCommittingError =>
+                    await CleanAtomicRejectionAsync(request, outcome)
+                        .ConfigureAwait(false),
+
                 // Transport success is never commit evidence, and loss of
                 // the socket or process before a valid terminal response is
                 // promoted to the Section 11/12 indeterminate path.
@@ -187,28 +192,34 @@ internal sealed partial class RbpBatchCoordinator
         foreach (AtomicStep step in envelope.Steps)
         {
             JsonElement evidence = StepEvidence(step);
-            if (!string.Equals(
+            if (string.Equals(
                     step.ExecutionState,
                     RbpBatchStepStatus.NotStarted,
                     StringComparison.Ordinal))
             {
-                await _journal
-                    .PersistInvocationTerminalAsync(
-                        request.StepKey(step.Index),
-                        new RbpInvocationTerminal(
-                            ToInvocationState(step.ExecutionState),
-                            evidence,
-                            Rfc8785Json.Sha256Digest(evidence)),
-                        DurableDecisionToken)
-                    .ConfigureAwait(false);
+                steps.Add(
+                    new RbpBatchStepOutcome(
+                        step.Index,
+                        step.InvocationId,
+                        evidence,
+                        Replayed: false));
+                continue;
             }
 
-            steps.Add(
-                new RbpBatchStepOutcome(
+            bool error = step.ExecutionState is
+                RbpBatchStepStatus.Failed or
+                RbpBatchStepStatus.Cancelled or
+                RbpBatchStepStatus.Indeterminate;
+            steps.Add(await PersistStepAsync(
+                    request,
                     step.Index,
-                    step.InvocationId,
+                    ToInvocationState(step.ExecutionState),
                     evidence,
-                    Replayed: false));
+                    Rfc8785Json.Sha256Digest(evidence),
+                    AtomicOutcomeEvidence(step),
+                    error,
+                    step.ErrorMessage)
+                .ConfigureAwait(false));
         }
 
         return await TerminalizeAtomicAsync(
@@ -254,21 +265,16 @@ internal sealed partial class RbpBatchCoordinator
                         outcome.AddinError),
                     replayed: false),
                 step.Mutating ? "not_committed" : "read_only");
-            await _journal
-                .PersistInvocationTerminalAsync(
-                    request.StepKey(index),
-                    new RbpInvocationTerminal(
-                        RbpInvocationState.Failed,
-                        evidence,
-                        Rfc8785Json.Sha256Digest(evidence)),
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-            steps.Add(
-                new RbpBatchStepOutcome(
+            steps.Add(await PersistStepAsync(
+                    request,
                     index,
-                    step.InvocationId,
+                    RbpInvocationState.Failed,
                     evidence,
-                    Replayed: false));
+                    Rfc8785Json.Sha256Digest(evidence),
+                    ResolveAtomicOutcomeEvidence(outcome),
+                    error: true,
+                    outcome.Message)
+                .ConfigureAwait(false));
         }
 
         return await TerminalizeAtomicAsync(
@@ -319,12 +325,17 @@ internal sealed partial class RbpBatchCoordinator
             if (step.Mutating)
             {
                 string? holdId = await _journal
-                    .PersistInvocationTerminalAsync(
+                    .PersistInvocationOutcomeV3Async(
                         request.StepKey(index),
                         new RbpInvocationTerminal(
                             RbpInvocationState.Indeterminate,
                             Outcome: default,
                             ResultDigest: null),
+                        RbpMutationOutcomeEvidence.Uncertain(
+                            RbpDispatchState.MayHaveReachedAddin,
+                            RbpTransactionMode.Native,
+                            "atomic_batch_missing_terminal"),
+                        error: true,
                         DurableDecisionToken)
                     .ConfigureAwait(false);
                 if (holdId is not { Length: > 0 })
@@ -365,21 +376,18 @@ internal sealed partial class RbpBatchCoordinator
                         reason),
                     replayed: false),
                 effectState: "read_only");
-            await _journal
-                .PersistInvocationTerminalAsync(
-                    request.StepKey(index),
-                    new RbpInvocationTerminal(
-                        RbpInvocationState.Failed,
-                        readEvidence,
-                        Rfc8785Json.Sha256Digest(readEvidence)),
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-            steps.Add(
-                new RbpBatchStepOutcome(
+            steps.Add(await PersistStepAsync(
+                    request,
                     index,
-                    step.InvocationId,
+                    RbpInvocationState.Failed,
                     readEvidence,
-                    Replayed: false));
+                    Rfc8785Json.Sha256Digest(readEvidence),
+                    RbpMutationOutcomeEvidence.NativeResponse(
+                        RbpEffectState.ReadOnly,
+                        "atomic_batch_missing_terminal"),
+                    error: true,
+                    reason)
+                .ConfigureAwait(false));
         }
 
         return await TerminalizeAtomicAsync(
@@ -484,6 +492,31 @@ internal sealed partial class RbpBatchCoordinator
         _ => "revit_api",
     };
 
+    private static RbpMutationOutcomeEvidence AtomicOutcomeEvidence(
+        AtomicStep step)
+    {
+        RbpEffectState effectState = step.EffectState switch
+        {
+            "not_started" => RbpEffectState.NotStarted,
+            "read_only" => RbpEffectState.ReadOnly,
+            "rolled_back" or "discarded" or "not_committed" =>
+                RbpEffectState.RolledBack,
+            "committed" => RbpEffectState.Committed,
+            _ => RbpEffectState.Unknown,
+        };
+        return RbpMutationOutcomeEvidence.NativeResponse(
+            effectState,
+            "execute_batch");
+    }
+
+    private static RbpMutationOutcomeEvidence ResolveAtomicOutcomeEvidence(
+        RbpAddinOutcome outcome) =>
+        outcome.OutcomeEvidence ??
+        RbpMutationOutcomeEvidence.ForLegacyOutcome(
+            outcome.Kind,
+            RbpTransactionMode.Native,
+            mutating: true);
+
     private static RbpInvocationState ToInvocationState(
         string executionState) =>
         executionState switch
@@ -506,7 +539,10 @@ internal sealed partial class RbpBatchCoordinator
         if (stored is { State: RbpBatchState.Received })
         {
             await _journal
-                .MarkBatchDispatchedAsync(request.BatchKey, cancellationToken)
+                .MarkBatchDispatchedOutcomeV3Async(
+                    request.BatchKey,
+                    TransactionModes(request),
+                    cancellationToken)
                 .ConfigureAwait(false);
         }
     }

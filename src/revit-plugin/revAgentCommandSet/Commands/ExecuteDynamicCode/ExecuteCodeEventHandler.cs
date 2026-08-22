@@ -19,23 +19,30 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
     {
         public const string TransactionModeAuto = "auto";
         public const string TransactionModeNone = "none";
+        public const string OutcomeEvidenceSchema = "revagent.mutation-outcome/v1";
 
         private string _generatedCode;
         private object[] _executionParameters = Array.Empty<object>();
         private string _transactionMode = TransactionModeAuto;
+        private string _nativeOutcomeEvidenceConformance = string.Empty;
 
         public ExecutionResultInfo ResultInfo { get; private set; }
         public bool TaskCompleted { get; private set; }
 
         private readonly ManualResetEvent _resetEvent = new ManualResetEvent(false);
 
-        public void SetExecutionParameters(string code, object[] parameters = null, string transactionMode = TransactionModeAuto)
+        public void SetExecutionParameters(
+            string code,
+            object[] parameters = null,
+            string transactionMode = TransactionModeAuto,
+            string nativeOutcomeEvidenceConformance = null)
         {
             _generatedCode = code;
             _executionParameters = parameters ?? Array.Empty<object>();
             _transactionMode = string.Equals(transactionMode, TransactionModeNone, StringComparison.OrdinalIgnoreCase)
                 ? TransactionModeNone
                 : TransactionModeAuto;
+            _nativeOutcomeEvidenceConformance = nativeOutcomeEvidenceConformance ?? string.Empty;
             TaskCompleted = false;
             _resetEvent.Reset();
         }
@@ -47,16 +54,36 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
 
         public void Execute(UIApplication app)
         {
+            Transaction transaction = null;
             try
             {
+                ResultInfo = new ExecutionResultInfo
+                {
+                    OutcomeEvidence = CreateOutcomeEvidence(
+                        "not_started",
+                        _transactionMode,
+                        "not_started")
+                };
                 var doc = app.ActiveUIDocument.Document;
-                ResultInfo = new ExecutionResultInfo();
 
                 if (_transactionMode == TransactionModeAuto && ContainsManualTransaction(_generatedCode))
                 {
                     SetGuardedResult(
                         "manual_transaction_requires_transactionMode_none",
                         "Manual Revit Transaction usage was blocked because transactionMode is auto. Use transactionMode none only for explicitly confirmed snippets that manage their own transaction.");
+                    return;
+                }
+
+                if (_transactionMode == TransactionModeNone &&
+                    ContainsManualTransaction(_generatedCode) &&
+                    !string.Equals(
+                        _nativeOutcomeEvidenceConformance,
+                        OutcomeEvidenceSchema,
+                        StringComparison.Ordinal))
+                {
+                    SetGuardedResult(
+                        "native_outcome_evidence_conformance_required",
+                        "transactionMode none with manual Revit transaction code requires the exact revagent.mutation-outcome/v1 conformance declaration before execution.");
                     return;
                 }
 
@@ -68,21 +95,63 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
                         doc: doc,
                         parameters: _executionParameters
                     );
+
+                    if (string.Equals(
+                            _nativeOutcomeEvidenceConformance,
+                            OutcomeEvidenceSchema,
+                            StringComparison.Ordinal))
+                    {
+                        if (!TryReadNativeOutcomeEvidence(
+                                result,
+                                out ExecutionOutcomeEvidence nativeEvidence))
+                        {
+                            ResultInfo.Success = false;
+                            ResultInfo.ErrorMessage =
+                                "Execution completed without exact native outcome evidence.";
+                            ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                                "unknown",
+                                TransactionModeNone,
+                                "unknown");
+                            return;
+                        }
+
+                        ResultInfo.OutcomeEvidence = nativeEvidence;
+                    }
+                    else
+                    {
+                        ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                            "read_only",
+                            TransactionModeNone,
+                            "read_only");
+                    }
                 }
                 else
                 {
-                    using (var transaction = new Transaction(doc, "Execute AI code"))
+                    transaction = new Transaction(doc, "Execute AI code");
+                    TransactionStatus startStatus = transaction.Start();
+                    if (startStatus != TransactionStatus.Started)
                     {
-                        transaction.Start();
-
-                        result = CompileAndExecuteCode(
-                            code: _generatedCode,
-                            doc: doc,
-                            parameters: _executionParameters
-                        );
-
-                        transaction.Commit();
+                        throw new InvalidOperationException(
+                            "The wrapper transaction did not enter Started state.");
                     }
+
+                    result = CompileAndExecuteCode(
+                        code: _generatedCode,
+                        doc: doc,
+                        parameters: _executionParameters
+                    );
+
+                    TransactionStatus commitStatus = transaction.Commit();
+                    if (commitStatus != TransactionStatus.Committed)
+                    {
+                        throw new InvalidOperationException(
+                            "The wrapper transaction did not report Committed state.");
+                    }
+
+                    ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                        "committed",
+                        TransactionModeAuto,
+                        "committed");
                 }
 
                 ResultInfo.Success = true;
@@ -90,11 +159,17 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
             }
             catch (Exception ex)
             {
+                string effectState = ResolveFailureEffect(transaction);
                 ResultInfo.Success = false;
                 ResultInfo.ErrorMessage = $"Execution failed: {ex.Message}";
+                ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                    effectState,
+                    _transactionMode,
+                    effectState);
             }
             finally
             {
+                transaction?.Dispose();
                 TaskCompleted = true;
                 _resetEvent.Set();
             }
@@ -106,6 +181,168 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
             ResultInfo.Guarded = true;
             ResultInfo.GuardReason = reason;
             ResultInfo.ErrorMessage = message;
+            ResultInfo.OutcomeEvidence = CreateOutcomeEvidence(
+                "not_started",
+                _transactionMode,
+                "not_started");
+        }
+
+        private static string ResolveFailureEffect(Transaction transaction)
+        {
+            if (transaction == null)
+            {
+                return ExecutionOutcomeDecision.ResolveFailure(null, null);
+            }
+
+            try
+            {
+                TransactionStatus status = transaction.GetStatus();
+                TransactionStatus? rollbackStatus = null;
+                if (status == TransactionStatus.Started)
+                {
+                    rollbackStatus = transaction.RollBack();
+                }
+
+                return ExecutionOutcomeDecision.ResolveFailure(
+                    status.ToString(),
+                    rollbackStatus?.ToString());
+            }
+            catch
+            {
+                // The only safe statement when transaction status cannot be
+                // read or rollback cannot be proven is unknown.
+            }
+
+            return ExecutionOutcomeDecision.ResolveFailure(null, null);
+        }
+
+        private static ExecutionOutcomeEvidence CreateOutcomeEvidence(
+            string effectState,
+            string transactionMode,
+            string transactionStatus)
+        {
+            return new ExecutionOutcomeEvidence
+            {
+                Schema = OutcomeEvidenceSchema,
+                EffectState = effectState,
+                TransactionMode = transactionMode,
+                Evidence = new ExecutionOutcomeWitness
+                {
+                    Source = "execute_dynamic_code",
+                    TransactionStatus = transactionStatus
+                }
+            };
+        }
+
+        private static bool TryReadNativeOutcomeEvidence(
+            object result,
+            out ExecutionOutcomeEvidence evidence)
+        {
+            evidence = null;
+            JToken token;
+            try
+            {
+                token = result as JToken ?? JToken.FromObject(result);
+            }
+            catch
+            {
+                return false;
+            }
+
+            JObject owner = token as JObject;
+            JObject candidate = owner?["outcomeEvidence"] as JObject;
+            if (candidate == null ||
+                !HasExactProperties(
+                    candidate,
+                    "schema",
+                    "effectState",
+                    "transactionMode",
+                    "evidence") ||
+                !string.Equals(
+                    candidate["schema"]?.Value<string>(),
+                    OutcomeEvidenceSchema,
+                    StringComparison.Ordinal) ||
+                !string.Equals(
+                    candidate["transactionMode"]?.Value<string>(),
+                    TransactionModeNone,
+                    StringComparison.Ordinal) ||
+                candidate["evidence"] is not JObject witness ||
+                !HasExactProperties(
+                    witness,
+                    "source",
+                    "transactionStatus"))
+            {
+                return false;
+            }
+
+            string effectState = candidate["effectState"]?.Value<string>();
+            string source = witness["source"]?.Value<string>();
+            string transactionStatus =
+                witness["transactionStatus"]?.Value<string>();
+            if (!IsEffectState(effectState) ||
+                !IsBoundedCode(source) ||
+                !string.Equals(
+                    effectState,
+                    transactionStatus,
+                    StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string serialized = candidate.ToString(Formatting.None);
+            if (System.Text.Encoding.UTF8.GetByteCount(serialized) > 2048)
+            {
+                return false;
+            }
+
+            evidence = new ExecutionOutcomeEvidence
+            {
+                Schema = OutcomeEvidenceSchema,
+                EffectState = effectState,
+                TransactionMode = TransactionModeNone,
+                Evidence = new ExecutionOutcomeWitness
+                {
+                    Source = source,
+                    TransactionStatus = transactionStatus
+                }
+            };
+            return true;
+        }
+
+        private static bool HasExactProperties(
+            JObject value,
+            params string[] expected)
+        {
+            var actual = new HashSet<string>(
+                value.Properties().Select(property => property.Name),
+                StringComparer.Ordinal);
+            return actual.Count == expected.Length &&
+                expected.All(actual.Contains);
+        }
+
+        private static bool IsEffectState(string value)
+        {
+            return value == "not_started" ||
+                value == "read_only" ||
+                value == "rolled_back" ||
+                value == "committed" ||
+                value == "unknown";
+        }
+
+        private static bool IsBoundedCode(string value)
+        {
+            if (string.IsNullOrEmpty(value) ||
+                value.Length > 64 ||
+                value[0] < 'a' ||
+                value[0] > 'z')
+            {
+                return false;
+            }
+
+            return value.All(character =>
+                (character >= 'a' && character <= 'z') ||
+                (character >= '0' && character <= '9') ||
+                character == '_');
         }
 
         private static JToken CreateSafeResultToken(object result)
@@ -311,5 +548,32 @@ namespace AIGeneratedCode
 
         [JsonProperty("errorMessage")]
         public string ErrorMessage { get; set; } = string.Empty;
+
+        [JsonProperty("outcomeEvidence")]
+        public ExecutionOutcomeEvidence OutcomeEvidence { get; set; }
+    }
+
+    public class ExecutionOutcomeEvidence
+    {
+        [JsonProperty("schema")]
+        public string Schema { get; set; } = ExecuteCodeEventHandler.OutcomeEvidenceSchema;
+
+        [JsonProperty("effectState")]
+        public string EffectState { get; set; } = "unknown";
+
+        [JsonProperty("transactionMode")]
+        public string TransactionMode { get; set; } = "not_applicable";
+
+        [JsonProperty("evidence")]
+        public ExecutionOutcomeWitness Evidence { get; set; } = new ExecutionOutcomeWitness();
+    }
+
+    public class ExecutionOutcomeWitness
+    {
+        [JsonProperty("source")]
+        public string Source { get; set; } = "execute_dynamic_code";
+
+        [JsonProperty("transactionStatus")]
+        public string TransactionStatus { get; set; } = "unknown";
     }
 }

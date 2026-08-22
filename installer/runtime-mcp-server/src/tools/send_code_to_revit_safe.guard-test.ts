@@ -1,4 +1,8 @@
 import assert from "node:assert/strict";
+import {
+    NATIVE_OUTCOME_EVIDENCE_CONFORMANCE,
+    nativeOutcomeEvidencePreflight,
+} from "./send_code_to_revit.js";
 import { findWritePatterns } from "./send_code_to_revit_safe_guards.js";
 
 const cases = [
@@ -55,4 +59,48 @@ assert(
     "Expected Revit property assignment guard for view.Name setter",
 );
 
-console.log(`send_code_to_revit_safe guard tests passed (${cases.length} write cases)`);
+const manualTransaction =
+    "using (var tx = new Transaction(document, \"x\")) { tx.Start(); tx.Commit(); }";
+assert.equal(
+    nativeOutcomeEvidencePreflight({
+        code: manualTransaction,
+        transactionMode: "none",
+    })?.reason,
+    "native_outcome_evidence_conformance_required",
+);
+assert.equal(
+    nativeOutcomeEvidencePreflight({
+        code: manualTransaction,
+        transactionMode: "none",
+        nativeOutcomeEvidenceConformance:
+            NATIVE_OUTCOME_EVIDENCE_CONFORMANCE,
+    }),
+    null,
+);
+assert.equal(
+    nativeOutcomeEvidencePreflight({
+        code: "return null;",
+        transactionMode: "auto",
+        nativeOutcomeEvidenceConformance:
+            NATIVE_OUTCOME_EVIDENCE_CONFORMANCE,
+    })?.reason,
+    "native_outcome_evidence_requires_transaction_mode_none",
+);
+assert.equal(
+    nativeOutcomeEvidencePreflight({
+        code: "return null;",
+        transactionMode: "none",
+    }),
+    null,
+);
+assert.equal(
+    nativeOutcomeEvidencePreflight({
+        code: manualTransaction,
+        transactionMode: "auto",
+    }),
+    null,
+);
+
+console.log(
+    `send_code_to_revit_safe guard tests passed (${cases.length} write cases; 5 outcome cases)`,
+);

@@ -127,6 +127,19 @@ export {
   type UncertainMutation,
 } from "./mutationHold.js";
 export {
+  classifyMutationError,
+  knownNotDispatched,
+  MUTATION_OUTCOME_SCHEMA,
+  parseAddinMutationOutcomeEvidence,
+  validateMutationOutcomeEvidence,
+  type AddinMutationOutcomeEvidence,
+  type DispatchState,
+  type EffectState,
+  type MutationErrorDisposition,
+  type MutationOutcomeEvidence,
+  type TransactionMode,
+} from "./mutationOutcome.js";
+export {
   appendStreamChunk,
   createStreamAssembler,
   finalizeStreams,

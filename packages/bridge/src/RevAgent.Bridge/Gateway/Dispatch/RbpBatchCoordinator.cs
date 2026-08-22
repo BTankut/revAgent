@@ -170,6 +170,26 @@ internal sealed partial class RbpBatchCoordinator
     {
         ArgumentNullException.ThrowIfNull(request);
 
+        foreach (RbpBatchStepRequest step in request.Steps)
+        {
+            RbpTransactionMode mode =
+                RbpMutationOutcomeEvidence.ReadRequestedMode(
+                    step.Method,
+                    step.Parameters);
+            if (step.Mutating &&
+                mode == RbpTransactionMode.None &&
+                !RbpMutationOutcomeEvidence.HasNativeConformanceDeclaration(
+                    step.Parameters))
+            {
+                return BatchFault(
+                    request.BatchId,
+                    "protocol",
+                    "A mutating transactionMode none batch step requires " +
+                    "the exact revagent.mutation-outcome/v1 native " +
+                    "outcome-evidence declaration before dispatch.");
+            }
+        }
+
         RbpBatchCapability capability = await _capabilities
             .ResolveAsync(request.Rsid, cancellationToken)
             .ConfigureAwait(false);
@@ -214,9 +234,10 @@ internal sealed partial class RbpBatchCoordinator
         try
         {
             gated = await _journal
-                .AdmitBatchAsync(
+                .AdmitBatchOutcomeV3Async(
                     request.ToIdentity(),
                     request.ParseClearances(),
+                    TransactionModes(request),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -426,8 +447,11 @@ internal sealed partial class RbpBatchCoordinator
         if (claimDispatchOwnership)
         {
             await _journal
-                .MarkInvocationExecutingAsync(
+                .MarkInvocationExecutingOutcomeV3Async(
                     request.StepKey(index),
+                    RbpMutationOutcomeEvidence.ReadRequestedMode(
+                        step.Method,
+                        step.Parameters),
                     cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -454,7 +478,13 @@ internal sealed partial class RbpBatchCoordinator
             return await TerminalizeUncertainStepAsync(
                     request,
                     index,
-                    exception.Message)
+                    exception.Message,
+                    RbpMutationOutcomeEvidence.Uncertain(
+                        RbpDispatchState.MayHaveReachedAddin,
+                        RbpMutationOutcomeEvidence.ReadRequestedMode(
+                            step.Method,
+                            step.Parameters),
+                        "batch_channel_exception"))
                 .ConfigureAwait(false);
         }
 
@@ -479,11 +509,23 @@ internal sealed partial class RbpBatchCoordinator
                             outcome)
                         .ConfigureAwait(false),
 
+                _ when ResolveStepOutcomeEvidence(step, outcome)
+                        .KnownNonCommittingError ||
+                    (!step.Mutating &&
+                     ResolveStepOutcomeEvidence(step, outcome).EffectState ==
+                        RbpEffectState.ReadOnly) =>
+                    await TerminalizeKnownStepFailureAsync(
+                            request,
+                            index,
+                            outcome)
+                        .ConfigureAwait(false),
+
                 _ => await TerminalizeUncertainStepAsync(
                             request,
                             index,
                             outcome.Message ??
-                                "The add-in dispatch outcome is unknown.")
+                                "The add-in dispatch outcome is unknown.",
+                            ResolveStepOutcomeEvidence(step, outcome))
                         .ConfigureAwait(false),
             };
         }
@@ -533,7 +575,10 @@ internal sealed partial class RbpBatchCoordinator
                     index,
                     RbpInvocationState.Failed,
                     faultEvidence,
-                    Rfc8785Json.Sha256Digest(faultEvidence))
+                    Rfc8785Json.Sha256Digest(faultEvidence),
+                    ResolveStepOutcomeEvidence(step, outcome),
+                    error: true,
+                    faultReason)
                 .ConfigureAwait(false);
         }
 
@@ -554,7 +599,10 @@ internal sealed partial class RbpBatchCoordinator
                     ? RbpInvocationState.Guarded
                     : RbpInvocationState.Completed,
                 evidence,
-                ResultDigest(outcome.RawResponsePayload))
+                ResultDigest(outcome.RawResponsePayload),
+                ResolveStepOutcomeEvidence(step, outcome),
+                error: false,
+                message: null)
             .ConfigureAwait(false);
     }
 
@@ -581,7 +629,10 @@ internal sealed partial class RbpBatchCoordinator
                 index,
                 RbpInvocationState.Failed,
                 evidence,
-                Rfc8785Json.Sha256Digest(evidence))
+                Rfc8785Json.Sha256Digest(evidence),
+                ResolveStepOutcomeEvidence(step, outcome),
+                error: true,
+                outcome.Message)
             .ConfigureAwait(false);
     }
 
@@ -594,7 +645,8 @@ internal sealed partial class RbpBatchCoordinator
     private async Task<RbpBatchStepOutcome> TerminalizeUncertainStepAsync(
         RbpBatchRequest request,
         int index,
-        string message)
+        string message,
+        RbpMutationOutcomeEvidence outcomeEvidence)
     {
         RbpBatchStepRequest step = request.Steps[index];
         if (!step.Mutating)
@@ -614,7 +666,10 @@ internal sealed partial class RbpBatchCoordinator
                     index,
                     RbpInvocationState.Failed,
                     readEvidence,
-                    Rfc8785Json.Sha256Digest(readEvidence))
+                    Rfc8785Json.Sha256Digest(readEvidence),
+                    NormalizeReadOutcomeEvidence(outcomeEvidence),
+                    error: true,
+                    message)
                 .ConfigureAwait(false);
         }
 
@@ -622,12 +677,14 @@ internal sealed partial class RbpBatchCoordinator
         // indeterminate terminal, and writes its own durable rule 4 evidence
         // body, so no outcome is supplied here.
         string? holdId = await _journal
-            .PersistInvocationTerminalAsync(
+            .PersistInvocationOutcomeV3Async(
                 request.StepKey(index),
                 new RbpInvocationTerminal(
                     RbpInvocationState.Indeterminate,
                     Outcome: default,
                     ResultDigest: null),
+                outcomeEvidence,
+                error: true,
                 DurableDecisionToken)
             .ConfigureAwait(false);
         if (holdId is not { Length: > 0 })
@@ -659,19 +716,78 @@ internal sealed partial class RbpBatchCoordinator
         int index,
         RbpInvocationState state,
         JsonElement evidence,
-        string? resultDigest)
+        string? resultDigest,
+        RbpMutationOutcomeEvidence outcomeEvidence,
+        bool error,
+        string? message)
     {
-        await _journal
-            .PersistInvocationTerminalAsync(
+        string? holdId = await _journal
+            .PersistInvocationOutcomeV3Async(
                 request.StepKey(index),
                 new RbpInvocationTerminal(state, evidence, resultDigest),
+                outcomeEvidence,
+                error,
                 DurableDecisionToken)
             .ConfigureAwait(false);
+        if (holdId is { Length: > 0 })
+        {
+            RbpBatchStepRequest step = request.Steps[index];
+            JsonElement indeterminate = RbpBatchPayloads.ErrorEvidence(
+                RbpBatchStepStatus.Indeterminate,
+                RbpBatchPayloads.NestedError(
+                    RbpInvocationPayloads.JournalIndeterminateError(
+                        step.InvocationId,
+                        holdId,
+                        step.MutationScope,
+                        message ??
+                            RbpInvocationPayloads
+                                .MutationMayHaveExecutedMessage,
+                        replayed: false),
+                    replayed: false));
+            return new RbpBatchStepOutcome(
+                index,
+                step.InvocationId,
+                indeterminate,
+                Replayed: false);
+        }
+
         return new RbpBatchStepOutcome(
             index,
             request.Steps[index].InvocationId,
             evidence,
             Replayed: false);
+    }
+
+    private static RbpMutationOutcomeEvidence ResolveStepOutcomeEvidence(
+        RbpBatchStepRequest step,
+        RbpAddinOutcome outcome) =>
+        outcome.OutcomeEvidence ??
+        RbpMutationOutcomeEvidence.ForLegacyOutcome(
+            outcome.Kind,
+            RbpMutationOutcomeEvidence.ReadRequestedMode(
+                step.Method,
+                step.Parameters),
+            step.Mutating);
+
+    private static RbpMutationOutcomeEvidence NormalizeReadOutcomeEvidence(
+        RbpMutationOutcomeEvidence evidence)
+    {
+        if (evidence.DispatchState == RbpDispatchState.NotStarted)
+        {
+            return evidence;
+        }
+
+        return new RbpMutationOutcomeEvidence(
+            evidence.DispatchState,
+            RbpEffectState.ReadOnly,
+            evidence.TransactionMode,
+            evidence.EvidenceJcs.Replace(
+                "\"effectState\":\"unknown\"",
+                "\"effectState\":\"read_only\"",
+                StringComparison.Ordinal).Replace(
+                "\"transactionStatus\":\"unknown\"",
+                "\"transactionStatus\":\"read_only\"",
+                StringComparison.Ordinal));
     }
 
     /// <summary>
@@ -804,6 +920,16 @@ internal sealed partial class RbpBatchCoordinator
 
         return null;
     }
+
+    private static IReadOnlyList<RbpTransactionMode> TransactionModes(
+        RbpBatchRequest request) =>
+        Array.AsReadOnly(
+            request.Steps
+                .Select(step =>
+                    RbpMutationOutcomeEvidence.ReadRequestedMode(
+                        step.Method,
+                        step.Parameters))
+                .ToArray());
 
     /// <summary>
     /// The exact Appendix A.4 reserved-name set (spec ~1772-1782).

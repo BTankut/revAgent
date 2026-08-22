@@ -42,7 +42,8 @@ internal sealed class RbpRoutedInvocationChannel(
             // orchestrator.
             return NotDispatched(
                 "addin_unreachable",
-                "No add-in session is currently routable for this RBP session.");
+                "No add-in session is currently routable for this RBP session.",
+                RequestedMode(call));
         }
 
         AddinSessionRouter.InvocationLease lease;
@@ -57,7 +58,10 @@ internal sealed class RbpRoutedInvocationChannel(
             // The router refused before dispatch: an invalid or stale handle,
             // an unavailable session, or its own single-flight gate. None of
             // these write an add-in byte.
-            return NotDispatched("addin_unreachable", exception.Message);
+            return NotDispatched(
+                "addin_unreachable",
+                exception.Message,
+                RequestedMode(call));
         }
 
         var leaseHandle = new RouterLease(lease);
@@ -72,43 +76,64 @@ internal sealed class RbpRoutedInvocationChannel(
             // entirely on how far the request got, which the evidence below
             // answers; the lease is still handed back so the dispatcher, not
             // this method, decides when the session reopens.
-            return FromFailure(exception, lease, leaseHandle);
+            return FromFailure(exception, lease, leaseHandle, call);
         }
 
-        return FromResponse(result, leaseHandle);
+        return FromResponse(result, leaseHandle, call);
     }
 
-    private static RbpAddinOutcome FromResponse(
+    internal static RbpAddinOutcome FromResponse(
         AddinCallResult result,
-        IRbpDispatchLease lease)
+        IRbpDispatchLease lease,
+        AddinCall call)
     {
         AddinTransportEvidence evidence = result.Evidence;
+        RbpTransactionMode requestedMode = RequestedMode(call);
         if (result.Response.Error is { } error)
         {
-            // The add-in ran and reported a failure. That is a known outcome:
-            // the command executed and answered, so nothing is in doubt.
-            // Section 15 defaults every add-in-reported class to
-            // retryable:false — the orchestrator, not the bridge, owns retry.
+            // A JSON-RPC error proves only that an answer was observed. Its
+            // model effect is known only when the add-in supplied a valid
+            // outcome-evidence carrier. In particular, no error code is proof
+            // that a mutation did not commit.
+            RbpMutationOutcomeEvidence outcomeEvidence =
+                RbpMutationOutcomeEvidence.FromResponse(
+                    evidence,
+                    error.Data,
+                    requestedMode);
             return new RbpAddinOutcome(
-                RbpAddinOutcomeKind.KnownNotDispatched,
+                outcomeEvidence.KnownNotDispatched
+                    ? RbpAddinOutcomeKind.KnownNotDispatched
+                    : RbpAddinOutcomeKind.PossiblyDispatched,
                 default,
-                [],
+                result.Response.RawPayload,
                 evidence.RequestPayloadBytes,
                 evidence.ResponseBytesObserved,
                 FaultClass: MapAddinErrorFaultClass(error.Code),
                 Message: error.Message,
                 AddinError: new AddinErrorDetail(error.Code, error.Message),
                 Lease: lease,
-                Retryable: false);
+                Retryable: false,
+                OutcomeEvidence: outcomeEvidence);
         }
 
         JObject? body = result.Response.Result;
         using JsonDocument document = JsonDocument.Parse(
             body?.ToString(Formatting.None) ?? "{}");
         (bool guarded, string? guardedReason) = ReadGuard(body);
+        RbpMutationOutcomeEvidence responseEvidence =
+            RbpMutationOutcomeEvidence.FromResponse(
+                evidence,
+                body,
+                requestedMode);
+        bool reportedError =
+            !guarded && body?.Value<bool?>("success") == false;
 
         return new RbpAddinOutcome(
-            guarded
+            reportedError
+                ? responseEvidence.KnownNotDispatched
+                    ? RbpAddinOutcomeKind.KnownNotDispatched
+                    : RbpAddinOutcomeKind.PossiblyDispatched
+                : guarded
                 ? RbpAddinOutcomeKind.Guarded
                 : RbpAddinOutcomeKind.Completed,
             document.RootElement.Clone(),
@@ -116,13 +141,21 @@ internal sealed class RbpRoutedInvocationChannel(
             evidence.RequestPayloadBytes,
             evidence.ResponseBytesObserved,
             GuardedReason: guarded ? guardedReason : null,
-            Lease: lease);
+            FaultClass: reportedError ? "revit_api" : null,
+            Message: reportedError
+                ? body?["errorMessage"]?.Value<string>() ??
+                    "The add-in reported execution failure."
+                : null,
+            Lease: lease,
+            Retryable: reportedError ? false : null,
+            OutcomeEvidence: responseEvidence);
     }
 
     private static RbpAddinOutcome FromFailure(
         Exception exception,
         AddinSessionRouter.InvocationLease lease,
-        IRbpDispatchLease leaseHandle)
+        IRbpDispatchLease leaseHandle,
+        AddinCall call)
     {
         // `MayHaveReachedAddin` is set before the first write, so anything at
         // or past it means non-execution cannot be proved. Section 15 forbids
@@ -133,6 +166,16 @@ internal sealed class RbpRoutedInvocationChannel(
                 AddinDispatchState.ResponseObserved ||
             lease.Result is null;
 
+        RbpTransactionMode requestedMode = RequestedMode(call);
+        RbpMutationOutcomeEvidence outcomeEvidence =
+            possiblyDispatched
+                ? RbpMutationOutcomeEvidence.Uncertain(
+                    lease.Result?.Evidence.DispatchState ==
+                        AddinDispatchState.ResponseObserved
+                        ? RbpDispatchState.ResponseObserved
+                        : RbpDispatchState.MayHaveReachedAddin,
+                    requestedMode)
+                : RbpMutationOutcomeEvidence.NotDispatched(requestedMode);
         return new RbpAddinOutcome(
             possiblyDispatched
                 ? RbpAddinOutcomeKind.PossiblyDispatched
@@ -145,7 +188,8 @@ internal sealed class RbpRoutedInvocationChannel(
                 exception,
                 possiblyDispatched),
             Message: exception.Message,
-            Lease: leaseHandle);
+            Lease: leaseHandle,
+            OutcomeEvidence: outcomeEvidence);
     }
 
     /// <summary>
@@ -194,7 +238,8 @@ internal sealed class RbpRoutedInvocationChannel(
 
     private static RbpAddinOutcome NotDispatched(
         string faultClass,
-        string message) =>
+        string message,
+        RbpTransactionMode transactionMode) =>
         new(
             RbpAddinOutcomeKind.KnownNotDispatched,
             default,
@@ -202,7 +247,19 @@ internal sealed class RbpRoutedInvocationChannel(
             RequestBytes: 0,
             ResponseBytes: 0,
             FaultClass: faultClass,
-            Message: message);
+            Message: message,
+            OutcomeEvidence:
+                RbpMutationOutcomeEvidence.NotDispatched(transactionMode));
+
+    private static RbpTransactionMode RequestedMode(AddinCall call)
+    {
+        JObject parameters = call.CopyParameters();
+        using JsonDocument document = JsonDocument.Parse(
+            parameters.ToString(Formatting.None));
+        return RbpMutationOutcomeEvidence.ReadRequestedMode(
+            call.Method,
+            document.RootElement);
+    }
 
     /// <summary>
     /// Reads the add-in's guard signal. Section 10.3 keeps a guarded answer a

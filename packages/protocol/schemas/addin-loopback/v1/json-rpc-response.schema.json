@@ -33,6 +33,9 @@
           "properties": {
             "resultContractVersion": {
               "const": 2
+            },
+            "outcomeEvidence": {
+              "$ref": "https://schemas.revagent.local/addin-loopback/v1/common.schema.json#/$defs/mutationOutcomeEvidence"
             }
           },
           "additionalProperties": true

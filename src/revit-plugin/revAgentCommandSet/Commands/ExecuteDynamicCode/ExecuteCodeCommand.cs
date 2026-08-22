@@ -33,9 +33,15 @@ namespace RevAgentCommandSet.Commands.ExecuteDynamicCode
                 JArray parametersArray = parameters["parameters"] as JArray;
                 object[] executionParameters = parametersArray?.ToObject<object[]>() ?? Array.Empty<object>();
                 string transactionMode = parameters["transactionMode"]?.Value<string>() ?? ExecuteCodeEventHandler.TransactionModeAuto;
+                string nativeOutcomeEvidenceConformance =
+                    parameters["nativeOutcomeEvidenceConformance"]?.Value<string>();
 
                 // Pass execution parameters to the Revit external event handler.
-                _handler.SetExecutionParameters(code, executionParameters, transactionMode);
+                _handler.SetExecutionParameters(
+                    code,
+                    executionParameters,
+                    transactionMode,
+                    nativeOutcomeEvidenceConformance);
 
                 // Raise the external event and wait for completion.
                 if (RaiseAndWaitForCompletion(60000))
