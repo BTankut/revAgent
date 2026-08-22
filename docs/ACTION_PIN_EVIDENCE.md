@@ -41,6 +41,10 @@ raw nonblank dedent is rescanned as YAML structure, even if it remains deeper
 than the indicator line. Explicit indentation indicators are honored
 conservatively; missing or contradictory payload indentation fails closed rather
 than extending a block-scalar skip.
+For sequence mappings such as `- name: |`, the comparison baseline is the
+mapping-key structural column after the dash, not the physical line's leading
+indent. A first nonblank line at that key column ends an empty scalar and is
+rescanned as YAML structure; only a deeper line may establish block content.
 Workflow YAML syntax is checked separately. The fixture matrix at
 `scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
 rejected forms.

@@ -267,7 +267,6 @@ foreach ($relativePath in $relativeFiles) {
             }
             if ($null -eq $blockScalar.contentIndent) {
                 if ($indent -le $blockScalar.indicatorIndent) {
-                    $violations.Add(('{0}:{1} block scalar indentation is indeterminate' -f $relativePath, $lineNumber))
                     $blockScalar = $null
                 }
                 elseif ($null -ne $blockScalar.explicitIndent -and $indent -lt ($blockScalar.indicatorIndent + $blockScalar.explicitIndent)) {
@@ -369,8 +368,16 @@ foreach ($relativePath in $relativeFiles) {
         $blockMatch = [regex]::Match($line, ':\s*[>|](?<modifiers>[+-]?[1-9]?|[1-9]?[+-]?)\s*$')
         if ($blockMatch.Success) {
             $explicitDigit = [regex]::Match($blockMatch.Groups['modifiers'].Value, '[1-9]')
+            $prefix = $line.Substring(0, $blockMatch.Index)
+            $sequencePrefix = [regex]::Match($prefix, '^\s*-\s+.+$')
+            $keyStructuralIndent = if ($sequencePrefix.Success) {
+                ([regex]::Match($prefix, '^\s*-\s+')).Length
+            }
+            else {
+                $indent
+            }
             $blockScalar = [pscustomobject]@{
-                indicatorIndent = $indent
+                indicatorIndent = $keyStructuralIndent
                 explicitIndent = if ($explicitDigit.Success) { [int]$explicitDigit.Value } else { $null }
                 contentIndent = $null
             }
