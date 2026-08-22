@@ -644,6 +644,10 @@ export function createProductionRbpIngressHost(
           let terminalEgressClaimed = false;
           let terminalErrorAttempted = false;
           let teardownTask: Promise<void> | null = null;
+          let detachRequested = false;
+          let detachedConnectionId: string | null = null;
+          let detachTask: Promise<void> | null = null;
+          let transportFinalized = false;
           const pendingSendCancellations = new Set<(error: Error) => void>();
 
           const internalFault = (error: unknown): GatewayRbpFault =>
@@ -810,6 +814,49 @@ export function createProductionRbpIngressHost(
                       ? "RBP internal error"
                       : "RBP connection closed";
 
+          const detachOnce = (): Promise<void> => {
+            detachRequested = true;
+            if (authorityConnectionId === null) return Promise.resolve();
+            if (detachedConnectionId !== null) return detachTask ?? Promise.resolve();
+            detachedConnectionId = authorityConnectionId;
+            detachTask = authority.detach(authorityConnectionId).catch((error: unknown) => {
+              observeDiagnostic("teardown", "internal", 1011, error);
+            });
+            return detachTask;
+          };
+
+          const finalizeTransportOnce = (
+            force: boolean,
+            closeCode: number | null,
+            closeReason: string,
+          ): void => {
+            if (transportFinalized) return;
+            transportFinalized = true;
+            if (websocket.readyState === WebSocket.CLOSED) return;
+            if (!force && websocket.readyState === WebSocket.CLOSING) {
+              // ws already owns a protocol close (for example maxPayload 1009).
+              return;
+            }
+            if (force || closeCode === null || websocket.readyState !== WebSocket.OPEN) {
+              try {
+                websocket.terminate();
+              } catch (error) {
+                observeDiagnostic("teardown", "internal", 1011, error);
+              }
+              return;
+            }
+            try {
+              websocket.close(closeCode, closeReason.slice(0, 123));
+            } catch (error) {
+              observeDiagnostic("teardown", "internal", 1011, error);
+              try {
+                websocket.terminate();
+              } catch (terminateError) {
+                observeDiagnostic("teardown", "internal", 1011, terminateError);
+              }
+            }
+          };
+
           const scheduleTeardown = (input: {
             readonly closeCode: number | null;
             readonly closeReason: string;
@@ -819,71 +866,97 @@ export function createProductionRbpIngressHost(
             if (teardownTask !== null) return teardownTask;
             terminalEgressClaimed = true;
             if (state !== "faulted" && state !== "closed") state = "closing";
-            const task = append(async () => {
-              try {
-                if (readsPaused) {
-                  try {
-                    websocket.resume();
-                  } catch {
-                    // A transport that cannot resume is terminated below if
-                    // the orderly close cannot be initiated.
-                  }
-                  readsPaused = false;
-                }
-                const terminalSerialized =
-                  input.publicFault !== null && input.sendFaultFrame
-                    ? JSON.stringify({
-                        v: 1,
-                        type: "error",
-                        id: gatewayUuidV7(Date.now()),
-                        ts: new Date().toISOString(),
-                        payload: {
-                          retryable: false,
-                          fault_class: input.publicFault.wireFaultClass,
-                          outcome: "known",
-                          verification_required: false,
-                          message: input.publicFault.message,
-                        },
-                      } satisfies RbpEnvelope)
-                    : null;
-                const egressResult = await settleEgressForTeardown(
-                  terminalSerialized,
+            const pendingAtClaim = pendingSendCancellations.size;
+            const claimedEgressTail = egressTail;
+            let accountingObserved = false;
+            let watchdogFired = false;
+            let watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+            const watchdog = new Promise<void>((resolve) => {
+              watchdogTimer = setTimeout(() => {
+                watchdogFired = true;
+                cancelPendingSends(new Error("WSS teardown watchdog expired"));
+                observeDiagnostic(
+                  "egress",
+                  "internal",
                   input.closeCode ?? 1011,
+                  new Error("WSS send completion timed out"),
                 );
-                if (egressResult === "timed_out") {
-                  observeDiagnostic(
-                    "egress",
-                    "internal",
-                    input.closeCode ?? 1011,
-                    new Error("WSS send completion timed out"),
-                  );
-                  if (websocket.readyState !== WebSocket.CLOSED) websocket.terminate();
-                } else if (
-                  input.closeCode !== null &&
-                  websocket.readyState === WebSocket.OPEN
-                ) {
-                  try {
-                    websocket.close(input.closeCode, input.closeReason.slice(0, 123));
-                  } catch (error) {
-                    observeDiagnostic("teardown", "internal", 1011, error);
-                    websocket.terminate();
-                  }
-                }
-              } finally {
-                if (authorityConnectionId !== null) {
-                  try {
-                    await authority.detach(authorityConnectionId);
-                  } catch (error) {
-                    observeDiagnostic("teardown", "internal", 1011, error);
-                  }
-                }
+                finalizeTransportOnce(true, input.closeCode, input.closeReason);
+                void detachOnce();
                 state = "closed";
-              }
+                resolve();
+              }, sendCompletionTimeoutMs);
             });
-            teardownTask = task.catch((error: unknown) => {
+            // This cancellation must happen before the cleanup is appended
+            // behind serialTail: processFrame may itself be awaiting this send.
+            cancelPendingSends(new Error("WSS send cancelled for teardown"));
+            if (pendingAtClaim > 0) {
+              void claimedEgressTail.then(() => {
+                if (accountingObserved) return;
+                accountingObserved = true;
+                observeDiagnostic(
+                  "egress",
+                  "internal",
+                  input.closeCode ?? 1011,
+                  new Error(
+                    `WSS egress accounting released frames=${String(applicationEgressFrames)} bytes=${String(applicationEgressBytes)}`,
+                  ),
+                );
+              });
+            }
+            const serializedCleanup = append(async () => {
+              if (watchdogFired) return;
+              if (readsPaused) {
+                try {
+                  websocket.resume();
+                } catch {
+                  // The watchdog owns the force-close fallback.
+                }
+                readsPaused = false;
+              }
+              const terminalSerialized =
+                input.publicFault !== null && input.sendFaultFrame
+                  ? JSON.stringify({
+                      v: 1,
+                      type: "error",
+                      id: gatewayUuidV7(Date.now()),
+                      ts: new Date().toISOString(),
+                      payload: {
+                        retryable: false,
+                        fault_class: input.publicFault.wireFaultClass,
+                        outcome: "known",
+                        verification_required: false,
+                        message: input.publicFault.message,
+                      },
+                    } satisfies RbpEnvelope)
+                  : null;
+              const egressResult = await settleEgressForTeardown(
+                terminalSerialized,
+                input.closeCode ?? 1011,
+              );
+              if (watchdogFired) return;
+              if (egressResult === "timed_out") {
+                observeDiagnostic(
+                  "egress",
+                  "internal",
+                  input.closeCode ?? 1011,
+                  new Error("WSS send completion timed out"),
+                );
+                finalizeTransportOnce(true, input.closeCode, input.closeReason);
+              } else {
+                finalizeTransportOnce(false, input.closeCode, input.closeReason);
+              }
+              await detachOnce();
+              if (!watchdogFired) state = "closed";
+            });
+            const observedCleanup = serializedCleanup.catch(async (error: unknown) => {
               observeDiagnostic("teardown", "internal", 1011, error);
+              finalizeTransportOnce(true, input.closeCode, input.closeReason);
+              await detachOnce();
               state = "closed";
-              if (websocket.readyState !== WebSocket.CLOSED) websocket.terminate();
+            });
+            teardownTask = Promise.race([observedCleanup, watchdog]).finally(() => {
+              if (watchdogTimer !== null) clearTimeout(watchdogTimer);
             });
             return teardownTask;
           };
@@ -1060,6 +1133,7 @@ export function createProductionRbpIngressHost(
                 throw new Error("WSS socket attempted to claim a second authority connection");
               }
               authorityConnectionId = opened.connectionId;
+              if (detachRequested) void detachOnce();
               if (state !== "opening") return;
               if (!applyNegotiatedQueueLimits(opened)) return;
               await channel.send(JSON.stringify(opened.helloAck));

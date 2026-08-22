@@ -1174,7 +1174,7 @@ describe("GW-12 production RBP ingress", () => {
     const terminate = vi.spyOn(serverSocket, "terminate");
     const held = holdWebSocketSendCallbacks(serverSocket);
     const stuck = channel.send(JSON.stringify({ stuck: true }));
-    const stuckOutcome = expect(stuck).rejects.toThrow("send completion timed out");
+    const stuckOutcome = expect(stuck).rejects.toThrow("send cancelled for teardown");
     await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
     const lateCallback = held.callbacks[0]!;
     const startedAt = Date.now();
@@ -1199,6 +1199,166 @@ describe("GW-12 production RBP ingress", () => {
     expect(detach).toHaveBeenCalledTimes(1);
     expect(client.messages.map((message) => message.type)).toStrictEqual(["hello_ack"]);
     held.restore();
+  });
+
+  it("preempts a stuck hello-ack send before serial cleanup on socket error", async () => {
+    const timeoutMs = 50;
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const detach = vi.spyOn(authority, "detach");
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { sendCompletionTimeoutMs: timeoutMs },
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    const close = vi.spyOn(serverSocket, "close");
+    const terminate = vi.spyOn(serverSocket, "terminate");
+    const held = holdWebSocketSendCallbacks(serverSocket);
+
+    try {
+      client.socket.send(JSON.stringify(hello()));
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      const lateCallback = held.callbacks[0]!;
+      const startedAt = Date.now();
+      serverSocket.emit("error", new Error("synthetic hello-ack transport error"));
+
+      const closed = await client.closed;
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(closed).toMatchObject({ code: 1011, reason: "RBP internal error" });
+      expect(close.mock.calls.length).toBeGreaterThanOrEqual(1);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(client.messages).toHaveLength(0);
+      expect(
+        diagnostics.some((diagnostic) =>
+          diagnostic.detail.includes("egress accounting released frames=0 bytes=0"),
+        ),
+      ).toBe(true);
+      expect(unhandled).toStrictEqual([]);
+      const closeCallsAtTerminal = close.mock.calls.length;
+
+      lateCallback();
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(close).toHaveBeenCalledTimes(closeCallsAtTerminal);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(unhandled).toStrictEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      held.restore();
+      if (client.socket.readyState !== WebSocket.CLOSED) client.socket.terminate();
+    }
+  });
+
+  it("watchdogs a stuck heartbeat-ack serial tail on socket close and ignores late completion", async () => {
+    const timeoutMs = 30;
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const stubbornTail = deferred();
+    const receiveSettled = deferred();
+    const originalReceive = authority.receive.bind(authority);
+    vi.spyOn(authority, "receive").mockImplementation(async (...args) => {
+      try {
+        await originalReceive(...args);
+      } catch {
+        await stubbornTail.promise;
+      } finally {
+        receiveSettled.resolve();
+      }
+    });
+    const detach = vi.spyOn(authority, "detach");
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { sendCompletionTimeoutMs: timeoutMs },
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const close = vi.spyOn(serverSocket, "close");
+    const terminate = vi.spyOn(serverSocket, "terminate");
+    const held = holdWebSocketSendCallbacks(serverSocket);
+
+    try {
+      client.socket.send(
+        JSON.stringify({
+          v: 1,
+          type: "heartbeat",
+          id: id(),
+          ts: new Date().toISOString(),
+          payload: { bridge_version: "gw12-test", acks: [], sessions: [] },
+        } satisfies RbpEnvelope),
+      );
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      const lateCallback = held.callbacks[0]!;
+      const startedAt = Date.now();
+      serverSocket.emit("close", 1000, Buffer.from("synthetic close"));
+
+      const closed = await client.closed;
+      expect(Date.now() - startedAt).toBeLessThan(1_000);
+      expect(closed.code).toBe(1006);
+      expect(close).not.toHaveBeenCalled();
+      expect(terminate).toHaveBeenCalledTimes(1);
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(client.messages.map((message) => message.type)).toStrictEqual(["hello_ack"]);
+      expect(
+        diagnostics.some((diagnostic) =>
+          diagnostic.detail.includes("egress accounting released frames=0 bytes=0"),
+        ),
+      ).toBe(true);
+      expect(unhandled).toStrictEqual([]);
+
+      lateCallback();
+      stubbornTail.resolve();
+      await receiveSettled.promise;
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(close).not.toHaveBeenCalled();
+      expect(terminate).toHaveBeenCalledTimes(1);
+      expect(detach).toHaveBeenCalledTimes(1);
+      expect(unhandled).toStrictEqual([]);
+    } finally {
+      stubbornTail.resolve();
+      process.off("unhandledRejection", onUnhandled);
+      held.restore();
+      if (client.socket.readyState !== WebSocket.CLOSED) client.socket.terminate();
+    }
   });
 
   it("sends one safe schema error before close and rejects every later normal frame", async () => {
