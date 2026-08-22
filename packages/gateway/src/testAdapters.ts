@@ -89,6 +89,12 @@ function device(
     }),
     connectionId: `conn-${deviceId}`,
     deviceStatus: status,
+    machineFingerprint: `sha256:${"1".repeat(64)}`,
+    authorizationVersion: 1,
+    identityRecordVersion: 1,
+    seatAuthorityVersion: 1,
+    seatRecordVersion: 1,
+    grantedConnectionCapabilities: Object.freeze([]),
     grantedSessionCapabilities: Object.freeze([]),
     deviceTokenDigest: `sha256:${"0".repeat(64)}` as const,
   });
