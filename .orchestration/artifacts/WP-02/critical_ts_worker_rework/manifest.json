@@ -1,0 +1,50 @@
+{
+  "schema": "revagent-remediation-artifact-manifest/v1",
+  "work_package": "WP-02",
+  "cycle": "egress-fence-rework",
+  "base_sha": "e2f3d52ff19eac01f93ff7060965f213f8625486",
+  "runtime": {
+    "node": "v24.19.0",
+    "npm_config_ignore_scripts": "false",
+    "lifecycle_override_scope": "process"
+  },
+  "final_results": {
+    "focused_unregister": "58 passed",
+    "gateway": "42 files passed; 571 tests passed; 5 skipped",
+    "protocol": "303 tests passed",
+    "protocol_conformance": "success"
+  },
+  "entries": [
+    { "file": "02-gateway-typecheck-wired.log", "exit": 2, "sha256": "c8d932507b9d6a48d62c181063ac875f69ce42590a275542c06266fca227772b", "status": "superseded" },
+    { "file": "03-gateway-typecheck-wired-rerun.log", "exit": 2, "sha256": "50958c536eb3d66eed44b2e621cd631dceb96595d7d7c3c508886b94564fd307", "status": "superseded" },
+    { "file": "04-gateway-typecheck-structural.log", "exit": 2, "sha256": "5364e18a2d4c84955722d1d114344b4b17ba4d17faff9a22d2176f4d61cab61a", "status": "superseded" },
+    { "file": "05-gateway-typecheck-first-pass.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "06-focused-existing-before-new-tests.log", "exit": 0, "sha256": "27f7c9ff9bd3a843ae48a3dd2c4639b61f442b025d9ad1861837fb4da7c9269d", "status": "pass" },
+    { "file": "07-gateway-typecheck-test-harness.log", "exit": 2, "sha256": "7db51b8afd63febc7d989ae334a2cd13b52fafc011548bb7dbbd991d31ec8c9b", "status": "superseded" },
+    { "file": "08-gateway-typecheck-race-tests.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "09-focused-race-suite.log", "exit": 0, "sha256": "0e14eb2ed7664b84f16de4ae00018b046a0dd77e96407642bf494c7110e830ae", "status": "pass" },
+    { "file": "10-gateway-typecheck-fault-tests.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "11-focused-fault-suite.log", "exit": 1, "sha256": "723264ee5b4912612217116139056cfcb51752d74499820d9d52cde853668b9e", "status": "superseded" },
+    { "file": "12-focused-fault-suite-rerun.log", "exit": 0, "sha256": "6665b1bca49f0d88581515c4c9c1ed8816ddaa3ba048a4d8a2767ccaf38918a0", "status": "pass" },
+    { "file": "13-gateway-typecheck-admission-tests.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "14-focused-admission-corruption-suite.log", "exit": 1, "sha256": "cf146e36b4a9f23a2be5061ea6d6c4a16453f4d4cad8c3c80199816c76468bfd", "status": "superseded" },
+    { "file": "15-focused-admission-corruption-rerun.log", "exit": 0, "sha256": "2ca4640a8b506b41b151aa38d18a9a82307ec88620fa02319608491faed1f614", "status": "pass" },
+    { "file": "16-gateway-typecheck-complete-focused.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "17-focused-complete-suite.log", "exit": 0, "sha256": "e24953a9fa09010e3794f6d1674b570c3ced1c5bfa0e12531d47ad70f0217042", "status": "pass" },
+    { "file": "18-gateway-lint-initial.log", "exit": 1, "sha256": "7b372f0cdbfe573618c62d50c8718d9fc26c1c7c31bae30f2945d232e696bc5b", "status": "superseded" },
+    { "file": "19-gateway-lint-pass.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "pass" },
+    { "file": "20-gateway-full-test.log", "exit": 0, "sha256": "08808d6e25c1421e54cacf69f0e4310c4cdacf0fb62a6d8077d3f832a9594f4c", "status": "pass" },
+    { "file": "21-protocol-typecheck.log", "exit": 0, "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc", "status": "pass" },
+    { "file": "22-protocol-lint.log", "exit": 0, "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27", "status": "pass" },
+    { "file": "23-protocol-full-test.log", "exit": 0, "sha256": "de770e3b6c4b1a363d0907bafbb30148a6fa29ef7afe4d9206103a5228796f89", "status": "pass" },
+    { "file": "24-gateway-typecheck-final.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "25-gateway-lint-final.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "pass" },
+    { "file": "26-protocol-conformance-final.log", "exit": 0, "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c", "status": "pass" },
+    { "file": "27-gateway-typecheck-candidate.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "candidate-pass" },
+    { "file": "28-gateway-lint-candidate.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "candidate-pass" },
+    { "file": "29-gateway-full-test-candidate.log", "exit": 0, "sha256": "c37ca20f04020909eccc00fdd38f5e64d768285c56f9e77e8d01e55c2754ba9d", "status": "superseded" },
+    { "file": "30-gateway-typecheck-final-candidate.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "candidate-pass" },
+    { "file": "31-gateway-lint-final-candidate.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "candidate-pass" },
+    { "file": "32-gateway-full-test-final-candidate.log", "exit": 0, "sha256": "2d20d2152f2b001b137c5dee0352b342d901b2d3b925128f208c7c5276288755", "status": "candidate-pass" }
+  ]
+}
