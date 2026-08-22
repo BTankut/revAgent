@@ -2121,6 +2121,10 @@ describe("GW-12 production RBP ingress", () => {
       tenantId: "tenant-gw12",
       deviceId: "device-gw12",
       seatId: "seat-gw12",
+      authorizationVersion: 2,
+      identityRecordVersion: 2,
+      connectionCapabilityVersion: 2,
+      sessionCapabilityVersion: 2,
     });
     let streamClosed = false;
     for (let reads = 0; reads < 4 && !streamClosed; reads += 1) {
@@ -2192,6 +2196,10 @@ describe("GW-12 production RBP ingress", () => {
       tenantId: "tenant-gw12",
       deviceId: "device-gw12",
       seatId: "seat-gw12",
+      authorizationVersion: 2,
+      identityRecordVersion: 2,
+      connectionCapabilityVersion: 2,
+      sessionCapabilityVersion: 2,
     });
     await expect(client.closed).resolves.toMatchObject({
       code: 4403,
@@ -2215,6 +2223,10 @@ describe("GW-12 production RBP ingress", () => {
           tenantId: "tenant-gw12",
           deviceId: "device-gw12",
           seatId: "seat-gw12",
+          authorizationVersion: 2,
+          identityRecordVersion: 2,
+          connectionCapabilityVersion: 2,
+          sessionCapabilityVersion: 2,
         });
         return opened;
       });
