@@ -378,6 +378,13 @@ Unknown sessions, cross-owner replays, and a replay whose `reason` differs from 
 with `4403`. A bridge with a durable pending-unregister tombstone MUST replay
 `session_unregister` directly on each fresh binding; it MUST NOT resume the revoked session first.
 
+The Gateway stores that v1 tombstone at the tenant-scoped key `(tenantId, rsid)` in
+`gateway.rbp-unregister/v1`. Its frozen DC-01 fields are `version`, authenticated owner, `reason`,
+`revokedAtMs`, `byConnectionId`, and the normalized pending disposition. Creation atomically writes the
+tombstone and changes the legacy `gateway.rbp-session/v1` row to non-resumable/non-dispatchable; readback of
+the exact tombstone is required before returning success. Until WP-10 owns a successor schema, admission reads
+the v1 session/tombstone union fail-closed and does not claim v2 normalization or migration.
+
 The bridge revokes local dispatch as soon as it durably records unregister intent. It MUST NOT mutate local
 lifecycle or outbound-queue authority before that journal transaction commits. If a post-commit durability
 operation reports an error, the bridge re-reads the exact tombstone: an observed matching intent revokes local

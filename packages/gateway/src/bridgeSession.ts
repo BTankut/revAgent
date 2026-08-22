@@ -9,6 +9,7 @@ import {
   makeParamsDigest,
   createConnectionLifecycle,
   createSessionLifecycle,
+  handleJournalSessionUnregister,
   markJournalExecuting,
   markJournalIndeterminate,
   queueOutboundData,
@@ -31,6 +32,7 @@ import {
   type RbpSequenceState,
   type SessionRegister,
   type SessionLifecycleState,
+  type SessionUnregister,
   type JsonValue,
 } from "@revagent/protocol";
 
@@ -62,6 +64,8 @@ import type { GatewayInvocationRoute } from "./invocationContext.js";
 
 export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
+export const GATEWAY_RBP_UNREGISTER_NAMESPACE =
+  "gateway.rbp-unregister/v1" as const;
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMEOUT_MS = 120_000;
@@ -118,6 +122,48 @@ interface DurableRbpSession {
   readonly evidence: readonly DurableDispatchEvidence[];
   readonly updatedAtMs: number;
 }
+
+/**
+ * DC-01 deliberately keeps revocation beside, rather than inside, the v1
+ * session row.  The store transaction is tenant scoped, so namespace + rsid
+ * is the durable (tenantId, rsid) key.  This preserves legacy v1 session rows
+ * while making revocation independently readable before resume or dispatch.
+ */
+interface DurableUnregisterTombstone {
+  readonly schema: typeof GATEWAY_RBP_UNREGISTER_NAMESPACE;
+  readonly version: 1;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly owner: {
+    readonly deviceId: string;
+    readonly userId: string;
+    readonly seatId: string;
+  };
+  readonly reason: SessionUnregister["reason"];
+  readonly revokedAtMs: number;
+  readonly byConnectionId: string;
+  readonly pendingDisposition:
+    | {
+        readonly kind: "none" | "read_closed";
+        readonly correlationId: string | null;
+        readonly verificationHoldIds: readonly [];
+      }
+    | {
+        readonly kind: "mutation_indeterminate";
+        readonly correlationId: string;
+        readonly verificationHoldIds: readonly string[];
+      };
+}
+
+type DurableUnregisterWrite =
+  | {
+      readonly kind: "created";
+      readonly tombstone: DurableUnregisterTombstone;
+      readonly pendingOutcome: GatewayExecutorOutcome | null;
+      readonly pendingCorrelationId: string | null;
+    }
+  | { readonly kind: "replay"; readonly tombstone: DurableUnregisterTombstone }
+  | { readonly kind: "rejected"; readonly reason: string };
 
 interface LiveConnection {
   readonly connectionId: string;
@@ -230,6 +276,85 @@ function registeredSessionLifecycle(
   let state = createSessionLifecycle(localSessionKey);
   state = sessionTransition(state, { type: "register_requested" });
   return sessionTransition(state, { type: "registered", rsid });
+}
+
+function sameTombstoneOwner(
+  owner: DurableUnregisterTombstone["owner"],
+  record: Pick<DurableRbpSession, "deviceId" | "userId" | "seatId">,
+): boolean {
+  return (
+    owner.deviceId === record.deviceId &&
+    owner.userId === record.userId &&
+    owner.seatId === record.seatId
+  );
+}
+
+function isUnregisterReason(value: unknown): value is SessionUnregister["reason"] {
+  return (
+    value === "revit_exited" ||
+    value === "bridge_shutdown" ||
+    value === "session_replaced" ||
+    value === "operator_requested"
+  );
+}
+
+/** Do not interpret malformed durable state as an absent revocation. */
+function parseUnregisterTombstone(value: unknown): DurableUnregisterTombstone {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("malformed unregister tombstone");
+  }
+  const candidate = value as Record<string, unknown>;
+  const owner = candidate.owner;
+  const disposition = candidate.pendingDisposition;
+  const verificationHoldIds =
+    disposition !== null && typeof disposition === "object" && !Array.isArray(disposition)
+      ? (disposition as Record<string, unknown>).verificationHoldIds
+      : undefined;
+  if (
+    candidate.schema !== GATEWAY_RBP_UNREGISTER_NAMESPACE ||
+    candidate.version !== 1 ||
+    typeof candidate.tenantId !== "string" ||
+    candidate.tenantId.length === 0 ||
+    typeof candidate.rsid !== "string" ||
+    candidate.rsid.length === 0 ||
+    owner === null ||
+    typeof owner !== "object" ||
+    Array.isArray(owner) ||
+    typeof (owner as Record<string, unknown>).deviceId !== "string" ||
+    typeof (owner as Record<string, unknown>).userId !== "string" ||
+    typeof (owner as Record<string, unknown>).seatId !== "string" ||
+    !isUnregisterReason(candidate.reason) ||
+    !Number.isSafeInteger(candidate.revokedAtMs) ||
+    (candidate.revokedAtMs as number) < 0 ||
+    typeof candidate.byConnectionId !== "string" ||
+    candidate.byConnectionId.length === 0 ||
+    disposition === null ||
+    typeof disposition !== "object" ||
+    Array.isArray(disposition) ||
+    !Array.isArray(verificationHoldIds)
+  ) {
+    throw new Error("malformed unregister tombstone");
+  }
+  const parsedDisposition = disposition as Record<string, unknown>;
+  if (
+    (parsedDisposition.kind !== "none" &&
+      parsedDisposition.kind !== "read_closed" &&
+      parsedDisposition.kind !== "mutation_indeterminate") ||
+    (parsedDisposition.correlationId !== null &&
+      typeof parsedDisposition.correlationId !== "string") ||
+    verificationHoldIds.some(
+      (holdId: unknown) => typeof holdId !== "string" || holdId.length === 0,
+    ) ||
+    (parsedDisposition.kind === "mutation_indeterminate" &&
+      (typeof parsedDisposition.correlationId !== "string" ||
+        parsedDisposition.correlationId.length === 0 ||
+        verificationHoldIds.length === 0)) ||
+    (parsedDisposition.kind !== "mutation_indeterminate" &&
+      verificationHoldIds.length !== 0)
+  ) {
+    throw new Error("malformed unregister tombstone");
+  }
+  return candidate as unknown as DurableUnregisterTombstone;
 }
 
 function immutableEnvelopeDigest(envelope: RbpEnvelope): `sha256:${string}` {
@@ -737,7 +862,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         await this.#resume(connection, envelope.payload);
         return;
       case "session_unregister":
-        await this.#unregister(connection, envelope.payload.rsid);
+        await this.#unregister(connection, envelope.payload);
         return;
       case "heartbeat":
         await this.#heartbeat(connection, envelope.payload.acks);
@@ -1036,6 +1161,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         error: { code: "executor_unavailable", message: "registered rsid is not active" },
       };
     }
+    if (await this.#readUnregisterTombstone(input.tenantId, input.rsid) !== null) {
+      return {
+        state: "failed",
+        error: { code: "executor_unavailable", message: "registered rsid is revoked" },
+      };
+    }
     const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
     const journals = input.journalRecords.map(markJournalExecuting);
@@ -1046,6 +1177,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         record.sessionBindingId !== active.record.sessionBindingId
       ) {
         throw new Error("active session binding changed before dispatch");
+      }
+      if (!record.sessionLifecycle.dispatchAllowed) {
+        throw new Error("durable session is not dispatchable");
       }
       if (record.pending !== null) {
         throw new Error("RBP dispatch window already has active work");
@@ -1166,6 +1300,18 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tx: Pick<StoreTransaction, "read" | "list">,
     expected: GatewayExpectedDispatchTarget,
   ): Promise<GatewayBridgeResumeAuthorization> {
+    const tombstone = await tx.read<GatewayJsonValue>(
+      GATEWAY_RBP_UNREGISTER_NAMESPACE,
+      expected.rsid,
+    );
+    if (tombstone !== null) {
+      try {
+        parseUnregisterTombstone(tombstone.value);
+      } catch {
+        return { kind: "not_authorized", reason: "unregister_tombstone_invalid" };
+      }
+      return { kind: "not_authorized", reason: "session_unregistered" };
+    }
     const stored = await tx.read<GatewayJsonValue>(
       GATEWAY_RBP_SESSION_NAMESPACE,
       expected.rsid,
@@ -1175,7 +1321,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (
       session.sessionBindingId !== expected.sessionBindingId ||
       session.connectionId !== expected.connectionId ||
-      session.sequence.nextTxSeq !== expected.gatewaySequence
+      session.sequence.nextTxSeq !== expected.gatewaySequence ||
+      !session.sessionLifecycle.dispatchAllowed
     ) {
       return { kind: "not_authorized", reason: "dispatch_target_mismatch" };
     }
@@ -1265,6 +1412,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
   ): Promise<void> {
+    if (
+      await this.#readUnregisterTombstone(
+        connection.auth.actor.tenantId,
+        payload.rsid,
+      ) !== null
+    ) {
+      throw new GatewayRbpFault("auth", "resume authorization rejected", 403, 4403);
+    }
     const stored = await this.#readSession(
       connection.auth.actor.tenantId,
       payload.rsid,
@@ -1272,7 +1427,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (
       stored.deviceId !== connection.auth.actor.deviceId ||
       stored.resumeTokenDigest !== digest(payload.resume_token) ||
-      stored.resumeExpiresAtMs <= this.#clock()
+      stored.resumeExpiresAtMs <= this.#clock() ||
+      !stored.sessionLifecycle.resumeAllowed
     ) {
       throw new GatewayRbpFault("auth", "resume authorization rejected", 403, 4403);
     }
@@ -1330,15 +1486,215 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
-  async #unregister(connection: LiveConnection, rsid: string): Promise<void> {
-    const active = this.#active.get(rsid);
-    if (
-      active === undefined ||
-      active.record.connectionId !== connection.connectionId
-    ) {
-      throw new GatewayRbpFault("auth", "session is not bound to this connection", 403, 4403);
+  async #unregister(
+    connection: LiveConnection,
+    payload: SessionUnregister,
+  ): Promise<void> {
+    const tenantId = connection.auth.actor.tenantId;
+    const owner = {
+      deviceId: connection.auth.actor.deviceId,
+      userId: connection.auth.actor.userId,
+      seatId: connection.auth.actor.seatId,
+    };
+    const persisted = await this.store.transact({ tenantId }, async (tx) => {
+      const existingTombstone = await tx.read<GatewayJsonValue>(
+        GATEWAY_RBP_UNREGISTER_NAMESPACE,
+        payload.rsid,
+      );
+      if (existingTombstone !== null) {
+        let tombstone: DurableUnregisterTombstone;
+        try {
+          tombstone = parseUnregisterTombstone(existingTombstone.value);
+        } catch {
+          return { kind: "rejected", reason: "unregister_tombstone_invalid" } as const;
+        }
+        if (
+          tombstone.tenantId !== tenantId ||
+          !sameTombstoneOwner(tombstone.owner, owner) ||
+          tombstone.reason !== payload.reason
+        ) {
+          return { kind: "rejected", reason: "unregister_owner_or_reason_mismatch" } as const;
+        }
+        return { kind: "replay", tombstone } as const;
+      }
+
+      const stored = await tx.read<GatewayJsonValue>(
+        GATEWAY_RBP_SESSION_NAMESPACE,
+        payload.rsid,
+      );
+      if (stored === null) {
+        return { kind: "rejected", reason: "unknown_rsid" } as const;
+      }
+      const record = stored.value as unknown as DurableRbpSession;
+      if (
+        record.tenantId !== tenantId ||
+        !sameTombstoneOwner(owner, record)
+      ) {
+        return { kind: "rejected", reason: "unregister_owner_mismatch" } as const;
+      }
+      if (
+        !record.sessionLifecycle.dispatchAllowed &&
+        !record.sessionLifecycle.resumeAllowed
+      ) {
+        return { kind: "rejected", reason: "unregister_legacy_state_invalid" } as const;
+      }
+
+      const nowMs = this.#clock();
+      const pending = record.pending;
+      const holdIds: string[] = [];
+      const journals = pending?.journalRecords.map((journal) => {
+        const nonExecutionProven =
+          journal.state === "received" && !journal.dispatchMayHaveStarted;
+        const holdId =
+          journal.binding.mutating && !nonExecutionProven
+            ? gatewayUuidV7(nowMs)
+            : null;
+        if (holdId !== null) holdIds.push(holdId);
+        return handleJournalSessionUnregister(
+          journal,
+          nonExecutionProven,
+          holdId,
+        ).record;
+      }) ?? [];
+      // Direct executor tests and read-only callers may not have a recovery
+      // journal carrier yet.  The durable tombstone still records a normalized
+      // hold identity so a possibly dispatched mutation never degrades into a
+      // known failure during this pre-WP10 compatibility window.
+      if (pending?.mutating && holdIds.length === 0) {
+        holdIds.push(gatewayUuidV7(nowMs));
+      }
+      const nextSessionVersion = record.sessionVersion + 1;
+      const pendingDisposition: DurableUnregisterTombstone["pendingDisposition"] =
+        holdIds.length > 0 && pending !== null
+          ? {
+              kind: "mutation_indeterminate",
+              correlationId: pending.invocationId,
+              verificationHoldIds: [...new Set(holdIds)].sort(),
+            }
+          : {
+              kind: pending === null ? "none" : "read_closed",
+              correlationId: pending?.invocationId ?? null,
+              verificationHoldIds: [],
+            };
+      const journalKind: GatewayVerifiedBridgeJournalEvidence["kind"] =
+        holdIds.length > 0 ? "indeterminate" : "known_terminal";
+      const tombstone: DurableUnregisterTombstone = {
+        schema: GATEWAY_RBP_UNREGISTER_NAMESPACE,
+        version: 1,
+        tenantId,
+        rsid: payload.rsid,
+        owner,
+        reason: payload.reason,
+        revokedAtMs: nowMs,
+        byConnectionId: connection.connectionId,
+        pendingDisposition,
+      };
+      const evidence: readonly DurableDispatchEvidence[] = pending === null || journals.length === 0
+        ? record.evidence
+        : [
+            ...record.evidence.filter(
+              (candidate) => candidate.envelopeDigest !== pending.envelopeDigest,
+            ),
+            {
+              envelopeDigest: pending.envelopeDigest,
+              acceptance:
+                record.evidence.find(
+                  (candidate) => candidate.envelopeDigest === pending.envelopeDigest,
+                )?.acceptance ?? null,
+              journal: {
+                kind: journalKind,
+                rsid: record.rsid,
+                sessionBindingId: record.sessionBindingId,
+                envelopeDigest: pending.envelopeDigest,
+                journalRecords: journals,
+                batchTerminal: null,
+                durableJournalVersion: nextSessionVersion,
+                recordedAtMs: nowMs,
+              },
+            },
+          ];
+      const sessionLifecycle = sessionTransition(record.sessionLifecycle, {
+        type: "unregister",
+        reason: payload.reason,
+      });
+      const next: DurableRbpSession = {
+        ...record,
+        sessionVersion: nextSessionVersion,
+        resumeExpiresAtMs: nowMs,
+        sessionLifecycle,
+        pending: null,
+        evidence,
+        updatedAtMs: nowMs,
+      };
+      tx.stage({
+        namespace: GATEWAY_RBP_UNREGISTER_NAMESPACE,
+        key: payload.rsid,
+        value: asJson(tombstone),
+        expect: { kind: "absent" },
+      });
+      tx.stage({
+        namespace: GATEWAY_RBP_SESSION_NAMESPACE,
+        key: payload.rsid,
+        value: asJson(next),
+        expect: { kind: "version", version: stored.version },
+      });
+      return {
+        kind: "created",
+        tombstone,
+        pendingOutcome:
+          pending === null ? null : this.#indeterminateOutcome(pending.mutating),
+        pendingCorrelationId: pending?.invocationId ?? null,
+      } as const;
+    });
+
+    let decision: DurableUnregisterWrite;
+    if (persisted.ok) {
+      decision = persisted.value;
+    } else {
+      const observed = await this.#readUnregisterTombstone(tenantId, payload.rsid);
+      if (
+        observed === null ||
+        observed.tenantId !== tenantId ||
+        !sameTombstoneOwner(observed.owner, owner) ||
+        observed.reason !== payload.reason
+      ) {
+        throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
+      }
+      decision = { kind: "replay", tombstone: observed };
     }
-    this.#active.delete(rsid);
+    if (decision.kind === "rejected") {
+      throw new GatewayRbpFault("auth", decision.reason, 403, 4403);
+    }
+
+    const readBack = await this.#readUnregisterTombstone(tenantId, payload.rsid);
+    if (
+      readBack === null ||
+      readBack.tenantId !== tenantId ||
+      !sameTombstoneOwner(readBack.owner, owner) ||
+      readBack.reason !== payload.reason
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "unregister tombstone was not durably readable",
+        503,
+        1011,
+      );
+    }
+
+    if (decision.kind === "created") {
+      this.#active.delete(payload.rsid);
+      if (
+        decision.pendingCorrelationId !== null &&
+        decision.pendingOutcome !== null
+      ) {
+        const waiter = this.#waiters.get(decision.pendingCorrelationId);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(decision.pendingCorrelationId);
+          waiter.resolve(decision.pendingOutcome);
+        }
+      }
+    }
   }
 
   async #heartbeat(
@@ -1560,6 +1916,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       updatedAtMs: this.#clock(),
     }));
     active.record = updated;
+  }
+
+  async #readUnregisterTombstone(
+    tenantId: string,
+    rsid: string,
+  ): Promise<DurableUnregisterTombstone | null> {
+    const result = await this.store.transact({ tenantId }, async (tx) =>
+      tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid),
+    );
+    if (!result.ok) {
+      throw new GatewayRbpFault("unavailable", result.message, 503, 1011);
+    }
+    if (result.value === null) return null;
+    try {
+      return parseUnregisterTombstone(result.value.value);
+    } catch {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "unregister tombstone is malformed",
+        503,
+        1011,
+      );
+    }
   }
 
   async #readSession(tenantId: string, rsid: string): Promise<DurableRbpSession> {
