@@ -71,11 +71,13 @@ function Read-YamlQuotedScalar {
 
     $quote = $Text[$Start]
     $value = [System.Text.StringBuilder]::new()
+    $hadEscape = $false
     for ($index = $Start + 1; $index -lt $Text.Length; $index++) {
         $character = $Text[$index]
         if ($quote -eq '"' -and $character -eq '\') {
+            $hadEscape = $true
             if (($index + 1) -ge $Text.Length) {
-                return [pscustomobject]@{ success = $false; reason = 'unterminated escape'; next = $Text.Length; value = '' }
+                return [pscustomobject]@{ success = $false; reason = 'unterminated escape'; next = $Text.Length; value = ''; hasEscape = $true }
             }
             [void]$value.Append($Text[$index + 1])
             $index++
@@ -87,11 +89,32 @@ function Read-YamlQuotedScalar {
                 $index++
                 continue
             }
-            return [pscustomobject]@{ success = $true; reason = ''; next = $index + 1; value = $value.ToString() }
+            return [pscustomobject]@{ success = $true; reason = ''; next = $index + 1; value = $value.ToString(); hasEscape = $hadEscape }
         }
         [void]$value.Append($character)
     }
-    return [pscustomobject]@{ success = $false; reason = 'unterminated quoted scalar'; next = $Text.Length; value = '' }
+    return [pscustomobject]@{ success = $false; reason = 'unterminated quoted scalar'; next = $Text.Length; value = ''; hasEscape = $false }
+}
+
+function Test-UnsupportedExplicitMappingKeySyntax {
+    param([string]$Line)
+
+    for ($index = 0; $index -lt $Line.Length; $index++) {
+        $character = $Line[$index]
+        if ($character -in @("'", '"')) {
+            $quoted = Read-YamlQuotedScalar -Text $Line -Start $index
+            if (-not $quoted.success) { return $false }
+            $index = $quoted.next - 1
+            continue
+        }
+        if ($character -ne '?') { continue }
+        $previousIsBoundary = $index -eq 0 -or [char]::IsWhiteSpace($Line[$index - 1]) -or $Line[$index - 1] -in @('{', ',')
+        if (-not $previousIsBoundary) { continue }
+        $next = $index + 1
+        while ($next -lt $Line.Length -and [char]::IsWhiteSpace($Line[$next])) { $next++ }
+        if ($next -lt $Line.Length -and $Line[$next] -ne '#') { return $true }
+    }
+    return $false
 }
 
 function Read-YamlUsesValue {
@@ -175,6 +198,10 @@ foreach ($relativePath in $relativeFiles) {
     foreach ($rawLine in @(Get-Content -LiteralPath $absolutePath -ErrorAction Stop)) {
         $lineNumber++
         $line = Remove-YamlComment -Line $rawLine
+        if (Test-UnsupportedExplicitMappingKeySyntax -Line $line) {
+            $violations.Add(('{0}:{1} explicit YAML mapping-key syntax is unsupported' -f $relativePath, $lineNumber))
+            continue
+        }
         $flowDepth = 0
         for ($index = 0; $index -lt $line.Length; $index++) {
             $character = $line[$index]
@@ -183,6 +210,7 @@ foreach ($relativePath in $relativeFiles) {
 
             $key = $null
             $keyEnd = $index
+            $keyHasEscape = $false
             if ($character -in @("'", '"')) {
                 $quotedKey = Read-YamlQuotedScalar -Text $line -Start $index
                 if (-not $quotedKey.success) {
@@ -194,6 +222,7 @@ foreach ($relativePath in $relativeFiles) {
                 }
                 $key = $quotedKey.value
                 $keyEnd = $quotedKey.next
+                $keyHasEscape = $quotedKey.hasEscape
             }
             elseif ($character -match '[A-Za-z_]') {
                 $keyEnd = $index + 1
@@ -208,6 +237,11 @@ foreach ($relativePath in $relativeFiles) {
             while ($colon -lt $line.Length -and [char]::IsWhiteSpace($line[$colon])) { $colon++ }
             if ($null -eq $key -or $colon -ge $line.Length -or $line[$colon] -ne ':') {
                 $index = [Math]::Max($index, $keyEnd - 1)
+                continue
+            }
+            if ($keyHasEscape) {
+                $violations.Add(('{0}:{1} backslash escapes in double-quoted mapping keys are unsupported' -f $relativePath, $lineNumber))
+                $index = $keyEnd - 1
                 continue
             }
 

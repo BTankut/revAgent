@@ -17,7 +17,10 @@ This is an intentionally narrow fail-closed lexer, not a general YAML parser.
 It rejects every recognized `uses` key that lacks one exact scalar, including
 multiline values, anchors, aliases, dynamic expressions, reusable workflows,
 Docker actions, tags, branches, uppercase SHAs, short SHAs, and ambiguous
-tails. Workflow YAML syntax is checked separately. The fixture matrix at
+tails. Backslash escapes in *any* double-quoted mapping key and YAML explicit
+mapping-key syntax (`? key`, quoted explicit keys, and flow explicit keys) are
+rejected globally as unsupported, even when the key is unrelated to `uses`.
+Workflow YAML syntax is checked separately. The fixture matrix at
 `scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
 rejected forms.
 
