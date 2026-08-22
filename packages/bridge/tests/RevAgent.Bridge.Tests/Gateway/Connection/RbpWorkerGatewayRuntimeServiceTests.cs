@@ -358,6 +358,13 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         var transport = new ScriptedStatusTransport();
         var router = new AddinSessionRouter(transport);
+        var credentialClaims = new RbpCredentialClaimBinding(
+            new RuntimeEnrollmentProvider(
+                "token-0123456789ABCDEFGHIJKLMNOP",
+                TestMachineFingerprint));
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
         var catalog = new WorkerAddinSessionCatalog(
             new AddinDiscovery(transport, new NoOpProcessAttestor()),
             router,
@@ -365,7 +372,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => new FixedCredentialProvider(),
             (rsid, _) => Task.FromResult<string?>(null),
             "0.1.0-test",
-            "WS01");
+            "WS01",
+            credentialClaims: credentialClaims);
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
@@ -456,6 +464,48 @@ public sealed partial class RbpConnectionCoordinatorTests
         {
             await service.StopAsync(CancellationToken.None);
         }
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
+    {
+        string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
+        var enrollment = new RuntimeEnrollmentProvider(
+            currentToken,
+            TestMachineFingerprint);
+        var credentialClaims = new RbpCredentialClaimBinding(enrollment);
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
+
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new RuntimeCredentialProvider(
+                currentToken,
+                TestMachineFingerprint),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01",
+            credentialClaims: credentialClaims);
+
+        Assert.Single(await catalog.ReadAsync());
+
+        currentToken = "rotated-0123456789ABCDEFGHIJKLMNOP";
+        RbpGatewayTransportException mismatch =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => catalog.ReadAsync());
+        Assert.Equal(RbpGatewayFailureKind.Authorization, mismatch.Kind);
+        Assert.Equal(4403, mismatch.CloseCode);
+
+        enrollment.Token = currentToken;
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
+        Assert.Single(await catalog.ReadAsync());
     }
 
     private const string TestMachineFingerprint =
@@ -610,6 +660,48 @@ public sealed partial class RbpConnectionCoordinatorTests
                 "device-1",
                 new BridgeSecretString("token-0123456789ABCDEFGHIJKLMNOP"),
                 TestMachineFingerprint);
+    }
+
+    private sealed class RuntimeCredentialProvider :
+        IBridgeDeviceCredentialProvider
+    {
+        private readonly string _token;
+        private readonly string _claim;
+
+        internal RuntimeCredentialProvider(string token, string claim)
+        {
+            _token = token;
+            _claim = claim;
+        }
+
+        public BridgeGatewayCredential GetRequired() =>
+            new(
+                "device-1",
+                new BridgeSecretString(_token),
+                _claim);
+    }
+
+    private sealed class RuntimeEnrollmentProvider :
+        IRbpEnrollmentStateProvider
+    {
+        internal RuntimeEnrollmentProvider(string token, string claim)
+        {
+            Token = token;
+            Claim = claim;
+        }
+
+        internal string Token { get; set; }
+
+        internal string Claim { get; }
+
+        public ValueTask<RbpEnrollmentSnapshot> ReadAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                RbpEnrollmentSnapshot.Ready(
+                    new RbpDeviceCredential("device-1", Token, Claim)));
+        }
     }
 
     private static RbpLocalSessionSnapshot WatchedLocalSession(

@@ -61,7 +61,9 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
             enrollment.Credential is not { } credential)
         {
             throw new RbpGatewayTransportException(
-                RbpGatewayFailureKind.EnrollmentRequired,
+                enrollment.Status == RbpEnrollmentStatus.Invalid
+                    ? RbpGatewayFailureKind.Authorization
+                    : RbpGatewayFailureKind.EnrollmentRequired,
                 "The fallback cannot open until enrollment is ready " +
                 $"({enrollment.DiagnosticCode}).");
         }

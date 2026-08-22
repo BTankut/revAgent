@@ -89,6 +89,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             journalOptions);
         try
         {
+            var credentialClaims = new RbpCredentialClaimBinding(
+                WorkerGatewayComposition.CreateEnrollmentStateProvider(
+                    layout));
             var transport = new AddinTcpTransport();
             var router = new AddinSessionRouter(transport);
             var catalog = new WorkerAddinSessionCatalog(
@@ -102,21 +105,22 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                         .ConfigureAwait(false))?.LocalSessionKey,
                 bridgeVersion,
                 hostname: null,
-                onDiscovered: onDiscovered);
+                onDiscovered: onDiscovered,
+                credentialClaims: credentialClaims);
 
             RbpConnectionCoordinator coordinator =
                 WorkerGatewayComposition.CreateCoordinator(
                     new WorkerGatewayServices(
                         WorkerGatewayComposition.CreateConnectionCycleFactory(
-                            WorkerGatewayComposition
-                                .CreateEnrollmentStateProvider(layout)),
+                            credentialClaims),
                         journal,
                         catalog,
                         new RbpConnectionCoordinatorOptions(
                             configuration.GatewayUri,
                             RbpHelloProfile.Production(
                                 bridgeVersion,
-                                Array.Empty<string>())),
+                                Array.Empty<string>()),
+                            CredentialClaimInvalidator: credentialClaims),
                         new WorkerAddinDispatchSurface(router, catalog),
                         Clock: null,
                         Random: null,
