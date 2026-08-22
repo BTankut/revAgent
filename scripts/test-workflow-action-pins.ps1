@@ -262,7 +262,7 @@ foreach ($relativePath in $relativeFiles) {
         $indent = ([regex]::Match($rawLine, '^\s*')).Length
         $line = Remove-YamlComment -Line $rawLine
         if ($null -ne $blockScalar) {
-            if ([string]::IsNullOrWhiteSpace($line.Trim())) {
+            if ([string]::IsNullOrWhiteSpace($rawLine.Trim())) {
                 continue
             }
             if ($null -eq $blockScalar.contentIndent) {
