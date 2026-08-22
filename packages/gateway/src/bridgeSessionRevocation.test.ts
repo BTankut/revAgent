@@ -1047,6 +1047,75 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await authority.close();
   });
 
+  it("treats an exact equal-version device revoke as a zero-side-effect replay", async () => {
+    const fixture = createRestartableTestStore();
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    if (!revoked.ok) throw new Error(revoked.message);
+    const scope = deviceRevocationScope(revoked.value, SEAT_A);
+    await authority.revokeIdentityAuthority(scope);
+    const versionAfterFirst = fixture.snapshot().nextVersion;
+    const closesAfterFirst = session.channel.closes.length;
+    await expect(authority.revokeIdentityAuthority(scope)).resolves.toBeUndefined();
+    expect(fixture.snapshot().nextVersion).toBe(versionAfterFirst);
+    expect(session.channel.closes).toHaveLength(closesAfterFirst);
+    await authority.close();
+  });
+
+  it("rejects capability-version conflicts without mutating a revoked device fence", async () => {
+    const fixture = createRestartableTestStore();
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      preproduction.identity,
+    );
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    if (!revoked.ok) throw new Error(revoked.message);
+    const scope = deviceRevocationScope(revoked.value, SEAT_A);
+    await authority.revokeIdentityAuthority(scope);
+    const versionAfterRevoke = fixture.snapshot().nextVersion;
+    const closesAfterRevoke = session.channel.closes.length;
+
+    await expect(
+      authority.revokeIdentityAuthority({
+        ...scope,
+        connectionCapabilityVersion: scope.connectionCapabilityVersion - 1,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409, closeCode: 4403 });
+    expect(fixture.snapshot().nextVersion).toBe(versionAfterRevoke);
+    expect(session.channel.closes).toHaveLength(closesAfterRevoke);
+
+    await expect(
+      authority.revokeIdentityAuthority({
+        ...scope,
+        authorizationVersion: scope.authorizationVersion + 1,
+        identityRecordVersion: scope.identityRecordVersion + 1,
+        connectionCapabilityVersion: scope.connectionCapabilityVersion - 1,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409, closeCode: 4403 });
+    expect(fixture.snapshot().nextVersion).toBe(versionAfterRevoke);
+    expect(session.channel.closes).toHaveLength(closesAfterRevoke);
+    await authority.close();
+  });
+
   it("denies delayed active authentication released after seat revoke", async () => {
     const fixture = createRestartableTestStore();
     const preproduction = preProductionFixture();
@@ -1067,6 +1136,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       seatId: SEAT_A,
       authorizationVersion: 2,
       identityRecordVersion: 2,
+      connectionCapabilityVersion: 2,
+      sessionCapabilityVersion: 2,
       seatAuthorityVersion: 2,
       seatRecordVersion: 2,
     });
@@ -1120,6 +1191,36 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       channel: freshChannel,
     });
     expect(freshOpening.connectionId).toBeTypeOf("string");
+    await authority.receive(
+      freshOpening.connectionId,
+      registration(FINGERPRINT_A),
+    );
+    const freshRegistered = registered(freshChannel);
+    await expect(
+      authority.revokeIdentityAuthority(
+        deviceRevocationScope(revoked.value, SEAT_A),
+      ),
+    ).resolves.toBeUndefined();
+    await expect(
+      authority.revokeIdentityAuthority({
+        tenantId: TENANT_A,
+        kind: "device",
+        deviceId: DEVICE_A,
+        seatId: SEAT_A,
+        authorizationVersion: 3,
+        identityRecordVersion: 3,
+        connectionCapabilityVersion: 3,
+        sessionCapabilityVersion: 3,
+      }),
+    ).rejects.toMatchObject({ httpStatus: 409, closeCode: 4403 });
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === freshRegistered.payload.rsid,
+      ),
+    ).toBe(false);
+    authority.assertConnectionOutbound(freshOpening.connectionId);
     delayed.release();
     await expect(oldOpening).rejects.toMatchObject({
       code: "auth",
@@ -1269,7 +1370,7 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await authority.close();
   });
 
-  it("revokes every live device sharing the revoked seat", async () => {
+  it("rejects equal-version seat takeover, then admits only higher reassignment", async () => {
     const fixture = createRestartableTestStore();
     const sharedSeat = "seat-shared-revocation";
     const multi = multiPreProductionFixture([
@@ -1284,27 +1385,93 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       deviceToken: multi.tokens.get(DEVICE_A)!,
       fingerprint: FINGERPRINT_A,
     });
-    const sessionB = await openAndRegister({
-      authority,
-      deviceId: DEVICE_B,
-      deviceToken: multi.tokens.get(DEVICE_B)!,
-      fingerprint: FINGERPRINT_B,
-    });
-    await authority.revokeIdentityAuthority({
+    await expect(
+      authority.openConnection({
+        deviceToken: multi.tokens.get(DEVICE_B)!,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    authority.assertConnectionOutbound(sessionA.connectionId);
+    expect(sessionA.channel.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toBe(false);
+
+    const revokedB = multi.identity.revokeDevice(DEVICE_B);
+    if (!revokedB.ok) throw new Error(revokedB.message);
+    const issuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-device-b",
       tenantId: TENANT_A,
-      kind: "seat",
+      userId: USER_B,
+      deviceId: DEVICE_B,
       seatId: sharedSeat,
-      seatAuthorityVersion: 2,
-      seatRecordVersion: 2,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!issuedB.ok) throw new Error(issuedB.message);
+    const exchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: issuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!exchangedB.ok) throw new Error(exchangedB.message);
+    const channelB = channel();
+    const openingB = await authority.openConnection({
+      deviceToken: exchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channelB,
     });
     expect(sessionA.channel.closes[0]?.code).toBe(4403);
-    expect(sessionB.channel.closes[0]?.code).toBe(4403);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    await authority.receive(openingB.connectionId, registration(FINGERPRINT_B));
+    const registeredB = registered(channelB);
+    const versionBeforeStaleSeatNotification = fixture.snapshot().nextVersion;
     await expect(
-      authority.assertConnectionCredential(sessionA.connectionId, multi.tokens.get(DEVICE_A)!),
-    ).rejects.toMatchObject({ httpStatus: 403 });
+      authority.revokeIdentityAuthority({
+        tenantId: TENANT_A,
+        kind: "seat",
+        deviceId: DEVICE_A,
+        seatId: sharedSeat,
+        authorizationVersion: 2,
+        identityRecordVersion: 2,
+        connectionCapabilityVersion: 2,
+        sessionCapabilityVersion: 2,
+        seatAuthorityVersion: 2,
+        seatRecordVersion: 2,
+      }),
+    ).resolves.toBeUndefined();
+    expect(fixture.snapshot().nextVersion).toBe(
+      versionBeforeStaleSeatNotification,
+    );
     await expect(
-      authority.assertConnectionCredential(sessionB.connectionId, multi.tokens.get(DEVICE_B)!),
-    ).rejects.toMatchObject({ httpStatus: 403 });
+      authority.openConnection({
+        deviceToken: multi.tokens.get(DEVICE_A)!,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    authority.assertConnectionOutbound(openingB.connectionId);
+    expect(channelB.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === registeredB.payload.rsid,
+      ),
+    ).toBe(false);
     await authority.close();
   });
 
@@ -1549,12 +1716,10 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     );
     await gate.entered;
     const revoked = preproduction.identity.revokeDevice(DEVICE_A);
-    expect(revoked.ok).toBe(true);
-    const revocation = authority.revokeIdentityAuthority({
-      tenantId: TENANT_A,
-      deviceId: DEVICE_A,
-      seatId: SEAT_A,
-    });
+    if (!revoked.ok) throw new Error(revoked.message);
+    const revocation = authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
     await waitForOutboundFence(authority, opened.connectionId);
     gate.release();
     const [registerResult, revokeResult] = await bounded(
@@ -1620,12 +1785,10 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     });
     await gate.entered;
     const revoked = preproduction.identity.revokeDevice(DEVICE_A);
-    expect(revoked.ok).toBe(true);
-    const revocation = authority.revokeIdentityAuthority({
-      tenantId: TENANT_A,
-      deviceId: DEVICE_A,
-      seatId: SEAT_A,
-    });
+    if (!revoked.ok) throw new Error(revoked.message);
+    const revocation = authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
     await waitForOutboundFence(authority, replacement.connectionId);
     gate.release();
     const [resumeResult, revokeResult] = await bounded(
@@ -1677,12 +1840,10 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     );
     await gate.entered;
     const revoked = preproduction.identity.revokeDevice(DEVICE_A);
-    expect(revoked.ok).toBe(true);
-    const revocation = authority.revokeIdentityAuthority({
-      tenantId: TENANT_A,
-      deviceId: DEVICE_A,
-      seatId: SEAT_A,
-    });
+    if (!revoked.ok) throw new Error(revoked.message);
+    const revocation = authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
     await waitForOutboundFence(authority, session.connectionId);
     gate.release();
     const [executionResult, revokeResult] = await bounded(
@@ -1744,12 +1905,10 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     });
     await gate.entered;
     const revoked = preproduction.identity.revokeDevice(DEVICE_A);
-    expect(revoked.ok).toBe(true);
-    const revocation = authority.revokeIdentityAuthority({
-      tenantId: TENANT_A,
-      deviceId: DEVICE_A,
-      seatId: SEAT_A,
-    });
+    if (!revoked.ok) throw new Error(revoked.message);
+    const revocation = authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
     await waitForOutboundFence(authority, session.connectionId);
     gate.release();
     const [heartbeatResult, revokeResult] = await bounded(

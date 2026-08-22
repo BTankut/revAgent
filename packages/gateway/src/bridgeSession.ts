@@ -157,6 +157,7 @@ interface DeviceAuthorityFence {
   readonly connectionCapabilityVersion: number | null;
   readonly sessionCapabilityVersion: number | null;
   readonly seatId: string | null;
+  readonly reason: "device_revoked" | "seat_revoked" | null;
 }
 
 interface SeatAuthorityFence {
@@ -165,6 +166,7 @@ interface SeatAuthorityFence {
   readonly seatAuthorityVersion: number | null;
   readonly seatRecordVersion: number | null;
   readonly deviceId: string | null;
+  readonly reason: "seat_revoked" | null;
 }
 
 interface DurablePendingDispatch {
@@ -2474,7 +2476,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       prior.identityRecordVersion === input.identityRecordVersion &&
       prior.connectionCapabilityVersion === input.connectionCapabilityVersion &&
       prior.sessionCapabilityVersion === input.sessionCapabilityVersion &&
-      prior.seatId === input.seatId;
+      prior.seatId === input.seatId &&
+      prior.reason === input.reason;
     const next = Object.freeze({
       ...input,
       generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
@@ -2495,7 +2498,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       prior.status === input.status &&
       prior.seatAuthorityVersion === input.seatAuthorityVersion &&
       prior.seatRecordVersion === input.seatRecordVersion &&
-      prior.deviceId === input.deviceId;
+      prior.deviceId === input.deviceId &&
+      prior.reason === input.reason;
     const next = Object.freeze({
       ...input,
       generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
@@ -2513,8 +2517,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   #admitAuthenticatedScope(connection: LiveConnection): {
+    readonly kind: "admitted";
     readonly deviceGeneration: number;
     readonly seatGeneration: number;
+  } | {
+    readonly kind: "seat_reassignment";
+    readonly priorDeviceId: string;
   } {
     const tenantId = connection.auth.actor.tenantId;
     const durable = durableIdentityAuthority(connection.auth);
@@ -2524,6 +2532,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const identityRecordVersion = durable?.identityRecordVersion ?? null;
     const seatVersion = durable?.seatAuthorityVersion ?? null;
     const seatRecordVersion = durable?.seatRecordVersion ?? null;
+    const seatOwnerChanged =
+      seatPrior?.deviceId !== null &&
+      seatPrior?.deviceId !== undefined &&
+      seatPrior.deviceId !== connection.auth.actor.deviceId;
+    const seatVersionsEqual =
+      seatPrior !== null &&
+      seatPrior.seatAuthorityVersion === seatVersion &&
+      seatPrior.seatRecordVersion === seatRecordVersion;
+    const seatVersionsHigher =
+      seatPrior !== null &&
+      seatPrior.seatAuthorityVersion !== null &&
+      seatPrior.seatRecordVersion !== null &&
+      seatVersion !== null &&
+      seatRecordVersion !== null &&
+      seatVersion > seatPrior.seatAuthorityVersion &&
+      seatRecordVersion > seatPrior.seatRecordVersion;
     const deviceCanActivate =
       devicePrior === null ||
       (devicePrior.status === "active" &&
@@ -2546,22 +2570,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const seatCanActivate =
       seatPrior === null ||
       (seatPrior.status === "active" &&
-        seatPrior.seatAuthorityVersion === seatVersion &&
-        seatPrior.seatRecordVersion === seatRecordVersion) ||
+        !seatOwnerChanged &&
+        seatVersionsEqual) ||
       (seatPrior.status === "active" &&
-        seatVersion !== null &&
-        seatRecordVersion !== null &&
-        (seatPrior.seatAuthorityVersion === null ||
-          seatVersion > seatPrior.seatAuthorityVersion) &&
-        (seatPrior.seatRecordVersion === null ||
-          seatRecordVersion > seatPrior.seatRecordVersion)) ||
+        seatVersionsHigher) ||
       (seatPrior.status === "revoked" &&
-        seatPrior.seatAuthorityVersion !== null &&
-        seatPrior.seatRecordVersion !== null &&
-        seatVersion !== null &&
-        seatRecordVersion !== null &&
-        seatVersion > seatPrior.seatAuthorityVersion &&
-        seatRecordVersion > seatPrior.seatRecordVersion);
+        seatVersionsHigher);
     if (!deviceCanActivate || !seatCanActivate) {
       throw new GatewayRbpFault(
         "auth",
@@ -2569,6 +2583,53 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         403,
         4403,
       );
+    }
+    if (seatOwnerChanged) {
+      if (!seatVersionsHigher || seatPrior?.deviceId === null) {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat owner change requires a strictly newer coherent authority",
+          403,
+          4403,
+        );
+      }
+      const oldDevice = this.#deviceFence(tenantId, seatPrior.deviceId);
+      this.#setDeviceAuthorityFence(tenantId, seatPrior.deviceId, {
+        status: "blocked",
+        authorizationVersion: oldDevice?.authorizationVersion ?? null,
+        identityRecordVersion: oldDevice?.identityRecordVersion ?? null,
+        connectionCapabilityVersion:
+          oldDevice?.connectionCapabilityVersion ?? null,
+        sessionCapabilityVersion: oldDevice?.sessionCapabilityVersion ?? null,
+        seatId: connection.auth.actor.seatId,
+        reason: "seat_revoked",
+      });
+      this.#setDeviceAuthorityFence(
+        tenantId,
+        connection.auth.actor.deviceId,
+        {
+          status: "blocked",
+          authorizationVersion: deviceVersion,
+          identityRecordVersion,
+          connectionCapabilityVersion:
+            durable?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion:
+            durable?.sessionCapabilityVersion ?? null,
+          seatId: connection.auth.actor.seatId,
+          reason: null,
+        },
+      );
+      this.#setSeatAuthorityFence(tenantId, connection.auth.actor.seatId, {
+        status: "blocked",
+        seatAuthorityVersion: seatVersion,
+        seatRecordVersion,
+        deviceId: connection.auth.actor.deviceId,
+        reason: null,
+      });
+      return {
+        kind: "seat_reassignment",
+        priorDeviceId: seatPrior.deviceId,
+      };
     }
     const device = this.#setDeviceAuthorityFence(
       tenantId,
@@ -2581,6 +2642,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           durable?.connectionCapabilityVersion ?? null,
         sessionCapabilityVersion: durable?.sessionCapabilityVersion ?? null,
         seatId: connection.auth.actor.seatId,
+        reason: null,
       },
     );
     const seat = this.#setSeatAuthorityFence(
@@ -2591,9 +2653,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         seatAuthorityVersion: seatVersion,
         seatRecordVersion,
         deviceId: connection.auth.actor.deviceId,
+        reason: null,
       },
     );
     return {
+      kind: "admitted",
       deviceGeneration: device.generation,
       seatGeneration: seat.generation,
     };
@@ -2603,6 +2667,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const prior = this.#deviceFence(device.tenantId, device.deviceId);
     const status: ScopedAuthorityStatus =
       device.status === "active" ? "active" : "revoked";
+    if (
+      prior !== null &&
+      ((prior.authorizationVersion !== null &&
+        device.authorizationVersion < prior.authorizationVersion) ||
+        (prior.identityRecordVersion !== null &&
+          device.recordVersion < prior.identityRecordVersion))
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "device snapshot regressed scoped authority versions",
+        503,
+        1011,
+      );
+    }
     if (status === "active" && prior !== null) {
       const versionIsOlder =
         (prior.authorizationVersion !== null &&
@@ -2631,6 +2709,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       connectionCapabilityVersion: device.connectionCapabilityVersion,
       sessionCapabilityVersion: device.sessionCapabilityVersion,
       seatId: device.seatId,
+      reason: status === "active" ? null : prior?.reason ?? "device_revoked",
     });
   }
 
@@ -2638,6 +2717,37 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const prior = this.#seatFence(seat.tenantId, seat.seatId);
     const status: ScopedAuthorityStatus =
       seat.status === "active" ? "active" : "revoked";
+    if (
+      prior !== null &&
+      ((prior.seatAuthorityVersion !== null &&
+        seat.seatAuthorityVersion < prior.seatAuthorityVersion) ||
+        (prior.seatRecordVersion !== null &&
+          seat.recordVersion < prior.seatRecordVersion))
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat snapshot regressed scoped authority versions",
+        503,
+        1011,
+      );
+    }
+    if (
+      status === "active" &&
+      prior?.status === "active" &&
+      prior.deviceId !== null &&
+      prior.deviceId !== seat.deviceId &&
+      (prior.seatAuthorityVersion === null ||
+        prior.seatRecordVersion === null ||
+        seat.seatAuthorityVersion <= prior.seatAuthorityVersion ||
+        seat.recordVersion <= prior.seatRecordVersion)
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat owner changed without a higher coherent authority version",
+        503,
+        1011,
+      );
+    }
     if (status === "active" && prior !== null) {
       const versionIsOlder =
         (prior.seatAuthorityVersion !== null &&
@@ -2664,6 +2774,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       seatAuthorityVersion: seat.seatAuthorityVersion,
       seatRecordVersion: seat.recordVersion,
       deviceId: seat.deviceId,
+      reason: status === "active" ? null : prior?.reason ?? "seat_revoked",
     });
   }
 
@@ -2672,8 +2783,69 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     events: readonly IdentityRevocationEventV1[],
   ): void {
     for (const event of events) {
+      const priorSeat =
+        event.seatId === null ? null : this.#seatFence(tenantId, event.seatId);
+      if (
+        event.seatId !== null &&
+        event.seatAuthorityVersion !== null &&
+        priorSeat?.seatAuthorityVersion !== null &&
+        priorSeat?.seatAuthorityVersion !== undefined &&
+        event.seatAuthorityVersion < priorSeat.seatAuthorityVersion
+      ) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "identity event regressed seat authority version",
+          503,
+          1011,
+        );
+      }
+      if (
+        event.action === "seat_reassigned" &&
+        event.seatId !== null &&
+        priorSeat?.deviceId !== null &&
+        priorSeat?.deviceId !== undefined &&
+        priorSeat.deviceId !== event.deviceId
+      ) {
+        if (
+          event.seatAuthorityVersion === null ||
+          priorSeat.seatAuthorityVersion === null ||
+          event.seatAuthorityVersion <= priorSeat.seatAuthorityVersion
+        ) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "seat reassignment event lacks a higher authority version",
+            503,
+            1011,
+          );
+        }
+        const oldDevice = this.#deviceFence(tenantId, priorSeat.deviceId);
+        this.#setDeviceAuthorityFence(tenantId, priorSeat.deviceId, {
+          status: "blocked",
+          authorizationVersion: oldDevice?.authorizationVersion ?? null,
+          identityRecordVersion: oldDevice?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            oldDevice?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion:
+            oldDevice?.sessionCapabilityVersion ?? null,
+          seatId: event.seatId,
+          reason: "seat_revoked",
+        });
+      }
       if (event.deviceId !== null) {
         const prior = this.#deviceFence(tenantId, event.deviceId);
+        if (
+          event.authorizationVersion !== null &&
+          prior?.authorizationVersion !== null &&
+          prior?.authorizationVersion !== undefined &&
+          event.authorizationVersion < prior.authorizationVersion
+        ) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event regressed device authority version",
+            503,
+            1011,
+          );
+        }
         this.#setDeviceAuthorityFence(tenantId, event.deviceId, {
           status: event.action === "seat_reassigned" ? "blocked" : "revoked",
           authorizationVersion:
@@ -2683,6 +2855,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             prior?.connectionCapabilityVersion ?? null,
           sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
           seatId: event.seatId ?? prior?.seatId ?? null,
+          reason:
+            event.action === "seat_reassigned" ? null : event.action,
         });
       }
       if (event.action !== "device_revoked" && event.seatId !== null) {
@@ -2693,6 +2867,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             event.seatAuthorityVersion ?? prior?.seatAuthorityVersion ?? null,
           seatRecordVersion: prior?.seatRecordVersion ?? null,
           deviceId: event.deviceId ?? prior?.deviceId ?? null,
+          reason: event.action === "seat_reassigned" ? null : "seat_revoked",
         });
       }
     }
@@ -2749,7 +2924,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (this.#productionIdentity !== null) {
       await this.synchronizeIdentityRevocations(tenantId);
     }
-    return await this.#withTenantIdentityAuthority(tenantId, async () => {
+    const phase = await this.#withTenantIdentityAuthority(tenantId, async () => {
       if (
         this.#blockedTenants.has(tenantId) ||
         connection.auth.deviceStatus !== "active" ||
@@ -2778,6 +2953,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }
       }
       const scoped = this.#admitAuthenticatedScope(connection);
+      if (scoped.kind === "seat_reassignment") return scoped;
       const tenantBlockGeneration =
         this.#tenantBlockGenerations.get(tenantId) ?? 0;
       connection.tenantBlockGeneration = tenantBlockGeneration;
@@ -2792,6 +2968,86 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         deviceGeneration: scoped.deviceGeneration,
         seatGeneration: scoped.seatGeneration,
         identityAuthority: durableIdentityAuthority(connection.auth),
+      });
+    });
+    if ("tenantId" in phase) return phase;
+
+    // The tenant tail is released before old-owner rsid cleanup.
+    await this.#reconcileExplicitIdentityRevocation({
+      tenantId,
+      kind: "device",
+      deviceId: phase.priorDeviceId,
+      seatId: connection.auth.actor.seatId,
+      affectedDeviceIds: new Set([phase.priorDeviceId]),
+    });
+    return await this.#withTenantIdentityAuthority(tenantId, async () => {
+      const durable = durableIdentityAuthority(connection.auth);
+      const seat = this.#seatFence(tenantId, connection.auth.actor.seatId);
+      if (
+        seat?.status !== "blocked" ||
+        seat.deviceId !== connection.auth.actor.deviceId ||
+        seat.seatAuthorityVersion !==
+          (durable?.seatAuthorityVersion ?? null) ||
+        seat.seatRecordVersion !== (durable?.seatRecordVersion ?? null)
+      ) {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat reassignment authority changed during old-owner cleanup",
+          403,
+          4403,
+        );
+      }
+      const oldDevice = this.#deviceFence(tenantId, phase.priorDeviceId);
+      this.#setDeviceAuthorityFence(tenantId, phase.priorDeviceId, {
+        status: "revoked",
+        authorizationVersion: oldDevice?.authorizationVersion ?? null,
+        identityRecordVersion: oldDevice?.identityRecordVersion ?? null,
+        connectionCapabilityVersion:
+          oldDevice?.connectionCapabilityVersion ?? null,
+        sessionCapabilityVersion: oldDevice?.sessionCapabilityVersion ?? null,
+        seatId: connection.auth.actor.seatId,
+        reason: "seat_revoked",
+      });
+      const device = this.#setDeviceAuthorityFence(
+        tenantId,
+        connection.auth.actor.deviceId,
+        {
+          status: "active",
+          authorizationVersion: durable?.authorizationVersion ?? null,
+          identityRecordVersion: durable?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            durable?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion:
+            durable?.sessionCapabilityVersion ?? null,
+          seatId: connection.auth.actor.seatId,
+          reason: null,
+        },
+      );
+      const activeSeat = this.#setSeatAuthorityFence(
+        tenantId,
+        connection.auth.actor.seatId,
+        {
+          status: "active",
+          seatAuthorityVersion: durable?.seatAuthorityVersion ?? null,
+          seatRecordVersion: durable?.seatRecordVersion ?? null,
+          deviceId: connection.auth.actor.deviceId,
+          reason: null,
+        },
+      );
+      const tenantBlockGeneration =
+        this.#tenantBlockGenerations.get(tenantId) ?? 0;
+      connection.tenantBlockGeneration = tenantBlockGeneration;
+      connection.deviceGeneration = device.generation;
+      connection.seatGeneration = activeSeat.generation;
+      return Object.freeze({
+        tenantId,
+        deviceId: connection.auth.actor.deviceId,
+        seatId: connection.auth.actor.seatId,
+        connectionId: connection.connectionId,
+        tenantBlockGeneration,
+        deviceGeneration: device.generation,
+        seatGeneration: activeSeat.generation,
+        identityAuthority: durable,
       });
     });
   }
@@ -3499,12 +3755,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   public async revokeIdentityAuthority(input: {
     readonly tenantId: string;
     readonly kind?: "device" | "seat";
-    readonly deviceId?: string;
-    readonly seatId?: string;
-    readonly authorizationVersion?: number;
-    readonly identityRecordVersion?: number;
-    readonly connectionCapabilityVersion?: number;
-    readonly sessionCapabilityVersion?: number;
+    readonly deviceId: string;
+    readonly seatId: string;
+    readonly authorizationVersion: number;
+    readonly identityRecordVersion: number;
+    readonly connectionCapabilityVersion: number;
+    readonly sessionCapabilityVersion: number;
     readonly seatAuthorityVersion?: number;
     readonly seatRecordVersion?: number;
   }): Promise<void> {
@@ -3512,8 +3768,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const kind = input.kind ?? "device";
     if (
       input.tenantId.length === 0 ||
-      (kind === "device" && input.deviceId === undefined) ||
-      (kind === "seat" && input.seatId === undefined) ||
+      input.deviceId.length === 0 ||
+      input.seatId.length === 0 ||
+      input.authorizationVersion === undefined ||
+      input.identityRecordVersion === undefined ||
+      input.connectionCapabilityVersion === undefined ||
+      input.sessionCapabilityVersion === undefined ||
+      (kind === "seat" &&
+        (input.seatAuthorityVersion === undefined ||
+          input.seatRecordVersion === undefined)) ||
       [
         input.authorizationVersion,
         input.identityRecordVersion,
@@ -3529,10 +3792,108 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     await this.#withTenantRevocationRun(input.tenantId, async () => {
       const affectedDeviceIds = new Set<string>();
+      let phaseMutated = false;
       try {
-        await this.#withTenantIdentityAuthority(
+        const phase = await this.#withTenantIdentityAuthority(
           input.tenantId,
           async () => {
+            const deviceNotificationIsStaleOrReplay = (
+              deviceId: string,
+            ): "advance" | "noop" => {
+              const prior = this.#deviceFence(input.tenantId, deviceId);
+              if (prior?.authorizationVersion !== null &&
+                  prior?.authorizationVersion !== undefined) {
+                if (input.authorizationVersion! < prior.authorizationVersion) {
+                  return "noop";
+                }
+                if (input.authorizationVersion === prior.authorizationVersion) {
+                  const exactReplay =
+                    prior.status === "revoked" &&
+                    prior.reason ===
+                      (kind === "seat" ? "seat_revoked" : "device_revoked") &&
+                    prior.identityRecordVersion === input.identityRecordVersion &&
+                    prior.connectionCapabilityVersion ===
+                      input.connectionCapabilityVersion &&
+                    prior.sessionCapabilityVersion ===
+                      input.sessionCapabilityVersion &&
+                    prior.seatId === input.seatId;
+                  if (exactReplay) return "noop";
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "equal device authority version conflicts with existing state",
+                    409,
+                    4403,
+                  );
+                }
+                if (
+                  (prior.identityRecordVersion !== null &&
+                    input.identityRecordVersion! <= prior.identityRecordVersion) ||
+                  (prior.connectionCapabilityVersion !== null &&
+                    input.connectionCapabilityVersion <
+                      prior.connectionCapabilityVersion) ||
+                  (prior.sessionCapabilityVersion !== null &&
+                    input.sessionCapabilityVersion <
+                      prior.sessionCapabilityVersion)
+                ) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "device authority versions are not coherently increasing",
+                    409,
+                    4403,
+                  );
+                }
+              }
+              return "advance";
+            };
+            if (kind === "seat") {
+              const prior = this.#seatFence(input.tenantId, input.seatId!);
+              if (prior?.seatAuthorityVersion !== null &&
+                  prior?.seatAuthorityVersion !== undefined) {
+                if (input.seatAuthorityVersion! < prior.seatAuthorityVersion) {
+                  return "noop" as const;
+                }
+                if (input.seatAuthorityVersion === prior.seatAuthorityVersion) {
+                  const priorDevice =
+                    input.deviceId === undefined
+                      ? null
+                      : this.#deviceFence(input.tenantId, input.deviceId);
+                  const exactReplay =
+                    prior.status === "revoked" &&
+                    prior.reason === "seat_revoked" &&
+                    prior.seatRecordVersion === input.seatRecordVersion &&
+                    input.deviceId !== undefined &&
+                    prior.deviceId === input.deviceId &&
+                    priorDevice?.status === "revoked" &&
+                    priorDevice.reason === "seat_revoked" &&
+                    priorDevice.authorizationVersion ===
+                      input.authorizationVersion &&
+                    priorDevice.identityRecordVersion ===
+                      input.identityRecordVersion &&
+                    priorDevice.connectionCapabilityVersion ===
+                      input.connectionCapabilityVersion &&
+                    priorDevice.sessionCapabilityVersion ===
+                      input.sessionCapabilityVersion;
+                  if (exactReplay) return "noop" as const;
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "equal seat authority version conflicts with existing state",
+                    409,
+                    4403,
+                  );
+                }
+                if (
+                  prior.seatRecordVersion !== null &&
+                  input.seatRecordVersion! <= prior.seatRecordVersion
+                ) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "seat authority versions are not coherently increasing",
+                    409,
+                    4403,
+                  );
+                }
+              }
+            }
             if (input.deviceId !== undefined) {
               affectedDeviceIds.add(input.deviceId);
             }
@@ -3558,6 +3919,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               }
             }
             for (const deviceId of affectedDeviceIds) {
+              if (deviceNotificationIsStaleOrReplay(deviceId) === "noop") {
+                return "noop" as const;
+              }
+            }
+            phaseMutated = true;
+            for (const deviceId of affectedDeviceIds) {
               const prior = this.#deviceFence(input.tenantId, deviceId);
               this.#setDeviceAuthorityFence(input.tenantId, deviceId, {
                 status: "blocked",
@@ -3572,12 +3939,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                       prior?.identityRecordVersion ?? null
                     : prior?.identityRecordVersion ?? null,
                 connectionCapabilityVersion:
-                  input.connectionCapabilityVersion ??
-                  prior?.connectionCapabilityVersion ?? null,
+                  input.connectionCapabilityVersion,
                 sessionCapabilityVersion:
-                  input.sessionCapabilityVersion ??
-                  prior?.sessionCapabilityVersion ?? null,
+                  input.sessionCapabilityVersion,
                 seatId: input.seatId ?? prior?.seatId ?? null,
+                reason: kind === "seat" ? "seat_revoked" : "device_revoked",
               });
             }
             if (kind === "seat") {
@@ -3590,10 +3956,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 seatRecordVersion:
                   input.seatRecordVersion ?? prior?.seatRecordVersion ?? null,
                 deviceId: input.deviceId ?? prior?.deviceId ?? null,
+                reason: "seat_revoked",
               });
             }
+            return "advance" as const;
           },
         );
+        if (phase === "noop") return;
         await this.#reconcileExplicitIdentityRevocation({
           ...input,
           kind,
@@ -3610,6 +3979,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
                 prior?.connectionCapabilityVersion ?? null,
               sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
               seatId: prior?.seatId ?? input.seatId ?? null,
+              reason: kind === "seat" ? "seat_revoked" : "device_revoked",
             });
           }
           if (kind === "seat") {
@@ -3619,11 +3989,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               seatAuthorityVersion: prior?.seatAuthorityVersion ?? null,
               seatRecordVersion: prior?.seatRecordVersion ?? null,
               deviceId: prior?.deviceId ?? input.deviceId ?? null,
+              reason: "seat_revoked",
             });
           }
         });
       } catch (error: unknown) {
-        for (const connection of [...this.#connections.values()]) {
+        for (const connection of phaseMutated
+          ? [...this.#connections.values()]
+          : []) {
           if (
             connection.auth.actor.tenantId === input.tenantId &&
             (affectedDeviceIds.has(connection.auth.actor.deviceId) ||
