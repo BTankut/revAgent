@@ -41,7 +41,13 @@ import {
   type JsonValue,
 } from "@revagent/protocol";
 
-import type { DeviceAuthContext, IdentityPort } from "./authContext.js";
+import {
+  isCanonicalMachineFingerprint,
+  machineFingerprintClaimsEqual,
+  type DeviceAuthContext,
+  type GatewayMachineFingerprint,
+  type IdentityPort,
+} from "./authContext.js";
 import type {
   GatewayAtomicBatchExecutorRequest,
   GatewayExecutor,
@@ -64,10 +70,18 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  StoreOutcome,
   StoreTransaction,
   StoredRecord,
 } from "./store.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
+import type {
+  IdentityDeviceV2,
+  IdentityRevocationEventV1,
+  IdentityResyncSnapshot,
+  IdentityTenantSeatV1,
+  ProductionIdentityAuthority,
+} from "./productionIdentityStore.js";
 
 export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
@@ -85,6 +99,10 @@ const MAX_RECOVERABLE_MUTATION_SCOPES =
   PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT / 2;
 const MAX_HOLD_AUDIT_ENTRIES = 256;
 const MAX_DURABLE_STRING_LENGTH = 4_096;
+const MAX_IDENTITY_EVENT_BATCH = 1_000;
+const MAX_IDENTITY_EVENT_BATCHES = 32;
+const MAX_IDENTITY_SESSION_RESYNC = 10_000;
+const MAX_REVOKED_CONNECTION_TOMBSTONES = 10_000;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
 const SUPPORTED_CAPABILITIES = Object.freeze([
@@ -96,6 +114,27 @@ const SUPPORTED_CAPABILITIES = Object.freeze([
 ] as const);
 
 type BindingKind = "wss" | "http_sse";
+
+type BridgeLifecycleState = "closed" | "opening" | "open" | "closing" | "failed";
+type BridgeLifecycleResourceState = "closed" | "open" | "unknown";
+
+interface DurableIdentityAuthority {
+  readonly machineFingerprint: GatewayMachineFingerprint;
+  readonly deviceTokenDigest: `sha256:${string}`;
+  readonly authorizationVersion: number;
+  readonly identityRecordVersion: number;
+  readonly connectionCapabilityVersion: number;
+  readonly sessionCapabilityVersion: number;
+  readonly seatAuthorityVersion: number;
+  readonly seatRecordVersion: number;
+}
+
+interface TenantIdentitySnapshot {
+  readonly headSequence: number;
+  readonly authorityDigest: `sha256:${string}`;
+  readonly devices: ReadonlyMap<string, IdentityDeviceV2>;
+  readonly seats: ReadonlyMap<string, IdentityTenantSeatV1>;
+}
 
 interface DurablePendingDispatch {
   readonly envelopeDigest: `sha256:${string}`;
@@ -117,6 +156,15 @@ interface DurableDispatchEvidence {
   readonly envelopeDigest: `sha256:${string}`;
   readonly acceptance: GatewayDurableDispatchObservation["acceptance"];
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
+  /** Terminal truth is retained even when identity revocation suppresses delivery. */
+  readonly terminalTruth?: DurableTerminalTruth | null;
+}
+
+interface DurableTerminalTruth {
+  readonly state: "completed" | "guarded" | "failed";
+  readonly resultDigest: `sha256:${string}` | null;
+  readonly errorCode: string | null;
+  readonly payloadRetained: boolean;
 }
 
 interface DurableLiveDocumentRoute {
@@ -135,6 +183,8 @@ interface DurableRbpSession {
   readonly userId: string;
   readonly deviceId: string;
   readonly seatId: string;
+  /** Null only for deterministic legacy adapters without versioned authority. */
+  readonly identityAuthority?: DurableIdentityAuthority | null;
   readonly rsid: string;
   readonly sessionBindingId: string;
   readonly sessionVersion: number;
@@ -291,6 +341,7 @@ interface LiveConnection {
   readonly connectionId: string;
   readonly binding: BindingKind;
   readonly auth: DeviceAuthContext;
+  readonly machineHostname: string;
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
@@ -306,6 +357,8 @@ interface ActiveSession {
 interface PendingWaiter {
   resolve(outcome: GatewayExecutorOutcome): void;
   timer: ReturnType<typeof setTimeout>;
+  readonly tenantId: string;
+  readonly rsid: string;
   readonly mutating: boolean;
 }
 
@@ -341,6 +394,13 @@ export interface BridgeConnectionChannel {
 export interface BridgeConnectionOpening {
   readonly connectionId: string;
   readonly helloAck: HelloAckEnvelope;
+}
+
+export interface GatewayBridgeSessionLifecycleSnapshot {
+  readonly state: BridgeLifecycleState;
+  readonly protocolStore: BridgeLifecycleResourceState;
+  readonly identity: BridgeLifecycleResourceState;
+  readonly protocolStoreManagedBy: "bridge" | "identity";
 }
 
 export class GatewayRbpFault extends Error {
@@ -381,6 +441,104 @@ function nowIso(nowMs: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function asProductionIdentityAuthority(
+  identity: IdentityPort,
+): ProductionIdentityAuthority | null {
+  const candidate = identity as Partial<ProductionIdentityAuthority>;
+  if (
+    identity.kind !== "oidc" ||
+    typeof candidate.open !== "function" ||
+    typeof candidate.close !== "function" ||
+    typeof candidate.lifecycle !== "function" ||
+    typeof candidate.managedResources !== "function" ||
+    typeof candidate.usesStore !== "function" ||
+    typeof candidate.consumeRevocationEvents !== "function" ||
+    typeof candidate.prepareTenantResync !== "function" ||
+    typeof candidate.commitTenantResync !== "function"
+  ) {
+    return null;
+  }
+  return identity as ProductionIdentityAuthority;
+}
+
+function durableIdentityAuthority(
+  auth: DeviceAuthContext,
+): DurableIdentityAuthority | null {
+  if (
+    !isCanonicalMachineFingerprint(auth.machineFingerprint) ||
+    !DIGEST_PATTERN.test(auth.deviceTokenDigest) ||
+    !isSafePositiveInteger(auth.authorizationVersion) ||
+    !isSafePositiveInteger(auth.identityRecordVersion) ||
+    !isSafePositiveInteger(auth.connectionCapabilityVersion) ||
+    !isSafePositiveInteger(auth.sessionCapabilityVersion) ||
+    !isSafePositiveInteger(auth.seatAuthorityVersion) ||
+    !isSafePositiveInteger(auth.seatRecordVersion)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    machineFingerprint: auth.machineFingerprint,
+    deviceTokenDigest: auth.deviceTokenDigest,
+    authorizationVersion: auth.authorizationVersion,
+    identityRecordVersion: auth.identityRecordVersion,
+    connectionCapabilityVersion: auth.connectionCapabilityVersion,
+    sessionCapabilityVersion: auth.sessionCapabilityVersion,
+    seatAuthorityVersion: auth.seatAuthorityVersion,
+    seatRecordVersion: auth.seatRecordVersion,
+  });
+}
+
+function sameDurableIdentityAuthority(
+  auth: DeviceAuthContext,
+  expected: DurableIdentityAuthority | null | undefined,
+): boolean {
+  if (expected === undefined || expected === null) {
+    return durableIdentityAuthority(auth) === null;
+  }
+  const current = durableIdentityAuthority(auth);
+  return (
+    current !== null &&
+    machineFingerprintClaimsEqual(
+      current.machineFingerprint,
+      expected.machineFingerprint,
+    ) &&
+    current.deviceTokenDigest === expected.deviceTokenDigest &&
+    current.authorizationVersion === expected.authorizationVersion &&
+    current.identityRecordVersion === expected.identityRecordVersion &&
+    current.connectionCapabilityVersion === expected.connectionCapabilityVersion &&
+    current.sessionCapabilityVersion === expected.sessionCapabilityVersion &&
+    current.seatAuthorityVersion === expected.seatAuthorityVersion &&
+    current.seatRecordVersion === expected.seatRecordVersion
+  );
+}
+
+function identitySnapshot(
+  snapshot: IdentityResyncSnapshot,
+): TenantIdentitySnapshot {
+  const devices = new Map(snapshot.devices.map((device) => [device.deviceId, device]));
+  const seats = new Map(snapshot.seats.map((seat) => [seat.seatId, seat]));
+  if (
+    !isSafeNonNegativeInteger(snapshot.headSequence) ||
+    !DIGEST_PATTERN.test(snapshot.authorityDigest) ||
+    devices.size !== snapshot.devices.length ||
+    seats.size !== snapshot.seats.length ||
+    snapshot.devices.some((device) => device.tenantId !== snapshot.tenantId) ||
+    snapshot.seats.some((seat) => seat.tenantId !== snapshot.tenantId)
+  ) {
+    throw new Error("identity resync snapshot is malformed");
+  }
+  return Object.freeze({
+    headSequence: snapshot.headSequence,
+    authorityDigest: snapshot.authorityDigest,
+    devices,
+    seats,
+  });
+}
+
+function identityIndexKey(tenantId: string, authorityId: string): string {
+  return `${tenantId}\u0000${authorityId}`;
 }
 
 function hasExactKeys(
@@ -613,6 +771,37 @@ function sessionConflictIndex(
     : parseNormalizedConflictIndex(record.normalizedConflictIndex);
 }
 
+function parseSessionIdentityAuthority(
+  value: unknown,
+): DurableIdentityAuthority | null {
+  if (value === undefined || value === null) return null;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "machineFingerprint",
+      "deviceTokenDigest",
+      "authorizationVersion",
+      "identityRecordVersion",
+      "connectionCapabilityVersion",
+      "sessionCapabilityVersion",
+      "seatAuthorityVersion",
+      "seatRecordVersion",
+    ]) ||
+    !isCanonicalMachineFingerprint(value.machineFingerprint) ||
+    typeof value.deviceTokenDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.deviceTokenDigest) ||
+    !isSafePositiveInteger(value.authorizationVersion) ||
+    !isSafePositiveInteger(value.identityRecordVersion) ||
+    !isSafePositiveInteger(value.connectionCapabilityVersion) ||
+    !isSafePositiveInteger(value.sessionCapabilityVersion) ||
+    !isSafePositiveInteger(value.seatAuthorityVersion) ||
+    !isSafePositiveInteger(value.seatRecordVersion)
+  ) {
+    throw new Error("malformed durable identity authority");
+  }
+  return value as unknown as DurableIdentityAuthority;
+}
+
 function parseStoredSession(
   stored: StoredRecord<GatewayJsonValue>,
   tenantId: string,
@@ -636,6 +825,7 @@ function parseStoredSession(
   ) {
     throw new Error("malformed durable session");
   }
+  parseSessionIdentityAuthority(candidate.identityAuthority);
   sessionEgressFence(candidate);
   sessionConflictIndex(candidate);
   return candidate;
@@ -1662,6 +1852,42 @@ function terminalOutcome(
   };
 }
 
+function durableTerminalTruth(
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): DurableTerminalTruth {
+  if (envelope.type === "error") {
+    return Object.freeze({
+      state: "failed" as const,
+      resultDigest:
+        typeof envelope.payload.result_digest === "string" &&
+        DIGEST_PATTERN.test(envelope.payload.result_digest)
+          ? envelope.payload.result_digest as `sha256:${string}`
+          : null,
+      errorCode: envelope.payload.fault_class,
+      payloadRetained: false,
+    });
+  }
+  const resultDigest =
+    typeof envelope.payload.result_digest === "string" &&
+    DIGEST_PATTERN.test(envelope.payload.result_digest)
+      ? envelope.payload.result_digest as `sha256:${string}`
+      : makeParamsDigest(envelope.payload as unknown as JsonValue);
+  const state = envelope.payload.status === "guarded"
+    ? "guarded" as const
+    : envelope.payload.status === "completed"
+      ? "completed" as const
+      : "failed" as const;
+  return Object.freeze({
+    state,
+    resultDigest,
+    errorCode: state === "failed" ? envelope.payload.status : null,
+    payloadRetained:
+      envelope.payload.kind === "invocation" &&
+      envelope.payload.payload_omitted !== true &&
+      envelope.payload.chunked !== true,
+  });
+}
+
 function terminalJournalRecords(
   records: readonly InvocationJournalRecord[],
   envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
@@ -1773,9 +1999,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #waiters = new Map<string, PendingWaiter>();
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
+  readonly #tenantIdentityTails = new Map<string, Promise<void>>();
+  readonly #tenantIdentityEpochs = new Map<string, number>();
+  readonly #blockedTenants = new Set<string>();
+  readonly #revokedConnectionIds = new Set<string>();
+  readonly #knownTenants = new Set<string>();
+  readonly #tenantIdentitySnapshots = new Map<string, TenantIdentitySnapshot>();
+  readonly #deviceConnections = new Map<string, Set<string>>();
+  readonly #seatConnections = new Map<string, Set<string>>();
+  readonly #deviceSessions = new Map<string, Set<string>>();
+  readonly #seatSessions = new Map<string, Set<string>>();
+  readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
   readonly #wait: (milliseconds: number) => Promise<void>;
+  #lifecycleState: BridgeLifecycleState = "closed";
+  #protocolStoreState: BridgeLifecycleResourceState = "closed";
+  #identityState: BridgeLifecycleResourceState = "closed";
+  #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
+  #openPromise: Promise<void> | null = null;
+  #closePromise: Promise<void> | null = null;
 
   public constructor(
     readonly store: GatewayProtocolStore,
@@ -1786,6 +2029,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly wait?: (milliseconds: number) => Promise<void>;
     } = {},
   ) {
+    this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
     if (!isGatewayUuidV7(this.#instanceId)) {
@@ -1796,14 +2040,140 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     });
   }
 
-  public async open(): Promise<void> {
-    const opened = await this.store.open();
-    if (!opened.ok) {
-      throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+  public lifecycle(): GatewayBridgeSessionLifecycleSnapshot {
+    return Object.freeze({
+      state: this.#lifecycleState,
+      protocolStore: this.#protocolStoreState,
+      identity: this.#identityState,
+      protocolStoreManagedBy: this.#protocolStoreManagedBy,
+    });
+  }
+
+  public open(): Promise<void> {
+    if (this.#lifecycleState === "open") return Promise.resolve();
+    if (this.#openPromise !== null) return this.#openPromise;
+    if (this.#closePromise !== null) {
+      return this.#closePromise.then(() => this.open());
+    }
+    this.#openPromise = this.#performOpen().finally(() => {
+      this.#openPromise = null;
+    });
+    return this.#openPromise;
+  }
+
+  async #callLifecycle(
+    action: () => Promise<StoreOutcome<void>>,
+  ): Promise<StoreOutcome<void>> {
+    try {
+      return await action();
+    } catch {
+      return Object.freeze({
+        ok: false as const,
+        code: "unavailable" as const,
+        message: "Gateway lifecycle dependency threw",
+      });
     }
   }
 
-  public async close(): Promise<void> {
+  async #performOpen(): Promise<void> {
+    if (this.#lifecycleState === "failed") {
+      await this.#closeLifecycleResources();
+    }
+    this.#lifecycleState = "opening";
+    const identity = this.#productionIdentity;
+    if (identity !== null) {
+      let identityUsesStore: boolean;
+      let identityOwnsStore: boolean;
+      try {
+        identityUsesStore = identity.usesStore(this.store);
+        identityOwnsStore =
+          identityUsesStore && identity.managedResources().tenantStore.managed;
+      } catch {
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault(
+          "unavailable",
+          "production identity lifecycle metadata is unavailable",
+          503,
+          1011,
+        );
+      }
+      this.#protocolStoreManagedBy = identityOwnsStore ? "identity" : "bridge";
+    } else {
+      this.#protocolStoreManagedBy = "bridge";
+    }
+
+    if (this.#protocolStoreManagedBy === "bridge") {
+      const opened = await this.#callLifecycle(() => this.store.open());
+      if (!opened.ok) {
+        this.#protocolStoreState = "unknown";
+        const rollback = await this.#callLifecycle(() => this.store.close());
+        this.#protocolStoreState = rollback.ok ? "closed" : "unknown";
+        this.#lifecycleState = rollback.ok ? "closed" : "failed";
+        throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+      }
+      this.#protocolStoreState = "open";
+    }
+
+    if (identity !== null) {
+      const opened = await this.#callLifecycle(() => identity.open());
+      if (!opened.ok) {
+        try {
+          this.#identityState =
+            identity.lifecycle().state === "closed" ? "closed" : "unknown";
+        } catch {
+          this.#identityState = "unknown";
+        }
+        const rollback = await this.#callLifecycle(() => identity.close());
+        this.#identityState = rollback.ok ? "closed" : "unknown";
+        if (
+          rollback.ok &&
+          this.#protocolStoreManagedBy === "bridge" &&
+          this.#protocolStoreState !== "closed"
+        ) {
+          const storeRollback = await this.#callLifecycle(() => this.store.close());
+          this.#protocolStoreState = storeRollback.ok ? "closed" : "unknown";
+        }
+        if (this.#protocolStoreManagedBy === "identity" && rollback.ok) {
+          this.#protocolStoreState = "closed";
+        }
+        this.#lifecycleState =
+          this.#identityState === "closed" && this.#protocolStoreState === "closed"
+            ? "closed"
+            : "failed";
+        throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+      }
+      this.#identityState = "open";
+      if (this.#protocolStoreManagedBy === "identity") {
+        this.#protocolStoreState = "open";
+      }
+    } else {
+      this.#identityState = "open";
+    }
+    this.#lifecycleState = "open";
+  }
+
+  public close(): Promise<void> {
+    if (this.#lifecycleState === "closed") return Promise.resolve();
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#openPromise !== null) {
+      return this.#openPromise.then(
+        () => this.close(),
+        () => this.close(),
+      );
+    }
+    this.#closePromise = this.#performClose().finally(() => {
+      this.#closePromise = null;
+    });
+    return this.#closePromise;
+  }
+
+  async #performClose(): Promise<void> {
+    this.#lifecycleState = "closing";
+    await Promise.allSettled([
+      ...this.#receiveTails.values(),
+      ...this.#sessionAuthorizationTails.values(),
+      ...this.#tenantIdentityTails.values(),
+    ]);
     const connections = [...this.#connections.values()];
     const active = [...this.#active.values()];
     let shutdownError: unknown = null;
@@ -1815,6 +2185,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     }
     this.#connections.clear();
+    this.#deviceConnections.clear();
+    this.#seatConnections.clear();
+    this.#deviceSessions.clear();
+    this.#seatSessions.clear();
+    this.#revokedConnectionIds.clear();
     this.#active.clear();
     for (const waiter of this.#waiters.values()) {
       clearTimeout(waiter.timer);
@@ -1838,13 +2213,645 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         }
       }),
     );
-    const closed = await this.store.close();
-    if (!closed.ok) throw new Error(closed.message);
+    try {
+      await this.#closeLifecycleResources();
+    } catch (error) {
+      shutdownError ??= error;
+    }
     const drainFailure = drained.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
     if (shutdownError !== null) throw shutdownError;
     if (drainFailure !== undefined) throw drainFailure.reason;
+  }
+
+  async #closeLifecycleResources(): Promise<void> {
+    const identity = this.#productionIdentity;
+    if (identity !== null && this.#identityState !== "closed") {
+      const closed = await this.#callLifecycle(() => identity.close());
+      if (!closed.ok) {
+        this.#identityState = "unknown";
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault("unavailable", closed.message, 503, 1011);
+      }
+      this.#identityState = "closed";
+      if (this.#protocolStoreManagedBy === "identity") {
+        this.#protocolStoreState = "closed";
+      }
+    } else if (identity === null) {
+      this.#identityState = "closed";
+    }
+    if (
+      this.#protocolStoreManagedBy === "bridge" &&
+      this.#protocolStoreState !== "closed"
+    ) {
+      const closed = await this.#callLifecycle(() => this.store.close());
+      if (!closed.ok) {
+        this.#protocolStoreState = "unknown";
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault("unavailable", closed.message, 503, 1011);
+      }
+      this.#protocolStoreState = "closed";
+    }
+    this.#lifecycleState = "closed";
+  }
+
+  #assertOpen(): void {
+    if (this.#lifecycleState !== "open") {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "Gateway identity and protocol authority are not ready",
+        503,
+        1011,
+      );
+    }
+  }
+
+  #trackConnection(connection: LiveConnection): void {
+    this.#knownTenants.add(connection.auth.actor.tenantId);
+    const add = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key) ?? new Set<string>();
+      existing.add(connection.connectionId);
+      index.set(key, existing);
+    };
+    add(
+      this.#deviceConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.deviceId,
+      ),
+    );
+    add(
+      this.#seatConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.seatId,
+      ),
+    );
+  }
+
+  #untrackConnection(connection: LiveConnection): void {
+    const remove = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key);
+      if (existing === undefined) return;
+      existing.delete(connection.connectionId);
+      if (existing.size === 0) index.delete(key);
+    };
+    remove(
+      this.#deviceConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.deviceId,
+      ),
+    );
+    remove(
+      this.#seatConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.seatId,
+      ),
+    );
+    this.#maybeForgetTenant(connection.auth.actor.tenantId);
+  }
+
+  #trackSession(record: DurableRbpSession): void {
+    const add = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key) ?? new Set<string>();
+      existing.add(record.rsid);
+      index.set(key, existing);
+    };
+    add(
+      this.#deviceSessions,
+      identityIndexKey(record.tenantId, record.deviceId),
+    );
+    add(
+      this.#seatSessions,
+      identityIndexKey(record.tenantId, record.seatId),
+    );
+  }
+
+  #untrackSession(record: DurableRbpSession): void {
+    const remove = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key);
+      if (existing === undefined) return;
+      existing.delete(record.rsid);
+      if (existing.size === 0) index.delete(key);
+    };
+    remove(
+      this.#deviceSessions,
+      identityIndexKey(record.tenantId, record.deviceId),
+    );
+    remove(
+      this.#seatSessions,
+      identityIndexKey(record.tenantId, record.seatId),
+    );
+    this.#maybeForgetTenant(record.tenantId);
+  }
+
+  #maybeForgetTenant(tenantId: string): void {
+    const hasConnection = [...this.#connections.values()].some(
+      (connection) => connection.auth.actor.tenantId === tenantId,
+    );
+    const hasSession = [...this.#active.values()].some(
+      (active) => active.tenantId === tenantId,
+    );
+    if (hasConnection || hasSession) return;
+    this.#knownTenants.delete(tenantId);
+    this.#tenantIdentitySnapshots.delete(tenantId);
+  }
+
+  async #withTenantIdentityAuthority<T>(
+    tenantId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.#tenantIdentityTails.get(tenantId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#tenantIdentityTails.set(tenantId, tail);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#tenantIdentityTails.get(tenantId) === tail) {
+        this.#tenantIdentityTails.delete(tenantId);
+      }
+    }
+  }
+
+  #connectionMatchesSnapshot(
+    connection: LiveConnection,
+    snapshot: TenantIdentitySnapshot,
+  ): boolean {
+    const auth = connection.auth;
+    const durable = durableIdentityAuthority(auth);
+    if (durable === null) return false;
+    const device = snapshot.devices.get(auth.actor.deviceId);
+    const seat = snapshot.seats.get(auth.actor.seatId);
+    return (
+      device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.tenantId === auth.actor.tenantId &&
+      device.userId === auth.actor.userId &&
+      device.seatId === auth.actor.seatId &&
+      seat.userId === auth.actor.userId &&
+      seat.deviceId === auth.actor.deviceId &&
+      machineFingerprintClaimsEqual(
+        device.machineFingerprint,
+        durable.machineFingerprint,
+      ) &&
+      device.deviceTokenDigest === durable.deviceTokenDigest &&
+      device.authorizationVersion === durable.authorizationVersion &&
+      device.recordVersion === durable.identityRecordVersion &&
+      device.connectionCapabilityVersion === durable.connectionCapabilityVersion &&
+      device.sessionCapabilityVersion === durable.sessionCapabilityVersion &&
+      seat.seatAuthorityVersion === durable.seatAuthorityVersion &&
+      seat.recordVersion === durable.seatRecordVersion
+    );
+  }
+
+  #sessionMatchesSnapshot(
+    session: DurableRbpSession,
+    snapshot: TenantIdentitySnapshot,
+  ): boolean {
+    const identity = parseSessionIdentityAuthority(session.identityAuthority);
+    if (identity === null) return false;
+    const device = snapshot.devices.get(session.deviceId);
+    const seat = snapshot.seats.get(session.seatId);
+    return (
+      device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === session.userId &&
+      device.seatId === session.seatId &&
+      seat.userId === session.userId &&
+      seat.deviceId === session.deviceId &&
+      machineFingerprintClaimsEqual(
+        device.machineFingerprint,
+        identity.machineFingerprint,
+      ) &&
+      device.deviceTokenDigest === identity.deviceTokenDigest &&
+      device.authorizationVersion === identity.authorizationVersion &&
+      device.recordVersion === identity.identityRecordVersion &&
+      device.connectionCapabilityVersion === identity.connectionCapabilityVersion &&
+      device.sessionCapabilityVersion === identity.sessionCapabilityVersion &&
+      seat.seatAuthorityVersion === identity.seatAuthorityVersion &&
+      seat.recordVersion === identity.seatRecordVersion
+    );
+  }
+
+  #closeConnectionForRevocation(connection: LiveConnection): void {
+    this.#connections.delete(connection.connectionId);
+    this.#untrackConnection(connection);
+    this.#revokedConnectionIds.add(connection.connectionId);
+    while (this.#revokedConnectionIds.size > MAX_REVOKED_CONNECTION_TOMBSTONES) {
+      const oldest = this.#revokedConnectionIds.values().next().value;
+      if (oldest === undefined) break;
+      this.#revokedConnectionIds.delete(oldest);
+    }
+    let closeOperation: Promise<void>;
+    try {
+      closeOperation = connection.close(4403, "identity authority revoked");
+    } catch {
+      closeOperation = Promise.reject(new Error("revocation close threw"));
+    }
+    void closeOperation
+      .catch(() => undefined)
+      .finally(() => this.detach(connection.connectionId).catch(() => undefined));
+  }
+
+  #suppressSessionWaiters(tenantId: string, rsids: ReadonlySet<string>): void {
+    for (const [invocationId, waiter] of this.#waiters) {
+      if (waiter.tenantId !== tenantId || !rsids.has(waiter.rsid)) continue;
+      clearTimeout(waiter.timer);
+      this.#waiters.delete(invocationId);
+      waiter.resolve({
+        state: "failed",
+        error: {
+          code: "executor_unavailable",
+          message: "identity revocation suppressed terminal or resource delivery",
+        },
+      });
+    }
+  }
+
+  async #revokeIdentitySession(record: DurableRbpSession): Promise<void> {
+    const identity = parseSessionIdentityAuthority(record.identityAuthority);
+    const synthetic: LiveConnection = {
+      connectionId: record.connectionId,
+      binding: record.binding,
+      auth: {
+        contractVersion: "revagent.auth-context/v1",
+        actor: {
+          type: "device",
+          tenantId: record.tenantId,
+          userId: record.userId,
+          deviceId: record.deviceId,
+          seatId: record.seatId,
+        },
+        connectionId: record.connectionId,
+        deviceStatus: "revoked",
+        ...(identity === null
+          ? {}
+          : {
+              machineFingerprint: identity.machineFingerprint,
+              authorizationVersion: identity.authorizationVersion,
+              identityRecordVersion: identity.identityRecordVersion,
+              connectionCapabilityVersion: identity.connectionCapabilityVersion,
+              sessionCapabilityVersion: identity.sessionCapabilityVersion,
+              seatAuthorityVersion: identity.seatAuthorityVersion,
+              seatRecordVersion: identity.seatRecordVersion,
+              deviceTokenDigest: identity.deviceTokenDigest,
+            }),
+        grantedSessionCapabilities: record.grantedCapabilities,
+        deviceTokenDigest:
+          identity?.deviceTokenDigest ?? `sha256:${"0".repeat(64)}`,
+      },
+      machineHostname: "identity-revocation",
+      grantedCapabilities: record.grantedCapabilities,
+      lifecycle: record.connectionLifecycle,
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+    await this.#withSessionAuthorization(record.rsid, async () =>
+      this.#unregisterNow(synthetic, {
+        rsid: record.rsid,
+        reason: "session_replaced",
+      }),
+    );
+  }
+
+  async #reconcileIdentitySnapshot(
+    tenantId: string,
+    snapshot: TenantIdentitySnapshot,
+    events: readonly IdentityRevocationEventV1[],
+  ): Promise<void> {
+    const affectedDevices = new Set(
+      events.flatMap((event) => event.deviceId === null ? [] : [event.deviceId]),
+    );
+    const affectedSeats = new Set(
+      events.flatMap((event) => event.seatId === null ? [] : [event.seatId]),
+    );
+    const listed = await this.store.transact(
+      { tenantId },
+      async (tx) => ({
+        sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
+        tombstones: await tx.list(GATEWAY_RBP_UNREGISTER_NAMESPACE),
+      }),
+    );
+    if (!listed.ok) {
+      throw new GatewayRbpFault("unavailable", listed.message, 503, 1011);
+    }
+    if (listed.value.sessions.length > MAX_IDENTITY_SESSION_RESYNC) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "identity session resync exceeded its bounded record limit",
+        503,
+        1011,
+      );
+    }
+    const tombstonedRsids = new Set<string>();
+    for (const tombstone of listed.value.tombstones) {
+      parseUnregisterTombstone(tombstone.value, {
+        tenantId,
+        rsid: tombstone.key,
+        stored: tombstone,
+      });
+      tombstonedRsids.add(tombstone.key);
+    }
+    const sessions: DurableRbpSession[] = [];
+    for (const stored of listed.value.sessions) {
+      const parsed = parseStoredSession(stored, tenantId, stored.key);
+      if (tombstonedRsids.has(parsed.rsid)) continue;
+      if (
+        events.length === 0 ||
+        affectedDevices.has(parsed.deviceId) ||
+        affectedSeats.has(parsed.seatId) ||
+        !this.#sessionMatchesSnapshot(parsed, snapshot)
+      ) {
+        sessions.push(parsed);
+      }
+    }
+    const revokedRsids = new Set<string>();
+    for (const session of sessions) {
+      if (this.#sessionMatchesSnapshot(session, snapshot)) continue;
+      await this.#revokeIdentitySession(session);
+      revokedRsids.add(session.rsid);
+    }
+    this.#suppressSessionWaiters(tenantId, revokedRsids);
+    for (const connection of [...this.#connections.values()]) {
+      if (
+        connection.auth.actor.tenantId === tenantId &&
+        !this.#connectionMatchesSnapshot(connection, snapshot)
+      ) {
+        this.#closeConnectionForRevocation(connection);
+      }
+    }
+  }
+
+  public async synchronizeIdentityRevocations(tenantId: string): Promise<void> {
+    this.#assertOpen();
+    const identity = this.#productionIdentity;
+    if (identity === null) return;
+    this.#blockedTenants.add(tenantId);
+    const synchronizationEpoch =
+      (this.#tenantIdentityEpochs.get(tenantId) ?? 0) + 1;
+    this.#tenantIdentityEpochs.set(tenantId, synchronizationEpoch);
+    await this.#withTenantIdentityAuthority(tenantId, async () => {
+      const events: IdentityRevocationEventV1[] = [];
+      let observedHeadSequence = -1;
+      let cursorBlocked = false;
+      for (let batch = 0; batch < MAX_IDENTITY_EVENT_BATCHES; batch += 1) {
+        const consumed = await identity.consumeRevocationEvents({
+          tenantId,
+          maxEvents: MAX_IDENTITY_EVENT_BATCH,
+        });
+        if (!consumed.ok) {
+          throw new GatewayRbpFault("unavailable", consumed.message, 503, 1011);
+        }
+        observedHeadSequence = consumed.headSequence;
+        if (consumed.kind === "blocked") {
+          cursorBlocked = true;
+          break;
+        }
+        events.push(...consumed.events);
+        if (consumed.complete) break;
+        if (batch === MAX_IDENTITY_EVENT_BATCHES - 1) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event consumption exceeded its bounded batch limit",
+            503,
+            1011,
+          );
+        }
+      }
+      const currentSnapshot = this.#tenantIdentitySnapshots.get(tenantId);
+      let eventStreamCorrupt = false;
+      for (let index = 0; index < events.length; index += 1) {
+        const event = events[index]!;
+        const prior = events[index - 1];
+        if (
+          event.tenantId !== tenantId ||
+          (prior !== undefined && event.sequence !== prior.sequence + 1)
+        ) {
+          // A corrupt adapter result cannot be applied selectively. Emptying
+          // the hint set forces the bounded full-snapshot reconciliation below.
+          eventStreamCorrupt = true;
+          events.splice(0);
+          break;
+        }
+      }
+      if (
+        !cursorBlocked &&
+        !eventStreamCorrupt &&
+        events.length === 0 &&
+        currentSnapshot !== undefined &&
+        currentSnapshot.headSequence === observedHeadSequence
+      ) {
+        if (this.#tenantIdentityEpochs.get(tenantId) === synchronizationEpoch) {
+          this.#blockedTenants.delete(tenantId);
+        }
+        return;
+      }
+      const prepared = await identity.prepareTenantResync({ tenantId });
+      if (!prepared.ok) {
+        throw new GatewayRbpFault("unavailable", prepared.message, 503, 1011);
+      }
+      if (prepared.snapshot.tenantId !== tenantId) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "identity resync returned a cross-tenant snapshot",
+          503,
+          1011,
+        );
+      }
+      const nextSnapshot = identitySnapshot(prepared.snapshot);
+      await this.#reconcileIdentitySnapshot(tenantId, nextSnapshot, events);
+      const committed = await identity.commitTenantResync({
+        tenantId,
+        expectedAuthorityDigest: nextSnapshot.authorityDigest,
+      });
+      if (!committed.ok) {
+        throw new GatewayRbpFault("unavailable", committed.message, 503, 1011);
+      }
+      if (
+        committed.snapshot.tenantId !== tenantId ||
+        committed.snapshot.authorityDigest !== nextSnapshot.authorityDigest ||
+        committed.cursor.tenantId !== tenantId ||
+        committed.cursor.status !== "current" ||
+        committed.cursor.lastContiguousSequence !==
+          committed.snapshot.headSequence
+      ) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "identity resync commit returned incoherent authority",
+          503,
+          1011,
+        );
+      }
+      this.#tenantIdentitySnapshots.set(
+        tenantId,
+        identitySnapshot(committed.snapshot),
+      );
+      if (this.#tenantIdentityEpochs.get(tenantId) === synchronizationEpoch) {
+        this.#blockedTenants.delete(tenantId);
+      }
+    }).catch((error: unknown) => {
+      this.#blockedTenants.add(tenantId);
+      for (const connection of [...this.#connections.values()]) {
+        if (connection.auth.actor.tenantId === tenantId) {
+          this.#closeConnectionForRevocation(connection);
+        }
+      }
+      throw error;
+    });
+  }
+
+  public async revokeIdentityAuthority(input: {
+    readonly tenantId: string;
+    readonly deviceId?: string;
+    readonly seatId?: string;
+  }): Promise<void> {
+    this.#assertOpen();
+    if (
+      input.tenantId.length === 0 ||
+      (input.deviceId === undefined && input.seatId === undefined)
+    ) {
+      throw new GatewayRbpFault("auth", "identity revocation scope is invalid", 403, 4403);
+    }
+    await this.#withTenantIdentityAuthority(input.tenantId, async () => {
+      const listed = await this.store.transact(
+        { tenantId: input.tenantId },
+        async (tx) => ({
+          sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
+          tombstones: await tx.list(GATEWAY_RBP_UNREGISTER_NAMESPACE),
+        }),
+      );
+      if (!listed.ok) {
+        throw new GatewayRbpFault("unavailable", listed.message, 503, 1011);
+      }
+      if (listed.value.sessions.length > MAX_IDENTITY_SESSION_RESYNC) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "identity revocation exceeded its bounded session limit",
+          503,
+          1011,
+        );
+      }
+      const tombstoned = new Set<string>();
+      for (const row of listed.value.tombstones) {
+        parseUnregisterTombstone(row.value, {
+          tenantId: input.tenantId,
+          rsid: row.key,
+          stored: row,
+        });
+        tombstoned.add(row.key);
+      }
+      const revokedRsids = new Set<string>();
+      for (const stored of listed.value.sessions) {
+        const session = parseStoredSession(stored, input.tenantId, stored.key);
+        if (
+          tombstoned.has(session.rsid) ||
+          (input.deviceId !== undefined && session.deviceId !== input.deviceId) ||
+          (input.seatId !== undefined && session.seatId !== input.seatId)
+        ) {
+          continue;
+        }
+        await this.#revokeIdentitySession(session);
+        revokedRsids.add(session.rsid);
+      }
+      this.#suppressSessionWaiters(input.tenantId, revokedRsids);
+      const connectionIds = new Set<string>();
+      if (input.deviceId !== undefined) {
+        for (const connectionId of
+          this.#deviceConnections.get(
+            identityIndexKey(input.tenantId, input.deviceId),
+          ) ?? []) {
+          connectionIds.add(connectionId);
+        }
+      }
+      if (input.seatId !== undefined) {
+        for (const connectionId of
+          this.#seatConnections.get(
+            identityIndexKey(input.tenantId, input.seatId),
+          ) ?? []) {
+          connectionIds.add(connectionId);
+        }
+      }
+      for (const connectionId of connectionIds) {
+        const connection = this.#connections.get(connectionId);
+        if (connection !== undefined) this.#closeConnectionForRevocation(connection);
+      }
+    }).catch((error: unknown) => {
+      this.#blockedTenants.add(input.tenantId);
+      for (const connection of [...this.#connections.values()]) {
+        if (
+          connection.auth.actor.tenantId === input.tenantId &&
+          (input.deviceId === undefined ||
+            connection.auth.actor.deviceId === input.deviceId) &&
+          (input.seatId === undefined ||
+            connection.auth.actor.seatId === input.seatId)
+        ) {
+          this.#closeConnectionForRevocation(connection);
+        }
+      }
+      throw error;
+    });
+  }
+
+  #sameConnectionAuthority(
+    expected: DeviceAuthContext,
+    current: DeviceAuthContext,
+  ): boolean {
+    return (
+      current.deviceStatus === "active" &&
+      current.actor.tenantId === expected.actor.tenantId &&
+      current.actor.userId === expected.actor.userId &&
+      current.actor.deviceId === expected.actor.deviceId &&
+      current.actor.seatId === expected.actor.seatId &&
+      current.deviceTokenDigest === expected.deviceTokenDigest &&
+      sameDurableIdentityAuthority(current, durableIdentityAuthority(expected))
+    );
+  }
+
+  async #assertCurrentConnectionAuthority(
+    connection: LiveConnection,
+  ): Promise<void> {
+    this.#assertOpen();
+    const tenantId = connection.auth.actor.tenantId;
+    if (this.#blockedTenants.has(tenantId)) {
+      throw new GatewayRbpFault("auth", "tenant identity authority is blocked", 403, 4403);
+    }
+    if (this.#productionIdentity !== null) {
+      await this.synchronizeIdentityRevocations(tenantId);
+      const snapshot = this.#tenantIdentitySnapshots.get(tenantId);
+      if (
+        snapshot === undefined ||
+        this.#blockedTenants.has(tenantId) ||
+        !this.#connectionMatchesSnapshot(connection, snapshot)
+      ) {
+        throw new GatewayRbpFault("auth", "connection identity authority changed", 403, 4403);
+      }
+    }
+    if (connection.auth.deviceStatus !== "active") {
+      throw new GatewayRbpFault("auth", "device or seat is not active", 403, 4403);
+    }
+  }
+
+  #connectionIsCurrentlyAuthorized(connection: LiveConnection | undefined): boolean {
+    if (connection === undefined || connection.auth.deviceStatus !== "active") {
+      return false;
+    }
+    const tenantId = connection.auth.actor.tenantId;
+    if (this.#blockedTenants.has(tenantId)) return false;
+    if (this.#productionIdentity === null) return true;
+    const snapshot = this.#tenantIdentitySnapshots.get(tenantId);
+    return snapshot !== undefined && this.#connectionMatchesSnapshot(connection, snapshot);
   }
 
   public async openConnection(input: {
@@ -1853,6 +2860,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly hello: HelloEnvelope;
     readonly channel: BridgeConnectionChannel;
   }): Promise<BridgeConnectionOpening> {
+    this.#assertOpen();
     if (
       input.hello.payload.min_protocol > 1 ||
       input.hello.payload.max_protocol < 1
@@ -1863,9 +2871,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const authenticated = await this.identity.authenticateDevice({
       deviceToken: input.deviceToken,
       connectionId,
+      claimedDeviceId: input.hello.payload.device_id,
+      machineFingerprint: input.hello.payload.machine.fingerprint,
+      machineHostname: input.hello.payload.machine.hostname,
     });
     if (!authenticated.ok) {
-      throw new GatewayRbpFault("auth", authenticated.message, 401, 4401);
+      const claimBoundRefusal =
+        (this.identity.kind === "preproduction" ||
+          this.#productionIdentity !== null) &&
+        isCanonicalMachineFingerprint(input.hello.payload.machine.fingerprint);
+      throw new GatewayRbpFault(
+        "auth",
+        authenticated.message,
+        claimBoundRefusal ? 403 : 401,
+        claimBoundRefusal ? 4403 : 4401,
+      );
     }
     if (authenticated.value.deviceStatus !== "active") {
       throw new GatewayRbpFault("auth", "device or seat is not active", 403, 4403);
@@ -1893,6 +2913,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       connectionId,
       binding: input.binding,
       auth: { ...authenticated.value, connectionId },
+      machineHostname: input.hello.payload.machine.hostname,
       grantedCapabilities: granted,
       lifecycle: steadyConnectionLifecycle(granted),
       async send(serialized): Promise<void> {
@@ -1902,7 +2923,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         await input.channel.close(code, reason);
       },
     };
+    if (this.#productionIdentity !== null) {
+      await this.synchronizeIdentityRevocations(connection.auth.actor.tenantId);
+      const snapshot = this.#tenantIdentitySnapshots.get(
+        connection.auth.actor.tenantId,
+      );
+      if (
+        snapshot === undefined ||
+        this.#blockedTenants.has(connection.auth.actor.tenantId) ||
+        !this.#connectionMatchesSnapshot(connection, snapshot)
+      ) {
+        throw new GatewayRbpFault(
+          "auth",
+          "device authority changed during connection opening",
+          403,
+          4403,
+        );
+      }
+    }
     this.#connections.set(connectionId, connection);
+    this.#trackConnection(connection);
     const helloAck: HelloAckEnvelope = {
       type: "hello_ack",
       id: gatewayUuidV7(this.#clock()),
@@ -1930,20 +2970,32 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connectionId: string,
     deviceToken: string | undefined,
   ): Promise<LiveConnection> {
+    this.#assertOpen();
     const connection = this.#connections.get(connectionId);
     if (connection === undefined) {
+      if (this.#revokedConnectionIds.has(connectionId)) {
+        throw new GatewayRbpFault("auth", "connection authority was revoked", 403, 4403);
+      }
       throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
+    }
+    await this.#assertCurrentConnectionAuthority(connection);
+    if (this.#connections.get(connectionId) !== connection) {
+      throw new GatewayRbpFault("auth", "connection authority was revoked", 403, 4403);
     }
     const authenticated = await this.identity.authenticateDevice({
       deviceToken,
       connectionId,
+      claimedDeviceId: connection.auth.actor.deviceId,
+      establishedScope: {
+        tenantId: connection.auth.actor.tenantId,
+        deviceId: connection.auth.actor.deviceId,
+      },
+      machineFingerprint: connection.auth.machineFingerprint,
+      machineHostname: connection.machineHostname,
     });
     if (
       !authenticated.ok ||
-      authenticated.value.deviceStatus !== "active" ||
-      authenticated.value.actor.tenantId !== connection.auth.actor.tenantId ||
-      authenticated.value.actor.deviceId !== connection.auth.actor.deviceId ||
-      authenticated.value.deviceTokenDigest !== connection.auth.deviceTokenDigest
+      !this.#sameConnectionAuthority(connection.auth, authenticated.value)
     ) {
       throw new GatewayRbpFault("auth", "connection credential mismatch", 403, 4403);
     }
@@ -1954,6 +3006,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connectionId: string,
     envelope: RbpEnvelope,
   ): Promise<void> {
+    this.#assertOpen();
     const prior = this.#receiveTails.get(connectionId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => {
@@ -2000,6 +3053,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (connection === undefined) {
       throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
     }
+    await this.#assertCurrentConnectionAuthority(connection);
+    if (this.#connections.get(connectionId) !== connection) {
+      throw new GatewayRbpFault("auth", "connection authority was revoked", 403, 4403);
+    }
     switch (envelope.type) {
       case "session_register":
         await this.#register(connection, envelope.payload);
@@ -2043,16 +3100,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   public async detach(connectionId: string): Promise<void> {
+    const connection = this.#connections.get(connectionId);
     this.#connections.delete(connectionId);
+    if (connection !== undefined) this.#untrackConnection(connection);
     for (const [rsid, active] of this.#active) {
       if (active.record.connectionId === connectionId) {
         await this.#markConnectionLost(active);
         this.#active.delete(rsid);
+        this.#untrackSession(active.record);
       }
     }
   }
 
   public async sweepLiveness(): Promise<readonly string[]> {
+    this.#assertOpen();
+    for (const tenantId of [...this.#knownTenants]) {
+      await this.synchronizeIdentityRevocations(tenantId);
+    }
     const disconnected: string[] = [];
     for (const [rsid, active] of this.#active) {
       const silenceMs = Math.max(0, this.#clock() - active.record.lastHeartbeatAtMs);
@@ -2069,6 +3133,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       if (silenceMs >= RBP_HEARTBEAT_DISCONNECTED_AFTER_MS) {
         disconnected.push(rsid);
         this.#active.delete(rsid);
+        this.#untrackSession(active.record);
       }
     }
     return disconnected;
@@ -2091,11 +3156,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }): GatewayInvocationRoute {
     const candidates = [...this.#active.values()].filter((active) => {
       const record = active.record;
+      const connection = this.#connections.get(record.connectionId);
       return (
         record.tenantId === input.tenantId &&
         record.userId === input.userId &&
         record.deviceId === input.deviceId &&
-        this.#connections.has(record.connectionId) &&
+        this.#connectionIsCurrentlyAuthorized(connection) &&
         record.sessionLifecycle.dispatchAllowed &&
         (record.connectionLifecycle.phase === "steady" ||
           record.connectionLifecycle.phase === "degraded") &&
@@ -2131,10 +3197,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly expected: GatewayExpectedMutationDispatch;
   } {
     const active = this.#active.get(request.context.rsid);
+    const connection = active === undefined
+      ? undefined
+      : this.#connections.get(active.record.connectionId);
     if (
       active === undefined ||
       active.tenantId !== request.context.actor.tenantId ||
-      !this.#connections.has(active.record.connectionId)
+      !this.#connectionIsCurrentlyAuthorized(connection)
       || !active.record.sessionLifecycle.dispatchAllowed
       || (active.record.connectionLifecycle.phase !== "steady" &&
         active.record.connectionLifecycle.phase !== "degraded")
@@ -2187,10 +3256,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new GatewayRbpFault("protocol", "atomic batch has no steps", 409, 4400);
     }
     const active = this.#active.get(first.context.rsid);
+    const connection = active === undefined
+      ? undefined
+      : this.#connections.get(active.record.connectionId);
     if (
       active === undefined ||
       active.tenantId !== first.context.actor.tenantId ||
-      !this.#connections.has(active.record.connectionId) ||
+      !this.#connectionIsCurrentlyAuthorized(connection) ||
       !active.record.sessionLifecycle.dispatchAllowed ||
       !active.record.grantedCapabilities.includes("batch_atomic") ||
       (active.record.connectionLifecycle.phase !== "steady" &&
@@ -2325,6 +3397,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const connection = this.#connections.get(active.record.connectionId);
     if (connection === undefined) {
       return { outcome: Promise.resolve(this.#indeterminateOutcome(input.mutating)) };
+    }
+    try {
+      await this.#assertCurrentConnectionAuthority(connection);
+    } catch {
+      return {
+        outcome: Promise.resolve({
+          state: "failed",
+          error: {
+            code: "executor_unavailable",
+            message: "identity authority denied dispatch",
+          },
+        }),
+      };
     }
     const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
@@ -2542,6 +3627,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             this.#waiters.set(input.correlationId, {
               resolve,
               timer,
+              tenantId: input.tenantId,
+              rsid: input.rsid,
               mutating: input.mutating,
             });
           });
@@ -2797,7 +3884,31 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     serialized: string,
     beforeSend?: () => void,
   ): Promise<void> {
+    await this.#assertCurrentConnectionAuthority(connection);
+    const tenantId = connection.auth.actor.tenantId;
+    const authorityEpoch = this.#tenantIdentityEpochs.get(tenantId) ?? 0;
+    if (this.#connections.get(connection.connectionId) !== connection) {
+      throw new GatewayRbpFault(
+        "auth",
+        "connection authority was revoked before egress",
+        403,
+        4403,
+      );
+    }
     const started = await this.#promoteEgressReservation(reservation);
+    if (
+      this.#blockedTenants.has(tenantId) ||
+      (this.#tenantIdentityEpochs.get(tenantId) ?? 0) !== authorityEpoch ||
+      this.#connections.get(connection.connectionId) !== connection
+    ) {
+      await this.#releaseStartedEgressLease(started);
+      throw new GatewayRbpFault(
+        "auth",
+        "identity authority changed before egress",
+        403,
+        4403,
+      );
+    }
     let sendFailure: unknown = null;
     let releaseFailure: unknown = null;
     try {
@@ -2869,6 +3980,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           record.deviceId !== connection.auth.actor.deviceId ||
           record.userId !== connection.auth.actor.userId ||
           record.seatId !== connection.auth.actor.seatId ||
+          !sameDurableIdentityAuthority(
+            connection.auth,
+            record.identityAuthority,
+          ) ||
           record.resumeTokenDigest !== digest(payload.resume_token) ||
           record.resumeExpiresAtMs <= nowMs ||
           !record.sessionLifecycle.resumeAllowed
@@ -3245,6 +4360,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   async #register(connection: LiveConnection, payload: SessionRegister): Promise<void> {
+    await this.#assertCurrentConnectionAuthority(connection);
+    if (
+      connection.auth.machineFingerprint !== undefined &&
+      !machineFingerprintClaimsEqual(
+        connection.auth.machineFingerprint,
+        payload.machine.fingerprint,
+      )
+    ) {
+      throw new GatewayRbpFault(
+        "auth",
+        "session registration machine claim does not match credential",
+        403,
+        4403,
+      );
+    }
     const rsid = gatewayUuidV7(this.#clock());
     const resumeToken = token();
     const nowMs = this.#clock();
@@ -3259,6 +4389,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       userId: connection.auth.actor.userId,
       deviceId: connection.auth.actor.deviceId,
       seatId: connection.auth.actor.seatId,
+      identityAuthority: durableIdentityAuthority(connection.auth),
       rsid,
       sessionBindingId: gatewayUuidV7(this.#clock()),
       sessionVersion: 1,
@@ -3300,6 +4431,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
     if (!saved.ok) throw new GatewayRbpFault("unavailable", saved.message, 503, 1011);
     await this.#activate(record);
+    await this.#assertCurrentConnectionAuthority(connection);
     await connection.send(
       JSON.stringify({
         v: 1,
@@ -3334,6 +4466,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
   ): Promise<void> {
+    await this.#assertCurrentConnectionAuthority(connection);
     const reservedAck = await this.#reserveResumeAck(connection, payload);
     await this.#activate(reservedAck.record);
     try {
@@ -3941,6 +5074,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       active.record = updated;
       returned.push({ rsid: ack.rsid, seq: updated.sequence.lastRxSeq });
     }
+    await this.#assertCurrentConnectionAuthority(connection);
     await connection.send(
       JSON.stringify({
         v: 1,
@@ -4015,6 +5149,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           envelopeDigest: pending.envelopeDigest,
           acceptance,
           journal: existing?.journal ?? null,
+          terminalTruth: existing?.terminalTruth ?? null,
         };
         evidence = [
           ...evidence.filter(
@@ -4036,6 +5171,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           throw new Error("terminal envelope does not match the active invocation");
         }
         const journals = terminalJournalRecords(pending.journalRecords, envelope);
+        const durableTerminalOutcome = terminalOutcome(envelope);
+        const terminalTruth = durableTerminalTruth(envelope);
         const existing = evidence.find(
           (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
         );
@@ -4069,9 +5206,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             envelopeDigest: pending.envelopeDigest,
             acceptance: existing?.acceptance ?? null,
             journal,
+            terminalTruth,
           },
         ];
-        completed = terminalOutcome(envelope);
+        completed = durableTerminalOutcome;
         completedInvocationId = pending.invocationId;
         pending = null;
       }
@@ -4089,6 +5227,23 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     });
     active.record = updated;
     if (completedInvocationId !== null && completed !== null) {
+      try {
+        await this.#assertCurrentConnectionAuthority(connection);
+      } catch {
+        const waiter = this.#waiters.get(completedInvocationId);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(completedInvocationId);
+          waiter.resolve({
+            state: "failed",
+            error: {
+              code: "executor_unavailable",
+              message: "identity revocation suppressed terminal delivery",
+            },
+          });
+        }
+        return;
+      }
       const waiter = this.#waiters.get(completedInvocationId);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
@@ -4107,11 +5262,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const connection = this.#connections.get(prior.record.connectionId);
       await connection?.close(4001, "session replaced");
     }
+    if (prior !== undefined) this.#untrackSession(prior.record);
     this.#active.set(record.rsid, {
       tenantId: record.tenantId,
       rsid: record.rsid,
       record,
     });
+    this.#trackSession(record);
   }
 
   async #markConnectionLost(active: ActiveSession): Promise<void> {
@@ -4952,7 +6109,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     pending: DurablePendingDispatch | null,
     knownNotDispatched: boolean,
   ): void {
+    const active = this.#active.get(rsid);
     this.#active.delete(rsid);
+    if (active !== undefined) this.#untrackSession(active.record);
     if (pending === null) return;
     const waiter = this.#waiters.get(pending.invocationId);
     if (waiter === undefined) return;

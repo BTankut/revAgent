@@ -645,7 +645,8 @@ describe("M4 pre-production serving composition", () => {
     });
     expect(fixture.counts.start).toBe(1);
 
-    expect(prepared.revokeConfiguredDevice()).toMatchObject({
+    await prepared.composition.bridgeAuthority.open();
+    await expect(prepared.revokeConfiguredDevice()).resolves.toMatchObject({
       ok: true,
       value: { deviceStatus: "revoked" },
     });
@@ -670,6 +671,7 @@ describe("M4 pre-production serving composition", () => {
         channel: { async send() {}, async close() {} },
       }),
     ).rejects.toMatchObject({ code: "auth", httpStatus: 403, closeCode: 4403 });
+    await prepared.composition.bridgeAuthority.close();
   });
 
   it("refuses a pre-production composition before listener creation when TLS is absent", async () => {
