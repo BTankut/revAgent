@@ -4,11 +4,14 @@ import type { Duplex } from "node:stream";
 
 import {
   parseRbpFrame,
+  RBP_MAX_DECODED_CHUNK_BYTES,
+  RBP_MAX_INLINE_RESULT_BYTES,
+  RBP_MAX_INVOCATION_PARAMS_BYTES,
   type HelloEnvelope,
   type RbpEnvelope,
 } from "@revagent/protocol";
 import type { FastifyInstance } from "fastify";
-import { WebSocket, WebSocketServer } from "ws";
+import { WebSocket, WebSocketServer, type RawData } from "ws";
 
 import {
   GatewayRbpFault,
@@ -32,6 +35,78 @@ export const RBP_INGRESS_HTTP_FALLBACK_PATHS = Object.freeze([
 
 const MAX_HTTP_MESSAGE_BYTES = 48 * 1024 * 1024;
 const MAX_PENDING_TRANSPORT_BYTES = 1024 * 1024;
+const RBP_WSS_FRAME_OVERHEAD_BYTES = 64 * 1024;
+const RBP_WSS_DEFAULT_QUEUED_FRAMES = 32;
+const RBP_WSS_MIN_QUEUED_FRAMES = 1;
+const RBP_WSS_MAX_QUEUED_FRAMES = 256;
+
+type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
+
+interface WssFrameCeilings {
+  readonly maxParamsBytes: number;
+  readonly maxPartialBytes: number;
+  readonly maxInlineTerminalBytes: number;
+}
+
+export interface RbpWssQueueConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+}
+
+export interface ProductionRbpIngressOptions {
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly wssQueue?: RbpWssQueueConfig;
+  readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
+  readonly onOpeningRefusalObservation?: (
+    observation: RbpOpeningRefusalObservation,
+  ) => void;
+}
+
+function wssFrameBudget(ceilings: WssFrameCeilings): number {
+  return (
+    RBP_WSS_FRAME_OVERHEAD_BYTES +
+    Math.max(
+      ceilings.maxParamsBytes,
+      4 * Math.ceil(ceilings.maxPartialBytes / 3),
+      ceilings.maxInlineTerminalBytes,
+    )
+  );
+}
+
+const LOCAL_WSS_FRAME_BUDGET_BYTES = wssFrameBudget({
+  maxParamsBytes: RBP_MAX_INVOCATION_PARAMS_BYTES,
+  maxPartialBytes: RBP_MAX_DECODED_CHUNK_BYTES,
+  maxInlineTerminalBytes: RBP_MAX_INLINE_RESULT_BYTES,
+});
+
+function boundedInteger(
+  value: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new RangeError(
+      `${name} must be a safe integer in [${String(minimum)}, ${String(maximum)}]`,
+    );
+  }
+  return value;
+}
+
+function configuredQueueBytes(configured: number | undefined, frameBudget: number): number {
+  return boundedInteger(
+    configured ?? 2 * frameBudget,
+    frameBudget,
+    2 * frameBudget,
+    "wssQueue.queuedBytes",
+  );
+}
+
+function rawFrame(raw: RawData): Buffer {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (Array.isArray(raw)) return Buffer.concat(raw);
+  return Buffer.from(raw);
+}
 
 export const RBP_OPENING_REFUSAL_OBSERVER_CONTRACT =
   "revagent.m4-rbp-refusal-observer/v1" as const;
@@ -214,14 +289,21 @@ function rawResponse(
   );
 }
 
-export function createProductionRbpIngressHost(options: {
-  readonly authority: GatewayBridgeSessionAuthority;
-  readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
-  readonly onOpeningRefusalObservation?: (
-    observation: RbpOpeningRefusalObservation,
-  ) => void;
-}): ProductionRbpIngressHost {
+export function createProductionRbpIngressHost(
+  options: ProductionRbpIngressOptions,
+): ProductionRbpIngressHost {
   const { authority } = options;
+  const queuedFrameLimit = boundedInteger(
+    options.wssQueue?.queuedFrames ?? RBP_WSS_DEFAULT_QUEUED_FRAMES,
+    RBP_WSS_MIN_QUEUED_FRAMES,
+    RBP_WSS_MAX_QUEUED_FRAMES,
+    "wssQueue.queuedFrames",
+  );
+  const configuredQueuedByteLimit = options.wssQueue?.queuedBytes;
+  const localQueuedByteLimit = configuredQueueBytes(
+    configuredQueuedByteLimit,
+    LOCAL_WSS_FRAME_BUDGET_BYTES,
+  );
   const websocketServer = new WebSocketServer({
     noServer: true,
     maxPayload: MAX_HTTP_MESSAGE_BYTES,
@@ -412,86 +494,79 @@ export function createProductionRbpIngressHost(options: {
           return;
         }
         websocketServer.handleUpgrade(request, socket, head, (websocket) => {
-          let connectionId: string | null = null;
-          let opening = true;
+          let state: WssConnectionState = "opening";
+          let authorityConnectionId: string | null = null;
+          let openingCorrelationId: string | null = null;
           let openingRefusalObserved = false;
-          const channel: BridgeConnectionChannel = {
-            async send(serialized): Promise<void> {
-              if (websocket.readyState !== WebSocket.OPEN) {
-                throw new Error("WSS transport is not open");
-              }
-              if (
-                websocket.bufferedAmount + Buffer.byteLength(serialized) >
-                MAX_PENDING_TRANSPORT_BYTES
-              ) {
-                throw new Error("WSS backlog exceeds the bounded transport window");
-              }
-              await new Promise<void>((resolve, reject) => {
-                websocket.send(serialized, (error) =>
-                  error === undefined || error === null
-                    ? resolve()
-                    : reject(error),
-                );
-              });
-            },
-            async close(code, reason): Promise<void> {
-              if (websocket.readyState === WebSocket.CLOSED) return;
-              websocket.close(code, reason.slice(0, 123));
-            },
+          let queuedFrames = 0;
+          let queuedBytes = 0;
+          let queuedByteLimit = localQueuedByteLimit;
+          let pauseAtBytes = Math.ceil((queuedByteLimit * 3) / 4);
+          let resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
+          let readsPaused = false;
+          let serialTail: Promise<void> = Promise.resolve();
+          let teardownTask: Promise<void> | null = null;
+
+          const internalFault = (error: unknown): GatewayRbpFault =>
+            new GatewayRbpFault(
+              "unavailable",
+              error instanceof Error ? error.message : String(error),
+              500,
+              1011,
+            );
+
+          const append = (operation: () => Promise<void>): Promise<void> => {
+            const task = serialTail.then(operation);
+            serialTail = task.catch(() => {
+              // Every socket-owned task has a rejection observer. Individual
+              // operations translate failures into the first teardown below.
+            });
+            return task;
           };
-          websocket.on("message", (raw, binary) => {
-            void (async () => {
-              let openingCorrelationId: string | null = null;
+
+          const sendSerialized = async (serialized: string): Promise<void> => {
+            if (websocket.readyState !== WebSocket.OPEN) {
+              throw new Error("WSS transport is not open");
+            }
+            if (
+              websocket.bufferedAmount + Buffer.byteLength(serialized) >
+              MAX_PENDING_TRANSPORT_BYTES
+            ) {
+              throw new Error("WSS backlog exceeds the bounded transport window");
+            }
+            await new Promise<void>((resolve, reject) => {
+              websocket.send(serialized, (error) =>
+                error === undefined || error === null ? resolve() : reject(error),
+              );
+            });
+          };
+
+          const scheduleTeardown = (input: {
+            readonly closeCode: number | null;
+            readonly reason: string;
+            readonly fault: GatewayRbpFault | null;
+            readonly sendFaultFrame: boolean;
+          }): Promise<void> => {
+            if (teardownTask !== null) return teardownTask;
+            if (state !== "faulted" && state !== "closed") state = "closing";
+            const task = append(async () => {
               try {
-                if (binary) {
-                  throw new GatewayRbpFault("protocol", "RBP WSS requires text frames", 400, 4400);
-                }
-                const envelope = parseRbpFrame(
-                  Buffer.isBuffer(raw) ? raw : Buffer.from(raw as ArrayBuffer),
-                );
-                if (opening) {
-                  if (envelope.type !== "hello") {
-                    throw new GatewayRbpFault("protocol", "first WSS frame must be hello", 400, 4400);
-                  }
-                  openingCorrelationId = envelope.id;
-                  const opened = await authority.openConnection({
-                    deviceToken: bearer(request.headers.authorization),
-                    binding: "wss",
-                    hello: envelope,
-                    channel,
-                  });
-                  connectionId = opened.connectionId;
-                  opening = false;
-                  await channel.send(JSON.stringify(opened.helloAck));
-                  return;
-                }
-                await authority.receive(connectionId!, envelope);
-              } catch (error) {
-                const fault =
-                  error instanceof GatewayRbpFault
-                    ? error
-                    : new GatewayRbpFault(
-                        "protocol",
-                        error instanceof Error ? error.message : String(error),
-                        400,
-                        4400,
-                      );
-                const observation =
-                  opening && openingCorrelationId !== null
-                    ? openingRefusalObservation(fault, openingCorrelationId, "wss")
-                    : null;
-                if (
-                  !openingRefusalObserved &&
-                  observation !== null
-                ) {
-                  // Claim before invoking any best-effort sink so duplicate
-                  // hello frames cannot race the observer side effect.
-                  openingRefusalObserved = true;
-                  observeOpeningRefusal(observation);
-                }
-                if (!opening && websocket.readyState === WebSocket.OPEN) {
+                if (readsPaused) {
                   try {
-                    await channel.send(
+                    websocket.resume();
+                  } catch {
+                    // A transport that cannot resume is terminated below if
+                    // the orderly close cannot be initiated.
+                  }
+                  readsPaused = false;
+                }
+                if (
+                  input.fault !== null &&
+                  input.sendFaultFrame &&
+                  websocket.readyState === WebSocket.OPEN
+                ) {
+                  try {
+                    await sendSerialized(
                       JSON.stringify({
                         v: 1,
                         type: "error",
@@ -499,25 +574,252 @@ export function createProductionRbpIngressHost(options: {
                         ts: new Date().toISOString(),
                         payload: {
                           retryable: false,
-                          fault_class: fault.code === "auth" ? "auth" : "protocol",
+                          fault_class: input.fault.code === "auth" ? "auth" : "protocol",
                           outcome: "known",
                           verification_required: false,
-                          message: fault.message,
+                          message: input.fault.message,
                         },
                       } satisfies RbpEnvelope),
                     );
                   } catch {
-                    // The authenticated close code remains authoritative when
-                    // the peer cannot accept the final control frame.
+                    // The close code remains authoritative if the peer cannot
+                    // accept the final authenticated control frame.
                   }
                 }
-                websocket.close(fault.closeCode, fault.message.slice(0, 123));
+                if (
+                  input.closeCode !== null &&
+                  websocket.readyState === WebSocket.OPEN
+                ) {
+                  try {
+                    websocket.close(input.closeCode, input.reason.slice(0, 123));
+                  } catch {
+                    websocket.terminate();
+                  }
+                }
+              } finally {
+                if (authorityConnectionId !== null) {
+                  try {
+                    await authority.detach(authorityConnectionId);
+                  } catch {
+                    // Detach failure is contained by this one caught teardown
+                    // task; it must never become an unhandled rejection.
+                  }
+                }
+                state = "closed";
               }
-            })();
+            });
+            teardownTask = task.catch(() => {
+              state = "closed";
+            });
+            return teardownTask;
+          };
+
+          const fail = (fault: GatewayRbpFault): void => {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            const sendFaultFrame = state === "open";
+            const observation =
+              state === "opening" && openingCorrelationId !== null
+                ? openingRefusalObservation(fault, openingCorrelationId, "wss")
+                : null;
+            if (!openingRefusalObserved && observation !== null) {
+              openingRefusalObserved = true;
+              observeOpeningRefusal(observation);
+            }
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: fault.closeCode,
+              reason: fault.message,
+              fault,
+              sendFaultFrame,
+            });
+          };
+
+          const overload = (): void => {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: 1013,
+              reason: "WSS inbound queue overloaded",
+              fault: null,
+              sendFaultFrame: false,
+            });
+          };
+
+          const releaseQueueCharge = (bytes: number): void => {
+            queuedFrames -= 1;
+            queuedBytes -= bytes;
+            if (
+              readsPaused &&
+              queuedBytes < resumeBelowBytes &&
+              (state === "opening" || state === "open")
+            ) {
+              try {
+                websocket.resume();
+                readsPaused = false;
+              } catch (error) {
+                fail(internalFault(error));
+              }
+            }
+          };
+
+          const applyNegotiatedQueueLimits = (opened: {
+            readonly helloAck: {
+              readonly payload: {
+                readonly limits: {
+                  readonly max_params_bytes: number;
+                  readonly max_partial_bytes: number;
+                  readonly max_result_bytes: number;
+                };
+              };
+            };
+          }): boolean => {
+            const negotiatedFrameBudget = wssFrameBudget({
+              maxParamsBytes: opened.helloAck.payload.limits.max_params_bytes,
+              maxPartialBytes: opened.helloAck.payload.limits.max_partial_bytes,
+              maxInlineTerminalBytes: opened.helloAck.payload.limits.max_result_bytes,
+            });
+            queuedByteLimit = configuredQueueBytes(
+              configuredQueuedByteLimit,
+              negotiatedFrameBudget,
+            );
+            pauseAtBytes = Math.ceil((queuedByteLimit * 3) / 4);
+            resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
+            if (queuedFrames > queuedFrameLimit || queuedBytes > queuedByteLimit) {
+              overload();
+              return false;
+            }
+            return true;
+          };
+
+          const channel: BridgeConnectionChannel = {
+            send: sendSerialized,
+            async close(code, reason): Promise<void> {
+              if (state !== "faulted" && state !== "closed") state = "closing";
+              await scheduleTeardown({
+                closeCode: code,
+                reason,
+                fault: null,
+                sendFaultFrame: false,
+              });
+            },
+          };
+
+          const processFrame = async (bytes: Buffer, binary: boolean): Promise<void> => {
+            if (binary) {
+              throw new GatewayRbpFault(
+                "protocol",
+                "RBP WSS requires text frames",
+                400,
+                4400,
+              );
+            }
+            let envelope: RbpEnvelope;
+            try {
+              envelope = parseRbpFrame(bytes);
+            } catch (error) {
+              throw new GatewayRbpFault(
+                "protocol",
+                error instanceof Error ? error.message : String(error),
+                400,
+                4400,
+              );
+            }
+            if (state === "opening") {
+              if (envelope.type !== "hello") {
+                throw new GatewayRbpFault(
+                  "protocol",
+                  "first WSS frame must be hello",
+                  400,
+                  4400,
+                );
+              }
+              openingCorrelationId = envelope.id;
+              const opened = await authority.openConnection({
+                deviceToken: bearer(request.headers.authorization),
+                binding: "wss",
+                hello: envelope,
+                channel,
+              });
+              if (authorityConnectionId !== null) {
+                throw new Error("WSS socket attempted to claim a second authority connection");
+              }
+              authorityConnectionId = opened.connectionId;
+              if (state !== "opening") return;
+              if (!applyNegotiatedQueueLimits(opened)) return;
+              await channel.send(JSON.stringify(opened.helloAck));
+              if (state === "opening") state = "open";
+              return;
+            }
+            if (state !== "open") return;
+            if (envelope.type === "hello") {
+              throw new GatewayRbpFault(
+                "protocol",
+                "hello is only valid as the first WSS frame",
+                400,
+                4400,
+              );
+            }
+            if (authorityConnectionId === null) {
+              throw new Error("open WSS socket has no authority connection");
+            }
+            await authority.receive(authorityConnectionId, envelope);
+          };
+
+          const enqueueFrame = (raw: RawData, binary: boolean): void => {
+            if (state !== "opening" && state !== "open") return;
+            let bytes: Buffer;
+            try {
+              bytes = rawFrame(raw);
+            } catch (error) {
+              fail(internalFault(error));
+              return;
+            }
+            const nextFrames = queuedFrames + 1;
+            const nextBytes = queuedBytes + bytes.byteLength;
+            if (nextFrames > queuedFrameLimit || nextBytes > queuedByteLimit) {
+              overload();
+              return;
+            }
+            queuedFrames = nextFrames;
+            queuedBytes = nextBytes;
+            if (!readsPaused && queuedBytes >= pauseAtBytes) {
+              try {
+                websocket.pause();
+                readsPaused = true;
+              } catch (error) {
+                releaseQueueCharge(bytes.byteLength);
+                fail(internalFault(error));
+                return;
+              }
+            }
+            const task = append(async () => {
+              try {
+                if (state !== "opening" && state !== "open") return;
+                await processFrame(bytes, binary);
+              } catch (error) {
+                fail(error instanceof GatewayRbpFault ? error : internalFault(error));
+              } finally {
+                releaseQueueCharge(bytes.byteLength);
+              }
+            });
+            void task.catch(() => {
+              // append() has already installed the queue-tail rejection sink.
+            });
+          };
+
+          websocket.on("error", (error) => {
+            fail(internalFault(error));
           });
           websocket.once("close", () => {
-            if (connectionId !== null) void authority.detach(connectionId);
+            if (state !== "faulted" && state !== "closed") state = "closing";
+            void scheduleTeardown({
+              closeCode: null,
+              reason: "WSS transport closed",
+              fault: null,
+              sendFaultFrame: false,
+            });
           });
+          websocket.on("message", enqueueFrame);
         });
       })().catch((error: unknown) => {
         rawResponse(socket, 503, {
