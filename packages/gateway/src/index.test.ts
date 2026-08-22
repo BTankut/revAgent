@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { NodeStreamableHTTPServerTransport } from "@modelcontextprotocol/node";
 import {
   GATEWAY_CREDENTIAL_SCOPE_SCHEMA,
+  PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA,
   GatewayCompositionError,
   createProductionCredentialScopeLocator,
   createProductionIdentityAuthority,
@@ -45,6 +46,9 @@ describe("gateway scaffold", () => {
     const fingerprint = `sha256:${"a".repeat(64)}`;
     expect(GATEWAY_CREDENTIAL_SCOPE_SCHEMA).toBe(
       "gateway.credential-scope/v1",
+    );
+    expect(PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA).toBe(
+      "revagent.production-identity-port-trust/v1",
     );
     expect(createProductionCredentialScopeLocator).toBeTypeOf("function");
     expect(createProductionIdentityAuthority).toBeTypeOf("function");

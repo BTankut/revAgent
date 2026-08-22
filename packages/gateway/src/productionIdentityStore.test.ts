@@ -9,13 +9,17 @@ import {
   IDENTITY_REVOCATION_EVENT_SCHEMA,
   IDENTITY_REVOCATION_HEAD_SCHEMA,
   IDENTITY_TENANT_SEAT_SCHEMA,
+  PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA,
   createProductionCredentialScopeLocator,
   createProductionIdentityAuthority,
   type CredentialScopeLookupResult,
   type IdentityMutationResult,
   type ProductionIdentityAuthority,
   type ProductionCredentialScopeLocator,
+  type ProductionCredentialScopeStore,
   type ProductionIdentityStoreOptions,
+  type ProductionNorthIdentityDelegate,
+  type ProductionTenantIdentityStore,
   type ProvisionIdentityDeviceInput,
 } from "./productionIdentityStore.js";
 import type {
@@ -37,6 +41,8 @@ const TOKEN_A = "device-token-a-0000000000000000000000000001";
 const TOKEN_B = "device-token-b-0000000000000000000000000002";
 const FINGERPRINT_A = `sha256:${"a".repeat(64)}`;
 const FINGERPRINT_B = `sha256:${"b".repeat(64)}`;
+const TRUST_DOMAIN = "revagent-test-trust";
+const DEPLOYMENT_ID = "deployment-test-1";
 
 function sha256(value: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(value, "utf8").digest("hex")}`;
@@ -61,16 +67,151 @@ function provisionInput(
   };
 }
 
+function productionTrust(
+  resource:
+    | "tenant_identity_store"
+    | "credential_scope_store"
+    | "north_identity",
+) {
+  return Object.freeze({
+    schema: PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA,
+    environment: "production" as const,
+    trustDomain: TRUST_DOMAIN,
+    deploymentId: DEPLOYMENT_ID,
+    resource,
+    durability:
+      resource === "north_identity"
+        ? ("external_authority" as const)
+        : ("durable" as const),
+  });
+}
+
+function trustedTenantStore(
+  delegate: GatewayProtocolStore,
+): ProductionTenantIdentityStore {
+  return {
+    kind: "postgres",
+    contractVersion: delegate.contractVersion,
+    productionTrust: {
+      ...productionTrust("tenant_identity_store"),
+      resource: "tenant_identity_store",
+      durability: "durable",
+    },
+    open: () => delegate.open(),
+    close: () => delegate.close(),
+    transact: (scope, fn) => delegate.transact(scope, fn),
+    async readiness() {
+      const result = await delegate.transact(
+        { tenantId: "production-readiness" },
+        () => undefined,
+      );
+      return result.ok
+        ? { ok: true as const, value: undefined }
+        : result;
+    },
+  };
+}
+
+function trustedCredentialStore(
+  delegate: GatewayProtocolStore,
+): ProductionCredentialScopeStore {
+  return {
+    kind: "postgres",
+    contractVersion: delegate.contractVersion,
+    productionTrust: {
+      ...productionTrust("credential_scope_store"),
+      resource: "credential_scope_store",
+      durability: "durable",
+    },
+    open: () => delegate.open(),
+    close: () => delegate.close(),
+    transact: (scope, fn) => delegate.transact(scope, fn),
+    async readiness() {
+      const result = await delegate.transact(
+        { tenantId: "production-readiness" },
+        () => undefined,
+      );
+      return result.ok
+        ? { ok: true as const, value: undefined }
+        : result;
+    },
+  };
+}
+
+function trustedNorthIdentity(): ProductionNorthIdentityDelegate {
+  let open = false;
+  return {
+    kind: "oidc",
+    productionTrust: {
+      ...productionTrust("north_identity"),
+      resource: "north_identity",
+      durability: "external_authority",
+    },
+    async open() {
+      open = true;
+      return { ok: true as const, value: undefined };
+    },
+    async close() {
+      open = false;
+      return { ok: true as const, value: undefined };
+    },
+    async readiness() {
+      return open
+        ? { ok: true as const, value: undefined }
+        : {
+            ok: false as const,
+            code: "unavailable" as const,
+            message: "north identity is closed",
+          };
+    },
+    async authenticateNorthRequest() {
+      return {
+        ok: false as const,
+        port: "identity" as const,
+        code: "unavailable" as const,
+        message: "north identity test fixture has no credential",
+      };
+    },
+  };
+}
+
+function testLocator(store: GatewayProtocolStore): ProductionCredentialScopeLocator {
+  return createProductionCredentialScopeLocator({
+    store: trustedCredentialStore(store),
+    clock: () => NOW_MS,
+  });
+}
+
+function deferredSignal(): {
+  readonly promise: Promise<void>;
+  release(): void;
+} {
+  let release!: () => void;
+  const promise = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { promise, release };
+}
+
 function authority(
-  store: GatewayProtocolStore,
+  store: GatewayProtocolStore | ProductionTenantIdentityStore,
   credentialLocator: ProductionCredentialScopeLocator,
   overrides: Partial<
-    Omit<ProductionIdentityStoreOptions, "store" | "credentialLocator">
+    Omit<
+      ProductionIdentityStoreOptions,
+      "store" | "credentialLocator" | "northIdentity"
+    > & { readonly northIdentity: ProductionNorthIdentityDelegate }
   > = {},
 ): ProductionIdentityAuthority {
+  const tenantStore =
+    store.kind === "postgres" && "productionTrust" in store
+      ? (store as ProductionTenantIdentityStore)
+      : trustedTenantStore(store);
   return createProductionIdentityAuthority({
-    store,
+    store: tenantStore,
+    tenantStoreOwnership: "owned",
     credentialLocator,
+    northIdentity: overrides.northIdentity ?? trustedNorthIdentity(),
     subscriberId: "gateway-subscriber-1",
     clock: () => NOW_MS,
     ...overrides,
@@ -86,10 +227,7 @@ async function openAuthority(
   readonly locator: ProductionCredentialScopeLocator;
   readonly identity: ProductionIdentityAuthority;
 }> {
-  const locator = createProductionCredentialScopeLocator({
-    store: locatorFixture.store,
-    clock: () => NOW_MS,
-  });
+  const locator = testLocator(locatorFixture.store);
   const identity = authority(fixture.store, locator);
   expect(await identity.open()).toEqual({ ok: true, value: undefined });
   return { fixture, locatorFixture, locator, identity };
@@ -140,11 +278,52 @@ async function exactAuth(
   });
 }
 
+async function expectAllOperationsUnavailable(
+  identity: ProductionIdentityAuthority,
+): Promise<void> {
+  const operations = await Promise.all([
+    identity.provisionDevice(provisionInput()),
+    identity.revokeDevice({
+      operationId: "guard-revoke-device",
+      tenantId: TENANT_A,
+      deviceId: DEVICE_ID,
+      expectedDeviceRecordVersion: 1,
+      expectedSeatRecordVersion: 1,
+    }),
+    identity.revokeSeat({
+      operationId: "guard-revoke-seat",
+      tenantId: TENANT_A,
+      seatId: SEAT_ID,
+      expectedSeatRecordVersion: 1,
+      expectedDeviceRecordVersion: 1,
+    }),
+    identity.consumeRevocationEvents({ tenantId: TENANT_A }),
+    identity.prepareTenantResync({ tenantId: TENANT_A }),
+    identity.commitTenantResync({
+      tenantId: TENANT_A,
+      expectedAuthorityDigest: `sha256:${"0".repeat(64)}`,
+    }),
+  ]);
+  for (const operation of operations) {
+    expect(operation).toMatchObject({
+      ok: false,
+      kind: "unavailable",
+      code: "unavailable",
+    });
+  }
+  expect(await exactAuth(identity)).toMatchObject({ ok: false });
+  expect(
+    await identity.authenticateNorthRequest({ authorization: undefined }),
+  ).toMatchObject({ ok: false, code: "unavailable" });
+}
+
 function uncertainAfter(
   delegate: GatewayProtocolStore,
   phase: "before" | "after",
+  skipTransactions = 0,
 ): GatewayProtocolStore {
   let inject = true;
+  let remainingSkips = skipTransactions;
   return {
     kind: delegate.kind,
     contractVersion: delegate.contractVersion,
@@ -154,6 +333,10 @@ function uncertainAfter(
       scope: { readonly tenantId: string },
       fn: (tx: StoreTransaction) => Promise<T> | T,
     ): Promise<StoreOutcome<T>> {
+      if (remainingSkips > 0) {
+        remainingSkips -= 1;
+        return delegate.transact(scope, fn);
+      }
       if (inject && phase === "before") {
         inject = false;
         return {
@@ -219,11 +402,13 @@ function observedLifecycleStore(input: {
 function failFirstLocatorMutation(
   delegate: ProductionCredentialScopeLocator,
   method: "bind" | "retire",
+  failAtAttempts: readonly number[] = [1],
 ): {
   readonly locator: ProductionCredentialScopeLocator;
   attempts(): number;
 } {
   let attempts = 0;
+  const failures = new Set(failAtAttempts);
   const unavailable = () => ({
     ok: false as const,
     kind: "unavailable" as const,
@@ -233,15 +418,23 @@ function failFirstLocatorMutation(
   return {
     locator: {
       kind: delegate.kind,
+      productionTrust: delegate.productionTrust,
       open: () => delegate.open(),
       close: () => delegate.close(),
+      readiness: () => delegate.readiness(),
       lookup: (input) => delegate.lookup(input),
       async bind(input) {
-        if (method === "bind" && attempts++ === 0) return unavailable();
+        if (method === "bind") {
+          attempts += 1;
+          if (failures.has(attempts)) return unavailable();
+        }
         return delegate.bind(input);
       },
       async retire(input) {
-        if (method === "retire" && attempts++ === 0) return unavailable();
+        if (method === "retire") {
+          attempts += 1;
+          if (failures.has(attempts)) return unavailable();
+        }
         return delegate.retire(input);
       },
     },
@@ -252,6 +445,7 @@ function failFirstLocatorMutation(
 function fixedLookupLocator(
   result: CredentialScopeLookupResult,
 ): ProductionCredentialScopeLocator {
+  let open = false;
   const unavailable = {
     ok: false as const,
     kind: "unavailable" as const,
@@ -259,12 +453,28 @@ function fixedLookupLocator(
     message: "fixed lookup locator is read only",
   };
   return {
-    kind: "memory",
+    kind: "postgres",
+    productionTrust: {
+      ...productionTrust("credential_scope_store"),
+      resource: "credential_scope_locator",
+      durability: "durable",
+    },
     async open() {
+      open = true;
       return { ok: true as const, value: undefined };
     },
     async close() {
+      open = false;
       return { ok: true as const, value: undefined };
+    },
+    async readiness() {
+      return open
+        ? { ok: true as const, value: undefined }
+        : {
+            ok: false as const,
+            code: "unavailable" as const,
+            message: "fixed locator is closed",
+          };
     },
     async lookup() {
       return structuredClone(result);
@@ -277,6 +487,92 @@ function fixedLookupLocator(
     },
   };
 }
+
+describe("production identity port trust", () => {
+  it("rejects memory, missing, untrusted, and mismatched production ports before exposing oidc", () => {
+    const rawTenant = createRestartableTestStore().store;
+    const rawLocator = createRestartableTestStore().store;
+    expect(() =>
+      createProductionCredentialScopeLocator({
+        store: rawLocator as unknown as ProductionCredentialScopeStore,
+        clock: () => NOW_MS,
+      }),
+    ).toThrow(TypeError);
+
+    const tenantStore = trustedTenantStore(rawTenant);
+    const credentialLocator = testLocator(rawLocator);
+    const northIdentity = trustedNorthIdentity();
+    const base: ProductionIdentityStoreOptions = {
+      store: tenantStore,
+      tenantStoreOwnership: "owned",
+      credentialLocator,
+      northIdentity,
+      subscriberId: "gateway-subscriber-1",
+      clock: () => NOW_MS,
+    };
+    expect(createProductionIdentityAuthority(base).kind).toBe("oidc");
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        store: rawTenant as unknown as ProductionTenantIdentityStore,
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        credentialLocator: {
+          ...credentialLocator,
+          kind: "memory",
+        } as unknown as ProductionCredentialScopeLocator,
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        northIdentity: undefined as unknown as ProductionNorthIdentityDelegate,
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        northIdentity: {
+          ...northIdentity,
+          kind: "fake",
+        } as unknown as ProductionNorthIdentityDelegate,
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        northIdentity: {
+          ...northIdentity,
+          productionTrust: {
+            ...northIdentity.productionTrust,
+            trustDomain: "different-trust-domain",
+          },
+        },
+      }),
+    ).toThrow(TypeError);
+    expect(() =>
+      createProductionIdentityAuthority({
+        ...base,
+        credentialLocator: {
+          kind: credentialLocator.kind,
+          productionTrust: {
+            ...credentialLocator.productionTrust,
+            deploymentId: "different-deployment",
+          },
+          open: () => credentialLocator.open(),
+          close: () => credentialLocator.close(),
+          readiness: () => credentialLocator.readiness(),
+          lookup: (input) => credentialLocator.lookup(input),
+          bind: (input) => credentialLocator.bind(input),
+          retire: (input) => credentialLocator.retire(input),
+        },
+      }),
+    ).toThrow(TypeError);
+  });
+});
 
 describe("production identity lifecycle", () => {
   it("is oidc, refuses pre-open auth, opens tenant then locator exactly once, and closes in reverse", async () => {
@@ -291,18 +587,64 @@ describe("production identity lifecycle", () => {
       label: "locator",
       calls,
     });
+    const trustedTenantBase = trustedTenantStore(tenantStore);
+    const trustedTenant: ProductionTenantIdentityStore = {
+      ...trustedTenantBase,
+      async readiness() {
+        calls.push("tenant.readiness");
+        return trustedTenantBase.readiness();
+      },
+    };
+    const locatorBase = testLocator(locatorStore);
+    const locator: ProductionCredentialScopeLocator = {
+      kind: locatorBase.kind,
+      productionTrust: locatorBase.productionTrust,
+      open: () => locatorBase.open(),
+      close: () => locatorBase.close(),
+      lookup: (input) => locatorBase.lookup(input),
+      bind: (input) => locatorBase.bind(input),
+      retire: (input) => locatorBase.retire(input),
+      async readiness() {
+        calls.push("locator.readiness");
+        return locatorBase.readiness();
+      },
+    };
+    const northBase = trustedNorthIdentity();
+    const north: ProductionNorthIdentityDelegate = {
+      ...northBase,
+      async open() {
+        calls.push("north.open");
+        return northBase.open();
+      },
+      async readiness() {
+        calls.push("north.readiness");
+        return northBase.readiness();
+      },
+      async close() {
+        calls.push("north.close");
+        return northBase.close();
+      },
+    };
     const identity = authority(
-      tenantStore,
-      createProductionCredentialScopeLocator({
-        store: locatorStore,
-        clock: () => NOW_MS,
-      }),
+      trustedTenant,
+      locator,
+      { northIdentity: north },
     );
     expect(identity.kind).toBe("oidc");
     expect(identity.lifecycle()).toEqual({
       state: "closed",
-      tenantAuthorityOpened: false,
-      credentialLocatorOpened: false,
+      resources: {
+        tenantStore: "closed",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
+    });
+    expect(identity.usesStore(trustedTenant)).toBe(true);
+    expect(identity.usesStore(tenantStore)).toBe(false);
+    expect(identity.managedResources()).toEqual({
+      tenantStore: { ownership: "owned", managed: true },
+      credentialLocator: { managed: true },
+      northIdentity: { managed: true },
     });
     expect(await exactAuth(identity)).toEqual({
       ok: false,
@@ -310,16 +652,27 @@ describe("production identity lifecycle", () => {
       code: "unavailable",
       message: "production identity refused device authorization",
     });
+    await expectAllOperationsUnavailable(identity);
     expect(await Promise.all([identity.open(), identity.open()])).toEqual([
       { ok: true, value: undefined },
       { ok: true, value: undefined },
     ]);
     expect(await identity.open()).toEqual({ ok: true, value: undefined });
-    expect(calls).toEqual(["tenant.open", "locator.open"]);
+    expect(calls).toEqual([
+      "tenant.open",
+      "tenant.readiness",
+      "locator.open",
+      "locator.readiness",
+      "north.open",
+      "north.readiness",
+    ]);
     expect(identity.lifecycle()).toEqual({
       state: "open",
-      tenantAuthorityOpened: true,
-      credentialLocatorOpened: true,
+      resources: {
+        tenantStore: "open",
+        credentialLocator: "open",
+        northIdentity: "open",
+      },
     });
     expect(await Promise.all([identity.close(), identity.close()])).toEqual([
       { ok: true, value: undefined },
@@ -328,12 +681,24 @@ describe("production identity lifecycle", () => {
     expect(await identity.close()).toEqual({ ok: true, value: undefined });
     expect(calls).toEqual([
       "tenant.open",
+      "tenant.readiness",
       "locator.open",
+      "locator.readiness",
+      "north.open",
+      "north.readiness",
+      "north.close",
       "locator.close",
       "tenant.close",
     ]);
     expect(await identity.open()).toEqual({ ok: true, value: undefined });
-    expect(calls.slice(-2)).toEqual(["tenant.open", "locator.open"]);
+    expect(calls.slice(-6)).toEqual([
+      "tenant.open",
+      "tenant.readiness",
+      "locator.open",
+      "locator.readiness",
+      "north.open",
+      "north.readiness",
+    ]);
     await identity.close();
   });
 
@@ -352,10 +717,7 @@ describe("production identity lifecycle", () => {
     });
     const identity = authority(
       tenantStore,
-      createProductionCredentialScopeLocator({
-        store: locatorStore,
-        clock: () => NOW_MS,
-      }),
+      testLocator(locatorStore),
     );
     const failed = await identity.open();
     expect(failed).toMatchObject({ ok: false, code: "unavailable" });
@@ -363,11 +725,19 @@ describe("production identity lifecycle", () => {
       expect(failed.message).toContain("locator_open:unavailable");
       expect(failed.message.length).toBeLessThanOrEqual(256);
     }
-    expect(calls).toEqual(["tenant.open", "locator.open", "tenant.close"]);
+    expect(calls).toEqual([
+      "tenant.open",
+      "locator.open",
+      "locator.close",
+      "tenant.close",
+    ]);
     expect(identity.lifecycle()).toEqual({
       state: "closed",
-      tenantAuthorityOpened: false,
-      credentialLocatorOpened: false,
+      resources: {
+        tenantStore: "closed",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
     });
     expect(await exactAuth(identity)).toMatchObject({ ok: false });
     expect(await identity.open()).toEqual({ ok: true, value: undefined });
@@ -390,24 +760,25 @@ describe("production identity lifecycle", () => {
     });
     const identity = authority(
       tenantStore,
-      createProductionCredentialScopeLocator({
-        store: locatorStore,
-        clock: () => NOW_MS,
-      }),
+      testLocator(locatorStore),
     );
     expect(await identity.open()).toMatchObject({
       ok: false,
       code: "unavailable",
     });
-    expect(calls).toEqual(["tenant.open"]);
+    expect(calls).toEqual(["tenant.open", "tenant.close"]);
     expect(identity.lifecycle()).toEqual({
-      state: "failed",
-      tenantAuthorityOpened: false,
-      credentialLocatorOpened: false,
+      state: "closed",
+      resources: {
+        tenantStore: "closed",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
     });
     expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(calls.slice(-2)).toEqual(["tenant.open", "locator.open"]);
     await identity.close();
-    expect(calls).toEqual(["tenant.open"]);
   });
 
   it("attempts both reverse-order closes once and returns a bounded aggregated failure", async () => {
@@ -426,10 +797,7 @@ describe("production identity lifecycle", () => {
     });
     const identity = authority(
       tenantStore,
-      createProductionCredentialScopeLocator({
-        store: locatorStore,
-        clock: () => NOW_MS,
-      }),
+      testLocator(locatorStore),
     );
     await identity.open();
     const failed = await identity.close();
@@ -445,20 +813,152 @@ describe("production identity lifecycle", () => {
       "locator.close",
       "tenant.close",
     ]);
-    expect(identity.lifecycle()).toMatchObject({ state: "failed" });
-    expect(await identity.close()).toEqual(failed);
-    expect(calls).toHaveLength(4);
+    expect(identity.lifecycle()).toEqual({
+      state: "failed",
+      resources: {
+        tenantStore: "unknown",
+        credentialLocator: "unknown",
+        northIdentity: "closed",
+      },
+    });
+    await expectAllOperationsUnavailable(identity);
+    expect(await identity.close()).toEqual({ ok: true, value: undefined });
+    expect(calls.slice(-2)).toEqual(["locator.close", "tenant.close"]);
+    expect(identity.lifecycle()).toEqual({
+      state: "closed",
+      resources: {
+        tenantStore: "closed",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
+    });
+    expect(await identity.close()).toEqual({ ok: true, value: undefined });
+    expect(calls).toHaveLength(6);
     expect(await exactAuth(identity)).toMatchObject({ ok: false });
+  });
+
+  it("uses but never opens or closes an externally owned shared tenant store", async () => {
+    const calls: string[] = [];
+    const rawTenant = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+    });
+    const tenantStore = trustedTenantStore(rawTenant);
+    const locatorStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "locator",
+      calls,
+    });
+    expect(await tenantStore.open()).toEqual({ ok: true, value: undefined });
+    calls.length = 0;
+    const identity = authority(tenantStore, testLocator(locatorStore), {
+      tenantStoreOwnership: "external",
+    });
+    expect(identity.usesStore(tenantStore)).toBe(true);
+    expect(identity.managedResources()).toEqual({
+      tenantStore: { ownership: "external", managed: false },
+      credentialLocator: { managed: true },
+      northIdentity: { managed: true },
+    });
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(calls).toEqual(["locator.open"]);
+    expect(await identity.close()).toEqual({ ok: true, value: undefined });
+    expect(calls).toEqual(["locator.open", "locator.close"]);
+    expect(identity.lifecycle()).toEqual({
+      state: "closed",
+      resources: {
+        tenantStore: "open",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
+    });
+    expect(await tenantStore.close()).toEqual({ ok: true, value: undefined });
+    expect(calls.at(-1)).toBe("tenant.close");
+  });
+
+  it("fails external readiness closed, gates every operation, and reopens after composition recovery", async () => {
+    const calls: string[] = [];
+    const rawTenant = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+    });
+    const tenantStore = trustedTenantStore(rawTenant);
+    const identity = authority(
+      tenantStore,
+      testLocator(createRestartableTestStore().store),
+      { tenantStoreOwnership: "external" },
+    );
+    expect(await identity.open()).toMatchObject({
+      ok: false,
+      code: "unavailable",
+    });
+    expect(calls).toEqual([]);
+    expect(identity.lifecycle()).toEqual({
+      state: "closed",
+      resources: {
+        tenantStore: "unknown",
+        credentialLocator: "closed",
+        northIdentity: "closed",
+      },
+    });
+    await expectAllOperationsUnavailable(identity);
+    expect(await tenantStore.open()).toEqual({ ok: true, value: undefined });
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(identity.lifecycle()).toMatchObject({
+      state: "open",
+      resources: { tenantStore: "open" },
+    });
+    await identity.close();
+    await tenantStore.close();
+  });
+
+  it("gates every operation while opening and closing", async () => {
+    const openingGate = deferredSignal();
+    const tenantBase = createRestartableTestStore().store;
+    const delayedTenant: GatewayProtocolStore = {
+      kind: tenantBase.kind,
+      contractVersion: tenantBase.contractVersion,
+      async open() {
+        await openingGate.promise;
+        return tenantBase.open();
+      },
+      close: () => tenantBase.close(),
+      transact: (scope, fn) => tenantBase.transact(scope, fn),
+    };
+    const northBase = trustedNorthIdentity();
+    const closingGate = deferredSignal();
+    const delayedNorth: ProductionNorthIdentityDelegate = {
+      ...northBase,
+      async close() {
+        await closingGate.promise;
+        return northBase.close();
+      },
+    };
+    const identity = authority(
+      trustedTenantStore(delayedTenant),
+      testLocator(createRestartableTestStore().store),
+      { northIdentity: delayedNorth },
+    );
+    const opening = identity.open();
+    expect(identity.lifecycle()).toMatchObject({ state: "opening" });
+    await expectAllOperationsUnavailable(identity);
+    openingGate.release();
+    expect(await opening).toEqual({ ok: true, value: undefined });
+
+    const closing = identity.close();
+    expect(identity.lifecycle()).toMatchObject({ state: "closing" });
+    await expectAllOperationsUnavailable(identity);
+    closingGate.release();
+    expect(await closing).toEqual({ ok: true, value: undefined });
   });
 });
 
 describe("production credential scope locator", () => {
   it("binds only absent/exact replay, retires by exact CAS, and never rebinds retired digests", async () => {
     const fixture = createRestartableTestStore();
-    const locator = createProductionCredentialScopeLocator({
-      store: fixture.store,
-      clock: () => NOW_MS,
-    });
+    const locator = testLocator(fixture.store);
     await locator.open();
     const bind = {
       operationId: "locator-bind-1",
@@ -512,10 +1012,7 @@ describe("production credential scope locator", () => {
 
   it("fails closed on malformed global records and keeps exact missing distinct for reconciliation", async () => {
     const fixture = createRestartableTestStore();
-    const locator = createProductionCredentialScopeLocator({
-      store: fixture.store,
-      clock: () => NOW_MS,
-    });
+    const locator = testLocator(fixture.store);
     await locator.open();
     const digest = sha256(TOKEN_A);
     expect(await locator.lookup({ deviceTokenDigest: digest })).toEqual({
@@ -618,10 +1115,7 @@ describe("production identity durable records", () => {
 
     await identity.close();
     const restartedStore = fixture.restart();
-    const restartedLocator = createProductionCredentialScopeLocator({
-      store: locatorFixture.restart(),
-      clock: () => NOW_MS,
-    });
+    const restartedLocator = testLocator(locatorFixture.restart());
     const restarted = authority(restartedStore, restartedLocator);
     await restarted.open();
     const reopenedHelloCredential = {
@@ -796,10 +1290,7 @@ describe("production identity durable records", () => {
     await identity.close();
     const restarted = authority(
       fixture.restart(),
-      createProductionCredentialScopeLocator({
-        store: locatorFixture.restart(),
-        clock: () => NOW_MS,
-      }),
+      testLocator(locatorFixture.restart()),
     );
     await restarted.open();
     expect(await exactAuth(restarted)).toMatchObject({ ok: false });
@@ -885,19 +1376,13 @@ describe("production identity CAS and atomic event allocation", () => {
   it("returns reconciliation_required without retry or rollback when new locator bind fails", async () => {
     const authorityFixture = createRestartableTestStore();
     const locatorFixture = createRestartableTestStore();
-    const firstLocator = createProductionCredentialScopeLocator({
-      store: locatorFixture.store,
-      clock: () => NOW_MS,
-    });
+    const firstLocator = testLocator(locatorFixture.store);
     const first = authority(authorityFixture.store, firstLocator);
     await first.open();
     const initial = committed(await first.provisionDevice(provisionInput()));
     await first.close();
 
-    const durableLocator = createProductionCredentialScopeLocator({
-      store: locatorFixture.restart(),
-      clock: () => NOW_MS,
-    });
+    const durableLocator = testLocator(locatorFixture.restart());
     const injected = failFirstLocatorMutation(durableLocator, "bind");
     const restarted = authority(authorityFixture.restart(), injected.locator);
     await restarted.open();
@@ -939,11 +1424,8 @@ describe("production identity CAS and atomic event allocation", () => {
   it("keeps committed rotation/revoke truth when locator retirement crosses a cutpoint", async () => {
     const authorityFixture = createRestartableTestStore();
     const locatorFixture = createRestartableTestStore();
-    const durableLocator = createProductionCredentialScopeLocator({
-      store: locatorFixture.store,
-      clock: () => NOW_MS,
-    });
-    const injected = failFirstLocatorMutation(durableLocator, "retire");
+    const durableLocator = testLocator(locatorFixture.store);
+    const injected = failFirstLocatorMutation(durableLocator, "retire", [1, 3]);
     const identity = authority(authorityFixture.store, injected.locator);
     await identity.open();
     const initial = committed(await identity.provisionDevice(provisionInput()));
@@ -991,19 +1473,17 @@ describe("production identity CAS and atomic event allocation", () => {
       expectedDeviceRecordVersion: device.recordVersion,
       expectedSeatRecordVersion: seat.recordVersion,
     };
-    const secondInjected = failFirstLocatorMutation(durableLocator, "retire");
-    const revokeAuthority = authority(authorityFixture.store, secondInjected.locator);
-    // Both adapters share already-open stores; no second lifecycle open is needed.
-    expect(await revokeAuthority.revokeDevice(revokeInput)).toMatchObject({
+    expect(await identity.revokeDevice(revokeInput)).toMatchObject({
       ok: false,
       kind: "reconciliation_required",
       change: { device: { status: "revoked" }, head: { lastSequence: 3 } },
     });
-    expect(secondInjected.attempts()).toBe(1);
-    expect(await revokeAuthority.revokeDevice(revokeInput)).toMatchObject({
+    expect(injected.attempts()).toBe(3);
+    expect(await identity.revokeDevice(revokeInput)).toMatchObject({
       ok: true,
       kind: "replay",
     });
+    expect(injected.attempts()).toBe(4);
   });
 
   it("reports digest collision after tenant commit and leaves the other owner unchanged", async () => {
@@ -1215,11 +1695,8 @@ describe("production identity CAS and atomic event allocation", () => {
     const committedFixture = createRestartableTestStore();
     const committedLocatorFixture = createRestartableTestStore();
     const recoveredAuthority = authority(
-      uncertainAfter(committedFixture.store, "after"),
-      createProductionCredentialScopeLocator({
-        store: committedLocatorFixture.store,
-        clock: () => NOW_MS,
-      }),
+      uncertainAfter(committedFixture.store, "after", 1),
+      testLocator(committedLocatorFixture.store),
     );
     await recoveredAuthority.open();
     expect(await recoveredAuthority.provisionDevice(provisionInput())).toMatchObject({
@@ -1235,11 +1712,8 @@ describe("production identity CAS and atomic event allocation", () => {
     const uncommittedFixture = createRestartableTestStore();
     const uncommittedLocatorFixture = createRestartableTestStore();
     const uncertainAuthority = authority(
-      uncertainAfter(uncommittedFixture.store, "before"),
-      createProductionCredentialScopeLocator({
-        store: uncommittedLocatorFixture.store,
-        clock: () => NOW_MS,
-      }),
+      uncertainAfter(uncommittedFixture.store, "before", 1),
+      testLocator(uncommittedLocatorFixture.store),
     );
     await uncertainAuthority.open();
     expect(await uncertainAuthority.provisionDevice(provisionInput())).toMatchObject({

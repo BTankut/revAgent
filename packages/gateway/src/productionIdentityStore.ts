@@ -29,6 +29,8 @@ export const GATEWAY_REVOCATION_CURSOR_SCHEMA =
   "gateway.revocation-cursor/v1" as const;
 export const GATEWAY_CREDENTIAL_SCOPE_SCHEMA =
   "gateway.credential-scope/v1" as const;
+export const PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA =
+  "revagent.production-identity-port-trust/v1" as const;
 
 const IDENTIFIER_PATTERN = /^[A-Za-z0-9_.:@-]+$/u;
 const CAPABILITY_PATTERN = /^[a-z0-9_.:-]+$/u;
@@ -141,6 +143,53 @@ export interface ProductionCredentialScope {
   readonly deviceId: string;
 }
 
+export type ProductionIdentityTrustResource =
+  | "tenant_identity_store"
+  | "credential_scope_store"
+  | "credential_scope_locator"
+  | "north_identity";
+
+export interface ProductionIdentityPortTrustMetadata {
+  readonly schema: typeof PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA;
+  readonly environment: "production";
+  readonly trustDomain: string;
+  readonly deploymentId: string;
+  readonly resource: ProductionIdentityTrustResource;
+  readonly durability: "durable" | "external_authority";
+}
+
+export interface ProductionTenantIdentityStore extends GatewayProtocolStore {
+  readonly kind: "postgres";
+  readonly productionTrust: ProductionIdentityPortTrustMetadata & {
+    readonly resource: "tenant_identity_store";
+    readonly durability: "durable";
+  };
+  readiness(): Promise<StoreOutcome<void>>;
+}
+
+export interface ProductionCredentialScopeStore extends GatewayProtocolStore {
+  readonly kind: "postgres";
+  readonly productionTrust: ProductionIdentityPortTrustMetadata & {
+    readonly resource: "credential_scope_store";
+    readonly durability: "durable";
+  };
+  readiness(): Promise<StoreOutcome<void>>;
+}
+
+export interface ProductionNorthIdentityDelegate {
+  readonly kind: "oidc";
+  readonly productionTrust: ProductionIdentityPortTrustMetadata & {
+    readonly resource: "north_identity";
+    readonly durability: "external_authority";
+  };
+  open(): Promise<StoreOutcome<void>>;
+  close(): Promise<StoreOutcome<void>>;
+  readiness(): Promise<StoreOutcome<void>>;
+  authenticateNorthRequest(input: {
+    readonly authorization: string | undefined;
+  }): Promise<GatewayPortResult<AuthContext>>;
+}
+
 /**
  * Durable global digest index. It is a credential-boundary hint, never final
  * authority: the tenant device/seat/head/cursor transaction must still agree.
@@ -174,9 +223,14 @@ export type CredentialScopeMutationResult =
   | CredentialScopeFailure;
 
 export interface ProductionCredentialScopeLocator {
-  readonly kind: GatewayProtocolStore["kind"];
+  readonly kind: "postgres";
+  readonly productionTrust: ProductionIdentityPortTrustMetadata & {
+    readonly resource: "credential_scope_locator";
+    readonly durability: "durable";
+  };
   open(): Promise<StoreOutcome<void>>;
   close(): Promise<StoreOutcome<void>>;
+  readiness(): Promise<StoreOutcome<void>>;
   lookup(input: {
     readonly deviceTokenDigest: string;
   }): Promise<CredentialScopeLookupResult>;
@@ -194,16 +248,19 @@ export interface ProductionCredentialScopeLocator {
 }
 
 export interface ProductionCredentialScopeLocatorOptions {
-  readonly store: GatewayProtocolStore;
+  readonly store: ProductionCredentialScopeStore;
   readonly clock: () => number;
 }
 
+export type ProductionTenantStoreOwnership = "external" | "owned";
+
 export interface ProductionIdentityStoreOptions {
-  readonly store: GatewayProtocolStore;
+  readonly store: ProductionTenantIdentityStore;
+  readonly tenantStoreOwnership: ProductionTenantStoreOwnership;
   readonly credentialLocator: ProductionCredentialScopeLocator;
+  readonly northIdentity: ProductionNorthIdentityDelegate;
   readonly subscriberId: string;
   readonly clock: () => number;
-  readonly northIdentity?: Pick<IdentityPort, "authenticateNorthRequest">;
   readonly maxResyncDevices?: number;
   readonly maxResyncSeats?: number;
 }
@@ -217,15 +274,36 @@ export type ProductionIdentityLifecycleState =
 
 export type ProductionIdentityLifecycleStage =
   | "tenant_open"
+  | "tenant_readiness"
   | "locator_open"
+  | "locator_readiness"
+  | "north_open"
+  | "north_readiness"
+  | "north_open_rollback"
+  | "locator_open_rollback"
   | "tenant_open_rollback"
+  | "north_close"
   | "locator_close"
   | "tenant_close";
 
+export type ProductionIdentityResourceState = "closed" | "open" | "unknown";
+
+export interface ProductionIdentityManagedResources {
+  readonly tenantStore: {
+    readonly ownership: ProductionTenantStoreOwnership;
+    readonly managed: boolean;
+  };
+  readonly credentialLocator: { readonly managed: true };
+  readonly northIdentity: { readonly managed: true };
+}
+
 export interface ProductionIdentityLifecycleSnapshot {
   readonly state: ProductionIdentityLifecycleState;
-  readonly tenantAuthorityOpened: boolean;
-  readonly credentialLocatorOpened: boolean;
+  readonly resources: {
+    readonly tenantStore: ProductionIdentityResourceState;
+    readonly credentialLocator: ProductionIdentityResourceState;
+    readonly northIdentity: ProductionIdentityResourceState;
+  };
 }
 
 /** Durable production authentication always carries the full authority tuple. */
@@ -359,6 +437,8 @@ export interface ProductionIdentityAuthority extends IdentityPort {
   open(): Promise<StoreOutcome<void>>;
   close(): Promise<StoreOutcome<void>>;
   lifecycle(): ProductionIdentityLifecycleSnapshot;
+  managedResources(): ProductionIdentityManagedResources;
+  usesStore(store: GatewayProtocolStore): boolean;
   provisionDevice(
     input: ProvisionIdentityDeviceInput,
   ): Promise<IdentityMutationResult>;
@@ -397,6 +477,14 @@ function invalidInput(): IdentityOperationFailure {
     "invalid_input",
     "invalid_input",
     "production identity input is invalid",
+  );
+}
+
+function lifecycleUnavailable(): IdentityOperationFailure {
+  return failure(
+    "unavailable",
+    "unavailable",
+    "production identity lifecycle is not ready",
   );
 }
 
@@ -487,6 +575,40 @@ function isIdentifier(value: unknown): value is string {
     value.length > 0 &&
     Buffer.byteLength(value, "utf8") <= MAX_IDENTIFIER_BYTES &&
     IDENTIFIER_PATTERN.test(value)
+  );
+}
+
+function hasProductionTrust(
+  value: unknown,
+  resource: ProductionIdentityTrustResource,
+  durability: ProductionIdentityPortTrustMetadata["durability"],
+): value is ProductionIdentityPortTrustMetadata {
+  return (
+    isRecord(value) &&
+    hasExactKeys(value, [
+      "schema",
+      "environment",
+      "trustDomain",
+      "deploymentId",
+      "resource",
+      "durability",
+    ]) &&
+    value.schema === PRODUCTION_IDENTITY_PORT_TRUST_SCHEMA &&
+    value.environment === "production" &&
+    value.resource === resource &&
+    value.durability === durability &&
+    isIdentifier(value.trustDomain) &&
+    isIdentifier(value.deploymentId)
+  );
+}
+
+function sameProductionTrustDomain(
+  left: ProductionIdentityPortTrustMetadata,
+  right: ProductionIdentityPortTrustMetadata,
+): boolean {
+  return (
+    left.trustDomain === right.trustDomain &&
+    left.deploymentId === right.deploymentId
   );
 }
 
@@ -980,18 +1102,36 @@ function credentialStoreFailure(
 class StoreBackedProductionCredentialScopeLocator
   implements ProductionCredentialScopeLocator
 {
-  public readonly kind: GatewayProtocolStore["kind"];
+  public readonly kind = "postgres" as const;
+  public readonly productionTrust: ProductionCredentialScopeLocator["productionTrust"];
 
-  readonly #store: GatewayProtocolStore;
+  readonly #store: ProductionCredentialScopeStore;
   readonly #clock: () => number;
 
   constructor(options: ProductionCredentialScopeLocatorOptions) {
-    if (typeof options.clock !== "function") {
+    if (
+      !isRecord(options) ||
+      !isRecord(options.store) ||
+      typeof options.clock !== "function" ||
+      options.store.kind !== "postgres" ||
+      !hasProductionTrust(
+        options.store.productionTrust,
+        "credential_scope_store",
+        "durable",
+      ) ||
+      typeof options.store.open !== "function" ||
+      typeof options.store.close !== "function" ||
+      typeof options.store.transact !== "function" ||
+      typeof options.store.readiness !== "function"
+    ) {
       throw new TypeError("credential scope locator configuration is invalid");
     }
     this.#store = options.store;
     this.#clock = options.clock;
-    this.kind = options.store.kind;
+    this.productionTrust = Object.freeze({
+      ...options.store.productionTrust,
+      resource: "credential_scope_locator" as const,
+    });
   }
 
   public open(): Promise<StoreOutcome<void>> {
@@ -1000,6 +1140,10 @@ class StoreBackedProductionCredentialScopeLocator
 
   public close(): Promise<StoreOutcome<void>> {
     return this.#store.close();
+  }
+
+  public readiness(): Promise<StoreOutcome<void>> {
+    return this.#store.readiness();
   }
 
   #now(): number {
@@ -1608,40 +1752,85 @@ function publicSnapshot(
 class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthority {
   public readonly kind = "oidc" as const;
 
-  readonly #store: GatewayProtocolStore;
+  readonly #store: ProductionTenantIdentityStore;
+  readonly #tenantStoreOwnership: ProductionTenantStoreOwnership;
   readonly #credentialLocator: ProductionCredentialScopeLocator;
   readonly #subscriberId: string;
   readonly #clock: () => number;
-  readonly #northIdentity: Pick<IdentityPort, "authenticateNorthRequest"> | undefined;
+  readonly #northIdentity: ProductionNorthIdentityDelegate;
   readonly #maxResyncDevices: number;
   readonly #maxResyncSeats: number;
   #lifecycleState: ProductionIdentityLifecycleState = "closed";
-  #tenantAuthorityOpened = false;
-  #credentialLocatorOpened = false;
+  #tenantStoreState: ProductionIdentityResourceState;
+  #credentialLocatorState: ProductionIdentityResourceState = "closed";
+  #northIdentityState: ProductionIdentityResourceState = "closed";
   #openPromise: Promise<StoreOutcome<void>> | null = null;
   #closePromise: Promise<StoreOutcome<void>> | null = null;
   #lastLifecycleFailure: FailedStoreOutcome | null = null;
 
   constructor(options: ProductionIdentityStoreOptions) {
     if (
+      !isRecord(options) ||
+      !isRecord(options.store) ||
       !isIdentifier(options.subscriberId) ||
       typeof options.clock !== "function" ||
+      (options.tenantStoreOwnership !== "external" &&
+        options.tenantStoreOwnership !== "owned") ||
+      options.store.kind !== "postgres" ||
+      !hasProductionTrust(
+        options.store.productionTrust,
+        "tenant_identity_store",
+        "durable",
+      ) ||
+      typeof options.store.open !== "function" ||
+      typeof options.store.close !== "function" ||
+      typeof options.store.transact !== "function" ||
+      typeof options.store.readiness !== "function" ||
       !isRecord(options.credentialLocator) ||
+      options.credentialLocator.kind !== "postgres" ||
+      !hasProductionTrust(
+        options.credentialLocator.productionTrust,
+        "credential_scope_locator",
+        "durable",
+      ) ||
       typeof options.credentialLocator.open !== "function" ||
       typeof options.credentialLocator.close !== "function" ||
+      typeof options.credentialLocator.readiness !== "function" ||
       typeof options.credentialLocator.lookup !== "function" ||
       typeof options.credentialLocator.bind !== "function" ||
       typeof options.credentialLocator.retire !== "function" ||
+      !isRecord(options.northIdentity) ||
+      options.northIdentity.kind !== "oidc" ||
+      !hasProductionTrust(
+        options.northIdentity.productionTrust,
+        "north_identity",
+        "external_authority",
+      ) ||
+      typeof options.northIdentity.open !== "function" ||
+      typeof options.northIdentity.close !== "function" ||
+      typeof options.northIdentity.readiness !== "function" ||
+      typeof options.northIdentity.authenticateNorthRequest !== "function" ||
+      !sameProductionTrustDomain(
+        options.store.productionTrust,
+        options.credentialLocator.productionTrust,
+      ) ||
+      !sameProductionTrustDomain(
+        options.store.productionTrust,
+        options.northIdentity.productionTrust,
+      ) ||
       !isSafePositiveInteger(options.maxResyncDevices ?? DEFAULT_MAX_RESYNC_DEVICES) ||
       !isSafePositiveInteger(options.maxResyncSeats ?? DEFAULT_MAX_RESYNC_SEATS)
     ) {
       throw new TypeError("production identity configuration is invalid");
     }
     this.#store = options.store;
+    this.#tenantStoreOwnership = options.tenantStoreOwnership;
     this.#credentialLocator = options.credentialLocator;
     this.#subscriberId = options.subscriberId;
     this.#clock = options.clock;
     this.#northIdentity = options.northIdentity;
+    this.#tenantStoreState =
+      options.tenantStoreOwnership === "owned" ? "closed" : "unknown";
     this.#maxResyncDevices = options.maxResyncDevices ?? DEFAULT_MAX_RESYNC_DEVICES;
     this.#maxResyncSeats = options.maxResyncSeats ?? DEFAULT_MAX_RESYNC_SEATS;
   }
@@ -1649,13 +1838,40 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public lifecycle(): ProductionIdentityLifecycleSnapshot {
     return Object.freeze({
       state: this.#lifecycleState,
-      tenantAuthorityOpened: this.#tenantAuthorityOpened,
-      credentialLocatorOpened: this.#credentialLocatorOpened,
+      resources: Object.freeze({
+        tenantStore: this.#tenantStoreState,
+        credentialLocator: this.#credentialLocatorState,
+        northIdentity: this.#northIdentityState,
+      }),
     });
   }
 
+  public managedResources(): ProductionIdentityManagedResources {
+    return Object.freeze({
+      tenantStore: Object.freeze({
+        ownership: this.#tenantStoreOwnership,
+        managed: this.#tenantStoreOwnership === "owned",
+      }),
+      credentialLocator: Object.freeze({ managed: true as const }),
+      northIdentity: Object.freeze({ managed: true as const }),
+    });
+  }
+
+  public usesStore(store: GatewayProtocolStore): boolean {
+    return store === this.#store;
+  }
+
+  #resourcesReady(): boolean {
+    return (
+      this.#lifecycleState === "open" &&
+      this.#tenantStoreState === "open" &&
+      this.#credentialLocatorState === "open" &&
+      this.#northIdentityState === "open"
+    );
+  }
+
   public open(): Promise<StoreOutcome<void>> {
-    if (this.#lifecycleState === "open") return Promise.resolve(lifecycleSuccess());
+    if (this.#resourcesReady()) return Promise.resolve(lifecycleSuccess());
     if (this.#openPromise !== null) return this.#openPromise;
     if (
       this.#lifecycleState === "closing" ||
@@ -1682,71 +1898,106 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   async #performOpen(): Promise<StoreOutcome<void>> {
     this.#lifecycleState = "opening";
     this.#lastLifecycleFailure = null;
+    const failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[] = [];
     try {
-      let authority: StoreOutcome<void>;
-      try {
-        authority = await this.#store.open();
-      } catch {
-        authority = {
-          ok: false,
-          code: "unavailable",
-          message: "tenant authority open threw",
-        };
-      }
-      if (!authority.ok) {
-        const failed = lifecycleFailure("open", [
-          { stage: "tenant_open", outcome: authority },
-        ]);
-        this.#lifecycleState = "failed";
-        this.#lastLifecycleFailure = failed;
-        return failed;
-      }
-      this.#tenantAuthorityOpened = true;
-
-      let locator: StoreOutcome<void>;
-      try {
-        locator = await this.#credentialLocator.open();
-      } catch {
-        locator = {
-          ok: false,
-          code: "unavailable",
-          message: "credential locator open threw",
-        };
-      }
-      if (!locator.ok) {
-        let rollback: StoreOutcome<void>;
-        try {
-          rollback = await this.#store.close();
-        } catch {
-          rollback = {
-            ok: false,
-            code: "unavailable",
-            message: "tenant authority rollback threw",
-          };
+      if (this.#tenantStoreOwnership === "owned") {
+        const opened = await this.#callLifecycle(() => this.#store.open());
+        if (!opened.ok) {
+          this.#tenantStoreState = "unknown";
+          failures.push({ stage: "tenant_open", outcome: opened });
+          return this.#finishOpenFailure(failures);
         }
-        if (rollback.ok) this.#tenantAuthorityOpened = false;
-        const failures = [
-          { stage: "locator_open" as const, outcome: locator },
-          ...(rollback.ok
-            ? []
-            : [
-                {
-                  stage: "tenant_open_rollback" as const,
-                  outcome: rollback,
-                },
-              ]),
-        ];
-        const failed = lifecycleFailure("open", failures);
-        this.#lifecycleState = rollback.ok ? "closed" : "failed";
-        this.#lastLifecycleFailure = rollback.ok ? null : failed;
-        return failed;
+        this.#tenantStoreState = "open";
       }
-      this.#credentialLocatorOpened = true;
+      const tenantReady = await this.#callLifecycle(() =>
+        this.#store.readiness(),
+      );
+      if (!tenantReady.ok) {
+        this.#tenantStoreState = "unknown";
+        failures.push({ stage: "tenant_readiness", outcome: tenantReady });
+        return this.#finishOpenFailure(failures);
+      }
+      this.#tenantStoreState = "open";
+
+      const locatorOpened = await this.#callLifecycle(() =>
+        this.#credentialLocator.open(),
+      );
+      if (!locatorOpened.ok) {
+        this.#credentialLocatorState = "unknown";
+        failures.push({ stage: "locator_open", outcome: locatorOpened });
+        return this.#finishOpenFailure(failures);
+      }
+      this.#credentialLocatorState = "open";
+      const locatorReady = await this.#callLifecycle(() =>
+        this.#credentialLocator.readiness(),
+      );
+      if (!locatorReady.ok) {
+        this.#credentialLocatorState = "unknown";
+        failures.push({ stage: "locator_readiness", outcome: locatorReady });
+        return this.#finishOpenFailure(failures);
+      }
+
+      const northOpened = await this.#callLifecycle(() =>
+        this.#northIdentity.open(),
+      );
+      if (!northOpened.ok) {
+        this.#northIdentityState = "unknown";
+        failures.push({ stage: "north_open", outcome: northOpened });
+        return this.#finishOpenFailure(failures);
+      }
+      this.#northIdentityState = "open";
+      const northReady = await this.#callLifecycle(() =>
+        this.#northIdentity.readiness(),
+      );
+      if (!northReady.ok) {
+        this.#northIdentityState = "unknown";
+        failures.push({ stage: "north_readiness", outcome: northReady });
+        return this.#finishOpenFailure(failures);
+      }
       this.#lifecycleState = "open";
       return lifecycleSuccess();
     } finally {
       this.#openPromise = null;
     }
+  }
+
+  async #callLifecycle(
+    action: () => Promise<StoreOutcome<void>>,
+  ): Promise<StoreOutcome<void>> {
+    try {
+      return await action();
+    } catch {
+      return {
+        ok: false,
+        code: "unavailable",
+        message: "production lifecycle dependency threw",
+      };
+    }
+  }
+
+  async #finishOpenFailure(
+    failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[],
+  ): Promise<StoreOutcome<void>> {
+    await this.#closeNorth(failures, "north_open_rollback");
+    await this.#closeLocator(failures, "locator_open_rollback");
+    if (this.#tenantStoreOwnership === "owned") {
+      await this.#closeTenant(failures, "tenant_open_rollback");
+    }
+    const managedClosed =
+      this.#northIdentityState === "closed" &&
+      this.#credentialLocatorState === "closed" &&
+      (this.#tenantStoreOwnership === "external" ||
+        this.#tenantStoreState === "closed");
+    const failed = lifecycleFailure("open", failures);
+    this.#lifecycleState = managedClosed ? "closed" : "failed";
+    this.#lastLifecycleFailure = managedClosed ? null : failed;
+    return failed;
   }
 
   public close(): Promise<StoreOutcome<void>> {
@@ -1768,14 +2019,6 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
         ]),
       );
     }
-    if (
-      this.#lifecycleState === "failed" &&
-      !this.#tenantAuthorityOpened &&
-      !this.#credentialLocatorOpened &&
-      this.#lastLifecycleFailure !== null
-    ) {
-      return Promise.resolve(this.#lastLifecycleFailure);
-    }
     this.#closePromise = this.#performClose();
     return this.#closePromise;
   }
@@ -1787,33 +2030,10 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
       outcome: FailedStoreOutcome;
     }[] = [];
     try {
-      if (this.#credentialLocatorOpened) {
-        let locator: StoreOutcome<void>;
-        try {
-          locator = await this.#credentialLocator.close();
-        } catch {
-          locator = {
-            ok: false,
-            code: "unavailable",
-            message: "credential locator close threw",
-          };
-        }
-        this.#credentialLocatorOpened = false;
-        if (!locator.ok) failures.push({ stage: "locator_close", outcome: locator });
-      }
-      if (this.#tenantAuthorityOpened) {
-        let authority: StoreOutcome<void>;
-        try {
-          authority = await this.#store.close();
-        } catch {
-          authority = {
-            ok: false,
-            code: "unavailable",
-            message: "tenant authority close threw",
-          };
-        }
-        this.#tenantAuthorityOpened = false;
-        if (!authority.ok) failures.push({ stage: "tenant_close", outcome: authority });
+      await this.#closeNorth(failures, "north_close");
+      await this.#closeLocator(failures, "locator_close");
+      if (this.#tenantStoreOwnership === "owned") {
+        await this.#closeTenant(failures, "tenant_close");
       }
       if (failures.length > 0) {
         const failed = lifecycleFailure("close", failures);
@@ -1829,18 +2049,60 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     }
   }
 
+  async #closeNorth(
+    failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[],
+    stage: "north_close" | "north_open_rollback",
+  ): Promise<void> {
+    if (this.#northIdentityState === "closed") return;
+    const outcome = await this.#callLifecycle(() => this.#northIdentity.close());
+    if (outcome.ok) this.#northIdentityState = "closed";
+    else {
+      this.#northIdentityState = "unknown";
+      failures.push({ stage, outcome });
+    }
+  }
+
+  async #closeLocator(
+    failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[],
+    stage: "locator_close" | "locator_open_rollback",
+  ): Promise<void> {
+    if (this.#credentialLocatorState === "closed") return;
+    const outcome = await this.#callLifecycle(() =>
+      this.#credentialLocator.close(),
+    );
+    if (outcome.ok) this.#credentialLocatorState = "closed";
+    else {
+      this.#credentialLocatorState = "unknown";
+      failures.push({ stage, outcome });
+    }
+  }
+
+  async #closeTenant(
+    failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[],
+    stage: "tenant_close" | "tenant_open_rollback",
+  ): Promise<void> {
+    if (this.#tenantStoreState === "closed") return;
+    const outcome = await this.#callLifecycle(() => this.#store.close());
+    if (outcome.ok) this.#tenantStoreState = "closed";
+    else {
+      this.#tenantStoreState = "unknown";
+      failures.push({ stage, outcome });
+    }
+  }
+
   public async authenticateNorthRequest(input: {
     readonly authorization: string | undefined;
   }): Promise<GatewayPortResult<AuthContext>> {
-    if (this.#lifecycleState !== "open") return identityRefusal();
-    if (this.#northIdentity === undefined) {
-      return Object.freeze({
-        ok: false as const,
-        port: "identity" as const,
-        code: "not_configured" as const,
-        message: "production north identity is not configured",
-      });
-    }
+    if (!this.#resourcesReady()) return identityRefusal();
     return this.#northIdentity.authenticateNorthRequest(input);
   }
 
@@ -1909,7 +2171,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     readonly machineHostname?: string;
   }): Promise<GatewayPortResult<ProductionDeviceAuthContext>> {
     if (!isRecord(input)) return identityRefusal();
-    if (this.#lifecycleState !== "open") return identityRefusal();
+    if (!this.#resourcesReady()) return identityRefusal();
     if (
       !isOpaqueToken(input.deviceToken) ||
       !isIdentifier(input.connectionId) ||
@@ -2223,6 +2485,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public async provisionDevice(
     input: ProvisionIdentityDeviceInput,
   ): Promise<IdentityMutationResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     let frozen: ProvisionIdentityDeviceInput;
     try {
@@ -2440,6 +2703,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public async revokeDevice(
     input: RevokeIdentityDeviceInput,
   ): Promise<IdentityMutationResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     let frozen: RevokeIdentityDeviceInput;
     try {
@@ -2586,6 +2850,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public async revokeSeat(
     input: RevokeIdentitySeatInput,
   ): Promise<IdentityMutationResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     let frozen: RevokeIdentitySeatInput;
     try {
@@ -2746,6 +3011,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     readonly tenantId: string;
     readonly maxEvents?: number;
   }): Promise<IdentityRevocationConsumeResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     const maxEvents = input.maxEvents ?? DEFAULT_MAX_CONSUME_EVENTS;
     if (!isIdentifier(input.tenantId) || !isSafePositiveInteger(maxEvents) || maxEvents > 10_000) {
@@ -2882,6 +3148,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   public async prepareTenantResync(input: {
     readonly tenantId: string;
   }): Promise<IdentityResyncPrepareResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     if (!isIdentifier(input.tenantId)) return invalidInput();
     const outcome = await this.#store.transact(
@@ -2906,6 +3173,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     readonly tenantId: string;
     readonly expectedAuthorityDigest: string;
   }): Promise<IdentityResyncCommitResult> {
+    if (!this.#resourcesReady()) return lifecycleUnavailable();
     if (!isRecord(input)) return invalidInput();
     if (!isIdentifier(input.tenantId) || !isSha256Digest(input.expectedAuthorityDigest)) {
       return invalidInput();
