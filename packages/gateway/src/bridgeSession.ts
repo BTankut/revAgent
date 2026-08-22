@@ -424,6 +424,29 @@ function isStrictSortedUniqueStrings(
   );
 }
 
+function isUniqueOriginKeysInOrder(
+  value: unknown,
+  maximum: number,
+  rsid: string,
+): value is readonly string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > maximum) {
+    return false;
+  }
+  const observed = new Set<string>();
+  for (const candidate of value) {
+    if (
+      typeof candidate !== "string" ||
+      !candidate.startsWith(`${rsid}/`) ||
+      candidate.length <= rsid.length + 1 ||
+      observed.has(candidate)
+    ) {
+      return false;
+    }
+    observed.add(candidate);
+  }
+  return true;
+}
+
 function sameJson(left: unknown, right: unknown): boolean {
   try {
     return canonicalizeJson(left as JsonValue) === canonicalizeJson(right as JsonValue);
@@ -483,7 +506,7 @@ function parseEgressLease(value: unknown): DurableEgressLease {
       ? value.startedAtMs !== null
       : !isSafeNonNegativeInteger(value.startedAtMs) ||
         value.startedAtMs < value.reservedAtMs ||
-        value.startedAtMs > value.reserveExpiresAtMs)
+        value.startedAtMs >= value.reserveExpiresAtMs)
   ) {
     throw new Error("malformed egress lease");
   }
@@ -894,11 +917,10 @@ function parseMutationHold(
     !HOLD_ID_PATTERN.test(candidate.holdId) ||
     stored.key !== candidate.holdId ||
     !isBoundedNonEmptyString(candidate.mutationScopeJcs) ||
-    !isStrictSortedUniqueStrings(
+    !isUniqueOriginKeysInOrder(
       candidate.originIdempotencyKeys,
       MAX_HOLD_AUDIT_ENTRIES,
-      (origin) =>
-        origin.startsWith(`${rsid}/`) && origin.length > rsid.length + 1,
+      rsid,
     ) ||
     (candidate.state !== "active" &&
       candidate.state !== "evidence_recorded" &&
@@ -1047,7 +1069,55 @@ interface ValidatedLegacyHold {
   readonly mutationScope: MutationScope;
   readonly originIdempotencyKeys: readonly string[];
   readonly hasResolution: boolean;
+  readonly resolutionId: string | null;
   readonly digestFact: JsonValue;
+}
+
+function legacyResolutionId(value: unknown): string | null {
+  if (value === null) return null;
+  if (!isRecord(value) || !hasExactKeys(value, [
+    "resolutionId",
+    "basis",
+    "verificationInvocationId",
+    "evidenceDigest",
+    "decision",
+    "auditId",
+    "authorizedDispatchIdentity",
+    "journalBindingDigest",
+    "journalOutcomeDigest",
+    "terminalKind",
+    "terminalStatus",
+  ])) {
+    throw new Error("malformed legacy recovery resolution");
+  }
+  if (
+    !isBoundedNonEmptyString(value.resolutionId) ||
+    !isGatewayUuidV7(value.resolutionId) ||
+    (value.basis !== "verification_read" && value.basis !== "late_terminal") ||
+    (value.verificationInvocationId !== null &&
+      (!isBoundedNonEmptyString(value.verificationInvocationId) ||
+        !isGatewayUuidV7(value.verificationInvocationId))) ||
+    typeof value.evidenceDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.evidenceDigest) ||
+    (value.decision !== "non_execution_proven" &&
+      value.decision !== "postcondition_verified") ||
+    !isBoundedNonEmptyString(value.auditId) ||
+    !isGatewayUuidV7(value.auditId) ||
+    typeof value.authorizedDispatchIdentity !== "string" ||
+    !DIGEST_PATTERN.test(value.authorizedDispatchIdentity) ||
+    typeof value.journalBindingDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.journalBindingDigest) ||
+    typeof value.journalOutcomeDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.journalOutcomeDigest) ||
+    (value.terminalKind !== "terminal" && value.terminalKind !== "late_terminal") ||
+    (value.terminalStatus !== "completed" &&
+      value.terminalStatus !== "failed" &&
+      value.terminalStatus !== "guarded" &&
+      value.terminalStatus !== "cancelled")
+  ) {
+    throw new Error("malformed legacy recovery resolution");
+  }
+  return value.resolutionId;
 }
 
 function parseLegacyRecoveryHolds(
@@ -1106,11 +1176,10 @@ function parseLegacyRecoveryHolds(
       raw.scopeKey !== mutationScopeKey(scope) ||
       typeof raw.holdId !== "string" ||
       !HOLD_ID_PATTERN.test(raw.holdId) ||
-      !isStrictSortedUniqueStrings(
+      !isUniqueOriginKeysInOrder(
         raw.originIdempotencyKeys,
         MAX_HOLD_AUDIT_ENTRIES,
-        (origin) =>
-          origin.startsWith(`${rsid}/`) && origin.length > rsid.length + 1,
+        rsid,
       ) ||
       !Array.isArray(raw.evidenceAttempts) ||
       raw.evidenceAttempts.length > MAX_HOLD_AUDIT_ENTRIES ||
@@ -1132,12 +1201,26 @@ function parseLegacyRecoveryHolds(
       throw new Error("malformed legacy recovery hold");
     }
     const state = raw.state as ValidatedLegacyHold["state"];
+    const resolutionId = legacyResolutionId(raw.resolution);
+    if (
+      ((state === "active" || state === "evidence_recorded") &&
+        resolutionId !== null) ||
+      ((state === "resolved_pending_bridge" || state === "cleared") &&
+        resolutionId === null) ||
+      (state === "resolved_pending_bridge" && raw.clearedBy !== null) ||
+      (state === "cleared" &&
+        (!isRecord(raw.resolution) ||
+          raw.clearedBy !== raw.resolution.authorizedDispatchIdentity))
+    ) {
+      throw new Error("legacy recovery resolution state is inconsistent");
+    }
     return {
       holdId: raw.holdId,
       state,
       mutationScope: scope,
       originIdempotencyKeys: [...raw.originIdempotencyKeys] as string[],
       hasResolution: raw.resolution !== null,
+      resolutionId,
       digestFact: {
         cleared_by: raw.clearedBy as JsonValue,
         evidence_attempts: structuredClone(raw.evidenceAttempts) as JsonValue,
@@ -1250,7 +1333,7 @@ function normalizedHoldCandidates(
   entries: readonly DurablePendingMutation[],
 ): readonly NormalizedHoldCandidate[] {
   if (entries.length === 0) return [];
-  const allOrigins = [...new Set(entries.map((entry) => entry.originIdempotencyKey))].sort();
+  const allOrigins = [...new Set(entries.map((entry) => entry.originIdempotencyKey))];
   const groups = entries.some((entry) => entry.mutationScope.kind === "session")
     ? [{ mutationScope: { kind: "session" } as MutationScope, origins: allOrigins }]
     : [...new Map(entries.map((entry) => [
@@ -1260,8 +1343,7 @@ function normalizedHoldCandidates(
         mutationScope,
         origins: entries
           .filter((entry) => mutationScopeKey(entry.mutationScope) === scopeJcs)
-          .map((entry) => entry.originIdempotencyKey)
-          .sort(),
+          .map((entry) => entry.originIdempotencyKey),
       }));
   return groups.map(({ mutationScope, origins }) => ({
     holdId: makeMutationHoldId(rsid, mutationScope, origins),
@@ -3502,7 +3584,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           this.#completeLocalUnregister(
             payload.rsid,
             localPendingAtStart,
-            false,
+            localPendingAtStart !== null && replay.pendingDisposition === "none",
           );
           return;
         }
@@ -3547,7 +3629,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           owner,
           payload.reason,
         );
-        if (finalized !== null) return;
+        if (finalized !== null) {
+          this.#completeLocalUnregister(
+            payload.rsid,
+            localPendingAtStart,
+            localPendingAtStart !== null &&
+              finalized.pendingDisposition === "none",
+          );
+          return;
+        }
       }
       throw new GatewayRbpFault("unavailable", persisted.message, 503, 1011);
     }
@@ -4097,27 +4187,56 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           rsid,
         );
         if (tombstone !== null) {
-          parseUnregisterTombstone(tombstone.value, {
+          const parsed = parseUnregisterTombstone(tombstone.value, {
             tenantId,
             rsid,
             stored: tombstone,
           });
-          return "final" as const;
+          return { kind: "final" as const, tombstone: parsed };
         }
         const session = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_SESSION_NAMESPACE,
           rsid,
         );
-        if (session === null) return "open" as const;
+        if (session === null) return { kind: "open" as const };
         const record = parseStoredSession(session, tenantId, rsid);
         return sessionEgressFence(record).state === "revocation_pending"
-          ? "pending" as const
-          : "open" as const;
+          ? { kind: "pending" as const }
+          : { kind: "open" as const };
       });
       if (!observed.ok) {
         throw new GatewayRbpFault("unavailable", observed.message, 503, 1011);
       }
-      if (observed.value !== "pending") return;
+      if (observed.value.kind === "final") {
+        const active = this.#active.get(rsid)?.record;
+        if (active !== undefined) {
+          const verified = await this.#verifyFinalTombstone(
+            tenantId,
+            rsid,
+            {
+              userId: active.userId,
+              deviceId: active.deviceId,
+              seatId: active.seatId,
+            },
+            observed.value.tombstone.reason,
+          );
+          if (verified === null) {
+            throw new GatewayRbpFault(
+              "unavailable",
+              "observed final tombstone failed exact readback",
+              503,
+              1011,
+            );
+          }
+        }
+        this.#completeLocalUnregister(
+          rsid,
+          this.#active.get(rsid)?.record.pending ?? null,
+          true,
+        );
+        return;
+      }
+      if (observed.value.kind === "open") return;
       if (remainingMs <= 0) {
         throw new GatewayRbpFault(
           "unavailable",
@@ -4302,6 +4421,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     record: DurableRbpSession,
     marker: DurableHoldCutover,
     legacyHolds: readonly ValidatedLegacyHold[],
+    legacyAuthorityExists: boolean,
   ): Promise<void> {
     if (record.normalizedConflictIndex === undefined) {
       throw new Error("cutover marker lacks a normalized conflict index");
@@ -4311,12 +4431,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new Error("cutover marker requires a complete normalized index");
     }
     const proof = legacyCutoverFacts(record, legacyHolds);
-    if (
-      marker.legacyDigest !== proof.legacyDigest ||
-      marker.importedHoldCount !== proof.importedHoldCount ||
-      marker.importedConflictCount !== proof.importedConflictCount ||
-      marker.importedResolutionCount !== proof.importedResolutionCount
-    ) {
+    if (marker.legacyDigest !== proof.legacyDigest) {
       throw new Error("cutover marker does not match canonical legacy facts");
     }
     const indexedPairs = new Map<string, {
@@ -4336,6 +4451,30 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       indexedPairs.set(scopeDigest, pair);
     }
+    if (!legacyAuthorityExists) {
+      const normalizedResolutionCount = [...indexedPairs.values()].reduce(
+        (count, pair) => count + pair.hold.resolutionIds.length,
+        0,
+      );
+      if (
+        marker.importedHoldCount !== indexedPairs.size ||
+        marker.importedConflictCount !== indexedPairs.size ||
+        marker.importedResolutionCount !== normalizedResolutionCount ||
+        normalizedResolutionCount !== 0
+      ) {
+        throw new Error(
+          "normalized-only cutover counts or resolution records are incomplete",
+        );
+      }
+      return;
+    }
+    if (
+      marker.importedHoldCount !== proof.importedHoldCount ||
+      marker.importedConflictCount !== proof.importedConflictCount ||
+      marker.importedResolutionCount !== proof.importedResolutionCount
+    ) {
+      throw new Error("cutover marker does not match canonical legacy counts");
+    }
     for (const legacy of legacyHolds) {
       const pair = await this.#readConflictPairByHoldId(
         tx,
@@ -4352,6 +4491,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           pair.hold.originIdempotencyKeys,
           legacy.originIdempotencyKeys,
         ) ||
+        !sameJson(
+          pair.hold.resolutionIds,
+          legacy.resolutionId === null ? [] : [legacy.resolutionId],
+        ) ||
         index.scopeDigests.includes(pair.scopeDigest) !== active
       ) {
         throw new Error("cutover import disagrees with normalized authority");
@@ -4359,7 +4502,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       indexedPairs.delete(pair.scopeDigest);
     }
     for (const pair of indexedPairs.values()) {
-      if (pair.hold.createdAtMs <= marker.cutoverAtMs) {
+      if (
+        pair.hold.createdAtMs <= marker.cutoverAtMs ||
+        pair.hold.resolutionIds.length !== 0
+      ) {
         throw new Error("cutover index contains an unaccounted imported pair");
       }
     }
@@ -4419,11 +4565,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           originRedelivery &&
           ownHoldIds.has(pair.hold.holdId) &&
           trustedHoldIds.has(pair.hold.holdId)
-        ) &&
-        !(
-          !originRedelivery &&
-          pair.hold.state === "resolved_pending_bridge" &&
-          trustedHoldIds.has(pair.hold.holdId)
         )
       ) {
         return false;
@@ -4453,6 +4594,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         record,
         cutover,
         legacyHolds,
+        recovery !== null,
       );
       return true;
     }

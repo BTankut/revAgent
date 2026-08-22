@@ -389,7 +389,7 @@ and cross-owner requests fail `4403`.
 The v1 session row carries a durable `egressFence` with one lease maximum. Dispatch, `resume_ack`, and every
 retransmitted frame first reserve a five-second lease, CAS-promote that exact unexpired lease to `started`, call
 the transport without another await, and CAS-release in `finally`. A reserved lease may expire and be reclaimed;
-a started lease never expires by time, and its `startedAtMs` cannot exceed its reservation expiry. Unregister first
+a started lease never expires by time, and its `startedAtMs` is strictly earlier than its reservation expiry. Unregister first
 commits the session-only `revocation_pending` poison, cancels any reserved lease, advances the session CAS version,
 and makes the session non-resumable/non-dispatchable. Only after exact readback may a separate bounded transaction
 install or validate companion hold/conflict rows. This ordering means an unclassifiable or partially applied
@@ -414,19 +414,25 @@ normalized hold/conflict pair is fully integrity-checked before use. Until WP-10
 `gateway.hold-cutover/v1` marker, admission unions exact legacy and normalized unresolved facts; a malformed marker
 fails closed. Shape validity alone never suppresses legacy authority. The marker's `legacyDigest` is SHA-256 over
 RFC 8785 canonical JSON `{rsid,pending,holds}`: `pending` contains the retained envelope digest, invocation id,
-mutating flag, and canonical sorted mutation-entry identities; every sorted hold fact contains hold id, mutation
-scope, sorted origin keys, state, evidence attempts, selected evidence, resolution, and clearing digest. Imported
+mutating flag, and canonical mutation-entry identities in protocol-envelope order; every hold fact contains hold
+id, mutation scope, origin keys in their original protocol order, state, evidence attempts, selected evidence,
+resolution, and clearing digest. Imported
 hold/conflict/resolution counts must equal those bounded facts. The session index must be `complete`; every imported
 legacy hold must have an identical normalized pair, every imported active scope must be indexed, every imported
 cleared scope must be absent from the active index, and any additional indexed pair must post-date `cutoverAtMs`.
-Only that semantic `normalized_authoritative` proof suppresses legacy reads. WP-02 does not write the marker,
-define v2 normalization, clear holds, or delete legacy authority.
+While any bounded legacy row exists, only that semantic `normalized_authoritative` proof suppresses legacy reads.
+After verified legacy deletion, normalized-only authority is accepted only when the marker remains schema-valid,
+the index is complete, every indexed hold/conflict pair is exact, imported hold/conflict/resolution counts equal
+those pairs, and every resolution id has its required durable record; a dangling id, missing pair, or mismatch
+fails closed. WP-02 does not write the marker, define v2 normalization, clear holds, or delete legacy authority.
 
 The generic durable target check validates only tombstone/fence, binding, sequence, lifecycle, and capability.
 It never applies a session-wide hold denial because it does not know the trusted operation scope. Hold union
 admission runs inside the later dispatch-reservation transaction using the exact server-authored recovery carrier.
-Verification reads pass holds; exact authenticated origin redelivery is exempt only from its own hold; an accepted
-clearance is recognized only from that internal carrier, never from caller-authored envelope bytes. Before any new
+Verification reads pass holds; exact authenticated origin redelivery is exempt only from its own hold. Existing
+authenticated legacy-only clearance composition remains accepted from the internal recovery carrier, never from
+caller-authored envelope bytes. A normalized `resolved_pending_bridge` hold remains blocking in WP-02; only WP-03
+may atomically advance its normalized hold and conflict pair. Before any new
 mutating reservation, the Gateway also proves that the distinct normalized candidates fit both the 256-entry index
 and the 128-write store transaction limit. At two companion writes per scope, at most 64 new recoverable scopes are
 admitted; over-cap requests fail before lease reservation or transport send. No admission path performs a

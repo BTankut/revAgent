@@ -1,19 +1,21 @@
 {
   "schema": "revagent-remediation-artifact-manifest/v1",
   "work_package": "WP-02",
-  "cycle": "egress-fence-rework-cycle-3",
+  "cycle": "egress-fence-rework-cycle-4",
   "base_sha": "e2f3d52ff19eac01f93ff7060965f213f8625486",
   "cycle_3_base_sha": "420a0344b7f5033e6c57787fe39bdf6643be6f6d",
+  "cycle_4_base_sha": "81cac79d5b32dfd490e889460d1c479f82925c38",
   "runtime": {
     "node": "v24.19.0",
     "npm_config_ignore_scripts": "false",
     "lifecycle_override_scope": "process"
   },
   "final_results": {
-    "focused_unregister": "72 passed",
-    "gateway": "42 files passed; 585 tests passed; 5 skipped",
+    "focused_unregister": "81 passed",
+    "gateway": "42 files passed; 594 tests passed; 5 skipped",
     "protocol": "303 tests passed",
-    "protocol_conformance": "success"
+    "protocol_conformance": "success",
+    "remote_engineering_gate": "classified out-of-scope frozen O1 provenance pin"
   },
   "entries": [
     { "file": "02-gateway-typecheck-wired.log", "exit": 2, "sha256": "c8d932507b9d6a48d62c181063ac875f69ce42590a275542c06266fca227772b", "status": "superseded" },
@@ -66,6 +68,23 @@
     { "file": "50-cycle3-protocol-typecheck.log", "exit": 0, "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc", "status": "candidate-pass" },
     { "file": "51-cycle3-protocol-lint.log", "exit": 0, "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27", "status": "candidate-pass" },
     { "file": "52-cycle3-protocol-full-test.log", "exit": 0, "sha256": "cab48915f5d933052e096ae21db34fdd3a1cb0f534e72cfb8b92e1f22b100076", "status": "candidate-pass" },
-    { "file": "53-cycle3-protocol-conformance.log", "exit": 0, "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c", "status": "candidate-pass" }
+    { "file": "53-cycle3-protocol-conformance.log", "exit": 0, "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c", "status": "superseded" },
+    { "file": "54-cycle4-engineering-gate-failure.log", "exit": 1, "sha256": "22de947eac84a64cdf6558f391997f8fd5df013bc98490f1c3af76fbd3a34aa6", "status": "diagnostic" },
+    { "file": "55-cycle4-inspect-pr-checks.log", "exit": 1, "sha256": "481bf45fc6015811032dad0d033df53e5d885cfec08301fd3621112d9489159c", "status": "classified-out-of-scope" },
+    { "file": "56-cycle4-typecheck-initial.log", "exit": 2, "sha256": "b5b764cdde9832db620313280a1f92c481c3c4fa78db27e009b2654d041de8bc", "status": "superseded" },
+    { "file": "58-cycle4-typecheck-rerun.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "pass" },
+    { "file": "59-cycle4-focused-rerun.log", "exit": 0, "sha256": "dc81eb843eab252e284a9d35ab207b2e155cae1e651235d5155d0deaa4daf661", "status": "pass" },
+    { "file": "60-cycle4-gateway-lint.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "pass" },
+    { "file": "61-cycle4-typecheck-expanded.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "superseded" },
+    { "file": "62-cycle4-focused-expanded.log", "exit": 0, "sha256": "585b97d70a5df1265238a2d56ec90a9de0df5680d4973bbbd53c93ad651a0b4a", "status": "superseded" },
+    { "file": "63-cycle4-gateway-lint-expanded.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "superseded" },
+    { "file": "64-cycle4-gateway-full-test.log", "exit": 0, "sha256": "382b896256b5655de605ff58bf2cda705d3ff704bbc594e8535d16830b2e0a41", "status": "superseded" },
+    { "file": "65-cycle4-protocol-typecheck.log", "exit": 0, "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc", "status": "candidate-pass" },
+    { "file": "66-cycle4-protocol-lint.log", "exit": 0, "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27", "status": "candidate-pass" },
+    { "file": "67-cycle4-protocol-full-test.log", "exit": 0, "sha256": "12748f0ed9326e9c230e0eb633ad0c0569c6215183db5879ce4ce753b8336075", "status": "candidate-pass" },
+    { "file": "68-cycle4-protocol-conformance.log", "exit": 0, "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c", "status": "candidate-pass" },
+    { "file": "69-cycle4-gateway-typecheck-final.log", "exit": 0, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970", "status": "candidate-pass" },
+    { "file": "70-cycle4-gateway-lint-final.log", "exit": 0, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77", "status": "candidate-pass" },
+    { "file": "71-cycle4-gateway-full-test-final.log", "exit": 0, "sha256": "4cec109532d730864ede86da564ef98e542bfa1b6b82b526c2829d94987ba3ce", "status": "candidate-pass" }
   ]
 }
