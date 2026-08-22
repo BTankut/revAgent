@@ -69,7 +69,7 @@ function tokenDigest(value: string): `sha256:${string}` {
 
 function identity(tenantId = TENANT_ID): IdentityPort {
   return {
-    kind: "oidc" as const,
+    kind: "fake" as const,
     async authenticateNorthRequest() {
       return {
         ok: false as const,

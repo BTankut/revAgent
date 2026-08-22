@@ -35,7 +35,7 @@ function identity(): IdentityPort {
     .update(DEVICE_TOKEN)
     .digest("hex")}` as const;
   return {
-    kind: "oidc" as const,
+    kind: "fake" as const,
     async authenticateNorthRequest() {
       return {
         ok: false as const,
