@@ -2,12 +2,12 @@
   "schema": "revagent-remediation-artifact-manifest/v1",
   "workPackage": "WP-04",
   "baseSha": "5daf37a51a10024be54bd3b2237d496fbae01d05",
-  "codeCommit": "11565445fc0b38ef32d5eeffdeff89700c3e68cf",
-  "reworkCycle": 2,
+  "codeCommit": "86157f8967d19bdcc106ab0d7a8e80a0af1f91e9",
+  "reworkCycle": 3,
   "branch": "remediation/wp-04-wss-serialized-teardown",
   "pullRequest": 389,
   "pullRequestState": "open_draft",
-  "generatedAtUtc": "2026-08-22T19:06:35.0471002+00:00",
+  "generatedAtUtc": "2026-08-22T19:23:26.1361456+00:00",
   "portableRoot": ".orchestration/artifacts/WP-04/critical_ts_worker",
   "rawLogsCommitted": false,
   "rawLogLocation": "local_writer_worktree",
@@ -19,13 +19,13 @@
   "gates": {
     "gatewayTypecheck": "pass on Node 24.19.0",
     "gatewayLint": "pass on Node 24.19.0",
-    "focusedIngress": "37/37 pass on Node 24.19.0",
-    "gatewayFull": "42/42 files; 619 pass; 5 skip on Node 24.19.0, including post-native-restore rerun",
+    "focusedIngress": "39/39 pass on Node 24.19.0",
+    "gatewayFull": "42/42 files; 621 pass; 5 skip on Node 24.19.0, including post-native-restore rerun",
     "protocolFull": "8/8 files; 303/303 pass; protocol conformance success on Node 24.19.0",
     "relevantRawBindingConformance": "8/8 pass on canonical Node 22.22.2",
     "node24NativeRestoreSmoke": "pass",
     "diffCheck": "pass",
-    "productScope": "2/2 allowlisted paths in rework cycle 2"
+    "productScope": "2/2 allowlisted paths in rework cycle 3"
   },
   "rework1": {
     "reviewIssuesClosed": [
@@ -77,6 +77,32 @@
       { "file": "rework2/12-gateway-full-post-restore.log", "exit": 0, "bytes": 18608, "sha256": "0b9937160d20a3755015b9aa18009a346a42e822a62bb6e53c2033634c0edd8e" },
       { "file": "rework2/13-diff-check-final.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
       { "file": "rework2/14-scope-final.log", "exit": 0, "bytes": 77, "sha256": "8f40ed941330c1d38fa85944f1731d9737e734e8144c72971ee72e2a22e52174" }
+    ]
+  },
+  "rework3": {
+    "reviewIssuesClosed": [
+      "first terminal event cancels pending egress and arms watchdog before serial cleanup enqueue",
+      "hello_ack send cancellation releases processFrame so serialized cleanup can close and detach",
+      "heartbeat_ack stalled serial tail is bounded by watchdog force termination and shared detach",
+      "egress accounting reaches zero after cancellation and no unhandled rejection is emitted",
+      "late send callbacks and late serial-tail completion cannot send, close, or detach twice"
+    ],
+    "artifacts": [
+      { "file": "rework3/00-node-version.log", "exit": 0, "bytes": 10, "sha256": "bc697de995dc791df53d688ef69c08994cdffc8ce30c906b1ffc65b131ccd0eb" },
+      { "file": "rework3/01-gateway-typecheck.log", "exit": 0, "bytes": 896, "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970" },
+      { "file": "rework3/02-gateway-lint.log", "exit": 0, "bytes": 58, "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77" },
+      { "file": "rework3/03-focused-rbp-ingress.log", "exit": 0, "bytes": 15176, "sha256": "1d3d5962c9db767fff6eef6082290f42c695db6e0f0d9f12c8a5e3712a618885" },
+      { "file": "rework3/04-gateway-full.log", "exit": 0, "bytes": 18979, "sha256": "0af2c4ac8af0c5de7400be8b7ddcb23d7233e30af5cafaa24425fa23e601cb4e" },
+      { "file": "rework3/05-protocol-full.log", "exit": 0, "bytes": 1328, "sha256": "12592bf9d67f4af763e2b2e8222600af5df98c1585a69c0535004750826668eb" },
+      { "file": "rework3/06-diff-check-precommit.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework3/07-scope-precommit.log", "exit": 0, "bytes": 77, "sha256": "8f40ed941330c1d38fa85944f1731d9737e734e8144c72971ee72e2a22e52174" },
+      { "file": "rework3/08-native-rebuild-node22.log", "exit": 0, "bytes": 35, "sha256": "735478f546fc7efd5952d03fea585fa26a33f96eaff79116fd33442d6f7d23e2" },
+      { "file": "rework3/09-raw-binding-canonical.log", "exit": 0, "bytes": 1726, "sha256": "f8619957ac240198d3bc52f60df51a7a23d3214d1c2a26dce704411e1814505b" },
+      { "file": "rework3/10-native-restore-node24.log", "exit": 0, "bytes": 35, "sha256": "735478f546fc7efd5952d03fea585fa26a33f96eaff79116fd33442d6f7d23e2" },
+      { "file": "rework3/11-native-smoke-node24.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework3/12-gateway-full-post-restore.log", "exit": 0, "bytes": 19324, "sha256": "adf8ebcbc024c0cd89caca872508eb6ec6e5875717346fa4fca38788e5835721" },
+      { "file": "rework3/13-diff-check-final.log", "exit": 0, "bytes": 0, "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855" },
+      { "file": "rework3/14-scope-final.log", "exit": 0, "bytes": 77, "sha256": "8f40ed941330c1d38fa85944f1731d9737e734e8144c72971ee72e2a22e52174" }
     ]
   },
   "classifiedAttempts": [
