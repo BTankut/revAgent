@@ -1,0 +1,223 @@
+{
+  "schema": "revagent-remediation-evidence-index/v1",
+  "workPackage": "WP-03",
+  "cycle": "rework-7",
+  "portableRoot": ".orchestration/artifacts/WP-03/critical_csharp_worker_rework7",
+  "absoluteWriterRootIncluded": false,
+  "rawLogs": {
+    "committed": false,
+    "location": "local_writer_worktree",
+    "controlConsolidationRequired": true,
+    "entries": [
+      {
+        "path": "bridge-build.log",
+        "bytes": 1443,
+        "sha256": "d807311f66b0486043bebe5e1da8f064c8d7ebddb7fdb76651ee3b44b7c424b4",
+        "committed": false
+      },
+      {
+        "path": "bridge-focused-final.log",
+        "bytes": 591,
+        "sha256": "126ea3fdccf9de0ac5e3a0bdf8f6aa8e2dbcd3eba8f7f68257b5ea8cddcf7000",
+        "committed": false
+      },
+      {
+        "path": "bridge-focused.log",
+        "bytes": 591,
+        "sha256": "aaf025a7fe2ebdd49188f5687d23d49dc8defc790cd7a7885bdaed9c21a84c2b",
+        "committed": false
+      },
+      {
+        "path": "bridge-full-final.log",
+        "bytes": 596,
+        "sha256": "80a0146a816ee7a5bffb1274d2bc418a6aca52993379fef7823448ac787ef6fa",
+        "committed": false
+      },
+      {
+        "path": "bridge-full.log",
+        "bytes": 596,
+        "sha256": "34d3b0b90803563c05fcd119613d4fc0f796d43bfdf35d64f1a14e9319d678d4",
+        "committed": false
+      },
+      {
+        "path": "build-01.log",
+        "bytes": 1443,
+        "sha256": "aa0ec0533c35d7582d89eb861717e7052c50ba93be92fd0b9e966eaffafd2e3a",
+        "committed": false
+      },
+      {
+        "path": "build-final.log",
+        "bytes": 1443,
+        "sha256": "6374307d003224ac08eea250cfcca51bfbf60c6ced754d3096772ae26d2c71b6",
+        "committed": false
+      },
+      {
+        "path": "commands.json",
+        "bytes": 5208,
+        "sha256": "222938d166ce97b5c4770585418a6916c1ee6b0edf818c1acca5b482cb3eb9e0",
+        "committed": false
+      },
+      {
+        "path": "commandset-r25.log",
+        "bytes": 21749,
+        "sha256": "f7a9c8fd28f76b53f6b1e26752f49e3c2de60f0cf8f33b87ba912e0872188e75",
+        "committed": false
+      },
+      {
+        "path": "contracts-full.log",
+        "bytes": 600,
+        "sha256": "622aebdfbd3508ca418122d498344cabe4eb1ca35bcff5b761dc6997ba641210",
+        "committed": false
+      },
+      {
+        "path": "dotnet-format-verify.log",
+        "bytes": 167,
+        "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147",
+        "committed": false
+      },
+      {
+        "path": "environment.json",
+        "bytes": 468,
+        "sha256": "7bcfc29fc02ebca663a7cc29da808af77d9c1d03d8a3e993d2873fd4f650ce78",
+        "committed": false
+      },
+      {
+        "path": "git-diff-check-final.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "committed": false
+      },
+      {
+        "path": "git-diff-check-pre-full.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-full-final.log",
+        "bytes": 11354,
+        "sha256": "fe546c7940efd3f07adbaa161f9484a6ae25f24e8523985e1c2b525dc984827e",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-full.log",
+        "bytes": 13540,
+        "sha256": "c5f8a551a39ee52f7c409d65097d746a06f9f2f2398946aee49f9019c291ad8f",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-lint-final.log",
+        "bytes": 58,
+        "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-lint.log",
+        "bytes": 58,
+        "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-typecheck-final.log",
+        "bytes": 74,
+        "sha256": "a5c825ba051431de38926cea057827446a6cd6daf37ea7c05541db300a6fd9f8",
+        "committed": false
+      },
+      {
+        "path": "node-gates/gateway-typecheck.log",
+        "bytes": 74,
+        "sha256": "a5c825ba051431de38926cea057827446a6cd6daf37ea7c05541db300a6fd9f8",
+        "committed": false
+      },
+      {
+        "path": "node-gates/node-version.log",
+        "bytes": 10,
+        "sha256": "bc697de995dc791df53d688ef69c08994cdffc8ce30c906b1ffc65b131ccd0eb",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-conformance-final.log",
+        "bytes": 232,
+        "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-conformance.log",
+        "bytes": 1113,
+        "sha256": "4f64f5024cca19ce67a7dd28b71d55d7ce653da82ec3ea2ab1a8d303e5cff0fe",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-lint-final.log",
+        "bytes": 57,
+        "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-lint.log",
+        "bytes": 57,
+        "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-test-final.log",
+        "bytes": 1505,
+        "sha256": "ade545d4514e9bb488b983b9a8e634e66219f2a3e0c67ed9110947322fdb605e",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-test.log",
+        "bytes": 2968,
+        "sha256": "ff1eec3d0ac60a7ace0d0e2d86beadc2139e572d9e23d3b70f3d9e3087bd602f",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-typecheck-final.log",
+        "bytes": 236,
+        "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc",
+        "committed": false
+      },
+      {
+        "path": "node-gates/protocol-typecheck.log",
+        "bytes": 236,
+        "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc",
+        "committed": false
+      },
+      {
+        "path": "node-gates/runtime-full-final.log",
+        "bytes": 6206,
+        "sha256": "046a3b207e88bbb70c5ee06f7d01a9e0b5d3af9ffb019c711e08e5b04bac0be2",
+        "committed": false
+      },
+      {
+        "path": "node-gates/runtime-full.log",
+        "bytes": 5636,
+        "sha256": "4902c72496e99aff3f79cac84704de379a4bc21e790839b48c1c78cddd36f240",
+        "committed": false
+      },
+      {
+        "path": "provenance-pin-final.log",
+        "bytes": 3350,
+        "sha256": "c3cfcd0e05f460560b366efb6721686edd4afe73fd12f00e62a1caa7c2bb07c7",
+        "committed": false
+      },
+      {
+        "path": "scope-audit-final.log",
+        "bytes": 4410,
+        "sha256": "3c063d4a1417974f1e590716d97c57728cf7d91293d8c53b0984fa38abd27ce4",
+        "committed": false
+      },
+      {
+        "path": "scope-audit-precommit.log",
+        "bytes": 842,
+        "sha256": "132cffbbb0af84aa0ce0092cbd87f78ecdb0f423ea74733eefaa49c07c2e470c",
+        "committed": false
+      }
+    ]
+  },
+  "committedFiles": [
+    "evidence-index.json",
+    "manifest.json"
+  ],
+  "codeCommit": "761717c6123b133ce7da5c5dd50b7242ba8bb648"
+}
