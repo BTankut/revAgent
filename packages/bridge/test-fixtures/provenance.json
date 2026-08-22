@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "frozenAtCommit": "b3cca906ec90d0068df489407d3e0ce7254a308e",
   "frozenSources": {
-    "docs/specs/O1-bridge-gateway-protocol.md": "f4f6ac9dbcbd540e28ec30586b165b1d76fe7de4",
+    "docs/specs/O1-bridge-gateway-protocol.md": "710c8beeb1f23a75d3c5c4dc733d5ebbc6ba9f72",
     "packages/protocol/schemas/rbp/v1/common.schema.json": "96661956099d8b06fa2180c5141f83569c867e04",
     "packages/protocol/schemas/rbp/v1/payloads.schema.json": "d4c7213e454a3723e60f25bfe099b1c7740b7795",
     "packages/protocol/schemas/rbp/v1/envelope.schema.json": "82fbf0ca40fc19c2727fa78e0991f3d62fdc7f84",

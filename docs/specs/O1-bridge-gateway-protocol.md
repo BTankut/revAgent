@@ -378,6 +378,68 @@ Unknown sessions, cross-owner replays, and a replay whose `reason` differs from 
 with `4403`. A bridge with a durable pending-unregister tombstone MUST replay
 `session_unregister` directly on each fresh binding; it MUST NOT resume the revoked session first.
 
+The Gateway stores that v1 tombstone at tenant-scoped key `rsid` in `gateway.rbp-unregister/v1`. Every logical
+record has `schema`, `tenantId`, `createdAtMs`, `updatedAtMs`, and CAS `recordVersion`; this tombstone also has
+`sessionBindingId`, authenticated `owner`, the exact closed enum field `reason`, `revokedAtMs`,
+`acceptedConnectionId`, `pendingDisposition`, sorted canonical `holdIds`, and `cleanupState`.
+`pendingDisposition` is one of `none`, `read_closed`, or `mutation_indeterminate`; `cleanupState` is `retained`
+or `cleanup_pending`. An exact same-owner/same-reason replay is write-free. Unknown sessions, changed reasons,
+and cross-owner requests fail `4403`.
+
+The v1 session row carries a durable `egressFence` with one lease maximum. Dispatch, `resume_ack`, and every
+retransmitted frame first reserve a five-second lease, CAS-promote that exact unexpired lease to `started`, call
+the transport without another await, and CAS-release in `finally`. A reserved lease may expire and be reclaimed;
+a started lease never expires by time, and its `startedAtMs` is strictly earlier than its reservation expiry. Unregister first
+commits the session-only `revocation_pending` poison, cancels any reserved lease, advances the session CAS version,
+and makes the session non-resumable/non-dispatchable. Only after exact readback may a separate bounded transaction
+install or validate companion hold/conflict rows. This ordering means an unclassifiable or partially applied
+companion transaction still leaves durable denial across restart. A reserved mutation canceled by this first
+phase is known not dispatched and creates no indeterminate hold; a started or previously released/send-begun
+mutation remains indeterminate. Unregister then drains a started lease for at most five seconds. Timeout returns
+`503`/`1011`, leaves the pending revocation authoritative, and does not remove the active-map entry or resolve its
+waiter. Only a lease-free later transaction may write the final tombstone and clear retained pending dispatch;
+active-map deletion and waiter resolution occur only after exact final readback. Therefore no dispatch, resume
+acknowledgement, or retransmit send call can begin after the final tombstone commits. A store conflict is retried
+at most eight times; uncertain durability proceeds only after exact keyed readback proves the attempted
+transition. An uncertain release never resends and leaves the started lease blocking. If the holder process hard
+crashes with a started lease, the session remains `revocation_pending` until exact holder release or authoritative
+owner-close proof exists; PID, heartbeat, elapsed time, and restart alone never reclaim it.
+
+Normalized conflicts are addressed only by the exact key `rsid + "/" + sha256(canonical mutation_scope)` and
+the session carries a bounded `normalizedConflictIndex` of at most 256 sorted scope digests. Reads pass valid
+holds. A document mutation checks only its document key and the session-wildcard key, so a disjoint-document hold
+does not block it. A session mutation validates every indexed pair; `overflow` denies session mutations
+conservatively without evicting indexed authority. Admission never performs a tenant-wide conflict list. Every
+normalized hold/conflict pair is fully integrity-checked before use. Until WP-10 writes a fully valid per-session
+`gateway.hold-cutover/v1` marker, admission unions exact legacy and normalized unresolved facts; a malformed marker
+fails closed. Shape validity alone never suppresses legacy authority. The marker's `legacyDigest` is SHA-256 over
+RFC 8785 canonical JSON `{rsid,pending,holds}`: `pending` contains the retained envelope digest, invocation id,
+mutating flag, and canonical mutation-entry identities in protocol-envelope order; every hold fact contains hold
+id, mutation scope, origin keys in their original protocol order, state, evidence attempts, selected evidence,
+resolution, and clearing digest. Imported
+hold/conflict/resolution counts must equal those bounded facts. The session index must be `complete`; every imported
+legacy hold must have an identical normalized pair, every imported active scope must be indexed, every imported
+cleared scope must be absent from the active index, and any additional indexed pair must post-date `cutoverAtMs`.
+While any bounded legacy row exists, only that semantic `normalized_authoritative` proof suppresses legacy reads.
+After exact legacy-row absence is verified, the strict schema-valid WP-10 marker is retained import proof: WP-02
+does not recompute an empty `legacyDigest` or reconstruct deleted cleared/resolved history. It requires a complete
+normalized active-conflict index and an exact hold/conflict pair for every indexed scope; a dangling or mismatched
+active pair fails closed. The marker's imported hold/conflict/resolution counts and nonempty digest remain
+type/provenance-validated fields, while verification of total deleted history and resolution records belongs to
+WP-10. WP-02 does not write the marker, define v2 normalization, clear holds, or delete legacy authority.
+
+The generic durable target check validates only tombstone/fence, binding, sequence, lifecycle, and capability.
+It never applies a session-wide hold denial because it does not know the trusted operation scope. Hold union
+admission runs inside the later dispatch-reservation transaction using the exact server-authored recovery carrier.
+Verification reads pass holds; exact authenticated origin redelivery is exempt only from its own hold. Existing
+authenticated legacy-only clearance composition remains accepted from the internal recovery carrier, never from
+caller-authored envelope bytes. A normalized `resolved_pending_bridge` hold remains blocking in WP-02; only WP-03
+may atomically advance its normalized hold and conflict pair. Before any new
+mutating reservation, the Gateway also proves that the distinct normalized candidates fit both the 256-entry index
+and the 128-write store transaction limit. At two companion writes per scope, at most 64 new recoverable scopes are
+admitted; over-cap requests fail before lease reservation or transport send. No admission path performs a
+tenant-wide conflict list.
+
 The bridge revokes local dispatch as soon as it durably records unregister intent. It MUST NOT mutate local
 lifecycle or outbound-queue authority before that journal transaction commits. If a post-commit durability
 operation reports an error, the bridge re-reads the exact tombstone: an observed matching intent revokes local

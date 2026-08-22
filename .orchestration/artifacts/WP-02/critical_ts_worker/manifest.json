@@ -1,0 +1,121 @@
+{
+  "schema": "revagent-remediation-artifact-manifest/v1",
+  "work_package": "WP-02",
+  "runtime": "node v24.19.0",
+  "npm_config_ignore_scripts": "false",
+  "entries": [
+    {
+      "file": "01-gateway-typecheck.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 1,
+      "sha256": "d6397a4e0efa1a13214da645deca457779973601f9b5690f615ca4f04d664fc3",
+      "note": "Pre-install attempt; worktree dependencies absent and npm child used system Node."
+    },
+    {
+      "file": "02-npm-ci.log",
+      "command": "npm ci",
+      "exit": 0,
+      "sha256": "adb13cb16296d6d5048dd843a691066449d38ea9362daacf97f65e3d59261a7c"
+    },
+    {
+      "file": "03-gateway-typecheck.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 2,
+      "sha256": "8b347bff921c8bc22f2b66ad7e2038b3dabd0de7e6d2b3b222445e644487d99f",
+      "note": "Initial implementation diagnostics; superseded by final passing rerun."
+    },
+    {
+      "file": "04-gateway-typecheck-rerun.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 2,
+      "sha256": "f4d651c8f68ebeadd55b557ae7459a481e24879bbb21d0678d2b62eed55ed502",
+      "note": "Single const-assertion diagnostic; superseded by final passing rerun."
+    },
+    {
+      "file": "05-gateway-typecheck-final.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970"
+    },
+    {
+      "file": "06-focused-unregister-vitest.log",
+      "command": "npm exec --workspace @revagent/gateway -- vitest run src/bridgeSessionUnregister.test.ts",
+      "exit": 0,
+      "sha256": "ecb1db7f4267ee34f1f97f4c70c9b9f3d30be51df91983c0910122a02cc37fbd",
+      "result": "5 tests passed"
+    },
+    {
+      "file": "07-gateway-test.log",
+      "command": "npm test --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "84879cfa09bd0de0596f8957e715ec0e6dbc3c96e407906a3c37d0a625d4acaf",
+      "result": "42 files passed; 518 tests passed; 5 skipped"
+    },
+    {
+      "file": "08-protocol-test.log",
+      "command": "npm test --workspace @revagent/protocol",
+      "exit": 0,
+      "sha256": "4d2e5e3b1f83b59a551f7023c9aa91b98f82f63a11d0adb60b7ef36ec19183b9",
+      "result": "303 tests passed; protocol conformance success"
+    },
+    {
+      "file": "09-gateway-lint.log",
+      "command": "npm run lint --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77"
+    },
+    {
+      "file": "10-rework-typecheck.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 2,
+      "sha256": "b72252df85523f87a8c9d396db6255fdb45e4c434b954afa5828c64ef9f293a2",
+      "note": "Schema migration diagnostic; superseded by final passing typecheck."
+    },
+    {
+      "file": "11-rework-typecheck-rerun.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970"
+    },
+    {
+      "file": "12-rework-focused.log",
+      "command": "npm exec --workspace @revagent/gateway -- vitest run src/bridgeSessionUnregister.test.ts",
+      "exit": 0,
+      "sha256": "150d575a7e6891ae8af4d3ec77c98631f4049e46976ff125bf5327b420740aa2",
+      "result": "5 tests passed"
+    },
+    {
+      "file": "13-rework-gateway-test.log",
+      "command": "npm test --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "2048c4a04be29b3dd8d14361e85daf81622ebf51daea435a4f718ddc04ddbf78",
+      "result": "42 files passed; 518 tests passed; 5 skipped"
+    },
+    {
+      "file": "14-rework-gateway-final.log",
+      "command": "npm test --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "8acedf262194b403143984b2f7387638a5b3cb4f9f459a5d02380ec367beb0a4",
+      "result": "42 files passed; 518 tests passed; 5 skipped"
+    },
+    {
+      "file": "15-rework-typecheck-final.log",
+      "command": "npm run typecheck --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "de9dde3a511ecfe7ec13626646efe578d0199f582566e026df80bb4528727970"
+    },
+    {
+      "file": "16-rework-lint-final.log",
+      "command": "npm run lint --workspace @revagent/gateway",
+      "exit": 0,
+      "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77"
+    },
+    {
+      "file": "17-rework-protocol-final.log",
+      "command": "npm test --workspace @revagent/protocol",
+      "exit": 0,
+      "sha256": "459b8d87a2817580252ae6b9d7e2a3109906c93a3d3f051c786bb4271d22f2b1",
+      "result": "303 tests passed; protocol conformance success"
+    }
+  ]
+}
