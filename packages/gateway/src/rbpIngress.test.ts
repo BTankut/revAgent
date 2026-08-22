@@ -1970,11 +1970,13 @@ describe("GW-12 production RBP ingress", () => {
   for (const kind of ["wss", "http_sse"] as const) {
     it(`routes register and dispatch through the shared ${kind} authority`, async () => {
       const restartable = createRestartableTestStore();
-      const authority = new GatewayBridgeSessionAuthority(restartable.store, identity());
+      const activeIdentity = identity();
+      const authenticateDevice = vi.spyOn(activeIdentity, "authenticateDevice");
+      const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
       const ingress = createProductionRbpIngressHost({ authority });
       const server = await startGatewayServer({
         config,
-        ports: { ...createFailClosedPorts(), identity: identity(), protocolStore: restartable.store, rbpIngress: ingress },
+        ports: { ...createFailClosedPorts(), identity: activeIdentity, protocolStore: restartable.store, rbpIngress: ingress },
       });
       handles.push(server);
       const binding: GatewayBinding =
@@ -1992,6 +1994,9 @@ describe("GW-12 production RBP ingress", () => {
       bindings.push(binding);
 
       const ack = await binding.open(hello());
+      if (kind === "http_sse") {
+        expect(authenticateDevice).toHaveBeenCalledTimes(2);
+      }
       expect(ack.payload.connection_id).toBe(binding.connectionId);
       expect(ack.payload.granted_capabilities).toContain("transport_streamable_http");
       if (kind === "wss" && (binding as WssGatewayBinding).closeInfo !== null) {
@@ -2000,6 +2005,9 @@ describe("GW-12 production RBP ingress", () => {
         );
       }
       await binding.send(registration());
+      if (kind === "http_sse") {
+        expect(authenticateDevice).toHaveBeenCalledTimes(3);
+      }
       const registered = (await next(binding)) as SessionRegisteredEnvelope;
 
       const executor = authority.createExecutor();
@@ -2019,6 +2027,9 @@ describe("GW-12 production RBP ingress", () => {
           (invoke as Extract<RbpEnvelope, { type: "invoke" }>).seq,
         ),
       );
+      if (kind === "http_sse") {
+        expect(authenticateDevice).toHaveBeenCalledTimes(4);
+      }
       await expect(outcomePromise).resolves.toEqual({
         state: "completed",
         result: { success: true, source: "gw12-fixture" },
@@ -2038,6 +2049,9 @@ describe("GW-12 production RBP ingress", () => {
         faultClass: "protocol",
         binding: kind === "wss" ? "wss" : "streamable_http_sse",
       });
+      if (kind === "http_sse") {
+        expect(authenticateDevice).toHaveBeenCalledTimes(5);
+      }
     });
   }
 

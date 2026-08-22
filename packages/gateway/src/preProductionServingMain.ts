@@ -66,13 +66,25 @@ try {
       process.on("SIGINT", shutdown);
       process.on("SIGTERM", shutdown);
       process.on("SIGUSR2", () => {
-        const revoked = launch.prepared.revokeConfiguredDevice();
-        launch.server.app.log.info(
-          {
-            msg: "gateway.preproduction_device_revocation",
-            state: revoked.ok ? "revoked" : "refused",
+        void launch.prepared.revokeConfiguredDevice().then(
+          (revoked) => {
+            launch.server.app.log.info(
+              {
+                msg: "gateway.preproduction_device_revocation",
+                state: revoked.ok ? "revoked" : "refused",
+              },
+              "gateway.preproduction_device_revocation",
+            );
           },
-          "gateway.preproduction_device_revocation",
+          () => {
+            launch.server.app.log.error(
+              {
+                msg: "gateway.preproduction_device_revocation",
+                state: "refused",
+              },
+              "gateway.preproduction_device_revocation",
+            );
+          },
         );
       });
       launch.server.app.log.info(
