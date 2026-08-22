@@ -1,0 +1,251 @@
+{
+  "schema": "revagent-remediation-artifact-manifest/v1",
+  "workPackage": "WP-03",
+  "cycle": "rework-6",
+  "baseSha": "7e6df21c417109f2a9ba45b311f9051bddad75a7",
+  "codeCommit": "aea07d349f6911d7e12ea2adb84106d815e65997",
+  "branch": "remediation/wp-03-mutation-outcome-holds",
+  "pullRequest": 388,
+  "pullRequestState": "open_draft",
+  "generatedAtUtc": "2026-08-22T16:41:03.8222469+00:00",
+  "portableRoot": ".orchestration/artifacts/WP-03/critical_csharp_worker_rework6",
+  "rawLogsCommitted": false,
+  "evidenceIndex": "evidence-index.json",
+  "toolchain": {
+    "node": "24.19.0",
+    "dotnet": "9.0.102",
+    "powershell": "7.6.4"
+  },
+  "gates": {
+    "holdClearanceFocused": "34/34 pass",
+    "bridgeFull": "912/912 pass",
+    "contractsProvenance": "308/308 pass",
+    "protocol": "312/312 plus typecheck lint conformance pass",
+    "runtime": "full pass",
+    "gateway": "594 pass 5 skip plus typecheck lint",
+    "commandset": "Release R25 pass",
+    "scope": "3 product/test paths 0 violations",
+    "format": "pass",
+    "diffCheck": "pass",
+    "independentReview": "pass"
+  },
+  "idempotence": {
+    "sameProcess": "write-free terminal replay",
+    "afterReopen": "write-free terminal replay",
+    "driftRejected": [
+      "digest",
+      "decision",
+      "audit",
+      "resolution",
+      "verification_id",
+      "basis"
+    ],
+    "unclearedTrustedChecksPreserved": true
+  },
+  "artifacts": [
+    {
+      "path": "bridge-full-01.log",
+      "bytes": 1458,
+      "sha256": "661925d625c8c8dc88eab2a45a119982c10456929a03351d4fc4f5552af28224",
+      "committed": false
+    },
+    {
+      "path": "build-01.log",
+      "bytes": 1443,
+      "sha256": "7a91bcb7ff8853e6de64c5e25eb795ab31c8d38c2bae9b0269ec87a489833217",
+      "committed": false
+    },
+    {
+      "path": "commandset-r25.log",
+      "bytes": 21755,
+      "sha256": "98d3d777302691480203e2390a3ea38a0eb681267746235b3b550c2a5c8a534a",
+      "committed": false
+    },
+    {
+      "path": "contracts-full.log",
+      "bytes": 958,
+      "sha256": "4ee8906e80695d3832f459ec73ad5275fa34760cc3d7520a0d9033af47e4c707",
+      "committed": false
+    },
+    {
+      "path": "dotnet-format-verify-final.log",
+      "bytes": 167,
+      "sha256": "8192040d2167b285829243e5e05ad53b2ee73ca9bba79c32249a79a7e5d5f147",
+      "committed": false
+    },
+    {
+      "path": "evidence-index.json",
+      "bytes": 7289,
+      "sha256": "fd2f9a66c41b954b3a3e1a0de2d0f527d90ba919b720d45aea5a913a46dfa366",
+      "committed": true
+    },
+    {
+      "path": "git-diff-check-final.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "committed": false
+    },
+    {
+      "path": "hold-clearance-focused-final.log",
+      "bytes": 1453,
+      "sha256": "89509f43062dc046394694fefd27973c06823bc79b4542bc9da42d6999fd07bc",
+      "committed": false
+    },
+    {
+      "path": "node-gates/commands.json",
+      "bytes": 4744,
+      "sha256": "42f5ba670401b963aa9601bd92c79a3471a559f38629078c04c1bc01f8f6da43",
+      "committed": false
+    },
+    {
+      "path": "node-gates/commands.sha256.txt",
+      "bytes": 263,
+      "sha256": "1ed9922287f9255831230c10723649b5516f0b890d489e1f7e401577f58bf918",
+      "committed": false
+    },
+    {
+      "path": "node-gates/environment.json",
+      "bytes": 569,
+      "sha256": "74de2ea2637d0e7947c07d83d20defe5703f93c7940b2743fd158ada8ddac4f2",
+      "committed": false
+    },
+    {
+      "path": "node-gates/environment.sha256.txt",
+      "bytes": 266,
+      "sha256": "64541aeb596016853d630248a584ee1e29731d009e231d9e39071cf557b2155f",
+      "committed": false
+    },
+    {
+      "path": "node-gates/gateway-full.log",
+      "bytes": 11619,
+      "sha256": "052a7c58e164b6f909ff670384b4b82f20bc9cde45bbb452cf951d187d07f7be",
+      "committed": false
+    },
+    {
+      "path": "node-gates/gateway-lint.log",
+      "bytes": 58,
+      "sha256": "395576d5fe92b3846a517b417f1905461211d54edee1e3f1ce2606f08db28a77",
+      "committed": false
+    },
+    {
+      "path": "node-gates/gateway-typecheck.log",
+      "bytes": 74,
+      "sha256": "a5c825ba051431de38926cea057827446a6cd6daf37ea7c05541db300a6fd9f8",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/commands.json",
+      "bytes": 4439,
+      "sha256": "bb42e1a32b5a63445c5e79c6f09dc2d1e8a8ba1d2e5cc9faf8e24372addb62a2",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/commands.sha256.txt",
+      "bytes": 263,
+      "sha256": "de1d1ebd4f558774c035d3e350d1ac495395ca0b7cef887da41b50cf7ecc7371",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/gateway-full.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/gateway-lint.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/gateway-typecheck.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/protocol-conformance.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/protocol-lint.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/protocol-test.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/protocol-typecheck.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/harness-attempt-1/runtime-full.log",
+      "bytes": 1318,
+      "sha256": "46fe2df007af5dfd37d5c0b6a54ff59d59730c2cc5c0b0d2b897629b9eba4654",
+      "committed": false
+    },
+    {
+      "path": "node-gates/post-gate-drift.json",
+      "bytes": 1228,
+      "sha256": "9fda3eec5a6adb214c6e07a555b47c86b0ff5502222acf91974a386cad9ee243",
+      "committed": false
+    },
+    {
+      "path": "node-gates/post-gate-drift.sha256.txt",
+      "bytes": 270,
+      "sha256": "1638a6dcb975034ad22e190ab894ea288320a36eae8a3519b9caa3c2593de5e4",
+      "committed": false
+    },
+    {
+      "path": "node-gates/protocol-conformance.log",
+      "bytes": 232,
+      "sha256": "145efaa4d878510c3200206e3761f8f760c7535e7044bd2fd8c40e31d8dc8d7c",
+      "committed": false
+    },
+    {
+      "path": "node-gates/protocol-lint.log",
+      "bytes": 57,
+      "sha256": "d12b66126ac8abe1f75d8ddbbbcea82d1fa31402ea12bafd955d349f9e39fc27",
+      "committed": false
+    },
+    {
+      "path": "node-gates/protocol-test.log",
+      "bytes": 1505,
+      "sha256": "247589cb51ad699ba1334456ce40a573ce39ae511f4f6f4867282092e2a29776",
+      "committed": false
+    },
+    {
+      "path": "node-gates/protocol-typecheck.log",
+      "bytes": 236,
+      "sha256": "d94a1166d4b25009454d069ba2e7658166fb0c978eb8a65ba18c982df283f4dc",
+      "committed": false
+    },
+    {
+      "path": "node-gates/runtime-full.log",
+      "bytes": 6206,
+      "sha256": "be5d7c08beeb2a04cc610ea142d39a54434d176ad0e698a290fc8189d2e07aa7",
+      "committed": false
+    },
+    {
+      "path": "provenance-pin-final.log",
+      "bytes": 378,
+      "sha256": "d3741f82dc1ebad5518cfa80123bed7c55128bf59a307f506a7d6965cce89779",
+      "committed": false
+    },
+    {
+      "path": "scope-audit-final.log",
+      "bytes": 431,
+      "sha256": "2b980a464e3a10bc146b232d534e940baef1f4d6bd1a730afa65dde234e323cc",
+      "committed": false
+    }
+  ]
+}
