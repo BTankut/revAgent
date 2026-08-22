@@ -335,6 +335,26 @@ function assertCanaryAbsentFromRemote(
   expect(closed.reason).not.toContain(canary);
 }
 
+function holdWebSocketSendCallbacks(socket: WebSocket): {
+  readonly callbacks: Array<(error?: Error) => void>;
+  readonly restore: () => void;
+} {
+  const callbacks: Array<(error?: Error) => void> = [];
+  const heldSend = ((
+    _data: unknown,
+    optionsOrCallback?: unknown,
+    callback?: unknown,
+  ): void => {
+    const completion =
+      typeof optionsOrCallback === "function" ? optionsOrCallback : callback;
+    if (typeof completion === "function") {
+      callbacks.push(completion as (error?: Error) => void);
+    }
+  }) as typeof socket.send;
+  const spy = vi.spyOn(socket, "send").mockImplementation(heldSend);
+  return { callbacks, restore: () => spy.mockRestore() };
+}
+
 const config: GatewayConfig = {
   nodeEnv: "development",
   logLevel: "fatal",
@@ -644,6 +664,35 @@ describe("GW-12 production RBP ingress", () => {
         },
       }),
     ).not.toThrow();
+    expect(() =>
+      createProductionRbpIngressHost({
+        authority,
+        wssEgress: {
+          queuedFrames: 0,
+          queuedBytes: 0,
+          sendCompletionTimeoutMs: 0,
+        },
+      }),
+    ).not.toThrow();
+    expect(() =>
+      createProductionRbpIngressHost({
+        authority,
+        wssEgress: {
+          queuedFrames: 1_000,
+          queuedBytes: 10 * LOCAL_WSS_FRAME_BUDGET_BYTES,
+          sendCompletionTimeoutMs: 1_000_000,
+        },
+      }),
+    ).not.toThrow();
+    for (const wssEgress of [
+      { queuedFrames: 1.5 },
+      { queuedBytes: 1.5 },
+      { sendCompletionTimeoutMs: 1.5 },
+    ]) {
+      expect(() => createProductionRbpIngressHost({ authority, wssEgress })).toThrow(
+        "must be a safe integer",
+      );
+    }
   });
 
   it("serializes two valid hello arrivals into one authenticate/open claim", async () => {
@@ -958,6 +1007,198 @@ describe("GW-12 production RBP ingress", () => {
     backlog.mockRestore();
     client.socket.close(1000, "test complete");
     await client.closed;
+  });
+
+  it("bounds concurrent application egress frames and releases accounting after settle", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { queuedFrames: 2, sendCompletionTimeoutMs: 100 },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const held = holdWebSocketSendCallbacks(serverSocket);
+
+    const runExactWave = async (wave: number): Promise<void> => {
+      const first = channel.send(JSON.stringify({ wave, frame: 1 }));
+      const second = channel.send(JSON.stringify({ wave, frame: 2 }));
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      held.callbacks.shift()!();
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      held.callbacks.shift()!();
+      await expect(Promise.all([first, second])).resolves.toStrictEqual([
+        undefined,
+        undefined,
+      ]);
+    };
+    await runExactWave(1);
+    await runExactWave(2);
+
+    const first = channel.send(JSON.stringify({ overload: 1 }));
+    const second = channel.send(JSON.stringify({ overload: 2 }));
+    const acceptedOutcomes = Promise.allSettled([first, second]);
+    await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+    await expect(channel.send(JSON.stringify({ overload: 3 }))).rejects.toThrow(
+      "application egress queue overloaded",
+    );
+    expect(held.callbacks).toHaveLength(1);
+    held.callbacks.shift()!();
+    await acceptedOutcomes;
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
+    expect(held.callbacks).toHaveLength(0);
+    held.restore();
+  });
+
+  it("bounds concurrent application egress bytes at exact F and rejects plus one", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: {
+            queuedFrames: 4,
+            queuedBytes: LOCAL_WSS_FRAME_BUDGET_BYTES,
+            sendCompletionTimeoutMs: 100,
+          },
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    const firstFrame = jsonObjectWithExactBytes(
+      Math.floor(LOCAL_WSS_FRAME_BUDGET_BYTES / 2),
+    );
+    const secondFrame = jsonObjectWithExactBytes(
+      LOCAL_WSS_FRAME_BUDGET_BYTES - Buffer.byteLength(firstFrame),
+    );
+
+    const runExactWave = async (): Promise<void> => {
+      const first = channel.send(firstFrame);
+      const second = channel.send(secondFrame);
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      held.callbacks.shift()!();
+      await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+      held.callbacks.shift()!();
+      await expect(Promise.all([first, second])).resolves.toStrictEqual([
+        undefined,
+        undefined,
+      ]);
+    };
+    await runExactWave();
+    await runExactWave();
+
+    const first = channel.send(firstFrame);
+    const second = channel.send(secondFrame);
+    const acceptedOutcomes = Promise.allSettled([first, second]);
+    await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+    await expect(channel.send("x")).rejects.toThrow("application egress queue overloaded");
+    expect(held.callbacks).toHaveLength(1);
+    held.callbacks.shift()!();
+    await acceptedOutcomes;
+    const closed = await client.closed;
+    expect(closed).toMatchObject({ code: 1013, reason: "RBP application egress overloaded" });
+    expect(held.callbacks).toHaveLength(0);
+    held.restore();
+  });
+
+  it("times out a stuck normal send, terminates, detaches once, and ignores its late callback", async () => {
+    const timeoutMs = 25;
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity();
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel!: BridgeConnectionChannel;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return originalOpen(input);
+    });
+    const detach = vi.spyOn(authority, "detach");
+    const diagnostics: RbpWssInternalDiagnostic[] = [];
+    const accepted = captureNextServerSocket();
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          wssEgress: { sendCompletionTimeoutMs: timeoutMs },
+          onWssInternalDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+        }),
+      },
+    });
+    handles.push(server);
+    const client = await openRawWss(server.port);
+    const serverSocket = await accepted.promise;
+    client.socket.send(JSON.stringify(hello()));
+    await vi.waitFor(() => expect(client.messages[0]?.type).toBe("hello_ack"));
+    const terminate = vi.spyOn(serverSocket, "terminate");
+    const held = holdWebSocketSendCallbacks(serverSocket);
+    const stuck = channel.send(JSON.stringify({ stuck: true }));
+    const stuckOutcome = expect(stuck).rejects.toThrow("send completion timed out");
+    await vi.waitFor(() => expect(held.callbacks).toHaveLength(1));
+    const lateCallback = held.callbacks[0]!;
+    const startedAt = Date.now();
+    client.socket.send('{"v":1,"type":"session_register","id":"malformed"');
+
+    const closed = await client.closed;
+    await stuckOutcome;
+    expect(Date.now() - startedAt).toBeLessThan(1_000);
+    expect(closed.code).toBe(1006);
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(client.messages.map((message) => message.type)).toStrictEqual(["hello_ack"]);
+    expect(
+      diagnostics.some((diagnostic) =>
+        diagnostic.detail.includes("send completion timed out"),
+      ),
+    ).toBe(true);
+
+    lateCallback();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(terminate).toHaveBeenCalledTimes(1);
+    expect(detach).toHaveBeenCalledTimes(1);
+    expect(client.messages.map((message) => message.type)).toStrictEqual(["hello_ack"]);
+    held.restore();
   });
 
   it("sends one safe schema error before close and rejects every later normal frame", async () => {

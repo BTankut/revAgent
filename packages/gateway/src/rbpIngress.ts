@@ -39,6 +39,9 @@ const RBP_WSS_FRAME_OVERHEAD_BYTES = 64 * 1024;
 const RBP_WSS_DEFAULT_QUEUED_FRAMES = 32;
 const RBP_WSS_MIN_QUEUED_FRAMES = 1;
 const RBP_WSS_MAX_QUEUED_FRAMES = 256;
+const RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS = 5_000;
+const RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS = 1;
+const RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS = 60_000;
 
 type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
 
@@ -51,6 +54,12 @@ interface WssFrameCeilings {
 export interface RbpWssQueueConfig {
   readonly queuedFrames?: number;
   readonly queuedBytes?: number;
+}
+
+export interface RbpWssEgressConfig {
+  readonly queuedFrames?: number;
+  readonly queuedBytes?: number;
+  readonly sendCompletionTimeoutMs?: number;
 }
 
 export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
@@ -69,6 +78,7 @@ export interface RbpWssInternalDiagnostic {
 export interface ProductionRbpIngressOptions {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly wssQueue?: RbpWssQueueConfig;
+  readonly wssEgress?: RbpWssEgressConfig;
   readonly writeOpeningRefusalLog?: (serializedObservation: string) => void;
   readonly onOpeningRefusalObservation?: (
     observation: RbpOpeningRefusalObservation,
@@ -168,6 +178,33 @@ function configuredQueueBytes(configured: number | undefined, frameBudget: numbe
     frameBudget,
     2 * frameBudget,
     "wssQueue.queuedBytes",
+  );
+}
+
+function clampedInteger(
+  configured: number | undefined,
+  defaultValue: number,
+  minimum: number,
+  maximum: number,
+  name: string,
+): number {
+  const value = configured ?? defaultValue;
+  if (!Number.isSafeInteger(value)) {
+    throw new RangeError(`${name} must be a safe integer`);
+  }
+  return Math.min(maximum, Math.max(minimum, value));
+}
+
+function configuredEgressQueueBytes(
+  configured: number | undefined,
+  frameBudget: number,
+): number {
+  return clampedInteger(
+    configured,
+    2 * frameBudget,
+    frameBudget,
+    2 * frameBudget,
+    "wssEgress.queuedBytes",
   );
 }
 
@@ -372,6 +409,25 @@ export function createProductionRbpIngressHost(
   const localQueuedByteLimit = configuredQueueBytes(
     configuredQueuedByteLimit,
     LOCAL_WSS_FRAME_BUDGET_BYTES,
+  );
+  const egressQueuedFrameLimit = clampedInteger(
+    options.wssEgress?.queuedFrames,
+    RBP_WSS_DEFAULT_QUEUED_FRAMES,
+    RBP_WSS_MIN_QUEUED_FRAMES,
+    RBP_WSS_MAX_QUEUED_FRAMES,
+    "wssEgress.queuedFrames",
+  );
+  const configuredEgressQueuedByteLimit = options.wssEgress?.queuedBytes;
+  const localEgressQueuedByteLimit = configuredEgressQueueBytes(
+    configuredEgressQueuedByteLimit,
+    LOCAL_WSS_FRAME_BUDGET_BYTES,
+  );
+  const sendCompletionTimeoutMs = clampedInteger(
+    options.wssEgress?.sendCompletionTimeoutMs,
+    RBP_WSS_DEFAULT_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MIN_SEND_COMPLETION_TIMEOUT_MS,
+    RBP_WSS_MAX_SEND_COMPLETION_TIMEOUT_MS,
+    "wssEgress.sendCompletionTimeoutMs",
   );
   const websocketServer = new WebSocketServer({
     noServer: true,
@@ -582,9 +638,13 @@ export function createProductionRbpIngressHost(
           let readsPaused = false;
           let serialTail: Promise<void> = Promise.resolve();
           let egressTail: Promise<void> = Promise.resolve();
+          let applicationEgressFrames = 0;
+          let applicationEgressBytes = 0;
+          let egressQueuedByteLimit = localEgressQueuedByteLimit;
           let terminalEgressClaimed = false;
           let terminalErrorAttempted = false;
           let teardownTask: Promise<void> | null = null;
+          const pendingSendCancellations = new Set<(error: Error) => void>();
 
           const internalFault = (error: unknown): GatewayRbpFault =>
             new GatewayRbpFault(
@@ -628,6 +688,10 @@ export function createProductionRbpIngressHost(
             });
           };
 
+          const cancelPendingSends = (error: Error): void => {
+            for (const cancel of [...pendingSendCancellations]) cancel(error);
+          };
+
           const sendRaw = async (serialized: string): Promise<void> => {
             if (websocket.readyState !== WebSocket.OPEN) {
               throw new Error("WSS transport is not open");
@@ -638,9 +702,21 @@ export function createProductionRbpIngressHost(
               throw new Error("WSS backlog exceeds the bounded transport window");
             }
             await new Promise<void>((resolve, reject) => {
-              websocket.send(serialized, (error) =>
-                error === undefined || error === null ? resolve() : reject(error),
-              );
+              let settled = false;
+              const finish = (error?: unknown): void => {
+                if (settled) return;
+                settled = true;
+                pendingSendCancellations.delete(cancel);
+                if (error === undefined || error === null) resolve();
+                else reject(error);
+              };
+              const cancel = (error: Error): void => finish(error);
+              pendingSendCancellations.add(cancel);
+              try {
+                websocket.send(serialized, (error) => finish(error));
+              } catch (error) {
+                finish(error);
+              }
             });
           };
 
@@ -653,6 +729,18 @@ export function createProductionRbpIngressHost(
             ) {
               throw new Error("WSS normal egress is closed");
             }
+            const serializedBytes = Buffer.byteLength(serialized);
+            const nextFrames = applicationEgressFrames + 1;
+            const nextBytes = applicationEgressBytes + serializedBytes;
+            if (
+              nextFrames > egressQueuedFrameLimit ||
+              nextBytes > egressQueuedByteLimit
+            ) {
+              egressOverload();
+              throw new Error("WSS application egress queue overloaded");
+            }
+            applicationEgressFrames = nextFrames;
+            applicationEgressBytes = nextBytes;
             try {
               await appendEgress(async () => {
                 if (
@@ -668,15 +756,45 @@ export function createProductionRbpIngressHost(
             } catch (error) {
               observeDiagnostic("egress", "internal", 1011, error);
               throw error;
+            } finally {
+              applicationEgressFrames -= 1;
+              applicationEgressBytes -= serializedBytes;
             }
           };
 
-          const sendTerminalError = async (serialized: string): Promise<void> => {
-            if (terminalErrorAttempted) return;
-            terminalErrorAttempted = true;
-            await appendEgress(async () => {
-              await sendRaw(serialized);
+          const settleEgressForTeardown = async (
+            terminalSerialized: string | null,
+            closeCode: number,
+          ): Promise<"settled" | "failed" | "timed_out"> => {
+            let timedOut = false;
+            let timer: ReturnType<typeof setTimeout> | null = null;
+            const operation = (async (): Promise<"settled" | "timed_out"> => {
+              await egressTail;
+              if (timedOut) return "timed_out";
+              if (terminalSerialized !== null && !terminalErrorAttempted) {
+                terminalErrorAttempted = true;
+                await sendRaw(terminalSerialized);
+              }
+              return "settled";
+            })();
+            const observedOperation = operation.catch((error: unknown) => {
+              observeDiagnostic("egress", "internal", closeCode, error);
+              return timedOut ? ("timed_out" as const) : ("failed" as const);
             });
+            const timeout = new Promise<"timed_out">((resolve) => {
+              timer = setTimeout(() => {
+                timedOut = true;
+                cancelPendingSends(new Error("WSS send completion timed out"));
+                resolve("timed_out");
+              }, sendCompletionTimeoutMs);
+            });
+            const result = await Promise.race([observedOperation, timeout]);
+            if (timer !== null) clearTimeout(timer);
+            if (result === "timed_out") {
+              cancelPendingSends(new Error("WSS send completion timed out"));
+              await egressTail;
+            }
+            return result;
           };
 
           const safeChannelCloseReason = (code: number): string =>
@@ -712,14 +830,9 @@ export function createProductionRbpIngressHost(
                   }
                   readsPaused = false;
                 }
-                if (
-                  input.publicFault !== null &&
-                  input.sendFaultFrame &&
-                  websocket.readyState === WebSocket.OPEN
-                ) {
-                  try {
-                    await sendTerminalError(
-                      JSON.stringify({
+                const terminalSerialized =
+                  input.publicFault !== null && input.sendFaultFrame
+                    ? JSON.stringify({
                         v: 1,
                         type: "error",
                         id: gatewayUuidV7(Date.now()),
@@ -731,18 +844,21 @@ export function createProductionRbpIngressHost(
                           verification_required: false,
                           message: input.publicFault.message,
                         },
-                      } satisfies RbpEnvelope),
-                    );
-                  } catch (error) {
-                    observeDiagnostic(
-                      "egress",
-                      "internal",
-                      input.closeCode ?? 1011,
-                      error,
-                    );
-                  }
-                }
-                if (
+                      } satisfies RbpEnvelope)
+                    : null;
+                const egressResult = await settleEgressForTeardown(
+                  terminalSerialized,
+                  input.closeCode ?? 1011,
+                );
+                if (egressResult === "timed_out") {
+                  observeDiagnostic(
+                    "egress",
+                    "internal",
+                    input.closeCode ?? 1011,
+                    new Error("WSS send completion timed out"),
+                  );
+                  if (websocket.readyState !== WebSocket.CLOSED) websocket.terminate();
+                } else if (
                   input.closeCode !== null &&
                   websocket.readyState === WebSocket.OPEN
                 ) {
@@ -815,6 +931,18 @@ export function createProductionRbpIngressHost(
             });
           };
 
+          function egressOverload(): void {
+            if (state === "closing" || state === "closed" || state === "faulted") return;
+            terminalEgressClaimed = true;
+            state = "faulted";
+            void scheduleTeardown({
+              closeCode: 1013,
+              closeReason: "RBP application egress overloaded",
+              publicFault: null,
+              sendFaultFrame: false,
+            });
+          }
+
           const releaseQueueCharge = (bytes: number): void => {
             queuedFrames -= 1;
             queuedBytes -= bytes;
@@ -852,10 +980,21 @@ export function createProductionRbpIngressHost(
               configuredQueuedByteLimit,
               negotiatedFrameBudget,
             );
+            egressQueuedByteLimit = configuredEgressQueueBytes(
+              configuredEgressQueuedByteLimit,
+              negotiatedFrameBudget,
+            );
             pauseAtBytes = Math.ceil((queuedByteLimit * 3) / 4);
             resumeBelowBytes = Math.ceil(queuedByteLimit / 2);
             if (queuedFrames > queuedFrameLimit || queuedBytes > queuedByteLimit) {
               overload();
+              return false;
+            }
+            if (
+              applicationEgressFrames > egressQueuedFrameLimit ||
+              applicationEgressBytes > egressQueuedByteLimit
+            ) {
+              egressOverload();
               return false;
             }
             return true;
