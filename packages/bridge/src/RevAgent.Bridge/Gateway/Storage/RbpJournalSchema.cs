@@ -434,6 +434,10 @@ internal static class RbpJournalSchema
             CHECK(record_schema='bridge.mutation-resolution/v1'),
           rsid TEXT NOT NULL REFERENCES rbp_sessions(rsid) ON DELETE RESTRICT,
           hold_id TEXT NOT NULL,
+          consumer_kind TEXT NOT NULL CHECK(consumer_kind IN (
+            'invocation','batch'
+          )),
+          consumer_id TEXT NOT NULL CHECK(length(consumer_id) BETWEEN 38 AND 293),
           basis TEXT NOT NULL CHECK(basis IN (
             'verification_read','late_terminal'
           )),
@@ -454,10 +458,16 @@ internal static class RbpJournalSchema
           CHECK(length(evidence_digest)=71 AND
                 substr(evidence_digest,1,7)='sha256:' AND
                 substr(evidence_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(substr(consumer_id,1,length(rsid)+1)=rsid || '/'),
           FOREIGN KEY(rsid,hold_id)
             REFERENCES rbp_mutation_holds_v3(rsid,hold_id)
             ON DELETE RESTRICT
         ) STRICT;
+
+        CREATE INDEX ix_rbp_mutation_resolutions_v3_consumer
+          ON rbp_mutation_resolutions_v3(
+            rsid,consumer_kind,consumer_id,hold_id
+          );
 
         CREATE TABLE rbp_outcome_dispatch_v3(
           idempotency_key TEXT PRIMARY KEY

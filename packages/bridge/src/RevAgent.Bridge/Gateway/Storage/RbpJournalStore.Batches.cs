@@ -40,7 +40,7 @@ internal sealed partial class RbpJournalStore
     /// fresh invocation (Section 21 item 28); redelivery of the bound batch
     /// is exempt from the conflict block and is arbitrated instead.
     /// </summary>
-    internal Task<RbpBatchGatedAdmission> AdmitBatchAsync(
+    internal async Task<RbpBatchGatedAdmission> AdmitBatchAsync(
         RbpBatchIdentity identity,
         IReadOnlyList<RbpRecoveryClearance> clearances,
         CancellationToken cancellationToken = default)
@@ -51,9 +51,17 @@ internal sealed partial class RbpJournalStore
         RbpBatchIdentity normalized = NormalizeBatchIdentity(identity);
         ValidateBatchClearances(normalized, clearances);
         VerifyBatchDigestBinding(normalized);
+        if (clearances.Count > 0)
+        {
+            _ = await EnsureOutcomeV3ForSessionAsync(
+                    normalized.Rsid,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         string stepsJcs = BuildStepsJcs(normalized);
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
+        return await ExecuteImmediateAsync(
             context =>
             {
                 RequireActiveSession(context, normalized.Rsid);
@@ -81,6 +89,8 @@ internal sealed partial class RbpJournalStore
                         context,
                         normalized.Rsid,
                         scopes,
+                        "batch",
+                        normalized.BatchKey,
                         clearance,
                         now);
                 }
@@ -89,7 +99,7 @@ internal sealed partial class RbpJournalStore
                     ArbitrateRedelivery(context, existing, normalized, now),
                     null);
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -297,7 +307,14 @@ internal sealed partial class RbpJournalStore
         IReadOnlyList<string> scopes = MutatingScopes(identity);
         foreach (RbpRecoveryClearance clearance in clearances)
         {
-            AcceptClearance(context, identity.Rsid, scopes, clearance, now);
+            AcceptClearance(
+                context,
+                identity.Rsid,
+                scopes,
+                "batch",
+                identity.BatchKey,
+                clearance,
+                now);
         }
 
         // Section 21 item 28: every step scope is checked against Section

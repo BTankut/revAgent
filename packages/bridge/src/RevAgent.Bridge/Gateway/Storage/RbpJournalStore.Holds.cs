@@ -22,6 +22,22 @@ namespace RevAgent.Bridge.Gateway.Storage;
 /// </summary>
 internal sealed partial class RbpJournalStore
 {
+    private static void ValidateClearanceConsumer(
+        string rsid,
+        string consumerKind,
+        string consumerId)
+    {
+        string prefix = rsid + "/";
+        if (consumerKind is not ("invocation" or "batch") ||
+            consumerId.Length is < 38 or > 293 ||
+            !consumerId.StartsWith(prefix, StringComparison.Ordinal) ||
+            !RbpRecoveryClearance.IsUuidV7(consumerId[prefix.Length..]))
+        {
+            throw ClearanceFault(
+                "clearance consumer identity is not canonical");
+        }
+    }
+
     private static void ValidateGroupedHoldMaterial(RbpVerificationHold hold)
     {
         if (hold.OrderedOriginIdempotencyKeys.Count <= 1)
@@ -231,7 +247,7 @@ internal sealed partial class RbpJournalStore
     /// envelope carries every conflicting hold. Redelivery of an origin key
     /// is exempt from the conflict block.
     /// </summary>
-    internal Task<RbpClearanceGatedAdmission>
+    internal async Task<RbpClearanceGatedAdmission>
         AdmitInvocationWithClearancesAsync(
             RbpInvocationIdentity identity,
             IReadOnlyList<RbpRecoveryClearance> clearances,
@@ -241,8 +257,16 @@ internal sealed partial class RbpJournalStore
         ArgumentNullException.ThrowIfNull(clearances);
         ValidateInvocationIdentity(identity);
         ValidateClearanceShapes(identity, clearances);
+        if (clearances.Count > 0)
+        {
+            _ = await EnsureOutcomeV3ForSessionAsync(
+                    identity.Rsid,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
         long now = NowMilliseconds();
-        return ExecuteImmediateAsync(
+        return await ExecuteImmediateAsync(
             context =>
             {
                 RequireActiveSession(context, identity.Rsid);
@@ -252,6 +276,8 @@ internal sealed partial class RbpJournalStore
                         context,
                         identity.Rsid,
                         new[] { identity.MutationScopeJcs! },
+                        "invocation",
+                        identity.IdempotencyKey,
                         clearance,
                         now);
                 }
@@ -280,7 +306,7 @@ internal sealed partial class RbpJournalStore
 
                 return new RbpClearanceGatedAdmission(admitted, null);
             },
-            cancellationToken);
+            cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -324,164 +350,31 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         string rsid,
         IReadOnlyList<string> envelopeScopeJcsList,
+        string consumerKind,
+        string consumerId,
         RbpRecoveryClearance clearance,
         long now)
     {
+        ValidateClearanceConsumer(rsid, consumerKind, consumerId);
         if (HasOutcomeV3Cutover(context, rsid))
         {
             AcceptClearanceV3(
                 context,
                 rsid,
                 envelopeScopeJcsList,
+                consumerKind,
+                consumerId,
                 clearance,
                 now);
             return;
         }
 
-        RbpVerificationHold hold =
-            FindHoldById(context, rsid, clearance.HoldId) ??
-            throw ClearanceFault(
-                "no durable hold matches the clearance for this session");
-        if (!string.Equals(
-                hold.ScopeJcs,
-                clearance.MutationScopeJcs,
-                StringComparison.Ordinal))
-        {
-            throw ClearanceFault(
-                "the clearance mutation scope is not the hold's frozen " +
-                "scope");
-        }
-
-        bool conflicts = false;
-        foreach (string envelopeScopeJcs in envelopeScopeJcsList)
-        {
-            if (ScopeConflicts(envelopeScopeJcs, hold))
-            {
-                conflicts = true;
-                break;
-            }
-        }
-
-        if (!conflicts)
-        {
-            // The frozen array contains every and only active holds that
-            // conflict with the envelope's mutation scopes.
-            throw ClearanceFault(
-                "the clearance hold does not conflict with the envelope's " +
-                "mutation scope");
-        }
-
-        string basis = ToStorageBasis(clearance.Basis);
-        string decision = ToStorageDecision(clearance.Decision);
-        RequireGroupedHoldMaterialForClearance(hold);
-        if (hold.State == RbpHoldState.Cleared)
-        {
-            bool identical =
-                string.Equals(
-                    hold.ResolutionId,
-                    clearance.ResolutionId,
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    hold.ResolutionBasis,
-                    basis,
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    hold.ResolutionDecision,
-                    decision,
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    hold.AuditId,
-                    clearance.AuditId,
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    hold.EvidenceDigest,
-                    clearance.EvidenceDigest,
-                    StringComparison.Ordinal) &&
-                string.Equals(
-                    hold.VerificationInvocationId,
-                    clearance.VerificationInvocationId,
-                    StringComparison.Ordinal);
-            if (!identical)
-            {
-                throw ClearanceFault(
-                    "the hold is already cleared by a different " +
-                    "resolution; a changed clearance is never idempotent");
-            }
-
-            // Duplicate delivery of the identical envelope is idempotent.
-            return;
-        }
-
-        RequireGroupedHoldClearanceAuthority(hold, clearance);
-
-        if (clearance.Basis == RbpClearanceBasis.VerificationRead)
-        {
-            if (hold.State is not (RbpHoldState.EvidenceRecorded or
-                RbpHoldState.ResolvedPendingBridge))
-            {
-                // An inconclusive or missing verification attempt is not
-                // durable conclusive evidence; the hold stays blocking.
-                throw ClearanceFault(
-                    "the hold has no durable conclusive verification " +
-                    "evidence");
-            }
-
-            if (!string.Equals(
-                    hold.VerificationInvocationId,
-                    clearance.VerificationInvocationId,
-                    StringComparison.Ordinal) ||
-                !string.Equals(
-                    hold.EvidenceDigest,
-                    clearance.EvidenceDigest,
-                    StringComparison.Ordinal))
-            {
-                throw ClearanceFault(
-                    "the clearance does not match the hold's durable " +
-                    "verification evidence");
-            }
-        }
-        else if (!HasDurableLateTerminal(
-                     context,
-                     clearance.HoldId,
-                     clearance.EvidenceDigest))
-        {
-            throw ClearanceFault(
-                "no durable conclusive late terminal supports the " +
-                "late_terminal clearance");
-        }
-
-        using SqliteCommand update = context.CreateCommand(
-            """
-            UPDATE rbp_verification_holds
-            SET state='cleared',
-                verification_invocation_id=$vid,
-                evidence_digest=$digest,
-                resolution_id=$resolution,
-                resolution_basis=$basis,
-                resolution_decision=$decision,
-                audit_id=$audit,
-                cleared_at_ms=$now,
-                updated_at_ms=MAX(updated_at_ms,$now)
-            WHERE verification_hold_id=$id AND state<>'cleared';
-            """);
-        update.Parameters.AddWithValue(
-            "$vid",
-            (object?)clearance.VerificationInvocationId ?? DBNull.Value);
-        update.Parameters.AddWithValue("$digest", clearance.EvidenceDigest);
-        update.Parameters.AddWithValue(
-            "$resolution",
-            clearance.ResolutionId);
-        update.Parameters.AddWithValue("$basis", basis);
-        update.Parameters.AddWithValue("$decision", decision);
-        update.Parameters.AddWithValue("$audit", clearance.AuditId);
-        update.Parameters.AddWithValue("$now", now);
-        update.Parameters.AddWithValue("$id", clearance.HoldId);
-        if (update.ExecuteNonQuery() != 1)
-        {
-            throw new RbpJournalException(
-                RbpJournalErrorCode.IntegrityCheckFailed,
-                "The hold clearance could not be persisted.");
-        }
+        // Compatibility callers with clearances cut over before entering this
+        // transaction. A v2-only resolution has nowhere to persist its exact
+        // consumer and must never be accepted.
+        throw new RbpJournalException(
+            RbpJournalErrorCode.MigrationMismatch,
+            "Recovery clearance requires canonical v3 consumer authority.");
     }
 
     private static void ValidateClearanceShapes(

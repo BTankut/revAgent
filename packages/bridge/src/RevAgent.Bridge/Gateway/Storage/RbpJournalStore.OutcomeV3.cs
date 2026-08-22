@@ -39,6 +39,8 @@ internal sealed record RbpOutcomeV3ResolutionSnapshot(
     string ResolutionId,
     string Rsid,
     string HoldId,
+    string ConsumerKind,
+    string ConsumerId,
     string Basis,
     string? VerificationInvocationId,
     string EvidenceDigest,
@@ -271,6 +273,8 @@ internal sealed partial class RbpJournalStore
                 context,
                 identity.Rsid,
                 new[] { identity.MutationScopeJcs! },
+                "invocation",
+                identity.IdempotencyKey,
                 clearance,
                 now);
         }
@@ -455,9 +459,12 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         string rsid,
         IReadOnlyList<string> envelopeScopeJcsList,
+        string consumerKind,
+        string consumerId,
         RbpRecoveryClearance clearance,
         long now)
     {
+        ValidateClearanceConsumer(rsid, consumerKind, consumerId);
         RbpVerificationHold hold =
             ReadHoldV3(context, rsid, clearance.HoldId) ??
             throw ClearanceFault(
@@ -502,6 +509,8 @@ internal sealed partial class RbpJournalStore
                 hold.AuditId != clearance.AuditId ||
                 existing.Rsid != rsid ||
                 existing.HoldId != clearance.HoldId ||
+                existing.ConsumerKind != consumerKind ||
+                existing.ConsumerId != consumerId ||
                 existing.Basis != basis ||
                 existing.VerificationInvocationId !=
                     clearance.VerificationInvocationId ||
@@ -544,6 +553,8 @@ internal sealed partial class RbpJournalStore
             context,
             hold,
             clearance,
+            consumerKind,
+            consumerId,
             basis,
             decision,
             now);
@@ -663,6 +674,8 @@ internal sealed partial class RbpJournalStore
                             context,
                             normalized.Rsid,
                             scopes,
+                            "batch",
+                            normalized.BatchKey,
                             clearance,
                             now);
                     }
@@ -1356,7 +1369,8 @@ internal sealed partial class RbpJournalStore
                 using SqliteCommand command = CreateCommand(
                     connection,
                     """
-                    SELECT resolution_id,rsid,hold_id,basis,
+                    SELECT resolution_id,rsid,hold_id,consumer_kind,consumer_id,
+                           basis,
                            verification_invocation_id,evidence_digest,
                            decision,audit_id,state,record_version
                     FROM rbp_mutation_resolutions_v3
@@ -1377,12 +1391,14 @@ internal sealed partial class RbpJournalStore
                     reader.GetString(1),
                     reader.GetString(2),
                     reader.GetString(3),
-                    reader.IsDBNull(4) ? null : reader.GetString(4),
+                    reader.GetString(4),
                     reader.GetString(5),
-                    reader.GetString(6),
+                    reader.IsDBNull(6) ? null : reader.GetString(6),
                     reader.GetString(7),
                     reader.GetString(8),
-                    reader.GetInt64(9));
+                    reader.GetString(9),
+                    reader.GetString(10),
+                    reader.GetInt64(11));
             },
             cancellationToken);
     }
@@ -3241,7 +3257,8 @@ internal sealed partial class RbpJournalStore
     {
         using SqliteCommand command = context.CreateCommand(
             """
-            SELECT resolution_id,rsid,hold_id,basis,verification_invocation_id,
+            SELECT resolution_id,rsid,hold_id,consumer_kind,consumer_id,basis,
+                   verification_invocation_id,
                    evidence_digest,decision,audit_id,state,record_version
             FROM rbp_mutation_resolutions_v3
             WHERE resolution_id=$resolution;
@@ -3254,12 +3271,14 @@ internal sealed partial class RbpJournalStore
                 reader.GetString(1),
                 reader.GetString(2),
                 reader.GetString(3),
-                reader.IsDBNull(4) ? null : reader.GetString(4),
+                reader.GetString(4),
                 reader.GetString(5),
-                reader.GetString(6),
+                reader.IsDBNull(6) ? null : reader.GetString(6),
                 reader.GetString(7),
                 reader.GetString(8),
-                reader.GetInt64(9))
+                reader.GetString(9),
+                reader.GetString(10),
+                reader.GetInt64(11))
             : null;
     }
 
@@ -3285,6 +3304,8 @@ internal sealed partial class RbpJournalStore
         RbpJournalWriteContext context,
         RbpVerificationHold hold,
         RbpRecoveryClearance clearance,
+        string consumerKind,
+        string consumerId,
         string basis,
         string decision,
         long now)
@@ -3292,12 +3313,13 @@ internal sealed partial class RbpJournalStore
         using SqliteCommand insert = context.CreateCommand(
             """
             INSERT INTO rbp_mutation_resolutions_v3(
-              resolution_id,record_schema,rsid,hold_id,basis,
+              resolution_id,record_schema,rsid,hold_id,consumer_kind,
+              consumer_id,basis,
               verification_invocation_id,evidence_digest,decision,audit_id,
               state,record_version,created_at_ms,updated_at_ms
             ) VALUES(
-              $resolution,'bridge.mutation-resolution/v1',$rsid,$hold,$basis,
-              $vid,
+              $resolution,'bridge.mutation-resolution/v1',$rsid,$hold,
+              $consumer_kind,$consumer_id,$basis,$vid,
               $evidence,$decision,$audit,'accepted',1,$now,$now
             )
             ON CONFLICT(resolution_id) DO UPDATE SET
@@ -3308,6 +3330,9 @@ internal sealed partial class RbpJournalStore
                 excluded.updated_at_ms)
             WHERE rbp_mutation_resolutions_v3.rsid=excluded.rsid
               AND rbp_mutation_resolutions_v3.hold_id=excluded.hold_id
+              AND rbp_mutation_resolutions_v3.consumer_kind=
+                    excluded.consumer_kind
+              AND rbp_mutation_resolutions_v3.consumer_id=excluded.consumer_id
               AND rbp_mutation_resolutions_v3.basis=excluded.basis
               AND rbp_mutation_resolutions_v3.verification_invocation_id
                     IS excluded.verification_invocation_id
@@ -3321,6 +3346,8 @@ internal sealed partial class RbpJournalStore
             clearance.ResolutionId);
         insert.Parameters.AddWithValue("$rsid", hold.Rsid);
         insert.Parameters.AddWithValue("$hold", hold.VerificationHoldId);
+        insert.Parameters.AddWithValue("$consumer_kind", consumerKind);
+        insert.Parameters.AddWithValue("$consumer_id", consumerId);
         insert.Parameters.AddWithValue("$basis", basis);
         insert.Parameters.AddWithValue(
             "$vid",
@@ -3343,88 +3370,15 @@ internal sealed partial class RbpJournalStore
         RbpVerificationHold hold,
         long now)
     {
-        string resolutionId = hold.ResolutionId!;
-        string basis = hold.ResolutionBasis ?? string.Empty;
-        bool validVerificationId = basis == "verification_read"
-            ? RbpRecoveryClearance.IsUuidV7(hold.VerificationInvocationId)
-            : basis == "late_terminal" &&
-              hold.VerificationInvocationId is null;
-        if (!RbpRecoveryClearance.IsUuidV7(resolutionId) ||
-            !RbpRecoveryClearance.IsUuidV7(hold.AuditId) ||
-            !RbpRecoveryClearance.IsSha256Digest(hold.EvidenceDigest) ||
-            !validVerificationId ||
-            hold.ResolutionDecision is not (
-                "non_execution_proven" or "postcondition_verified"))
-        {
-            throw new RbpJournalException(
-                RbpJournalErrorCode.IntegrityCheckFailed,
-                "A durable hold resolution violates DC-02 evidence shape.");
-        }
-
-        if (hold.OrderedOriginIdempotencyKeys.Count > 1 &&
-            basis != "verification_read")
-        {
-            throw new RbpJournalException(
-                RbpJournalErrorCode.IntegrityCheckFailed,
-                "A grouped legacy hold lacks aggregate verification_read " +
-                "authority.");
-        }
-
-        using SqliteCommand resolution = context.CreateCommand(
-            """
-            INSERT INTO rbp_mutation_resolutions_v3(
-              resolution_id,record_schema,rsid,hold_id,basis,
-              verification_invocation_id,evidence_digest,decision,audit_id,
-              state,record_version,created_at_ms,updated_at_ms
-            ) VALUES(
-              $resolution,'bridge.mutation-resolution/v1',$rsid,$hold,$basis,
-              $vid,
-              $evidence,$decision,$audit,$state,1,$created,$now
-            )
-            ON CONFLICT(resolution_id) DO UPDATE SET
-              state=excluded.state,
-              record_version=rbp_mutation_resolutions_v3.record_version+1,
-              updated_at_ms=MAX(rbp_mutation_resolutions_v3.updated_at_ms,
-                                excluded.updated_at_ms)
-            WHERE rbp_mutation_resolutions_v3.record_schema=
-                    'bridge.mutation-resolution/v1'
-              AND rbp_mutation_resolutions_v3.rsid=excluded.rsid
-              AND rbp_mutation_resolutions_v3.hold_id=excluded.hold_id
-              AND rbp_mutation_resolutions_v3.basis=excluded.basis
-              AND rbp_mutation_resolutions_v3.verification_invocation_id
-                    IS excluded.verification_invocation_id
-              AND rbp_mutation_resolutions_v3.evidence_digest=
-                    excluded.evidence_digest
-              AND rbp_mutation_resolutions_v3.decision=excluded.decision
-              AND rbp_mutation_resolutions_v3.audit_id=excluded.audit_id;
-            """);
-        resolution.Parameters.AddWithValue("$resolution", resolutionId);
-        resolution.Parameters.AddWithValue("$rsid", hold.Rsid);
-        resolution.Parameters.AddWithValue("$hold", hold.VerificationHoldId);
-        resolution.Parameters.AddWithValue("$basis", basis);
-        resolution.Parameters.AddWithValue(
-            "$vid",
-            (object?)hold.VerificationInvocationId ?? DBNull.Value);
-        resolution.Parameters.AddWithValue("$evidence", hold.EvidenceDigest!);
-        resolution.Parameters.AddWithValue(
-            "$decision",
-            hold.ResolutionDecision!);
-        resolution.Parameters.AddWithValue("$audit", hold.AuditId!);
-        resolution.Parameters.AddWithValue(
-            "$state",
-            hold.State == RbpHoldState.Cleared
-                ? "accepted"
-                : "pending_bridge");
-        resolution.Parameters.AddWithValue(
-            "$created",
-            hold.CreatedAtMilliseconds);
-        resolution.Parameters.AddWithValue("$now", now);
-        if (resolution.ExecuteNonQuery() != 1)
-        {
-            throw new RbpJournalException(
-                RbpJournalErrorCode.IntegrityCheckFailed,
-                "The v3 resolution identity is contradictory.");
-        }
+        _ = context;
+        _ = hold;
+        _ = now;
+        // Legacy v2 did not bind a resolution to its accepted consumer.
+        // Guessing that consumer would let a clearance escape onto a fresh
+        // invocation or batch, so cutover quarantines instead.
+        throw new RbpOutcomeV3ImportException(
+            "import_resolution_consumer_missing",
+            "A legacy hold resolution has no exact consumer binding.");
     }
 
     private static IReadOnlyList<string> InvocationKeys(

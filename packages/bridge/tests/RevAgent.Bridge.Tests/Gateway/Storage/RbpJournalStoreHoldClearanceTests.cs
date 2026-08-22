@@ -156,6 +156,51 @@ public sealed class RbpJournalStoreHoldClearanceTests
     }
 
     [Fact]
+    public async Task CompatibilityClearanceAdmissionCreatesAndReopensCanonicalV3Outcome()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        GroupedClearanceFixture fixture;
+
+        await using (RbpJournalStore store = OpenStore(directory))
+        {
+            fixture = await CreateVerifiedGroupedClearanceFixtureAsync(store);
+            RbpClearanceGatedAdmission admitted =
+                await store.AdmitInvocationWithClearancesAsync(
+                    fixture.Admission,
+                    new[] { fixture.Clearance });
+            Assert.Equal(RbpInvocationAdmission.Accepted, admitted.Admission?.Admission);
+
+            RbpOutcomeV3Snapshot outcome =
+                (await store.GetOutcomeV3Async(
+                    fixture.Admission.IdempotencyKey))!;
+            Assert.Equal("received", outcome.TerminalState);
+            Assert.Equal("not_started", outcome.DispatchState);
+            RbpOutcomeV3ResolutionSnapshot resolution =
+                (await store.GetOutcomeV3ResolutionAsync(
+                    fixture.Clearance.ResolutionId))!;
+            Assert.Equal("invocation", resolution.ConsumerKind);
+            Assert.Equal(fixture.Admission.IdempotencyKey, resolution.ConsumerId);
+        }
+
+        await using (RbpJournalStore reopened = OpenStore(directory))
+        {
+            RbpStoredInvocation stored =
+                (await reopened.GetInvocationAsync(
+                    fixture.Admission.IdempotencyKey))!;
+            Assert.Equal(RbpInvocationState.Received, stored.State);
+            Assert.NotNull(await reopened.GetOutcomeV3Async(
+                fixture.Admission.IdempotencyKey));
+            await reopened.MarkInvocationExecutingOutcomeV3Async(
+                fixture.Admission.IdempotencyKey,
+                RbpTransactionMode.Native);
+            Assert.Equal(
+                RbpInvocationState.Executing,
+                (await reopened.GetInvocationAsync(
+                    fixture.Admission.IdempotencyKey))!.State);
+        }
+    }
+
+    [Fact]
     public async Task ClearanceAndAdmissionRollBackTogether()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -759,6 +804,64 @@ public sealed class RbpJournalStoreHoldClearanceTests
     }
 
     [Fact]
+    public async Task ExactClearedGroupedClearanceCannotAuthorizeAFreshInvocation()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        GroupedClearanceFixture fixture =
+            await CreateVerifiedGroupedClearanceFixtureAsync(store);
+        _ = await CompleteClearingAdmissionAsync(store, fixture);
+        GroupedClearanceDurableSnapshot before = ReadGroupedClearanceSnapshot(
+            directory,
+            fixture.Hold);
+        RbpInvocationIdentity fresh = FreshMutationIdentity(
+            invocationId: "0197a3c2-0000-7000-8000-0000000006c1");
+
+        RbpJournalException fault =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.AdmitInvocationOutcomeV3Async(
+                    fresh,
+                    new[] { fixture.Clearance },
+                    RbpTransactionMode.Native));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
+        Assert.Equal(before, ReadGroupedClearanceSnapshot(directory, fixture.Hold));
+        Assert.Null(await store.GetInvocationAsync(fresh.IdempotencyKey));
+    }
+
+    [Fact]
+    public async Task ClearedGroupedClearanceNeverAuthorizesAnotherSession()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        GroupedClearanceFixture fixture =
+            await CreateVerifiedGroupedClearanceFixtureAsync(store);
+        _ = await CompleteClearingAdmissionAsync(store, fixture);
+        GroupedClearanceDurableSnapshot before = ReadGroupedClearanceSnapshot(
+            directory,
+            fixture.Hold);
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-other",
+                localSessionKey: "port:8081:pid:1235",
+                resumeToken: "other-resume-token"));
+        RbpInvocationIdentity other = FreshMutationIdentity(
+            invocationId: "0197a3c2-0000-7000-8000-0000000006c2") with
+        {
+            Rsid = "rs-other",
+        };
+
+        RbpJournalException fault =
+            await Assert.ThrowsAsync<RbpJournalException>(
+                () => store.AdmitInvocationOutcomeV3Async(
+                    other,
+                    new[] { fixture.Clearance },
+                    RbpTransactionMode.Native));
+        Assert.Equal(RbpJournalErrorCode.ProtocolConflict, fault.ErrorCode);
+        Assert.Equal(before, ReadGroupedClearanceSnapshot(directory, fixture.Hold));
+        Assert.Null(await store.GetInvocationAsync(other.IdempotencyKey));
+    }
+
+    [Fact]
     public async Task GatewayFixtureClearancesClearBothExactConflictsAtomically()
     {
         using JsonDocument fixture = RbpFixtureReader.Load(
@@ -1128,6 +1231,25 @@ public sealed class RbpJournalStoreHoldClearanceTests
             clearance,
             FreshMutationIdentity(
                 invocationId: "0197a3c2-0000-7000-8000-0000000006b4"));
+    }
+
+    private static async Task<RbpClearanceGatedAdmission>
+        CompleteClearingAdmissionAsync(
+            RbpJournalStore store,
+            GroupedClearanceFixture fixture)
+    {
+        RbpClearanceGatedAdmission admitted =
+            await store.AdmitInvocationOutcomeV3Async(
+                fixture.Admission,
+                new[] { fixture.Clearance },
+                RbpTransactionMode.Native);
+        Assert.Equal(RbpInvocationAdmission.Accepted, admitted.Admission?.Admission);
+        await store.MarkInvocationExecutingAsync(
+            fixture.Admission.IdempotencyKey);
+        _ = await store.PersistInvocationTerminalAsync(
+            fixture.Admission.IdempotencyKey,
+            Terminal(RbpInvocationState.Completed, """{"ok":true}"""));
+        return admitted;
     }
 
     private static GroupedClearanceDurableSnapshot
