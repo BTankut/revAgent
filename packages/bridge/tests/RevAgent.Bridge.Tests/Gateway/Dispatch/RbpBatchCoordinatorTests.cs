@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using RevAgent.Bridge.Gateway.Dispatch;
+using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 using RevAgent.Bridge.Tests.Gateway.Storage;
 using static RevAgent.Bridge.Tests.Gateway.Dispatch.RbpBatchCoordinatorTestData;
@@ -786,7 +787,11 @@ public sealed class RbpBatchCoordinatorTests
                 {
                     MutationScopeJson = "{\"kind\":\"session\"}",
                 },
-                Read(StepThree),
+                Write(StepThree) with
+                {
+                    MutationScopeJson =
+                        "{\"document_id\":\"doc-2\",\"kind\":\"document\"}",
+                },
             ]);
         var lost = new StubBatchChannel()
             .Then(_ => throw new IOException("transport lost"));
@@ -809,12 +814,53 @@ public sealed class RbpBatchCoordinatorTests
                 .GetProperty("error")
                 .GetProperty("verification_hold_id")
                 .GetString());
+        Assert.Equal(
+            firstHold,
+            Step(answer, 2)
+                .GetProperty("error")
+                .GetProperty("verification_hold_id")
+                .GetString());
         RbpVerificationHold hold =
             (await store.GetHoldAsync(Rsid, firstHold))!;
         Assert.Equal("session", hold.ScopeKind);
         Assert.Equal(
-            new[] { Rsid + "/" + StepOne, Rsid + "/" + StepTwo },
+            new[]
+            {
+                Rsid + "/" + StepOne,
+                Rsid + "/" + StepTwo,
+                Rsid + "/" + StepThree,
+            },
             hold.OrderedOriginIdempotencyKeys);
+        using (JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs))
+        {
+            Assert.Equal(
+                Rfc8785Json.MakeVerificationHoldId(
+                    Rsid,
+                    scope.RootElement,
+                    hold.OrderedOriginIdempotencyKeys),
+                hold.VerificationHoldId);
+        }
+        foreach ((int index, string invocationId) in new[]
+                 {
+                     (0, StepOne),
+                     (1, StepTwo),
+                     (2, StepThree),
+                 })
+        {
+            JsonElement error = Step(answer, index).GetProperty("error");
+            Assert.Equal(
+                hold.ScopeJcs,
+                Rfc8785Json.Canonicalize(
+                    error.GetProperty("mutation_scope")));
+            RbpStoredInvocation row = (await store.GetInvocationAsync(
+                Rsid + "/" + invocationId))!;
+            Assert.Equal(hold.VerificationHoldId, row.VerificationHoldId);
+            using JsonDocument outcome = JsonDocument.Parse(
+                row.TerminalOutcomeJson!);
+            Assert.Equal(
+                Rfc8785Json.Sha256Digest(outcome.RootElement),
+                row.ResultDigest);
+        }
         Assert.Equal(
             RbpBatchState.Terminal,
             (await store.GetBatchAsync(Rsid + "/" + BatchId))!.State);

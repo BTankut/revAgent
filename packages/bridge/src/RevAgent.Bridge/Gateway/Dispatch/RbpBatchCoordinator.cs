@@ -695,20 +695,12 @@ internal sealed partial class RbpBatchCoordinator
                 "Section 6.2.1 scope hold.");
         }
 
-        return new RbpBatchStepOutcome(
-            index,
-            step.InvocationId,
-            RbpBatchPayloads.ErrorEvidence(
-                RbpBatchStepStatus.Indeterminate,
-                RbpBatchPayloads.NestedError(
-                    RbpInvocationPayloads.JournalIndeterminateError(
-                        step.InvocationId,
-                        holdId,
-                        step.MutationScope,
-                        message,
-                        replayed: false),
-                    replayed: false)),
-            Replayed: false);
+        return await ReadDurableIndeterminateStepAsync(
+                request,
+                index,
+                holdId,
+                message)
+            .ConfigureAwait(false);
     }
 
     private async Task<RbpBatchStepOutcome> PersistStepAsync(
@@ -731,24 +723,13 @@ internal sealed partial class RbpBatchCoordinator
             .ConfigureAwait(false);
         if (holdId is { Length: > 0 })
         {
-            RbpBatchStepRequest step = request.Steps[index];
-            JsonElement indeterminate = RbpBatchPayloads.ErrorEvidence(
-                RbpBatchStepStatus.Indeterminate,
-                RbpBatchPayloads.NestedError(
-                    RbpInvocationPayloads.JournalIndeterminateError(
-                        step.InvocationId,
-                        holdId,
-                        step.MutationScope,
-                        message ??
-                            RbpInvocationPayloads
-                                .MutationMayHaveExecutedMessage,
-                        replayed: false),
-                    replayed: false));
-            return new RbpBatchStepOutcome(
-                index,
-                step.InvocationId,
-                indeterminate,
-                Replayed: false);
+            return await ReadDurableIndeterminateStepAsync(
+                    request,
+                    index,
+                    holdId,
+                    message ??
+                        RbpInvocationPayloads.MutationMayHaveExecutedMessage)
+                .ConfigureAwait(false);
         }
 
         return new RbpBatchStepOutcome(
@@ -756,6 +737,40 @@ internal sealed partial class RbpBatchCoordinator
             request.Steps[index].InvocationId,
             evidence,
             Replayed: false);
+    }
+
+    private async Task<RbpBatchStepOutcome>
+        ReadDurableIndeterminateStepAsync(
+            RbpBatchRequest request,
+            int index,
+            string expectedHoldId,
+            string message)
+    {
+        RbpBatchStepRequest step = request.Steps[index];
+        RbpStoredInvocation durable =
+            await _journal.GetInvocationAsync(
+                    request.StepKey(index),
+                    DurableDecisionToken)
+                .ConfigureAwait(false) ??
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A persisted indeterminate batch step disappeared before " +
+                "its carrier was built.");
+        if (durable.State != RbpInvocationState.Indeterminate ||
+            durable.VerificationHoldId != expectedHoldId)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A persisted indeterminate batch step disagrees with its " +
+                "durable hold.");
+        }
+
+        return FromStoredRow(
+            index,
+            step.InvocationId,
+            durable,
+            replayed: false,
+            indeterminateMessage: message);
     }
 
     private static RbpMutationOutcomeEvidence ResolveStepOutcomeEvidence(

@@ -590,6 +590,24 @@ internal sealed partial class RbpJournalStore
                         row,
                         null));
             }
+            else if (IsKnownUnownedV3Mutation(context, row))
+            {
+                // A non-atomic batch marker records only that ordered fan-out
+                // began. The step's own closed evidence is the ownership
+                // authority: received + not_started/not_started proves this
+                // mutation never took dispatch ownership, so it may execute
+                // once and must not acquire a model-effect hold. Successors
+                // stay not_started until this step finishes successfully.
+                stopped = true;
+                mayExecute = true;
+                steps.Add(
+                    new RbpBatchStepArbitration(
+                        index,
+                        stepIdentity.InvocationId,
+                        RbpBatchStepDisposition.Accepted,
+                        row,
+                        null));
+            }
             else
             {
                 // Spec ~1113-1114 (rule 4): the first non-terminal mutating
@@ -624,6 +642,24 @@ internal sealed partial class RbpJournalStore
             steps.AsReadOnly(),
             firstNonSuccess,
             ReplayPermitted: !mayExecute);
+    }
+
+    private static bool IsKnownUnownedV3Mutation(
+        RbpJournalWriteContext context,
+        RbpStoredInvocation row)
+    {
+        if (row.State != RbpInvocationState.Received ||
+            !HasOutcomeV3Cutover(context, row.Identity.Rsid))
+        {
+            return false;
+        }
+
+        RbpOutcomeV3EvidenceSnapshot evidence =
+            ReadOutcomeV3Evidence(
+                context,
+                row.Identity.IdempotencyKey);
+        return evidence.DispatchState == RbpDispatchState.NotStarted &&
+               evidence.EffectState == RbpEffectState.NotStarted;
     }
 
     private static RbpBatchAdmissionResult ArbitrateAtomicDispatchLoss(

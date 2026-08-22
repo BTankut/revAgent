@@ -82,6 +82,23 @@ public sealed class RbpDispatcherIndeterminateReplayTests
             Canonical(ScopeJson),
             Rfc8785Json.Canonicalize(
                 replay.Payload.GetProperty("mutation_scope")));
+        Assert.Equal(
+            Canonical(ScopeJson),
+            first.Payload.GetProperty("mutation_scope").GetRawText());
+        Assert.Equal(
+            Canonical(ScopeJson),
+            replay.Payload.GetProperty("mutation_scope").GetRawText());
+        using (JsonDocument durable = JsonDocument.Parse(
+                   stored.TerminalOutcomeJson!))
+        {
+            Assert.Equal(
+                Canonical(ScopeJson),
+                durable.RootElement.GetProperty("mutation_scope")
+                    .GetRawText());
+            Assert.Equal(
+                Rfc8785Json.Sha256Digest(durable.RootElement),
+                stored.ResultDigest);
+        }
 
         // Section 15 forbids a result digest on this class.
         Assert.False(replay.Payload.TryGetProperty("result_digest", out _));

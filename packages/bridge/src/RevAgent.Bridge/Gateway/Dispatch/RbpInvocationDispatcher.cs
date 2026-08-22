@@ -160,7 +160,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 return ReplayLate(admission.Stored);
 
             case RbpInvocationAdmission.RefuseIndeterminate:
-                return RefuseIndeterminate(request, admission);
+                return RefuseIndeterminate(admission);
 
             case RbpInvocationAdmission.BlockedByConflictingHold:
                 return BlockedByHold(
@@ -407,33 +407,11 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     /// <c>replayed:true</c>.
     /// </remarks>
     private static RbpInvocationAnswer ReplayIndeterminate(
-        RbpStoredInvocation stored)
-    {
-        if (stored.VerificationHoldId is not { Length: > 0 } holdId)
-        {
-            throw new RbpDispatchException(
-                RbpDispatchErrorCode.Environment,
-                "An indeterminate replay requires the installed " +
-                "Section 6.2.1 verification hold id.");
-        }
-
-        if (stored.Identity.MutationScopeJcs is not { Length: > 0 } scopeJcs)
-        {
-            throw new RbpDispatchException(
-                RbpDispatchErrorCode.Environment,
-                "An indeterminate replay requires the durable mutation " +
-                "scope.");
-        }
-
-        using JsonDocument scope = JsonDocument.Parse(scopeJcs);
-        return RbpInvocationAnswer.Error(
-            RbpInvocationPayloads.JournalIndeterminateError(
-                stored.Identity.InvocationId,
-                holdId,
-                scope.RootElement,
-                RbpInvocationPayloads.MutationMayHaveExecutedMessage,
-                replayed: true));
-    }
+        RbpStoredInvocation stored) =>
+        BuildIndeterminateAnswer(
+            stored,
+            RbpInvocationPayloads.MutationMayHaveExecutedMessage,
+            replayed: true);
 
     private static RbpInvocationAnswer ReplayLate(RbpStoredInvocation stored)
     {
@@ -460,7 +438,6 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     }
 
     private static RbpInvocationAnswer RefuseIndeterminate(
-        RbpInvokeRequest request,
         RbpInvocationAdmissionResult admission)
     {
         if (admission.VerificationHoldId is not { Length: > 0 } holdId)
@@ -470,13 +447,72 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 "Section 12.2 rule 4 requires an installed verification hold.");
         }
 
+        if (admission.Stored.VerificationHoldId != holdId)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "Section 12.2 rule 4 disagrees with its durable hold.");
+        }
+
+        return BuildIndeterminateAnswer(
+            admission.Stored,
+            RbpInvocationPayloads.MutationMayHaveExecutedMessage,
+            replayed: false);
+    }
+
+    private static RbpInvocationAnswer BuildIndeterminateAnswer(
+        RbpStoredInvocation stored,
+        string message,
+        bool replayed)
+    {
+        if (stored.State != RbpInvocationState.Indeterminate ||
+            stored.VerificationHoldId is not { Length: > 0 } holdId ||
+            stored.TerminalOutcomeJson is not { Length: > 0 } outcomeJson ||
+            stored.ResultDigest is not { Length: > 0 } outcomeDigest)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "An indeterminate answer requires durable hold evidence.");
+        }
+
+        using JsonDocument outcome = JsonDocument.Parse(outcomeJson);
+        JsonElement durable = outcome.RootElement;
+        if (durable.ValueKind != JsonValueKind.Object ||
+            !durable.TryGetProperty(
+                "mutation_scope",
+                out JsonElement scope) ||
+            scope.ValueKind != JsonValueKind.Object ||
+            !durable.TryGetProperty(
+                "verification_hold_id",
+                out JsonElement durableHold) ||
+            durableHold.ValueKind != JsonValueKind.String ||
+            durableHold.GetString() != holdId ||
+            !durable.TryGetProperty("outcome", out JsonElement state) ||
+            state.ValueKind != JsonValueKind.String ||
+            state.GetString() != "indeterminate" ||
+            !durable.TryGetProperty(
+                "verification_required",
+                out JsonElement required) ||
+            required.ValueKind != JsonValueKind.True ||
+            !durable.TryGetProperty(
+                "retryable",
+                out JsonElement retryable) ||
+            retryable.ValueKind != JsonValueKind.False ||
+            Rfc8785Json.Sha256Digest(durable) != outcomeDigest)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "An indeterminate answer has contradictory durable hold " +
+                "evidence.");
+        }
+
         return RbpInvocationAnswer.Error(
             RbpInvocationPayloads.JournalIndeterminateError(
-                request.InvocationId,
+                stored.Identity.InvocationId,
                 holdId,
-                request.MutationScope,
-                RbpInvocationPayloads.MutationMayHaveExecutedMessage,
-                replayed: false));
+                scope,
+                message,
+                replayed));
     }
 
     private async Task<RbpInvocationAnswer> ExecuteAsync(
@@ -766,13 +802,24 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 "Section 6.2.1 scope hold.");
         }
 
-        return RbpInvocationAnswer.Error(
-            RbpInvocationPayloads.JournalIndeterminateError(
-                request.InvocationId,
-                holdId,
-                request.MutationScope,
-                message,
-                replayed: false));
+        RbpStoredInvocation durable =
+            await _journal.GetInvocationAsync(
+                    identity.IdempotencyKey,
+                    DurableDecisionToken)
+                .ConfigureAwait(false) ??
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A persisted indeterminate mutation disappeared before its " +
+                "carrier was built.");
+        if (durable.VerificationHoldId != holdId)
+        {
+            throw new RbpDispatchException(
+                RbpDispatchErrorCode.Environment,
+                "A persisted indeterminate mutation disagrees with its " +
+                "durable hold.");
+        }
+
+        return BuildIndeterminateAnswer(durable, message, replayed: false);
     }
 
     /// <summary>

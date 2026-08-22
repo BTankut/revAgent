@@ -147,7 +147,7 @@ internal static class RbpJournalPowerCutData
                     DocumentScopeJcs),
                 RbpBatchTestData.WriteStep(
                     AtomicBatchSecondWriteStepId,
-                    DocumentScopeJcs),
+                    "{\"kind\":\"session\"}"),
             });
 
     internal static RbpInvocationTerminal CompletedTerminal()

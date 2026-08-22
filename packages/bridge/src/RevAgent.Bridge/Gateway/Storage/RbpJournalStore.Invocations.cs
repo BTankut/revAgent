@@ -395,6 +395,7 @@ internal sealed partial class RbpJournalStore
                     // outcome could not be disproved.
                     (outcomeJson, resultDigest) =
                         BuildJournalIndeterminateOutcome(
+                            context,
                             existing.Identity,
                             holdId);
                 }
@@ -754,7 +755,7 @@ internal sealed partial class RbpJournalStore
                     RbpJournalErrorCode.IntegrityCheckFailed,
                     "The v3 invocation to promote is missing.");
             (string v3Outcome, string v3Digest) =
-                BuildJournalIndeterminateOutcome(identity, holdId);
+                BuildJournalIndeterminateOutcome(context, identity, holdId);
             RbpStoredInvocation promoted = existing with
             {
                 State = RbpInvocationState.Indeterminate,
@@ -781,7 +782,7 @@ internal sealed partial class RbpJournalStore
         // row to carry an outcome and a digest, so the same JSON is both the
         // wire answer and the durable evidence.
         (string outcomeJson, string outcomeDigest) =
-            BuildJournalIndeterminateOutcome(identity, holdId);
+            BuildJournalIndeterminateOutcome(context, identity, holdId);
         using SqliteCommand update = context.CreateCommand(
             """
             UPDATE rbp_invocations
@@ -804,14 +805,35 @@ internal sealed partial class RbpJournalStore
 
     private static (string Json, string Digest)
         BuildJournalIndeterminateOutcome(
+            RbpJournalWriteContext context,
             RbpInvocationIdentity identity,
             string holdId)
     {
-        using var scope = JsonDocument.Parse(
-            identity.MutationScopeJcs ??
+        RbpVerificationHold? v3Hold =
+            ReadHoldV3(context, identity.Rsid, holdId);
+        RbpVerificationHold hold = v3Hold ??
+            (HasOutcomeV3Cutover(context, identity.Rsid)
+                ? throw new RbpJournalException(
+                    RbpJournalErrorCode.IntegrityCheckFailed,
+                    "An indeterminate v3 outcome lost its canonical hold.")
+                : FindHoldById(context, identity.Rsid, holdId) ??
+                  throw new RbpJournalException(
+                      RbpJournalErrorCode.IntegrityCheckFailed,
+                      "An indeterminate outcome lost its canonical hold."));
+        using var scope = JsonDocument.Parse(hold.ScopeJcs);
+        string canonicalScope = Rfc8785Json.Canonicalize(scope.RootElement);
+        string derivedHoldId = Rfc8785Json.MakeVerificationHoldId(
+            hold.Rsid,
+            scope.RootElement,
+            hold.OrderedOriginIdempotencyKeys);
+        if (canonicalScope != hold.ScopeJcs ||
+            derivedHoldId != hold.VerificationHoldId ||
+            hold.VerificationHoldId != holdId)
+        {
             throw new RbpJournalException(
-                RbpJournalErrorCode.ProtocolConflict,
-                "An indeterminate mutation requires a mutation scope."));
+                RbpJournalErrorCode.IntegrityCheckFailed,
+                "The canonical hold material is contradictory.");
+        }
         using var buffer = new MemoryStream();
         using (var writer = new Utf8JsonWriter(buffer))
         {
@@ -820,7 +842,9 @@ internal sealed partial class RbpJournalStore
             scope.RootElement.WriteTo(writer);
             writer.WriteString("outcome", "indeterminate");
             writer.WriteBoolean("retryable", false);
-            writer.WriteString("verification_hold_id", holdId);
+            writer.WriteString(
+                "verification_hold_id",
+                hold.VerificationHoldId);
             writer.WriteBoolean("verification_required", true);
             writer.WriteEndObject();
         }

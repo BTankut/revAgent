@@ -360,7 +360,10 @@ internal sealed partial class RbpJournalStore
             new[] { existing.Identity.IdempotencyKey },
             now);
         (string outcomeJson, string outcomeDigest) =
-            BuildJournalIndeterminateOutcome(existing.Identity, holdId);
+            BuildJournalIndeterminateOutcome(
+                context,
+                existing.Identity,
+                holdId);
         RbpStoredInvocation indeterminate = existing with
         {
             State = RbpInvocationState.Indeterminate,
@@ -876,7 +879,10 @@ internal sealed partial class RbpJournalStore
                 new[] { row.Identity.IdempotencyKey },
                 now);
             (string outcomeJson, string outcomeDigest) =
-                BuildJournalIndeterminateOutcome(row.Identity, holdId);
+                BuildJournalIndeterminateOutcome(
+                    context,
+                    row.Identity,
+                    holdId);
             UpsertOutcomeV3(
                 context,
                 row with
@@ -1135,6 +1141,7 @@ internal sealed partial class RbpJournalStore
                                 now);
                             (outcomeJson, resultDigest) =
                                 BuildJournalIndeterminateOutcome(
+                                    context,
                                     existing.Identity,
                                     holdId);
                             finalState = RbpInvocationState.Indeterminate;
@@ -2157,7 +2164,10 @@ internal sealed partial class RbpJournalStore
             }
 
             (string outcomeJson, string outcomeDigest) =
-                BuildJournalIndeterminateOutcome(stored.Identity, holdId);
+                BuildJournalIndeterminateOutcome(
+                    context,
+                    stored.Identity,
+                    holdId);
             imported = stored with
             {
                 State = RbpInvocationState.Indeterminate,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Text.Json;
 using Microsoft.Data.Sqlite;
 using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
@@ -509,6 +510,32 @@ public sealed class RbpJournalPowerCutTests
                     RbpJournalPowerCutData.AtomicBatchSecondWriteStepId,
             },
             hold.OrderedOriginIdempotencyKeys);
+        Assert.Equal("session", hold.ScopeKind);
+        using (JsonDocument scope = JsonDocument.Parse(hold.ScopeJcs))
+        {
+            Assert.Equal(
+                Rfc8785Json.MakeVerificationHoldId(
+                    RbpJournalPowerCutData.Rsid,
+                    scope.RootElement,
+                    hold.OrderedOriginIdempotencyKeys),
+                hold.VerificationHoldId);
+        }
+        foreach (RbpBatchStepIdentity step in batch.Steps)
+        {
+            RbpStoredInvocation promoted = (await recovered.GetInvocationAsync(
+                RbpJournalPowerCutData.Rsid + "/" + step.InvocationId))!;
+            Assert.Equal(RbpInvocationState.Indeterminate, promoted.State);
+            Assert.Equal(hold.VerificationHoldId, promoted.VerificationHoldId);
+            using JsonDocument outcome = JsonDocument.Parse(
+                promoted.TerminalOutcomeJson!);
+            Assert.Equal(
+                hold.ScopeJcs,
+                Rfc8785Json.Canonicalize(
+                    outcome.RootElement.GetProperty("mutation_scope")));
+            Assert.Equal(
+                Rfc8785Json.Sha256Digest(outcome.RootElement),
+                promoted.ResultDigest);
+        }
         Assert.Equal(
             RbpBatchState.Terminal,
             (await recovered.GetBatchAsync(batch.BatchKey))!.State);
