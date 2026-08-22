@@ -103,6 +103,12 @@ export interface PreProductionDeviceRevocation {
   readonly priorStatus: DeviceAuthContext["deviceStatus"];
   readonly deviceStatus: "revoked";
   readonly changed: boolean;
+  readonly authorizationVersion: number;
+  readonly identityRecordVersion: number;
+  readonly connectionCapabilityVersion: number;
+  readonly sessionCapabilityVersion: number;
+  readonly seatAuthorityVersion: number;
+  readonly seatRecordVersion: number;
 }
 
 export interface PreProductionIdentityAuthority extends IdentityPort {
@@ -725,6 +731,12 @@ export function createPreProductionIdentityAuthority(
           priorStatus,
           deviceStatus: "revoked" as const,
           changed: priorStatus !== "revoked",
+          authorizationVersion: record.authorizationVersion,
+          identityRecordVersion: record.identityRecordVersion,
+          connectionCapabilityVersion: record.connectionCapabilityVersion,
+          sessionCapabilityVersion: record.sessionCapabilityVersion,
+          seatAuthorityVersion: record.seatAuthorityVersion,
+          seatRecordVersion: record.seatRecordVersion,
         }),
       });
     },

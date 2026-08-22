@@ -375,8 +375,16 @@ export async function preparePreProductionServing(
       ) {
         await composition.bridgeAuthority.revokeIdentityAuthority({
           tenantId: principal.tenantId,
+          kind: "device",
           deviceId: device.deviceId,
           seatId: device.seatId,
+          authorizationVersion: revoked.value.authorizationVersion,
+          identityRecordVersion: revoked.value.identityRecordVersion,
+          connectionCapabilityVersion:
+            revoked.value.connectionCapabilityVersion,
+          sessionCapabilityVersion: revoked.value.sessionCapabilityVersion,
+          seatAuthorityVersion: revoked.value.seatAuthorityVersion,
+          seatRecordVersion: revoked.value.seatRecordVersion,
         });
       }
       return revoked;

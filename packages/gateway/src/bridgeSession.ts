@@ -141,7 +141,30 @@ interface TenantAuthorityTicket {
   readonly deviceId: string;
   readonly seatId: string;
   readonly connectionId: string;
-  readonly authorityEpoch: number;
+  readonly tenantBlockGeneration: number;
+  readonly deviceGeneration: number;
+  readonly seatGeneration: number;
+  readonly identityAuthority: DurableIdentityAuthority | null;
+}
+
+type ScopedAuthorityStatus = "active" | "revoked" | "blocked";
+
+interface DeviceAuthorityFence {
+  readonly generation: number;
+  readonly status: ScopedAuthorityStatus;
+  readonly authorizationVersion: number | null;
+  readonly identityRecordVersion: number | null;
+  readonly connectionCapabilityVersion: number | null;
+  readonly sessionCapabilityVersion: number | null;
+  readonly seatId: string | null;
+}
+
+interface SeatAuthorityFence {
+  readonly generation: number;
+  readonly status: ScopedAuthorityStatus;
+  readonly seatAuthorityVersion: number | null;
+  readonly seatRecordVersion: number | null;
+  readonly deviceId: string | null;
 }
 
 interface DurablePendingDispatch {
@@ -348,9 +371,11 @@ type DurableUnregisterWrite =
 interface LiveConnection {
   readonly connectionId: string;
   readonly binding: BindingKind;
-  readonly auth: DeviceAuthContext;
+  auth: DeviceAuthContext;
   readonly machineHostname: string;
-  authorityEpoch: number;
+  tenantBlockGeneration: number;
+  deviceGeneration: number;
+  seatGeneration: number;
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
@@ -2013,10 +2038,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
   readonly #tenantIdentityTails = new Map<string, Promise<void>>();
   readonly #tenantRevocationTails = new Map<string, Promise<void>>();
-  readonly #tenantIdentityEpochs = new Map<string, number>();
+  readonly #tenantBlockGenerations = new Map<string, number>();
   readonly #blockedTenants = new Set<string>();
-  readonly #revokingDevices = new Set<string>();
-  readonly #revokingSeats = new Set<string>();
+  readonly #deviceAuthorityFences = new Map<string, DeviceAuthorityFence>();
+  readonly #seatAuthorityFences = new Map<string, SeatAuthorityFence>();
   readonly #revokedConnectionIds = new Set<string>();
   readonly #knownTenants = new Set<string>();
   readonly #tenantIdentitySnapshots = new Map<string, TenantIdentitySnapshot>();
@@ -2429,47 +2454,290 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
-  #advanceAuthorityEpoch(tenantId: string): number {
-    const next = (this.#tenantIdentityEpochs.get(tenantId) ?? 0) + 1;
-    this.#tenantIdentityEpochs.set(tenantId, next);
+  #advanceTenantBlockGeneration(tenantId: string): number {
+    const next = (this.#tenantBlockGenerations.get(tenantId) ?? 0) + 1;
+    this.#tenantBlockGenerations.set(tenantId, next);
     return next;
   }
 
-  #installRevocationFences(
-    tenantId: string,
-    deviceIds: ReadonlySet<string>,
-    seatIds: ReadonlySet<string>,
-  ): void {
-    for (const deviceId of deviceIds) {
-      this.#revokingDevices.add(identityIndexKey(tenantId, deviceId));
-    }
-    for (const seatId of seatIds) {
-      this.#revokingSeats.add(identityIndexKey(tenantId, seatId));
-    }
-  }
-
-  #removeRevocationFences(
-    tenantId: string,
-    deviceIds: ReadonlySet<string>,
-    seatIds: ReadonlySet<string>,
-  ): void {
-    for (const deviceId of deviceIds) {
-      this.#revokingDevices.delete(identityIndexKey(tenantId, deviceId));
-    }
-    for (const seatId of seatIds) {
-      this.#revokingSeats.delete(identityIndexKey(tenantId, seatId));
-    }
-  }
-
-  #identityScopeIsFenced(
+  #setDeviceAuthorityFence(
     tenantId: string,
     deviceId: string,
+    input: Omit<DeviceAuthorityFence, "generation">,
+  ): DeviceAuthorityFence {
+    const key = identityIndexKey(tenantId, deviceId);
+    const prior = this.#deviceAuthorityFences.get(key);
+    const unchanged =
+      prior !== undefined &&
+      prior.status === input.status &&
+      prior.authorizationVersion === input.authorizationVersion &&
+      prior.identityRecordVersion === input.identityRecordVersion &&
+      prior.connectionCapabilityVersion === input.connectionCapabilityVersion &&
+      prior.sessionCapabilityVersion === input.sessionCapabilityVersion &&
+      prior.seatId === input.seatId;
+    const next = Object.freeze({
+      ...input,
+      generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
+    });
+    this.#deviceAuthorityFences.set(key, next);
+    return next;
+  }
+
+  #setSeatAuthorityFence(
+    tenantId: string,
     seatId: string,
-  ): boolean {
-    return (
-      this.#revokingDevices.has(identityIndexKey(tenantId, deviceId)) ||
-      this.#revokingSeats.has(identityIndexKey(tenantId, seatId))
+    input: Omit<SeatAuthorityFence, "generation">,
+  ): SeatAuthorityFence {
+    const key = identityIndexKey(tenantId, seatId);
+    const prior = this.#seatAuthorityFences.get(key);
+    const unchanged =
+      prior !== undefined &&
+      prior.status === input.status &&
+      prior.seatAuthorityVersion === input.seatAuthorityVersion &&
+      prior.seatRecordVersion === input.seatRecordVersion &&
+      prior.deviceId === input.deviceId;
+    const next = Object.freeze({
+      ...input,
+      generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
+    });
+    this.#seatAuthorityFences.set(key, next);
+    return next;
+  }
+
+  #deviceFence(tenantId: string, deviceId: string): DeviceAuthorityFence | null {
+    return this.#deviceAuthorityFences.get(identityIndexKey(tenantId, deviceId)) ?? null;
+  }
+
+  #seatFence(tenantId: string, seatId: string): SeatAuthorityFence | null {
+    return this.#seatAuthorityFences.get(identityIndexKey(tenantId, seatId)) ?? null;
+  }
+
+  #admitAuthenticatedScope(connection: LiveConnection): {
+    readonly deviceGeneration: number;
+    readonly seatGeneration: number;
+  } {
+    const tenantId = connection.auth.actor.tenantId;
+    const durable = durableIdentityAuthority(connection.auth);
+    const devicePrior = this.#deviceFence(tenantId, connection.auth.actor.deviceId);
+    const seatPrior = this.#seatFence(tenantId, connection.auth.actor.seatId);
+    const deviceVersion = durable?.authorizationVersion ?? null;
+    const identityRecordVersion = durable?.identityRecordVersion ?? null;
+    const seatVersion = durable?.seatAuthorityVersion ?? null;
+    const seatRecordVersion = durable?.seatRecordVersion ?? null;
+    const deviceCanActivate =
+      devicePrior === null ||
+      (devicePrior.status === "active" &&
+        devicePrior.authorizationVersion === deviceVersion &&
+        devicePrior.identityRecordVersion === identityRecordVersion) ||
+      (devicePrior.status === "active" &&
+        deviceVersion !== null &&
+        identityRecordVersion !== null &&
+        (devicePrior.authorizationVersion === null ||
+          deviceVersion > devicePrior.authorizationVersion) &&
+        (devicePrior.identityRecordVersion === null ||
+          identityRecordVersion > devicePrior.identityRecordVersion)) ||
+      (devicePrior.status === "revoked" &&
+        devicePrior.authorizationVersion !== null &&
+        devicePrior.identityRecordVersion !== null &&
+        deviceVersion !== null &&
+        identityRecordVersion !== null &&
+        deviceVersion > devicePrior.authorizationVersion &&
+        identityRecordVersion > devicePrior.identityRecordVersion);
+    const seatCanActivate =
+      seatPrior === null ||
+      (seatPrior.status === "active" &&
+        seatPrior.seatAuthorityVersion === seatVersion &&
+        seatPrior.seatRecordVersion === seatRecordVersion) ||
+      (seatPrior.status === "active" &&
+        seatVersion !== null &&
+        seatRecordVersion !== null &&
+        (seatPrior.seatAuthorityVersion === null ||
+          seatVersion > seatPrior.seatAuthorityVersion) &&
+        (seatPrior.seatRecordVersion === null ||
+          seatRecordVersion > seatPrior.seatRecordVersion)) ||
+      (seatPrior.status === "revoked" &&
+        seatPrior.seatAuthorityVersion !== null &&
+        seatPrior.seatRecordVersion !== null &&
+        seatVersion !== null &&
+        seatRecordVersion !== null &&
+        seatVersion > seatPrior.seatAuthorityVersion &&
+        seatRecordVersion > seatPrior.seatRecordVersion);
+    if (!deviceCanActivate || !seatCanActivate) {
+      throw new GatewayRbpFault(
+        "auth",
+        "authenticated identity is stale against scoped authority",
+        403,
+        4403,
+      );
+    }
+    const device = this.#setDeviceAuthorityFence(
+      tenantId,
+      connection.auth.actor.deviceId,
+      {
+        status: "active",
+        authorizationVersion: deviceVersion,
+        identityRecordVersion,
+        connectionCapabilityVersion:
+          durable?.connectionCapabilityVersion ?? null,
+        sessionCapabilityVersion: durable?.sessionCapabilityVersion ?? null,
+        seatId: connection.auth.actor.seatId,
+      },
     );
+    const seat = this.#setSeatAuthorityFence(
+      tenantId,
+      connection.auth.actor.seatId,
+      {
+        status: "active",
+        seatAuthorityVersion: seatVersion,
+        seatRecordVersion,
+        deviceId: connection.auth.actor.deviceId,
+      },
+    );
+    return {
+      deviceGeneration: device.generation,
+      seatGeneration: seat.generation,
+    };
+  }
+
+  #applyDeviceSnapshot(device: IdentityDeviceV2): DeviceAuthorityFence {
+    const prior = this.#deviceFence(device.tenantId, device.deviceId);
+    const status: ScopedAuthorityStatus =
+      device.status === "active" ? "active" : "revoked";
+    if (status === "active" && prior !== null) {
+      const versionIsOlder =
+        (prior.authorizationVersion !== null &&
+          device.authorizationVersion < prior.authorizationVersion) ||
+        (prior.identityRecordVersion !== null &&
+          device.recordVersion < prior.identityRecordVersion);
+      const revokedWasNotSuperseded =
+        prior.status === "revoked" &&
+        (prior.authorizationVersion === null ||
+          prior.identityRecordVersion === null ||
+          device.authorizationVersion <= prior.authorizationVersion ||
+          device.recordVersion <= prior.identityRecordVersion);
+      if (versionIsOlder || revokedWasNotSuperseded) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "active device snapshot did not supersede its scoped fence",
+          503,
+          1011,
+        );
+      }
+    }
+    return this.#setDeviceAuthorityFence(device.tenantId, device.deviceId, {
+      status,
+      authorizationVersion: device.authorizationVersion,
+      identityRecordVersion: device.recordVersion,
+      connectionCapabilityVersion: device.connectionCapabilityVersion,
+      sessionCapabilityVersion: device.sessionCapabilityVersion,
+      seatId: device.seatId,
+    });
+  }
+
+  #applySeatSnapshot(seat: IdentityTenantSeatV1): SeatAuthorityFence {
+    const prior = this.#seatFence(seat.tenantId, seat.seatId);
+    const status: ScopedAuthorityStatus =
+      seat.status === "active" ? "active" : "revoked";
+    if (status === "active" && prior !== null) {
+      const versionIsOlder =
+        (prior.seatAuthorityVersion !== null &&
+          seat.seatAuthorityVersion < prior.seatAuthorityVersion) ||
+        (prior.seatRecordVersion !== null &&
+          seat.recordVersion < prior.seatRecordVersion);
+      const revokedWasNotSuperseded =
+        prior.status === "revoked" &&
+        (prior.seatAuthorityVersion === null ||
+          prior.seatRecordVersion === null ||
+          seat.seatAuthorityVersion <= prior.seatAuthorityVersion ||
+          seat.recordVersion <= prior.seatRecordVersion);
+      if (versionIsOlder || revokedWasNotSuperseded) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "active seat snapshot did not supersede its scoped fence",
+          503,
+          1011,
+        );
+      }
+    }
+    return this.#setSeatAuthorityFence(seat.tenantId, seat.seatId, {
+      status,
+      seatAuthorityVersion: seat.seatAuthorityVersion,
+      seatRecordVersion: seat.recordVersion,
+      deviceId: seat.deviceId,
+    });
+  }
+
+  #applyEventFences(
+    tenantId: string,
+    events: readonly IdentityRevocationEventV1[],
+  ): void {
+    for (const event of events) {
+      if (event.deviceId !== null) {
+        const prior = this.#deviceFence(tenantId, event.deviceId);
+        this.#setDeviceAuthorityFence(tenantId, event.deviceId, {
+          status: event.action === "seat_reassigned" ? "blocked" : "revoked",
+          authorizationVersion:
+            event.authorizationVersion ?? prior?.authorizationVersion ?? null,
+          identityRecordVersion: prior?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            prior?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
+          seatId: event.seatId ?? prior?.seatId ?? null,
+        });
+      }
+      if (event.action !== "device_revoked" && event.seatId !== null) {
+        const prior = this.#seatFence(tenantId, event.seatId);
+        this.#setSeatAuthorityFence(tenantId, event.seatId, {
+          status: event.action === "seat_reassigned" ? "blocked" : "revoked",
+          seatAuthorityVersion:
+            event.seatAuthorityVersion ?? prior?.seatAuthorityVersion ?? null,
+          seatRecordVersion: prior?.seatRecordVersion ?? null,
+          deviceId: event.deviceId ?? prior?.deviceId ?? null,
+        });
+      }
+    }
+  }
+
+  #applyScopedSnapshot(
+    snapshot: TenantIdentitySnapshot,
+    events: readonly IdentityRevocationEventV1[],
+    wholeTenant: boolean,
+  ): void {
+    if (wholeTenant) {
+      for (const device of snapshot.devices.values()) {
+        this.#applyDeviceSnapshot(device);
+      }
+      for (const seat of snapshot.seats.values()) {
+        this.#applySeatSnapshot(seat);
+      }
+      return;
+    }
+    for (const event of events) {
+      if (event.deviceId !== null) {
+        const device = snapshot.devices.get(event.deviceId);
+        if (device === undefined) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event device is absent from the authority snapshot",
+            503,
+            1011,
+          );
+        }
+        this.#applyDeviceSnapshot(device);
+      }
+      if (event.action !== "device_revoked" && event.seatId !== null) {
+        const seat = snapshot.seats.get(event.seatId);
+        if (seat === undefined) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event seat is absent from the authority snapshot",
+            503,
+            1011,
+          );
+        }
+        this.#applySeatSnapshot(seat);
+      }
+    }
   }
 
   async #acquireConnectionAuthorityTicket(
@@ -2484,11 +2752,6 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return await this.#withTenantIdentityAuthority(tenantId, async () => {
       if (
         this.#blockedTenants.has(tenantId) ||
-        this.#identityScopeIsFenced(
-          tenantId,
-          connection.auth.actor.deviceId,
-          connection.auth.actor.seatId,
-        ) ||
         connection.auth.deviceStatus !== "active" ||
         (options.requireMembership !== false &&
           this.#connections.get(connection.connectionId) !== connection)
@@ -2514,14 +2777,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           );
         }
       }
-      const authorityEpoch = this.#tenantIdentityEpochs.get(tenantId) ?? 0;
-      connection.authorityEpoch = authorityEpoch;
+      const scoped = this.#admitAuthenticatedScope(connection);
+      const tenantBlockGeneration =
+        this.#tenantBlockGenerations.get(tenantId) ?? 0;
+      connection.tenantBlockGeneration = tenantBlockGeneration;
+      connection.deviceGeneration = scoped.deviceGeneration;
+      connection.seatGeneration = scoped.seatGeneration;
       return Object.freeze({
         tenantId,
         deviceId: connection.auth.actor.deviceId,
         seatId: connection.auth.actor.seatId,
         connectionId: connection.connectionId,
-        authorityEpoch,
+        tenantBlockGeneration,
+        deviceGeneration: scoped.deviceGeneration,
+        seatGeneration: scoped.seatGeneration,
+        identityAuthority: durableIdentityAuthority(connection.auth),
       });
     });
   }
@@ -2536,21 +2806,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     } = {},
   ): void {
     const session = options.session;
+    const device = this.#deviceFence(ticket.tenantId, ticket.deviceId);
+    const seat = this.#seatFence(ticket.tenantId, ticket.seatId);
     this.#assertOpen();
     if (
       ticket.tenantId !== connection.auth.actor.tenantId ||
       ticket.deviceId !== connection.auth.actor.deviceId ||
       ticket.seatId !== connection.auth.actor.seatId ||
       ticket.connectionId !== connection.connectionId ||
-      ticket.authorityEpoch !==
-        (this.#tenantIdentityEpochs.get(ticket.tenantId) ?? 0) ||
-      connection.authorityEpoch !== ticket.authorityEpoch ||
-      this.#blockedTenants.has(ticket.tenantId) ||
-      this.#identityScopeIsFenced(
-        ticket.tenantId,
-        ticket.deviceId,
-        ticket.seatId,
+      ticket.tenantBlockGeneration !==
+        (this.#tenantBlockGenerations.get(ticket.tenantId) ?? 0) ||
+      ticket.deviceGeneration !== (device?.generation ?? 0) ||
+      ticket.seatGeneration !== (seat?.generation ?? 0) ||
+      device?.status !== "active" ||
+      seat?.status !== "active" ||
+      connection.tenantBlockGeneration !== ticket.tenantBlockGeneration ||
+      connection.deviceGeneration !== ticket.deviceGeneration ||
+      connection.seatGeneration !== ticket.seatGeneration ||
+      !sameDurableIdentityAuthority(
+        connection.auth,
+        ticket.identityAuthority,
       ) ||
+      this.#blockedTenants.has(ticket.tenantId) ||
       (options.requireConnectionMembership !== false &&
         this.#connections.get(ticket.connectionId) !== connection) ||
       (session !== undefined &&
@@ -2558,6 +2835,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           session.deviceId !== ticket.deviceId ||
           session.seatId !== ticket.seatId ||
           session.connectionId !== ticket.connectionId ||
+          !sameJson(
+            parseSessionIdentityAuthority(session.identityAuthority),
+            ticket.identityAuthority,
+          ) ||
           (options.requireSessionMembership !== false &&
             (this.#active.get(session.rsid)?.record.connectionId !==
               ticket.connectionId ||
@@ -2571,6 +2852,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         4403,
       );
     }
+  }
+
+  #ticketScopeIsRevokedOrBlocked(ticket: TenantAuthorityTicket): boolean {
+    return (
+      this.#blockedTenants.has(ticket.tenantId) ||
+      this.#deviceFence(ticket.tenantId, ticket.deviceId)?.status !== "active" ||
+      this.#seatFence(ticket.tenantId, ticket.seatId)?.status !== "active"
+    );
   }
 
   public assertConnectionOutbound(connectionId: string): void {
@@ -2591,7 +2880,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         deviceId: connection.auth.actor.deviceId,
         seatId: connection.auth.actor.seatId,
         connectionId,
-        authorityEpoch: connection.authorityEpoch,
+        tenantBlockGeneration: connection.tenantBlockGeneration,
+        deviceGeneration: connection.deviceGeneration,
+        seatGeneration: connection.seatGeneration,
+        identityAuthority: durableIdentityAuthority(connection.auth),
       },
       connection,
     );
@@ -2630,6 +2922,26 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
   }
 
+  #connectionSnapshotDisposition(
+    connection: LiveConnection,
+    snapshot: TenantIdentitySnapshot,
+  ): "current" | "stale_active" | "revoked" {
+    if (this.#connectionMatchesSnapshot(connection, snapshot)) return "current";
+    const auth = connection.auth;
+    const device = snapshot.devices.get(auth.actor.deviceId);
+    const seat = snapshot.seats.get(auth.actor.seatId);
+    return device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === auth.actor.userId &&
+      device.seatId === auth.actor.seatId &&
+      seat.userId === auth.actor.userId &&
+      seat.deviceId === auth.actor.deviceId
+      ? "stale_active"
+      : "revoked";
+  }
+
   #sessionMatchesSnapshot(
     session: DurableRbpSession,
     snapshot: TenantIdentitySnapshot,
@@ -2659,6 +2971,25 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       seat.seatAuthorityVersion === identity.seatAuthorityVersion &&
       seat.recordVersion === identity.seatRecordVersion
     );
+  }
+
+  #sessionSnapshotDisposition(
+    session: DurableRbpSession,
+    snapshot: TenantIdentitySnapshot,
+  ): "current" | "stale_active" | "revoked" {
+    if (this.#sessionMatchesSnapshot(session, snapshot)) return "current";
+    const device = snapshot.devices.get(session.deviceId);
+    const seat = snapshot.seats.get(session.seatId);
+    return device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === session.userId &&
+      device.seatId === session.seatId &&
+      seat.userId === session.userId &&
+      seat.deviceId === session.deviceId
+      ? "stale_active"
+      : "revoked";
   }
 
   #closeConnectionForRevocation(connection: LiveConnection): void {
@@ -2729,7 +3060,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           identity?.deviceTokenDigest ?? `sha256:${"0".repeat(64)}`,
       },
       machineHostname: "identity-revocation",
-      authorityEpoch: this.#tenantIdentityEpochs.get(record.tenantId) ?? 0,
+      tenantBlockGeneration:
+        this.#tenantBlockGenerations.get(record.tenantId) ?? 0,
+      deviceGeneration:
+        this.#deviceFence(record.tenantId, record.deviceId)?.generation ?? 0,
+      seatGeneration:
+        this.#seatFence(record.tenantId, record.seatId)?.generation ?? 0,
       grantedCapabilities: record.grantedCapabilities,
       lifecycle: record.connectionLifecycle,
       async send(): Promise<void> {},
@@ -2789,7 +3125,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       events.flatMap((event) => event.deviceId === null ? [] : [event.deviceId]),
     );
     const affectedSeats = new Set(
-      events.flatMap((event) => event.seatId === null ? [] : [event.seatId]),
+      events.flatMap((event) =>
+        event.action === "device_revoked" || event.seatId === null
+          ? []
+          : [event.seatId],
+      ),
     );
     const listed = await this.store.transact(
       { tenantId },
@@ -2836,7 +3176,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     const revokedRsids = new Set<string>();
     for (const session of sessions) {
-      if (this.#sessionMatchesSnapshot(session, snapshot)) continue;
+      if (this.#sessionSnapshotDisposition(session, snapshot) !== "revoked") {
+        continue;
+      }
       await this.#revokeIdentitySession(session);
       revokedRsids.add(session.rsid);
     }
@@ -2844,7 +3186,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     for (const connection of [...this.#connections.values()]) {
       if (
         connection.auth.actor.tenantId === tenantId &&
-        !this.#connectionMatchesSnapshot(connection, snapshot)
+        this.#connectionSnapshotDisposition(connection, snapshot) === "revoked"
       ) {
         this.#closeConnectionForRevocation(connection);
       }
@@ -2856,16 +3198,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const identity = this.#productionIdentity;
     if (identity === null) return;
     await this.#withTenantRevocationRun(tenantId, async () => {
-      let fencedDevices = new Set<string>();
-      let fencedSeats = new Set<string>();
-      let phaseOneEpoch: number | null = null;
+      let affectedDevices = new Set<string>();
+      let affectedSeats = new Set<string>();
+      let wholeTenant = true;
+      let tenantBlockGeneration: number | null = null;
       try {
         const phaseOne = await this.#withTenantIdentityAuthority(
           tenantId,
           async () => {
-            // Polling itself is an authority read boundary. Existing tickets
-            // cannot send while the cursor/head result is unresolved.
-            this.#blockedTenants.add(tenantId);
             const events: IdentityRevocationEventV1[] = [];
             let observedHeadSequence = -1;
             let cursorBlocked = false;
@@ -2919,26 +3259,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               currentSnapshot !== undefined &&
               currentSnapshot.headSequence === observedHeadSequence
             ) {
-              this.#blockedTenants.delete(tenantId);
               return null;
             }
-            fencedDevices = new Set(
+            wholeTenant =
+              cursorBlocked || eventStreamCorrupt || events.length === 0;
+            affectedDevices = new Set(
               events.flatMap((event) =>
                 event.deviceId === null ? [] : [event.deviceId],
               ),
             );
-            fencedSeats = new Set(
+            affectedSeats = new Set(
               events.flatMap((event) =>
-                event.seatId === null ? [] : [event.seatId],
+                event.action === "device_revoked" || event.seatId === null
+                  ? []
+                  : [event.seatId],
               ),
             );
-            phaseOneEpoch = this.#advanceAuthorityEpoch(tenantId);
-            this.#installRevocationFences(
-              tenantId,
-              fencedDevices,
-              fencedSeats,
-            );
-            this.#blockedTenants.add(tenantId);
+            if (wholeTenant) {
+              tenantBlockGeneration =
+                this.#advanceTenantBlockGeneration(tenantId);
+              this.#blockedTenants.add(tenantId);
+            } else {
+              this.#applyEventFences(tenantId, events);
+            }
             const prepared = await identity.prepareTenantResync({ tenantId });
             if (!prepared.ok) {
               throw new GatewayRbpFault(
@@ -2957,42 +3300,40 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               );
             }
             const snapshot = identitySnapshot(prepared.snapshot);
-            if (cursorBlocked || eventStreamCorrupt || events.length === 0) {
+            if (wholeTenant) {
               for (const device of snapshot.devices.values()) {
-                fencedDevices.add(device.deviceId);
+                affectedDevices.add(device.deviceId);
               }
               for (const seat of snapshot.seats.values()) {
-                fencedSeats.add(seat.seatId);
+                affectedSeats.add(seat.seatId);
               }
               for (const connection of this.#connections.values()) {
                 if (connection.auth.actor.tenantId !== tenantId) continue;
-                fencedDevices.add(connection.auth.actor.deviceId);
-                fencedSeats.add(connection.auth.actor.seatId);
+                affectedDevices.add(connection.auth.actor.deviceId);
+                affectedSeats.add(connection.auth.actor.seatId);
               }
               for (const active of this.#active.values()) {
                 if (active.tenantId !== tenantId) continue;
-                fencedDevices.add(active.record.deviceId);
-                fencedSeats.add(active.record.seatId);
+                affectedDevices.add(active.record.deviceId);
+                affectedSeats.add(active.record.seatId);
               }
             }
-            this.#installRevocationFences(
-              tenantId,
-              fencedDevices,
-              fencedSeats,
-            );
+            this.#applyScopedSnapshot(snapshot, events, wholeTenant);
             return Object.freeze({
-              authorityEpoch: phaseOneEpoch,
+              tenantBlockGeneration,
+              wholeTenant,
               snapshot,
               events: Object.freeze([...events]),
-              deviceIds: fencedDevices,
-              seatIds: fencedSeats,
+              deviceIds: affectedDevices,
+              seatIds: affectedSeats,
             });
           },
         );
         if (phaseOne === null) return;
-        phaseOneEpoch = phaseOne.authorityEpoch;
-        fencedDevices = phaseOne.deviceIds;
-        fencedSeats = phaseOne.seatIds;
+        tenantBlockGeneration = phaseOne.tenantBlockGeneration;
+        wholeTenant = phaseOne.wholeTenant;
+        affectedDevices = phaseOne.deviceIds;
+        affectedSeats = phaseOne.seatIds;
 
         // No tenant lock is held while rsid tails are acquired one at a time.
         await this.#reconcileIdentitySnapshot(
@@ -3002,10 +3343,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
 
         await this.#withTenantIdentityAuthority(tenantId, async () => {
-          if (this.#tenantIdentityEpochs.get(tenantId) !== phaseOne.authorityEpoch) {
+          if (
+            phaseOne.wholeTenant &&
+            this.#tenantBlockGenerations.get(tenantId) !==
+              phaseOne.tenantBlockGeneration
+          ) {
             throw new GatewayRbpFault(
               "unavailable",
-              "identity authority epoch changed during resync",
+              "tenant block generation changed during resync",
               503,
               1011,
             );
@@ -3038,29 +3383,35 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
               1011,
             );
           }
+          const committedSnapshot = identitySnapshot(committed.snapshot);
+          this.#applyScopedSnapshot(
+            committedSnapshot,
+            phaseOne.events,
+            phaseOne.wholeTenant,
+          );
           this.#tenantIdentitySnapshots.set(
             tenantId,
-            identitySnapshot(committed.snapshot),
+            committedSnapshot,
           );
-          this.#removeRevocationFences(
-            tenantId,
-            phaseOne.deviceIds,
-            phaseOne.seatIds,
-          );
-          this.#blockedTenants.delete(tenantId);
+          if (phaseOne.wholeTenant) this.#blockedTenants.delete(tenantId);
         });
       } catch (error: unknown) {
         await this.#withTenantIdentityAuthority(tenantId, async () => {
-          if (phaseOneEpoch === null) this.#advanceAuthorityEpoch(tenantId);
-          this.#blockedTenants.add(tenantId);
-          this.#installRevocationFences(
-            tenantId,
-            fencedDevices,
-            fencedSeats,
-          );
+          if (wholeTenant) {
+            if (tenantBlockGeneration === null) {
+              tenantBlockGeneration =
+                this.#advanceTenantBlockGeneration(tenantId);
+            }
+            this.#blockedTenants.add(tenantId);
+          }
         });
         for (const connection of [...this.#connections.values()]) {
-          if (connection.auth.actor.tenantId === tenantId) {
+          if (
+            connection.auth.actor.tenantId === tenantId &&
+            (wholeTenant ||
+              affectedDevices.has(connection.auth.actor.deviceId) ||
+              affectedSeats.has(connection.auth.actor.seatId))
+          ) {
             this.#closeConnectionForRevocation(connection);
           }
         }
@@ -3071,8 +3422,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #reconcileExplicitIdentityRevocation(input: {
     readonly tenantId: string;
+    readonly kind: "device" | "seat";
     readonly deviceId?: string;
     readonly seatId?: string;
+    readonly affectedDeviceIds: ReadonlySet<string>;
   }): Promise<void> {
     const listed = await this.store.transact(
       { tenantId: input.tenantId },
@@ -3109,8 +3462,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const session = parseStoredSession(stored, input.tenantId, stored.key);
       if (
         tombstoned.has(session.rsid) ||
-        (input.deviceId !== undefined && session.deviceId !== input.deviceId) ||
-        (input.seatId !== undefined && session.seatId !== input.seatId)
+        (input.kind === "device" &&
+          !input.affectedDeviceIds.has(session.deviceId)) ||
+        (input.kind === "seat" &&
+          session.seatId !== input.seatId &&
+          !input.affectedDeviceIds.has(session.deviceId))
       ) {
         continue;
       }
@@ -3120,15 +3476,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
     this.#suppressSessionWaiters(input.tenantId, revokedRsids);
     const connectionIds = new Set<string>();
-    if (input.deviceId !== undefined) {
+    for (const deviceId of input.affectedDeviceIds) {
       for (const connectionId of
-        this.#deviceConnections.get(
-          identityIndexKey(input.tenantId, input.deviceId),
-        ) ?? []) {
+        this.#deviceConnections.get(identityIndexKey(input.tenantId, deviceId)) ?? []) {
         connectionIds.add(connectionId);
       }
     }
-    if (input.seatId !== undefined) {
+    if (input.kind === "seat" && input.seatId !== undefined) {
       for (const connectionId of
         this.#seatConnections.get(
           identityIndexKey(input.tenantId, input.seatId),
@@ -3144,56 +3498,137 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   public async revokeIdentityAuthority(input: {
     readonly tenantId: string;
+    readonly kind?: "device" | "seat";
     readonly deviceId?: string;
     readonly seatId?: string;
+    readonly authorizationVersion?: number;
+    readonly identityRecordVersion?: number;
+    readonly connectionCapabilityVersion?: number;
+    readonly sessionCapabilityVersion?: number;
+    readonly seatAuthorityVersion?: number;
+    readonly seatRecordVersion?: number;
   }): Promise<void> {
     this.#assertOpen();
+    const kind = input.kind ?? "device";
     if (
       input.tenantId.length === 0 ||
-      (input.deviceId === undefined && input.seatId === undefined)
+      (kind === "device" && input.deviceId === undefined) ||
+      (kind === "seat" && input.seatId === undefined) ||
+      [
+        input.authorizationVersion,
+        input.identityRecordVersion,
+        input.connectionCapabilityVersion,
+        input.sessionCapabilityVersion,
+        input.seatAuthorityVersion,
+        input.seatRecordVersion,
+      ].some((version) =>
+        version !== undefined && !isSafePositiveInteger(version),
+      )
     ) {
       throw new GatewayRbpFault("auth", "identity revocation scope is invalid", 403, 4403);
     }
     await this.#withTenantRevocationRun(input.tenantId, async () => {
-      const deviceIds = new Set(
-        input.deviceId === undefined ? [] : [input.deviceId],
-      );
-      const seatIds = new Set(input.seatId === undefined ? [] : [input.seatId]);
-      let phaseOneEpoch: number | null = null;
+      const affectedDeviceIds = new Set<string>();
       try {
-        phaseOneEpoch = await this.#withTenantIdentityAuthority(
+        await this.#withTenantIdentityAuthority(
           input.tenantId,
           async () => {
-            const epoch = this.#advanceAuthorityEpoch(input.tenantId);
-            this.#installRevocationFences(input.tenantId, deviceIds, seatIds);
-            return epoch;
+            if (input.deviceId !== undefined) {
+              affectedDeviceIds.add(input.deviceId);
+            }
+            if (kind === "seat") {
+              const seatKey = identityIndexKey(input.tenantId, input.seatId!);
+              for (const connectionId of this.#seatConnections.get(seatKey) ?? []) {
+                const connection = this.#connections.get(connectionId);
+                if (connection !== undefined) {
+                  affectedDeviceIds.add(connection.auth.actor.deviceId);
+                }
+              }
+              for (const rsid of this.#seatSessions.get(seatKey) ?? []) {
+                const active = this.#active.get(rsid);
+                if (active !== undefined) {
+                  affectedDeviceIds.add(active.record.deviceId);
+                }
+              }
+              const snapshotSeat = this.#tenantIdentitySnapshots
+                .get(input.tenantId)
+                ?.seats.get(input.seatId!);
+              if (snapshotSeat?.deviceId !== null && snapshotSeat?.deviceId !== undefined) {
+                affectedDeviceIds.add(snapshotSeat.deviceId);
+              }
+            }
+            for (const deviceId of affectedDeviceIds) {
+              const prior = this.#deviceFence(input.tenantId, deviceId);
+              this.#setDeviceAuthorityFence(input.tenantId, deviceId, {
+                status: "blocked",
+                authorizationVersion:
+                  deviceId === input.deviceId
+                    ? input.authorizationVersion ??
+                      prior?.authorizationVersion ?? null
+                    : prior?.authorizationVersion ?? null,
+                identityRecordVersion:
+                  deviceId === input.deviceId
+                    ? input.identityRecordVersion ??
+                      prior?.identityRecordVersion ?? null
+                    : prior?.identityRecordVersion ?? null,
+                connectionCapabilityVersion:
+                  input.connectionCapabilityVersion ??
+                  prior?.connectionCapabilityVersion ?? null,
+                sessionCapabilityVersion:
+                  input.sessionCapabilityVersion ??
+                  prior?.sessionCapabilityVersion ?? null,
+                seatId: input.seatId ?? prior?.seatId ?? null,
+              });
+            }
+            if (kind === "seat") {
+              const prior = this.#seatFence(input.tenantId, input.seatId!);
+              this.#setSeatAuthorityFence(input.tenantId, input.seatId!, {
+                status: "blocked",
+                seatAuthorityVersion:
+                  input.seatAuthorityVersion ??
+                  prior?.seatAuthorityVersion ?? null,
+                seatRecordVersion:
+                  input.seatRecordVersion ?? prior?.seatRecordVersion ?? null,
+                deviceId: input.deviceId ?? prior?.deviceId ?? null,
+              });
+            }
           },
         );
-        await this.#reconcileExplicitIdentityRevocation(input);
+        await this.#reconcileExplicitIdentityRevocation({
+          ...input,
+          kind,
+          affectedDeviceIds,
+        });
         await this.#withTenantIdentityAuthority(input.tenantId, async () => {
-          if (this.#tenantIdentityEpochs.get(input.tenantId) !== phaseOneEpoch) {
-            throw new GatewayRbpFault(
-              "unavailable",
-              "identity authority epoch changed during explicit revocation",
-              503,
-              1011,
-            );
+          for (const deviceId of affectedDeviceIds) {
+            const prior = this.#deviceFence(input.tenantId, deviceId);
+            this.#setDeviceAuthorityFence(input.tenantId, deviceId, {
+              status: "revoked",
+              authorizationVersion: prior?.authorizationVersion ?? null,
+              identityRecordVersion: prior?.identityRecordVersion ?? null,
+              connectionCapabilityVersion:
+                prior?.connectionCapabilityVersion ?? null,
+              sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
+              seatId: prior?.seatId ?? input.seatId ?? null,
+            });
           }
-          this.#removeRevocationFences(input.tenantId, deviceIds, seatIds);
+          if (kind === "seat") {
+            const prior = this.#seatFence(input.tenantId, input.seatId!);
+            this.#setSeatAuthorityFence(input.tenantId, input.seatId!, {
+              status: "revoked",
+              seatAuthorityVersion: prior?.seatAuthorityVersion ?? null,
+              seatRecordVersion: prior?.seatRecordVersion ?? null,
+              deviceId: prior?.deviceId ?? input.deviceId ?? null,
+            });
+          }
         });
       } catch (error: unknown) {
-        await this.#withTenantIdentityAuthority(input.tenantId, async () => {
-          if (phaseOneEpoch === null) this.#advanceAuthorityEpoch(input.tenantId);
-          this.#blockedTenants.add(input.tenantId);
-          this.#installRevocationFences(input.tenantId, deviceIds, seatIds);
-        });
         for (const connection of [...this.#connections.values()]) {
           if (
             connection.auth.actor.tenantId === input.tenantId &&
-            (input.deviceId === undefined ||
-              connection.auth.actor.deviceId === input.deviceId) &&
-            (input.seatId === undefined ||
-              connection.auth.actor.seatId === input.seatId)
+            (affectedDeviceIds.has(connection.auth.actor.deviceId) ||
+              (kind === "seat" &&
+                connection.auth.actor.seatId === input.seatId))
           ) {
             this.#closeConnectionForRevocation(connection);
           }
@@ -3203,7 +3638,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     });
   }
 
-  #sameConnectionAuthority(
+  #sameConnectionPrincipal(
     expected: DeviceAuthContext,
     current: DeviceAuthContext,
   ): boolean {
@@ -3214,7 +3649,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       current.actor.deviceId === expected.actor.deviceId &&
       current.actor.seatId === expected.actor.seatId &&
       current.deviceTokenDigest === expected.deviceTokenDigest &&
-      sameDurableIdentityAuthority(current, durableIdentityAuthority(expected))
+      (expected.machineFingerprint === undefined ||
+        machineFingerprintClaimsEqual(
+          expected.machineFingerprint,
+          current.machineFingerprint,
+        ))
+    );
+  }
+
+  #connectionScopedAuthorityIsActive(connection: LiveConnection): boolean {
+    const tenantId = connection.auth.actor.tenantId;
+    return (
+      !this.#blockedTenants.has(tenantId) &&
+      this.#deviceFence(tenantId, connection.auth.actor.deviceId)?.status ===
+        "active" &&
+      this.#seatFence(tenantId, connection.auth.actor.seatId)?.status ===
+        "active"
     );
   }
 
@@ -3229,15 +3679,16 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       return false;
     }
     const tenantId = connection.auth.actor.tenantId;
+    const device = this.#deviceFence(tenantId, connection.auth.actor.deviceId);
+    const seat = this.#seatFence(tenantId, connection.auth.actor.seatId);
     if (
       this.#blockedTenants.has(tenantId) ||
-      this.#identityScopeIsFenced(
-        tenantId,
-        connection.auth.actor.deviceId,
-        connection.auth.actor.seatId,
-      ) ||
-      connection.authorityEpoch !==
-        (this.#tenantIdentityEpochs.get(tenantId) ?? 0)
+      device?.status !== "active" ||
+      seat?.status !== "active" ||
+      connection.tenantBlockGeneration !==
+        (this.#tenantBlockGenerations.get(tenantId) ?? 0) ||
+      connection.deviceGeneration !== device.generation ||
+      connection.seatGeneration !== seat.generation
     ) return false;
     if (this.#productionIdentity === null) return true;
     const snapshot = this.#tenantIdentitySnapshots.get(tenantId);
@@ -3304,7 +3755,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       binding: input.binding,
       auth: { ...authenticated.value, connectionId },
       machineHostname: input.hello.payload.machine.hostname,
-      authorityEpoch: 0,
+      tenantBlockGeneration: 0,
+      deviceGeneration: 0,
+      seatGeneration: 0,
       grantedCapabilities: granted,
       lifecycle: steadyConnectionLifecycle(granted),
       async send(serialized): Promise<void> {
@@ -3358,25 +3811,34 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
     }
-    const authorityTicket = await this.#assertCurrentConnectionAuthority(connection);
+    try {
+      await this.#assertCurrentConnectionAuthority(connection);
+    } catch (error: unknown) {
+      if (!this.#connectionScopedAuthorityIsActive(connection)) throw error;
+      // Active higher-version authority may refresh an HTTP credential because
+      // this boundary still has the raw bearer. WSS never retains that bearer.
+    }
+    const priorAuth = connection.auth;
     const authenticated = await this.identity.authenticateDevice({
       deviceToken,
       connectionId,
-      claimedDeviceId: connection.auth.actor.deviceId,
+      claimedDeviceId: priorAuth.actor.deviceId,
       establishedScope: {
-        tenantId: connection.auth.actor.tenantId,
-        deviceId: connection.auth.actor.deviceId,
+        tenantId: priorAuth.actor.tenantId,
+        deviceId: priorAuth.actor.deviceId,
       },
-      machineFingerprint: connection.auth.machineFingerprint,
+      machineFingerprint: priorAuth.machineFingerprint,
       machineHostname: connection.machineHostname,
     });
-    this.#assertAuthorityTicket(authorityTicket, connection);
     if (
       !authenticated.ok ||
-      !this.#sameConnectionAuthority(connection.auth, authenticated.value)
+      !this.#sameConnectionPrincipal(priorAuth, authenticated.value)
     ) {
       throw new GatewayRbpFault("auth", "connection credential mismatch", 403, 4403);
     }
+    connection.auth = { ...authenticated.value, connectionId };
+    const authorityTicket = await this.#assertCurrentConnectionAuthority(connection);
+    this.#assertAuthorityTicket(authorityTicket, connection);
     return connection;
   }
 
@@ -3520,7 +3982,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             session: next,
           });
         } catch (error: unknown) {
-          await this.#revokeStaleAuthorizedSession(connection, rsid);
+          if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+            await this.#revokeStaleAuthorizedSession(connection, rsid);
+          }
           throw error;
         }
         return next;
@@ -4318,7 +4782,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         session: reservation.record,
       });
     } catch (error: unknown) {
-      await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
+      }
       throw error;
     }
     const started = await this.#promoteEgressReservation(reservation);
@@ -4349,7 +4815,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     }
     if (releaseFailure !== null) throw releaseFailure;
-    if (sendFailure !== null && !sendBegan) {
+    if (
+      sendFailure !== null &&
+      !sendBegan &&
+      this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
+    ) {
       await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
     }
     if (sendFailure !== null) throw sendFailure;
@@ -4890,11 +5360,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     try {
       this.#assertAuthorityTicket(authorityTicket, connection);
     } catch (error: unknown) {
-      await this.#unregisterNow(connection, {
-        rsid,
-        reason: "session_replaced",
-      });
-      this.#closeConnectionForRevocation(connection);
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#unregisterNow(connection, {
+          rsid,
+          reason: "session_replaced",
+        });
+        this.#closeConnectionForRevocation(connection);
+      }
       throw error;
     }
     await this.#activate(record);
@@ -4903,7 +5375,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         session: record,
       });
     } catch (error: unknown) {
-      await this.#revokeStaleAuthorizedSession(connection, rsid);
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, rsid);
+      }
       throw error;
     }
     await connection.send(
@@ -4955,7 +5429,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       try {
         this.#assertAuthorityTicket(authorityTicket, connection);
       } catch {
-        await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
+        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
+        }
       }
       throw error;
     }
@@ -5583,7 +6059,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             session: next,
           });
         } catch (error: unknown) {
-          await this.#revokeStaleAuthorizedSession(connection, ack.rsid);
+          if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+            await this.#revokeStaleAuthorizedSession(connection, ack.rsid);
+          }
           throw error;
         }
         return next;
@@ -5758,7 +6236,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     } catch {
       deliveryAuthorized = false;
     }
-    if (!deliveryAuthorized) {
+    if (
+      !deliveryAuthorized &&
+      this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
+    ) {
       await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
     }
     if (completedInvocationId !== null && completed !== null) {

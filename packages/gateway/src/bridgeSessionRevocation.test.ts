@@ -24,6 +24,7 @@ import {
 import { gatewayUuidV7 } from "./identifiers.js";
 import {
   createPreProductionIdentityAuthority,
+  type PreProductionDeviceRevocation,
   type PreProductionIdentityAuthority,
 } from "./preProductionIdentity.js";
 import type {
@@ -281,6 +282,113 @@ function preProductionFixture(): {
   });
   if (!exchanged.ok) throw new Error(exchanged.message);
   return { identity, deviceToken: exchanged.value.deviceToken };
+}
+
+function multiPreProductionFixture(
+  devices: readonly {
+    readonly deviceId: string;
+    readonly seatId: string;
+    readonly userId: string;
+    readonly fingerprint: string;
+  }[],
+): {
+  readonly identity: PreProductionIdentityAuthority;
+  readonly tokens: ReadonlyMap<string, string>;
+} {
+  const identity = createPreProductionIdentityAuthority({
+    mode: "preproduction",
+    nodeEnv: "preproduction",
+    tokenKey: "wp06-s2-multi-device-token-key-0123456789",
+    clock: () => Date.now(),
+    northIdentities: [
+      {
+        authorization: "Bearer wp06-s2-multi-north-token-0123456789",
+        context: {
+          contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+          actor: {
+            type: "user",
+            tenantId: TENANT_A,
+            userId: USER_A,
+            role: "user",
+            oidcIssuer: "https://identity.invalid",
+            oidcSubject: USER_A,
+          },
+          session: {
+            sessionId: "north-multi-session",
+            clientType: "mcp",
+            mcpSessionId: null,
+            oauthClientId: "north-multi-client",
+          },
+          principalKey: `${TENANT_A}:${USER_A}`,
+          issuedAtMs: 0,
+          expiresAtMs: null,
+        },
+      },
+    ],
+  });
+  const tokens = new Map<string, string>();
+  for (const [index, device] of devices.entries()) {
+    const issued = identity.issueEnrollmentToken({
+      enrollmentId: `multi-enrollment-${String(index)}`,
+      tenantId: TENANT_A,
+      userId: device.userId,
+      deviceId: device.deviceId,
+      seatId: device.seatId,
+      machineFingerprint: device.fingerprint,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!issued.ok) throw new Error(issued.message);
+    const exchanged = identity.exchangeEnrollmentToken({
+      enrollmentToken: issued.value.enrollmentToken,
+      machineFingerprint: device.fingerprint,
+    });
+    if (!exchanged.ok) throw new Error(exchanged.message);
+    tokens.set(device.deviceId, exchanged.value.deviceToken);
+  }
+  return { identity, tokens };
+}
+
+function deviceRevocationScope(
+  revocation: PreProductionDeviceRevocation,
+  seatId: string,
+) {
+  return {
+    tenantId: TENANT_A,
+    kind: "device" as const,
+    deviceId: revocation.deviceId,
+    seatId,
+    authorizationVersion: revocation.authorizationVersion,
+    identityRecordVersion: revocation.identityRecordVersion,
+    connectionCapabilityVersion: revocation.connectionCapabilityVersion,
+    sessionCapabilityVersion: revocation.sessionCapabilityVersion,
+    seatAuthorityVersion: revocation.seatAuthorityVersion,
+    seatRecordVersion: revocation.seatRecordVersion,
+  };
+}
+
+function delayFirstDeviceAuthentication(
+  base: PreProductionIdentityAuthority,
+): {
+  readonly identity: PreProductionIdentityAuthority;
+  readonly entered: Promise<void>;
+  release(): void;
+} {
+  const entered = deferred();
+  const release = deferred();
+  let delay = true;
+  const identity: PreProductionIdentityAuthority = {
+    ...base,
+    async authenticateDevice(input) {
+      const result = await base.authenticateDevice(input);
+      if (delay) {
+        delay = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return result;
+    },
+  };
+  return { identity, entered: entered.promise, release: () => release.resolve() };
 }
 
 interface MutableIdentityTenant {
@@ -542,7 +650,10 @@ async function openAndRegister(input: {
   };
 }
 
-function executorRequest(rsid: string): GatewayExecutorRequest {
+function executorRequest(
+  rsid: string,
+  userId = USER_A,
+): GatewayExecutorRequest {
   const args: GatewayJsonObject = { probe: "wp06-terminal" };
   const invocationId = id();
   return {
@@ -555,8 +666,8 @@ function executorRequest(rsid: string): GatewayExecutorRequest {
     context: {
       invocationId,
       idempotencyKey: `${rsid}/${invocationId}`,
-      principalKey: `${TENANT_A}:${USER_A}`,
-      actor: { tenantId: TENANT_A, userId: USER_A, role: "user" },
+      principalKey: `${TENANT_A}:${userId}`,
+      actor: { tenantId: TENANT_A, userId, role: "user" },
       gatewaySessionId: "gateway-wp06",
       oauthClientId: "oauth-wp06",
       mcpSessionId: "mcp-wp06",
@@ -851,6 +962,402 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await authority.close();
   });
 
+  it("denies delayed active authentication released after completed device revoke", async () => {
+    const fixture = createRestartableTestStore();
+    const preproduction = preProductionFixture();
+    const delayed = delayFirstDeviceAuthentication(preproduction.identity);
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, delayed.identity);
+    await authority.open();
+    const opening = authority.openConnection({
+      deviceToken: preproduction.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: channel(),
+    });
+    await delayed.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    if (!revoked.ok) throw new Error(revoked.message);
+    await authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
+    delayed.release();
+    await expect(opening).rejects.toMatchObject({
+      code: "auth",
+      httpStatus: 403,
+      closeCode: 4403,
+    });
+    expect(
+      fixture.snapshot().records.some(
+        (row) => row.namespace === "gateway.rbp-session/v1",
+      ),
+    ).toBe(false);
+    await authority.close();
+  });
+
+  it("denies a delayed production auth result after durable cursor revocation", async () => {
+    const fixture = createRestartableTestStore();
+    const tenant: MutableIdentityTenant = {
+      tenantId: TENANT_A,
+      userId: USER_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+      deviceToken: TOKEN_A,
+      fingerprint: FINGERPRINT_A,
+      digest: AUTHORITY_DIGEST_A,
+      generation: 1,
+      consumeCalls: 0,
+      revoked: false,
+      cursorBlocked: false,
+    };
+    const base = productionIdentityFixture(fixture.store, [tenant]);
+    const entered = deferred();
+    const release = deferred();
+    let delay = true;
+    const identity = {
+      ...base,
+      async authenticateDevice(input: Parameters<IdentityPort["authenticateDevice"]>[0]) {
+        const result = await base.authenticateDevice(input);
+        if (delay) {
+          delay = false;
+          entered.resolve();
+          await release.promise;
+        }
+        return result;
+      },
+    } as ProductionIdentityAuthority;
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, identity);
+    await authority.open();
+    const opening = authority.openConnection({
+      deviceToken: TOKEN_A,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: channel(),
+    });
+    await entered.promise;
+    tenant.revoked = true;
+    tenant.generation += 1;
+    tenant.cursorBlocked = true;
+    await authority.synchronizeIdentityRevocations(TENANT_A);
+    release.resolve();
+    await expect(opening).rejects.toMatchObject({
+      code: "auth",
+      httpStatus: 403,
+      closeCode: 4403,
+    });
+    await authority.close();
+  });
+
+  it("denies delayed active authentication released after seat revoke", async () => {
+    const fixture = createRestartableTestStore();
+    const preproduction = preProductionFixture();
+    const delayed = delayFirstDeviceAuthentication(preproduction.identity);
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, delayed.identity);
+    await authority.open();
+    const opening = authority.openConnection({
+      deviceToken: preproduction.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: channel(),
+    });
+    await delayed.entered;
+    await authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      kind: "seat",
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+      authorizationVersion: 2,
+      identityRecordVersion: 2,
+      seatAuthorityVersion: 2,
+      seatRecordVersion: 2,
+    });
+    delayed.release();
+    await expect(opening).rejects.toMatchObject({
+      code: "auth",
+      httpStatus: 403,
+      closeCode: 4403,
+    });
+    await authority.close();
+  });
+
+  it("accepts coherent higher-version re-enrollment but still denies the delayed old auth", async () => {
+    const fixture = createRestartableTestStore();
+    const preproduction = preProductionFixture();
+    const delayed = delayFirstDeviceAuthentication(preproduction.identity);
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, delayed.identity);
+    await authority.open();
+    const oldOpening = authority.openConnection({
+      deviceToken: preproduction.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: channel(),
+    });
+    await delayed.entered;
+    const revoked = preproduction.identity.revokeDevice(DEVICE_A);
+    if (!revoked.ok) throw new Error(revoked.message);
+    await authority.revokeIdentityAuthority(
+      deviceRevocationScope(revoked.value, SEAT_A),
+    );
+    const issued = preproduction.identity.issueEnrollmentToken({
+      enrollmentId: "enrollment-revocation-a-reenrolled",
+      tenantId: TENANT_A,
+      userId: USER_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+      machineFingerprint: FINGERPRINT_A,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!issued.ok) throw new Error(issued.message);
+    const exchanged = preproduction.identity.exchangeEnrollmentToken({
+      enrollmentToken: issued.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_A,
+    });
+    if (!exchanged.ok) throw new Error(exchanged.message);
+    const freshChannel = channel();
+    const freshOpening = await authority.openConnection({
+      deviceToken: exchanged.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_A, fingerprint: FINGERPRINT_A }),
+      channel: freshChannel,
+    });
+    expect(freshOpening.connectionId).toBeTypeOf("string");
+    delayed.release();
+    await expect(oldOpening).rejects.toMatchObject({
+      code: "auth",
+      httpStatus: 403,
+      closeCode: 4403,
+    });
+    expect(freshChannel.closes).toEqual([]);
+    await authority.close();
+  });
+
+  it("keeps unrelated same-tenant device B registration valid during device A revoke", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: SEAT_A, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: SEAT_B, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const tokenA = multi.tokens.get(DEVICE_A)!;
+    const tokenB = multi.tokens.get(DEVICE_B)!;
+    const authority = new GatewayBridgeSessionAuthority(gated.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: tokenA,
+      fingerprint: FINGERPRINT_A,
+    });
+    const channelB = channel();
+    const openedB = await authority.openConnection({
+      deviceToken: tokenB,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channelB,
+    });
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "gateway.rbp-session/v1" &&
+        "deviceId" in value &&
+        value.deviceId === DEVICE_B,
+    );
+    const registeringB = authority.receive(
+      openedB.connectionId,
+      registration(FINGERPRINT_B),
+    );
+    await gate.entered;
+    const revokedA = multi.identity.revokeDevice(DEVICE_A);
+    if (!revokedA.ok) throw new Error(revokedA.message);
+    await bounded(
+      authority.revokeIdentityAuthority(
+        deviceRevocationScope(revokedA.value, SEAT_A),
+      ),
+      "device A revoke during device B register",
+    );
+    gate.release();
+    await bounded(registeringB, "device B register completion");
+    const registeredB = registered(channelB);
+    expect(registeredB.payload.principal.tenant_id).toBe(TENANT_A);
+    expect(channelB.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === registeredB.payload.rsid,
+      ),
+    ).toBe(false);
+    expect(sessionA.channel.closes).toContainEqual({
+      code: 4403,
+      reason: "identity authority revoked",
+    });
+    await authority.close();
+  });
+
+  it("keeps unrelated device B dispatch and terminal delivery active during device A revoke", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: SEAT_A, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: SEAT_B, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(gated.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const sessionB = await openAndRegister({
+      authority,
+      deviceId: DEVICE_B,
+      deviceToken: multi.tokens.get(DEVICE_B)!,
+      fingerprint: FINGERPRINT_B,
+    });
+    const request = executorRequest(sessionB.registered.payload.rsid, USER_B);
+    const gate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "lease" in value &&
+        typeof value.lease === "object" &&
+        value.lease !== null &&
+        "operation" in value.lease &&
+        value.lease.operation === "dispatch",
+    );
+    const execution = authority.execute(request);
+    await gate.entered;
+    const revokedA = multi.identity.revokeDevice(DEVICE_A);
+    if (!revokedA.ok) throw new Error(revokedA.message);
+    await bounded(
+      authority.revokeIdentityAuthority(
+        deviceRevocationScope(revokedA.value, SEAT_A),
+      ),
+      "device A revoke during device B dispatch",
+    );
+    gate.release();
+    while (!sessionB.channel.frames.some((frame) => frame.type === "invoke")) {
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const invoke = sessionB.channel.frames.find(
+      (frame): frame is Extract<RbpEnvelope, { type: "invoke" }> =>
+        frame.type === "invoke",
+    )!;
+    await authority.receive(
+      sessionB.connectionId,
+      terminalResult({
+        rsid: sessionB.registered.payload.rsid,
+        invocationId: request.context.invocationId,
+        ack: invoke.seq,
+      }),
+    );
+    await expect(execution).resolves.toEqual({
+      state: "completed",
+      result: { retained: true },
+    });
+    expect(sessionB.channel.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionB.registered.payload.rsid,
+      ),
+    ).toBe(false);
+    expect(sessionA.channel.closes).toHaveLength(1);
+    await authority.close();
+  });
+
+  it("revokes every live device sharing the revoked seat", async () => {
+    const fixture = createRestartableTestStore();
+    const sharedSeat = "seat-shared-revocation";
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const sessionB = await openAndRegister({
+      authority,
+      deviceId: DEVICE_B,
+      deviceToken: multi.tokens.get(DEVICE_B)!,
+      fingerprint: FINGERPRINT_B,
+    });
+    await authority.revokeIdentityAuthority({
+      tenantId: TENANT_A,
+      kind: "seat",
+      seatId: sharedSeat,
+      seatAuthorityVersion: 2,
+      seatRecordVersion: 2,
+    });
+    expect(sessionA.channel.closes[0]?.code).toBe(4403);
+    expect(sessionB.channel.closes[0]?.code).toBe(4403);
+    await expect(
+      authority.assertConnectionCredential(sessionA.connectionId, multi.tokens.get(DEVICE_A)!),
+    ).rejects.toMatchObject({ httpStatus: 403 });
+    await expect(
+      authority.assertConnectionCredential(sessionB.connectionId, multi.tokens.get(DEVICE_B)!),
+    ).rejects.toMatchObject({ httpStatus: 403 });
+    await authority.close();
+  });
+
+  it("keeps stale active-version sessions untombstoned and refreshes HTTP authority", async () => {
+    const fixture = createRestartableTestStore();
+    const tenant: MutableIdentityTenant = {
+      tenantId: TENANT_A,
+      userId: USER_A,
+      deviceId: DEVICE_A,
+      seatId: SEAT_A,
+      deviceToken: TOKEN_A,
+      fingerprint: FINGERPRINT_A,
+      digest: AUTHORITY_DIGEST_A,
+      generation: 1,
+      consumeCalls: 0,
+      revoked: false,
+      cursorBlocked: false,
+    };
+    const identity = productionIdentityFixture(fixture.store, [tenant]);
+    const authority = new GatewayBridgeSessionAuthority(fixture.store, identity);
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: TOKEN_A,
+      fingerprint: FINGERPRINT_A,
+    });
+    tenant.generation += 1;
+    await authority.synchronizeIdentityRevocations(TENANT_A);
+    expect(session.channel.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === session.registered.payload.rsid,
+      ),
+    ).toBe(false);
+    await expect(
+      authority.assertConnectionCredential(session.connectionId, TOKEN_A),
+    ).resolves.toMatchObject({
+      auth: { authorizationVersion: 2, identityRecordVersion: 2 },
+    });
+    expect(session.channel.closes).toEqual([]);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === session.registered.payload.rsid,
+      ),
+    ).toBe(false);
+    await authority.close();
+  });
+
   it("resyncs a blocked cursor, durably revokes before 4403, and isolates another tenant", async () => {
     const fixture = createRestartableTestStore();
     const tenantA: MutableIdentityTenant = {
@@ -954,7 +1461,7 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await restarted.close();
   });
 
-  it("rejects resume after an active authority-version change", async () => {
+  it("rejects stale resume after an active version change without tombstoning it", async () => {
     const fixture = createRestartableTestStore();
     const tenant: MutableIdentityTenant = {
       tenantId: TENANT_A,
@@ -1006,7 +1513,8 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
           row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
           row.key === original.registered.payload.rsid,
       ),
-    ).toBe(true);
+    ).toBe(false);
+    expect(resumedChannel.closes).toEqual([]);
     await authority.close();
   });
 
