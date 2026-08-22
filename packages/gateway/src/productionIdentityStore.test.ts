@@ -176,6 +176,46 @@ function uncertainAfter(
   };
 }
 
+function observedLifecycleStore(input: {
+  readonly delegate: GatewayProtocolStore;
+  readonly label: string;
+  readonly calls: string[];
+  readonly failOpenCount?: number;
+  readonly failCloseCount?: number;
+}): GatewayProtocolStore {
+  let openFailures = input.failOpenCount ?? 0;
+  let closeFailures = input.failCloseCount ?? 0;
+  return {
+    kind: input.delegate.kind,
+    contractVersion: input.delegate.contractVersion,
+    async open() {
+      input.calls.push(`${input.label}.open`);
+      if (openFailures > 0) {
+        openFailures -= 1;
+        return {
+          ok: false as const,
+          code: "unavailable" as const,
+          message: `${input.label} injected open failure`,
+        };
+      }
+      return input.delegate.open();
+    },
+    async close() {
+      input.calls.push(`${input.label}.close`);
+      if (closeFailures > 0) {
+        closeFailures -= 1;
+        return {
+          ok: false as const,
+          code: "unavailable" as const,
+          message: `${input.label} injected close failure`,
+        };
+      }
+      return input.delegate.close();
+    },
+    transact: (scope, fn) => input.delegate.transact(scope, fn),
+  };
+}
+
 function failFirstLocatorMutation(
   delegate: ProductionCredentialScopeLocator,
   method: "bind" | "retire",
@@ -237,6 +277,180 @@ function fixedLookupLocator(
     },
   };
 }
+
+describe("production identity lifecycle", () => {
+  it("is oidc, refuses pre-open auth, opens tenant then locator exactly once, and closes in reverse", async () => {
+    const calls: string[] = [];
+    const tenantStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+    });
+    const locatorStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "locator",
+      calls,
+    });
+    const identity = authority(
+      tenantStore,
+      createProductionCredentialScopeLocator({
+        store: locatorStore,
+        clock: () => NOW_MS,
+      }),
+    );
+    expect(identity.kind).toBe("oidc");
+    expect(identity.lifecycle()).toEqual({
+      state: "closed",
+      tenantAuthorityOpened: false,
+      credentialLocatorOpened: false,
+    });
+    expect(await exactAuth(identity)).toEqual({
+      ok: false,
+      port: "identity",
+      code: "unavailable",
+      message: "production identity refused device authorization",
+    });
+    expect(await Promise.all([identity.open(), identity.open()])).toEqual([
+      { ok: true, value: undefined },
+      { ok: true, value: undefined },
+    ]);
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(calls).toEqual(["tenant.open", "locator.open"]);
+    expect(identity.lifecycle()).toEqual({
+      state: "open",
+      tenantAuthorityOpened: true,
+      credentialLocatorOpened: true,
+    });
+    expect(await Promise.all([identity.close(), identity.close()])).toEqual([
+      { ok: true, value: undefined },
+      { ok: true, value: undefined },
+    ]);
+    expect(await identity.close()).toEqual({ ok: true, value: undefined });
+    expect(calls).toEqual([
+      "tenant.open",
+      "locator.open",
+      "locator.close",
+      "tenant.close",
+    ]);
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(calls.slice(-2)).toEqual(["tenant.open", "locator.open"]);
+    await identity.close();
+  });
+
+  it("rolls back tenant open when locator open fails and permits a clean reopen", async () => {
+    const calls: string[] = [];
+    const tenantStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+    });
+    const locatorStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "locator",
+      calls,
+      failOpenCount: 1,
+    });
+    const identity = authority(
+      tenantStore,
+      createProductionCredentialScopeLocator({
+        store: locatorStore,
+        clock: () => NOW_MS,
+      }),
+    );
+    const failed = await identity.open();
+    expect(failed).toMatchObject({ ok: false, code: "unavailable" });
+    if (!failed.ok) {
+      expect(failed.message).toContain("locator_open:unavailable");
+      expect(failed.message.length).toBeLessThanOrEqual(256);
+    }
+    expect(calls).toEqual(["tenant.open", "locator.open", "tenant.close"]);
+    expect(identity.lifecycle()).toEqual({
+      state: "closed",
+      tenantAuthorityOpened: false,
+      credentialLocatorOpened: false,
+    });
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(await identity.open()).toEqual({ ok: true, value: undefined });
+    expect(calls.slice(-2)).toEqual(["tenant.open", "locator.open"]);
+    await identity.close();
+  });
+
+  it("fails closed without opening the locator when tenant authority is unavailable", async () => {
+    const calls: string[] = [];
+    const tenantStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+      failOpenCount: 1,
+    });
+    const locatorStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "locator",
+      calls,
+    });
+    const identity = authority(
+      tenantStore,
+      createProductionCredentialScopeLocator({
+        store: locatorStore,
+        clock: () => NOW_MS,
+      }),
+    );
+    expect(await identity.open()).toMatchObject({
+      ok: false,
+      code: "unavailable",
+    });
+    expect(calls).toEqual(["tenant.open"]);
+    expect(identity.lifecycle()).toEqual({
+      state: "failed",
+      tenantAuthorityOpened: false,
+      credentialLocatorOpened: false,
+    });
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    await identity.close();
+    expect(calls).toEqual(["tenant.open"]);
+  });
+
+  it("attempts both reverse-order closes once and returns a bounded aggregated failure", async () => {
+    const calls: string[] = [];
+    const tenantStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "tenant",
+      calls,
+      failCloseCount: 1,
+    });
+    const locatorStore = observedLifecycleStore({
+      delegate: createRestartableTestStore().store,
+      label: "locator",
+      calls,
+      failCloseCount: 1,
+    });
+    const identity = authority(
+      tenantStore,
+      createProductionCredentialScopeLocator({
+        store: locatorStore,
+        clock: () => NOW_MS,
+      }),
+    );
+    await identity.open();
+    const failed = await identity.close();
+    expect(failed).toMatchObject({ ok: false, code: "unavailable" });
+    if (!failed.ok) {
+      expect(failed.message).toContain("locator_close:unavailable");
+      expect(failed.message).toContain("tenant_close:unavailable");
+      expect(failed.message.length).toBeLessThanOrEqual(256);
+    }
+    expect(calls).toEqual([
+      "tenant.open",
+      "locator.open",
+      "locator.close",
+      "tenant.close",
+    ]);
+    expect(identity.lifecycle()).toMatchObject({ state: "failed" });
+    expect(await identity.close()).toEqual(failed);
+    expect(calls).toHaveLength(4);
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+  });
+});
 
 describe("production credential scope locator", () => {
   it("binds only absent/exact replay, retires by exact CAS, and never rebinds retired digests", async () => {
@@ -1389,6 +1603,149 @@ describe("fingerprint claim consistency and tenant isolation", () => {
     ).toMatchObject({ ok: false, kind: "corrupt" });
   });
 
+  it("rejects a touched event whose seat id differs from the seat record", async () => {
+    const { fixture, identity } = await openAuthority();
+    committed(await identity.provisionDevice(provisionInput()));
+    await consumeAll(identity);
+    const event = fixture
+      .snapshot()
+      .records.find(
+        (record) => record.namespace === IDENTITY_REVOCATION_EVENT_SCHEMA,
+      )!;
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: event.namespace,
+        key: event.key,
+        value: {
+          ...(event.value as Record<string, unknown>),
+          seatId: "seat-wrong",
+        } as never,
+        expect: { kind: "version", version: event.version },
+      });
+    });
+    expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
+  it("rejects a seat-only revocation event naming the wrong seat", async () => {
+    const { fixture, identity } = await openAuthority();
+    const operationDigest = sha256("seat-only-operation");
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: IDENTITY_REVOCATION_HEAD_SCHEMA,
+        key: TENANT_A,
+        value: {
+          schema: IDENTITY_REVOCATION_HEAD_SCHEMA,
+          tenantId: TENANT_A,
+          lastSequence: 1,
+          createdAtMs: NOW_MS,
+          updatedAtMs: NOW_MS,
+          recordVersion: 1,
+        },
+        expect: { kind: "absent" },
+      });
+      tx.stage({
+        namespace: IDENTITY_TENANT_SEAT_SCHEMA,
+        key: `${TENANT_A}/${SEAT_ID}`,
+        value: {
+          schema: IDENTITY_TENANT_SEAT_SCHEMA,
+          tenantId: TENANT_A,
+          seatId: SEAT_ID,
+          userId: "user-1",
+          deviceId: null,
+          status: "revoked",
+          seatAuthorityVersion: 1,
+          lastAuthorityOperationId: "seat-only-operation",
+          lastAuthorityOperationDigest: operationDigest,
+          lastAuthoritySequence: 1,
+          createdAtMs: NOW_MS,
+          updatedAtMs: NOW_MS,
+          recordVersion: 1,
+        },
+        expect: { kind: "absent" },
+      });
+      tx.stage({
+        namespace: IDENTITY_REVOCATION_EVENT_SCHEMA,
+        key: `${TENANT_A}/1`,
+        value: {
+          schema: IDENTITY_REVOCATION_EVENT_SCHEMA,
+          tenantId: TENANT_A,
+          sequence: 1,
+          deviceId: null,
+          seatId: "seat-wrong",
+          action: "seat_revoked",
+          authorizationVersion: null,
+          seatAuthorityVersion: 1,
+          priorDeviceTokenDigest: null,
+          deviceTokenDigest: null,
+          operationId: "seat-only-operation",
+          operationDigest,
+          committedAtMs: NOW_MS,
+          createdAtMs: NOW_MS,
+          updatedAtMs: NOW_MS,
+          recordVersion: 1,
+        },
+        expect: { kind: "absent" },
+      });
+    });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
+  it("rejects revoked-event records corrupted back to active state", async () => {
+    const { fixture, identity } = await openAuthority();
+    const initial = committed(await identity.provisionDevice(provisionInput()));
+    committed(
+      await identity.revokeDevice({
+        operationId: "operation-revoked-active-corruption",
+        tenantId: TENANT_A,
+        deviceId: DEVICE_ID,
+        expectedDeviceRecordVersion: initial.device!.recordVersion,
+        expectedSeatRecordVersion: initial.seat.recordVersion,
+      }),
+    );
+    await consumeAll(identity);
+    const device = fixture
+      .snapshot()
+      .records.find((record) => record.namespace === IDENTITY_DEVICE_SCHEMA)!;
+    const seat = fixture
+      .snapshot()
+      .records.find(
+        (record) => record.namespace === IDENTITY_TENANT_SEAT_SCHEMA,
+      )!;
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: device.namespace,
+        key: device.key,
+        value: {
+          ...(device.value as Record<string, unknown>),
+          status: "active",
+        } as never,
+        expect: { kind: "version", version: device.version },
+      });
+      tx.stage({
+        namespace: seat.namespace,
+        key: seat.key,
+        value: {
+          ...(seat.value as Record<string, unknown>),
+          status: "active",
+        } as never,
+        expect: { kind: "version", version: seat.version },
+      });
+    });
+    expect(
+      await exactAuth(identity, {
+        establishedScope: { tenantId: TENANT_A, deviceId: DEVICE_ID },
+      }),
+    ).toMatchObject({ ok: false });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
   it("rejects a coherent-looking device/seat pair whose sequence is ahead of head", async () => {
     const { fixture, identity } = await openAuthority();
     committed(await identity.provisionDevice(provisionInput()));
@@ -1422,6 +1779,63 @@ describe("fingerprint claim consistency and tenant isolation", () => {
       });
     });
     expect(await exactAuth(identity)).toMatchObject({ ok: false });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
+  it("blocks an empty positive head and fails bounded resync", async () => {
+    const { fixture, identity } = await openAuthority();
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: IDENTITY_REVOCATION_HEAD_SCHEMA,
+        key: TENANT_A,
+        value: {
+          schema: IDENTITY_REVOCATION_HEAD_SCHEMA,
+          tenantId: TENANT_A,
+          lastSequence: 1,
+          createdAtMs: NOW_MS,
+          updatedAtMs: NOW_MS,
+          recordVersion: 1,
+        },
+        expect: { kind: "absent" },
+      });
+    });
+    expect(
+      await identity.consumeRevocationEvents({ tenantId: TENANT_A }),
+    ).toMatchObject({
+      ok: true,
+      kind: "blocked",
+      reason: "event_missing",
+    });
+    expect(
+      await identity.prepareTenantResync({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: false, kind: "corrupt" });
+  });
+
+  it("rejects a head advanced beyond every touched record", async () => {
+    const { fixture, identity } = await openAuthority();
+    committed(await identity.provisionDevice(provisionInput()));
+    const head = fixture
+      .snapshot()
+      .records.find(
+        (record) => record.namespace === IDENTITY_REVOCATION_HEAD_SCHEMA,
+      )!;
+    await fixture.store.transact({ tenantId: TENANT_A }, (tx) => {
+      tx.stage({
+        namespace: head.namespace,
+        key: head.key,
+        value: {
+          ...(head.value as Record<string, unknown>),
+          lastSequence: 2,
+          recordVersion: 2,
+        } as never,
+        expect: { kind: "version", version: head.version },
+      });
+    });
+    expect(
+      await identity.consumeRevocationEvents({ tenantId: TENANT_A }),
+    ).toMatchObject({ ok: true, kind: "blocked", reason: "event_missing" });
     expect(
       await identity.prepareTenantResync({ tenantId: TENANT_A }),
     ).toMatchObject({ ok: false, kind: "corrupt" });

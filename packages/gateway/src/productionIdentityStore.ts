@@ -208,6 +208,26 @@ export interface ProductionIdentityStoreOptions {
   readonly maxResyncSeats?: number;
 }
 
+export type ProductionIdentityLifecycleState =
+  | "closed"
+  | "opening"
+  | "open"
+  | "closing"
+  | "failed";
+
+export type ProductionIdentityLifecycleStage =
+  | "tenant_open"
+  | "locator_open"
+  | "tenant_open_rollback"
+  | "locator_close"
+  | "tenant_close";
+
+export interface ProductionIdentityLifecycleSnapshot {
+  readonly state: ProductionIdentityLifecycleState;
+  readonly tenantAuthorityOpened: boolean;
+  readonly credentialLocatorOpened: boolean;
+}
+
 /** Durable production authentication always carries the full authority tuple. */
 export interface ProductionDeviceAuthContext extends DeviceAuthContext {
   readonly machineFingerprint: GatewayMachineFingerprint;
@@ -327,6 +347,7 @@ export type IdentityRevocationConsumeResult =
   | IdentityOperationFailure;
 
 export interface ProductionIdentityAuthority extends IdentityPort {
+  readonly kind: "oidc";
   authenticateDevice(input: {
     readonly deviceToken: string | undefined;
     readonly connectionId: string;
@@ -337,6 +358,7 @@ export interface ProductionIdentityAuthority extends IdentityPort {
   }): Promise<GatewayPortResult<ProductionDeviceAuthContext>>;
   open(): Promise<StoreOutcome<void>>;
   close(): Promise<StoreOutcome<void>>;
+  lifecycle(): ProductionIdentityLifecycleSnapshot;
   provisionDevice(
     input: ProvisionIdentityDeviceInput,
   ): Promise<IdentityMutationResult>;
@@ -392,6 +414,38 @@ function storeFailure(code: StoreErrorCode, message: string): IdentityOperationF
     return corruptAuthority();
   }
   return failure("unavailable", code, message);
+}
+
+type FailedStoreOutcome = Extract<StoreOutcome<void>, { readonly ok: false }>;
+
+function lifecycleSuccess(): StoreOutcome<void> {
+  return Object.freeze({ ok: true as const, value: undefined });
+}
+
+function lifecycleFailure(
+  operation: "open" | "close",
+  failures: readonly {
+    readonly stage: ProductionIdentityLifecycleStage;
+    readonly outcome: FailedStoreOutcome;
+  }[],
+): FailedStoreOutcome {
+  const code = failures.some(
+    (failure) => failure.outcome.code === "durability_uncertain",
+  )
+    ? "durability_uncertain"
+    : (failures[0]?.outcome.code ?? "unavailable");
+  const stages = failures
+    .slice(0, 3)
+    .map((failure) => `${failure.stage}:${failure.outcome.code}`)
+    .join(",");
+  return Object.freeze({
+    ok: false as const,
+    code,
+    message: `production identity lifecycle ${operation} failed [${stages}]`.slice(
+      0,
+      256,
+    ),
+  });
 }
 
 function identityRefusal(): GatewayPortResult<never> {
@@ -1215,7 +1269,12 @@ function assertChangeCoherence(change: IdentityAuthorityChange): void {
   const { device, seat, head, event } = change;
   assertSeatEventCoherence(seat, event, head.lastSequence);
   if (device === null) {
-    if (event.deviceId !== null || event.authorizationVersion !== null) {
+    if (
+      event.action !== "seat_revoked" ||
+      seat.status !== "revoked" ||
+      event.deviceId !== null ||
+      event.authorizationVersion !== null
+    ) {
       throw new CorruptIdentityAuthorityError(
         "device-free authority event carries device state",
       );
@@ -1224,6 +1283,18 @@ function assertChangeCoherence(change: IdentityAuthorityChange): void {
   }
   assertPairCoherence(device, seat, head.lastSequence);
   assertDeviceEventCoherence(device, event, head.lastSequence);
+  if (
+    (event.action === "seat_reassigned" &&
+      (device.status !== "active" || seat.status !== "active")) ||
+    (event.action === "device_revoked" &&
+      (device.status !== "revoked" || seat.status !== "revoked")) ||
+    (event.action === "seat_revoked" &&
+      (device.status !== "revoked" || seat.status !== "revoked"))
+  ) {
+    throw new CorruptIdentityAuthorityError(
+      "authority event action does not match touched record state",
+    );
+  }
 }
 
 function assertSeatEventCoherence(
@@ -1234,6 +1305,7 @@ function assertSeatEventCoherence(
   if (
     seat.lastAuthoritySequence !== event.sequence ||
     event.sequence > headSequence ||
+    event.seatId !== seat.seatId ||
     seat.seatAuthorityVersion !== event.seatAuthorityVersion ||
     seat.lastAuthorityOperationId !== event.operationId ||
     !digestEqual(seat.lastAuthorityOperationDigest, event.operationDigest)
@@ -1442,11 +1514,7 @@ async function loadAuthoritySnapshot(
       highestAuthoritySequence,
       device.lastAuthoritySequence,
     );
-    assertDeviceEventCoherence(
-      device,
-      await eventFor(device.lastAuthoritySequence),
-      headSequence,
-    );
+    const deviceEvent = await eventFor(device.lastAuthoritySequence);
     const seat = seatsById.get(device.seatId);
     if (
       device.status === "active" &&
@@ -1465,7 +1533,14 @@ async function loadAuthoritySnapshot(
       throw new CorruptIdentityAuthorityError("revoked device retains an active seat");
     }
     if (seat?.deviceId === device.deviceId) {
-      assertPairCoherence(device, seat, headSequence);
+      if (head === null) {
+        throw new CorruptIdentityAuthorityError(
+          "paired identity authority has no head",
+        );
+      }
+      assertChangeCoherence({ device, seat, head, event: deviceEvent });
+    } else {
+      assertDeviceEventCoherence(device, deviceEvent, headSequence);
     }
   }
   for (const seat of seats) {
@@ -1473,11 +1548,17 @@ async function loadAuthoritySnapshot(
       highestAuthoritySequence,
       seat.lastAuthoritySequence,
     );
-    assertSeatEventCoherence(
-      seat,
-      await eventFor(seat.lastAuthoritySequence),
-      headSequence,
-    );
+    const seatEvent = await eventFor(seat.lastAuthoritySequence);
+    if (seat.deviceId === null) {
+      if (head === null) {
+        throw new CorruptIdentityAuthorityError(
+          "seat-only identity authority has no head",
+        );
+      }
+      assertChangeCoherence({ device: null, seat, head, event: seatEvent });
+    } else {
+      assertSeatEventCoherence(seat, seatEvent, headSequence);
+    }
     if (seat.deviceId !== null && !devicesById.has(seat.deviceId)) {
       throw new CorruptIdentityAuthorityError(
         "seat references a missing device authority",
@@ -1496,6 +1577,11 @@ async function loadAuthoritySnapshot(
   }
   if (highestAuthoritySequence > headSequence) {
     throw new CorruptIdentityAuthorityError("identity authority sequence exceeds head");
+  }
+  if (headSequence > 0 && highestAuthoritySequence !== headSequence) {
+    throw new CorruptIdentityAuthorityError(
+      "identity authority head has no touched record at its sequence",
+    );
   }
   return {
     headStored,
@@ -1520,7 +1606,7 @@ function publicSnapshot(
 }
 
 class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthority {
-  public readonly kind: GatewayProtocolStore["kind"];
+  public readonly kind = "oidc" as const;
 
   readonly #store: GatewayProtocolStore;
   readonly #credentialLocator: ProductionCredentialScopeLocator;
@@ -1529,6 +1615,12 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
   readonly #northIdentity: Pick<IdentityPort, "authenticateNorthRequest"> | undefined;
   readonly #maxResyncDevices: number;
   readonly #maxResyncSeats: number;
+  #lifecycleState: ProductionIdentityLifecycleState = "closed";
+  #tenantAuthorityOpened = false;
+  #credentialLocatorOpened = false;
+  #openPromise: Promise<StoreOutcome<void>> | null = null;
+  #closePromise: Promise<StoreOutcome<void>> | null = null;
+  #lastLifecycleFailure: FailedStoreOutcome | null = null;
 
   constructor(options: ProductionIdentityStoreOptions) {
     if (
@@ -1547,7 +1639,6 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     }
     this.#store = options.store;
     this.#credentialLocator = options.credentialLocator;
-    this.kind = options.store.kind;
     this.#subscriberId = options.subscriberId;
     this.#clock = options.clock;
     this.#northIdentity = options.northIdentity;
@@ -1555,26 +1646,193 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     this.#maxResyncSeats = options.maxResyncSeats ?? DEFAULT_MAX_RESYNC_SEATS;
   }
 
-  public async open(): Promise<StoreOutcome<void>> {
-    const authority = await this.#store.open();
-    if (!authority.ok) return authority;
-    const locator = await this.#credentialLocator.open();
-    if (!locator.ok) {
-      await this.#store.close();
-      return locator;
-    }
-    return Object.freeze({ ok: true as const, value: undefined });
+  public lifecycle(): ProductionIdentityLifecycleSnapshot {
+    return Object.freeze({
+      state: this.#lifecycleState,
+      tenantAuthorityOpened: this.#tenantAuthorityOpened,
+      credentialLocatorOpened: this.#credentialLocatorOpened,
+    });
   }
 
-  public async close(): Promise<StoreOutcome<void>> {
-    const locator = await this.#credentialLocator.close();
-    const authority = await this.#store.close();
-    return !locator.ok ? locator : authority;
+  public open(): Promise<StoreOutcome<void>> {
+    if (this.#lifecycleState === "open") return Promise.resolve(lifecycleSuccess());
+    if (this.#openPromise !== null) return this.#openPromise;
+    if (
+      this.#lifecycleState === "closing" ||
+      this.#lifecycleState === "failed"
+    ) {
+      return Promise.resolve(
+        this.#lastLifecycleFailure ??
+          lifecycleFailure("open", [
+            {
+              stage: "tenant_open",
+              outcome: {
+                ok: false,
+                code: "unavailable",
+                message: "lifecycle is not openable",
+              },
+            },
+          ]),
+      );
+    }
+    this.#openPromise = this.#performOpen();
+    return this.#openPromise;
+  }
+
+  async #performOpen(): Promise<StoreOutcome<void>> {
+    this.#lifecycleState = "opening";
+    this.#lastLifecycleFailure = null;
+    try {
+      let authority: StoreOutcome<void>;
+      try {
+        authority = await this.#store.open();
+      } catch {
+        authority = {
+          ok: false,
+          code: "unavailable",
+          message: "tenant authority open threw",
+        };
+      }
+      if (!authority.ok) {
+        const failed = lifecycleFailure("open", [
+          { stage: "tenant_open", outcome: authority },
+        ]);
+        this.#lifecycleState = "failed";
+        this.#lastLifecycleFailure = failed;
+        return failed;
+      }
+      this.#tenantAuthorityOpened = true;
+
+      let locator: StoreOutcome<void>;
+      try {
+        locator = await this.#credentialLocator.open();
+      } catch {
+        locator = {
+          ok: false,
+          code: "unavailable",
+          message: "credential locator open threw",
+        };
+      }
+      if (!locator.ok) {
+        let rollback: StoreOutcome<void>;
+        try {
+          rollback = await this.#store.close();
+        } catch {
+          rollback = {
+            ok: false,
+            code: "unavailable",
+            message: "tenant authority rollback threw",
+          };
+        }
+        if (rollback.ok) this.#tenantAuthorityOpened = false;
+        const failures = [
+          { stage: "locator_open" as const, outcome: locator },
+          ...(rollback.ok
+            ? []
+            : [
+                {
+                  stage: "tenant_open_rollback" as const,
+                  outcome: rollback,
+                },
+              ]),
+        ];
+        const failed = lifecycleFailure("open", failures);
+        this.#lifecycleState = rollback.ok ? "closed" : "failed";
+        this.#lastLifecycleFailure = rollback.ok ? null : failed;
+        return failed;
+      }
+      this.#credentialLocatorOpened = true;
+      this.#lifecycleState = "open";
+      return lifecycleSuccess();
+    } finally {
+      this.#openPromise = null;
+    }
+  }
+
+  public close(): Promise<StoreOutcome<void>> {
+    if (this.#lifecycleState === "closed") {
+      return Promise.resolve(lifecycleSuccess());
+    }
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#lifecycleState === "opening") {
+      return Promise.resolve(
+        lifecycleFailure("close", [
+          {
+            stage: "locator_close",
+            outcome: {
+              ok: false,
+              code: "unavailable",
+              message: "lifecycle is opening",
+            },
+          },
+        ]),
+      );
+    }
+    if (
+      this.#lifecycleState === "failed" &&
+      !this.#tenantAuthorityOpened &&
+      !this.#credentialLocatorOpened &&
+      this.#lastLifecycleFailure !== null
+    ) {
+      return Promise.resolve(this.#lastLifecycleFailure);
+    }
+    this.#closePromise = this.#performClose();
+    return this.#closePromise;
+  }
+
+  async #performClose(): Promise<StoreOutcome<void>> {
+    this.#lifecycleState = "closing";
+    const failures: {
+      stage: ProductionIdentityLifecycleStage;
+      outcome: FailedStoreOutcome;
+    }[] = [];
+    try {
+      if (this.#credentialLocatorOpened) {
+        let locator: StoreOutcome<void>;
+        try {
+          locator = await this.#credentialLocator.close();
+        } catch {
+          locator = {
+            ok: false,
+            code: "unavailable",
+            message: "credential locator close threw",
+          };
+        }
+        this.#credentialLocatorOpened = false;
+        if (!locator.ok) failures.push({ stage: "locator_close", outcome: locator });
+      }
+      if (this.#tenantAuthorityOpened) {
+        let authority: StoreOutcome<void>;
+        try {
+          authority = await this.#store.close();
+        } catch {
+          authority = {
+            ok: false,
+            code: "unavailable",
+            message: "tenant authority close threw",
+          };
+        }
+        this.#tenantAuthorityOpened = false;
+        if (!authority.ok) failures.push({ stage: "tenant_close", outcome: authority });
+      }
+      if (failures.length > 0) {
+        const failed = lifecycleFailure("close", failures);
+        this.#lifecycleState = "failed";
+        this.#lastLifecycleFailure = failed;
+        return failed;
+      }
+      this.#lifecycleState = "closed";
+      this.#lastLifecycleFailure = null;
+      return lifecycleSuccess();
+    } finally {
+      this.#closePromise = null;
+    }
   }
 
   public async authenticateNorthRequest(input: {
     readonly authorization: string | undefined;
   }): Promise<GatewayPortResult<AuthContext>> {
+    if (this.#lifecycleState !== "open") return identityRefusal();
     if (this.#northIdentity === undefined) {
       return Object.freeze({
         ok: false as const,
@@ -1651,6 +1909,7 @@ class StoreBackedProductionIdentityAuthority implements ProductionIdentityAuthor
     readonly machineHostname?: string;
   }): Promise<GatewayPortResult<ProductionDeviceAuthContext>> {
     if (!isRecord(input)) return identityRefusal();
+    if (this.#lifecycleState !== "open") return identityRefusal();
     if (
       !isOpaqueToken(input.deviceToken) ||
       !isIdentifier(input.connectionId) ||
