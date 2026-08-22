@@ -7,7 +7,7 @@
   "branch": "remediation/wp-03-mutation-outcome-holds",
   "pullRequest": 388,
   "pullRequestState": "open_draft",
-  "generatedAtUtc": "2026-08-22T15:52:21.2304480+00:00",
+  "generatedAtUtc": "2026-08-22T15:53:39.7764219+00:00",
   "portableRoot": ".orchestration/artifacts/WP-03/critical_csharp_worker_rework4",
   "rawLogsCommitted": false,
   "evidenceIndex": "evidence-index.json",
@@ -81,8 +81,8 @@
     },
     {
       "path": "evidence-index.json",
-      "bytes": 5229,
-      "sha256": "7a0341ca1d31bfc621259a352e86d37585a8ba3c5da4c3e48a6e0d5feeca35f9",
+      "bytes": 5073,
+      "sha256": "4212dcb448efcbd4d7f6a628d2dc1edbf055b635ffb2c9327f81279395c15718",
       "committed": true
     },
     {
