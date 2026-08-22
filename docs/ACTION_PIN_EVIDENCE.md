@@ -33,6 +33,13 @@ ordinary shell `&&` and glob text remain valid in `run: |`/`run: >` payloads.
 Inline `run:` scalar command text is likewise excluded from this YAML
 indirection check; the scanner continues to inspect every structural mapping
 line and every `uses` value.
+
+For literal/folded block scalars, the scanner infers the content indentation
+from the first nonblank, noncomment payload line and skips only that indentation
+or deeper. A later nonblank dedent is rescanned as YAML structure, even if it
+remains deeper than the indicator line. Explicit indentation indicators are
+honored conservatively; missing or contradictory payload indentation fails
+closed rather than extending a block-scalar skip.
 Workflow YAML syntax is checked separately. The fixture matrix at
 `scripts/test-workflow-action-pins-fixtures.ps1` exercises these accepted and
 rejected forms.

@@ -256,18 +256,37 @@ $localCount = 0
 foreach ($relativePath in $relativeFiles) {
     $absolutePath = Join-Path $resolvedRoot ($relativePath.Replace('/', '\'))
     $lineNumber = 0
-    $blockScalarIndent = $null
+    $blockScalar = $null
     foreach ($rawLine in @(Get-Content -LiteralPath $absolutePath -ErrorAction Stop)) {
         $lineNumber++
         $indent = ([regex]::Match($rawLine, '^\s*')).Length
-        $trimmedRawLine = $rawLine.Trim()
-        if ($null -ne $blockScalarIndent) {
-            if ([string]::IsNullOrWhiteSpace($trimmedRawLine) -or $indent -gt $blockScalarIndent) {
+        $line = Remove-YamlComment -Line $rawLine
+        if ($null -ne $blockScalar) {
+            if ([string]::IsNullOrWhiteSpace($line.Trim())) {
                 continue
             }
-            $blockScalarIndent = $null
+            if ($null -eq $blockScalar.contentIndent) {
+                if ($indent -le $blockScalar.indicatorIndent) {
+                    $violations.Add(('{0}:{1} block scalar indentation is indeterminate' -f $relativePath, $lineNumber))
+                    $blockScalar = $null
+                }
+                elseif ($null -ne $blockScalar.explicitIndent -and $indent -lt ($blockScalar.indicatorIndent + $blockScalar.explicitIndent)) {
+                    $violations.Add(('{0}:{1} block scalar violates its explicit indentation indicator' -f $relativePath, $lineNumber))
+                    $blockScalar = $null
+                }
+                else {
+                    $minimumIndent = if ($null -eq $blockScalar.explicitIndent) { $indent } else { $blockScalar.indicatorIndent + $blockScalar.explicitIndent }
+                    $blockScalar.contentIndent = [Math]::Max($indent, $minimumIndent)
+                    continue
+                }
+            }
+            elseif ($indent -ge $blockScalar.contentIndent) {
+                continue
+            }
+            else {
+                $blockScalar = $null
+            }
         }
-        $line = Remove-YamlComment -Line $rawLine
         $isRunScalarLine = $line -match '^\s*run\s*:'
         if (-not $isRunScalarLine) {
             $indirectionReason = Get-UnsupportedYamlIndirectionReason -Line $line
@@ -347,8 +366,14 @@ foreach ($relativePath in $relativeFiles) {
             }
             $index = [Math]::Max($index, $valueResult.next - 1)
         }
-        if ($line -match ':\s*[>|][+-]?\s*$') {
-            $blockScalarIndent = $indent
+        $blockMatch = [regex]::Match($line, ':\s*[>|](?<modifiers>[+-]?[1-9]?|[1-9]?[+-]?)\s*$')
+        if ($blockMatch.Success) {
+            $explicitDigit = [regex]::Match($blockMatch.Groups['modifiers'].Value, '[1-9]')
+            $blockScalar = [pscustomobject]@{
+                indicatorIndent = $indent
+                explicitIndent = if ($explicitDigit.Success) { [int]$explicitDigit.Value } else { $null }
+                contentIndent = $null
+            }
         }
     }
 }
