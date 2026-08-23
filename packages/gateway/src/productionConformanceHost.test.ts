@@ -36,12 +36,12 @@ describe("productionGatewayHost", () => {
   it("requires the explicit profile and a complete conformance tuple before opening a socket", async () => {
     const ports = createFailClosedPorts();
     await expect(startProductionGatewayHost({
-      server: server("test", "127.0.0.1"), ports,
+      server: { ...server("test", "127.0.0.1"), tls: { key: Buffer.from("test"), cert: Buffer.from("test") } }, ports,
       authority: null as unknown as never,
       hostProfile: "not_conformance" as never,
     })).rejects.toThrow(/host profile/u);
     await expect(startProductionGatewayHost({
-      server: server("test", "127.0.0.1"), ports,
+      server: { ...server("test", "127.0.0.1"), tls: { key: Buffer.from("test"), cert: Buffer.from("test") } }, ports,
       authority: null as unknown as never,
       hostProfile: "production_conformance",
     })).rejects.toThrow(/explicit conformance identity/u);
