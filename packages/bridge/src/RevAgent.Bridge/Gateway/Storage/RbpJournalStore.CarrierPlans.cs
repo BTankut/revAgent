@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
@@ -111,7 +112,7 @@ internal sealed partial class RbpJournalStore
     /// idempotent replay after outbox pruning; the returned keys are only a
     /// spool-release signal for the producer's independent cleanup API.
     /// </summary>
-    internal Task<IReadOnlyList<string>> ApplyCarrierPlanAcknowledgementsAsync(
+    internal Task<IReadOnlyList<RbpReleasedCarrier>> ApplyCarrierPlanAcknowledgementsAsync(
         IReadOnlyList<RbpSessionAcknowledgement> acknowledgements,
         CancellationToken cancellationToken = default)
     {
@@ -120,7 +121,7 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
-                var released = new List<string>();
+                var released = new List<RbpReleasedCarrier>();
                 foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements
                              .OrderBy(value => value.Rsid, StringComparer.Ordinal))
                 {
@@ -131,21 +132,30 @@ internal sealed partial class RbpJournalStore
                     }
 
                     using SqliteCommand read = context.CreateCommand("""
-                        SELECT plan_id,carrier_key FROM rbp_carrier_plans
+                        SELECT plan_id,carrier_key,terminal_rsid,terminal_sequence
+                        FROM rbp_carrier_plans
                         WHERE terminal_rsid=$rsid AND terminal_sequence <= $sequence
                         ORDER BY terminal_sequence,plan_id;
                         """);
                     read.Parameters.AddWithValue("$rsid", acknowledgement.Rsid);
                     read.Parameters.AddWithValue("$sequence", acknowledgement.Sequence);
                     using SqliteDataReader reader = read.ExecuteReader();
-                    var plans = new List<(string PlanId, string CarrierKey)>();
+                    var plans = new List<(string PlanId, string CarrierKey,
+                        string Rsid, long TerminalSequence)>();
                     while (reader.Read())
                     {
-                        plans.Add((reader.GetString(0), reader.GetString(1)));
+                        if (reader.IsDBNull(2) || reader.IsDBNull(3))
+                        {
+                            throw RbpJournalSerialization.Corrupt(
+                                "A releasable carrier plan lacks its terminal fence.");
+                        }
+                        plans.Add((reader.GetString(0), reader.GetString(1),
+                            reader.GetString(2), reader.GetInt64(3)));
                     }
                     reader.Close();
 
-                    foreach ((string planId, string carrierKey) in plans)
+                    foreach ((string planId, string carrierKey,
+                              string rsid, long terminalSequence) in plans)
                     {
                         using SqliteCommand mark = context.CreateCommand("""
                             UPDATE rbp_carrier_plans
@@ -159,13 +169,59 @@ internal sealed partial class RbpJournalStore
                             throw RbpJournalSerialization.Corrupt(
                                 "A carrier plan disappeared before acknowledgement.");
                         }
-                        released.Add(carrierKey);
+                        released.Add(new RbpReleasedCarrier(
+                            carrierKey,
+                            rsid,
+                            terminalSequence));
                     }
                 }
-                return (IReadOnlyList<string>)released.AsReadOnly();
+                return (IReadOnlyList<RbpReleasedCarrier>)released.AsReadOnly();
             },
             cancellationToken);
     }
+
+    /// <summary>
+    /// Reconstructs the exact terminal fences from journal authority.  The
+    /// spool is never enumerated: acknowledged fences are returned separately
+    /// so recovery can delete only a carrier the committed journal released.
+    /// </summary>
+    internal Task<RbpCarrierRecovery> LoadCarrierRecoveryAsync(
+        CancellationToken cancellationToken = default) =>
+        ExecuteImmediateAsync(
+            context =>
+            {
+                using SqliteCommand command = context.CreateCommand("""
+                    SELECT carrier_key,terminal_rsid,terminal_sequence,
+                           acknowledged_at_ms
+                    FROM rbp_carrier_plans
+                    WHERE terminal_rsid IS NOT NULL
+                      AND terminal_sequence IS NOT NULL
+                    ORDER BY carrier_key;
+                    """);
+                using SqliteDataReader reader = command.ExecuteReader();
+                var pending = new List<RbpCarrierFenceRecord>();
+                var released = new List<RbpReleasedCarrier>();
+                while (reader.Read())
+                {
+                    string carrierKey = reader.GetString(0);
+                    string rsid = reader.GetString(1);
+                    long terminalSequence = reader.GetInt64(2);
+                    if (reader.IsDBNull(3))
+                    {
+                        pending.Add(new RbpCarrierFenceRecord(
+                            carrierKey, rsid, terminalSequence));
+                    }
+                    else
+                    {
+                        released.Add(new RbpReleasedCarrier(
+                            carrierKey, rsid, terminalSequence));
+                    }
+                }
+
+                return new RbpCarrierRecovery(
+                    pending.AsReadOnly(), released.AsReadOnly());
+            },
+            cancellationToken);
 
     private static void ValidateCarrierKey(string carrierKey)
     {
@@ -176,3 +232,12 @@ internal sealed partial class RbpJournalStore
         }
     }
 }
+
+internal sealed record RbpCarrierFenceRecord(
+    string CarrierKey,
+    string Rsid,
+    long TerminalSequence);
+
+internal sealed record RbpCarrierRecovery(
+    IReadOnlyList<RbpCarrierFenceRecord> PendingFences,
+    IReadOnlyList<RbpReleasedCarrier> ReleasedCarriers);

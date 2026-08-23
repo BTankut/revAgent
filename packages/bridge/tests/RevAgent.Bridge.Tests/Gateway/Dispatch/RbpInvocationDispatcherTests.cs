@@ -270,12 +270,20 @@ public sealed class RbpInvocationDispatcherTests
         Assert.NotNull((await store.GetInvocationAsync(
             Rsid + "/" + ReadRequest().InvocationId))!.CarrierPlan);
 
-        Assert.Equal(
-            new[] { plan.CarrierKey },
+        IReadOnlyList<RbpReleasedCarrier> released =
             await store.ApplyCarrierPlanAcknowledgementsAsync(
-                new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
-        producer.ApplyDurableAcknowledgements(
-            new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) });
+                new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) });
+        RbpReleasedCarrier release = Assert.Single(released);
+        Assert.Equal(plan.CarrierKey, release.CarrierKey);
+        Assert.Equal(Rsid, release.Rsid);
+        Assert.Equal(terminalSequence, release.TerminalSequence);
+        // Simulate a worker restart after the durable heartbeat ACK committed
+        // but before the live connection could delete the spool. Recovery may
+        // use only the journal's exact released fence; the carrier plan stays
+        // attached for duplicate replay.
+        RbpArtifactCarrierProducer restarted =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        await restarted.RehydrateFencesAsync(CancellationToken.None);
         Assert.False(Directory.Exists(carrierRoot));
 
         RbpStoredInvocation acknowledged = Assert.IsType<RbpStoredInvocation>(
@@ -304,6 +312,11 @@ public sealed class RbpInvocationDispatcherTests
             RbpJournalStore.MinimumRetentionPeriod);
         Assert.Equal(1, expired.PrunedCarrierPlans);
         Assert.Equal(1, expired.PrunedInvocations);
+        RbpReleasedCarrier retainedRelease = Assert.Single(
+            expired.ExactReleasedCarriers);
+        Assert.Equal(plan.CarrierKey, retainedRelease.CarrierKey);
+        Assert.Equal(Rsid, retainedRelease.Rsid);
+        Assert.Equal(terminalSequence, retainedRelease.TerminalSequence);
         Assert.Null(await store.GetInvocationAsync(
             Rsid + "/" + ReadRequest().InvocationId));
     }

@@ -348,11 +348,11 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
-    public async Task WorkerRuntimePeriodicallySweepsOnlyExpiredFencedCarrierSpools()
+    public async Task WorkerRuntimePurgeUsesSevenDayJournalReleaseForSpoolCleanup()
     {
         using var directory = new RbpJournalTestDirectory();
         var clock = new ManualCoordinatorClock();
-        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpJournalStore store = OpenStore(directory, clock);
         RbpArtifactCarrierProducer producer =
             RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
         RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(
@@ -365,12 +365,57 @@ public sealed partial class RbpConnectionCoordinatorTests
                         'x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1),
                 }),
                 CancellationToken.None));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration(
+                rsid: "rs-sweep",
+                expiresInHours: 24 * 365));
+        const string invocationId = "0197a3c2-0000-7000-8000-000000000412";
+        var identity = new RbpInvocationIdentity(
+            "rs-sweep", invocationId, "get_current_view_info", false, null,
+            "sha256:" + new string('a', 64), "{}", "[]");
+        _ = await store.AdmitInvocationAsync(identity);
+        await store.MarkInvocationExecutingAsync(identity.IdempotencyKey);
+        JsonElement prefixes = JsonSerializer.SerializeToElement(
+            emission.Prefixes.Select(value => new
+            {
+                type = value.Type,
+                payload = value.Payload,
+            }));
+        string prefixDigest = RbpArtifactCarrierProducer.Digest(
+            System.Text.Encoding.UTF8.GetBytes(prefixes.GetRawText()));
+        string terminalDigest = RbpArtifactCarrierProducer.Digest(
+            System.Text.Encoding.UTF8.GetBytes(
+                emission.TerminalPayload.GetRawText()));
+        _ = await store.PersistInvocationTerminalAsync(
+            identity.IdempotencyKey,
+            new RbpInvocationTerminal(
+                RbpInvocationState.Completed,
+                emission.TerminalPayload,
+                terminalDigest,
+                new RbpCarrierPlan(
+                    "sha256:" + new string('c', 64),
+                    emission.CarrierKey,
+                    emission.Prefixes.Select(value =>
+                        new RbpCarrierPlanFrame(value.Type, value.Payload))
+                        .ToArray(),
+                    emission.TerminalPayload,
+                    prefixDigest,
+                    terminalDigest)));
+        RbpQueueOutboundResult terminal = await store.QueueOutboundDataAsync(
+            "rs-sweep",
+            new RbpOutboundDataDraft(
+                "result", "sweep-terminal", emission.TerminalPayload));
+        long terminalSequence = Assert.IsType<RbpDataEnvelopeSnapshot>(
+            terminal.Envelope).Sequence;
+        await store.RecordCarrierTerminalQueuedAsync(
+            emission.CarrierKey, "rs-sweep", terminalSequence);
         producer.RecordTerminalQueued(emission.CarrierKey, "rs-sweep", 1);
         string carrierRoot = Path.Combine(
             directory.Path, "artifact-spool", emission.CarrierKey);
-        File.SetLastWriteTimeUtc(
-            Path.Combine(carrierRoot, "terminal.ack.json"),
-            DateTime.UtcNow.AddDays(-8));
+        Assert.Equal(1, terminalSequence);
+        _ = await store.ApplyCarrierPlanAcknowledgementsAsync(
+            new[] { new RbpSessionAcknowledgement("rs-sweep", terminalSequence) });
+        clock.Advance(TimeSpan.FromDays(8));
 
         var responder = new ScriptedGatewayResponder(clock);
         var cycle = new FakeConnectionCycle(responder.Respond);
@@ -381,6 +426,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             clock);
         await using var runtime = new WorkerGatewayRuntime(
             coordinator,
+            ownedJournal: store,
             carrierProducer: producer,
             carrierSweepInterval: TimeSpan.FromMilliseconds(10));
         var service = new WorkerGatewayRuntimeService(
@@ -393,6 +439,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         try
         {
             await EventuallyAsync(() => !Directory.Exists(carrierRoot));
+            Assert.Null(await store.GetInvocationAsync(identity.IdempotencyKey));
         }
         finally
         {

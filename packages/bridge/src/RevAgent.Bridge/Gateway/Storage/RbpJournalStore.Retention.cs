@@ -1,4 +1,5 @@
 using Microsoft.Data.Sqlite;
+using RevAgent.Bridge.Gateway.Dispatch;
 
 namespace RevAgent.Bridge.Gateway.Storage;
 
@@ -13,7 +14,12 @@ internal sealed record RbpJournalRetentionResult(
     int PrunedOutboxEnvelopes,
     int PrunedTransportSessions,
     int PrunedTerminalBatches = 0,
-    int PrunedCarrierPlans = 0);
+    int PrunedCarrierPlans = 0,
+    IReadOnlyList<RbpReleasedCarrier>? ReleasedCarriers = null)
+{
+    internal IReadOnlyList<RbpReleasedCarrier> ExactReleasedCarriers =>
+        ReleasedCarriers ?? Array.Empty<RbpReleasedCarrier>();
+}
 
 /// <summary>
 /// Frozen O1 Section 12.2 journal retention. The journal retains entries
@@ -82,7 +88,8 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
-                (int carrierPlans, int carrierInvocations) =
+                (IReadOnlyList<RbpReleasedCarrier> releasedCarriers,
+                 int carrierInvocations) =
                     PruneExpiredCarrierPlans(context, cutoff);
                 int invocations = carrierInvocations +
                     PruneTerminalInvocations(context, cutoff);
@@ -100,19 +107,30 @@ internal sealed partial class RbpJournalStore
                     context,
                     "rbp_session_sequence",
                     cutoff);
-                return new RbpJournalRetentionResult(
-                    invocations,
-                    holds,
-                    receipts,
-                    outbox,
-                    sessions,
-                    batches,
-                    carrierPlans);
+                return releasedCarriers.Count == 0
+                    ? new RbpJournalRetentionResult(
+                        invocations,
+                        holds,
+                        receipts,
+                        outbox,
+                        sessions,
+                        batches,
+                        0)
+                    : new RbpJournalRetentionResult(
+                        invocations,
+                        holds,
+                        receipts,
+                        outbox,
+                        sessions,
+                        batches,
+                        releasedCarriers.Count,
+                        releasedCarriers);
             },
             cancellationToken);
     }
 
-    private static (int Plans, int Invocations) PruneExpiredCarrierPlans(
+    private static (IReadOnlyList<RbpReleasedCarrier> ReleasedCarriers,
+                    int Invocations) PruneExpiredCarrierPlans(
         RbpJournalWriteContext context,
         long cutoff)
     {
@@ -122,7 +140,8 @@ internal sealed partial class RbpJournalStore
         // unlinks then removes the plan, so a crash leaves either both plan
         // and invocation or neither — never a terminal-only replay state.
         using SqliteCommand read = context.CreateCommand("""
-            SELECT plan.plan_id,invocation.idempotency_key
+            SELECT plan.plan_id,invocation.idempotency_key,plan.carrier_key,
+                   plan.terminal_rsid,plan.terminal_sequence
             FROM rbp_carrier_plans AS plan
             JOIN rbp_invocations AS invocation
               ON invocation.idempotency_key=plan.idempotency_key
@@ -159,14 +178,24 @@ internal sealed partial class RbpJournalStore
             """);
         read.Parameters.AddWithValue("$cutoff", cutoff);
         using SqliteDataReader reader = read.ExecuteReader();
-        var plans = new List<(string PlanId, string InvocationKey)>();
+        var plans = new List<(string PlanId, string InvocationKey,
+                              RbpReleasedCarrier Released)>();
         while (reader.Read())
         {
-            plans.Add((reader.GetString(0), reader.GetString(1)));
+            if (reader.IsDBNull(3) || reader.IsDBNull(4))
+            {
+                throw RbpJournalSerialization.Corrupt(
+                    "An expiring carrier plan lacks its immutable fence.");
+            }
+            plans.Add((reader.GetString(0), reader.GetString(1),
+                new RbpReleasedCarrier(
+                    reader.GetString(2), reader.GetString(3),
+                    reader.GetInt64(4))));
         }
         reader.Close();
 
-        foreach ((string planId, string invocationKey) in plans)
+        foreach ((string planId, string invocationKey,
+                  RbpReleasedCarrier _) in plans)
         {
             using SqliteCommand unlink = context.CreateCommand("""
                 UPDATE rbp_invocations SET carrier_plan_id=NULL
@@ -207,7 +236,7 @@ internal sealed partial class RbpJournalStore
                     "An expiring carrier invocation changed during fenced purge.");
             }
         }
-        return (plans.Count, plans.Count);
+        return (plans.Select(value => value.Released).ToArray(), plans.Count);
     }
 
     private static int PruneTerminalInvocations(

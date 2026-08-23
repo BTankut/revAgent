@@ -289,6 +289,15 @@ internal sealed partial class RbpConnectionCoordinator
     private async Task RunOneConnectionAsync(
         CancellationToken serviceCancellationToken)
     {
+        // Each fresh transport cycle starts from durable fences. This covers
+        // both process startup and reconnect after a crash between the ACK
+        // transaction and spool cleanup; no spool directory is discovered.
+        if (_carrierProducer is not null)
+        {
+            await _carrierProducer.RehydrateFencesAsync(serviceCancellationToken)
+                .ConfigureAwait(false);
+        }
+
         IRbpConnectionCycle cycle = await _cycleFactory
             .OpenAsync(
                 _options.Endpoint,

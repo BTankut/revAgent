@@ -503,6 +503,30 @@ internal sealed class RbpArtifactCarrierProducer
         }
     }
 
+    /// <summary>
+    /// Restores only journal-declared fences after worker startup or a
+    /// connection-cycle boundary. A process crash after the acknowledgement
+    /// transaction but before spool deletion is therefore recovered from the
+    /// exact durable release list, never from a filesystem search.
+    /// </summary>
+    internal async Task RehydrateFencesAsync(CancellationToken cancellationToken)
+    {
+        RbpCarrierRecovery recovery = await _journal
+            .LoadCarrierRecoveryAsync(cancellationToken)
+            .ConfigureAwait(false);
+        foreach (RbpCarrierFenceRecord pending in recovery.PendingFences)
+        {
+            _fences[pending.CarrierKey] = new RbpCarrierFence(
+                pending.Rsid,
+                pending.TerminalSequence);
+        }
+
+        if (recovery.ReleasedCarriers.Count > 0)
+        {
+            SweepExpired(recovery.ReleasedCarriers);
+        }
+    }
+
     /// <summary>Journal recovery supplies only fenced, already-released keys.
     /// There is no spool discovery path and no timestamp-based directory scan.</summary>
     internal void SweepExpired(IReadOnlyList<RbpReleasedCarrier> releasedCarriers)

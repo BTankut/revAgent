@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Runtime.ExceptionServices;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Protocol;
 using RevAgent.Bridge.Gateway.Storage;
 
@@ -427,17 +428,17 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
-            IReadOnlyList<string> releasedCarrierPlans =
+            IReadOnlyList<RbpReleasedCarrier> releasedCarriers =
                 await _journal.ApplyCarrierPlanAcknowledgementsAsync(
                         acknowledgements,
                         context.Token)
                     .ConfigureAwait(false);
-            if (releasedCarrierPlans.Count > 0)
+            if (releasedCarriers.Count > 0)
             {
                 // The journal release is the authority. The producer owns the
                 // spool and independently rechecks its terminal fence before
                 // deleting any bytes; it is never called on send.
-                _carrierProducer?.ApplyDurableAcknowledgements(acknowledgements);
+                _carrierProducer?.SweepExpired(releasedCarriers);
             }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {

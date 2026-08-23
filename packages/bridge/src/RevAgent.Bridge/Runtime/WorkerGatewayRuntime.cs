@@ -273,13 +273,21 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         {
             try
             {
-                producer.SweepExpired(DateTimeOffset.UtcNow);
                 if (_ownedJournal is not null)
                 {
-                    _ = await _ownedJournal.ApplyRetentionAsync(
+                    RbpJournalRetentionResult retained =
+                        await _ownedJournal.ApplyRetentionAsync(
                             RbpJournalStore.MinimumRetentionPeriod,
                             cancellationToken)
-                        .ConfigureAwait(false);
+                            .ConfigureAwait(false);
+                    // Retention yields only journal-fenced, expired carriers.
+                    // The sequential loop awaits this entire pass, so no two
+                    // cleanup passes overlap and cancellation reaches the
+                    // journal boundary before any next pass can begin.
+                    if (retained.ExactReleasedCarriers.Count > 0)
+                    {
+                        producer.SweepExpired(retained.ExactReleasedCarriers);
+                    }
                 }
             }
             catch (OperationCanceledException)
