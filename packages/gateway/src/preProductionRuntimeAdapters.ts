@@ -14,6 +14,7 @@ import type { GatewayPortResult } from "./gatewayPorts.js";
 import {
   GATEWAY_STORE_CONTRACT_VERSION,
   type GatewayProtocolStore,
+  type GatewayStartupCoordinator,
   type StoreErrorCode,
   type StoreExpectation,
   type StoreOutcome,
@@ -386,6 +387,7 @@ function createPreProductionProtocolStore(
   let nextVersion = 0;
   let recordCount = 0;
   let totalValueBytes = 0;
+  let startupTail = Promise.resolve();
 
   function recordFor(
     tenantId: string,
@@ -429,6 +431,34 @@ function createPreProductionProtocolStore(
   const store: GatewayProtocolStore & { readonly kind: "preproduction" } = {
     kind: "preproduction" as const,
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+    startupCoordinator: Object.freeze({
+      contractVersion: "revagent.protocol-store-startup/v1" as const,
+      async runExclusive<T>(work: () => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
+        const prior = startupTail;
+        let release!: () => void;
+        startupTail = new Promise<void>((resolve) => { release = resolve; });
+        await prior;
+        try { return await work(); } finally { release(); }
+      },
+      async listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!opened || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+          return storeFailure("unavailable", STORE_UNAVAILABLE_MESSAGE);
+        }
+        const ids = [...tenants.keys()].sort();
+        return ids.length > limit
+          ? storeFailure("invalid_record", STORE_INVALID_MESSAGE)
+          : storeSuccess(Object.freeze(ids));
+      },
+      async listKeys(tenantId: string, namespace: string, limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!opened || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000 || !boundedIdentifier(tenantId, maxIdentifierBytes) || !boundedIdentifier(namespace, maxIdentifierBytes)) {
+          return storeFailure("unavailable", STORE_UNAVAILABLE_MESSAGE);
+        }
+        const keys = listFor(tenantId, namespace).map((record) => record.key);
+        return keys.length > limit
+          ? storeFailure("invalid_record", STORE_INVALID_MESSAGE)
+          : storeSuccess(Object.freeze(keys));
+      },
+    } satisfies GatewayStartupCoordinator),
     async open(): Promise<StoreOutcome<void>> {
       opened = true;
       return storeSuccess(undefined);

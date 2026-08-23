@@ -84,6 +84,7 @@ interface ResourceRecordBase {
   readonly lifecycle?: "allocating" | "assembling" | "verified" | "active" | "gc_claimed";
   readonly gcLease?: {
     readonly owner: string;
+    readonly claimToken: string;
     readonly expiresAtMs: number;
   };
 }
@@ -274,6 +275,8 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
     record.lifecycle !== "gc_claimed" ||
     typeof record.gcLease.owner !== "string" ||
     record.gcLease.owner.length < 1 ||
+    typeof record.gcLease.claimToken !== "string" ||
+    record.gcLease.claimToken.length < 1 ||
     !Number.isSafeInteger(record.gcLease.expiresAtMs) ||
     record.gcLease.expiresAtMs < 0
   )) {
@@ -639,22 +642,6 @@ export class GatewayResourceAuthority {
     const digest = sha256(bytes);
     const key = storageKey(input.scope, "result_ref", refId, digest);
     const pages = splitResultBytes(bytes, this.#maxResultPageBytes);
-    const put = await this.#objectStore.put({
-      tenantId: input.scope.tenantId,
-      storageKey: key,
-      bytes,
-      contentType: "application/json",
-    });
-    if (!put.ok) {
-      fail("storage_unavailable", put.message);
-    }
-    if (put.value.storageKey !== key) {
-      await this.#objectStore.delete({
-        tenantId: input.scope.tenantId,
-        storageKey: key,
-      });
-      fail("storage_unavailable", "object store changed the requested storage key");
-    }
     const record: ResultRecord = Object.freeze({
       schemaVersion: "revagent-gateway-resource/v1",
       kind: "result_ref",
@@ -670,12 +657,33 @@ export class GatewayResourceAuthority {
       pageSize: this.#maxResultPageBytes,
       pageCount: pages.length,
       storageKey: key,
-      lifecycle: "active" as const,
+      lifecycle: "allocating" as const,
     });
-    const stored = await this.#writeRecords(input.scope, [record]);
-    if (!stored) {
+    if (!await this.#writeRecords(input.scope, [record])) {
+      fail("storage_unavailable", "result_ref allocation metadata was not durably accepted");
+    }
+    const put = await this.#objectStore.put({
+      tenantId: input.scope.tenantId,
+      storageKey: key,
+      bytes,
+      contentType: "application/json",
+    });
+    if (!put.ok) {
+      await this.#deleteRecords(input.scope, [record]);
+      fail("storage_unavailable", put.message);
+    }
+    if (put.value.storageKey !== key) {
+      await this.#objectStore.delete({
+        tenantId: input.scope.tenantId,
+        storageKey: key,
+      });
+      await this.#deleteRecords(input.scope, [record]);
+      fail("storage_unavailable", "object store changed the requested storage key");
+    }
+    if (!await this.#activateRecord(input.scope, record)) {
       await this.#objectStore.delete({ tenantId: input.scope.tenantId, storageKey: key });
-      fail("storage_unavailable", "result_ref metadata was not durably accepted");
+      await this.#deleteRecords(input.scope, [record]);
+      fail("storage_unavailable", "result_ref verification metadata was not durably accepted");
     }
     return Object.freeze({
       kind: "result_ref" as const,
@@ -789,6 +797,7 @@ export class GatewayResourceAuthority {
           currentRecord === null ||
           currentRecord.lifecycle !== "gc_claimed" ||
           currentRecord.gcLease?.owner !== this.#gcOwnerId ||
+          currentRecord.gcLease.claimToken !== claim.record.gcLease?.claimToken ||
           currentRecord.gcLease.expiresAtMs !== claim.record.gcLease?.expiresAtMs
         ) return false;
         tx.stage({ namespace: RESOURCE_NAMESPACE, key: candidate.key, value: null, expect: { kind: "version", version: current.version } });
@@ -849,21 +858,6 @@ export class GatewayResourceAuthority {
       refIds.add(refId);
       await this.#assertRefAbsent(scope, "artifact_ref", refId);
       const key = storageKey(scope, "artifact_ref", refId, input.digest);
-      const put = await this.#objectStore.put({
-        tenantId: scope.tenantId,
-        storageKey: key,
-        bytes: input.bytes,
-        contentType: input.contentType,
-      });
-      if (!put.ok) {
-        await this.#deleteStored(scope, records);
-        fail("storage_unavailable", put.message);
-      }
-      if (put.value.storageKey !== key) {
-        await this.#objectStore.delete({ tenantId: scope.tenantId, storageKey: key });
-        await this.#deleteStored(scope, records);
-        fail("storage_unavailable", "object store changed the requested storage key");
-      }
       records.push(Object.freeze({
         schemaVersion: "revagent-gateway-resource/v1",
         kind: "artifact_ref",
@@ -882,13 +876,33 @@ export class GatewayResourceAuthority {
         source: input.source,
         invocationId: input.invocationId,
         artifactIndex: input.artifactIndex,
-        lifecycle: "active" as const,
+        lifecycle: "allocating" as const,
       }));
     }
     const stored = await this.#writeRecords(scope, records);
     if (!stored) {
-      await this.#deleteStored(scope, records);
       fail("storage_unavailable", "artifact set metadata was not durably accepted");
+    }
+    for (const [index, record] of records.entries()) {
+      const input = inputs[index]!;
+      const put = await this.#objectStore.put({
+        tenantId: scope.tenantId,
+        storageKey: record.storageKey,
+        bytes: input.bytes,
+        contentType: input.contentType,
+      });
+      if (!put.ok || put.value.storageKey !== record.storageKey) {
+        await this.#deleteStored(scope, records);
+        await this.#deleteRecords(scope, records);
+        fail("storage_unavailable", put.ok ? "object store changed the requested storage key" : put.message);
+      }
+    }
+    for (const record of records) {
+      if (!await this.#activateRecord(scope, record)) {
+        await this.#deleteStored(scope, records);
+        await this.#deleteRecords(scope, records);
+        fail("storage_unavailable", "artifact verification metadata was not durably accepted");
+      }
     }
     return Object.freeze(records.map((record) => Object.freeze({
       kind: "artifact_ref" as const,
@@ -920,6 +934,36 @@ export class GatewayResourceAuthority {
       },
     );
     return outcome.ok;
+  }
+
+  async #activateRecord(scope: GatewayResourceScope, record: ResourceRecord): Promise<boolean> {
+    const outcome = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const stored = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(scope, record.kind, record.refId));
+      if (stored === null) return false;
+      const current = asJsonRecord(stored.value);
+      if (current === null || current.lifecycle !== "allocating" || current.storageKey !== record.storageKey) return false;
+      tx.stage({
+        namespace: RESOURCE_NAMESPACE,
+        key: stored.key,
+        value: { ...current, lifecycle: "active" } as unknown as GatewayJsonValue,
+        expect: { kind: "version", version: stored.version },
+      });
+      return true;
+    });
+    return outcome.ok && outcome.value;
+  }
+
+  async #deleteRecords(
+    scope: GatewayResourceScope,
+    records: readonly ResourceRecord[],
+  ): Promise<void> {
+    await Promise.allSettled(records.map(async (record) => {
+      await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+        const stored = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(scope, record.kind, record.refId));
+        if (stored === null) return;
+        tx.stage({ namespace: RESOURCE_NAMESPACE, key: stored.key, value: null, expect: { kind: "version", version: stored.version } });
+      });
+    }));
   }
 
   async #assertRefAbsent(
@@ -1035,7 +1079,11 @@ export class GatewayResourceAuthority {
       const next = Object.freeze({
         ...record,
         lifecycle: "gc_claimed" as const,
-        gcLease: Object.freeze({ owner: this.#gcOwnerId, expiresAtMs: now + 60_000 }),
+        gcLease: Object.freeze({
+          owner: this.#gcOwnerId,
+          claimToken: randomUUID(),
+          expiresAtMs: now + 60_000,
+        }),
       });
       tx.stage({ namespace: RESOURCE_NAMESPACE, key, value: next as unknown as GatewayJsonValue, expect: { kind: "version", version: stored.version } });
       return next;
