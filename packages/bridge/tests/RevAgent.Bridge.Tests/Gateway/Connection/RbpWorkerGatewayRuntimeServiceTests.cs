@@ -348,6 +348,59 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerRuntimePeriodicallySweepsOnlyExpiredFencedCarrierSpools()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        var clock = new ManualCoordinatorClock();
+        await using RbpJournalStore store = OpenStore(directory, clock);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(
+            await producer.TryPrepareAsync(
+                "rs-sweep",
+                Json("""{"invocation_id":"sweep-carrier"}"""),
+                JsonSerializer.SerializeToElement(new
+                {
+                    payload = new string(
+                        'x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1),
+                }),
+                CancellationToken.None));
+        producer.RecordTerminalQueued(emission.CarrierKey, "rs-sweep", 1);
+        string carrierRoot = Path.Combine(
+            directory.Path, "artifact-spool", emission.CarrierKey);
+        File.SetLastWriteTimeUtc(
+            Path.Combine(carrierRoot, "terminal.ack.json"),
+            DateTime.UtcNow.AddDays(-8));
+
+        var responder = new ScriptedGatewayResponder(clock);
+        var cycle = new FakeConnectionCycle(responder.Respond);
+        RbpConnectionCoordinator coordinator = Coordinator(
+            new FakeConnectionCycleFactory(cycle),
+            store,
+            new MutableSessionCatalog(),
+            clock);
+        await using var runtime = new WorkerGatewayRuntime(
+            coordinator,
+            carrierProducer: producer,
+            carrierSweepInterval: TimeSpan.FromMilliseconds(10));
+        var service = new WorkerGatewayRuntimeService(
+            () => runtime,
+            new RuntimeLifetime(),
+            new RuntimeLog(),
+            new WorkerExitState());
+
+        await service.StartAsync(CancellationToken.None);
+        try
+        {
+            await EventuallyAsync(() => !Directory.Exists(carrierRoot));
+        }
+        finally
+        {
+            await service.StopAsync(CancellationToken.None);
+        }
+    }
+
+    [Fact]
     public async Task WorkerCatalogProjectsDiscoveryIntoFrozenRegistrations()
     {
         using var directory = new RbpJournalTestDirectory();

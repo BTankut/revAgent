@@ -427,7 +427,18 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
-            _carrierProducer?.ApplyDurableAcknowledgements(acknowledgements);
+            IReadOnlyList<string> releasedCarrierPlans =
+                await _journal.ApplyCarrierPlanAcknowledgementsAsync(
+                        acknowledgements,
+                        context.Token)
+                    .ConfigureAwait(false);
+            if (releasedCarrierPlans.Count > 0)
+            {
+                // The journal release is the authority. The producer owns the
+                // spool and independently rechecks its terminal fence before
+                // deleting any bytes; it is never called on send.
+                _carrierProducer?.ApplyDurableAcknowledgements(acknowledgements);
+            }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
                 context.MarkUnregisterConfirmed(rsid);

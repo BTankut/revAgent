@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 2;
+    internal const int CurrentVersion = 4;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -378,10 +378,63 @@ internal static class RbpJournalSchema
 
     internal static RbpJournalMigration InvocationJournalMigration { get; } =
         new(
-            CurrentVersion,
+            2,
             "P3-T5",
             "rbp_invocation_journal_v1",
             InvocationJournalSchema);
+
+    private const string CarrierPlanSchema = """
+        CREATE TABLE rbp_carrier_plans(
+          plan_id TEXT PRIMARY KEY,
+          idempotency_key TEXT NOT NULL UNIQUE
+            REFERENCES rbp_invocations(idempotency_key) ON DELETE RESTRICT,
+          carrier_key TEXT NOT NULL,
+          prefixes_jcs TEXT NOT NULL,
+          prefix_digest TEXT NOT NULL,
+          terminal_jcs TEXT NOT NULL,
+          terminal_digest TEXT NOT NULL,
+          created_at_ms INTEGER NOT NULL CHECK(created_at_ms >= 0),
+          CHECK(length(plan_id)=71 AND substr(plan_id,1,7)='sha256:' AND
+            substr(plan_id,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(carrier_key)=64 AND carrier_key NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(prefixes_jcs)>0),
+          CHECK(length(terminal_jcs)>0),
+          CHECK(length(prefix_digest)=71 AND substr(prefix_digest,1,7)='sha256:' AND
+            substr(prefix_digest,8) NOT GLOB '*[^0-9a-f]*'),
+          CHECK(length(terminal_digest)=71 AND substr(terminal_digest,1,7)='sha256:' AND
+            substr(terminal_digest,8) NOT GLOB '*[^0-9a-f]*')
+        ) STRICT;
+
+        ALTER TABLE rbp_invocations
+          ADD COLUMN carrier_plan_id TEXT
+            REFERENCES rbp_carrier_plans(plan_id) ON DELETE RESTRICT;
+
+        CREATE UNIQUE INDEX ux_rbp_invocations_carrier_plan
+          ON rbp_invocations(carrier_plan_id)
+          WHERE carrier_plan_id IS NOT NULL;
+        """;
+
+    internal static RbpJournalMigration CarrierPlanMigration { get; } = new(
+        3,
+        "WP-12",
+        "rbp_carrier_plan_v1",
+        CarrierPlanSchema);
+
+    private const string CarrierPlanFenceSchema = """
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN terminal_rsid TEXT;
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN terminal_sequence INTEGER;
+        CREATE UNIQUE INDEX ux_rbp_carrier_plans_terminal_fence
+          ON rbp_carrier_plans(terminal_rsid,terminal_sequence)
+          WHERE terminal_rsid IS NOT NULL;
+        """;
+
+    internal static RbpJournalMigration CarrierPlanFenceMigration { get; } = new(
+        CurrentVersion,
+        "WP-12",
+        "rbp_carrier_plan_terminal_fence_v1",
+        CarrierPlanFenceSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -390,6 +443,8 @@ internal static class RbpJournalSchema
         {
             BaseMigration,
             InvocationJournalMigration,
+            CarrierPlanMigration,
+            CarrierPlanFenceMigration,
         };
         if (additional is not null)
         {

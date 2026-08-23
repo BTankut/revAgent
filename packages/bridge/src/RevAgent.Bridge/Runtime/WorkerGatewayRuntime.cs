@@ -40,28 +40,47 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
     internal static readonly TimeSpan DefaultBindingRefreshInterval =
         TimeSpan.FromMilliseconds(250);
 
+    /// <summary>
+    /// The carrier producer's constructor sweep is recovery-only.  This pump
+    /// keeps the seven-day terminal-fenced expiry policy alive for a long-lived
+    /// worker without making any send path a cleanup authority.
+    /// </summary>
+    internal static readonly TimeSpan DefaultCarrierSweepInterval =
+        TimeSpan.FromHours(1);
+
     private readonly RbpConnectionCoordinator _coordinator;
     private readonly IRbpSessionRouteBinder? _binder;
     private readonly RbpJournalStore? _ownedJournal;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
     private readonly TimeSpan _bindingRefreshInterval;
+    private readonly TimeSpan _carrierSweepInterval;
     private int _disposed;
 
     internal WorkerGatewayRuntime(
         RbpConnectionCoordinator coordinator,
         IRbpSessionRouteBinder? binder = null,
         RbpJournalStore? ownedJournal = null,
-        TimeSpan? bindingRefreshInterval = null)
+        TimeSpan? bindingRefreshInterval = null,
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        TimeSpan? carrierSweepInterval = null)
     {
         _coordinator = coordinator ??
             throw new ArgumentNullException(nameof(coordinator));
         _binder = binder;
         _ownedJournal = ownedJournal;
+        _carrierProducer = carrierProducer;
         _bindingRefreshInterval =
             bindingRefreshInterval ?? DefaultBindingRefreshInterval;
+        _carrierSweepInterval =
+            carrierSweepInterval ?? DefaultCarrierSweepInterval;
         if (_bindingRefreshInterval <= TimeSpan.Zero)
         {
             throw new ArgumentOutOfRangeException(
                 nameof(bindingRefreshInterval));
+        }
+        if (_carrierSweepInterval <= TimeSpan.Zero)
+        {
+            throw new ArgumentOutOfRangeException(nameof(carrierSweepInterval));
         }
     }
 
@@ -151,7 +170,8 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                 coordinator,
                 catalog,
                 journal,
-                bindingRefreshInterval);
+                bindingRefreshInterval,
+                carrierProducer);
         }
         catch
         {
@@ -180,6 +200,9 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         Task pump = _binder is null
             ? Task.CompletedTask
             : RunBindingPumpAsync(pumpCancellation.Token);
+        Task carrierSweep = _carrierProducer is null
+            ? Task.CompletedTask
+            : RunCarrierSweepAsync(pumpCancellation.Token);
         try
         {
             await _coordinator.RunAsync(cancellationToken)
@@ -189,6 +212,7 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
         {
             pumpCancellation.Cancel();
             await pump.ConfigureAwait(false);
+            await carrierSweep.ConfigureAwait(false);
         }
     }
 
@@ -233,6 +257,37 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             try
             {
                 await Task.Delay(_bindingRefreshInterval, cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+        }
+    }
+
+    private async Task RunCarrierSweepAsync(CancellationToken cancellationToken)
+    {
+        RbpArtifactCarrierProducer producer = _carrierProducer!;
+        while (!cancellationToken.IsCancellationRequested)
+        {
+            try
+            {
+                producer.SweepExpired(DateTimeOffset.UtcNow);
+            }
+            catch (RbpArtifactCarrierException)
+            {
+                // A fenced spool cleanup error leaves evidence intact and is
+                // retried later. It must not terminate a live connection.
+            }
+            catch (IOException)
+            {
+                // Same posture for transient filesystem contention.
+            }
+
+            try
+            {
+                await Task.Delay(_carrierSweepInterval, cancellationToken)
                     .ConfigureAwait(false);
             }
             catch (OperationCanceledException)

@@ -293,6 +293,12 @@ internal sealed partial class RbpConnectionCoordinator
 
         if (answer.CarrierKey is { } carrierKey)
         {
+            await _journal.RecordCarrierTerminalQueuedAsync(
+                    carrierKey,
+                    rsid,
+                    outbound.Sequence,
+                    context.Token)
+                .ConfigureAwait(false);
             _carrierProducer?.RecordTerminalQueued(
                 carrierKey,
                 rsid,
