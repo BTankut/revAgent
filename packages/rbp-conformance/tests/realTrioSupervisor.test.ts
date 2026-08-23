@@ -4,6 +4,8 @@ import {
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
+  pollRbpSessionV2Readiness,
+  RealTrioSessionReadinessPollError,
   readRbpSessionV2Readiness,
 } from "../src/realTrioSupervisor.js";
 
@@ -82,7 +84,12 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
         schema: "gateway.rbp-session/v2",
         rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
         binding: { binding: "wss", grantedCapabilities: ["batch_atomic", "doc_context_cached_v1"] },
-        lifecycle: { sessionLifecycle: { localSessionKey: "port:8080:pid:42:started:99" } },
+        lifecycle: { sessionLifecycle: {
+          localSessionKey: "port:8080:pid:42:started:99",
+          phase: "registered",
+          dispatchAllowed: true,
+          rsid: "018f7f7e-1234-7abc-8def-1234567890ab",
+        } },
       },
     }],
   };
@@ -99,8 +106,61 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     [{ sessions: [] }, /lacks one normalized v2/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v1", value: { grantedCapabilities: ["batch_atomic"] } }] }, /legacy or malformed/u],
     [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: ["batch_atomic"] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } }, grantedCapabilities: ["batch_atomic"] } }] }, /v2 session row is malformed/u],
-    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k" } } } }] }, /nested grants/u],
+    [{ sessions: [{ namespace: "gateway.rbp-session/v2", value: { schema: "gateway.rbp-session/v2", rsid: "r", binding: { binding: "wss", grantedCapabilities: [] }, lifecycle: { sessionLifecycle: { localSessionKey: "k", phase: "registered", dispatchAllowed: true, rsid: "r" } } } }] }, /nested grants/u],
   ] as const)("rejects absent, legacy, or non-nested v2 session readiness %#", (snapshot, expected) => {
     expect(() => readRbpSessionV2Readiness(snapshot, "wss")).toThrow(expected);
+  });
+
+  it("polls no-row then two identical active v2 observations", async () => {
+    let time = 0;
+    let reads = 0;
+    const readiness = await pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: async () => (++reads === 1 ? { sessions: [] } : v2Snapshot),
+      timeoutMs: 1_000,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    });
+    expect(reads).toBe(3);
+    expect(readiness.localSessionKey).toContain("port:8080");
+  });
+
+  it.each([
+    ["unstable", () => {
+      let flip = false;
+      return async () => {
+        flip = !flip;
+        return { sessions: [{ ...v2Snapshot.sessions[0]!, value: {
+          ...v2Snapshot.sessions[0]!.value,
+          lifecycle: { sessionLifecycle: { ...v2Snapshot.sessions[0]!.value.lifecycle.sessionLifecycle, localSessionKey: flip ? "a" : "b" } },
+        } }] };
+      };
+    }],
+    ["multiple", () => async () => ({ sessions: [v2Snapshot.sessions[0]!, v2Snapshot.sessions[0]!] })],
+    ["legacy", () => async () => ({ sessions: [{ namespace: "gateway.rbp-session/v1", value: {} }] })],
+  ] as const)("retains audits and times out on %s rows", async (_label, createReader) => {
+    let time = 0;
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => false,
+      readSnapshot: createReader(),
+      timeoutMs: 200,
+      intervalMs: 100,
+      now: () => time,
+      sleep: async (milliseconds) => { time += milliseconds; },
+    })).rejects.toSatisfy((error: unknown) =>
+      error instanceof RealTrioSessionReadinessPollError && error.audits.length === 3);
+  });
+
+  it("aborts polling when the real worker exits", async () => {
+    await expect(pollRbpSessionV2Readiness({
+      expectedBinding: "wss",
+      isBridgeExited: () => true,
+      readSnapshot: async () => v2Snapshot,
+      timeoutMs: 200,
+      intervalMs: 100,
+    })).rejects.toMatchObject({ message: expect.stringMatching(/bridge exited/u), audits: [] });
   });
 });

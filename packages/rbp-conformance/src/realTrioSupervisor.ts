@@ -55,6 +55,22 @@ export interface RealTrioSessionReadiness {
   readonly grantedCapabilities: readonly string[];
 }
 
+export interface RbpSessionReadinessPollOptions {
+  readonly readSnapshot: () => Promise<JsonObject>;
+  readonly expectedBinding: "wss" | "streamable_http_sse";
+  readonly isBridgeExited: () => boolean;
+  readonly timeoutMs?: number;
+  readonly intervalMs?: number;
+  readonly now?: () => number;
+  readonly sleep?: (milliseconds: number) => Promise<void>;
+}
+
+export class RealTrioSessionReadinessPollError extends Error {
+  public constructor(message: string, readonly audits: readonly JsonObject[]) {
+    super(message);
+  }
+}
+
 function sha256File(path: string): `sha256:${string}` {
   return `sha256:${createHash("sha256").update(readFileSync(path)).digest("hex")}`;
 }
@@ -180,15 +196,63 @@ export function readRbpSessionV2Readiness(
       !value.binding.grantedCapabilities.includes("batch_atomic")) {
     throw new Error("real trio v2 session binding or nested grants are invalid");
   }
-  const localSessionKey = value.lifecycle.sessionLifecycle.localSessionKey;
-  if (typeof localSessionKey !== "string" || localSessionKey.length === 0) {
-    throw new Error("real trio v2 session lacks a local session key");
+  const lifecycle = value.lifecycle.sessionLifecycle;
+  const localSessionKey = lifecycle.localSessionKey;
+  if (typeof localSessionKey !== "string" || localSessionKey.length === 0 ||
+      lifecycle.phase !== "registered" || lifecycle.dispatchAllowed !== true ||
+      lifecycle.rsid !== value.rsid) {
+    throw new Error("real trio v2 session is not active with a local session key");
   }
   return Object.freeze({
     rsid: value.rsid,
     localSessionKey,
     grantedCapabilities: Object.freeze([...value.binding.grantedCapabilities]),
   });
+}
+
+/**
+ * Polls only the Gateway's public loopback audit route after the real worker
+ * has reached READY. Two equal observations prevent a transient migration
+ * view from qualifying as smoke evidence; bounded retained audits explain a
+ * timeout without reaching into the protocol store or database.
+ */
+export async function pollRbpSessionV2Readiness(
+  options: RbpSessionReadinessPollOptions,
+): Promise<RealTrioSessionReadiness> {
+  const timeoutMs = options.timeoutMs ?? 15_000;
+  const intervalMs = options.intervalMs ?? 150;
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 ||
+      !Number.isSafeInteger(intervalMs) || intervalMs < 100 || intervalMs > 250) {
+    throw new Error("real trio session readiness poll bounds are invalid");
+  }
+  const now = options.now ?? Date.now;
+  const sleep = options.sleep ?? (async (milliseconds: number) => await new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
+  const startedAt = now();
+  const audits: JsonObject[] = [];
+  let previous: string | null = null;
+  let identicalObservations = 0;
+  for (;;) {
+    if (options.isBridgeExited()) {
+      throw new RealTrioSessionReadinessPollError("real trio bridge exited before session readiness", Object.freeze([...audits]));
+    }
+    const snapshot = await options.readSnapshot();
+    if (audits.length === 32) audits.shift();
+    audits.push(snapshot);
+    try {
+      const current = readRbpSessionV2Readiness(snapshot, options.expectedBinding);
+      const fingerprint = stableJson(current);
+      identicalObservations = fingerprint === previous ? identicalObservations + 1 : 1;
+      previous = fingerprint;
+      if (identicalObservations >= 2) return current;
+    } catch {
+      previous = null;
+      identicalObservations = 0;
+    }
+    if (now() - startedAt >= timeoutMs) {
+      throw new RealTrioSessionReadinessPollError("real trio session readiness timed out", Object.freeze([...audits]));
+    }
+    await sleep(intervalMs);
+  }
 }
 
 async function publicGatewayControl(
@@ -295,13 +359,16 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         if (binding !== "wss" && binding !== "streamable_http_sse") {
           throw new Error("real worker command lacks one supported binding");
         }
-        const sessionAudit = await publicGatewayControl(
-          endpoint,
-          input.gatewayControlToken,
-          certificateSha256,
-          "snapshot_audit",
-        );
-        const sessionReadiness = readRbpSessionV2Readiness(sessionAudit, binding);
+        const sessionReadiness = await pollRbpSessionV2Readiness({
+          expectedBinding: binding,
+          isBridgeExited: () => bridge.process.exitCode !== null,
+          readSnapshot: async () => await publicGatewayControl(
+            endpoint,
+            input.gatewayControlToken,
+            certificateSha256,
+            "snapshot_audit",
+          ),
+        });
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
