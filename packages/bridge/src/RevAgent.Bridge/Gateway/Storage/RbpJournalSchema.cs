@@ -5,7 +5,7 @@ namespace RevAgent.Bridge.Gateway.Storage;
 
 internal static class RbpJournalSchema
 {
-    internal const int CurrentVersion = 4;
+    internal const int CurrentVersion = 5;
     internal const string StoreFormat = "revagent-rbp-journal";
 
     private const string TransportLifecycleSchema = """
@@ -431,10 +431,23 @@ internal static class RbpJournalSchema
         """;
 
     internal static RbpJournalMigration CarrierPlanFenceMigration { get; } = new(
-        CurrentVersion,
+        4,
         "WP-12",
         "rbp_carrier_plan_terminal_fence_v1",
         CarrierPlanFenceSchema);
+
+    private const string CarrierPlanAcknowledgementSchema = """
+        ALTER TABLE rbp_carrier_plans
+          ADD COLUMN acknowledged_at_ms INTEGER;
+        CREATE INDEX ix_rbp_carrier_plans_releasable
+          ON rbp_carrier_plans(terminal_rsid,terminal_sequence,acknowledged_at_ms);
+        """;
+
+    internal static RbpJournalMigration CarrierPlanAcknowledgementMigration { get; } = new(
+        CurrentVersion,
+        "WP-12",
+        "rbp_carrier_plan_acknowledgement_v1",
+        CarrierPlanAcknowledgementSchema);
 
     internal static IReadOnlyList<RbpJournalMigration> BuildMigrationChain(
         IReadOnlyList<RbpJournalMigration>? additional)
@@ -445,6 +458,7 @@ internal static class RbpJournalSchema
             InvocationJournalMigration,
             CarrierPlanMigration,
             CarrierPlanFenceMigration,
+            CarrierPlanAcknowledgementMigration,
         };
         if (additional is not null)
         {

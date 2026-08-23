@@ -106,15 +106,17 @@ internal sealed partial class RbpJournalStore
     }
 
     /// <summary>
-    /// Clears only plans whose fenced terminal was acknowledged by the peer.
-    /// The returned keys are safe for the producer's independent spool cleanup
-    /// API; no send-path call can release either durable authority.
+    /// Marks only plans whose fenced terminal was acknowledged by the peer.
+    /// The immutable frame plan remains attached to its invocation for
+    /// idempotent replay after outbox pruning; the returned keys are only a
+    /// spool-release signal for the producer's independent cleanup API.
     /// </summary>
     internal Task<IReadOnlyList<string>> ApplyCarrierPlanAcknowledgementsAsync(
         IReadOnlyList<RbpSessionAcknowledgement> acknowledgements,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(acknowledgements);
+        long now = NowMilliseconds();
         return ExecuteImmediateAsync(
             context =>
             {
@@ -145,23 +147,17 @@ internal sealed partial class RbpJournalStore
 
                     foreach ((string planId, string carrierKey) in plans)
                     {
-                        using SqliteCommand unlink = context.CreateCommand("""
-                            UPDATE rbp_invocations SET carrier_plan_id=NULL
-                            WHERE carrier_plan_id=$plan_id;
+                        using SqliteCommand mark = context.CreateCommand("""
+                            UPDATE rbp_carrier_plans
+                            SET acknowledged_at_ms=COALESCE(acknowledged_at_ms,$now)
+                            WHERE plan_id=$plan_id;
                             """);
-                        unlink.Parameters.AddWithValue("$plan_id", planId);
-                        if (unlink.ExecuteNonQuery() != 1)
+                        mark.Parameters.AddWithValue("$now", now);
+                        mark.Parameters.AddWithValue("$plan_id", planId);
+                        if (mark.ExecuteNonQuery() != 1)
                         {
                             throw RbpJournalSerialization.Corrupt(
-                                "A carrier plan lost its terminal reference.");
-                        }
-                        using SqliteCommand remove = context.CreateCommand(
-                            "DELETE FROM rbp_carrier_plans WHERE plan_id=$plan_id;");
-                        remove.Parameters.AddWithValue("$plan_id", planId);
-                        if (remove.ExecuteNonQuery() != 1)
-                        {
-                            throw RbpJournalSerialization.Corrupt(
-                                "A carrier plan could not be removed after acknowledgement.");
+                                "A carrier plan disappeared before acknowledgement.");
                         }
                         released.Add(carrierKey);
                     }

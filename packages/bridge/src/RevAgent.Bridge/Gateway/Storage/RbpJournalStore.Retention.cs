@@ -12,7 +12,8 @@ internal sealed record RbpJournalRetentionResult(
     int PrunedInboundReceipts,
     int PrunedOutboxEnvelopes,
     int PrunedTransportSessions,
-    int PrunedTerminalBatches = 0);
+    int PrunedTerminalBatches = 0,
+    int PrunedCarrierPlans = 0);
 
 /// <summary>
 /// Frozen O1 Section 12.2 journal retention. The journal retains entries
@@ -81,6 +82,7 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
+                int carrierPlans = PruneExpiredCarrierPlans(context, cutoff);
                 int invocations = PruneTerminalInvocations(context, cutoff);
                 int batches = PruneTerminalBatches(context, cutoff);
                 int holds = PruneClearedHolds(context, cutoff);
@@ -102,9 +104,91 @@ internal sealed partial class RbpJournalStore
                     receipts,
                     outbox,
                     sessions,
-                    batches);
+                    batches,
+                    carrierPlans);
             },
             cancellationToken);
+    }
+
+    private static int PruneExpiredCarrierPlans(
+        RbpJournalWriteContext context,
+        long cutoff)
+    {
+        // A plan is durable replay evidence until the parent invocation itself
+        // is eligible for retention expiry.  The acknowledgement and both
+        // age gates are checked in the same immediate transaction that first
+        // unlinks then removes the plan, so a crash leaves either both plan
+        // and invocation or neither — never a terminal-only replay state.
+        using SqliteCommand read = context.CreateCommand("""
+            SELECT plan.plan_id
+            FROM rbp_carrier_plans AS plan
+            JOIN rbp_invocations AS invocation
+              ON invocation.idempotency_key=plan.idempotency_key
+            WHERE plan.acknowledged_at_ms IS NOT NULL
+              AND plan.acknowledged_at_ms<=$cutoff
+              AND plan.created_at_ms<=$cutoff
+              AND invocation.state IN (
+                'completed','failed','guarded','cancelled','indeterminate'
+              )
+              AND invocation.finished_at_ms<=$cutoff
+              AND NOT EXISTS(
+                SELECT 1 FROM rbp_verification_holds AS holds
+                WHERE holds.state<>'cleared'
+                  AND (
+                    holds.verification_hold_id=invocation.verification_hold_id
+                    OR (holds.rsid=invocation.rsid AND
+                        holds.verification_invocation_id=invocation.invocation_id)
+                    OR EXISTS(
+                      SELECT 1 FROM json_each(
+                        holds.ordered_origin_idempotency_keys_json
+                      ) AS origin WHERE origin.value=invocation.idempotency_key
+                    )
+                  )
+              )
+              AND (
+                invocation.batch_id IS NULL OR NOT EXISTS(
+                  SELECT 1 FROM rbp_batches AS batches
+                  WHERE batches.rsid=invocation.rsid
+                    AND batches.batch_id=invocation.batch_id
+                    AND batches.state<>'terminal'
+                )
+              )
+            ORDER BY plan.plan_id;
+            """);
+        read.Parameters.AddWithValue("$cutoff", cutoff);
+        using SqliteDataReader reader = read.ExecuteReader();
+        var planIds = new List<string>();
+        while (reader.Read())
+        {
+            planIds.Add(reader.GetString(0));
+        }
+        reader.Close();
+
+        foreach (string planId in planIds)
+        {
+            using SqliteCommand unlink = context.CreateCommand("""
+                UPDATE rbp_invocations SET carrier_plan_id=NULL
+                WHERE carrier_plan_id=$plan_id;
+                """);
+            unlink.Parameters.AddWithValue("$plan_id", planId);
+            if (unlink.ExecuteNonQuery() != 1)
+            {
+                throw RbpJournalSerialization.Corrupt(
+                    "An expiring carrier plan lost its invocation reference.");
+            }
+            using SqliteCommand remove = context.CreateCommand("""
+                DELETE FROM rbp_carrier_plans
+                WHERE plan_id=$plan_id AND acknowledged_at_ms<=$cutoff;
+                """);
+            remove.Parameters.AddWithValue("$plan_id", planId);
+            remove.Parameters.AddWithValue("$cutoff", cutoff);
+            if (remove.ExecuteNonQuery() != 1)
+            {
+                throw RbpJournalSerialization.Corrupt(
+                    "An expiring carrier plan changed during its fenced purge.");
+            }
+        }
+        return planIds.Count;
     }
 
     private static int PruneTerminalInvocations(

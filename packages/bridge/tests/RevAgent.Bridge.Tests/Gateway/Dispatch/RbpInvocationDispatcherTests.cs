@@ -219,10 +219,19 @@ public sealed class RbpInvocationDispatcherTests
     }
 
     [Fact]
-    public async Task CarrierPlanClearsOnlyAfterItsDurableTerminalAck()
+    public async Task CarrierAckCleansSpoolButRetainsExactPlanForDuplicateReplay()
     {
         using var directory = new RbpJournalTestDirectory();
-        await using RbpJournalStore store = await OpenAsync(directory);
+        long now = RbpJournalTestData.Now.ToUnixTimeMilliseconds();
+        var faults = new ArmedJournalFaultInjector();
+        await using RbpJournalStore store = RbpJournalStore.Open(
+            directory.JournalPath,
+            new TestResumeTokenProtector(),
+            RbpJournalTestData.Options(
+                faultInjector: faults,
+                nowMilliseconds: () => now));
+        _ = await store.PersistRegisteredSessionAsync(
+            RbpJournalTestData.Registration());
         string payload = new('x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1);
         var channel = new StubChannel(
             () => Task.FromResult(Completed(JsonSerializer.Serialize(new { payload }))));
@@ -252,6 +261,9 @@ public sealed class RbpInvocationDispatcherTests
             .Sequence;
         await store.RecordCarrierTerminalQueuedAsync(
             plan.CarrierKey, Rsid, terminalSequence);
+        producer.RecordTerminalQueued(plan.CarrierKey, Rsid, terminalSequence);
+        string carrierRoot = Path.Combine(
+            directory.Path, "artifact-spool", plan.CarrierKey);
 
         Assert.Empty(await store.ApplyCarrierPlanAcknowledgementsAsync(
             new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence - 1) }));
@@ -262,8 +274,38 @@ public sealed class RbpInvocationDispatcherTests
             new[] { plan.CarrierKey },
             await store.ApplyCarrierPlanAcknowledgementsAsync(
                 new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
-        Assert.Null((await store.GetInvocationAsync(
+        producer.ApplyDurableAcknowledgements(
+            new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) });
+        Assert.False(Directory.Exists(carrierRoot));
+
+        RbpStoredInvocation acknowledged = Assert.IsType<RbpStoredInvocation>(
+            await store.GetInvocationAsync(Rsid + "/" + ReadRequest().InvocationId));
+        Assert.Equal(plan.PlanId, acknowledged.CarrierPlan!.PlanId);
+        claim.Dispose();
+        RbpInvocationAnswer duplicate = await dispatcher.DispatchAsync(
+            ReadRequest(), CancellationToken.None);
+        Assert.Equal(1, channel.Calls);
+        Assert.Equal(plan.CarrierKey, duplicate.CarrierKey);
+        Assert.Equal(
+            plan.OrderedPrefixes.Select(frame => frame.Payload.GetRawText()),
+            duplicate.Prefixes!.Select(frame => frame.Payload.GetRawText()));
+        Assert.True(duplicate.Payload.GetProperty("replayed").GetBoolean());
+
+        now += (long)TimeSpan.FromDays(8).TotalMilliseconds;
+        faults.Arm(RbpJournalFaultPoint.BeforeCommit);
+        await Assert.ThrowsAsync<IOException>(() => store.ApplyRetentionAsync(
+            RbpJournalStore.MinimumRetentionPeriod));
+        Assert.NotNull(await store.GetInvocationAsync(
+            Rsid + "/" + ReadRequest().InvocationId));
+        Assert.NotNull((await store.GetInvocationAsync(
             Rsid + "/" + ReadRequest().InvocationId))!.CarrierPlan);
+
+        RbpJournalRetentionResult expired = await store.ApplyRetentionAsync(
+            RbpJournalStore.MinimumRetentionPeriod);
+        Assert.Equal(1, expired.PrunedCarrierPlans);
+        Assert.Equal(1, expired.PrunedInvocations);
+        Assert.Null(await store.GetInvocationAsync(
+            Rsid + "/" + ReadRequest().InvocationId));
     }
 
     [Fact]
