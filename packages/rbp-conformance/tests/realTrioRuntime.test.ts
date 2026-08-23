@@ -30,6 +30,15 @@ describe.sequential("WP-12 direct real trio runtime fixture", () => {
         expect(result.commit).toBeNull();
         const audit = await runtime.supervisor.readRealCaseAudit();
         expect(audit).toMatchObject({ ok: true, action: "read_real_case_audit" });
+        expect(audit.documentContextUpdates).toEqual([
+          expect.objectContaining({
+            contractVersion: "revagent.wp12-document-context-audit/v1",
+            event: "gateway.doc_context_update_observation",
+            stage: "accepted",
+            rsidDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+            routeDigest: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+          }),
+        ]);
       } finally {
         await runtime.stop();
       }

@@ -74,6 +74,33 @@ function redactedSessionAudit(records: readonly { readonly namespace: string; re
   }));
 }
 
+/** Value-free proof that the Gateway accepted a real doc_context_update. */
+function redactedDocumentContextAudit(
+  records: readonly { readonly namespace: string; readonly key: string; readonly value: unknown }[],
+): readonly Record<string, unknown>[] {
+  return Object.freeze(records
+    .filter((record) => record.namespace === "gateway.rbp-session/v2")
+    .slice(0, 32)
+    .flatMap((record) => {
+      const value = record.value !== null && typeof record.value === "object" && !Array.isArray(record.value)
+        ? record.value as Record<string, unknown>
+        : null;
+      const lifecycle = value?.lifecycle !== null && typeof value?.lifecycle === "object" && !Array.isArray(value?.lifecycle)
+        ? value.lifecycle as Record<string, unknown>
+        : null;
+      const route = lifecycle?.liveDocumentRoute;
+      if (route === null || typeof route !== "object" || Array.isArray(route)) return [];
+      return [Object.freeze({
+        contractVersion: "revagent.wp12-document-context-audit/v1",
+        event: "gateway.doc_context_update_observation",
+        stage: "accepted",
+        rsidDigest: typeof value?.rsid === "string" ? digest(value.rsid) : null,
+        routeDigest: digest(route),
+        recordDigest: digest(value),
+      })];
+    }));
+}
+
 export function conformanceConnectionCapabilitiesForBinding(
   binding: ConformanceBinding,
 ): readonly string[] {
@@ -355,12 +382,14 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
               records.push(...result.value.map((row) => ({ namespace: row.namespace, key: row.key, value: row.value })));
             }
             const rows = redactedSessionAudit(records);
+            const documentContextUpdates = redactedDocumentContextAudit(records);
             return reply.send({
               ok: true,
               action,
               schemaVersion: REAL_CASE_AUDIT_SCHEMA,
               tenantDigest: digest("conformance"),
               rows,
+              documentContextUpdates,
               counts: Object.freeze({ records: records.length, auditAccesses: auditAccesses.length }),
               frontier: digest(rows),
               auditAccessDigest: digest(auditAccesses.map((entry) => entry.action)),

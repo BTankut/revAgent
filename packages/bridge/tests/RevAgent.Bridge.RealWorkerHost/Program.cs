@@ -126,6 +126,7 @@ internal static class Program
                     new WorkerAddinDispatchSurface(router, catalog),
                     OnConnectionFailureObservation: ObserveConnectionFailure,
                     OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,
+                    OnDocumentContextObservation: ObserveDocumentContext,
                     CarrierProducer: carrier));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
@@ -181,6 +182,26 @@ internal static class Program
             lifecycleControl = observation.LifecycleControl,
             state = observation.State,
             reason = observation.Reason,
+        });
+        return ValueTask.CompletedTask;
+    }
+
+    private static ValueTask ObserveDocumentContext(
+        RbpDocumentContextObservation observation)
+    {
+        // This is intentionally a projection rather than an object dump.
+        // Keep the real-process transcript value-free even if the observation
+        // record grows in a production caller.
+        WriteObservation(new
+        {
+            contractVersion = observation.ContractVersion,
+            @event = observation.Event,
+            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+            stage = observation.Stage,
+            outcome = observation.Outcome,
+            rsidHash = observation.RsidHash,
+            payloadHash = observation.PayloadHash,
+            sequence = observation.Sequence,
         });
         return ValueTask.CompletedTask;
     }

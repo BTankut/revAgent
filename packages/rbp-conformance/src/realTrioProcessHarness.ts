@@ -1,8 +1,10 @@
 import {
   StrictJsonlProcess,
   StrictReadyProcess,
+  boundedProcessDiagnostics,
   type JsonObject,
   type JsonValue,
+  type ProcessDiagnosticSnapshot,
   type ProcessTranscriptRecord,
 } from "./processHarness.js";
 import type { ProcessCommandDescriptor } from "./types.js";
@@ -33,6 +35,7 @@ export interface RealTrioReadyChild {
   readonly process: { readonly exitCode: number | null };
   readonly pid: number;
   readonly transcript: readonly ProcessTranscriptRecord[];
+  diagnostics(phase: string): ProcessDiagnosticSnapshot;
   stop(): Promise<{ readonly exitCode: number | null; readonly killEscalated: boolean }>;
 }
 
@@ -74,6 +77,12 @@ export class RealTrioProcessHarness {
       process: child.process,
       pid: child.pid,
       get transcript() { return child.transcript; },
+      diagnostics: (phase: string) => boundedProcessDiagnostics({
+        componentId: input.componentId,
+        phase,
+        exitCode: child.process.exitCode,
+        transcript: child.transcript,
+      }),
       stop: async () => await child.stop(),
     });
   }
@@ -97,6 +106,12 @@ export class RealTrioProcessHarness {
       process: child.process,
       pid: child.pid,
       get transcript() { return child.transcript; },
+      diagnostics: (phase: string) => boundedProcessDiagnostics({
+        componentId: input.componentId,
+        phase,
+        exitCode: child.process.exitCode,
+        transcript: child.transcript,
+      }),
       request: async (
         action: string,
         fields: Readonly<Record<string, JsonValue>> = {},

@@ -34,7 +34,7 @@ function readinessExitError(
       stderrLines.push("<invalid-utf8>");
     }
   }
-  const stderr = stderrLines.join(" | ");
+  const stderr = stderrLines.map(redactDiagnosticLine).join(" | ");
   const excerpt = stderr.length <= 4_096 ? stderr : stderr.slice(-4_096);
   return new Error(
     `${componentId} exited before readiness (${String(code ?? signal)})${
@@ -60,6 +60,60 @@ export interface ProcessTranscriptRecord {
   stream: "stdout" | "stderr";
   at: string;
   line: string;
+}
+
+/** Safe, bounded process evidence for real-trio failure diagnostics. */
+export interface ProcessDiagnosticSnapshot {
+  readonly componentId: string;
+  readonly phase: string;
+  readonly exitCode: number | null;
+  readonly stdout: readonly string[];
+  readonly stderr: readonly string[];
+}
+
+const MAX_DIAGNOSTIC_LINES_PER_STREAM = 8;
+const MAX_DIAGNOSTIC_LINE_BYTES = 512;
+
+function redactDiagnosticLine(input: string): string {
+  const redacted = input
+    .replace(/(bearer|token|secret|proof|password)\s*[:=]\s*[^\s,;]+/giu, "$1=[redacted]")
+    .replace(/[A-Za-z]:\\[^\s,;]+/gu, "[path-redacted]")
+    .replace(/\/[^\s,;]+/gu, (value) => value.startsWith("//") ? value : "[path-redacted]");
+  const bytes = Buffer.from(redacted, "utf8");
+  return bytes.length <= MAX_DIAGNOSTIC_LINE_BYTES
+    ? redacted
+    : `${bytes.subarray(0, MAX_DIAGNOSTIC_LINE_BYTES - 16).toString("utf8")}…[truncated]`;
+}
+
+export function boundedProcessDiagnostics(input: {
+  readonly componentId: string;
+  readonly phase: string;
+  readonly exitCode: number | null;
+  readonly transcript: readonly ProcessTranscriptRecord[];
+}): ProcessDiagnosticSnapshot {
+  const lines = (stream: "stdout" | "stderr"): readonly string[] => Object.freeze(
+    input.transcript
+      .filter((record) => record.stream === stream)
+      .slice(-MAX_DIAGNOSTIC_LINES_PER_STREAM)
+      .map((record) => redactDiagnosticLine(record.line)),
+  );
+  return Object.freeze({
+    componentId: input.componentId,
+    phase: input.phase,
+    exitCode: input.exitCode,
+    stdout: lines("stdout"),
+    stderr: lines("stderr"),
+  });
+}
+
+export class ReadyProcessStartError extends Error {
+  constructor(
+    message: string,
+    readonly diagnostic: ProcessDiagnosticSnapshot,
+  ) {
+    super(message);
+    this.name = "ReadyProcessStartError";
+  }
 }
 
 export interface JsonlProcessOptions {
@@ -509,7 +563,13 @@ export class StrictReadyProcess {
     }) as ChildProcessWithoutNullStreams;
     if (child.pid === undefined) throw new Error(`${options.componentId} did not receive a process id`);
     const transcript: ProcessTranscriptRecord[] = [];
-    const ready = await new Promise<{ value: JsonObject; at: string }>((resolve, reject) => {
+    let observedExitCode: number | null = null;
+    child.once("exit", (code, signal) => {
+      observedExitCode = code ?? (signal === null ? 1 : 128);
+    });
+    let ready: { value: JsonObject; at: string };
+    try {
+      ready = await new Promise<{ value: JsonObject; at: string }>((resolve, reject) => {
       let buffer = Buffer.alloc(0);
       let settled = false;
       const timer = setTimeout(() => {
@@ -560,7 +620,19 @@ export class StrictReadyProcess {
         }
         if (line.length > 0) transcript.push({ stream: "stderr", at: new Date().toISOString(), line });
       });
-    });
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new ReadyProcessStartError(
+        message,
+        boundedProcessDiagnostics({
+          componentId: options.componentId,
+          phase: "ready",
+          exitCode: observedExitCode,
+          transcript,
+        }),
+      );
+    }
     return new StrictReadyProcess(
       options.componentId,
       child,

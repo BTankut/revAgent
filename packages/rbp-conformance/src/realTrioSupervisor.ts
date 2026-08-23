@@ -3,7 +3,13 @@ import { readFileSync } from "node:fs";
 import { request as httpsRequest } from "node:https";
 import type { TLSSocket } from "node:tls";
 
-import { type JsonObject, type JsonValue, type ProcessTranscriptRecord } from "./processHarness.js";
+import {
+  ReadyProcessStartError,
+  type JsonObject,
+  type JsonValue,
+  type ProcessDiagnosticSnapshot,
+  type ProcessTranscriptRecord,
+} from "./processHarness.js";
 import {
   RealTrioProcessHarness,
   type RealTrioJsonlChild,
@@ -23,6 +29,8 @@ export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
   "rbp-real-trio-failure-diagnostics/v1" as const;
 const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 const MAX_REAL_TRIO_READINESS_TRACE = 64;
+export const MAX_REAL_TRIO_CONTROL_BYTES = 64 * 1024;
+export const MAX_REAL_TRIO_CONTROL_TIMEOUT_MS = 15_000;
 
 export type RealTrioSupervisorCommand = RealTrioProcessCommand;
 
@@ -155,6 +163,8 @@ export interface RealTrioFailureDiagnostics {
   /** Only schema-valid value-free worker observations are retained. */
   readonly bridgeTranscript: readonly ProcessTranscriptRecord[];
   readonly readinessTrace: readonly RealTrioReadinessTrace[];
+  /** Bounded redacted process evidence retained before parent cleanup. */
+  readonly processDiagnostics: readonly ProcessDiagnosticSnapshot[];
 }
 
 export interface RealTrioReadinessTrace {
@@ -264,6 +274,7 @@ export class RealTrioSessionReadinessPollError extends Error {
         .map((audit) => redactGatewayAudit(audit)),
       bridgeTranscript: redactBridgeTranscript(this.bridgeReceiveTranscript),
       readinessTrace: Object.freeze([...this.readinessTrace].slice(-MAX_REAL_TRIO_READINESS_TRACE)),
+      processDiagnostics: Object.freeze([]),
     });
   }
 }
@@ -304,6 +315,15 @@ export function realTrioFailureDiagnostics(error: unknown): RealTrioFailureDiagn
   let current: unknown = error;
   for (let depth = 0; depth < 4; depth += 1) {
     if (current instanceof RealTrioSessionReadinessPollError) return current.failureDiagnostics;
+    if (current instanceof ReadyProcessStartError) {
+      return Object.freeze({
+        schemaVersion: REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA,
+        gatewayAudits: Object.freeze([]),
+        bridgeTranscript: Object.freeze([]),
+        readinessTrace: Object.freeze([]),
+        processDiagnostics: Object.freeze([current.diagnostic]),
+      });
+    }
     current = current instanceof Error ? current.cause : undefined;
   }
   return null;
@@ -499,6 +519,7 @@ export async function publicGatewayControl(
   controlToken: string,
   expectedCertificateSha256: string,
   payloadObject: JsonObject,
+  timeoutMs = MAX_REAL_TRIO_CONTROL_TIMEOUT_MS,
 ): Promise<JsonObject> {
   const url = new URL("/__conformance/v1/control", endpoint);
   const action = payloadObject.action;
@@ -506,22 +527,53 @@ export async function publicGatewayControl(
     throw new Error("Gateway public control action is invalid");
   }
   const payload = Buffer.from(JSON.stringify(payloadObject), "utf8");
+  if (payload.byteLength > MAX_REAL_TRIO_CONTROL_BYTES) {
+    throw new Error("Gateway public control request exceeds 64 KiB");
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_REAL_TRIO_CONTROL_TIMEOUT_MS) {
+    throw new Error("Gateway public control timeout is outside its fixed bound");
+  }
   return await new Promise<JsonObject>((resolve, reject) => {
-    const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
+    let settled = false;
+    let operation: ReturnType<typeof httpsRequest>;
+    const fail = (error: Error): void => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    const timer = setTimeout(() => {
+      operation.destroy(new Error("Gateway public control timed out"));
+      fail(new Error("Gateway public control timed out"));
+    }, timeoutMs);
+    operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
       const observed = peer === undefined ? null : `sha256:${createHash("sha256").update(peer).digest("hex")}`;
-      if (observed !== expectedCertificateSha256) { response.resume(); reject(new Error("Gateway control TLS pin mismatch")); return; }
+      if (observed !== expectedCertificateSha256) { response.resume(); clearTimeout(timer); fail(new Error("Gateway control TLS pin mismatch")); return; }
       const chunks: Buffer[] = [];
-      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      let responseBytes = 0;
+      response.on("data", (chunk: Buffer) => {
+        responseBytes += chunk.byteLength;
+        if (responseBytes > MAX_REAL_TRIO_CONTROL_BYTES) {
+          response.destroy();
+          clearTimeout(timer);
+          fail(new Error("Gateway public control response exceeds 64 KiB"));
+          return;
+        }
+        chunks.push(chunk);
+      });
       response.on("end", () => {
         try {
           const body = JSON.parse(Buffer.concat(chunks).toString("utf8")) as JsonObject;
           if (response.statusCode !== 200 || body.ok !== true || body.action !== action) throw new Error("Gateway public control refused request");
-          resolve(body);
-        } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            resolve(body);
+          }
+        } catch (error) { clearTimeout(timer); fail(error instanceof Error ? error : new Error(String(error))); }
       });
     });
-    operation.once("error", reject);
+    operation.once("error", (error) => { clearTimeout(timer); fail(error); });
     operation.end(payload);
   });
 }

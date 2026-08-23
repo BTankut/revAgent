@@ -1,5 +1,6 @@
 using System.Text;
 using System.Text.Json;
+using System.Security.Cryptography;
 using Newtonsoft.Json.Linq;
 using RevAgent.Bridge.AddinLoopback;
 using RevAgent.Bridge.Gateway.Dispatch;
@@ -15,6 +16,44 @@ namespace RevAgent.Bridge.Gateway.Connection;
 internal delegate Task<bool> RbpDocContextEmit(
     JsonElement payload,
     CancellationToken cancellationToken);
+
+/// <summary>
+/// Value-free WP-12 diagnostic seam. It deliberately carries only fixed
+/// classifications, a sequence and SHA-256 identities; document titles,
+/// paths, payloads, RSIDs and exception text never leave the coordinator.
+/// </summary>
+internal sealed record RbpDocumentContextObservation(
+    string ContractVersion,
+    string Event,
+    string Stage,
+    string Outcome,
+    string RsidHash,
+    string? PayloadHash,
+    long? Sequence)
+{
+    internal const string CurrentContractVersion =
+        "revagent.rbp-document-context-observation/v1";
+
+    internal static RbpDocumentContextObservation Create(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload = null,
+        long? sequence = null) =>
+        new(
+            CurrentContractVersion,
+            "bridge.document_context_observation",
+            stage,
+            outcome,
+            Hash(rsid),
+            payload is { } value ? Hash(value.GetRawText()) : null,
+            sequence);
+
+    private static string Hash(string value) =>
+        "sha256:" + Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(value)))
+            .ToLowerInvariant();
+}
 
 /// <summary>
 /// The Section 14 standing document-context watcher (P3-T7, RES-3).
@@ -55,6 +94,8 @@ internal sealed class RbpDocContextWatcher
     private readonly IRbpInvocationChannel _channel;
     private readonly IRbpCoordinatorClock _clock;
     private readonly TimeSpan _pollTimeout;
+    private readonly Func<RbpDocumentContextObservation, ValueTask>?
+        _onObservation;
     private readonly Dictionary<string, EmittedContext> _emitted =
         new(StringComparer.Ordinal);
     private readonly Dictionary<string, WatchLoop> _loops =
@@ -63,7 +104,9 @@ internal sealed class RbpDocContextWatcher
     internal RbpDocContextWatcher(
         IRbpInvocationChannel channel,
         IRbpCoordinatorClock? clock = null,
-        TimeSpan? pollTimeout = null)
+        TimeSpan? pollTimeout = null,
+        Func<RbpDocumentContextObservation, ValueTask>?
+            onObservation = null)
     {
         _channel = channel ??
             throw new ArgumentNullException(nameof(channel));
@@ -74,6 +117,7 @@ internal sealed class RbpDocContextWatcher
         }
 
         _pollTimeout = pollTimeout ?? DefaultPollTimeout;
+        _onObservation = onObservation;
     }
 
     /// <summary>
@@ -141,6 +185,8 @@ internal sealed class RbpDocContextWatcher
         }
 
         replaced?.Stop();
+        Observe(RbpDocumentContextObservation.Create(
+            "probe", started is null ? "capability_absent" : "started", rsid));
         started?.Start(
             RunWatchAsync(rsid, emitAsync, started.Token));
     }
@@ -206,6 +252,8 @@ internal sealed class RbpDocContextWatcher
         {
             // Add-in or transport failure: no emission, and the bounded
             // retry is the next 15-second tick rather than a hot loop.
+            Observe(RbpDocumentContextObservation.Create(
+                "failure", "snapshot_failed", rsid));
             return;
         }
 
@@ -215,6 +263,8 @@ internal sealed class RbpDocContextWatcher
             // A warming/unavailable cache carries no documents (A.3); it is
             // cache status, not document context, so nothing is emitted and
             // the last ready context is not clobbered.
+            Observe(RbpDocumentContextObservation.Create(
+                "snapshot", "not_ready", rsid));
             return;
         }
 
@@ -255,6 +305,8 @@ internal sealed class RbpDocContextWatcher
         {
             payload = document.RootElement.Clone();
         }
+        Observe(RbpDocumentContextObservation.Create(
+            "snapshot", "ready", rsid, payload));
 
         bool emitted;
         try
@@ -269,6 +321,8 @@ internal sealed class RbpDocContextWatcher
         {
             // The update was not durably queued; keep the previous emitted
             // state so the change is retried at the next tick.
+            Observe(RbpDocumentContextObservation.Create(
+                "failure", "queue_failed", rsid, payload));
             return;
         }
 
@@ -280,6 +334,33 @@ internal sealed class RbpDocContextWatcher
                     snapshot.Revision,
                     normalized);
             }
+        }
+        else
+        {
+            Observe(RbpDocumentContextObservation.Create(
+                "queue", "not_queued", rsid, payload));
+        }
+    }
+
+    private void Observe(RbpDocumentContextObservation observation)
+    {
+        if (_onObservation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _onObservation(observation).AsTask().ContinueWith(
+                completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+        catch
+        {
+            // Diagnostics never own document-context delivery.
         }
     }
 

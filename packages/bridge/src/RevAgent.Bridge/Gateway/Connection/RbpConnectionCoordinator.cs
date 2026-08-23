@@ -60,6 +60,8 @@ internal sealed partial class RbpConnectionCoordinator
         _onConnectionFailureObservation;
     private readonly Func<RbpLifecycleTimeoutObservation, ValueTask>?
         _onLifecycleTimeoutObservation;
+    private readonly Func<RbpDocumentContextObservation, ValueTask>?
+        _onDocumentContextObservation;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -69,6 +71,8 @@ internal sealed partial class RbpConnectionCoordinator
     private int _connectionAuthorityPoisoned;
     private int _ownedBackgroundTasks;
     private int _activeInvocations;
+    private readonly Dictionary<string, long> _documentContextQueued =
+        new(StringComparer.Ordinal);
 
     internal RbpConnectionCoordinator(
         IRbpConnectionCycleFactory cycleFactory,
@@ -86,13 +90,16 @@ internal sealed partial class RbpConnectionCoordinator
             onConnectionFailureObservation = null,
         RbpArtifactCarrierProducer? carrierProducer = null,
         Func<RbpLifecycleTimeoutObservation, ValueTask>?
-            onLifecycleTimeoutObservation = null)
+            onLifecycleTimeoutObservation = null,
+        Func<RbpDocumentContextObservation, ValueTask>?
+            onDocumentContextObservation = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
         _onDispatchDiagnostic = onDispatchDiagnostic;
         _onConnectionFailureObservation = onConnectionFailureObservation;
         _onLifecycleTimeoutObservation = onLifecycleTimeoutObservation;
+        _onDocumentContextObservation = onDocumentContextObservation;
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??

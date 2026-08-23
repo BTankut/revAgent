@@ -41,7 +41,9 @@ internal sealed record WorkerGatewayServices(
         OnConnectionFailureObservation = null,
     RbpArtifactCarrierProducer? CarrierProducer = null,
     Func<RbpLifecycleTimeoutObservation, ValueTask>?
-        OnLifecycleTimeoutObservation = null);
+        OnLifecycleTimeoutObservation = null,
+    Func<RbpDocumentContextObservation, ValueTask>?
+        OnDocumentContextObservation = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -210,7 +212,8 @@ internal static class WorkerGatewayComposition
         // advertise doc_context_cached_v1 are never polled.
         var docContextWatcher = new RbpDocContextWatcher(
             channel,
-            services.Clock);
+            services.Clock,
+            onObservation: services.OnDocumentContextObservation);
 
         // Section 11 execution shares the routed channel and journal with the
         // single-invocation dispatcher; only the capability seam is its own.
@@ -239,7 +242,8 @@ internal static class WorkerGatewayComposition
             services.OnDispatchDiagnostic,
             services.OnConnectionFailureObservation,
             services.CarrierProducer,
-            services.OnLifecycleTimeoutObservation);
+            services.OnLifecycleTimeoutObservation,
+            services.OnDocumentContextObservation);
     }
 
     /// <summary>

@@ -428,6 +428,7 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
+            ObserveDocumentContextAcknowledgements(acknowledgements);
             IReadOnlyList<RbpReleasedCarrier> releasedCarriers =
                 await _journal.ApplyCarrierPlanAcknowledgementsAsync(
                         acknowledgements,

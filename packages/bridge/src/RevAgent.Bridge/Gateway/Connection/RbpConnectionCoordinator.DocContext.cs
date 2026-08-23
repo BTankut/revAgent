@@ -1,5 +1,6 @@
 using System.Text.Json;
 using RevAgent.Bridge.Gateway.Protocol;
+using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Gateway.Connection;
 
@@ -61,6 +62,7 @@ internal sealed partial class RbpConnectionCoordinator
     {
         if (!IsCurrentContext(context))
         {
+            ObserveDocumentContext("failure", "stale_context", rsid, payload);
             return false;
         }
 
@@ -82,11 +84,18 @@ internal sealed partial class RbpConnectionCoordinator
                 // RenewalRequired: the session has no usable transmit
                 // sequence until it resumes, so nothing durable happened
                 // and the watcher retries at its next tick.
+                ObserveDocumentContext("queue", "renewal_required", rsid, payload);
                 return false;
             }
 
+            TrackDocumentContextQueued(rsid, outbound.Sequence);
+            ObserveDocumentContext("queue", "durably_queued", rsid, payload,
+                outbound.Sequence);
+
             if (!context.IsDispatchAllowed(rsid))
             {
+                ObserveDocumentContext("send", "dispatch_not_allowed", rsid,
+                    payload, outbound.Sequence);
                 return true;
             }
 
@@ -95,10 +104,14 @@ internal sealed partial class RbpConnectionCoordinator
                 await context.Cycle
                     .SendAsync(CreateDataEnvelope(outbound), context.Token)
                     .ConfigureAwait(false);
+                ObserveDocumentContext("send", "sent", rsid, payload,
+                    outbound.Sequence);
             }
             catch (RbpGatewayTransportException)
             {
                 // Durably queued; retransmission owns delivery.
+                ObserveDocumentContext("failure", "send_deferred", rsid,
+                    payload, outbound.Sequence);
             }
 
             return true;
@@ -106,6 +119,71 @@ internal sealed partial class RbpConnectionCoordinator
         finally
         {
             context.OutboundGate.Release();
+        }
+    }
+
+    private void TrackDocumentContextQueued(string rsid, long sequence)
+    {
+        lock (_sync)
+        {
+            if (!_documentContextQueued.TryGetValue(rsid, out long prior) ||
+                sequence > prior)
+            {
+                _documentContextQueued[rsid] = sequence;
+            }
+        }
+    }
+
+    private void ObserveDocumentContextAcknowledgements(
+        IReadOnlyList<RbpSessionAcknowledgement> acknowledgements)
+    {
+        foreach (RbpSessionAcknowledgement acknowledgement in acknowledgements)
+        {
+            long sequence;
+            lock (_sync)
+            {
+                if (!_documentContextQueued.TryGetValue(
+                        acknowledgement.Rsid, out sequence) ||
+                    acknowledgement.Sequence < sequence)
+                {
+                    continue;
+                }
+
+                _documentContextQueued.Remove(acknowledgement.Rsid);
+            }
+
+            ObserveDocumentContext("ack", "durably_acknowledged",
+                acknowledgement.Rsid, sequence: sequence);
+        }
+    }
+
+    private void ObserveDocumentContext(
+        string stage,
+        string outcome,
+        string rsid,
+        JsonElement? payload = null,
+        long? sequence = null)
+    {
+        if (_onDocumentContextObservation is null)
+        {
+            return;
+        }
+
+        try
+        {
+            _ = _onDocumentContextObservation(
+                RbpDocumentContextObservation.Create(
+                    stage, outcome, rsid, payload, sequence))
+                .AsTask().ContinueWith(
+                    completed => _ = completed.Exception,
+                    CancellationToken.None,
+                    TaskContinuationOptions.OnlyOnFaulted |
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+        }
+        catch
+        {
+            // Observation is diagnostic-only and cannot alter delivery.
         }
     }
 }
