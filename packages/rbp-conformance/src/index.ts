@@ -90,6 +90,19 @@ export {
 } from "./realTrioAttestation.js";
 export { REAL_TRIO_SUPERVISOR_SCHEMA, startRealTrioSupervisor } from "./realTrioSupervisor.js";
 export type { RealTrioSupervisorLaunch, RealTrioSupervisorResult } from "./realTrioSupervisor.js";
+export {
+  C957_REAL_TRIO_CONTROL_SURFACE,
+  REAL_TRIO_CASE_DRIVER_CONTRACT,
+  REAL_TRIO_COMPONENTS,
+  RealTrioCaseControlSurfaceError,
+  assertRealTrioCaseControlSurface,
+  realTrioCaseControlGaps,
+} from "./realTrioCaseDriver.js";
+export type {
+  RealTrioCaseComponent,
+  RealTrioCaseControlGap,
+  RealTrioCaseControlSurface,
+} from "./realTrioCaseDriver.js";
 export type {
   RealTrioAttestation,
   RealTrioComponentId,
