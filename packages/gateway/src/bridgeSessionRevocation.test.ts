@@ -1983,6 +1983,186 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     },
   );
 
+  it("does not apply the seat-drain deadline to an ordinary receive tail", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const preproduction = preProductionFixture();
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      preproduction.identity,
+      { seatReassignmentCloseDrainTimeoutMs: 20 },
+    );
+    await authority.open();
+    const session = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: preproduction.deviceToken,
+      fingerprint: FINGERPRINT_A,
+    });
+    const ordinaryGate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "gateway.rbp-session/v1" &&
+        "lastHeartbeatAtMs" in value,
+    );
+    const heartbeat = authority.receive(session.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "wp06-s2-test",
+        acks: [{ rsid: session.registered.payload.rsid, seq: 0 }],
+        sessions: [],
+      },
+    });
+    await bounded(ordinaryGate.entered, "ordinary receive close tail");
+    let closeSettled = false;
+    const closing = authority.close();
+    void closing.then(
+      () => {
+        closeSettled = true;
+      },
+      () => {
+        closeSettled = true;
+      },
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 60));
+    const stateWhileOrdinaryTailIsHeld = authority.lifecycle();
+    const settledBeforeRelease = closeSettled;
+    ordinaryGate.release();
+    const [, closeResult] = await bounded(
+      Promise.allSettled([heartbeat, closing]),
+      "ordinary receive close completion",
+    );
+    expect(settledBeforeRelease).toBe(false);
+    expect(stateWhileOrdinaryTailIsHeld).toMatchObject({
+      state: "closing",
+      protocolStore: "open",
+      identity: "open",
+    });
+    expect(closeResult.status).toBe("fulfilled");
+    expect(authority.lifecycle().state).toBe("closed");
+  });
+
+  it("separates a settled seat drain from an unrelated long ordinary tail", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const sharedSeat = "seat-reassignment-mixed-close";
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+      { deviceId: "device-mixed-tail-c", seatId: SEAT_B, userId: USER_B, fingerprint: `sha256:${"5".repeat(64)}` },
+    ]);
+    const fingerprintC = `sha256:${"5".repeat(64)}` as GatewayMachineFingerprint;
+    const authority = new GatewayBridgeSessionAuthority(
+      gated.store,
+      multi.identity,
+      { seatReassignmentCloseDrainTimeoutMs: 50 },
+    );
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const sessionC = await openAndRegister({
+      authority,
+      deviceId: "device-mixed-tail-c",
+      deviceToken: multi.tokens.get("device-mixed-tail-c")!,
+      fingerprint: fingerprintC,
+    });
+    const tokenB = reEnrollPreProductionDevice(multi.identity, {
+      enrollmentId: "seat-reassignment-mixed-close-b",
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      userId: USER_B,
+      fingerprint: FINGERPRINT_B,
+    });
+    const seatGate = gated.holdAfterCommit((value) =>
+      cleanupPendingForDevice(value, DEVICE_A),
+    );
+    const openingB = authority.openConnection({
+      deviceToken: tokenB,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channel(),
+    });
+    void openingB.catch(() => undefined);
+    await bounded(seatGate.entered, "mixed close seat drain");
+    const ordinaryGate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "gateway.rbp-session/v1" &&
+        "deviceId" in value &&
+        value.deviceId === "device-mixed-tail-c" &&
+        "lastHeartbeatAtMs" in value,
+    );
+    const heartbeat = authority.receive(sessionC.connectionId, {
+      v: 1,
+      type: "heartbeat",
+      id: id(),
+      ts: new Date().toISOString(),
+      payload: {
+        bridge_version: "wp06-s2-test",
+        acks: [{ rsid: sessionC.registered.payload.rsid, seq: 0 }],
+        sessions: [],
+      },
+    });
+    await bounded(ordinaryGate.entered, "mixed close ordinary tail");
+    let closeSettled = false;
+    const closing = authority.close();
+    void closing.then(
+      () => {
+        closeSettled = true;
+      },
+      () => {
+        closeSettled = true;
+      },
+    );
+    seatGate.release();
+    await bounded(
+      (async () => {
+        while (
+          !fixture.snapshot().records.some(
+            (row) =>
+              row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+              row.key === sessionA.registered.payload.rsid,
+          )
+        ) {
+          await new Promise<void>((resolve) => setTimeout(resolve, 0));
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      })(),
+      "mixed close seat drain settlement",
+    );
+    await new Promise<void>((resolve) => setTimeout(resolve, 90));
+    const stateWhileOrdinaryTailIsHeld = authority.lifecycle();
+    const settledBeforeOrdinaryRelease = closeSettled;
+    ordinaryGate.release();
+    const results = await bounded(
+      Promise.allSettled([openingB, heartbeat, closing]),
+      "mixed close ordinary completion",
+    );
+    expect(settledBeforeOrdinaryRelease).toBe(false);
+    expect(stateWhileOrdinaryTailIsHeld).toMatchObject({
+      state: "closing",
+      protocolStore: "open",
+      identity: "open",
+    });
+    expect(results[0]).toMatchObject({
+      status: "rejected",
+      reason: { httpStatus: 503, closeCode: 1011 },
+    });
+    expect(results[2]?.status).toBe("fulfilled");
+    expect(authority.lifecycle().state).toBe("closed");
+  });
+
   it("admits the exact reassignment cap, shares one retry, and rejects cap plus one", async () => {
     const fixture = createRestartableTestStore();
     const gated = gatedStore(fixture);

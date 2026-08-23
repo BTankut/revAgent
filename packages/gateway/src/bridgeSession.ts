@@ -2343,16 +2343,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     for (const task of [...this.#inFlightSeatReassignments.values()]) {
       this.#cancelSeatReassignmentTask(task);
     }
-    const drain = Promise.allSettled([
-      ...this.#receiveTails.values(),
-      ...this.#sessionAuthorizationTails.values(),
-      ...this.#tenantIdentityTails.values(),
-      ...this.#tenantRevocationTails.values(),
+    const seatReassignmentDrain = Promise.allSettled([
       ...this.#seatReassignmentDrains,
     ]);
     let closeDrainTimeout: ReturnType<typeof setTimeout> | null = null;
     const reassignmentDrained = await Promise.race([
-      drain.then(() => true),
+      seatReassignmentDrain.then(() => true),
       new Promise<false>((resolve) => {
         closeDrainTimeout = setTimeout(
           () => resolve(false),
@@ -2372,6 +2368,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
     }
     this.#closeDrainTimedOut = false;
+    await Promise.allSettled([
+      ...this.#receiveTails.values(),
+      ...this.#sessionAuthorizationTails.values(),
+      ...this.#tenantIdentityTails.values(),
+      ...this.#tenantRevocationTails.values(),
+    ]);
     this.#seatReassignmentOperations.clear();
     this.#seatReassignmentAttempts.clear();
     this.#inFlightSeatReassignments.clear();
