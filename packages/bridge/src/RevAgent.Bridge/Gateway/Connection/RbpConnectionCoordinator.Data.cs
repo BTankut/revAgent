@@ -438,7 +438,10 @@ internal sealed partial class RbpConnectionCoordinator
                 // The journal release is the authority. The producer owns the
                 // spool and independently rechecks its terminal fence before
                 // deleting any bytes; it is never called on send.
-                _carrierProducer?.SweepExpired(releasedCarriers);
+                await CompleteCarrierSpoolReleasesAsync(
+                        releasedCarriers,
+                        context.Token)
+                    .ConfigureAwait(false);
             }
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
@@ -455,6 +458,26 @@ internal sealed partial class RbpConnectionCoordinator
         {
             context.FailHeartbeatFlight(flight, exception);
             throw;
+        }
+    }
+
+    private async Task CompleteCarrierSpoolReleasesAsync(
+        IReadOnlyList<RbpReleasedCarrier> releases,
+        CancellationToken cancellationToken)
+    {
+        if (releases.Count == 0 || _carrierProducer is null)
+        {
+            return;
+        }
+
+        // Cleanup first, confirmation second: a crash in between retains a
+        // pending token that startup/reconnect reissues. The spool operation
+        // itself is absent-safe only after a successful prior release.
+        _carrierProducer.SweepExpired(releases);
+        foreach (RbpReleasedCarrier release in releases)
+        {
+            await _journal.ConfirmSpoolReleasedAsync(release, cancellationToken)
+                .ConfigureAwait(false);
         }
     }
 

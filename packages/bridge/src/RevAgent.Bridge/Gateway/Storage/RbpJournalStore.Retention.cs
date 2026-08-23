@@ -141,12 +141,15 @@ internal sealed partial class RbpJournalStore
         // and invocation or neither — never a terminal-only replay state.
         using SqliteCommand read = context.CreateCommand("""
             SELECT plan.plan_id,invocation.idempotency_key,plan.carrier_key,
-                   plan.terminal_rsid,plan.terminal_sequence
+                   plan.terminal_rsid,plan.terminal_sequence,
+                   plan.spool_release_token
             FROM rbp_carrier_plans AS plan
             JOIN rbp_invocations AS invocation
               ON invocation.idempotency_key=plan.idempotency_key
             WHERE plan.acknowledged_at_ms IS NOT NULL
               AND plan.acknowledged_at_ms<=$cutoff
+              AND plan.spool_release_state='completed'
+              AND plan.spool_released_at_ms<=$cutoff
               AND plan.created_at_ms<=$cutoff
               AND invocation.state IN (
                 'completed','failed','guarded','cancelled','indeterminate'
@@ -182,7 +185,7 @@ internal sealed partial class RbpJournalStore
                               RbpReleasedCarrier Released)>();
         while (reader.Read())
         {
-            if (reader.IsDBNull(3) || reader.IsDBNull(4))
+            if (reader.IsDBNull(3) || reader.IsDBNull(4) || reader.IsDBNull(5))
             {
                 throw RbpJournalSerialization.Corrupt(
                     "An expiring carrier plan lacks its immutable fence.");
@@ -190,7 +193,7 @@ internal sealed partial class RbpJournalStore
             plans.Add((reader.GetString(0), reader.GetString(1),
                 new RbpReleasedCarrier(
                     reader.GetString(2), reader.GetString(3),
-                    reader.GetInt64(4))));
+                    reader.GetInt64(4), reader.GetString(5))));
         }
         reader.Close();
 
@@ -210,7 +213,10 @@ internal sealed partial class RbpJournalStore
             }
             using SqliteCommand remove = context.CreateCommand("""
                 DELETE FROM rbp_carrier_plans
-                WHERE plan_id=$plan_id AND acknowledged_at_ms<=$cutoff;
+                WHERE plan_id=$plan_id
+                  AND acknowledged_at_ms<=$cutoff
+                  AND spool_release_state='completed'
+                  AND spool_released_at_ms<=$cutoff;
                 """);
             remove.Parameters.AddWithValue("$plan_id", planId);
             remove.Parameters.AddWithValue("$cutoff", cutoff);

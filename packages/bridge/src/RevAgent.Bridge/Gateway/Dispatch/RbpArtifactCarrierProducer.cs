@@ -509,7 +509,8 @@ internal sealed class RbpArtifactCarrierProducer
     /// acknowledged plans remain journal replay evidence after their bytes
     /// have been released.
     /// </summary>
-    internal async Task RehydrateFencesAsync(CancellationToken cancellationToken)
+    internal async Task<RbpCarrierRecovery> RehydrateFencesAsync(
+        CancellationToken cancellationToken)
     {
         RbpCarrierRecovery recovery = await _journal
             .LoadCarrierRecoveryAsync(cancellationToken)
@@ -520,6 +521,7 @@ internal sealed class RbpArtifactCarrierProducer
                 pending.Rsid,
                 pending.TerminalSequence);
         }
+        return recovery;
     }
 
     /// <summary>Journal recovery supplies only fenced, already-released keys.
@@ -659,7 +661,6 @@ internal sealed class RbpArtifactCarrierProducer
         {
             throw new RbpArtifactCarrierException($"Artifact {name} is malformed.");
         }
-
         return text;
     }
 
@@ -733,7 +734,11 @@ internal sealed record RbpArtifactReference(string ArtifactId, int ArtifactIndex
 
 /// <summary>Exact durable-release identity supplied by the journal.  A spool
 /// sweep cannot invent this selector and never enumerates the filesystem.</summary>
-internal sealed record RbpReleasedCarrier(string CarrierKey, string Rsid, long TerminalSequence);
+internal sealed record RbpReleasedCarrier(
+    string CarrierKey,
+    string Rsid,
+    long TerminalSequence,
+    string ReleaseToken = "");
 
 internal sealed record RbpCarrierFence(string Rsid, long TerminalSequence);
 

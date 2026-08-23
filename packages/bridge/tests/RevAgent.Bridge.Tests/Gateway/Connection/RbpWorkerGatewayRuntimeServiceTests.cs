@@ -413,8 +413,11 @@ public sealed partial class RbpConnectionCoordinatorTests
         string carrierRoot = Path.Combine(
             directory.Path, "artifact-spool", emission.CarrierKey);
         Assert.Equal(1, terminalSequence);
-        _ = await store.ApplyCarrierPlanAcknowledgementsAsync(
+        IReadOnlyList<RbpReleasedCarrier> released =
+            await store.ApplyCarrierPlanAcknowledgementsAsync(
             new[] { new RbpSessionAcknowledgement("rs-sweep", terminalSequence) });
+        producer.SweepExpired(released);
+        await store.ConfirmSpoolReleasedAsync(Assert.Single(released));
         clock.Advance(TimeSpan.FromDays(8));
 
         var responder = new ScriptedGatewayResponder(clock);

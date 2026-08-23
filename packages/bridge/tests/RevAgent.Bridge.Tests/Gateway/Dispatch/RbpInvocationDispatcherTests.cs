@@ -277,11 +277,26 @@ public sealed class RbpInvocationDispatcherTests
         Assert.Equal(plan.CarrierKey, release.CarrierKey);
         Assert.Equal(Rsid, release.Rsid);
         Assert.Equal(terminalSequence, release.TerminalSequence);
+        // Crash after the ACK transaction but before cleanup: the same
+        // pending token is reissued, not a second release identity.
+        RbpReleasedCarrier reissued = Assert.Single(
+            await store.ApplyCarrierPlanAcknowledgementsAsync(
+                new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
+        Assert.Equal(release.ReleaseToken, reissued.ReleaseToken);
         producer.SweepExpired(released);
         Assert.False(Directory.Exists(carrierRoot));
+        // Crash after delete but before confirmation: absent cleanup is safe
+        // and the durable pending token can be confirmed exactly once.
+        producer.SweepExpired(new[] { reissued });
+        await Assert.ThrowsAsync<RbpJournalException>(() =>
+            store.ConfirmSpoolReleasedAsync(reissued with
+            {
+                ReleaseToken = "sha256:" + new string('0', 64),
+            }));
+        await store.ConfirmSpoolReleasedAsync(reissued);
         Assert.Empty(await store.ApplyCarrierPlanAcknowledgementsAsync(
             new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
-        producer.SweepExpired(released);
+        await store.ConfirmSpoolReleasedAsync(reissued);
 
         // Acknowledged plans remain in the journal for exact duplicate replay,
         // but restart must not demand the already-released spool fence.

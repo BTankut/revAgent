@@ -294,7 +294,12 @@ internal sealed partial class RbpConnectionCoordinator
         // transaction and spool cleanup; no spool directory is discovered.
         if (_carrierProducer is not null)
         {
-            await _carrierProducer.RehydrateFencesAsync(serviceCancellationToken)
+            RbpCarrierRecovery carrierRecovery =
+                await _carrierProducer.RehydrateFencesAsync(serviceCancellationToken)
+                .ConfigureAwait(false);
+            await CompleteCarrierSpoolReleasesAsync(
+                    carrierRecovery.PendingReleases,
+                    serviceCancellationToken)
                 .ConfigureAwait(false);
         }
 

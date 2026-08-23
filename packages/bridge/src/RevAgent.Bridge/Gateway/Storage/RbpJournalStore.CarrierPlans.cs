@@ -132,40 +132,67 @@ internal sealed partial class RbpJournalStore
                     }
 
                     using SqliteCommand read = context.CreateCommand("""
-                        SELECT plan_id,carrier_key,terminal_rsid,terminal_sequence
+                        SELECT plan_id,carrier_key,terminal_rsid,terminal_sequence,
+                               spool_release_state,spool_release_token
                         FROM rbp_carrier_plans
                         WHERE terminal_rsid=$rsid
                           AND terminal_sequence <= $sequence
-                          AND acknowledged_at_ms IS NULL
+                          AND spool_release_state<>'completed'
                         ORDER BY terminal_sequence,plan_id;
                         """);
                     read.Parameters.AddWithValue("$rsid", acknowledgement.Rsid);
                     read.Parameters.AddWithValue("$sequence", acknowledgement.Sequence);
                     using SqliteDataReader reader = read.ExecuteReader();
                     var plans = new List<(string PlanId, string CarrierKey,
-                        string Rsid, long TerminalSequence)>();
+                        string Rsid, long TerminalSequence, string State,
+                        string? Token)>();
                     while (reader.Read())
                     {
-                        if (reader.IsDBNull(2) || reader.IsDBNull(3))
+                        if (reader.IsDBNull(2) || reader.IsDBNull(3) ||
+                            reader.IsDBNull(4))
                         {
                             throw RbpJournalSerialization.Corrupt(
                                 "A releasable carrier plan lacks its terminal fence.");
                         }
                         plans.Add((reader.GetString(0), reader.GetString(1),
-                            reader.GetString(2), reader.GetInt64(3)));
+                            reader.GetString(2), reader.GetInt64(3),
+                            reader.GetString(4),
+                            reader.IsDBNull(5) ? null : reader.GetString(5)));
                     }
                     reader.Close();
 
                     foreach ((string planId, string carrierKey,
-                              string rsid, long terminalSequence) in plans)
+                              string rsid, long terminalSequence,
+                              string state, string? existingToken) in plans)
                     {
+                        if (string.Equals(state, "pending", StringComparison.Ordinal))
+                        {
+                            if (existingToken is null)
+                            {
+                                throw RbpJournalSerialization.Corrupt(
+                                    "A pending spool release has no token.");
+                            }
+                            released.Add(new RbpReleasedCarrier(
+                                carrierKey, rsid, terminalSequence, existingToken));
+                            continue;
+                        }
+                        if (!string.Equals(state, "none", StringComparison.Ordinal))
+                        {
+                            throw RbpJournalSerialization.Corrupt(
+                                "A carrier spool release state is malformed.");
+                        }
+
+                        string token = CreateReleaseToken(planId, now);
                         using SqliteCommand mark = context.CreateCommand("""
                             UPDATE rbp_carrier_plans
-                            SET acknowledged_at_ms=$now
+                            SET acknowledged_at_ms=COALESCE(acknowledged_at_ms,$now),
+                                spool_release_state='pending',
+                                spool_release_token=$token
                             WHERE plan_id=$plan_id
-                              AND acknowledged_at_ms IS NULL;
+                              AND spool_release_state='none';
                             """);
                         mark.Parameters.AddWithValue("$now", now);
+                        mark.Parameters.AddWithValue("$token", token);
                         mark.Parameters.AddWithValue("$plan_id", planId);
                         int transitioned = mark.ExecuteNonQuery();
                         if (transitioned > 1)
@@ -175,18 +202,79 @@ internal sealed partial class RbpJournalStore
                         }
                         if (transitioned == 0)
                         {
-                            // A repeated heartbeat acknowledgement raced an
-                            // earlier committed transition. It is idempotent
-                            // and must not issue a second spool release.
+                            // A concurrent transition is re-observed on the
+                            // next heartbeat; it cannot mint another token.
                             continue;
                         }
                         released.Add(new RbpReleasedCarrier(
                             carrierKey,
                             rsid,
-                            terminalSequence));
+                            terminalSequence,
+                            token));
                     }
                 }
                 return (IReadOnlyList<RbpReleasedCarrier>)released.AsReadOnly();
+            },
+            cancellationToken);
+    }
+
+    internal Task ConfirmSpoolReleasedAsync(
+        RbpReleasedCarrier released,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(released);
+        ValidateCarrierKey(released.CarrierKey);
+        ValidateIdentifier(released.Rsid, nameof(released), 256);
+        if (released.TerminalSequence < 1 ||
+            !RbpJournalSerialization.IsSha256Digest(released.ReleaseToken))
+        {
+            throw new ArgumentException("Carrier release identity is malformed.", nameof(released));
+        }
+
+        long now = NowMilliseconds();
+        return ExecuteImmediateAsync(
+            context =>
+            {
+                using SqliteCommand confirm = context.CreateCommand("""
+                    UPDATE rbp_carrier_plans
+                    SET spool_release_state='completed',spool_released_at_ms=$now
+                    WHERE carrier_key=$carrier_key
+                      AND terminal_rsid=$rsid
+                      AND terminal_sequence=$sequence
+                      AND spool_release_state='pending'
+                      AND spool_release_token=$token;
+                    """);
+                confirm.Parameters.AddWithValue("$now", now);
+                confirm.Parameters.AddWithValue("$carrier_key", released.CarrierKey);
+                confirm.Parameters.AddWithValue("$rsid", released.Rsid);
+                confirm.Parameters.AddWithValue("$sequence", released.TerminalSequence);
+                confirm.Parameters.AddWithValue("$token", released.ReleaseToken);
+                if (confirm.ExecuteNonQuery() == 1)
+                {
+                    return true;
+                }
+
+                using SqliteCommand read = context.CreateCommand("""
+                    SELECT spool_release_state,spool_release_token
+                    FROM rbp_carrier_plans
+                    WHERE carrier_key=$carrier_key
+                      AND terminal_rsid=$rsid
+                      AND terminal_sequence=$sequence;
+                    """);
+                read.Parameters.AddWithValue("$carrier_key", released.CarrierKey);
+                read.Parameters.AddWithValue("$rsid", released.Rsid);
+                read.Parameters.AddWithValue("$sequence", released.TerminalSequence);
+                using SqliteDataReader row = read.ExecuteReader();
+                if (!row.Read() ||
+                    !string.Equals(row.GetString(0), "completed", StringComparison.Ordinal) ||
+                    row.IsDBNull(1) || !string.Equals(row.GetString(1), released.ReleaseToken,
+                        StringComparison.Ordinal))
+                {
+                    throw new RbpJournalException(
+                        RbpJournalErrorCode.ProtocolConflict,
+                        "Carrier spool release confirmation token conflicts.");
+                }
+                return true;
             },
             cancellationToken);
     }
@@ -204,7 +292,7 @@ internal sealed partial class RbpJournalStore
             {
                 using SqliteCommand command = context.CreateCommand("""
                     SELECT carrier_key,terminal_rsid,terminal_sequence,
-                           acknowledged_at_ms
+                           spool_release_state,spool_release_token
                     FROM rbp_carrier_plans
                     WHERE terminal_rsid IS NOT NULL
                       AND terminal_sequence IS NOT NULL
@@ -212,20 +300,37 @@ internal sealed partial class RbpJournalStore
                     """);
                 using SqliteDataReader reader = command.ExecuteReader();
                 var pending = new List<RbpCarrierFenceRecord>();
+                var releases = new List<RbpReleasedCarrier>();
                 while (reader.Read())
                 {
                     string carrierKey = reader.GetString(0);
                     string rsid = reader.GetString(1);
                     long terminalSequence = reader.GetInt64(2);
-                    if (reader.IsDBNull(3))
+                    string state = reader.GetString(3);
+                    if (string.Equals(state, "none", StringComparison.Ordinal))
                     {
                         pending.Add(new RbpCarrierFenceRecord(
                             carrierKey, rsid, terminalSequence));
                     }
+                    else if (string.Equals(state, "pending", StringComparison.Ordinal))
+                    {
+                        if (reader.IsDBNull(4))
+                        {
+                            throw RbpJournalSerialization.Corrupt(
+                                "A pending spool release has no token.");
+                        }
+                        releases.Add(new RbpReleasedCarrier(carrierKey, rsid,
+                            terminalSequence, reader.GetString(4)));
+                    }
+                    else if (!string.Equals(state, "completed", StringComparison.Ordinal))
+                    {
+                        throw RbpJournalSerialization.Corrupt(
+                            "A carrier spool release state is malformed.");
+                    }
                 }
 
                 return new RbpCarrierRecovery(
-                    pending.AsReadOnly());
+                    pending.AsReadOnly(), releases.AsReadOnly());
             },
             cancellationToken);
 
@@ -237,6 +342,10 @@ internal sealed partial class RbpJournalStore
             throw new ArgumentException("Carrier plan key is malformed.", nameof(carrierKey));
         }
     }
+
+    private static string CreateReleaseToken(string planId, long now) =>
+        "sha256:" + Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(planId + "\n" + now))).ToLowerInvariant();
 }
 
 internal sealed record RbpCarrierFenceRecord(
@@ -245,4 +354,5 @@ internal sealed record RbpCarrierFenceRecord(
     long TerminalSequence);
 
 internal sealed record RbpCarrierRecovery(
-    IReadOnlyList<RbpCarrierFenceRecord> PendingFences);
+    IReadOnlyList<RbpCarrierFenceRecord> PendingFences,
+    IReadOnlyList<RbpReleasedCarrier> PendingReleases);

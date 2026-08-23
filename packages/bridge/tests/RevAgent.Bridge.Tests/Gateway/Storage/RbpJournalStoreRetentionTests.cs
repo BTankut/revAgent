@@ -110,9 +110,9 @@ public sealed class RbpJournalStoreRetentionTests
         RbpJournalRetentionResult swept = await store.ApplyRetentionAsync(
             RbpJournalStore.MinimumRetentionPeriod);
 
-        Assert.Equal(2, swept.PrunedInvocations);
-        Assert.Equal(1, swept.PrunedCarrierPlans);
-        Assert.Null(await store.GetInvocationAsync(acknowledged.IdempotencyKey));
+        Assert.Equal(1, swept.PrunedInvocations);
+        Assert.Equal(0, swept.PrunedCarrierPlans);
+        Assert.NotNull(await store.GetInvocationAsync(acknowledged.IdempotencyKey));
         Assert.Null(await store.GetInvocationAsync(ordinary.IdempotencyKey));
         RbpStoredInvocation retained = Assert.IsType<RbpStoredInvocation>(
             await store.GetInvocationAsync(unacknowledged.IdempotencyKey));
