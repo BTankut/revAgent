@@ -1,5 +1,5 @@
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
-import { createConformanceRbpIngressHost, type ConformanceRbpIngressHost } from "./rbpIngress.js";
+import { type ConformanceRbpIngressHost } from "./rbpIngress.js";
 import {
   startGatewayServer,
   type GatewayServerHandle,
@@ -46,10 +46,13 @@ export async function startProductionGatewayHost(input: {
   if (input.ports.identity !== input.authority.identity || input.ports.protocolStore !== input.authority.store) {
     throw new Error("productionGatewayHost requires one exact authority/identity/store graph");
   }
-  const ingress = createConformanceRbpIngressHost({ authority: input.authority });
+  const ingress = input.ports.rbpIngress;
+  if (!(ingress instanceof Object) || ingress.kind !== "conformance" || ingress.authority !== input.authority) {
+    throw new Error("productionGatewayHost requires the exact validated conformance ingress/authority graph");
+  }
   const handle = await startGatewayServer({
     ...input.server,
     ports: { ...input.ports, rbpIngress: ingress },
   });
-  return Object.freeze({ ...handle, ingress });
+  return Object.freeze({ ...handle, ingress: ingress as ConformanceRbpIngressHost });
 }

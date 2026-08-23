@@ -49,11 +49,32 @@ describe("conformance ephemeral adapters", () => {
     await left.close(); await right.close();
   });
 
+  it("serializes startup work across independently opened SQLite adapters", async () => {
+    const location = await root();
+    const left = new SqliteConformanceProtocolStore(location);
+    const right = new SqliteConformanceProtocolStore(location);
+    await left.open(); await right.open();
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const order: string[] = [];
+    const first = left.startupCoordinator.runExclusive(async () => { order.push("left"); await held; return { ok: true as const, value: undefined }; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const second = right.startupCoordinator.runExclusive(async () => { order.push("right"); return { ok: true as const, value: undefined }; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(order).toEqual(["left"]);
+    release();
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(order).toEqual(["left", "right"]);
+    await left.close(); await right.close();
+  });
+
   it("requires a digest key and does not cross-read a tenant object", async () => {
-    const store = new DigestFileConformanceObjectStore(await root());
+    const location = await root();
+    const store = new DigestFileConformanceObjectStore(location);
     const bytes = Buffer.from("verified payload");
     const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
     await expect(store.put({ tenantId: "tenant_a", storageKey: key, bytes, contentType: "application/octet-stream" })).resolves.toMatchObject({ ok: true });
+    await expect(new DigestFileConformanceObjectStore(location).get({ tenantId: "tenant_a", storageKey: key })).resolves.toMatchObject({ ok: true, value: { contentType: "application/octet-stream" } });
     await expect(store.get({ tenantId: "tenant_b", storageKey: key })).resolves.toMatchObject({ ok: false });
     await expect(store.put({ tenantId: "tenant_a", storageKey: `sha256:${"0".repeat(64)}`, bytes, contentType: "application/octet-stream" })).resolves.toMatchObject({ ok: false });
   });
