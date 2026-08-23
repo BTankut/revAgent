@@ -126,6 +126,34 @@ public sealed class BridgeConfigurationLoaderTests
     }
 
     [Fact]
+    public void Load_OnlyCanonicalAddinPortEnvironmentSource_IsAccepted()
+    {
+        using var file = TemporaryConfig.Create(ValidConfiguration);
+
+        var configuration = BridgeConfigurationLoader.Load(
+            file.Path,
+            new Dictionary<string, string?>
+            {
+                [BridgeConfigurationLoader.AddinPortEnvironmentVariable] = "8181",
+            });
+        Assert.Equal(8181, configuration.Addin.ScanStartPort);
+        Assert.Equal(8181, configuration.Addin.ScanEndPort);
+        AssertEnvironmentSource(
+            configuration,
+            "addin.scanStartPort",
+            BridgeConfigurationLoader.AddinPortEnvironmentVariable);
+
+        var exception = Assert.Throws<BridgeConfigurationException>(
+            () => BridgeConfigurationLoader.Load(
+                file.Path,
+                new Dictionary<string, string?>
+                {
+                    ["REVAGENT_BRIDGE_ADDIN_PORT_TEST"] = "8181",
+                }));
+        Assert.Equal("config_environment_unknown", exception.ErrorCode);
+    }
+
+    [Fact]
     public void Load_EnrollmentTokenEnvironmentVariable_IsAcceptedAndContributesNoConfiguration()
     {
         using var file = TemporaryConfig.Create(ValidConfiguration);

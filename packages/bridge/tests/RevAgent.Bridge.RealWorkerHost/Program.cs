@@ -135,8 +135,12 @@ internal static class Program
         new BridgeLoggingConfiguration(1_048_576, 2),
         new BridgeConfigurationSourceMetadata("wp12-test-only", new Dictionary<string, BridgeConfigurationValueSource>
         {
-            ["addin.scanStartPort"] = new(BridgeConfigurationSourceKind.Environment, "WP12_TEST"),
-            ["addin.scanEndPort"] = new(BridgeConfigurationSourceKind.Environment, "WP12_TEST"),
+            ["addin.scanStartPort"] = new(
+                BridgeConfigurationSourceKind.Environment,
+                BridgeConfigurationLoader.AddinPortEnvironmentVariable),
+            ["addin.scanEndPort"] = new(
+                BridgeConfigurationSourceKind.Environment,
+                BridgeConfigurationLoader.AddinPortEnvironmentVariable),
         }));
 
     /// <summary>
