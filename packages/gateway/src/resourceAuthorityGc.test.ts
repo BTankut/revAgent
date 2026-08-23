@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { describe, expect, it, vi } from "vitest";
 import {
@@ -218,6 +220,42 @@ describe("WP-10 durable resource expiry GC", () => {
     await expect(second.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 1, claimed: 1, deleted: 1, retained: 0 });
     expect(objects.keys()).toEqual([]);
     expect(restartable.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+  });
+
+  it("fences carrier GC across set, chunks, members, acknowledgements, terminal, and identity", async () => {
+    let now = 90_000;
+    const restartable = createRestartableTestStore(); await restartable.store.open();
+    const objects = createMemoryObjectStore();
+    const bytes = new Uint8Array([1, 2, 3]);
+    const digest = `sha256:${createHash("sha256").update(bytes).digest("hex")}` as const;
+    const input = {
+      scope, effectiveMcpRequestScope: effectiveScope(), rsid: "rsid-carrier-gc",
+      invocationId: "0197a3c2-0000-7000-8000-000000000010",
+      chunks: [{ kind: "chunk" as const, invocation_id: "0197a3c2-0000-7000-8000-000000000010", stream_id: "artifact:0197a3c2-0000-7000-8000-000000000201" as const, artifact_id: "0197a3c2-0000-7000-8000-000000000201", artifact_index: 0, chunk_index: 0, encoding: "base64" as const, content_type: "image/png", data: Buffer.from(bytes).toString("base64") }],
+      manifest: { kind: "artifact_result" as const, descriptors: [{ artifact_id: "0197a3c2-0000-7000-8000-000000000201", artifact_index: 0, stream_id: "artifact:0197a3c2-0000-7000-8000-000000000201" as const, filename: "gc.png", content_type: "image/png", total_chunks: 1, total_size: bytes.byteLength, sha256: digest }], artifactReferences: [{ artifact_id: "0197a3c2-0000-7000-8000-000000000201", artifact_index: 0 }] },
+    };
+    let failures = 2; const originalDelete = objects.delete.bind(objects);
+    vi.spyOn(objects, "delete").mockImplementation(async (request) => {
+      if (request.storageKey.startsWith("carrier/quarantine/") && failures > 0) { failures -= 1; return { ok: false, port: "object_store", code: "unavailable", message: "carrier delete fault" } as const; }
+      return originalDelete(request);
+    });
+    const one = new GatewayResourceAuthority({ protocolStore: restartable.store, objectStore: objects, now: () => now, defaultTtlMs: 1, gcOwnerId: "carrier-owner-one" });
+    await one.ingestRbpArtifactCarrier(input); now += 1;
+    await one.collectExpired({ tenantId: scope.tenantId });
+    const first = restartable.snapshot().records.find((row) => row.namespace === "gateway.resource-set/v1")!.value as { gcLease: { token: string; expiresAtMs: number; owner: string }; state: string };
+    expect(first).toMatchObject({ state: "gc_claimed", gcLease: { owner: "carrier-owner-one", expiresAtMs: now + 60_000 } });
+    const two = new GatewayResourceAuthority({ protocolStore: restartable.store, objectStore: objects, now: () => now, gcOwnerId: "carrier-owner-two" });
+    await expect(two.collectExpired({ tenantId: scope.tenantId })).resolves.toMatchObject({ claimed: 0, retained: 1 });
+    now += 60_000;
+    await one.collectExpired({ tenantId: scope.tenantId });
+    const renewed = restartable.snapshot().records.find((row) => row.namespace === "gateway.resource-set/v1")!.value as { gcLease: { token: string; owner: string }; state: string };
+    expect(renewed).toMatchObject({ state: "gc_claimed", gcLease: { owner: "carrier-owner-one" } });
+    expect(renewed.gcLease.token).not.toBe(first.gcLease.token);
+    await expect(two.collectExpired({ tenantId: scope.tenantId })).resolves.toMatchObject({ claimed: 0, retained: 1 });
+    now += 60_000;
+    await expect(two.collectExpired({ tenantId: scope.tenantId })).resolves.toMatchObject({ deleted: 1, retained: 0 });
+    expect(objects.keys()).toEqual([]);
+    expect(restartable.snapshot().records.filter((row) => ["gateway.resource-set/v1", "gateway.carrier-chunk/v1", "gateway.resource-set-member/v1", "gateway.carrier-ack/v1", "gateway.carrier-terminal/v1", "gateway.carrier-identity/v1", "gateway_resource_v1"].includes(row.namespace))).toEqual([]);
   });
 
   it("collects exactly 100 expired resources and leaves the +1 record for a later bounded pass", async () => {
