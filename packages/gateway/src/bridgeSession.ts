@@ -103,6 +103,11 @@ const MAX_IDENTITY_EVENT_BATCH = 1_000;
 const MAX_IDENTITY_EVENT_BATCHES = 32;
 const MAX_IDENTITY_SESSION_RESYNC = 10_000;
 const MAX_REVOKED_CONNECTION_TOMBSTONES = 10_000;
+const DEFAULT_MAX_ACTIVE_SEAT_REASSIGNMENTS = 16;
+const MAX_CONFIGURED_ACTIVE_SEAT_REASSIGNMENTS = 256;
+const DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS = 30_000;
+const MAX_SEAT_REASSIGNMENT_TIMEOUT_MS = 300_000;
+const MAX_SEAT_REASSIGNMENT_ATTEMPTS = 2;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
 const SUPPORTED_CAPABILITIES = Object.freeze([
@@ -179,6 +184,34 @@ interface SeatReassignmentOperation {
   readonly priorDeviceFence: DeviceAuthorityFence;
   readonly incomingDeviceFence: DeviceAuthorityFence;
   readonly seatFence: SeatAuthorityFence;
+}
+
+interface SeatReassignmentAttemptState {
+  attemptsStarted: number;
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+  readonly lifecycleGeneration: number;
+}
+
+type SeatReassignmentTaskOutcome =
+  | "succeeded"
+  | "quarantined"
+  | "cancelled";
+
+interface SeatReassignmentTask {
+  readonly operation: SeatReassignmentOperation;
+  readonly lifecycleGeneration: number;
+  readonly attempt: number;
+  cancelled: boolean;
+  cancellationKind: "authority" | "lifecycle" | null;
+  outcomeSettled: boolean;
+  drainSettled: boolean;
+  readonly outcome: Promise<SeatReassignmentTaskOutcome>;
+  readonly resolveOutcome: (outcome: SeatReassignmentTaskOutcome) => void;
+  readonly cancellation: Promise<void>;
+  readonly resolveCancellation: () => void;
+  readonly drain: Promise<void>;
+  readonly resolveDrain: () => void;
 }
 
 interface DurablePendingDispatch {
@@ -2060,6 +2093,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     string,
     SeatReassignmentOperation
   >();
+  readonly #seatReassignmentAttempts = new Map<
+    string,
+    SeatReassignmentAttemptState
+  >();
+  readonly #inFlightSeatReassignments = new Map<
+    string,
+    SeatReassignmentTask
+  >();
+  readonly #seatReassignmentDrains = new Set<Promise<void>>();
   readonly #revokedConnectionIds = new Set<string>();
   readonly #knownTenants = new Set<string>();
   readonly #tenantIdentitySnapshots = new Map<string, TenantIdentitySnapshot>();
@@ -2071,7 +2113,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #clock: () => number;
   readonly #instanceId: string;
   readonly #wait: (milliseconds: number) => Promise<void>;
+  readonly #maxActiveSeatReassignments: number;
+  readonly #seatReassignmentTimeoutMs: number;
   #lifecycleState: BridgeLifecycleState = "closed";
+  #lifecycleGeneration = 0;
   #protocolStoreState: BridgeLifecycleResourceState = "closed";
   #identityState: BridgeLifecycleResourceState = "closed";
   #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
@@ -2085,6 +2130,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly clock?: () => number;
       readonly instanceId?: string;
       readonly wait?: (milliseconds: number) => Promise<void>;
+      readonly maxActiveSeatReassignments?: number;
+      readonly seatReassignmentTimeoutMs?: number;
     } = {},
   ) {
     this.#productionIdentity = asProductionIdentityAuthority(identity);
@@ -2096,6 +2143,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#wait = options.wait ?? (async (milliseconds) => {
       await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
     });
+    this.#maxActiveSeatReassignments =
+      options.maxActiveSeatReassignments ??
+      DEFAULT_MAX_ACTIVE_SEAT_REASSIGNMENTS;
+    this.#seatReassignmentTimeoutMs =
+      options.seatReassignmentTimeoutMs ??
+      DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS;
+    if (
+      !isSafePositiveInteger(this.#maxActiveSeatReassignments) ||
+      this.#maxActiveSeatReassignments >
+        MAX_CONFIGURED_ACTIVE_SEAT_REASSIGNMENTS
+    ) {
+      throw new TypeError(
+        "maxActiveSeatReassignments must be a bounded positive integer",
+      );
+    }
+    if (
+      !isSafePositiveInteger(this.#seatReassignmentTimeoutMs) ||
+      this.#seatReassignmentTimeoutMs > MAX_SEAT_REASSIGNMENT_TIMEOUT_MS
+    ) {
+      throw new TypeError(
+        "seatReassignmentTimeoutMs must be a bounded positive integer",
+      );
+    }
   }
 
   public lifecycle(): GatewayBridgeSessionLifecycleSnapshot {
@@ -2236,12 +2306,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
 
   async #performClose(): Promise<void> {
     this.#lifecycleState = "closing";
+    this.#lifecycleGeneration += 1;
+    for (const task of [...this.#inFlightSeatReassignments.values()]) {
+      this.#cancelSeatReassignmentTask(task);
+    }
     await Promise.allSettled([
       ...this.#receiveTails.values(),
       ...this.#sessionAuthorizationTails.values(),
       ...this.#tenantIdentityTails.values(),
       ...this.#tenantRevocationTails.values(),
+      ...this.#seatReassignmentDrains,
     ]);
+    this.#seatReassignmentOperations.clear();
+    this.#seatReassignmentAttempts.clear();
+    this.#inFlightSeatReassignments.clear();
+    this.#seatReassignmentDrains.clear();
     const connections = [...this.#connections.values()];
     const active = [...this.#active.values()];
     let shutdownError: unknown = null;
@@ -2532,6 +2611,166 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return this.#seatAuthorityFences.get(identityIndexKey(tenantId, seatId)) ?? null;
   }
 
+  #removeSeatReassignmentOperation(
+    operation: SeatReassignmentOperation,
+  ): void {
+    const key = identityIndexKey(operation.tenantId, operation.seatId);
+    if (this.#seatReassignmentOperations.get(key)?.token === operation.token) {
+      this.#seatReassignmentOperations.delete(key);
+    }
+    this.#seatReassignmentAttempts.delete(operation.token);
+  }
+
+  #pruneSeatReassignmentOperations(): void {
+    const nowMs = this.#clock();
+    for (const operation of this.#seatReassignmentOperations.values()) {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (
+        this.#inFlightSeatReassignments.has(operation.token) ||
+        (attempt !== undefined && attempt.expiresAtMs >= nowMs)
+      ) {
+        continue;
+      }
+      this.#removeSeatReassignmentOperation(operation);
+    }
+    const recordLimit = this.#maxActiveSeatReassignments * 4;
+    while (this.#seatReassignmentOperations.size >= recordLimit) {
+      const oldest = [...this.#seatReassignmentOperations.values()]
+        .filter(
+          (operation) =>
+            !this.#inFlightSeatReassignments.has(operation.token),
+        )
+        .sort(
+          (left, right) =>
+            (this.#seatReassignmentAttempts.get(left.token)?.createdAtMs ?? 0) -
+            (this.#seatReassignmentAttempts.get(right.token)?.createdAtMs ?? 0),
+        )[0];
+      if (oldest === undefined) break;
+      this.#removeSeatReassignmentOperation(oldest);
+    }
+  }
+
+  #assertSeatReassignmentCapacity(): void {
+    this.#pruneSeatReassignmentOperations();
+    if (
+      this.#lifecycleState !== "open" ||
+      this.#inFlightSeatReassignments.size >=
+        this.#maxActiveSeatReassignments ||
+      this.#seatReassignmentOperations.size >=
+        this.#maxActiveSeatReassignments * 4
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment authority is at its bounded capacity",
+        503,
+        1011,
+      );
+    }
+  }
+
+  #registerSeatReassignmentTask(
+    operation: SeatReassignmentOperation,
+    attempt: SeatReassignmentAttemptState,
+  ): SeatReassignmentTask {
+    if (
+      this.#lifecycleState !== "open" ||
+      this.#inFlightSeatReassignments.size >=
+        this.#maxActiveSeatReassignments ||
+      attempt.lifecycleGeneration !== this.#lifecycleGeneration ||
+      this.#inFlightSeatReassignments.has(operation.token)
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment lifecycle registration is stale",
+        503,
+        1011,
+      );
+    }
+    let resolveOutcome!: (outcome: SeatReassignmentTaskOutcome) => void;
+    const outcome = new Promise<SeatReassignmentTaskOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    let resolveCancellation!: () => void;
+    const cancellation = new Promise<void>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    let resolveDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      resolveDrain = resolve;
+    });
+    const task: SeatReassignmentTask = {
+      operation,
+      lifecycleGeneration: this.#lifecycleGeneration,
+      attempt: attempt.attemptsStarted,
+      cancelled: false,
+      cancellationKind: null,
+      outcomeSettled: false,
+      drainSettled: false,
+      outcome,
+      resolveOutcome,
+      cancellation,
+      resolveCancellation,
+      drain,
+      resolveDrain,
+    };
+    this.#inFlightSeatReassignments.set(operation.token, task);
+    this.#seatReassignmentDrains.add(drain);
+    return task;
+  }
+
+  #settleSeatReassignmentTask(
+    task: SeatReassignmentTask,
+    outcome: SeatReassignmentTaskOutcome,
+  ): void {
+    if (!task.outcomeSettled) {
+      task.outcomeSettled = true;
+      task.resolveOutcome(outcome);
+    }
+    if (
+      this.#inFlightSeatReassignments.get(task.operation.token) === task
+    ) {
+      this.#inFlightSeatReassignments.delete(task.operation.token);
+    }
+    if (outcome !== "succeeded") {
+      this.#quarantineSeatReassignment(task.operation);
+    }
+  }
+
+  #finishSeatReassignmentDrain(task: SeatReassignmentTask): void {
+    if (task.drainSettled) return;
+    task.drainSettled = true;
+    this.#seatReassignmentDrains.delete(task.drain);
+    task.resolveDrain();
+  }
+
+  #cancelSeatReassignmentTask(
+    task: SeatReassignmentTask,
+    kind: "authority" | "lifecycle" = "lifecycle",
+  ): void {
+    if (!task.cancelled) {
+      task.cancelled = true;
+      task.cancellationKind = kind;
+      task.resolveCancellation();
+    }
+    this.#settleSeatReassignmentTask(task, "cancelled");
+  }
+
+  #invalidateSeatReassignmentOperation(
+    operation: SeatReassignmentOperation,
+    options: { readonly quarantine?: boolean } = {},
+  ): void {
+    if (options.quarantine === false) {
+      this.#removeSeatReassignmentOperation(operation);
+    }
+    const task = this.#inFlightSeatReassignments.get(operation.token);
+    if (task !== undefined) {
+      this.#cancelSeatReassignmentTask(task, "authority");
+    }
+    if (options.quarantine !== false) {
+      this.#removeSeatReassignmentOperation(operation);
+    }
+  }
+
   #sameDeviceAuthorityFence(
     current: DeviceAuthorityFence | null,
     expected: DeviceAuthorityFence,
@@ -2674,6 +2913,19 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     );
   }
 
+  #seatReassignmentTaskIsCurrent(
+    connection: LiveConnection,
+    task: SeatReassignmentTask,
+  ): boolean {
+    return (
+      this.#lifecycleState === "open" &&
+      this.#lifecycleGeneration === task.lifecycleGeneration &&
+      !task.cancelled &&
+      this.#inFlightSeatReassignments.get(task.operation.token) === task &&
+      this.#seatReassignmentIsCurrent(connection, task.operation)
+    );
+  }
+
   #quarantineSeatReassignment(operation: SeatReassignmentOperation): void {
     const key = identityIndexKey(operation.tenantId, operation.seatId);
     if (this.#seatReassignmentOperations.get(key)?.token !== operation.token) {
@@ -2697,6 +2949,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   } | {
     readonly kind: "seat_reassignment";
     readonly operation: SeatReassignmentOperation;
+    readonly task: SeatReassignmentTask;
+    readonly role: "leader" | "replay";
   } {
     const tenantId = connection.auth.actor.tenantId;
     const durable = durableIdentityAuthority(connection.auth);
@@ -2708,9 +2962,49 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       pendingReassignment !== undefined &&
       this.#seatReassignmentIsCurrent(connection, pendingReassignment)
     ) {
+      const attempt = this.#seatReassignmentAttempts.get(
+        pendingReassignment.token,
+      );
+      if (
+        attempt === undefined ||
+        attempt.lifecycleGeneration !== this.#lifecycleGeneration ||
+        attempt.expiresAtMs < this.#clock() ||
+        attempt.attemptsStarted >= MAX_SEAT_REASSIGNMENT_ATTEMPTS
+      ) {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat reassignment retry authority is exhausted",
+          403,
+          4403,
+        );
+      }
+      const activeTask = this.#inFlightSeatReassignments.get(
+        pendingReassignment.token,
+      );
+      attempt.attemptsStarted += 1;
+      if (activeTask !== undefined) {
+        return {
+          kind: "seat_reassignment",
+          operation: pendingReassignment,
+          task: activeTask,
+          role: "replay",
+        };
+      }
+      let retryTask: SeatReassignmentTask;
+      try {
+        retryTask = this.#registerSeatReassignmentTask(
+          pendingReassignment,
+          attempt,
+        );
+      } catch (error) {
+        attempt.attemptsStarted -= 1;
+        throw error;
+      }
       return {
         kind: "seat_reassignment",
         operation: pendingReassignment,
+        task: retryTask,
+        role: "leader",
       };
     }
     if (
@@ -2747,12 +3041,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             reason: null,
           },
         );
-        if (
-          this.#seatReassignmentOperations.get(seatKey)?.token ===
-          pendingReassignment.token
-        ) {
-          this.#seatReassignmentOperations.delete(seatKey);
-        }
+        this.#invalidateSeatReassignmentOperation(pendingReassignment);
         throw new GatewayRbpFault(
           "auth",
           "newer seat reassignment authority requires resynchronization",
@@ -2826,7 +3115,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           4403,
         );
       }
-      const operationToken = gatewayUuidV7(this.#clock());
+      this.#assertSeatReassignmentCapacity();
+      const createdAtMs = this.#clock();
+      const operationToken = gatewayUuidV7(createdAtMs);
       const tenantBlockGeneration =
         this.#tenantBlockGenerations.get(tenantId) ?? 0;
       const oldDevice = this.#deviceFence(tenantId, seatPrior.deviceId);
@@ -2882,9 +3173,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         seatFence,
       });
       this.#seatReassignmentOperations.set(seatKey, operation);
+      const attempt: SeatReassignmentAttemptState = {
+        attemptsStarted: 1,
+        createdAtMs,
+        expiresAtMs: Math.min(
+          Number.MAX_SAFE_INTEGER,
+          createdAtMs + Math.max(this.#seatReassignmentTimeoutMs * 4, 1_000),
+        ),
+        lifecycleGeneration: this.#lifecycleGeneration,
+      };
+      this.#seatReassignmentAttempts.set(operation.token, attempt);
+      let task: SeatReassignmentTask;
+      try {
+        task = this.#registerSeatReassignmentTask(operation, attempt);
+      } catch (error) {
+        this.#removeSeatReassignmentOperation(operation);
+        throw error;
+      }
       return {
         kind: "seat_reassignment",
         operation,
+        task,
+        role: "leader",
       };
     }
     const device = this.#setDeviceAuthorityFence(
@@ -3032,9 +3342,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       deviceId: seat.deviceId,
       reason: status === "active" ? null : prior?.reason ?? "seat_revoked",
     });
-    this.#seatReassignmentOperations.delete(
+    const reassignment = this.#seatReassignmentOperations.get(
       identityIndexKey(seat.tenantId, seat.seatId),
     );
+    if (reassignment !== undefined) {
+      this.#invalidateSeatReassignmentOperation(reassignment, {
+        quarantine: false,
+      });
+    }
     return next;
   }
 
@@ -3185,6 +3500,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       await this.synchronizeIdentityRevocations(tenantId);
     }
     const phase = await this.#withTenantIdentityAuthority(tenantId, async () => {
+      this.#assertOpen();
       if (
         this.#blockedTenants.has(tenantId) ||
         connection.auth.deviceStatus !== "active" ||
@@ -3231,84 +3547,171 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       });
     });
     if ("tenantId" in phase) return phase;
+    if (phase.role === "replay") {
+      await phase.task.outcome;
+      throw new GatewayRbpFault(
+        "auth",
+        "seat reassignment replay does not own finalization",
+        403,
+        4403,
+      );
+    }
+    return await this.#runSeatReassignment(connection, phase.task);
+  }
 
+  async #runSeatReassignment(
+    connection: LiveConnection,
+    task: SeatReassignmentTask,
+  ): Promise<TenantAuthorityTicket> {
+    const operation = task.operation;
     // The tenant tail is released before old-owner rsid cleanup.
-    const operation = phase.operation;
-    await this.#reconcileExplicitIdentityRevocation({
-      tenantId,
+    const cleanup = this.#reconcileExplicitIdentityRevocation({
+      tenantId: operation.tenantId,
       kind: "device",
       deviceId: operation.priorDeviceId,
       seatId: operation.seatId,
       affectedDeviceIds: new Set([operation.priorDeviceId]),
+    }).then(
+      () => ({ kind: "clean" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<{ readonly kind: "timeout" }>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve({ kind: "timeout" }),
+        this.#seatReassignmentTimeoutMs,
+      );
     });
-    return await this.#withTenantIdentityAuthority(tenantId, async () => {
-      const durable = durableIdentityAuthority(connection.auth);
-      if (durable === null || !this.#seatReassignmentIsCurrent(connection, operation)) {
-        this.#quarantineSeatReassignment(operation);
+    const first = await Promise.race([
+      cleanup,
+      task.cancellation.then(() => ({ kind: "cancelled" as const })),
+      timeout,
+    ]);
+    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    if (first.kind === "timeout") {
+      this.#settleSeatReassignmentTask(task, "quarantined");
+      void cleanup.then(() => this.#finishSeatReassignmentDrain(task));
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment cleanup timed out",
+        503,
+        1011,
+      );
+    }
+    if (first.kind === "cancelled") {
+      this.#settleSeatReassignmentTask(task, "cancelled");
+      await cleanup;
+      this.#finishSeatReassignmentDrain(task);
+      if (task.cancellationKind === "authority") {
         throw new GatewayRbpFault(
           "auth",
-          "seat reassignment authority changed during old-owner cleanup",
+          "seat reassignment authority was superseded",
           403,
           4403,
         );
       }
-      this.#setDeviceAuthorityFence(tenantId, operation.priorDeviceId, {
-        status: "revoked",
-        authorizationVersion: operation.priorDeviceFence.authorizationVersion,
-        identityRecordVersion: operation.priorDeviceFence.identityRecordVersion,
-        connectionCapabilityVersion:
-          operation.priorDeviceFence.connectionCapabilityVersion,
-        sessionCapabilityVersion:
-          operation.priorDeviceFence.sessionCapabilityVersion,
-        seatId: operation.seatId,
-        reason: "seat_revoked",
-      });
-      const device = this.#setDeviceAuthorityFence(
-        tenantId,
-        operation.incomingDeviceId,
-        {
-          status: "active",
-          authorizationVersion:
-            operation.incomingDeviceFence.authorizationVersion,
-          identityRecordVersion:
-            operation.incomingDeviceFence.identityRecordVersion,
-          connectionCapabilityVersion:
-            operation.incomingDeviceFence.connectionCapabilityVersion,
-          sessionCapabilityVersion:
-            operation.incomingDeviceFence.sessionCapabilityVersion,
-          seatId: operation.seatId,
-          reason: null,
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment lifecycle was cancelled",
+        503,
+        1011,
+      );
+    }
+    if (first.kind === "failed") {
+      this.#settleSeatReassignmentTask(task, "quarantined");
+      this.#finishSeatReassignmentDrain(task);
+      throw first.error;
+    }
+    try {
+      return await this.#withTenantIdentityAuthority(
+        operation.tenantId,
+        async () => {
+          const durable = durableIdentityAuthority(connection.auth);
+          if (
+            durable === null ||
+            !this.#seatReassignmentTaskIsCurrent(connection, task)
+          ) {
+            throw new GatewayRbpFault(
+              "auth",
+              "seat reassignment authority changed during old-owner cleanup",
+              403,
+              4403,
+            );
+          }
+          this.#setDeviceAuthorityFence(
+            operation.tenantId,
+            operation.priorDeviceId,
+            {
+              status: "revoked",
+              authorizationVersion:
+                operation.priorDeviceFence.authorizationVersion,
+              identityRecordVersion:
+                operation.priorDeviceFence.identityRecordVersion,
+              connectionCapabilityVersion:
+                operation.priorDeviceFence.connectionCapabilityVersion,
+              sessionCapabilityVersion:
+                operation.priorDeviceFence.sessionCapabilityVersion,
+              seatId: operation.seatId,
+              reason: "seat_revoked",
+            },
+          );
+          const device = this.#setDeviceAuthorityFence(
+            operation.tenantId,
+            operation.incomingDeviceId,
+            {
+              status: "active",
+              authorizationVersion:
+                operation.incomingDeviceFence.authorizationVersion,
+              identityRecordVersion:
+                operation.incomingDeviceFence.identityRecordVersion,
+              connectionCapabilityVersion:
+                operation.incomingDeviceFence.connectionCapabilityVersion,
+              sessionCapabilityVersion:
+                operation.incomingDeviceFence.sessionCapabilityVersion,
+              seatId: operation.seatId,
+              reason: null,
+            },
+          );
+          const activeSeat = this.#setSeatAuthorityFence(
+            operation.tenantId,
+            operation.seatId,
+            {
+              status: "active",
+              seatAuthorityVersion: operation.seatFence.seatAuthorityVersion,
+              seatRecordVersion: operation.seatFence.seatRecordVersion,
+              deviceId: operation.incomingDeviceId,
+              reason: null,
+            },
+          );
+          this.#removeSeatReassignmentOperation(operation);
+          this.#settleSeatReassignmentTask(task, "succeeded");
+          const tenantBlockGeneration = operation.tenantBlockGeneration;
+          connection.tenantBlockGeneration = tenantBlockGeneration;
+          connection.deviceGeneration = device.generation;
+          connection.seatGeneration = activeSeat.generation;
+          return Object.freeze({
+            tenantId: operation.tenantId,
+            deviceId: operation.incomingDeviceId,
+            seatId: operation.seatId,
+            connectionId: connection.connectionId,
+            tenantBlockGeneration,
+            deviceGeneration: device.generation,
+            seatGeneration: activeSeat.generation,
+            identityAuthority: durable,
+          });
         },
       );
-      const activeSeat = this.#setSeatAuthorityFence(
-        tenantId,
-        operation.seatId,
-        {
-          status: "active",
-          seatAuthorityVersion: operation.seatFence.seatAuthorityVersion,
-          seatRecordVersion: operation.seatFence.seatRecordVersion,
-          deviceId: operation.incomingDeviceId,
-          reason: null,
-        },
+    } catch (error: unknown) {
+      this.#settleSeatReassignmentTask(
+        task,
+        task.cancelled || this.#lifecycleState !== "open"
+          ? "cancelled"
+          : "quarantined",
       );
-      this.#seatReassignmentOperations.delete(
-        identityIndexKey(operation.tenantId, operation.seatId),
-      );
-      const tenantBlockGeneration = operation.tenantBlockGeneration;
-      connection.tenantBlockGeneration = tenantBlockGeneration;
-      connection.deviceGeneration = device.generation;
-      connection.seatGeneration = activeSeat.generation;
-      return Object.freeze({
-        tenantId,
-        deviceId: operation.incomingDeviceId,
-        seatId: operation.seatId,
-        connectionId: connection.connectionId,
-        tenantBlockGeneration,
-        deviceGeneration: device.generation,
-        seatGeneration: activeSeat.generation,
-        identityAuthority: durable,
-      });
-    });
+      throw error;
+    } finally {
+      this.#finishSeatReassignmentDrain(task);
+    }
   }
 
   #assertAuthorityTicket(
