@@ -10,6 +10,7 @@ import {
 
 import type { AuthContext } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
+import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { GatewayProtocolStore, ObjectStorePort } from "./store.js";
 
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
@@ -47,6 +48,17 @@ export function resourceScopeFromAuth(
     principalKey: auth.principalKey,
     mcpSessionId,
   });
+}
+
+/** Keeps resource authority on the ingress-created effective MCP scope. */
+export function resourceScopeFromEffectiveMcpRequestScope(
+  auth: AuthContext,
+  scope: EffectiveMcpRequestScopeV1,
+): GatewayResourceScope {
+  if (scope.principalKey !== auth.principalKey) {
+    fail("scope_denied", "effective MCP scope principal does not match auth");
+  }
+  return resourceScopeFromAuth(auth, scope.effectiveMcpSessionId);
 }
 
 export type GatewayResourceKind = "artifact_ref" | "result_ref";
@@ -273,8 +285,18 @@ function asJsonRecord(value: unknown): ResourceRecord | null {
   return record as ResultRecord;
 }
 
-function recordKey(kind: GatewayResourceKind, refId: string): string {
-  return `${kind}:${refId}`;
+function scopeHash(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function recordKey(
+  scope: GatewayResourceScope,
+  kind: GatewayResourceKind,
+  refId: string,
+): string {
+  // Scope hashes make a foreign principal/session miss metadata before an
+  // object-store lookup and avoid persisting raw session or principal values.
+  return `p:${scopeHash(scope.principalKey)}/s:${scopeHash(scope.mcpSessionId)}/a:${scopeHash(scope.actorId)}/${kind}:${refId}`;
 }
 
 function storageKey(
@@ -283,9 +305,12 @@ function storageKey(
   refId: string,
   digest: `sha256:${string}`,
 ): string {
-  const tenant = createHash("sha256").update(scope.tenantId).digest("hex");
+  const tenant = scopeHash(scope.tenantId);
+  const principal = scopeHash(scope.principalKey);
+  const session = scopeHash(scope.mcpSessionId);
+  const actor = scopeHash(scope.actorId);
   const opaqueRef = createHash("sha256").update(`${refId}\u0000${digest}`).digest("hex");
-  return `gateway-resources/${tenant}/${kind}/${opaqueRef}`;
+  return `gateway-resources/${tenant}/${principal}/${session}/${actor}/${kind}/${opaqueRef}`;
 }
 
 function artifactUri(refId: string): string {
@@ -658,7 +683,7 @@ export class GatewayResourceAuthority {
         for (const record of records) {
           tx.stage({
             namespace: RESOURCE_NAMESPACE,
-            key: recordKey(record.kind, record.refId),
+            key: recordKey(scope, record.kind, record.refId),
             value: record as unknown as GatewayJsonValue,
             expect: { kind: "absent" },
           });
@@ -675,7 +700,7 @@ export class GatewayResourceAuthority {
   ): Promise<void> {
     const outcome = await this.#protocolStore.transact(
       { tenantId: scope.tenantId },
-      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(kind, refId)),
+      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(scope, kind, refId)),
     );
     if (!outcome.ok) {
       fail("storage_unavailable", outcome.message);
@@ -696,7 +721,7 @@ export class GatewayResourceAuthority {
     }
     const outcome = await this.#protocolStore.transact(
       { tenantId: scope.tenantId },
-      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(kind, refId)),
+      (tx) => tx.read(RESOURCE_NAMESPACE, recordKey(scope, kind, refId)),
     );
     if (!outcome.ok) {
       fail("storage_unavailable", outcome.message);
@@ -705,12 +730,14 @@ export class GatewayResourceAuthority {
     if (record === null || record.kind !== kind) {
       fail("not_found", "resource ref was not found");
     }
+    // The scope-hashed metadata key above is the primary isolation barrier.
+    // Keep this defensive invariant in case a backing store is corrupted.
     if (
       record.actorId !== scope.actorId ||
       record.principalKey !== scope.principalKey ||
       record.mcpSessionId !== scope.mcpSessionId
     ) {
-      fail("scope_denied", "resource ref does not belong to this actor and MCP session");
+      fail("not_found", "resource ref was not found");
     }
     if (this.#now() >= record.expiresAtMs) {
       fail("expired", "resource ref has expired");

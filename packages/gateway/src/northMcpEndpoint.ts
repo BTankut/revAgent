@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   createServer,
   type IncomingMessage,
@@ -29,7 +29,12 @@ import type {
   GatewayJsonValue,
 } from "./dispatch.js";
 import type { CatalogEntry, EntitledCatalogView } from "./entitledRegistry.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  GatewayInvocationContextError,
+  type EffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
 import {
   PHASE1_INSTRUCTION_VERSION,
   buildGatewayInstructionPackage,
@@ -45,7 +50,7 @@ import {
 import type { GatewayToolRegistry } from "./registry.js";
 import {
   GatewayResourceError,
-  resourceScopeFromAuth,
+  resourceScopeFromEffectiveMcpRequestScope,
   type GatewayResourceAuthority,
 } from "./resourceAuthority.js";
 
@@ -148,6 +153,8 @@ export interface NorthMcpEndpointOptions {
   readonly invocationRouteFor: (
     authenticated: AuthorizedNorthMcpRequest,
     mcpSessionId: string,
+    /** Immutable ingress authority; resolvers must not reconstruct scope. */
+    effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
   /** GW-9 scoped artifact/result resources; absent means no dynamic resource surface. */
@@ -307,6 +314,14 @@ function authBindingKey(authenticated: AuthorizedNorthMcpRequest): string {
     authenticated.authInfo.resource?.href ?? null,
     [...authenticated.authInfo.scopes].sort(),
   ]);
+}
+
+function effectiveScopeKey(scope: EffectiveMcpRequestScopeV1): string {
+  const hash = (value: string) =>
+    createHash("sha256").update(value).digest("hex");
+  // Never retain raw principal/session identifiers in the long-lived Mode-A
+  // discovery map. These two hashes are the durable key prefix.
+  return `p:${hash(scope.principalKey)}/s:${hash(scope.effectiveMcpSessionId)}`;
 }
 
 async function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -510,12 +525,12 @@ function assertCallableCatalogCoherence(
 function registerGatewayResources(
   server: McpServer,
   authenticated: AuthorizedNorthMcpRequest,
+  effectiveScope: EffectiveMcpRequestScopeV1,
   authority: Pick<GatewayResourceAuthority, "readResource">,
 ): void {
-  const scope = resourceScopeFromAuth(
+  const scope = resourceScopeFromEffectiveMcpRequestScope(
     authenticated.authContext,
-    authenticated.authContext.session.mcpSessionId ??
-      authenticated.authContext.session.sessionId,
+    effectiveScope,
   );
   const read = async (uri: URL) => {
     try {
@@ -614,7 +629,7 @@ function createSessionServer(input: {
   readonly registry: GatewayToolRegistry;
   readonly modeASession?: ModeADiscoverySession;
   readonly notifyToolsChanged: () => void;
-  readonly requestScopeId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly resourceAuthority?: Pick<
     GatewayResourceAuthority,
     "boundResult" | "readResource"
@@ -663,7 +678,12 @@ function createSessionServer(input: {
   );
   registerInstructionResources(server, instructionPackage);
   if (input.resourceAuthority !== undefined) {
-    registerGatewayResources(server, input.authenticated, input.resourceAuthority);
+    registerGatewayResources(
+      server,
+      input.authenticated,
+      input.effectiveMcpRequestScope,
+      input.resourceAuthority,
+    );
   }
   if (input.modeASession !== undefined) {
     registerModeAMetaTools(
@@ -699,14 +719,27 @@ function createSessionServer(input: {
           }
         }
         const call = splitGatewayConfirmationArguments(record, args);
+        if (
+          ctx.sessionId !== undefined &&
+          ctx.sessionId !== input.effectiveMcpRequestScope.effectiveMcpSessionId
+        ) {
+          return toolResult(
+            Object.freeze({
+              ok: false as const,
+              state: "failed" as const,
+              toolName: record.name,
+              requestId: "effective-mcp-scope-rejected",
+              executorReached: false,
+              error: Object.freeze({
+                code: "invalid_invocation_context",
+                detailCode: "mcp_session_binding_mismatch",
+                message: "MCP request context changed after ingress binding",
+              }),
+            }),
+          );
+        }
         const mcpSessionId =
-          ctx.sessionId ??
-          input.authenticated.authContext.session.mcpSessionId ??
-          `stateless-request:${input.requestScopeId}`;
-        const confirmationSessionId =
-          input.authenticated.authContext.session.mcpSessionId ??
-          ctx.sessionId ??
-          input.authenticated.authContext.session.sessionId;
+          input.effectiveMcpRequestScope.effectiveMcpSessionId;
         const outcome = await trackPromise(
           input.inflightOperations,
           dispatcher.dispatch({
@@ -714,24 +747,34 @@ function createSessionServer(input: {
             args: call.args,
             auth: input.authenticated.authContext,
             mcpSessionId,
-            confirmationSessionId,
+            confirmationSessionId: mcpSessionId,
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),
-            resolveRoute: (authContext) =>
-              input.invocationRouteFor(
+            resolveRoute: (authContext) => {
+              if (
+                authContext.principalKey !==
+                input.effectiveMcpRequestScope.principalKey
+              ) {
+                throw new GatewayInvocationContextError(
+                  "mcp_session_binding_mismatch",
+                  "effective MCP route authority principal changed before dispatch",
+                );
+              }
+              return input.invocationRouteFor(
                 Object.freeze({ ...input.authenticated, authContext }),
                 mcpSessionId,
-              ),
+                input.effectiveMcpRequestScope,
+              );
+            },
           }),
         );
         if (input.resourceAuthority === undefined) {
           return toolResult(outcome);
         }
-        const resourceScope = resourceScopeFromAuth(
+        const resourceScope = resourceScopeFromEffectiveMcpRequestScope(
           input.authenticated.authContext,
-          input.authenticated.authContext.session.mcpSessionId ??
-            input.authenticated.authContext.session.sessionId,
+          input.effectiveMcpRequestScope,
         );
         try {
           const bounded = await input.resourceAuthority.boundResult({
@@ -809,7 +852,7 @@ export function createNorthMcpHttpHandler(
   function modeASessionFor(
     authenticated: AuthorizedNorthMcpRequest,
     catalogView: EntitledCatalogView,
-    mcpConnectionId: string | null,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ): ModeADiscoverySession | undefined {
     if (options.modeA === undefined) {
       return undefined;
@@ -824,9 +867,7 @@ export function createNorthMcpHttpHandler(
       }
     }
 
-    const key = `${authBindingKey(authenticated)}\0${
-      mcpConnectionId ?? "initial-or-legacy"
-    }`;
+    const key = effectiveScopeKey(effectiveMcpRequestScope);
     const capabilityIndexDigest = catalogView.capabilityIndexDigest();
     const current = modeASessions.get(key);
     if (
@@ -920,10 +961,16 @@ export function createNorthMcpHttpHandler(
       ) {
         throw new Error("invalid MCP connection identifier");
       }
+      const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+        principalKey: authenticated.principalKey,
+        transportMcpSessionId: mcpConnectionId,
+        identityMcpSessionId: authenticated.authContext.session.mcpSessionId,
+        nowMs: Date.now(),
+      });
       const modeASession = modeASessionFor(
         authenticated,
         catalogView,
-        mcpConnectionId,
+        effectiveMcpRequestScope,
       );
       return createSessionServer({
         catalogView,
@@ -942,7 +989,7 @@ export function createNorthMcpHttpHandler(
           : { resourceAuthority: options.resourceAuthority }),
         notifyToolsChanged: () => mcpHandler.notify.toolsChanged(),
         registry: options.registry,
-        requestScopeId: randomUUID(),
+        effectiveMcpRequestScope,
         verifyRequestState: requestStateCodec.verify,
       });
     },
