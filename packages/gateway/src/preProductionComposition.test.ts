@@ -363,7 +363,7 @@ describe("M4-02 pre-production LAN/test composition", () => {
       deviceId: "device-m4-02",
       seatId: "seat-m4-02",
       machineFingerprint: MACHINE_FINGERPRINT,
-      grantedSessionCapabilities: ["transport_streamable_http"],
+      grantedConnectionCapabilities: ["transport_streamable_http"],
     });
     expect(issue.ok).toBe(true);
     if (!issue.ok) return;

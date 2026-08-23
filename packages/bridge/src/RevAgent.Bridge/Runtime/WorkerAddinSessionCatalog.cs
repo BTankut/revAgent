@@ -353,17 +353,9 @@ internal sealed class WorkerAddinSessionCatalog :
                 status.ResultContractVersion);
 
             writer.WriteStartArray("session_capabilities");
-            var emitted = new HashSet<string>(StringComparer.Ordinal);
-            foreach (string capability in status.SessionCapabilities)
+            foreach (string capability in SessionCapabilities(status))
             {
-                // A capability that does not match the frozen token shape is
-                // dropped, never repaired: claiming less than the add-in
-                // offered is safe, claiming a malformed token is not.
-                if (CapabilityPattern.IsMatch(capability) &&
-                    emitted.Add(capability))
-                {
-                    writer.WriteStringValue(capability);
-                }
+                writer.WriteStringValue(capability);
             }
 
             writer.WriteEndArray();
@@ -381,6 +373,32 @@ internal sealed class WorkerAddinSessionCatalog :
         }
 
         return Parse(buffer.WrittenSpan);
+    }
+
+    private static IReadOnlyList<string> SessionCapabilities(
+        AddinStatusSnapshot status)
+    {
+        // A status probe is per local Revit session. Its parsed descriptor is
+        // separate evidence from the connection hello and from the Gateway's
+        // later per-rsid grant, so no capability may leak across sessions.
+        var emitted = new List<string>(capacity: 2);
+        foreach (string capability in status.SessionCapabilities)
+        {
+            bool hasMatchingDescriptor = capability switch
+            {
+                AddinStatusContract.BatchAtomicCapability =>
+                    status.BatchAtomic is not null,
+                AddinStatusContract.DocumentContextCachedCapability =>
+                    status.DocumentContextCached is not null,
+                _ => false,
+            };
+            if (hasMatchingDescriptor && CapabilityPattern.IsMatch(capability))
+            {
+                emitted.Add(capability);
+            }
+        }
+
+        return emitted;
     }
 
     private static JsonElement CreateRevitStatus(AddinStatusSnapshot status)

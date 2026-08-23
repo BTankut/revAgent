@@ -54,7 +54,7 @@ import { E5_TOOL_BINDINGS } from "./toolBindings.js";
 let idOffset = 0;
 const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
 
-function hello(): HelloEnvelope {
+function hello(options: { readonly deviceId?: string } = {}): HelloEnvelope {
   return {
     type: "hello",
     id: id(),
@@ -64,7 +64,7 @@ function hello(): HelloEnvelope {
       max_protocol: 1,
       capabilities: ["transport_streamable_http", "partial_progress"],
       bridge_version: "gw12-test",
-      device_id: "device-gw12",
+      device_id: options.deviceId ?? "device-gw12",
       machine: { hostname: "gw12-test", os: "windows" },
       addin_versions: ["gw12-test"],
     },
@@ -103,7 +103,9 @@ function identity(
   options: {
     readonly deviceToken?: string;
     readonly deviceId?: string;
+    readonly tenantId?: string;
     readonly deviceStatus?: DeviceAuthContext["deviceStatus"];
+    readonly grantedConnectionCapabilities?: readonly string[];
     readonly beforeDeviceResult?: () => Promise<void>;
   } = {},
 ): IdentityPort {
@@ -134,13 +136,15 @@ function identity(
         contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
         actor: {
           type: "device",
-          tenantId: "tenant-gw12",
+          tenantId: options.tenantId ?? "tenant-gw12",
           userId: "user-gw12",
           deviceId,
           seatId: "seat-gw12",
         },
         connectionId: input.connectionId,
         deviceStatus: options.deviceStatus ?? "active",
+        grantedConnectionCapabilities:
+          options.grantedConnectionCapabilities ?? [],
         grantedSessionCapabilities,
         deviceTokenDigest: tokenDigest,
       };
@@ -1970,7 +1974,9 @@ describe("GW-12 production RBP ingress", () => {
   for (const kind of ["wss", "http_sse"] as const) {
     it(`routes register and dispatch through the shared ${kind} authority`, async () => {
       const restartable = createRestartableTestStore();
-      const activeIdentity = identity();
+      const activeIdentity = identity(undefined, {
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+      });
       const authenticateDevice = vi.spyOn(activeIdentity, "authenticateDevice");
       const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
       const ingress = createProductionRbpIngressHost({ authority });
@@ -1995,7 +2001,10 @@ describe("GW-12 production RBP ingress", () => {
 
       const ack = await binding.open(hello());
       if (kind === "http_sse") {
-        expect(authenticateDevice).toHaveBeenCalledTimes(2);
+        // HTTP/SSE admits against the authenticated tenant/device scope before
+        // the authority claims the connection, then re-validates at the shared
+        // transport-neutral authority boundary.
+        expect(authenticateDevice).toHaveBeenCalledTimes(4);
       }
       expect(ack.payload.connection_id).toBe(binding.connectionId);
       expect(ack.payload.granted_capabilities).toContain("transport_streamable_http");
@@ -2006,7 +2015,7 @@ describe("GW-12 production RBP ingress", () => {
       }
       await binding.send(registration());
       if (kind === "http_sse") {
-        expect(authenticateDevice).toHaveBeenCalledTimes(3);
+        expect(authenticateDevice).toHaveBeenCalledTimes(5);
       }
       const registered = (await next(binding)) as SessionRegisteredEnvelope;
 
@@ -2028,7 +2037,7 @@ describe("GW-12 production RBP ingress", () => {
         ),
       );
       if (kind === "http_sse") {
-        expect(authenticateDevice).toHaveBeenCalledTimes(4);
+        expect(authenticateDevice).toHaveBeenCalledTimes(6);
       }
       await expect(outcomePromise).resolves.toEqual({
         state: "completed",
@@ -2050,15 +2059,17 @@ describe("GW-12 production RBP ingress", () => {
         binding: kind === "wss" ? "wss" : "streamable_http_sse",
       });
       if (kind === "http_sse") {
-        expect(authenticateDevice).toHaveBeenCalledTimes(5);
+        expect(authenticateDevice).toHaveBeenCalledTimes(7);
       }
     });
   }
 
-  it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 403", async () => {
+  it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 410", async () => {
     const restartable = createRestartableTestStore();
     let revoked = false;
-    const baseIdentity = identity();
+    const baseIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const activeIdentity: IdentityPort = {
       ...baseIdentity,
       async authenticateDevice(input) {
@@ -2142,13 +2153,511 @@ describe("GW-12 production RBP ingress", () => {
       `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`,
       { method: "POST", headers, body: JSON.stringify(registration()) },
     );
-    expect(messageAfterRevoke.status).toBe(403);
+    expect(messageAfterRevoke.status).toBe(410);
     const eventsAfterRevoke = await fetch(
       `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`,
       { headers: { Authorization: headers.Authorization, Accept: "text/event-stream" } },
     );
-    expect(eventsAfterRevoke.status).toBe(403);
+    expect(eventsAfterRevoke.status).toBe(410);
   });
+
+  it("reserves HTTP/SSE caps before authority open, releases TTL entries, and distinguishes 404 from 410", async () => {
+    let nowMs = 0;
+    let sweep!: () => void;
+    const restartable = createRestartableTestStore();
+    const first = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const second = identity(undefined, {
+      deviceToken: "device-token-second",
+      deviceId: "device-gw12-second",
+      tenantId: "tenant-gw12-second",
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const multiDeviceIdentity: IdentityPort = {
+      ...first,
+      async authenticateDevice(input) {
+        return input.deviceToken === "device-token-second"
+          ? second.authenticateDevice(input)
+          : first.authenticateDevice(input);
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, multiDeviceIdentity);
+    const ingress = createProductionRbpIngressHost({
+      authority,
+      httpSseLifecycleRuntime: {
+        clock: () => nowMs,
+        setInterval: (callback) => {
+          sweep = callback;
+          return 0 as unknown as ReturnType<typeof setInterval>;
+        },
+        clearInterval() {},
+      },
+    });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: multiDeviceIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: ingress,
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = (token: string) => ({
+      Authorization: `Bearer ${token}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    });
+    const create = async (token = "device-token", deviceId = "device-gw12") =>
+      fetch(`${baseUrl}/bridge/v1/http/connections`, {
+        method: "POST",
+        headers: headers(token),
+        body: JSON.stringify(hello({ deviceId })),
+      });
+
+    const created: string[] = [];
+    for (let index = 0; index < 8; index += 1) {
+      const response = await create();
+      expect(response.status).toBe(201);
+      const connectionId = response.headers.get("RBP-Connection-Id");
+      if (connectionId === null) throw new Error("HTTP create omitted connection id");
+      created.push(connectionId);
+    }
+    await expect(create()).resolves.toMatchObject({ status: 429 });
+    // A saturated tenant/device scope must not consume a different tenant's quota.
+    await expect(create("device-token-second", "device-gw12-second")).resolves.toMatchObject({
+      status: 201,
+    });
+    await expect(
+      fetch(`${baseUrl}/bridge/v1/http/connections/not-a-connection/events`, {
+        headers: { Authorization: "Bearer device-token", Accept: "text/event-stream" },
+      }),
+    ).resolves.toMatchObject({ status: 404 });
+
+    nowMs = 30_001;
+    sweep();
+    await expect(
+      fetch(
+        `${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(created[0]!)}/messages`,
+        { method: "POST", headers: headers("device-token"), body: JSON.stringify(registration()) },
+      ),
+    ).resolves.toMatchObject({ status: 410 });
+    // Counter release happens before slow authority detach, so the exact cap is reusable.
+    await expect(create()).resolves.toMatchObject({ status: 201 });
+  });
+
+  it("releases a reserved HTTP/SSE admission when authority open fails", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const openConnection = vi.spyOn(authority, "openConnection");
+    openConnection.mockRejectedValueOnce(new Error("synthetic opening failure"));
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const create = () =>
+      fetch(`http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer device-token",
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-RBP-Versions": "1",
+        },
+        body: JSON.stringify(hello()),
+      });
+    await expect(create()).resolves.toMatchObject({ status: 500 });
+    await expect(create()).resolves.toMatchObject({ status: 201 });
+  });
+
+  it("fails closed and releases admission when identity drifts between reservation and authority binding", async () => {
+    const restartable = createRestartableTestStore();
+    const first = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const second = identity(undefined, {
+      tenantId: "tenant-drift",
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    let authenticationCalls = 0;
+    const driftingIdentity: IdentityPort = {
+      ...first,
+      async authenticateDevice(input) {
+        authenticationCalls += 1;
+        return authenticationCalls === 1
+          ? first.authenticateDevice(input)
+          : second.authenticateDevice(input);
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, driftingIdentity);
+    const detach = vi.spyOn(authority, "detach");
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: driftingIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({ authority }),
+      },
+    });
+    handles.push(server);
+    const create = () =>
+      fetch(`http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer device-token",
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-RBP-Versions": "1",
+        },
+        body: JSON.stringify(hello()),
+      });
+    await expect(create()).resolves.toMatchObject({ status: 403 });
+    expect(detach).toHaveBeenCalledTimes(1);
+    // All later authentication calls return the same principal, so a new
+    // opening proves the drift rejection did not retain its reservation.
+    await expect(create()).resolves.toMatchObject({ status: 201 });
+  });
+
+  it("disposes registered no-SSE overflow immediately and contains later terminal paths", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    let channel: BridgeConnectionChannel | null = null;
+    const originalOpen = authority.openConnection.bind(authority);
+    vi.spyOn(authority, "openConnection").mockImplementation(async (input) => {
+      channel = input.channel;
+      return await originalOpen(input);
+    });
+    const detach = vi.spyOn(authority, "detach");
+    const ingress = createProductionRbpIngressHost({ authority });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: ingress,
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hello()),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("RBP-Connection-Id");
+    if (connectionId === null || channel === null) throw new Error("HTTP opening evidence unavailable");
+    await expect(
+      fetch(`${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(registration()),
+      }),
+    ).resolves.toMatchObject({ status: 202 });
+    await expect((channel as unknown as BridgeConnectionChannel).send("x".repeat(1024 * 1024 + 1))).rejects.toThrow(
+      "SSE attach backlog exceeds the bounded transport window",
+    );
+    await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));
+    ingress.beginDrain?.();
+    expect(detach).toHaveBeenCalledTimes(1);
+    await expect(
+      fetch(`${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`, {
+        headers: { Authorization: headers.Authorization, Accept: "text/event-stream" },
+      }),
+    ).resolves.toMatchObject({ status: 410 });
+  });
+
+  it("disposes a live HTTP/SSE entry on credential failure and keeps the tombstone terminal", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const detach = vi.spyOn(authority, "detach");
+    const ingress = createProductionRbpIngressHost({ authority });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: ingress,
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(hello()),
+    });
+    expect(created.status).toBe(201);
+    const connectionId = created.headers.get("RBP-Connection-Id");
+    if (connectionId === null) throw new Error("HTTP create omitted connection id");
+    await expect(
+      fetch(`${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/messages`, {
+        method: "POST",
+        headers: { ...headers, Authorization: "Bearer wrong-token" },
+        body: JSON.stringify(registration()),
+      }),
+    ).resolves.toMatchObject({ status: 403 });
+    await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));
+    ingress.beginDrain?.();
+    expect(detach).toHaveBeenCalledTimes(1);
+    await expect(
+      fetch(`${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`, {
+        headers: { Authorization: headers.Authorization, Accept: "text/event-stream" },
+      }),
+    ).resolves.toMatchObject({ status: 410 });
+  });
+
+  it("contains a racing HTTP/SSE detach rejection through the one disposer", async () => {
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const detach = vi.spyOn(authority, "detach").mockRejectedValue(new Error("synthetic detach failure"));
+    const ingress = createProductionRbpIngressHost({ authority });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: ingress,
+      },
+    });
+    handles.push(server);
+    const baseUrl = `http://127.0.0.1:${String(server.port)}`;
+    const headers = {
+      Authorization: "Bearer device-token",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      "X-RBP-Versions": "1",
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const created = await fetch(`${baseUrl}/bridge/v1/http/connections`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify(hello()),
+      });
+      expect(created.status).toBe(201);
+      const connectionId = created.headers.get("RBP-Connection-Id");
+      if (connectionId === null) throw new Error("HTTP create omitted connection id");
+      if (ingress.beginDrain === undefined) throw new Error("production ingress cannot drain");
+      ingress.beginDrain();
+      await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1));
+      await Promise.resolve();
+      expect(unhandled).toEqual([]);
+      await expect(
+        fetch(`${baseUrl}/bridge/v1/http/connections/${encodeURIComponent(connectionId)}/events`, {
+          headers: { Authorization: headers.Authorization, Accept: "text/event-stream" },
+        }),
+      ).resolves.toMatchObject({ status: 410 });
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      detach.mockRestore();
+    }
+  });
+
+  it("leaves zero HTTP/SSE entries and admissions after 1000 fake-clock TTL cycles", async () => {
+    let nowMs = 0;
+    let sweep!: () => void;
+    let latest = { entries: -1, globalAdmissions: -1, tenantAdmissions: -1, deviceAdmissions: -1 };
+    const restartable = createRestartableTestStore();
+    const activeIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const detach = vi.spyOn(authority, "detach");
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: activeIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          httpSseLifecycleRuntime: {
+            clock: () => nowMs,
+            setInterval: (callback) => {
+              sweep = callback;
+              return 0 as unknown as ReturnType<typeof setInterval>;
+            },
+            clearInterval() {},
+            onLifecycleSnapshot: (snapshot) => {
+              latest = snapshot;
+            },
+          },
+        }),
+      },
+    });
+    handles.push(server);
+    const url = `http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`;
+    const connectionIds: string[] = [];
+    for (let cycle = 0; cycle < 1_000; cycle += 1) {
+      const response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer device-token",
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-RBP-Versions": "1",
+        },
+        body: JSON.stringify(hello()),
+      });
+      expect(response.status).toBe(201);
+      const connectionId = response.headers.get("RBP-Connection-Id");
+      if (connectionId === null) throw new Error("HTTP create omitted connection id");
+      connectionIds.push(connectionId);
+      await expect(
+        fetch(`${url}/${encodeURIComponent(connectionId)}/messages`, {
+          method: "POST",
+          headers: {
+            Authorization: "Bearer device-token",
+            Accept: "application/json",
+            "Content-Type": "application/json",
+            "X-RBP-Versions": "1",
+          },
+          body: JSON.stringify(registration()),
+        }),
+      ).resolves.toMatchObject({ status: 202 });
+      nowMs += 60_001;
+      sweep();
+    }
+    expect(latest).toEqual({
+      entries: 0,
+      globalAdmissions: 0,
+      tenantAdmissions: 0,
+      deviceAdmissions: 0,
+    });
+    await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1_000), { timeout: 30_000 });
+    expect(authority.liveCardinality()).toStrictEqual({ connections: 0, sessions: 0 });
+    for (const connectionId of connectionIds) {
+      expect(() => authority.assertConnectionOutbound(connectionId)).toThrow(GatewayRbpFault);
+    }
+  }, 30_000);
+
+  it("enforces exact tenant and global HTTP/SSE caps, fair admission, and one detach per drain", async () => {
+    const restartable = createRestartableTestStore();
+    const baseIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
+    const scopedIdentity: IdentityPort = {
+      ...baseIdentity,
+      async authenticateDevice(input) {
+        const authenticated = await baseIdentity.authenticateDevice(input);
+        if (!authenticated.ok) return authenticated;
+        const claimed = input.claimedDeviceId ?? "tenant-cap/device-cap";
+        const [claimedTenantId] = claimed.split("/", 1);
+        const tenantId = input.establishedScope?.tenantId ?? claimedTenantId;
+        const deviceId = input.establishedScope?.deviceId ?? claimed;
+        if (tenantId === undefined || deviceId === undefined) {
+          throw new Error("cap fixture requires tenant/device scope");
+        }
+        return {
+          ok: true as const,
+          value: {
+            ...authenticated.value,
+            actor: {
+              ...authenticated.value.actor,
+              tenantId,
+              deviceId,
+              seatId: `seat-${deviceId}`,
+            },
+          },
+        };
+      },
+    };
+    const authority = new GatewayBridgeSessionAuthority(restartable.store, scopedIdentity);
+    const detach = vi.spyOn(authority, "detach");
+    let latest = { entries: -1, globalAdmissions: -1, tenantAdmissions: -1, deviceAdmissions: -1 };
+    const ingress = createProductionRbpIngressHost({
+      authority,
+      httpSseLifecycleRuntime: {
+        onLifecycleSnapshot: (snapshot) => {
+          latest = snapshot;
+        },
+      },
+    });
+    const server = await startGatewayServer({
+      config,
+      ports: {
+        ...createFailClosedPorts(),
+        identity: scopedIdentity,
+        protocolStore: restartable.store,
+        rbpIngress: ingress,
+      },
+    });
+    handles.push(server);
+    const create = async (scope: string) =>
+      fetch(`http://127.0.0.1:${String(server.port)}/bridge/v1/http/connections`, {
+        method: "POST",
+        headers: {
+          Authorization: "Bearer device-token",
+          Accept: "application/json",
+          "Content-Type": "application/json",
+          "X-RBP-Versions": "1",
+        },
+        body: JSON.stringify(hello({ deviceId: scope })),
+      });
+
+    for (let index = 0; index < 128; index += 1) {
+      await expect(create(`tenant-a/device-${String(index)}`)).resolves.toMatchObject({ status: 201 });
+    }
+    await expect(create("tenant-a/device-over")).resolves.toMatchObject({ status: 429 });
+    await expect(create("tenant-b/device-fair")).resolves.toMatchObject({ status: 201 });
+    for (let index = 0; index < 895; index += 1) {
+      await expect(create(`tenant-${String(index + 2)}/device-${String(index)}`)).resolves.toMatchObject({ status: 201 });
+    }
+    expect(latest.globalAdmissions).toBe(1_024);
+    await expect(create("tenant-global/device-over")).resolves.toMatchObject({ status: 429 });
+
+    if (ingress.beginDrain === undefined) throw new Error("production ingress cannot drain");
+    ingress.beginDrain();
+    expect(latest).toEqual({
+      entries: 0,
+      globalAdmissions: 0,
+      tenantAdmissions: 0,
+      deviceAdmissions: 0,
+    });
+    await vi.waitFor(() => expect(detach).toHaveBeenCalledTimes(1_024), { timeout: 30_000 });
+  }, 60_000);
 
   it("closes an active WSS binding with 4403 after durable identity revoke", async () => {
     const restartable = createRestartableTestStore();
