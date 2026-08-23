@@ -9,6 +9,7 @@ import {
   type RealTrioNorthCredential,
 } from "../src/realTrioCaseDriver.js";
 import {
+  hasOrderedDocumentContextStages,
   publicGatewayControl,
   startRealTrioSupervisor,
   type RealTrioBinding,
@@ -90,6 +91,8 @@ export interface RealTrioDocumentContextAudit {
   readonly cachedContextHash: string;
   readonly activeDocumentIdentityHash: string;
   readonly acknowledgementHash: string;
+  readonly cacheReadCount: number;
+  readonly pollRequestCount: number;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -121,7 +124,7 @@ function documentContextControlAudit(value: unknown): RealTrioDocumentContextAud
 export function probeRealTrioFixtureDocumentContext(
   value: unknown,
   expected: RealTrioDocumentContextAudit,
-): void {
+): Pick<RealTrioDocumentContextAudit, "cacheReadCount" | "pollRequestCount"> {
   if (!isObject(value) || !isObject(value.documentContextEvidence)) {
     throw new Error("fixture snapshot_evidence lacks document-context evidence");
   }
@@ -131,6 +134,30 @@ export function probeRealTrioFixtureDocumentContext(
       evidence.activeDocumentIdentityHash !== expected.activeDocumentIdentityHash ||
       evidence.lastControlAcknowledgementHash !== expected.acknowledgementHash) {
     throw new Error("fixture snapshot_evidence does not confirm the controlled cached document context");
+  }
+  if (!Number.isSafeInteger(evidence.cacheReadCount) || Number(evidence.cacheReadCount) <= 0 ||
+      !Number.isSafeInteger(evidence.pollRequestCount) || Number(evidence.pollRequestCount) <= 0) {
+    throw new Error("fixture snapshot_evidence lacks a completed document-context poll");
+  }
+  return Object.freeze({
+    cacheReadCount: Number(evidence.cacheReadCount),
+    pollRequestCount: Number(evidence.pollRequestCount),
+  });
+}
+
+async function waitForOrderedDocumentContextStages(input: {
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly timeoutMs?: number;
+}): Promise<void> {
+  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
+  for (;;) {
+    if (hasOrderedDocumentContextStages(
+      input.supervisor.readDocumentContextDiagnostics(),
+    )) return;
+    if (Date.now() >= deadline) {
+      throw new Error("real trio document-context stages were not ordered through acknowledgement");
+    }
+    await new Promise<void>((resolve) => setTimeout(resolve, 100));
   }
 }
 
@@ -255,15 +282,17 @@ export async function startRealTrioRuntimeFixture(
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
     // and the Gateway's public audit observes the live route.
-    const documentContextAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
+    const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
-    probeRealTrioFixtureDocumentContext(
+    await waitForOrderedDocumentContextStages({ supervisor });
+    const counts = probeRealTrioFixtureDocumentContext(
       await supervisor.fixtureControl("snapshot_evidence"),
-      documentContextAudit,
+      controlAudit,
     );
+    const documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
     await waitForLiveDocumentRoute({ endpoint, controlToken, certificateSha256 });
     const issued = await publicGatewayControl(
       endpoint,

@@ -6,6 +6,7 @@ import {
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
+  hasOrderedDocumentContextStages,
   issueDeviceCredentialControlPayload,
   persistedBindingForReadiness,
   pollRbpSessionV2Readiness,
@@ -13,6 +14,7 @@ import {
   RealTrioSessionReadinessPollError,
   readRbpSessionV2Readiness,
   realTrioCredentialRequest,
+  redactBridgeTranscript,
 } from "../src/realTrioSupervisor.js";
 
 const worker = (binding: "wss" | "streamable_http_sse"): readonly string[] => ["--binding", binding];
@@ -355,17 +357,65 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
           updated: true,
         }],
       }],
-      bridgeTranscript: [{ stream: "stderr", at: "2026-08-23T00:00:00.000Z" }],
+      bridgeTranscript: [{ stream: "stderr", at: "" }],
     });
     expect(JSON.parse(diagnostics!.bridgeTranscript[0]!.line)).toEqual({
       contractVersion: "revagent.wp12-real-worker-observation/v1",
       event: "bridge.connection_failure_observation",
-      timestamp: "2026-08-23T00:00:00.000Z",
+      stage: "failure",
+      outcome: "authorization_refusal",
       binding: "streamable_http_sse",
-      state: "retry_paused",
-      reason: "authorization_refusal",
+      failureKind: "authorization_refusal",
+      rsidHashPresent: false,
+      payloadHashPresent: false,
     });
     expect(JSON.stringify(diagnostics)).not.toContain("must-not-leak");
     expect(JSON.stringify(diagnostics)).not.toContain("private\\path");
+  });
+
+  it("admits only fixed document-context schema fields and drops unknown stderr", () => {
+    const retained = redactBridgeTranscript([
+      {
+        stream: "stderr",
+        at: "now",
+        line: JSON.stringify({
+          contractVersion: "revagent.rbp-document-context-observation/v1",
+          event: "bridge.document_context_observation",
+          stage: "queue",
+          outcome: "durably_queued",
+          rsidHash: `sha256:${"a".repeat(64)}`,
+          payloadHash: `sha256:${"b".repeat(64)}`,
+          sequence: 7,
+          path: "C:\\private",
+          token: "never-retain",
+        }),
+      },
+      { stream: "stderr", at: "now", line: JSON.stringify({ event: "unknown", token: "drop" }) },
+    ]);
+    expect(retained).toHaveLength(1);
+    expect(JSON.parse(retained[0]!.line)).toEqual({
+      contractVersion: "revagent.rbp-document-context-observation/v1",
+      event: "bridge.document_context_observation",
+      stage: "queue",
+      outcome: "durably_queued",
+      binding: "unknown",
+      failureKind: "none",
+      rsidHashPresent: true,
+      payloadHashPresent: true,
+    });
+  });
+
+  it("requires document context progression through durable acknowledgement", () => {
+    const event = (stage: string) => ({
+      stream: "stderr" as const,
+      at: "",
+      line: JSON.stringify({ event: "bridge.document_context_observation", stage }),
+    });
+    expect(hasOrderedDocumentContextStages([
+      event("probe"), event("snapshot"), event("queue"), event("send"), event("ack"),
+    ])).toBe(true);
+    expect(hasOrderedDocumentContextStages([
+      event("probe"), event("queue"), event("snapshot"), event("send"), event("ack"),
+    ])).toBe(false);
   });
 });

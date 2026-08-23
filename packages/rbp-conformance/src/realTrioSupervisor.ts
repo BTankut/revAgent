@@ -75,6 +75,8 @@ export interface RealTrioSupervisorResult {
   ) => Promise<JsonValue>;
   /** Tenant-scoped, public and redacted audit correlation for real case assertions. */
   readonly readRealCaseAudit: () => Promise<JsonObject>;
+  /** Value-free C# document-context lifecycle observations only. */
+  readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
   /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
@@ -216,7 +218,22 @@ function redactGatewayAudit(snapshot: JsonObject): JsonObject {
   });
 }
 
-function redactBridgeTranscript(
+const DOCUMENT_CONTEXT_STAGES = new Set([
+  "probe", "snapshot", "queue", "send", "ack", "failure",
+]);
+const DOCUMENT_CONTEXT_OUTCOMES = new Set([
+  "capability_absent", "started", "not_ready", "ready", "renewal_required",
+  "durably_queued", "not_queued", "dispatch_not_allowed", "sent",
+  "durably_acknowledged", "stale_context", "snapshot_failed", "queue_failed",
+  "send_deferred",
+]);
+const SHA256 = /^sha256:[0-9a-f]{64}$/u;
+
+/**
+ * Drops arbitrary worker stderr. Both admitted schemas are reduced to fixed
+ * enum fields and hash-presence booleans before entering diagnostic evidence.
+ */
+export function redactBridgeTranscript(
   transcript: readonly ProcessTranscriptRecord[],
 ): readonly ProcessTranscriptRecord[] {
   const retained: ProcessTranscriptRecord[] = [];
@@ -224,30 +241,70 @@ function redactBridgeTranscript(
     if (record.stream !== "stderr") continue;
     try {
       const parsed = JSON.parse(record.line) as unknown;
-      if (!isObject(parsed) ||
-          parsed.contractVersion !== "revagent.wp12-real-worker-observation/v1" ||
-          parsed.event !== "bridge.connection_failure_observation" ||
-          !["wss", "streamable_http_sse"].includes(parsed.binding as string) ||
-          parsed.state !== "retry_paused" || parsed.reason !== "authorization_refusal") continue;
-      const timestamp = boundedText(parsed.timestamp, 64);
-      if (timestamp === null) continue;
-      retained.push(Object.freeze({
-        stream: "stderr",
-        at: boundedText(record.at, 64) ?? "",
-        line: stableJson({
-          contractVersion: parsed.contractVersion,
-          event: parsed.event,
-          timestamp,
-          binding: parsed.binding,
-          state: parsed.state,
-          reason: parsed.reason,
-        }),
-      }));
+      if (!isObject(parsed)) continue;
+      if (parsed.contractVersion === "revagent.wp12-real-worker-observation/v1" &&
+          parsed.event === "bridge.connection_failure_observation" &&
+          ["wss", "streamable_http_sse"].includes(parsed.binding as string) &&
+          parsed.state === "retry_paused" && parsed.reason === "authorization_refusal") {
+        retained.push(Object.freeze({
+          stream: "stderr",
+          at: "",
+          line: stableJson({
+            contractVersion: parsed.contractVersion,
+            event: parsed.event,
+            stage: "failure",
+            outcome: "authorization_refusal",
+            binding: parsed.binding,
+            failureKind: "authorization_refusal",
+            rsidHashPresent: false,
+            payloadHashPresent: false,
+          }),
+        }));
+        continue;
+      }
+      if (parsed.contractVersion === "revagent.rbp-document-context-observation/v1" &&
+          parsed.event === "bridge.document_context_observation" &&
+          typeof parsed.stage === "string" && DOCUMENT_CONTEXT_STAGES.has(parsed.stage) &&
+          typeof parsed.outcome === "string" && DOCUMENT_CONTEXT_OUTCOMES.has(parsed.outcome) &&
+          (parsed.rsidHash === null || typeof parsed.rsidHash === "string") &&
+          (parsed.payloadHash === null || typeof parsed.payloadHash === "string") &&
+          (parsed.sequence === null || Number.isSafeInteger(parsed.sequence))) {
+        retained.push(Object.freeze({
+          stream: "stderr",
+          at: "",
+          line: stableJson({
+            contractVersion: parsed.contractVersion,
+            event: parsed.event,
+            stage: parsed.stage,
+            outcome: parsed.outcome,
+            binding: "unknown",
+            failureKind: parsed.stage === "failure" ? parsed.outcome : "none",
+            rsidHashPresent: typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash),
+            payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
+          }),
+        }));
+      }
     } catch {
       // Raw stderr is not evidence: it may contain an endpoint, path, or secret.
     }
   }
   return Object.freeze(retained);
+}
+
+export function hasOrderedDocumentContextStages(
+  records: readonly ProcessTranscriptRecord[],
+): boolean {
+  const expected = ["probe", "snapshot", "queue", "send", "ack"];
+  let next = 0;
+  for (const record of records) {
+    try {
+      const value = JSON.parse(record.line) as unknown;
+      if (isObject(value) && value.event === "bridge.document_context_observation" &&
+          value.stage === expected[next]) next += 1;
+      if (next === expected.length) return true;
+    } catch { /* Redaction is the admission boundary. */ }
+  }
+  return false;
 }
 
 export class RealTrioSessionReadinessPollError extends Error {
@@ -782,6 +839,17 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         sessionReadiness,
         fixtureControl,
         readRealCaseAudit,
+        readDocumentContextDiagnostics: () => redactBridgeTranscript(
+          bridge.transcript,
+        ).filter((record) => {
+          try {
+            const value = JSON.parse(record.line) as unknown;
+            return isObject(value) &&
+              value.event === "bridge.document_context_observation";
+          } catch {
+            return false;
+          }
+        }),
         restartBridge,
         stop,
         });
