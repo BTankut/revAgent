@@ -449,11 +449,20 @@ export class GatewayResourceAuthority {
 
   public async boundResult(input: {
     readonly scope: GatewayResourceScope;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
     readonly value: GatewayJsonValue;
     readonly maxInlineBytes: number;
     readonly expiresAtMs?: number;
   }): Promise<BoundedGatewayResult> {
     assertScope(input.scope);
+    if (
+      !Object.isFrozen(input.effectiveMcpRequestScope) ||
+      input.effectiveMcpRequestScope.principalKey !== input.scope.principalKey ||
+      input.effectiveMcpRequestScope.effectiveMcpSessionId !==
+        input.scope.mcpSessionId
+    ) {
+      fail("scope_denied", "result authority scope does not match ingress scope");
+    }
     if (!Number.isSafeInteger(input.maxInlineBytes) || input.maxInlineBytes < 0) {
       fail("invalid_input", "maxInlineBytes must be a non-negative safe integer");
     }

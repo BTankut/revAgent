@@ -45,6 +45,7 @@ import {
 } from "./instructionPackage.js";
 import {
   createEffectiveMcpRequestScopeV1,
+  type EffectiveMcpRequestScopeV1,
   type GatewayInvocationRoute,
 } from "./invocationContext.js";
 import { isGatewayUuidV7 } from "./identifiers.js";
@@ -193,6 +194,7 @@ function authenticatedRequest(
 function invocationRouteFor(
   authenticated: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
 ): GatewayInvocationRoute {
   expect(authenticated.authInfo).not.toHaveProperty("token");
   expect(authenticated.authInfo).not.toHaveProperty("extra");
@@ -200,6 +202,7 @@ function invocationRouteFor(
     tenantId: authenticated.authContext.actor.tenantId,
     principalKey: authenticated.principalKey,
     mcpSessionId,
+    effectiveMcpRequestScope,
     rsid: RSID,
     documentIdentity: Object.freeze({
       kind: "live" as const,

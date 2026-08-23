@@ -154,7 +154,7 @@ export interface NorthMcpEndpointOptions {
     authenticated: AuthorizedNorthMcpRequest,
     mcpSessionId: string,
     /** Immutable ingress authority; resolvers must not reconstruct scope. */
-    effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1,
+    effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
   ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
   readonly dispatcher: GatewayDispatcher;
   /** GW-9 scoped artifact/result resources; absent means no dynamic resource surface. */
@@ -780,6 +780,7 @@ function createSessionServer(input: {
         try {
           const bounded = await input.resourceAuthority.boundResult({
             scope: resourceScope,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             value: outcome as unknown as GatewayJsonValue,
             maxInlineBytes: input.resourceMaxInlineResultBytes,
           });

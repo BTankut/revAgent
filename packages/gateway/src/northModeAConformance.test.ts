@@ -33,7 +33,10 @@ import {
   buildGatewayInstructionPackage,
   gatewayClientInstructions,
 } from "./instructionPackage.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import type {
+  EffectiveMcpRequestScopeV1,
+  GatewayInvocationRoute,
+} from "./invocationContext.js";
 import {
   NORTH_MODE_A_META_TOOLS,
   NORTH_MODE_A_PINNED_TOOLS,
@@ -132,11 +135,13 @@ function authenticated(
 function routeFor(
   request: AuthorizedNorthMcpRequest,
   mcpSessionId: string,
+  effectiveMcpRequestScope: EffectiveMcpRequestScopeV1,
 ): GatewayInvocationRoute {
   return Object.freeze({
     tenantId: request.authContext.actor.tenantId,
     principalKey: request.principalKey,
     mcpSessionId,
+    effectiveMcpRequestScope,
     rsid: RSID,
     documentIdentity: Object.freeze({
       kind: "live" as const,

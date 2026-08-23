@@ -8,6 +8,7 @@ import {
   type GatewayResourceError,
   type GatewayResourceScope,
 } from "./resourceAuthority.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   createMemoryObjectStore,
   createRestartableTestStore,
@@ -24,6 +25,12 @@ const scope: GatewayResourceScope = Object.freeze({
   actorId: "user-1",
   principalKey: "tenant-1:user-1",
   mcpSessionId: "mcp-session-1",
+});
+const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+  principalKey: scope.principalKey,
+  transportMcpSessionId: scope.mcpSessionId,
+  identityMcpSessionId: null,
+  nowMs: 1_775_000_000_000,
 });
 
 function sha256(bytes: Uint8Array): `sha256:${string}` {
@@ -239,11 +246,17 @@ describe("GW-9 scoped artifact and result authority", () => {
   it("bounds oversized structured JSON into independently digest-checked pages", async () => {
     const value = Object.freeze({ rows: ["alpha", "beta", "gamma"] });
     await expect(
-      authority.boundResult({ scope, value, maxInlineBytes: 200 }),
+      authority.boundResult({
+        scope,
+        effectiveMcpRequestScope,
+        value,
+        maxInlineBytes: 200,
+      }),
     ).resolves.toEqual({ kind: "inline", value });
 
     const ref = await authority.boundResult({
       scope,
+      effectiveMcpRequestScope,
       value,
       maxInlineBytes: 4,
     });

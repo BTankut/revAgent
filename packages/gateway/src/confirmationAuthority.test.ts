@@ -10,6 +10,7 @@ import {
   type GatewayPendingActionBinding,
 } from "./confirmationAuthority.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createRestartableTestStore } from "./testAdapters.js";
 import type { GatewayProtocolStore } from "./store.js";
 
@@ -57,6 +58,12 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
     });
     const issued = await authority.createPendingAction({
       ...baseBinding,
+      effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+        principalKey: baseBinding.principalKey,
+        transportMcpSessionId: baseBinding.confirmationSessionId,
+        identityMcpSessionId: null,
+        nowMs: 1_775_000_000_000,
+      }),
       originatingPreviewInvocationId: PREVIEW_INVOCATION_ID,
       previewDigest: makeParamsDigest({ preview: "bounded" }),
       previewRef: "inline:preview-a",

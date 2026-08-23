@@ -74,7 +74,10 @@ import type {
   StoreTransaction,
   StoredRecord,
 } from "./store.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import type {
+  EffectiveMcpRequestScopeV1,
+  GatewayInvocationRoute,
+} from "./invocationContext.js";
 import type {
   IdentityDeviceV2,
   IdentityRevocationEventV1,
@@ -5189,8 +5192,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly tenantId: string;
     readonly userId: string;
     readonly deviceId: string;
-    readonly principalKey: string;
-    readonly mcpSessionId: string;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   }): GatewayInvocationRoute {
     const candidates = [...this.#active.values()].filter((active) => {
       const record = active.record;
@@ -5221,7 +5223,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     // it an own, immutable field for the dispatcher authority check.
     const route = {
       tenantId: input.tenantId,
-      mcpSessionId: input.mcpSessionId,
+      mcpSessionId: input.effectiveMcpRequestScope.effectiveMcpSessionId,
+      effectiveMcpRequestScope: input.effectiveMcpRequestScope,
       rsid: selected.rsid,
       documentIdentity: {
         kind: "live",
@@ -5229,7 +5232,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       },
     } as GatewayInvocationRoute;
     Object.defineProperty(route, "principalKey", {
-      value: input.principalKey,
+      value: input.effectiveMcpRequestScope.principalKey,
       enumerable: false,
       writable: false,
       configurable: false,

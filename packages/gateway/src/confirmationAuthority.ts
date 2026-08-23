@@ -2,12 +2,19 @@ import { createHash, randomBytes } from "node:crypto";
 import { makeParamsDigest, type JsonValue } from "@revagent/protocol";
 import { z } from "zod";
 
-import type { AuthContext } from "./authContext.js";
+import {
+  GATEWAY_AUTH_CONTRACT_VERSION,
+  type AuthContext,
+} from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
 import { gatewayUuidV7, isGatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayDocumentIdentity,
   GatewayMutationScope,
+} from "./invocationContext.js";
+import {
+  assertEffectiveMcpRequestScopeV1,
+  type EffectiveMcpRequestScopeV1,
 } from "./invocationContext.js";
 import type {
   GatewayProtocolStore,
@@ -152,6 +159,8 @@ export interface GatewayPendingActionBinding {
 
 export interface GatewayPendingActionIssueInput
   extends GatewayPendingActionBinding {
+  /** Exact ingress carrier; durable records retain only its validated fields. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly originatingPreviewInvocationId: string;
   readonly previewDigest: `sha256:${string}`;
   readonly previewRef: string;
@@ -393,6 +402,37 @@ export class GatewayConfirmationAuthority
   public async createPendingAction(
     input: GatewayPendingActionIssueInput,
   ): Promise<GatewayPendingActionIssueResult> {
+    try {
+      assertEffectiveMcpRequestScopeV1({
+        scope: input.effectiveMcpRequestScope,
+        auth: Object.freeze({
+          contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+          actor: Object.freeze({
+            type: "user" as const,
+            tenantId: input.tenantId,
+            userId: input.userId,
+            role: "user" as const,
+            oidcIssuer: "confirmation-authority",
+            oidcSubject: input.userId,
+          }),
+          session: Object.freeze({
+            sessionId: input.gatewaySessionId,
+            clientType: "mcp" as const,
+            mcpSessionId: input.effectiveMcpRequestScope.effectiveMcpSessionId,
+            oauthClientId: input.oauthClientId,
+          }),
+          principalKey: input.principalKey,
+          issuedAtMs: 0,
+          expiresAtMs: null,
+        }),
+        mcpSessionId: input.confirmationSessionId,
+      });
+    } catch (error) {
+      return storeFailure(
+        "invalid_record",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     let frozen: GatewayPendingActionIssueInput;
     try {
       frozen = Object.freeze(structuredClone(input));

@@ -177,6 +177,12 @@ const route: GatewayInvocationRoute = Object.freeze({
   tenantId: "tenant-a",
   principalKey: "tenant-a:user-a",
   mcpSessionId: "mcp-session-test",
+  effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
+    principalKey: "tenant-a:user-a",
+    transportMcpSessionId: "mcp-session-test",
+    identityMcpSessionId: null,
+    nowMs: 1_775_000_000_000,
+  }),
   rsid: "rsid-test-a",
   documentIdentity: Object.freeze({
     kind: "live" as const,
@@ -774,6 +780,9 @@ function dispatchInput(
     >;
     readonly resolveRoute?: (
       auth: AuthContext,
+      effectiveMcpRequestScope: ReturnType<
+        typeof createEffectiveMcpRequestScopeV1
+      >,
     ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
     readonly route?: GatewayInvocationRoute;
   } = {},
@@ -797,7 +806,11 @@ function dispatchInput(
       identityMcpSessionId: null,
       nowMs: 1_775_000_000_000,
     }),
-    resolveRoute: overrides.resolveRoute ?? (() => selectedRoute),
+    resolveRoute: overrides.resolveRoute ?? ((
+      _auth: AuthContext,
+      scope: ReturnType<typeof createEffectiveMcpRequestScopeV1>,
+    ) =>
+      Object.freeze({ ...selectedRoute, effectiveMcpRequestScope: scope })),
     ...(overrides.confirmationSessionId === undefined
       ? {}
       : { confirmationSessionId: overrides.confirmationSessionId }),
@@ -2043,13 +2056,17 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
         { value: "ready" },
         {
           auth: mutableAuth,
-          resolveRoute: async (resolvedAuth) => {
+          resolveRoute: async (resolvedAuth, effectiveMcpRequestScope) => {
             expect(Object.isFrozen(resolvedAuth)).toBe(true);
             expect(Object.isFrozen(resolvedAuth.actor)).toBe(true);
             expect(Object.isFrozen(resolvedAuth.session)).toBe(true);
             routeStarted.resolve();
             await releaseRoute.promise;
-            return { ...route, tenantId: resolvedAuth.actor.tenantId };
+            return {
+              ...route,
+              tenantId: resolvedAuth.actor.tenantId,
+              effectiveMcpRequestScope,
+            };
           },
         },
       ),

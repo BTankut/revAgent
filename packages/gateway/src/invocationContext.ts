@@ -102,6 +102,8 @@ export interface GatewayInvocationRoute {
   /** Principal selected with the tenant/session route; never inferred later. */
   readonly principalKey: string;
   readonly mcpSessionId: string;
+  /** Exact immutable carrier received from north ingress; never reconstructed. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly rsid: string;
   readonly documentIdentity: GatewayDocumentIdentity;
 }
@@ -118,7 +120,7 @@ export interface GatewayInvocationContext {
   readonly gatewaySessionId: string;
   readonly oauthClientId: string;
   readonly mcpSessionId: string;
-  /** Set by the north-dispatch constructor; legacy test fixtures omit it. */
+  /** Authoritative constructors always set this; legacy synthetic fixtures do not. */
   readonly effectiveMcpRequestScope?: EffectiveMcpRequestScopeV1;
   readonly rsid: string;
   readonly toolName: string;
@@ -291,10 +293,22 @@ export function deriveGatewayInvocationAuthority(input: {
   readonly auth: AuthContext;
   readonly route: GatewayInvocationRoute;
   readonly mcpSessionId: string;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   readonly mutationScopePolicy: GatewayMutationScopePolicy;
   readonly startedAtMs: number;
 }): GatewayInvocationAuthority {
   const { auth, route } = input;
+  assertEffectiveMcpRequestScopeV1({
+    scope: input.effectiveMcpRequestScope,
+    auth,
+    mcpSessionId: input.mcpSessionId,
+  });
+  if (route.effectiveMcpRequestScope !== input.effectiveMcpRequestScope) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "invocation route did not retain the ingress effective MCP scope",
+    );
+  }
   if (auth.actor.type !== "user" || auth.session.clientType !== "mcp") {
     throw new GatewayInvocationContextError(
       "invalid_auth_context",

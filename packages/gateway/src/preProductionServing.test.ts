@@ -32,6 +32,7 @@ import {
   type GatewayServerTlsMaterial,
 } from "./server.js";
 import { gatewayUuidV7 } from "./identifiers.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { AuthorizedNorthMcpRequest } from "./northMcpEndpoint.js";
 import { verifyRegistrySeed } from "./registrySeed.js";
 
@@ -601,14 +602,22 @@ describe("M4 pre-production serving composition", () => {
         authContext: north.value,
         principalKey: north.value.principalKey,
       };
+      const effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+        principalKey: authenticated.principalKey,
+        transportMcpSessionId: "mcp-session-serving-live",
+        identityMcpSessionId: null,
+        nowMs: 1_775_000_000_000,
+      });
       const route = await Promise.resolve(
         prepared.composition.northMcp.invocationRouteFor(
           authenticated,
           "mcp-session-serving-live",
+          effectiveMcpRequestScope,
         ),
       );
       expect(route).toEqual({
         tenantId: "tenant-m4-serving",
+        effectiveMcpRequestScope,
         mcpSessionId: "mcp-session-serving-live",
         rsid: registered.payload.rsid,
         documentIdentity: {
