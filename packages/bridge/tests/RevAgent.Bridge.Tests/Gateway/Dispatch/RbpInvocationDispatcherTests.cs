@@ -277,10 +277,14 @@ public sealed class RbpInvocationDispatcherTests
         Assert.Equal(plan.CarrierKey, release.CarrierKey);
         Assert.Equal(Rsid, release.Rsid);
         Assert.Equal(terminalSequence, release.TerminalSequence);
-        // Simulate a worker restart after the durable heartbeat ACK committed
-        // but before the live connection could delete the spool. Recovery may
-        // use only the journal's exact released fence; the carrier plan stays
-        // attached for duplicate replay.
+        producer.SweepExpired(released);
+        Assert.False(Directory.Exists(carrierRoot));
+        Assert.Empty(await store.ApplyCarrierPlanAcknowledgementsAsync(
+            new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
+        producer.SweepExpired(released);
+
+        // Acknowledged plans remain in the journal for exact duplicate replay,
+        // but restart must not demand the already-released spool fence.
         RbpArtifactCarrierProducer restarted =
             RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
         await restarted.RehydrateFencesAsync(CancellationToken.None);

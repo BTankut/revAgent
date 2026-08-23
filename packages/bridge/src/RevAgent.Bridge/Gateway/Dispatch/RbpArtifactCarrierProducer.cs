@@ -505,9 +505,9 @@ internal sealed class RbpArtifactCarrierProducer
 
     /// <summary>
     /// Restores only journal-declared fences after worker startup or a
-    /// connection-cycle boundary. A process crash after the acknowledgement
-    /// transaction but before spool deletion is therefore recovered from the
-    /// exact durable release list, never from a filesystem search.
+    /// connection-cycle boundary. Only unacknowledged plans own spool fences;
+    /// acknowledged plans remain journal replay evidence after their bytes
+    /// have been released.
     /// </summary>
     internal async Task RehydrateFencesAsync(CancellationToken cancellationToken)
     {
@@ -520,11 +520,6 @@ internal sealed class RbpArtifactCarrierProducer
                 pending.Rsid,
                 pending.TerminalSequence);
         }
-
-        if (recovery.ReleasedCarriers.Count > 0)
-        {
-            SweepExpired(recovery.ReleasedCarriers);
-        }
     }
 
     /// <summary>Journal recovery supplies only fenced, already-released keys.
@@ -536,11 +531,26 @@ internal sealed class RbpArtifactCarrierProducer
         {
             string carrierKey = released.CarrierKey;
             ValidateCarrierKey(carrierKey);
+            bool tracked = _fences.TryGetValue(carrierKey, out RbpCarrierFence? trackedFence);
             if (!_spool.TryReadAllPinned(carrierKey, "terminal.ack.json", MaximumCombinedBytes,
-                    out byte[]? fenceBytes) || fenceBytes is null ||
-                !TryReadTerminalFence(fenceBytes, out string? rsid, out long sequence) ||
+                    out byte[]? fenceBytes) || fenceBytes is null)
+            {
+                // A repeated release after this producer already deleted the
+                // exact spool is harmless. An in-memory fence means bytes
+                // were expected, so a missing or unreadable fence still
+                // fails closed rather than disguising tampering as idempotency.
+                if (!tracked)
+                {
+                    continue;
+                }
+                throw new RbpArtifactCarrierException("carrier_spool_release_fence_refused");
+            }
+            if (!TryReadTerminalFence(fenceBytes, out string? rsid, out long sequence) ||
                 !string.Equals(rsid, released.Rsid, StringComparison.Ordinal) ||
-                sequence != released.TerminalSequence)
+                sequence != released.TerminalSequence ||
+                (tracked && (!string.Equals(trackedFence!.Rsid, released.Rsid,
+                    StringComparison.Ordinal) ||
+                    trackedFence.TerminalSequence != released.TerminalSequence)))
             {
                 throw new RbpArtifactCarrierException("carrier_spool_release_fence_refused");
             }

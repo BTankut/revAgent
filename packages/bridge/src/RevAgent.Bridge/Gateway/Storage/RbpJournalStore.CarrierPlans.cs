@@ -134,7 +134,9 @@ internal sealed partial class RbpJournalStore
                     using SqliteCommand read = context.CreateCommand("""
                         SELECT plan_id,carrier_key,terminal_rsid,terminal_sequence
                         FROM rbp_carrier_plans
-                        WHERE terminal_rsid=$rsid AND terminal_sequence <= $sequence
+                        WHERE terminal_rsid=$rsid
+                          AND terminal_sequence <= $sequence
+                          AND acknowledged_at_ms IS NULL
                         ORDER BY terminal_sequence,plan_id;
                         """);
                     read.Parameters.AddWithValue("$rsid", acknowledgement.Rsid);
@@ -159,15 +161,24 @@ internal sealed partial class RbpJournalStore
                     {
                         using SqliteCommand mark = context.CreateCommand("""
                             UPDATE rbp_carrier_plans
-                            SET acknowledged_at_ms=COALESCE(acknowledged_at_ms,$now)
-                            WHERE plan_id=$plan_id;
+                            SET acknowledged_at_ms=$now
+                            WHERE plan_id=$plan_id
+                              AND acknowledged_at_ms IS NULL;
                             """);
                         mark.Parameters.AddWithValue("$now", now);
                         mark.Parameters.AddWithValue("$plan_id", planId);
-                        if (mark.ExecuteNonQuery() != 1)
+                        int transitioned = mark.ExecuteNonQuery();
+                        if (transitioned > 1)
                         {
                             throw RbpJournalSerialization.Corrupt(
-                                "A carrier plan disappeared before acknowledgement.");
+                                "A carrier acknowledgement updated multiple plans.");
+                        }
+                        if (transitioned == 0)
+                        {
+                            // A repeated heartbeat acknowledgement raced an
+                            // earlier committed transition. It is idempotent
+                            // and must not issue a second spool release.
+                            continue;
                         }
                         released.Add(new RbpReleasedCarrier(
                             carrierKey,
@@ -182,8 +193,9 @@ internal sealed partial class RbpJournalStore
 
     /// <summary>
     /// Reconstructs the exact terminal fences from journal authority.  The
-    /// spool is never enumerated: acknowledged fences are returned separately
-    /// so recovery can delete only a carrier the committed journal released.
+    /// spool is never enumerated. Acknowledged plans intentionally remain
+    /// outside the fence set: their exact frames are journal replay evidence,
+    /// but their spool bytes may already have been released.
     /// </summary>
     internal Task<RbpCarrierRecovery> LoadCarrierRecoveryAsync(
         CancellationToken cancellationToken = default) =>
@@ -200,7 +212,6 @@ internal sealed partial class RbpJournalStore
                     """);
                 using SqliteDataReader reader = command.ExecuteReader();
                 var pending = new List<RbpCarrierFenceRecord>();
-                var released = new List<RbpReleasedCarrier>();
                 while (reader.Read())
                 {
                     string carrierKey = reader.GetString(0);
@@ -211,15 +222,10 @@ internal sealed partial class RbpJournalStore
                         pending.Add(new RbpCarrierFenceRecord(
                             carrierKey, rsid, terminalSequence));
                     }
-                    else
-                    {
-                        released.Add(new RbpReleasedCarrier(
-                            carrierKey, rsid, terminalSequence));
-                    }
                 }
 
                 return new RbpCarrierRecovery(
-                    pending.AsReadOnly(), released.AsReadOnly());
+                    pending.AsReadOnly());
             },
             cancellationToken);
 
@@ -239,5 +245,4 @@ internal sealed record RbpCarrierFenceRecord(
     long TerminalSequence);
 
 internal sealed record RbpCarrierRecovery(
-    IReadOnlyList<RbpCarrierFenceRecord> PendingFences,
-    IReadOnlyList<RbpReleasedCarrier> ReleasedCarriers);
+    IReadOnlyList<RbpCarrierFenceRecord> PendingFences);
