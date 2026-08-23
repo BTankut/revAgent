@@ -369,9 +369,33 @@ class ControlledStoreHarness {
 
   public createPort(): GatewayProtocolStore {
     let opened = false;
+    let startupTail = Promise.resolve();
+    const records = this.#records;
     return {
       kind: "memory" as const,
       contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+      startupCoordinator: Object.freeze({
+        contractVersion: "revagent.protocol-store-startup/v1" as const,
+        async runExclusive<T>(work: () => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
+          const prior = startupTail;
+          let release!: () => void;
+          startupTail = new Promise<void>((resolve) => { release = resolve; });
+          await prior;
+          try { return await work(); } finally { release(); }
+        },
+        async listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>> {
+          const ids = [...new Set([...records.values()].map((record) => record.tenantId))].sort();
+          return !opened || ids.length > limit
+            ? { ok: false as const, code: "unavailable", message: "startup inventory unavailable" }
+            : { ok: true as const, value: ids };
+        },
+        async listKeys(tenantId: string, namespace: string, limit: number): Promise<StoreOutcome<readonly string[]>> {
+          const keys = [...records.values()].filter((record) => record.tenantId === tenantId && record.namespace === namespace).map((record) => record.key).sort();
+          return !opened || keys.length > limit
+            ? { ok: false as const, code: "unavailable", message: "startup inventory unavailable" }
+            : { ok: true as const, value: keys };
+        },
+      }),
       async open(): Promise<StoreOutcome<void>> {
         opened = true;
         return { ok: true as const, value: undefined };

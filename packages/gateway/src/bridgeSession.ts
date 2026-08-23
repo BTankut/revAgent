@@ -2155,6 +2155,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
   #openPromise: Promise<void> | null = null;
   #closePromise: Promise<void> | null = null;
+  #startupReadiness = false;
 
   public constructor(
     readonly store: GatewayProtocolStore,
@@ -2349,6 +2350,27 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     } else {
       this.#identityState = "open";
+    }
+    if (!this.#startupReadiness) {
+      const coordinator = this.store.startupCoordinator;
+      const readiness = await coordinator.runExclusive(async () => {
+        const tenants = await coordinator.listTenantIds(10_000);
+        if (!tenants.ok) return tenants;
+        for (const tenantId of tenants.value) {
+          const sessions = await coordinator.listKeys(
+            tenantId,
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            10_000,
+          );
+          if (!sessions.ok) return sessions;
+        }
+        return Object.freeze({ ok: true as const, value: undefined });
+      });
+      if (!readiness.ok) {
+        await this.#closeLifecycleResources();
+        throw new GatewayRbpFault("unavailable", readiness.message, 503, 1011);
+      }
+      this.#startupReadiness = true;
     }
     this.#lifecycleState = "open";
   }

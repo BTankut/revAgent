@@ -1,5 +1,5 @@
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   GatewayResourceAuthority,
   type GatewayResourceScope,
@@ -114,5 +114,69 @@ describe("WP-10 durable resource expiry GC", () => {
       value: over,
       maxInlineBytes: 0,
     })).rejects.toMatchObject({ code: "oversize" });
+  });
+
+  it("leaves no readable allocation when the byte store refuses the write", async () => {
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const objects = createMemoryObjectStore();
+    vi.spyOn(objects, "put").mockResolvedValueOnce({
+      ok: false,
+      port: "object_store",
+      code: "unavailable",
+      message: "injected object failure",
+    });
+    const authority = new GatewayResourceAuthority({
+      protocolStore: restartable.store,
+      objectStore: objects,
+      now: () => 40_000,
+      newRefId: () => "failed-allocation",
+    });
+    await expect(authority.uploadArtifact({
+      scope,
+      filename: "failed.csv",
+      contentType: "text/csv",
+      quarantineStatus: "released",
+      bytes: Buffer.from("x"),
+    })).rejects.toMatchObject({ code: "storage_unavailable" });
+    expect(objects.keys()).toEqual([]);
+    expect(restartable.snapshot().records.filter((record) => record.namespace === "gateway_resource_v1")).toEqual([]);
+  });
+
+  it("never exposes an allocating record while the object write is in flight", async () => {
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const objects = createMemoryObjectStore();
+    const originalPut = objects.put.bind(objects);
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredWrite = new Promise<void>((resolve) => { entered = resolve; });
+    const releaseWrite = new Promise<void>((resolve) => { release = resolve; });
+    vi.spyOn(objects, "put").mockImplementation(async (input) => {
+      entered();
+      await releaseWrite;
+      return originalPut(input);
+    });
+    const authority = new GatewayResourceAuthority({
+      protocolStore: restartable.store,
+      objectStore: objects,
+      now: () => 50_000,
+      newRefId: () => "in-flight",
+    });
+    const pending = authority.uploadArtifact({
+      scope,
+      filename: "in-flight.csv",
+      contentType: "text/csv",
+      quarantineStatus: "released",
+      bytes: Buffer.from("x"),
+    });
+    await enteredWrite;
+    expect(restartable.snapshot().records).toContainEqual(expect.objectContaining({
+      namespace: "gateway_resource_v1",
+      value: expect.objectContaining({ lifecycle: "allocating" }),
+    }));
+    await expect(authority.consumeArtifact(scope, effectiveScope(), "in-flight")).rejects.toMatchObject({ code: "not_found" });
+    release();
+    await expect(pending).resolves.toMatchObject({ refId: "in-flight" });
   });
 });
