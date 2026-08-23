@@ -1067,6 +1067,7 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
   );
 
   it("binds the authenticated route, canonical digest and audit event", async () => {
+    let routeScope: ReturnType<typeof createEffectiveMcpRequestScopeV1> | undefined;
     const harness = createDispatcher({
       execute: async (request) => {
         expect(currentGatewayInvocationContext()).toBe(request.context);
@@ -1074,7 +1075,18 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
       },
     });
 
-    const input = dispatchInput({ value: "ready" });
+    const input = dispatchInput(
+      { value: "ready" },
+      {
+        resolveRoute: (_auth, effectiveMcpRequestScope) => {
+          routeScope = effectiveMcpRequestScope;
+          return Object.freeze({
+            ...route,
+            effectiveMcpRequestScope,
+          });
+        },
+      },
+    );
     await expect(harness.dispatcher.dispatch(input)).resolves.toMatchObject({
       ok: true,
       requestId: "invocation-1",
@@ -1086,6 +1098,12 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
     expect(request?.context.effectiveMcpRequestScope).toBe(
       input.effectiveMcpRequestScope,
     );
+    expect(routeScope).toBe(input.effectiveMcpRequestScope);
+    expect(
+      (harness.eventSink.captured()[0] as unknown as {
+        effectiveMcpRequestScope?: unknown;
+      }).effectiveMcpRequestScope,
+    ).toBe(input.effectiveMcpRequestScope);
     expect(request?.context).toMatchObject({
       actor: {
         role: "user",
