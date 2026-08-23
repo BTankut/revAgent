@@ -242,7 +242,8 @@ export interface StageCarrierChunkInput {
   readonly expiresAtMs?: number;
 }
 
-type CarrierSetState = "declared" | "assembling" | "verified" | "active" | "cleanup_pending";
+type CarrierSetState = "declared" | "assembling" | "verified" | "active" | "cleanup_pending" | "gc_claimed";
+const CARRIER_MAX_RECEIPTS = 1_024;
 type CarrierMemberState = "intent" | "verified" | "active";
 
 interface CarrierSetRecord {
@@ -255,7 +256,10 @@ interface CarrierSetRecord {
   readonly effectiveMcpSessionId: string;
   readonly state: CarrierSetState;
   readonly expiresAtMs: number;
-  readonly gcLease?: { readonly owner: string; readonly token: string; readonly expiresAtMs: number };
+  readonly receivedChunkCount: number;
+  readonly receivedByteCount: number;
+  readonly cleanupGeneration?: number;
+  readonly gcLease?: { readonly owner: string; readonly token: string; readonly expiresAtMs: number; readonly claimVersion: string };
 }
 
 interface CarrierIdentityRecord {
@@ -778,7 +782,7 @@ export class GatewayResourceAuthority {
     const sets = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, async (tx) =>
       (await tx.list(RESOURCE_SET_NAMESPACE)).map((row) => row.value as unknown as CarrierSetRecord)
         .filter((set) => set.tenantId === input.scope.tenantId && set.principalKey === input.scope.principalKey &&
-          set.effectiveMcpSessionId === input.scope.mcpSessionId && set.state !== "active" &&
+          set.effectiveMcpSessionId === input.scope.mcpSessionId && set.state !== "active" && set.state !== "cleanup_pending" && set.state !== "gc_claimed" &&
           (input.setId === undefined || set.setId === input.setId)),
     );
     if (!sets.ok) fail("storage_unavailable", sets.message);
@@ -1013,8 +1017,8 @@ export class GatewayResourceAuthority {
       const claim = await this.#protocolStore.transact({ tenantId }, async (tx) => {
         const row = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, candidate.row.key); if (row === null || row.version !== candidate.row.version) return false;
         const set = row.value as unknown as CarrierSetRecord;
-        if (set.state === "cleanup_pending" && set.gcLease !== undefined && set.gcLease.expiresAtMs > now) return false;
-        tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: row.key, value: { ...set, state: "cleanup_pending", gcLease: { owner: this.#gcOwnerId, token, expiresAtMs: now + 60_000 } } as unknown as GatewayJsonValue, expect: { kind: "version", version: row.version } }); return true;
+        if ((set.state === "cleanup_pending" || set.state === "gc_claimed") && set.gcLease !== undefined && set.gcLease.expiresAtMs > now) return false;
+        tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: row.key, value: { ...set, state: "gc_claimed", gcLease: { owner: this.#gcOwnerId, token, expiresAtMs: now + 60_000, claimVersion: row.version }, cleanupGeneration: (set.cleanupGeneration ?? 0) + 1 } as unknown as GatewayJsonValue, expect: { kind: "version", version: row.version } }); return true;
       });
       if (!claim.ok || !claim.value) { retained += 1; continue; }
       claimed += 1;
@@ -1029,7 +1033,7 @@ export class GatewayResourceAuthority {
       if (!allDeleted) { retained += 1; continue; }
       const finalized = await this.#protocolStore.transact({ tenantId }, async (tx) => {
         const setRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, candidate.row.key); const set = setRow?.value as unknown as CarrierSetRecord | undefined;
-        if (setRow === null || set?.state !== "cleanup_pending" || set.gcLease?.owner !== this.#gcOwnerId || set.gcLease.token !== token) return false;
+        if (setRow === null || set?.state !== "gc_claimed" || set.gcLease?.owner !== this.#gcOwnerId || set.gcLease.token !== token || set.gcLease.claimVersion.length < 1) return false;
         for (const namespace of [CARRIER_CHUNK_NAMESPACE, RESOURCE_SET_MEMBER_NAMESPACE, CARRIER_ACK_NAMESPACE, CARRIER_TERMINAL_NAMESPACE, RESOURCE_NAMESPACE] as const) {
           for (const row of await tx.list(namespace)) {
             const value = row.value as { setId?: string; carrierSetId?: string };
@@ -1049,6 +1053,17 @@ export class GatewayResourceAuthority {
   /** Used only for terminal-less/failed non-public recovery.  Objects are
    * deleted before metadata; uncertainty leaves the private evidence intact. */
   async #cleanPrivateCarrierSet(scope: GatewayResourceScope, setId: string): Promise<void> {
+    const owner = `${this.#gcOwnerId}:recovery`;
+    const token = randomUUID();
+    const claimed = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
+      if (set === null) return false;
+      const current = set.value as unknown as CarrierSetRecord;
+      if (current.state === "active" || current.state === "verified" || current.state === "gc_claimed" || (current.state === "cleanup_pending" && (current.gcLease?.expiresAtMs ?? 0) > this.#now())) return false;
+      tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: set.key, value: { ...current, state: "cleanup_pending", gcLease: { owner, token, expiresAtMs: this.#now() + 60_000, claimVersion: set.version }, cleanupGeneration: (current.cleanupGeneration ?? 0) + 1 } as unknown as GatewayJsonValue, expect: { kind: "version", version: set.version } });
+      return true;
+    });
+    if (!claimed.ok || !claimed.value) fail("storage_unavailable", "carrier private cleanup claim was not accepted");
     const inventory = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => ({
       chunks: (await tx.list(CARRIER_CHUNK_NAMESPACE)).filter((row) => (row.value as unknown as CarrierChunkRecord).setId === setId),
       members: (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).filter((row) => (row.value as unknown as CarrierMemberRecord).setId === setId),
@@ -1064,7 +1079,9 @@ export class GatewayResourceAuthority {
         for (const row of await tx.list(namespace)) if ((row.value as { setId?: string }).setId === setId) tx.stage({ namespace, key: row.key, value: null, expect: { kind: "version", version: row.version } });
       }
       const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
-      if (set !== null) tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: set.key, value: null, expect: { kind: "version", version: set.version } });
+      const current = set?.value as unknown as CarrierSetRecord | undefined;
+      if (set === null || current?.state !== "cleanup_pending" || current.gcLease?.owner !== owner || current.gcLease.token !== token || current.gcLease.claimVersion.length < 1) return false;
+      tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: set.key, value: null, expect: { kind: "version", version: set.version } });
       for (const row of await tx.list(CARRIER_IDENTITY_NAMESPACE)) if ((row.value as unknown as CarrierIdentityRecord).setId === setId) tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: row.key, value: null, expect: { kind: "version", version: row.version } });
       return true;
     });
@@ -1083,7 +1100,7 @@ export class GatewayResourceAuthority {
       }
       const setId = uuidV7(this.#now());
       const identity: CarrierIdentityRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId };
-      const set: CarrierSetRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(requestedExpiry) };
+      const set: CarrierSetRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(requestedExpiry), receivedChunkCount: 0, receivedByteCount: 0 };
       tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: identityKey, value: identity as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: set as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       return setId;
@@ -1102,10 +1119,18 @@ export class GatewayResourceAuthority {
       if (identityRow === null) tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: carrierIdentityKey(scope, rsid, invocationId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const currentIdentity = identityRow.value as unknown as CarrierIdentityRecord; if (currentIdentity.setId !== setId || currentIdentity.rsid !== rsid || currentIdentity.invocationId !== invocationId || currentIdentity.tenantId !== scope.tenantId || currentIdentity.principalKey !== scope.principalKey || currentIdentity.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
       const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
-      if (set === null) tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(input.expiresAtMs) } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
-      else { const current = set.value as unknown as CarrierSetRecord; if (current.rsid !== rsid || current.invocationId !== invocationId || current.tenantId !== scope.tenantId || current.principalKey !== scope.principalKey || current.effectiveMcpSessionId !== scope.mcpSessionId || current.state === "cleanup_pending") return false; }
+      if (set === null) tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(input.expiresAtMs), receivedChunkCount: 1, receivedByteCount: input.bytes.byteLength } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      else { const current = set.value as unknown as CarrierSetRecord; if (current.rsid !== rsid || current.invocationId !== invocationId || current.tenantId !== scope.tenantId || current.principalKey !== scope.principalKey || current.effectiveMcpSessionId !== scope.mcpSessionId || current.state === "cleanup_pending" || current.state === "gc_claimed") return false; }
       const existing = await tx.read<GatewayJsonValue>(CARRIER_CHUNK_NAMESPACE, key);
       if (existing !== null) return (existing.value as unknown as CarrierChunkRecord).chunkIdentity === identity ? (existing.value as unknown as CarrierChunkRecord).state : false;
+      if (set !== null) {
+        const current = set.value as unknown as CarrierSetRecord;
+        const nextCount = (current.receivedChunkCount ?? 0) + 1;
+        const nextBytes = (current.receivedByteCount ?? 0) + input.bytes.byteLength;
+        const maxBytes = input.streamId === "result" ? this.#maxResultBytes : 2 * 1024 * 1024;
+        if (nextCount > CARRIER_MAX_RECEIPTS || nextBytes > maxBytes) return false;
+        tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: set.key, value: { ...current, receivedChunkCount: nextCount, receivedByteCount: nextBytes } as unknown as GatewayJsonValue, expect: { kind: "version", version: set.version } });
+      }
       const record: CarrierChunkRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, streamDigest: input.streamDigest, chunkIndex: input.chunkIndex, sequence: input.sequence, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, streamId: input.streamId, contentType: input.contentType, artifactId: input.artifactId, artifactIndex: input.artifactIndex, chunkIdentity: identity, storageKey: objectKey, byteSize: input.bytes.byteLength, digest: input.digest, state: "pending" };
       tx.stage({ namespace: CARRIER_CHUNK_NAMESPACE, key, value: record as unknown as GatewayJsonValue, expect: { kind: "absent" } }); return "pending";
     });
@@ -1125,6 +1150,10 @@ export class GatewayResourceAuthority {
 
   async #stageCarrierTerminal(scope: GatewayResourceScope, setId: string, rsid: string, invocationId: string, manifest: Extract<TerminalStreamManifest, { kind: "artifact_result" }>): Promise<void> {
     const outcome = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
+      if (set === null) return false;
+      const currentSet = set.value as unknown as CarrierSetRecord;
+      if (currentSet.rsid !== rsid || currentSet.invocationId !== invocationId || currentSet.tenantId !== scope.tenantId || currentSet.principalKey !== scope.principalKey || currentSet.effectiveMcpSessionId !== scope.mcpSessionId || currentSet.state === "cleanup_pending" || currentSet.state === "gc_claimed") return false;
       const row = await tx.read<GatewayJsonValue>(CARRIER_TERMINAL_NAMESPACE, carrierSetKey(setId));
       if (row === null) { tx.stage({ namespace: CARRIER_TERMINAL_NAMESPACE, key: carrierSetKey(setId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, manifest } as unknown as GatewayJsonValue, expect: { kind: "absent" } }); return true; }
       return JSON.stringify((row.value as unknown as CarrierTerminalRecord).manifest) === JSON.stringify(manifest);
