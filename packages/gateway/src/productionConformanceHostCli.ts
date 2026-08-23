@@ -199,6 +199,8 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   const northMcp: NorthMcpEndpointOptions = Object.freeze({
     registry,
     dispatcher,
+    resourceAuthority,
+    resourceMaxInlineResultBytes: 32 * 1024,
     catalogViewFor: () => entitledCatalog,
     invocationRouteFor: (authenticated: AuthorizedNorthMcpRequest, _mcpSessionId: string, effectiveMcpRequestScope: EffectiveMcpRequestScopeV1) =>
       authority.resolveLiveInvocationRoute({
