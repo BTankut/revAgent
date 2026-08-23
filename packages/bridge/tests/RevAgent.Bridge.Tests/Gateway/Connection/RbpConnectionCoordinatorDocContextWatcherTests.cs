@@ -160,6 +160,24 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task RouteFailureIsObservedSeparatelyFromSnapshotNotReady()
+    {
+        await using var harness = await DocContextHarness.StartAsync(
+            DocContextLocalSession(8089, 1009),
+            failFirstRoute: true);
+
+        await EventuallyAsync(() => harness.Channel.CallCount == 1);
+        await EventuallyAsync(() => harness.Observations.Any(
+            observation => observation.Stage == "failure" &&
+                observation.Outcome == "route_failure"));
+        Assert.DoesNotContain(
+            harness.Observations,
+            observation => observation.Stage == "snapshot" &&
+                observation.Outcome == "not_ready");
+        Assert.Empty(harness.SentDocContextUpdates());
+    }
+
+    [Fact]
     public async Task SessionEndStopsTheWatcherCleanly()
     {
         await using var harness = await DocContextHarness.StartAsync(
@@ -252,6 +270,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         private readonly ConcurrentQueue<RecordingLease> _leases = new();
         private int _callCount;
         private int _failNextPolls;
+        private int _failNextRoutes;
         private long _revision = 1;
         private string _title = "Project A";
 
@@ -264,6 +283,9 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal void FailNextPoll() =>
             Interlocked.Increment(ref _failNextPolls);
+
+        internal void FailNextRoute() =>
+            Interlocked.Increment(ref _failNextRoutes);
 
         internal void SetSnapshot(long revision, string title)
         {
@@ -282,6 +304,21 @@ public sealed partial class RbpConnectionCoordinatorTests
             cancellationToken.ThrowIfCancellationRequested();
             _methods.Enqueue(call.Method);
             Interlocked.Increment(ref _callCount);
+            if (Interlocked.CompareExchange(ref _failNextRoutes, 0, 0) > 0)
+            {
+                Interlocked.Decrement(ref _failNextRoutes);
+                return Task.FromResult(
+                    new RbpAddinOutcome(
+                        RbpAddinOutcomeKind.KnownNotDispatched,
+                        default,
+                        Array.Empty<byte>(),
+                        RequestBytes: 0,
+                        ResponseBytes: 0,
+                        FaultClass: "addin_unreachable",
+                        Message: "routed session unavailable",
+                        RouteFailure: true));
+            }
+
             if (Interlocked.CompareExchange(ref _failNextPolls, 0, 0) > 0)
             {
                 Interlocked.Decrement(ref _failNextPolls);
@@ -384,6 +421,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             MutableSessionCatalog catalog,
             FakeConnectionCycle cycle,
             ScriptedDocContextChannel channel,
+            ConcurrentQueue<RbpDocumentContextObservation> observations,
             RbpConnectionCoordinator coordinator)
         {
             _directory = directory;
@@ -392,6 +430,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             Catalog = catalog;
             Cycle = cycle;
             Channel = channel;
+            Observations = observations;
             _run = coordinator.RunAsync(_stop.Token);
         }
 
@@ -403,6 +442,8 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal ScriptedDocContextChannel Channel { get; }
 
+        internal ConcurrentQueue<RbpDocumentContextObservation> Observations { get; }
+
         internal RbpEnvelope[] SentDocContextUpdates() =>
             Cycle.Sent
                 .Where(envelope => envelope.Type == "doc_context_update")
@@ -411,6 +452,7 @@ public sealed partial class RbpConnectionCoordinatorTests
         internal static async Task<DocContextHarness> StartAsync(
             RbpLocalSessionSnapshot local,
             bool failFirstPoll = false,
+            bool failFirstRoute = false,
             Func<RbpJournalStore, Task>? seedAsync = null)
         {
             var directory = new RbpJournalTestDirectory();
@@ -426,11 +468,23 @@ public sealed partial class RbpConnectionCoordinatorTests
             {
                 channel.FailNextPoll();
             }
+            if (failFirstRoute)
+            {
+                channel.FailNextRoute();
+            }
 
             var responder = new ScriptedGatewayResponder(clock);
             var cycle = new FakeConnectionCycle(responder.Respond);
             var catalog = new MutableSessionCatalog(local);
-            var watcher = new RbpDocContextWatcher(channel, clock);
+            var observations = new ConcurrentQueue<RbpDocumentContextObservation>();
+            var watcher = new RbpDocContextWatcher(
+                channel,
+                clock,
+                onObservation: observation =>
+                {
+                    observations.Enqueue(observation);
+                    return ValueTask.CompletedTask;
+                });
             var coordinator = new RbpConnectionCoordinator(
                 new FakeConnectionCycleFactory(cycle),
                 store,
@@ -454,6 +508,7 @@ public sealed partial class RbpConnectionCoordinatorTests
                 catalog,
                 cycle,
                 channel,
+                observations,
                 coordinator);
         }
 

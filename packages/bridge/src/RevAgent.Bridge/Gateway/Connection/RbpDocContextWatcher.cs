@@ -238,10 +238,10 @@ internal sealed class RbpDocContextWatcher
         RbpDocContextEmit emitAsync,
         CancellationToken token)
     {
-        AddinDocumentContextSnapshot? snapshot;
+        SnapshotRead snapshotRead;
         try
         {
-            snapshot = await ReadSnapshotAsync(rsid, token)
+            snapshotRead = await ReadSnapshotAsync(rsid, token)
                 .ConfigureAwait(false);
         }
         catch (OperationCanceledException)
@@ -257,6 +257,17 @@ internal sealed class RbpDocContextWatcher
             return;
         }
 
+        if (snapshotRead.RouteFailure)
+        {
+            // Route authority loss is distinct from an add-in cache state.
+            // The observation is value-free; in particular it exposes no
+            // local key, handle generation, route detail or add-in error.
+            Observe(RbpDocumentContextObservation.Create(
+                "failure", "route_failure", rsid));
+            return;
+        }
+
+        AddinDocumentContextSnapshot? snapshot = snapshotRead.Snapshot;
         if (snapshot is null ||
             snapshot.CacheState != DocumentContextCacheState.Ready)
         {
@@ -364,7 +375,7 @@ internal sealed class RbpDocContextWatcher
         }
     }
 
-    private async Task<AddinDocumentContextSnapshot?> ReadSnapshotAsync(
+    private async Task<SnapshotRead> ReadSnapshotAsync(
         string rsid,
         CancellationToken token)
     {
@@ -383,18 +394,20 @@ internal sealed class RbpDocContextWatcher
         {
             if (outcome.Kind != RbpAddinOutcomeKind.Completed)
             {
-                return null;
+                return new SnapshotRead(null, outcome.RouteFailure);
             }
 
             AddinDocumentContextResponse response =
                 AddinDocumentContextParser.ParseResponse(
                     Encoding.UTF8.GetString(outcome.RawResponsePayload));
-            return string.Equals(
+            return new SnapshotRead(
+                string.Equals(
                     response.RequestId,
                     call.InvocationId,
                     StringComparison.Ordinal)
-                ? response.Context
-                : null;
+                    ? response.Context
+                    : null,
+                RouteFailure: false);
         }
         finally
         {
@@ -404,6 +417,10 @@ internal sealed class RbpDocContextWatcher
             outcome.Lease?.ReleaseAfterDurableDecision();
         }
     }
+
+    private sealed record SnapshotRead(
+        AddinDocumentContextSnapshot? Snapshot,
+        bool RouteFailure);
 
     private sealed record EmittedContext(long Revision, string Normalized);
 

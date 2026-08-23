@@ -82,11 +82,17 @@ internal sealed class WorkerAddinSessionCatalog :
     /// </summary>
     private readonly Action<AddinDiscoveryEvidence>? _onDiscovered;
 
-    private readonly ConcurrentDictionary<string,
-        AddinSessionRouter.SessionHandle> _handlesByLocalKey =
-        new(StringComparer.Ordinal);
+    // A route is a handle, not a local-session key.  A key is merely the
+    // durable registration identity; resolving it again after registration
+    // used to leave a refresh window in which the route could select a stale
+    // router generation.  Keep the current attested handle and every rsid
+    // projection under one lock so a caller observes one complete snapshot.
+    private readonly object _routeSync = new();
 
-    private readonly ConcurrentDictionary<string, string> _localKeyByRsid =
+    private readonly Dictionary<string, AddinSessionRouter.SessionHandle>
+        _handlesByLocalKey = new(StringComparer.Ordinal);
+
+    private readonly Dictionary<string, BoundRoute> _routesByRsid =
         new(StringComparer.Ordinal);
 
     private readonly ConcurrentDictionary<string, byte> _bindingsInFlight =
@@ -181,12 +187,21 @@ internal sealed class WorkerAddinSessionCatalog :
             return null;
         }
 
-        if (_localKeyByRsid.TryGetValue(rsid, out string? localKey) &&
-            _handlesByLocalKey.TryGetValue(
-                localKey,
-                out AddinSessionRouter.SessionHandle? handle))
+        lock (_routeSync)
         {
-            return handle;
+            if (_routesByRsid.TryGetValue(rsid, out BoundRoute? route) &&
+                _handlesByLocalKey.TryGetValue(
+                    route.LocalSessionKey,
+                    out AddinSessionRouter.SessionHandle? current) &&
+                SameHandle(route.Handle, current))
+            {
+                return route.Handle;
+            }
+
+            // Never fall back from a formerly attested route to a key lookup.
+            // A vanished/replaced handle fences this rsid until the lifecycle
+            // registration path publishes a new authoritative route.
+            _ = _routesByRsid.Remove(rsid);
         }
 
         // Unknown or superseded binding. Returning null is the fail-closed
@@ -205,8 +220,7 @@ internal sealed class WorkerAddinSessionCatalog :
         foreach (string rsid in rsids)
         {
             cancellationToken.ThrowIfCancellationRequested();
-            if (string.IsNullOrEmpty(rsid) ||
-                _localKeyByRsid.ContainsKey(rsid))
+            if (string.IsNullOrEmpty(rsid))
             {
                 continue;
             }
@@ -237,26 +251,33 @@ internal sealed class WorkerAddinSessionCatalog :
     /// <inheritdoc />
     public bool TryBindRegisteredSession(string rsid, string localSessionKey)
     {
-        if (string.IsNullOrEmpty(rsid) || string.IsNullOrEmpty(localSessionKey) ||
-            !_handlesByLocalKey.ContainsKey(localSessionKey))
+        if (string.IsNullOrEmpty(rsid) || string.IsNullOrEmpty(localSessionKey))
         {
             return false;
         }
 
-        while (true)
+        lock (_routeSync)
         {
-            if (_localKeyByRsid.TryGetValue(rsid, out string? existing))
-            {
-                return string.Equals(
-                    existing,
+            if (!_handlesByLocalKey.TryGetValue(
                     localSessionKey,
-                    StringComparison.Ordinal);
+                    out AddinSessionRouter.SessionHandle? current))
+            {
+                return false;
             }
 
-            if (_localKeyByRsid.TryAdd(rsid, localSessionKey))
+            if (_routesByRsid.TryGetValue(rsid, out BoundRoute? existing))
             {
-                return true;
+                return string.Equals(
+                    existing.LocalSessionKey,
+                    localSessionKey,
+                    StringComparison.Ordinal) &&
+                    SameHandle(existing.Handle, current);
             }
+
+            _routesByRsid.Add(
+                rsid,
+                new BoundRoute(localSessionKey, current));
+            return true;
         }
     }
 
@@ -289,20 +310,49 @@ internal sealed class WorkerAddinSessionCatalog :
     private void ReplaceHandles(
         IReadOnlyDictionary<string, AddinSessionRouter.SessionHandle> handles)
     {
-        foreach (string stale in _handlesByLocalKey.Keys)
+        lock (_routeSync)
         {
-            if (!handles.ContainsKey(stale))
+            _handlesByLocalKey.Clear();
+            foreach (KeyValuePair<string, AddinSessionRouter.SessionHandle>
+                     pair in handles)
             {
-                _ = _handlesByLocalKey.TryRemove(stale, out _);
+                _handlesByLocalKey.Add(pair.Key, pair.Value);
+            }
+
+            // Re-publish every bound rsid to the exact current router handle.
+            // Removing an unavailable key is equally atomic: no stale route
+            // can survive a successful reconciliation without its attestation.
+            foreach (string rsid in _routesByRsid.Keys.ToArray())
+            {
+                BoundRoute route = _routesByRsid[rsid];
+                if (!_handlesByLocalKey.TryGetValue(
+                        route.LocalSessionKey,
+                        out AddinSessionRouter.SessionHandle? current))
+                {
+                    _ = _routesByRsid.Remove(rsid);
+                    continue;
+                }
+
+                _routesByRsid[rsid] = new BoundRoute(
+                    route.LocalSessionKey,
+                    current);
             }
         }
-
-        foreach (KeyValuePair<string, AddinSessionRouter.SessionHandle> pair
-                 in handles)
-        {
-            _handlesByLocalKey[pair.Key] = pair.Value;
-        }
     }
+
+    private static bool SameHandle(
+        AddinSessionRouter.SessionHandle left,
+        AddinSessionRouter.SessionHandle right) =>
+        ReferenceEquals(left, right) &&
+        left.Generation == right.Generation &&
+        string.Equals(
+            left.LocalSessionKey,
+            right.LocalSessionKey,
+            StringComparison.Ordinal);
+
+    private sealed record BoundRoute(
+        string LocalSessionKey,
+        AddinSessionRouter.SessionHandle Handle);
 
     private string ReadMachineFingerprint()
     {
