@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, mkdirSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,8 +14,10 @@ import {
   publicGatewayControl,
   startRealTrioSupervisor,
   type RealTrioBinding,
+  type RealTrioDocumentContextFailureState,
   type RealTrioSupervisorResult,
 } from "../src/realTrioSupervisor.js";
+import { stableJson } from "../src/stableJson.js";
 import { createEphemeralLoopbackTlsIdentity } from "../src/ephemeralTlsIdentity.js";
 
 const packageRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -85,6 +88,10 @@ export interface RealTrioRuntimeFixture {
 /** Deliberately differs from the fixture's boot cache identity. */
 export const REAL_TRIO_FIXTURE_DOCUMENT_ID = "fixture-document-wp12-control-1" as const;
 const DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS = 20_000;
+const MAX_DOCUMENT_CONTEXT_FAILURE_STAGES = 64;
+const MAX_DOCUMENT_CONTEXT_FAILURE_AUDITS = 32;
+export const REAL_TRIO_DOCUMENT_CONTEXT_FAILURE_SCHEMA =
+  "rbp-real-trio-document-context-failure/v1" as const;
 
 export interface RealTrioDocumentContextAudit {
   readonly revision: number;
@@ -95,8 +102,154 @@ export interface RealTrioDocumentContextAudit {
   readonly pollRequestCount: number;
 }
 
+export interface RealTrioRuntimeFixtureOptions {
+  /** A caller-owned, empty evidence file; no production path is inferred. */
+  readonly documentContextFailureEvidenceFile?: string;
+  /** Test-only bound for an observed document-context failure. */
+  readonly documentContextTimeoutMs?: number;
+}
+
+export interface RealTrioDocumentContextFailure {
+  readonly schemaVersion: typeof REAL_TRIO_DOCUMENT_CONTEXT_FAILURE_SCHEMA;
+  readonly reason: "ack_failure" | "stage_timeout" | "route_timeout" | "child_exit";
+  readonly binding: RealTrioBinding;
+  readonly timeline: readonly "control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route"[];
+  /** Fixed stage/outcome fields only; no correlation identifiers or payloads. */
+  readonly documentStages: readonly Readonly<{
+    readonly stage: string;
+    readonly outcome: string;
+    readonly sequence: number | null;
+    readonly rsidHashPresent: boolean;
+    readonly payloadHashPresent: boolean;
+  }> [];
+  readonly fixtureSnapshot: Readonly<{
+    readonly cacheReadCount: number | null;
+    readonly pollRequestCount: number | null;
+    readonly cachedContextHashPresent: boolean;
+    readonly activeDocumentIdentityHashPresent: boolean;
+    readonly acknowledgementHashPresent: boolean;
+  }>;
+  /** Last public Gateway rows, reduced to route booleans and one-way hashes. */
+  readonly gatewayRouteAudits: readonly Readonly<{
+    readonly routePresent: boolean;
+    readonly dispatchAllowed: boolean;
+    readonly routeHash: string | null;
+    readonly recordHash: string;
+  }> [];
+  readonly childState: RealTrioDocumentContextFailureState;
+}
+
+export class RealTrioDocumentContextFailureError extends Error {
+  public constructor(
+    message: string,
+    readonly failureEvidence: RealTrioDocumentContextFailure,
+    readonly cause: unknown,
+  ) {
+    super(message);
+    this.name = "RealTrioDocumentContextFailureError";
+  }
+}
+
 function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSha256(value: unknown): boolean {
+  return typeof value === "string" && /^sha256:[0-9a-f]{64}$/u.test(value);
+}
+
+function digest(value: unknown): string {
+  return `sha256:${createHash("sha256").update(stableJson(value)).digest("hex")}`;
+}
+
+function documentContextStages(
+  records: readonly { readonly line: string }[],
+): RealTrioDocumentContextFailure["documentStages"] {
+  const retained: Array<RealTrioDocumentContextFailure["documentStages"][number]> = [];
+  for (const record of records) {
+    if (retained.length === MAX_DOCUMENT_CONTEXT_FAILURE_STAGES) break;
+    try {
+      const value = JSON.parse(record.line) as unknown;
+      if (!isObject(value) ||
+          value.contractVersion !== "revagent.rbp-document-context-observation/v1" ||
+          value.event !== "bridge.document_context_observation" ||
+          typeof value.stage !== "string" || typeof value.outcome !== "string") continue;
+      retained.push(Object.freeze({
+        stage: value.stage,
+        outcome: value.outcome,
+        sequence: Number.isSafeInteger(value.sequence) ? Number(value.sequence) : null,
+        rsidHashPresent: value.rsidHashPresent === true || isSha256(value.rsidHash),
+        payloadHashPresent: value.payloadHashPresent === true || isSha256(value.payloadHash),
+      }));
+    } catch {
+      // Unstructured child output is deliberately not persisted.
+    }
+  }
+  return Object.freeze(retained);
+}
+
+function fixtureSnapshot(value: unknown): RealTrioDocumentContextFailure["fixtureSnapshot"] {
+  const evidence = isObject(value) && isObject(value.documentContextEvidence)
+    ? value.documentContextEvidence
+    : {};
+  return Object.freeze({
+    cacheReadCount: Number.isSafeInteger(evidence.cacheReadCount) ? Number(evidence.cacheReadCount) : null,
+    pollRequestCount: Number.isSafeInteger(evidence.pollRequestCount) ? Number(evidence.pollRequestCount) : null,
+    cachedContextHashPresent: isSha256(evidence.cachedContextHash),
+    activeDocumentIdentityHashPresent: isSha256(evidence.activeDocumentIdentityHash),
+    acknowledgementHashPresent: isSha256(evidence.lastControlAcknowledgementHash),
+  });
+}
+
+function gatewayRouteAudits(value: unknown): RealTrioDocumentContextFailure["gatewayRouteAudits"] {
+  const rows = isObject(value) && Array.isArray(value.sessions) ? value.sessions : [];
+  return Object.freeze(rows.slice(-MAX_DOCUMENT_CONTEXT_FAILURE_AUDITS).flatMap((row) => {
+    if (!isObject(row) || !isObject(row.value)) return [];
+    const lifecycle = isObject(row.value.lifecycle) ? row.value.lifecycle : {};
+    const sessionLifecycle = isObject(lifecycle.sessionLifecycle) ? lifecycle.sessionLifecycle : {};
+    const route = lifecycle.liveDocumentRoute;
+    return [Object.freeze({
+      routePresent: isObject(route),
+      dispatchAllowed: sessionLifecycle.dispatchAllowed === true,
+      routeHash: isObject(route) ? digest(route) : null,
+      recordHash: digest(row.value),
+    })];
+  }));
+}
+
+/**
+ * Creates a bounded, value-free diagnostic object before process cleanup.
+ * Input objects are never retained; only fixed fields, counts, booleans, and
+ * one-way hashes cross this boundary.
+ */
+export function createRealTrioDocumentContextFailure(input: {
+  readonly reason: RealTrioDocumentContextFailure["reason"];
+  readonly binding: RealTrioBinding;
+  readonly timeline: readonly ("control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route")[];
+  readonly transcript: readonly { readonly line: string }[];
+  readonly fixtureEvidence: unknown;
+  readonly gatewayAudit: unknown;
+  readonly childState: RealTrioDocumentContextFailureState;
+}): RealTrioDocumentContextFailure {
+  return Object.freeze({
+    schemaVersion: REAL_TRIO_DOCUMENT_CONTEXT_FAILURE_SCHEMA,
+    reason: input.reason,
+    binding: input.binding,
+    timeline: Object.freeze([...input.timeline]),
+    documentStages: documentContextStages(input.transcript),
+    fixtureSnapshot: fixtureSnapshot(input.fixtureEvidence),
+    gatewayRouteAudits: gatewayRouteAudits(input.gatewayAudit),
+    childState: input.childState,
+  });
+}
+
+/** Writes a single stable JSON artifact to the explicitly supplied path. */
+export function writeRealTrioDocumentContextFailure(
+  evidenceFile: string,
+  failure: RealTrioDocumentContextFailure,
+): void {
+  mkdirSync(path.dirname(evidenceFile), { recursive: true });
+  writeFileSync(evidenceFile, `${stableJson(failure)}\n`, { encoding: "utf8", flag: "wx" });
 }
 
 function hash(value: unknown, label: string): string {
@@ -151,6 +304,9 @@ async function waitForOrderedDocumentContextStages(input: {
 }): Promise<void> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
   for (;;) {
+    if (input.supervisor.readDocumentContextFailureState().childExited) {
+      throw new Error("real trio child exited before document-context acknowledgement");
+    }
     if (hasOrderedDocumentContextStages(
       input.supervisor.readDocumentContextDiagnostics(),
     )) return;
@@ -208,10 +364,14 @@ async function waitForLiveDocumentRoute(input: {
   readonly endpoint: string;
   readonly controlToken: string;
   readonly certificateSha256: string;
+  readonly supervisor: RealTrioSupervisorResult;
   readonly timeoutMs?: number;
 }): Promise<void> {
   const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
   for (;;) {
+    if (input.supervisor.readDocumentContextFailureState().childExited) {
+      throw new Error("real trio child exited before document-context route");
+    }
     const snapshot = await publicGatewayControl(
       input.endpoint,
       input.controlToken,
@@ -226,8 +386,49 @@ async function waitForLiveDocumentRoute(input: {
   }
 }
 
+async function documentContextFailureError(input: {
+  readonly error: unknown;
+  readonly reason: RealTrioDocumentContextFailure["reason"];
+  readonly binding: RealTrioBinding;
+  readonly timeline: readonly ("control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route")[];
+  readonly supervisor: RealTrioSupervisorResult;
+  readonly endpoint: string;
+  readonly controlToken: string;
+  readonly certificateSha256: string;
+  readonly evidenceFile: string;
+}): Promise<RealTrioDocumentContextFailureError> {
+  const [fixtureEvidence, gatewayAudit] = await Promise.all([
+    input.supervisor.fixtureControl("snapshot_evidence").catch(() => null),
+    publicGatewayControl(
+      input.endpoint,
+      input.controlToken,
+      input.certificateSha256,
+      { action: "snapshot_audit" },
+    ).catch(() => null),
+  ]);
+  const childState = input.supervisor.readDocumentContextFailureState();
+  const failure = createRealTrioDocumentContextFailure({
+    reason: childState.childExited ? "child_exit" : input.reason,
+    binding: input.binding,
+    timeline: input.timeline,
+    transcript: input.supervisor.readDocumentContextFailureStages(),
+    fixtureEvidence,
+    gatewayAudit,
+    childState,
+  });
+  try {
+    writeRealTrioDocumentContextFailure(input.evidenceFile, failure);
+  } catch {
+    // The failure object remains attached even if an operator-supplied target
+    // was unavailable; do not replace the original document-context failure.
+  }
+  const message = input.error instanceof Error ? input.error.message : "real trio document-context failure";
+  return new RealTrioDocumentContextFailureError(message, failure, input.error);
+}
+
 export async function startRealTrioRuntimeFixture(
   binding: RealTrioBinding,
+  options: RealTrioRuntimeFixtureOptions = {},
 ): Promise<RealTrioRuntimeFixture> {
   const root = mkdtempSync(path.join(tmpdir(), "revagent-wp12-real-trio-"));
   mkdirSync(path.join(root, "install"), { recursive: true });
@@ -278,6 +479,11 @@ export async function startRealTrioRuntimeFixture(
     await supervisor.stop();
     throw new Error("real trio Gateway readiness did not contain its loopback pin");
   }
+  const evidenceFile = options.documentContextFailureEvidenceFile ??
+    path.join(root, "document-context-failure.json");
+  const timeline: Array<"control_ack" | "ordered_stages" | "fixture_probe" | "gateway_route"> = [];
+  let failureReason: RealTrioDocumentContextFailure["reason"] = "ack_failure";
+  let documentContextAudit: RealTrioDocumentContextAudit;
   try {
     // This is the normal attested loopback fixture document-context event;
     // route authority is still earned only when the C# watcher forwards it
@@ -285,15 +491,47 @@ export async function startRealTrioRuntimeFixture(
     const controlAudit = documentContextControlAudit(await supervisor.fixtureControl("apply_document_context", {
       event: realTrioFixtureDocumentContextEvent(),
     }));
+    timeline.push("control_ack");
     // This probe is value-free and must succeed before any public Gateway
     // route can qualify. The regular 15 s C# watcher is the only forwarder.
-    await waitForOrderedDocumentContextStages({ supervisor });
+    failureReason = "stage_timeout";
+    await waitForOrderedDocumentContextStages({
+      supervisor,
+      timeoutMs: options.documentContextTimeoutMs,
+    });
+    timeline.push("ordered_stages");
+    failureReason = "ack_failure";
     const counts = probeRealTrioFixtureDocumentContext(
       await supervisor.fixtureControl("snapshot_evidence"),
       controlAudit,
     );
-    const documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
-    await waitForLiveDocumentRoute({ endpoint, controlToken, certificateSha256 });
+    documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
+    timeline.push("fixture_probe");
+    failureReason = "route_timeout";
+    await waitForLiveDocumentRoute({
+      endpoint,
+      controlToken,
+      certificateSha256,
+      supervisor,
+      timeoutMs: options.documentContextTimeoutMs,
+    });
+    timeline.push("gateway_route");
+  } catch (error) {
+    const failure = await documentContextFailureError({
+      error,
+      reason: failureReason,
+      binding,
+      timeline,
+      supervisor,
+      endpoint,
+      controlToken,
+      certificateSha256,
+      evidenceFile,
+    });
+    await supervisor.stop().catch(() => undefined);
+    throw failure;
+  }
+  try {
     const issued = await publicGatewayControl(
       endpoint,
       controlToken,

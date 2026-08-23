@@ -77,6 +77,13 @@ export interface RealTrioSupervisorResult {
   readonly readRealCaseAudit: () => Promise<JsonObject>;
   /** Value-free C# document-context lifecycle observations only. */
   readonly readDocumentContextDiagnostics: () => readonly ProcessTranscriptRecord[];
+  /** Fixed document-context stage sequence for failure artifacts only. */
+  readonly readDocumentContextFailureStages: () => readonly ProcessTranscriptRecord[];
+  /**
+   * Bounded child state for a document-context failure artifact. This returns
+   * no endpoint, command, control, or document values.
+   */
+  readonly readDocumentContextFailureState: () => RealTrioDocumentContextFailureState;
   /** Terminates the actual worker process, then relaunches its exact command/journal configuration. */
   readonly restartBridge: () => Promise<RealTrioSessionReadiness>;
   readonly stop: () => Promise<void>;
@@ -86,6 +93,11 @@ export interface RealTrioSessionReadiness {
   readonly rsid: string;
   readonly localSessionKey: string;
   readonly grantedCapabilities: readonly string[];
+}
+
+export interface RealTrioDocumentContextFailureState {
+  readonly childExited: boolean;
+  readonly processDiagnostics: readonly ProcessDiagnosticSnapshot[];
 }
 
 export type RealTrioBinding = "wss" | "streamable_http_sse";
@@ -286,6 +298,40 @@ export function redactBridgeTranscript(
       }
     } catch {
       // Raw stderr is not evidence: it may contain an endpoint, path, or secret.
+    }
+  }
+  return Object.freeze(retained);
+}
+
+/** Retains the fixed document-stage progression while excluding all values. */
+export function redactDocumentContextFailureStages(
+  transcript: readonly ProcessTranscriptRecord[],
+): readonly ProcessTranscriptRecord[] {
+  const retained: ProcessTranscriptRecord[] = [];
+  for (const record of transcript) {
+    if (retained.length === MAX_REAL_TRIO_READINESS_TRACE || record.stream !== "stderr") continue;
+    try {
+      const parsed = JSON.parse(record.line) as unknown;
+      if (!isObject(parsed) ||
+          parsed.contractVersion !== "revagent.rbp-document-context-observation/v1" ||
+          parsed.event !== "bridge.document_context_observation" ||
+          typeof parsed.stage !== "string" || !DOCUMENT_CONTEXT_STAGES.has(parsed.stage) ||
+          typeof parsed.outcome !== "string" || !DOCUMENT_CONTEXT_OUTCOMES.has(parsed.outcome)) continue;
+      retained.push(Object.freeze({
+        stream: "stderr",
+        at: "",
+        line: stableJson({
+          contractVersion: parsed.contractVersion,
+          event: parsed.event,
+          stage: parsed.stage,
+          outcome: parsed.outcome,
+          sequence: Number.isSafeInteger(parsed.sequence) ? parsed.sequence : null,
+          rsidHashPresent: typeof parsed.rsidHash === "string" && SHA256.test(parsed.rsidHash),
+          payloadHashPresent: typeof parsed.payloadHash === "string" && SHA256.test(parsed.payloadHash),
+        }),
+      }));
+    } catch {
+      // Raw child output is not failure-artifact evidence.
     }
   }
   return Object.freeze(retained);
@@ -592,7 +638,6 @@ export async function publicGatewayControl(
   }
   return await new Promise<JsonObject>((resolve, reject) => {
     let settled = false;
-    let operation: ReturnType<typeof httpsRequest>;
     const fail = (error: Error): void => {
       if (settled) return;
       settled = true;
@@ -602,7 +647,7 @@ export async function publicGatewayControl(
       operation.destroy(new Error("Gateway public control timed out"));
       fail(new Error("Gateway public control timed out"));
     }, timeoutMs);
-    operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
+    const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
       const observed = peer === undefined ? null : `sha256:${createHash("sha256").update(peer).digest("hex")}`;
       if (observed !== expectedCertificateSha256) { response.resume(); clearTimeout(timer); fail(new Error("Gateway control TLS pin mismatch")); return; }
@@ -849,6 +894,18 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           } catch {
             return false;
           }
+        }),
+        readDocumentContextFailureStages: () => redactDocumentContextFailureStages(
+          bridge.transcript,
+        ),
+        readDocumentContextFailureState: () => Object.freeze({
+          childExited: gateway.process.exitCode !== null ||
+            fixture.process.exitCode !== null || bridge.process.exitCode !== null,
+          processDiagnostics: Object.freeze([
+            gateway.diagnostics("document_context_failure"),
+            fixture.diagnostics("document_context_failure"),
+            bridge.diagnostics("document_context_failure"),
+          ]),
         }),
         restartBridge,
         stop,
