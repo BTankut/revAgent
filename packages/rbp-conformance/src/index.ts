@@ -82,6 +82,17 @@ export {
 } from "./caseStackSupervisor.js";
 export { createEphemeralLoopbackTlsIdentity } from "./ephemeralTlsIdentity.js";
 export type { EphemeralTlsIdentity } from "./ephemeralTlsIdentity.js";
+export {
+  assertRealBridgeWorkerExecutable,
+  REAL_TRIO_COMPONENT_IDS,
+  sha256RealTrioFile,
+  validateRealTrioAttestation,
+} from "./realTrioAttestation.js";
+export type {
+  RealTrioAttestation,
+  RealTrioComponentId,
+  RealTrioProcessIdentity,
+} from "./realTrioAttestation.js";
 export type {
   CaseStackSupervisorOptions,
   FixtureBindPolicyProbeInput,
