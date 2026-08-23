@@ -68,6 +68,21 @@ describe("conformance ephemeral adapters", () => {
     await left.close(); await right.close();
   });
 
+  it("renews a short SQLite lease over three lease periods without contender overlap", async () => {
+    const location = await root();
+    const options = { startupLeaseMs: 90, startupRenewMs: 20 };
+    const left = new SqliteConformanceProtocolStore(location, options);
+    const right = new SqliteConformanceProtocolStore(location, options);
+    await left.open(); await right.open();
+    let leftEnd = 0; let rightStart = 0;
+    const first = left.startupCoordinator.runExclusive(async () => { await new Promise((resolve) => setTimeout(resolve, 310)); leftEnd = Date.now(); return { ok: true as const, value: undefined }; });
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    const second = right.startupCoordinator.runExclusive(async () => { rightStart = Date.now(); return { ok: true as const, value: undefined }; });
+    await expect(Promise.all([first, second])).resolves.toHaveLength(2);
+    expect(rightStart).toBeGreaterThanOrEqual(leftEnd);
+    await left.close(); await right.close();
+  });
+
   it("requires a digest key and does not cross-read a tenant object", async () => {
     const location = await root();
     const store = new DigestFileConformanceObjectStore(location);
