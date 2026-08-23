@@ -100,6 +100,39 @@ async function connectedCore(
 }
 
 describe("Gateway stub shared FSM authority", () => {
+  it("keeps default connection and session grants in their separate WP-07 domains", async () => {
+    const path = await statePath("wp07-capability-domains");
+    const core = await GatewayStubCore.create({ statePath: path, tokenTable });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      await expect(core.acceptHello(connectionId, hello())).resolves.toMatchObject({
+        payload: {
+          granted_capabilities: ["journal_v1", "transport_streamable_http"],
+        },
+      });
+      core.activateConnection(connectionId);
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope(
+          "session_register",
+          sessionRegister(),
+          1,
+        ))),
+      );
+      expect(JSON.parse(transport.sent.at(-1)!) as RbpEnvelope).toMatchObject({
+        type: "session_registered",
+        payload: {
+          granted_session_capabilities: ["batch_atomic", "doc_context_cached_v1"],
+        },
+      });
+    } finally {
+      await core.close();
+    }
+  });
+
   it("binds hello and register to the enrolled claim while hostname stays metadata", async () => {
     const path = await statePath("credential-claim-binding");
     const core = await GatewayStubCore.create({ statePath: path, tokenTable });
@@ -1004,7 +1037,14 @@ describe("Gateway stub shared FSM authority", () => {
   });
 
   it("persists chunk bytes through the T2 stream assembler and finalizes only a matching manifest", async () => {
-    const fixture = await connectedCore("carrier");
+    const fixture = await connectedCore("carrier", undefined, {
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+    });
     const invocationId = uuid7(107);
     try {
       await fixture.core.dispatchInvoke({

@@ -888,7 +888,14 @@ describe("opening and proxy fault controls", () => {
   });
 
   it("injects exact HTTP opening errors with Retry-After and buffers SSE until explicitly flushed", async () => {
-    const handle = await start("fault-controls");
+    const handle = await start("fault-controls", {
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+    });
     handle.core.faults.enqueueOpening({
       binding: "http_sse",
       status: 503,
