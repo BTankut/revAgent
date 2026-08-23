@@ -274,6 +274,18 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             try
             {
                 producer.SweepExpired(DateTimeOffset.UtcNow);
+                if (_ownedJournal is not null)
+                {
+                    _ = await _ownedJournal.ApplyRetentionAsync(
+                            RbpJournalStore.MinimumRetentionPeriod,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException)
+                when (cancellationToken.IsCancellationRequested)
+            {
+                return;
             }
             catch (RbpArtifactCarrierException)
             {
@@ -283,6 +295,11 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             catch (IOException)
             {
                 // Same posture for transient filesystem contention.
+            }
+            catch (RbpJournalException)
+            {
+                // Retention is bounded maintenance. A failed sweep leaves the
+                // replay plan intact and retries on the next serialized pass.
             }
 
             try

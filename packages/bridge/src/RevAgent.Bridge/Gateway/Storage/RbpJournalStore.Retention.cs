@@ -82,8 +82,10 @@ internal sealed partial class RbpJournalStore
         return ExecuteImmediateAsync(
             context =>
             {
-                int carrierPlans = PruneExpiredCarrierPlans(context, cutoff);
-                int invocations = PruneTerminalInvocations(context, cutoff);
+                (int carrierPlans, int carrierInvocations) =
+                    PruneExpiredCarrierPlans(context, cutoff);
+                int invocations = carrierInvocations +
+                    PruneTerminalInvocations(context, cutoff);
                 int batches = PruneTerminalBatches(context, cutoff);
                 int holds = PruneClearedHolds(context, cutoff);
                 int receipts = PruneTransportRows(
@@ -110,7 +112,7 @@ internal sealed partial class RbpJournalStore
             cancellationToken);
     }
 
-    private static int PruneExpiredCarrierPlans(
+    private static (int Plans, int Invocations) PruneExpiredCarrierPlans(
         RbpJournalWriteContext context,
         long cutoff)
     {
@@ -120,7 +122,7 @@ internal sealed partial class RbpJournalStore
         // unlinks then removes the plan, so a crash leaves either both plan
         // and invocation or neither — never a terminal-only replay state.
         using SqliteCommand read = context.CreateCommand("""
-            SELECT plan.plan_id
+            SELECT plan.plan_id,invocation.idempotency_key
             FROM rbp_carrier_plans AS plan
             JOIN rbp_invocations AS invocation
               ON invocation.idempotency_key=plan.idempotency_key
@@ -157,20 +159,21 @@ internal sealed partial class RbpJournalStore
             """);
         read.Parameters.AddWithValue("$cutoff", cutoff);
         using SqliteDataReader reader = read.ExecuteReader();
-        var planIds = new List<string>();
+        var plans = new List<(string PlanId, string InvocationKey)>();
         while (reader.Read())
         {
-            planIds.Add(reader.GetString(0));
+            plans.Add((reader.GetString(0), reader.GetString(1)));
         }
         reader.Close();
 
-        foreach (string planId in planIds)
+        foreach ((string planId, string invocationKey) in plans)
         {
             using SqliteCommand unlink = context.CreateCommand("""
                 UPDATE rbp_invocations SET carrier_plan_id=NULL
-                WHERE carrier_plan_id=$plan_id;
+                WHERE idempotency_key=$key AND carrier_plan_id=$plan_id;
                 """);
             unlink.Parameters.AddWithValue("$plan_id", planId);
+            unlink.Parameters.AddWithValue("$key", invocationKey);
             if (unlink.ExecuteNonQuery() != 1)
             {
                 throw RbpJournalSerialization.Corrupt(
@@ -187,8 +190,24 @@ internal sealed partial class RbpJournalStore
                 throw RbpJournalSerialization.Corrupt(
                     "An expiring carrier plan changed during its fenced purge.");
             }
+            using SqliteCommand invocation = context.CreateCommand("""
+                DELETE FROM rbp_invocations
+                WHERE idempotency_key=$key
+                  AND carrier_plan_id IS NULL
+                  AND state IN (
+                    'completed','failed','guarded','cancelled','indeterminate'
+                  )
+                  AND finished_at_ms<=$cutoff;
+                """);
+            invocation.Parameters.AddWithValue("$key", invocationKey);
+            invocation.Parameters.AddWithValue("$cutoff", cutoff);
+            if (invocation.ExecuteNonQuery() != 1)
+            {
+                throw RbpJournalSerialization.Corrupt(
+                    "An expiring carrier invocation changed during fenced purge.");
+            }
         }
-        return planIds.Count;
+        return (plans.Count, plans.Count);
     }
 
     private static int PruneTerminalInvocations(
@@ -210,6 +229,7 @@ internal sealed partial class RbpJournalStore
                 'completed','failed','guarded','cancelled','indeterminate'
               )
               AND finished_at_ms<=$cutoff
+              AND carrier_plan_id IS NULL
               AND NOT EXISTS(
                 SELECT 1
                 FROM rbp_verification_holds AS holds
