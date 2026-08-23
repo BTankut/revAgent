@@ -79,6 +79,8 @@ const entitledView = new EntitledCatalogView(
 const TOKEN = "gw10-deterministic-fake-token";
 const PRINCIPAL_KEY = "tenant-gw10:user-gw10";
 const GATEWAY_SESSION_ID = "gateway-gw10-session";
+const PRIMARY_MCP_SESSION_ID = "mcp-gw10-primary";
+const ISOLATED_MCP_SESSION_ID = "mcp-gw10-isolated";
 const REQUEST_STATE_KEY = "gw10-request-state-key-at-least-32-bytes";
 const RSID = "019fa22d-535f-7a2d-9d10-85d31f03fa8d";
 const RUNTIME_TOOL = "core.view.activate";
@@ -89,7 +91,10 @@ function uuid7(value: number): string {
   return `019fa22d-535f-7000-8000-${String(value).padStart(12, "0")}`;
 }
 
-function authContext(sessionId = GATEWAY_SESSION_ID): AuthContext {
+function authContext(
+  sessionId = GATEWAY_SESSION_ID,
+  mcpSessionId: string | null = null,
+): AuthContext {
   return Object.freeze({
     contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
     actor: Object.freeze({
@@ -103,7 +108,7 @@ function authContext(sessionId = GATEWAY_SESSION_ID): AuthContext {
     session: Object.freeze({
       sessionId,
       clientType: "mcp" as const,
-      mcpSessionId: null,
+      mcpSessionId,
       oauthClientId: "dp10-fake-client",
     }),
     principalKey: PRINCIPAL_KEY,
@@ -115,10 +120,11 @@ function authContext(sessionId = GATEWAY_SESSION_ID): AuthContext {
 function authenticated(
   authInfo: AuthInfo,
   sessionId = GATEWAY_SESSION_ID,
+  mcpSessionId: string | null = null,
 ): AuthenticatedNorthMcpRequest {
   return Object.freeze({
     authInfo,
-    authContext: authContext(sessionId),
+    authContext: authContext(sessionId, mcpSessionId),
     principalKey: PRINCIPAL_KEY,
   });
 }
@@ -268,6 +274,9 @@ describe("GW-10 north Mode-A conformance", () => {
           return authenticated(
             authInfo,
             bearer.endsWith("-isolated") ? "gateway-gw10-isolated" : undefined,
+            bearer.endsWith("-isolated")
+              ? ISOLATED_MCP_SESSION_ID
+              : PRIMARY_MCP_SESSION_ID,
           );
         },
       },
@@ -314,7 +323,10 @@ describe("GW-10 north Mode-A conformance", () => {
     );
     transport = new StreamableHTTPClientTransport(endpointUrl, {
       requestInit: {
-        headers: { authorization: `Bearer ${TOKEN}` },
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          "mcp-session-id": PRIMARY_MCP_SESSION_ID,
+        },
       },
     });
     await client.connect(transport);
@@ -512,7 +524,10 @@ describe("GW-10 north Mode-A conformance", () => {
     );
     const isolatedTransport = new StreamableHTTPClientTransport(endpointUrl, {
       requestInit: {
-        headers: { authorization: `Bearer ${TOKEN}-isolated` },
+        headers: {
+          authorization: `Bearer ${TOKEN}-isolated`,
+          "mcp-session-id": ISOLATED_MCP_SESSION_ID,
+        },
       },
     });
     try {
