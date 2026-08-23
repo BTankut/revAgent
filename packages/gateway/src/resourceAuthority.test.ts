@@ -474,6 +474,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     expect(restartableStore.snapshot().records.filter((row) => [
       "gateway_resource_v1", "gateway.resource-set/v1", "gateway.carrier-chunk/v1",
       "gateway.resource-set-member/v1", "gateway.carrier-ack/v1", "gateway.carrier-identity/v1",
+      "gateway.carrier-terminal/v1",
     ].includes(row.namespace))).toEqual([]);
   });
 
@@ -543,6 +544,24 @@ describe("GW-9 scoped artifact and result authority", () => {
       },
     }), "incomplete");
     expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toHaveLength(1);
+  });
+
+  it("records receipt aggregates before object writes and fails the artifact byte cap", async () => {
+    const bytes = new Uint8Array(1_048_576);
+    const setId = "0197a3c2-0000-7000-8000-000000000077";
+    const base = {
+      scope, effectiveMcpRequestScope, setId, rsid: "rsid-receipt-cap", invocationId,
+      streamDigest: createHash("sha256").update("artifact:cap").digest("hex"), bytes,
+      digest: sha256(bytes), streamId: "artifact:cap", contentType: "image/png",
+      artifactId: "cap", artifactIndex: 0,
+    } as const;
+    await authority.stageChunk({ ...base, chunkIndex: 0, sequence: 0 });
+    await authority.stageChunk({ ...base, chunkIndex: 1, sequence: 1 });
+    await expectResourceError(authority.stageChunk({ ...base, chunkIndex: 2, sequence: 2 }), "protocol_fault");
+    expect(restartableStore.snapshot().records.find((row) => row.namespace === "gateway.resource-set/v1")?.value).toMatchObject({
+      receivedChunkCount: 2,
+      receivedByteCount: 2 * 1_048_576,
+    });
   });
 
   it("requires contiguous multi-chunk receipts with terminal count and digest before publication", async () => {

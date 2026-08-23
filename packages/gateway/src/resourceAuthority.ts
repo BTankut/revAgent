@@ -1189,9 +1189,29 @@ export class GatewayResourceAuthority {
     if (!loaded.ok) fail("storage_unavailable", loaded.message);
     const { set, terminal } = loaded.value;
     if (set === undefined || terminal === undefined || set.tenantId !== scope.tenantId || set.principalKey !== scope.principalKey || set.effectiveMcpSessionId !== scope.mcpSessionId) fail("incomplete", "carrier set has no durable terminal");
+    if (set.state === "verified") {
+      await this.#validateVerifiedCarrierSet(scope, set, terminal.manifest);
+      return this.#activateCarrierSet(scope, setId);
+    }
+    if (set.state === "active") return this.#activateCarrierSet(scope, setId);
     await this.#prepareCarrierSet(scope, set, terminal.manifest);
     await this.#verifyCarrierSet(scope, setId, terminal.manifest);
     return this.#activateCarrierSet(scope, setId);
+  }
+
+  /** A restart after B must prove the private final objects before C, without
+   * attempting the intent-only stream reconstruction path again. */
+  async #validateVerifiedCarrierSet(scope: GatewayResourceScope, set: CarrierSetRecord, manifest: CarrierTerminalRecord["manifest"]): Promise<void> {
+    const members = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) =>
+      (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).map((row) => row.value as unknown as CarrierMemberRecord)
+        .filter((member) => member.setId === set.setId).sort((a, b) => a.memberIndex - b.memberIndex));
+    if (!members.ok || members.value.length !== manifest.descriptors.length) fail("storage_unavailable", "verified carrier member inventory is invalid");
+    for (const [index, descriptor] of manifest.descriptors.entries()) {
+      const member = members.value[index];
+      if (member === undefined || member.state !== "verified" || member.rsid !== set.rsid || member.invocationId !== set.invocationId || member.tenantId !== scope.tenantId || member.principalKey !== scope.principalKey || member.effectiveMcpSessionId !== scope.mcpSessionId || member.memberIndex !== index || member.expectedChunkCount !== descriptor.total_chunks || member.digest !== descriptor.sha256 || member.byteSize !== descriptor.total_size || member.streamDigest !== carrierStreamDigest(descriptor.stream_id)) fail("storage_unavailable", "verified carrier member binding is invalid");
+      const object = await this.#objectStore.get({ tenantId: scope.tenantId, storageKey: member.storageKey });
+      if (!object.ok || object.value.bytes.byteLength !== member.byteSize || sha256(object.value.bytes) !== member.digest) fail("storage_unavailable", "verified carrier final object is unavailable");
+    }
   }
 
   /** Stage A: a single CAS creates every opaque member intent with the set transition. */
@@ -1279,7 +1299,17 @@ export class GatewayResourceAuthority {
       const setRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId)); if (setRow === null) return false;
       const set = setRow.value as unknown as CarrierSetRecord;
       const members = (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).map((row) => ({ row, member: row.value as unknown as CarrierMemberRecord })).filter(({ member }) => member.setId === setId).sort((a, b) => a.member.memberIndex - b.member.memberIndex);
-      if (set.state === "active") return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
+      if (set.state === "active") {
+        const ack = await tx.read<GatewayJsonValue>(CARRIER_ACK_NAMESPACE, carrierAckKey(scope, set.rsid, "terminal"));
+        const terminal = ack?.value as { setId?: string; rsid?: string; invocationId?: string; seq?: string; state?: string } | undefined;
+        if (members.length < 1 || members.some(({ member }) => member.state !== "active") || terminal?.setId !== setId || terminal.rsid !== set.rsid || terminal.invocationId !== set.invocationId || terminal.seq !== "terminal" || terminal.state !== "terminal_accepted") return false;
+        for (const { member } of members) {
+          const stored = await tx.read<GatewayJsonValue>(RESOURCE_NAMESPACE, recordKey(scope, "artifact_ref", member.refId));
+          const record = stored === null ? null : asJsonRecord(stored.value);
+          if (record === null || record.kind !== "artifact_ref" || record.lifecycle !== "active" || record.refId !== member.refId || record.storageKey !== member.storageKey || record.digest !== member.digest || record.byteSize !== member.byteSize || record.carrierSetId !== setId) return false;
+        }
+        return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
+      }
       if (set.state !== "verified" || members.length < 1 || members.some(({ member }) => member.state !== "verified")) return false;
       for (const { row, member } of members) {
         const record: ArtifactRecord = { schemaVersion: "revagent-gateway-resource/v1", kind: "artifact_ref", refId: member.refId, actorId: scope.actorId, principalKey: scope.principalKey, mcpSessionId: scope.mcpSessionId, createdAtMs: this.#now(), expiresAtMs: set.expiresAtMs, filename: member.filename, contentType: member.contentType, byteSize: member.byteSize, digest: member.digest, storageKey: member.storageKey, quarantineStatus: "released", source: "rbp_output", invocationId: set.invocationId, artifactIndex: member.memberIndex, carrierSetId: setId, lifecycle: "active" };
