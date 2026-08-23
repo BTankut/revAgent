@@ -739,8 +739,10 @@ public sealed partial class RbpConnectionCoordinatorTests
         public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
             IRbpInvocationClaim claim,
             JsonElement invokePayload,
+            IReadOnlyList<string> grantedConnectionCapabilities,
             CancellationToken cancellationToken)
         {
+            _ = grantedConnectionCapabilities;
             _dispatched.Enqueue(claim.Rsid);
             int active = Interlocked.Increment(ref _active);
             int peak = Volatile.Read(ref _concurrentPeak);

@@ -24,7 +24,11 @@ internal sealed partial class RbpConnectionCoordinator
         try
         {
             RbpInvocationAnswer answer = await _invocationDispatcher
-                .DispatchClaimedAsync(claim, envelope.Payload, context.Token)
+                .DispatchClaimedAsync(
+                    claim,
+                    envelope.Payload,
+                    context.GrantedConnectionCapabilities,
+                    context.Token)
                 .ConfigureAwait(false);
             await SendDataAsync(context, envelope.Rsid, answer)
                 .ConfigureAwait(false);

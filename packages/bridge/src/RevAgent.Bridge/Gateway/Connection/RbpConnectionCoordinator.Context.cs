@@ -129,11 +129,14 @@ internal sealed partial class RbpConnectionCoordinator
             RbpConnectionCoordinator owner,
             IRbpConnectionCycle cycle,
             long generation,
+            IReadOnlyList<string> grantedConnectionCapabilities,
             CancellationToken serviceCancellationToken)
         {
             _owner = owner;
             Cycle = cycle;
             Generation = generation;
+            GrantedConnectionCapabilities = grantedConnectionCapabilities ??
+                throw new ArgumentNullException(nameof(grantedConnectionCapabilities));
             _cancellation =
                 CancellationTokenSource.CreateLinkedTokenSource(
                     serviceCancellationToken);
@@ -143,6 +146,8 @@ internal sealed partial class RbpConnectionCoordinator
         internal IRbpConnectionCycle Cycle { get; }
 
         internal long Generation { get; }
+
+        internal IReadOnlyList<string> GrantedConnectionCapabilities { get; }
 
         internal long SteadyStartedMilliseconds
         {

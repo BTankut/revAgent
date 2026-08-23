@@ -43,6 +43,7 @@ internal interface IRbpInvocationDispatcher
     Task<RbpInvocationAnswer> DispatchClaimedAsync(
         IRbpInvocationClaim claim,
         JsonElement invokePayload,
+        IReadOnlyList<string> grantedConnectionCapabilities,
         CancellationToken cancellationToken);
 
     /// <summary>

@@ -323,6 +323,7 @@ internal sealed partial class RbpConnectionCoordinator
                 this,
                 cycle,
                 generation,
+                cycle.Acknowledgement.GrantedCapabilities,
                 serviceCancellationToken);
             SetActiveContext(context);
 

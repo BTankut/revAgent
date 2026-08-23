@@ -57,6 +57,7 @@ public sealed class RbpArtifactCarrierProducerTests
                 "rs-inline",
                 Json("""{"kind":"invocation","invocation_id":"invoke-02"}"""),
                 Files(new byte[] { 1 }),
+                new[] { "chunked_results" },
                 CancellationToken.None));
     }
 

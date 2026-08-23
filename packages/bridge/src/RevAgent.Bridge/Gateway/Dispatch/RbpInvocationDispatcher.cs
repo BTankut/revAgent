@@ -56,6 +56,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
     private readonly RbpArtifactCarrierProducer? _carrierProducer;
+    private readonly AsyncLocal<IReadOnlyList<string>?> _connectionCapabilities = new();
 
     internal RbpInvocationDispatcher(
         RbpJournalStore journal,
@@ -345,28 +346,39 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     public async Task<RbpInvocationAnswer> DispatchClaimedAsync(
         IRbpInvocationClaim claim,
         JsonElement invokePayload,
+        IReadOnlyList<string> grantedConnectionCapabilities,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(claim);
-
-        RbpInvokeRequest request;
+        ArgumentNullException.ThrowIfNull(grantedConnectionCapabilities);
+        IReadOnlyList<string>? prior = _connectionCapabilities.Value;
+        _connectionCapabilities.Value = grantedConnectionCapabilities;
         try
         {
-            request = RbpInvokeRequest.Parse(claim.Rsid, invokePayload);
-        }
-        catch (RbpDispatchException exception)
-            when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
-        {
-            return RbpInvocationAnswer.Error(
-                RbpInvocationPayloads.KnownError(
-                    ReadInvocationId(invokePayload),
-                    faultClass: "protocol",
-                    retryable: false,
-                    message: exception.Message));
-        }
 
-        return await DispatchUnderGateAsync(request, cancellationToken)
-            .ConfigureAwait(false);
+            RbpInvokeRequest request;
+            try
+            {
+                request = RbpInvokeRequest.Parse(claim.Rsid, invokePayload);
+            }
+            catch (RbpDispatchException exception)
+                when (exception.ErrorCode == RbpDispatchErrorCode.Protocol)
+            {
+                return RbpInvocationAnswer.Error(
+                    RbpInvocationPayloads.KnownError(
+                        ReadInvocationId(invokePayload),
+                        faultClass: "protocol",
+                        retryable: false,
+                        message: exception.Message));
+            }
+
+            return await DispatchUnderGateAsync(request, cancellationToken)
+                .ConfigureAwait(false);
+        }
+        finally
+        {
+            _connectionCapabilities.Value = prior;
+        }
     }
 
     private static string ReadInvocationId(JsonElement payload) =>
@@ -609,20 +621,43 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
         IReadOnlyList<RbpInvocationAnswer> prefixes =
             Array.AsReadOnly(Array.Empty<RbpInvocationAnswer>());
         string? carrierKey = null;
+        RbpInvocationState terminalState = guarded
+            ? RbpInvocationState.Guarded
+            : RbpInvocationState.Completed;
         if (_carrierProducer is not null)
         {
-            RbpCarrierEmission? carrier = await _carrierProducer
-                .TryPrepareAsync(
-                    request.Rsid,
-                    body,
-                    outcome.Result,
-                    DurableDecisionToken)
-                .ConfigureAwait(false);
-            if (carrier is not null)
+            try
             {
-                body = carrier.TerminalPayload;
-                prefixes = carrier.Prefixes;
-                carrierKey = carrier.CarrierKey;
+                RbpCarrierEmission? carrier = await _carrierProducer
+                    .TryPrepareAsync(
+                        request.Rsid,
+                        body,
+                        outcome.Result,
+                        _connectionCapabilities.Value ?? Array.Empty<string>(),
+                        DurableDecisionToken)
+                    .ConfigureAwait(false);
+                if (carrier is not null)
+                {
+                    body = carrier.TerminalPayload;
+                    prefixes = carrier.Prefixes;
+                    carrierKey = carrier.CarrierKey;
+                }
+            }
+            catch (Exception exception) when (
+                exception is RbpArtifactCarrierException or IOException or
+                    UnauthorizedAccessException or System.Security.SecurityException)
+            {
+                // The add-in has already answered. Persist a narrow terminal
+                // error rather than leaving the invocation executing or
+                // exposing a raw local artifact/path in an inline result.
+                body = RbpInvocationPayloads.KnownError(
+                    request.InvocationId,
+                    faultClass: "environment",
+                    retryable: false,
+                    message: "The bridge could not durably prepare the result carrier.");
+                prefixes = Array.AsReadOnly(Array.Empty<RbpInvocationAnswer>());
+                carrierKey = null;
+                terminalState = RbpInvocationState.Failed;
             }
         }
 
@@ -631,18 +666,15 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             .PersistInvocationTerminalAsync(
                 identity.IdempotencyKey,
                 new RbpInvocationTerminal(
-                    guarded
-                        ? RbpInvocationState.Guarded
-                        : RbpInvocationState.Completed,
+                    terminalState,
                     body,
                     digest),
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
-        return RbpInvocationAnswer.Result(
-            body,
-            prefixes,
-            carrierKey);
+        return terminalState == RbpInvocationState.Failed
+            ? RbpInvocationAnswer.Error(body)
+            : RbpInvocationAnswer.Result(body, prefixes, carrierKey);
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeKnownFailureAsync(

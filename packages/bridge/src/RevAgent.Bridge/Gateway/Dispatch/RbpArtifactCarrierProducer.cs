@@ -48,8 +48,10 @@ internal sealed class RbpArtifactCarrierProducer
         string rsid,
         JsonElement invocationBody,
         JsonElement addinResult,
+        IReadOnlyList<string> grantedConnectionCapabilities,
         CancellationToken cancellationToken)
     {
+        await Task.CompletedTask.ConfigureAwait(false);
         if (addinResult.ValueKind != JsonValueKind.Object)
         {
             return null;
@@ -66,12 +68,9 @@ internal sealed class RbpArtifactCarrierProducer
             return null;
         }
 
-        RbpStoredSession? session = await _journal
-            .GetStoredSessionAsync(rsid, cancellationToken)
-            .ConfigureAwait(false);
-        if (session is null || !session.GrantedCapabilities.Contains(
+        if (!grantedConnectionCapabilities.Contains(
                 "chunked_results", StringComparer.Ordinal) ||
-            (artifactOutput && !session.GrantedCapabilities.Contains(
+            (artifactOutput && !grantedConnectionCapabilities.Contains(
                 "artifact_result_v1", StringComparer.Ordinal)))
         {
             throw new RbpArtifactCarrierException(
@@ -142,6 +141,18 @@ internal sealed class RbpArtifactCarrierProducer
             chunks.AsReadOnly(),
             SafeSegment(invocationId));
     }
+
+    internal Task<RbpCarrierEmission?> TryPrepareAsync(
+        string rsid,
+        JsonElement invocationBody,
+        JsonElement addinResult,
+        CancellationToken cancellationToken) =>
+        TryPrepareAsync(
+            rsid,
+            invocationBody,
+            addinResult,
+            ConnectionCapabilities,
+            cancellationToken);
 
     private static RbpCarrierEmission PrepareChunkedResult(
         string invocationRoot,
