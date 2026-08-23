@@ -1105,8 +1105,26 @@ export class GatewayResourceAuthority {
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: set as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       return setId;
     });
-    if (!allocated.ok || allocated.value === false) fail("protocol_fault", "carrier identity allocation conflicts with durable state");
-    return allocated.value;
+    if (allocated.ok && allocated.value !== false) return allocated.value;
+    // A competing identical first receipt can win the absent-CAS.  It is not
+    // a protocol fault: reload its identity and prove the complete binding
+    // before joining that one UUIDv7 set.  A bounded retry avoids turning a
+    // damaged store into an unbounded request path.
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const winner = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+        const row = await tx.read<GatewayJsonValue>(CARRIER_IDENTITY_NAMESPACE, identityKey);
+        if (row === null) return null;
+        const identity = row.value as unknown as CarrierIdentityRecord;
+        if (identity.rsid !== rsid || identity.invocationId !== invocationId || identity.tenantId !== scope.tenantId || identity.principalKey !== scope.principalKey || identity.effectiveMcpSessionId !== scope.mcpSessionId || !UUID_V7_PATTERN.test(identity.setId)) return false;
+        const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(identity.setId));
+        const current = set?.value as unknown as CarrierSetRecord | undefined;
+        return current !== undefined && current.setId === identity.setId && current.rsid === rsid && current.invocationId === invocationId && current.tenantId === scope.tenantId && current.principalKey === scope.principalKey && current.effectiveMcpSessionId === scope.mcpSessionId
+          ? identity.setId : false;
+      });
+      if (winner.ok && typeof winner.value === "string") return winner.value;
+      if (winner.ok && winner.value === false) break;
+    }
+    fail("protocol_fault", "carrier identity allocation conflicts with durable state");
   }
 
   async #persistCarrierChunk(input: StageCarrierChunkInput): Promise<void> {
@@ -1158,7 +1176,7 @@ export class GatewayResourceAuthority {
       if (row === null) { tx.stage({ namespace: CARRIER_TERMINAL_NAMESPACE, key: carrierSetKey(setId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, manifest } as unknown as GatewayJsonValue, expect: { kind: "absent" } }); return true; }
       return JSON.stringify((row.value as unknown as CarrierTerminalRecord).manifest) === JSON.stringify(manifest);
     });
-    if (!outcome.ok || !outcome.value) fail("protocol_fault", "carrier terminal conflicts with durable state");
+    if (!outcome.ok || !outcome.value) fail("incomplete", "carrier terminal conflicts with durable state");
   }
 
   async #resumeCarrier(scope: GatewayResourceScope, effective: EffectiveMcpRequestScopeV1, setId: string): Promise<readonly GatewayArtifactRef[]> {
@@ -1274,8 +1292,18 @@ export class GatewayResourceAuthority {
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
       return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
     });
-    if (!activated.ok || activated.value === false) fail("storage_unavailable", "carrier stage C was not accepted");
-    return Object.freeze(activated.value);
+    if (activated.ok && activated.value !== false) return Object.freeze(activated.value);
+    // A concurrent identical replay may have won stage C's absent-CAS for
+    // every north row.  Re-read only an already-active, fully bound set.
+    const winner = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const setRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
+      const set = setRow?.value as unknown as CarrierSetRecord | undefined;
+      if (set?.state !== "active" || set.tenantId !== scope.tenantId || set.principalKey !== scope.principalKey || set.effectiveMcpSessionId !== scope.mcpSessionId) return null;
+      const members = (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).map((row) => row.value as unknown as CarrierMemberRecord).filter((member) => member.setId === setId).sort((a, b) => a.memberIndex - b.memberIndex);
+      return members.length > 0 && members.every((member) => member.state === "active") ? members.map((member) => this.#carrierRef(scope, member, set.expiresAtMs)) : null;
+    });
+    if (winner.ok && winner.value !== null) return Object.freeze(winner.value);
+    fail("storage_unavailable", "carrier stage C was not accepted");
   }
 
   #carrierRef(scope: GatewayResourceScope, member: CarrierMemberRecord, expiresAtMs: number): GatewayArtifactRef {
