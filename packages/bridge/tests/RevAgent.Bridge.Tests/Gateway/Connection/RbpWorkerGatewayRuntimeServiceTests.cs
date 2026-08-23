@@ -467,6 +467,38 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCatalogProjectsBatchCapabilityWithoutDocumentContext()
+    {
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            result["sessionCapabilities"] = new JArray("batch_atomic");
+            ((JObject)result["capabilityContracts"]!).Remove(
+                "doc_context_cached_v1");
+        });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot snapshot = Assert.Single(
+            await catalog.ReadAsync());
+        string[] capabilities = snapshot.RegistrationPayload
+            .GetProperty("session_capabilities")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray()!;
+
+        Assert.Equal(new[] { "batch_atomic" }, capabilities);
+        Assert.DoesNotContain("journal_v1", capabilities);
+        Assert.DoesNotContain("transport_streamable_http", capabilities);
+    }
+
+    [Fact]
     public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
     {
         string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
@@ -539,6 +571,13 @@ public sealed partial class RbpConnectionCoordinatorTests
     /// </summary>
     private sealed class ScriptedStatusTransport : IAddinTransport
     {
+        private readonly Action<JObject>? _configure;
+
+        internal ScriptedStatusTransport(Action<JObject>? configure = null)
+        {
+            _configure = configure;
+        }
+
         public Task<AddinCallResult> InvokeAsync(
             AddinEndpoint endpoint,
             AddinCall call,
@@ -565,6 +604,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
 
             JObject result = LoadStatusFixtureResult();
+            _configure?.Invoke(result);
             var envelope = new JObject
             {
                 ["jsonrpc"] = "2.0",
