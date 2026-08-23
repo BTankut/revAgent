@@ -224,7 +224,9 @@ describe("GW-9 scoped artifact and result authority", () => {
       }),
       "digest_mismatch",
     );
-    expect(objectStore.keys()).toEqual([]);
+    // Invalid terminals never publish north-facing resources.  Durable chunks
+    // may remain quarantined for fenced cleanup/restart inspection.
+    expect(restartableStore.snapshot().records.filter((record) => record.namespace === "gateway_resource_v1")).toEqual([]);
   });
 
   it("hash-prefixes durable keys and rejects foreign effective scopes before metadata or object lookup", async () => {
@@ -383,6 +385,7 @@ describe("GW-9 scoped artifact and result authority", () => {
 
     const refs = await authority.ingestRbpArtifactCarrier({
       scope,
+      rsid: "rsid-resource-a",
       invocationId,
       chunks: [
         artifactChunk(artifactA, 0, bytesA),
@@ -400,6 +403,21 @@ describe("GW-9 scoped artifact and result authority", () => {
       { contentType: "image/png", nextPageUri: null },
       { contentType: "image/png", nextPageUri: null },
     ]);
+    const durable = restartableStore.snapshot().records;
+    const set = durable.find((record) => record.namespace === "gateway.resource-set/v1");
+    expect(set?.value).toMatchObject({
+      rsid: "rsid-resource-a",
+      invocationId,
+      tenantId: scope.tenantId,
+      principalKey: scope.principalKey,
+      effectiveMcpSessionId: scope.mcpSessionId,
+      state: "active",
+    });
+    expect(durable.filter((record) => record.namespace === "gateway.carrier-chunk/v1")).toHaveLength(2);
+    expect(durable.filter((record) => record.namespace === "gateway.resource-set-member/v1")).toHaveLength(2);
+    expect(durable.filter((record) => record.namespace === "gateway.carrier-ack/v1").map((record) => record.value)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ state: "terminal_accepted" })]),
+    );
 
     const restartedStore = restartableStore.restart();
     await restartedStore.open();
@@ -429,6 +447,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        rsid: "rsid-resource-a",
         invocationId,
         chunks: [artifactChunk(artifactA, 0, bytesA)],
         manifest: { kind: "artifact_result", descriptors, artifactReferences },
@@ -438,6 +457,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        rsid: "rsid-resource-a",
         invocationId,
         chunks: [
           artifactChunk(artifactA, 0, bytesA),
@@ -450,6 +470,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        rsid: "rsid-resource-a",
         invocationId,
         chunks: [
           artifactChunk(artifactA, 0, bytesA),
@@ -469,6 +490,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        rsid: "rsid-resource-a",
         invocationId,
         chunks: [
           artifactChunk(artifactA, 0, bytesA),
@@ -485,6 +507,8 @@ describe("GW-9 scoped artifact and result authority", () => {
       }),
       "invalid_input",
     );
-    expect(objectStore.keys()).toEqual([]);
+    // Invalid terminals never publish north-facing resources.  Durable chunks
+    // may remain quarantined for fenced cleanup/restart inspection.
+    expect(restartableStore.snapshot().records.filter((record) => record.namespace === "gateway_resource_v1")).toEqual([]);
   });
 });
