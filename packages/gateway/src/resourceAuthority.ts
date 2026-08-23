@@ -10,10 +10,7 @@ import {
 
 import type { AuthContext } from "./authContext.js";
 import type { GatewayJsonValue } from "./dispatch.js";
-import {
-  createEffectiveMcpRequestScopeV1,
-  type EffectiveMcpRequestScopeV1,
-} from "./invocationContext.js";
+import type { EffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import type { GatewayProtocolStore, ObjectStorePort } from "./store.js";
 
 const RESOURCE_NAMESPACE = "gateway_resource_v1";
@@ -213,6 +210,7 @@ export interface UploadArtifactInput {
 
 export interface IngestRbpArtifactCarrierInput {
   readonly scope: GatewayResourceScope;
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   /** Durable bridge session binding.  WP-11 is the only activation caller. */
   readonly rsid: string;
   readonly invocationId: string;
@@ -314,6 +312,7 @@ interface CarrierMemberRecord {
   readonly contentType: string;
   readonly digest: `sha256:${string}`;
   readonly byteSize: number;
+  readonly expectedChunkCount: number;
   readonly streamDigest: string;
   readonly storageKey: string;
   readonly state: CarrierMemberState;
@@ -482,15 +481,6 @@ function assertEffectiveScope(
   ) {
     fail("scope_denied", "resource authority scope does not match ingress scope");
   }
-}
-
-function createEffectiveScope(scope: GatewayResourceScope): EffectiveMcpRequestScopeV1 {
-  return createEffectiveMcpRequestScopeV1({
-    principalKey: scope.principalKey,
-    transportMcpSessionId: scope.mcpSessionId,
-    identityMcpSessionId: null,
-    nowMs: 0,
-  });
 }
 
 function decodeCarrierChunk(chunk: RbpStreamChunk): Uint8Array {
@@ -740,16 +730,17 @@ export class GatewayResourceAuthority {
     if (input.manifest.descriptors.some((item) => !safeFilename(item.filename))) {
       fail("invalid_input", "RBP artifact filename is not a safe leaf name");
     }
-    const effectiveMcpRequestScope = createEffectiveScope(input.scope);
-    const setId = await this.#setIdFor(input.scope, input.rsid, input.invocationId);
+    assertEffectiveScope(input.scope, input.effectiveMcpRequestScope);
+    const effectiveMcpRequestScope = input.effectiveMcpRequestScope;
+    const setId = await this.#setIdFor(input.scope, input.rsid, input.invocationId, input.expiresAtMs);
     // Receipt is independently durable.  A terminal can be replayed after a
     // restart, but never turns a receipt into a public ref by itself.
-    for (const chunk of input.chunks) {
+    for (const [sequence, chunk] of input.chunks.entries()) {
       const bytes = decodeCarrierChunk(chunk);
       await this.stageChunk({
         scope: input.scope, effectiveMcpRequestScope, setId, rsid: input.rsid,
         invocationId: input.invocationId, streamDigest: carrierStreamDigest(chunk.stream_id),
-        chunkIndex: chunk.chunk_index, sequence: chunk.chunk_index, bytes,
+        chunkIndex: chunk.chunk_index, sequence, bytes,
         digest: sha256(bytes), streamId: chunk.stream_id, contentType: chunk.content_type,
         artifactId: (chunk as RbpStreamChunk & { artifact_id?: string }).artifact_id ?? null,
         artifactIndex: (chunk as RbpStreamChunk & { artifact_index?: number }).artifact_index ?? null,
@@ -768,6 +759,9 @@ export class GatewayResourceAuthority {
     if (!Number.isSafeInteger(input.chunkIndex) || input.chunkIndex < 0 ||
         !Number.isSafeInteger(input.sequence) || input.sequence < 0 ||
         input.streamDigest !== carrierStreamDigest(input.streamId) ||
+        (input.streamId === "result"
+          ? input.artifactId !== null || input.artifactIndex !== null
+          : input.streamId !== `artifact:${input.artifactId ?? ""}` || input.artifactId === null || input.artifactIndex === null || !Number.isSafeInteger(input.artifactIndex) || input.artifactIndex < 0) ||
         input.bytes.byteLength > 1_048_576 || sha256(input.bytes) !== input.digest) {
       fail("protocol_fault", "carrier chunk identity is invalid");
     }
@@ -789,8 +783,26 @@ export class GatewayResourceAuthority {
     );
     if (!sets.ok) fail("storage_unavailable", sets.message);
     const refs: GatewayArtifactRef[] = [];
-    for (const set of sets.value) refs.push(...await this.#resumeCarrier(input.scope, input.effectiveMcpRequestScope, set.setId));
+    for (const set of sets.value) {
+      const terminal = await this.#protocolStore.transact({ tenantId: input.scope.tenantId }, (tx) => tx.read<GatewayJsonValue>(CARRIER_TERMINAL_NAMESPACE, carrierSetKey(set.setId)));
+      if (!terminal.ok) fail("storage_unavailable", terminal.message);
+      if (terminal.value === null) { await this.#cleanPrivateCarrierSet(input.scope, set.setId); continue; }
+      try {
+        refs.push(...await this.#resumeCarrier(input.scope, input.effectiveMcpRequestScope, set.setId));
+      } catch (error) {
+        if (set.state === "verified") throw error;
+        await this.#cleanPrivateCarrierSet(input.scope, set.setId);
+      }
+    }
     return Object.freeze(refs);
+  }
+
+  /** WP-11 may call this one bounded recovery surface after bridge restart. */
+  public async recoverAll(input: {
+    readonly scope: GatewayResourceScope;
+    readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
+  }): Promise<readonly GatewayArtifactRef[]> {
+    return this.recoverIncomplete(input);
   }
 
   public async boundResult(input: {
@@ -1034,12 +1046,50 @@ export class GatewayResourceAuthority {
     return Object.freeze({ scanned: listed.value.length, claimed, deleted, retained });
   }
 
-  async #setIdFor(scope: GatewayResourceScope, rsid: string, invocationId: string): Promise<string> {
-    const found = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) =>
-      tx.read<GatewayJsonValue>(CARRIER_IDENTITY_NAMESPACE, carrierIdentityKey(scope, rsid, invocationId)));
-    if (!found.ok) fail("storage_unavailable", found.message);
-    if (found.value !== null) return (found.value.value as unknown as CarrierIdentityRecord).setId;
-    return uuidV7(this.#now());
+  /** Used only for terminal-less/failed non-public recovery.  Objects are
+   * deleted before metadata; uncertainty leaves the private evidence intact. */
+  async #cleanPrivateCarrierSet(scope: GatewayResourceScope, setId: string): Promise<void> {
+    const inventory = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => ({
+      chunks: (await tx.list(CARRIER_CHUNK_NAMESPACE)).filter((row) => (row.value as unknown as CarrierChunkRecord).setId === setId),
+      members: (await tx.list(RESOURCE_SET_MEMBER_NAMESPACE)).filter((row) => (row.value as unknown as CarrierMemberRecord).setId === setId),
+    }));
+    if (!inventory.ok) fail("storage_unavailable", inventory.message);
+    for (const row of [...inventory.value.chunks, ...inventory.value.members]) {
+      const storageKey = (row.value as unknown as { storageKey: string }).storageKey;
+      const removed = await this.#objectStore.delete({ tenantId: scope.tenantId, storageKey });
+      if (!removed.ok) fail("storage_unavailable", "carrier private cleanup is uncertain");
+    }
+    const deleted = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      for (const namespace of [CARRIER_CHUNK_NAMESPACE, RESOURCE_SET_MEMBER_NAMESPACE, CARRIER_ACK_NAMESPACE, CARRIER_TERMINAL_NAMESPACE] as const) {
+        for (const row of await tx.list(namespace)) if ((row.value as { setId?: string }).setId === setId) tx.stage({ namespace, key: row.key, value: null, expect: { kind: "version", version: row.version } });
+      }
+      const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
+      if (set !== null) tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: set.key, value: null, expect: { kind: "version", version: set.version } });
+      for (const row of await tx.list(CARRIER_IDENTITY_NAMESPACE)) if ((row.value as unknown as CarrierIdentityRecord).setId === setId) tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: row.key, value: null, expect: { kind: "version", version: row.version } });
+      return true;
+    });
+    if (!deleted.ok || !deleted.value) fail("storage_unavailable", "carrier private cleanup was not accepted");
+  }
+
+  async #setIdFor(scope: GatewayResourceScope, rsid: string, invocationId: string, requestedExpiry: number | undefined): Promise<string> {
+    const identityKey = carrierIdentityKey(scope, rsid, invocationId);
+    const allocated = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
+      const existing = await tx.read<GatewayJsonValue>(CARRIER_IDENTITY_NAMESPACE, identityKey);
+      if (existing !== null) {
+        const identity = existing.value as unknown as CarrierIdentityRecord;
+        if (identity.rsid !== rsid || identity.invocationId !== invocationId || identity.tenantId !== scope.tenantId || identity.principalKey !== scope.principalKey || identity.effectiveMcpSessionId !== scope.mcpSessionId) return false;
+        const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(identity.setId));
+        return set === null ? false : identity.setId;
+      }
+      const setId = uuidV7(this.#now());
+      const identity: CarrierIdentityRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId };
+      const set: CarrierSetRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(requestedExpiry) };
+      tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: identityKey, value: identity as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: set as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      return setId;
+    });
+    if (!allocated.ok || allocated.value === false) fail("protocol_fault", "carrier identity allocation conflicts with durable state");
+    return allocated.value;
   }
 
   async #persistCarrierChunk(input: StageCarrierChunkInput): Promise<void> {
@@ -1050,7 +1100,7 @@ export class GatewayResourceAuthority {
     const staged = await this.#protocolStore.transact({ tenantId: scope.tenantId }, async (tx) => {
       const identityRow = await tx.read<GatewayJsonValue>(CARRIER_IDENTITY_NAMESPACE, carrierIdentityKey(scope, rsid, invocationId));
       if (identityRow === null) tx.stage({ namespace: CARRIER_IDENTITY_NAMESPACE, key: carrierIdentityKey(scope, rsid, invocationId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
-      else if ((identityRow.value as unknown as CarrierIdentityRecord).setId !== setId) return false;
+      else { const currentIdentity = identityRow.value as unknown as CarrierIdentityRecord; if (currentIdentity.setId !== setId || currentIdentity.rsid !== rsid || currentIdentity.invocationId !== invocationId || currentIdentity.tenantId !== scope.tenantId || currentIdentity.principalKey !== scope.principalKey || currentIdentity.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
       const set = await tx.read<GatewayJsonValue>(RESOURCE_SET_NAMESPACE, carrierSetKey(setId));
       if (set === null) tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: carrierSetKey(setId), value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "declared", expiresAtMs: this.#expiry(input.expiresAtMs) } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       else { const current = set.value as unknown as CarrierSetRecord; if (current.rsid !== rsid || current.invocationId !== invocationId || current.tenantId !== scope.tenantId || current.principalKey !== scope.principalKey || current.effectiveMcpSessionId !== scope.mcpSessionId || current.state === "cleanup_pending") return false; }
@@ -1066,8 +1116,8 @@ export class GatewayResourceAuthority {
       const chunk = current.value as unknown as CarrierChunkRecord;
       if (chunk.state !== "durable") tx.stage({ namespace: CARRIER_CHUNK_NAMESPACE, key, value: { ...chunk, state: "durable" } as unknown as GatewayJsonValue, expect: { kind: "version", version: current.version } });
       const ackKey = carrierAckKey(scope, rsid, String(input.sequence)); const ack = await tx.read(CARRIER_ACK_NAMESPACE, ackKey);
-      if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, seq: input.sequence, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "chunk_durable" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
-      else { const value = ack.value as { setId?: string; invocationId?: string; state?: string }; if (value.setId !== setId || value.invocationId !== invocationId || value.state !== "chunk_durable") return false; }
+      if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid, invocationId, seq: input.sequence, chunkIdentity: identity, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "chunk_durable" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      else { const value = ack.value as { setId?: string; invocationId?: string; chunkIdentity?: string; state?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string }; if (value.setId !== setId || value.invocationId !== invocationId || value.chunkIdentity !== identity || value.state !== "chunk_durable" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId) return false; }
       return true;
     });
     if (!durable.ok || !durable.value) fail("storage_unavailable", "carrier chunk durability acknowledgement was not accepted");
@@ -1108,7 +1158,7 @@ export class GatewayResourceAuthority {
       for (const [memberIndex, descriptor] of manifest.descriptors.entries()) {
         if (!safeFilename(descriptor.filename) || !(GW9_ALLOWED_OUTPUT_CONTENT_TYPES as readonly string[]).includes(descriptor.content_type) || descriptor.artifact_index !== memberIndex) return false;
         const refId = this.#validatedRefId();
-        const member: CarrierMemberRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId: set.setId, memberIndex, rsid: set.rsid, invocationId: set.invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, refId, filename: descriptor.filename, contentType: descriptor.content_type, digest: descriptor.sha256 as `sha256:${string}`, byteSize: descriptor.total_size, streamDigest: carrierStreamDigest(descriptor.stream_id), storageKey: storageKey(scope, "artifact_ref", refId, descriptor.sha256 as `sha256:${string}`), state: "intent" };
+        const member: CarrierMemberRecord = { schemaVersion: "revagent-gateway-carrier/v1", setId: set.setId, memberIndex, rsid: set.rsid, invocationId: set.invocationId, tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, refId, filename: descriptor.filename, contentType: descriptor.content_type, digest: descriptor.sha256 as `sha256:${string}`, byteSize: descriptor.total_size, expectedChunkCount: descriptor.total_chunks, streamDigest: carrierStreamDigest(descriptor.stream_id), storageKey: storageKey(scope, "artifact_ref", refId, descriptor.sha256 as `sha256:${string}`), state: "intent" };
         tx.stage({ namespace: RESOURCE_SET_MEMBER_NAMESPACE, key: carrierMemberKey(set.setId, memberIndex), value: member as unknown as GatewayJsonValue, expect: { kind: "absent" } });
       }
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: row.key, value: { ...current, state: "assembling" } as unknown as GatewayJsonValue, expect: { kind: "version", version: row.version } }); return true;
@@ -1125,11 +1175,16 @@ export class GatewayResourceAuthority {
     if (!durable.ok) fail("storage_unavailable", durable.message);
     let assembler = createStreamAssembler((durable.value[0] as CarrierChunkRecord | undefined)?.invocationId ?? "missing", { maxInvocationBytes: this.#maxResultBytes });
     const byStream = [...durable.value].sort((a, b) => a.streamId.localeCompare(b.streamId) || a.chunkIndex - b.chunkIndex);
+    const sequences = new Set<number>();
     for (const chunk of byStream) {
-      if (chunk.state !== "durable") fail("incomplete", "carrier contains a non-durable chunk");
+      if (chunk.state !== "durable" || !SHA256_PATTERN.test(chunk.digest) || sequences.has(chunk.sequence)) fail("incomplete", "carrier contains an invalid durable receipt");
+      sequences.add(chunk.sequence);
       const object = await this.#objectStore.get({ tenantId: scope.tenantId, storageKey: chunk.storageKey });
       if (!object.ok || object.value.bytes.byteLength !== chunk.byteSize || sha256(object.value.bytes) !== chunk.digest) fail("storage_unavailable", "carrier chunk object is missing or corrupt");
-      const rebuilt: RbpStreamChunk = { kind: "chunk", invocation_id: chunk.invocationId, stream_id: chunk.streamId, chunk_index: chunk.chunkIndex, encoding: "base64", content_type: chunk.contentType, data: Buffer.from(object.value.bytes).toString("base64"), ...(chunk.artifactId === null ? {} : { artifact_id: chunk.artifactId, artifact_index: chunk.artifactIndex! }) };
+      const common = { kind: "chunk" as const, invocation_id: chunk.invocationId, chunk_index: chunk.chunkIndex, encoding: "base64" as const, content_type: chunk.contentType, data: Buffer.from(object.value.bytes).toString("base64") };
+      const rebuilt: RbpStreamChunk = chunk.artifactId === null
+        ? { ...common, stream_id: "result" }
+        : { ...common, stream_id: `artifact:${chunk.artifactId}`, artifact_id: chunk.artifactId, artifact_index: chunk.artifactIndex! };
       const appended = appendStreamChunk(assembler, rebuilt); assembler = appended.state;
       if (appended.kind === "gap") fail("incomplete", "carrier durable chunks are not contiguous");
       if (appended.kind === "oversize") fail("oversize", "carrier durable chunks exceed limits");
@@ -1142,7 +1197,7 @@ export class GatewayResourceAuthority {
       for (const [index, stream] of finalized.streams.entries()) {
         const memberRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_MEMBER_NAMESPACE, carrierMemberKey(setId, index)); if (memberRow === null) return null;
         const member = memberRow.value as unknown as CarrierMemberRecord;
-        if (member.state !== "intent" || member.digest !== stream.sha256 || member.byteSize !== stream.bytes.byteLength || member.contentType !== stream.contentType) return null;
+        if (member.state !== "intent" || member.digest !== stream.sha256 || member.byteSize !== stream.bytes.byteLength || member.expectedChunkCount !== stream.totalChunks || member.contentType !== stream.contentType) return null;
         rows.push(member);
       }
       return rows;
@@ -1163,7 +1218,7 @@ export class GatewayResourceAuthority {
       for (const [index, stream] of finalized.streams.entries()) {
         const memberRow = await tx.read<GatewayJsonValue>(RESOURCE_SET_MEMBER_NAMESPACE, carrierMemberKey(setId, index)); if (memberRow === null) return false;
         const member = memberRow.value as unknown as CarrierMemberRecord;
-        if (member.state !== "intent" || member.digest !== stream.sha256 || member.byteSize !== stream.bytes.byteLength || member.contentType !== stream.contentType) return false;
+        if (member.state !== "intent" || member.digest !== stream.sha256 || member.byteSize !== stream.bytes.byteLength || member.expectedChunkCount !== stream.totalChunks || member.contentType !== stream.contentType) return false;
         tx.stage({ namespace: RESOURCE_SET_MEMBER_NAMESPACE, key: memberRow.key, value: { ...member, state: "verified" } as unknown as GatewayJsonValue, expect: { kind: "version", version: memberRow.version } });
       }
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "verified" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } }); return true;
@@ -1186,6 +1241,7 @@ export class GatewayResourceAuthority {
       }
       const ackKey = carrierAckKey(scope, set.rsid, "terminal"); const ack = await tx.read(CARRIER_ACK_NAMESPACE, ackKey);
       if (ack === null) tx.stage({ namespace: CARRIER_ACK_NAMESPACE, key: ackKey, value: { schemaVersion: "revagent-gateway-carrier/v1", setId, rsid: set.rsid, invocationId: set.invocationId, seq: "terminal", tenantId: scope.tenantId, principalKey: scope.principalKey, effectiveMcpSessionId: scope.mcpSessionId, state: "terminal_accepted" } as unknown as GatewayJsonValue, expect: { kind: "absent" } });
+      else { const value = ack.value as { setId?: string; rsid?: string; invocationId?: string; seq?: string; tenantId?: string; principalKey?: string; effectiveMcpSessionId?: string; state?: string }; if (value.setId !== setId || value.rsid !== set.rsid || value.invocationId !== set.invocationId || value.seq !== "terminal" || value.tenantId !== scope.tenantId || value.principalKey !== scope.principalKey || value.effectiveMcpSessionId !== scope.mcpSessionId || value.state !== "terminal_accepted") return false; }
       tx.stage({ namespace: RESOURCE_SET_NAMESPACE, key: setRow.key, value: { ...set, state: "active" } as unknown as GatewayJsonValue, expect: { kind: "version", version: setRow.version } });
       return members.map(({ member }) => this.#carrierRef(scope, member, set.expiresAtMs));
     });

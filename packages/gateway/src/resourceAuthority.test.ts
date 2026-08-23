@@ -385,6 +385,7 @@ describe("GW-9 scoped artifact and result authority", () => {
 
     const refs = await authority.ingestRbpArtifactCarrier({
       scope,
+      effectiveMcpRequestScope,
       rsid: "rsid-resource-a",
       invocationId,
       chunks: [
@@ -436,6 +437,18 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expect(
       restartedAuthority.readResource(scope, effectiveMcpRequestScope, new URL(refs[1]!.uri)),
     ).resolves.toMatchObject({ contentType: "image/png" });
+    now = refs[0]!.expiresAtMs;
+    await expect(authority.collectExpired({ tenantId: scope.tenantId })).resolves.toMatchObject({
+      scanned: 3,
+      claimed: 3,
+      deleted: 3,
+      retained: 0,
+    });
+    expect(objectStore.keys()).toEqual([]);
+    expect(restartableStore.snapshot().records.filter((row) => [
+      "gateway_resource_v1", "gateway.resource-set/v1", "gateway.carrier-chunk/v1",
+      "gateway.resource-set-member/v1", "gateway.carrier-ack/v1", "gateway.carrier-identity/v1",
+    ].includes(row.namespace))).toEqual([]);
   });
 
   it("binds direct durable receipt to the effective scope and rejects a conflicting replay", async () => {
@@ -465,6 +478,9 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(authority.stageChunk({ ...staged, bytes: new Uint8Array([9]), digest: sha256(new Uint8Array([9])) }), "protocol_fault");
     await expectResourceError(authority.stageChunk({ ...staged, effectiveMcpRequestScope: effectiveScopeFor({ ...scope, mcpSessionId: "other" }) }), "scope_denied");
     expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    await expect(authority.recoverAll({ scope, effectiveMcpRequestScope })).resolves.toEqual([]);
+    expect(objectStore.keys()).toEqual([]);
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace.startsWith("gateway.carrier") || row.namespace === "gateway.resource-set/v1")).toEqual([]);
   });
 
   it("rejects stream collision, missing sibling, and digest mismatch without publishing refs", async () => {
@@ -482,6 +498,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        effectiveMcpRequestScope,
         rsid: "rsid-resource-a",
         invocationId,
         chunks: [artifactChunk(artifactA, 0, bytesA)],
@@ -492,6 +509,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        effectiveMcpRequestScope,
         rsid: "rsid-resource-a",
         invocationId,
         chunks: [
@@ -505,6 +523,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        effectiveMcpRequestScope,
         rsid: "rsid-resource-a",
         invocationId,
         chunks: [
@@ -525,6 +544,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expectResourceError(
       authority.ingestRbpArtifactCarrier({
         scope,
+        effectiveMcpRequestScope,
         rsid: "rsid-resource-a",
         invocationId,
         chunks: [
