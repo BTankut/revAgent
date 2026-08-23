@@ -235,6 +235,51 @@ public sealed class RbpArtifactCarrierProducerTests
     }
 
     [Fact]
+    public void RefusesSameLengthLeafTamperByExpectedDigest()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using var spool = RbpArtifactSpoolFileSystem.OpenForStateRoot(directory.Path);
+        string carrierKey = new string('a', 64);
+        const string name = "same-length.bin";
+        byte[] original = [1, 2, 3, 4];
+        spool.EnsureCarrier(carrierKey);
+        spool.WriteImmutable(carrierKey, name, original, Digest(original));
+
+        File.WriteAllBytes(Path.Combine(directory.Path, "artifact-spool", carrierKey, name),
+            new byte[] { 4, 3, 2, 1 });
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(() =>
+            spool.ReadAllPinned(carrierKey, name, RbpArtifactCarrierProducer.MaximumCombinedBytes,
+                Digest(original)));
+        Assert.Equal("carrier_spool_digest_refused", error.Message);
+        Assert.DoesNotContain(directory.Path, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void RefusesBadDigestWithoutAcceptingPartialLeaf()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        using var spool = RbpArtifactSpoolFileSystem.OpenForStateRoot(directory.Path);
+        string carrierKey = new string('b', 64);
+        const string name = "immutable.bin";
+        spool.EnsureCarrier(carrierKey);
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(() =>
+            spool.WriteImmutable(carrierKey, name, new byte[] { 9, 8, 7 },
+                "sha256:0000000000000000000000000000000000000000000000000000000000000000"));
+        Assert.Equal("carrier_spool_verification_refused", error.Message);
+        Assert.False(File.Exists(Path.Combine(directory.Path, "artifact-spool", carrierKey, name)));
+        Assert.DoesNotContain(directory.Path, error.Message, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void LeafOperationSharePolicyDeniesConcurrentWriterAndDelete()
+    {
+        // The leaf option is passed for create, read, and cleanup opens; only
+        // FILE_SHARE_READ remains, so same-length write/delete replacement is
+        // denied for the entire pinned-handle operation lifetime.
+        Assert.Equal(1u, WindowsRelativeSpoolNative.LeafShare);
+    }
+
+    [Fact]
     public async Task UsesOnlyDeclaredRelativeInventoryForReleasedCleanup()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -499,18 +544,23 @@ public sealed class RbpArtifactCarrierProducerTests
             files.Add(fileName, bytes.ToArray());
         }
 
-        public byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes)
+        public byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+            string? expectedDigest = null)
         {
             RelativeSegments.Add(carrierKey); RelativeSegments.Add(fileName);
             if (!_carriers.TryGetValue(carrierKey, out Dictionary<string, byte[]>? files) ||
                 !files.TryGetValue(fileName, out byte[]? bytes) || bytes.Length > maximumBytes)
                 throw new RbpArtifactCarrierException("carrier_spool_read_refused");
-            return bytes.ToArray();
+            byte[] result = bytes.ToArray();
+            if (expectedDigest is not null && !string.Equals(Digest(result), expectedDigest, StringComparison.Ordinal))
+                throw new RbpArtifactCarrierException("carrier_spool_digest_refused");
+            return result;
         }
 
-        public bool TryReadAllPinned(string carrierKey, string fileName, int maximumBytes, out byte[]? bytes)
+        public bool TryReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+            out byte[]? bytes, string? expectedDigest = null)
         {
-            try { bytes = ReadAllPinned(carrierKey, fileName, maximumBytes); return true; }
+            try { bytes = ReadAllPinned(carrierKey, fileName, maximumBytes, expectedDigest); return true; }
             catch (RbpArtifactCarrierException) { bytes = null; return false; }
         }
 

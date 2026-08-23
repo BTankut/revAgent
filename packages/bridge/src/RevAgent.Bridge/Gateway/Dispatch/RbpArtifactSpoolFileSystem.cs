@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using Microsoft.Win32.SafeHandles;
 
 namespace RevAgent.Bridge.Gateway.Dispatch;
@@ -10,8 +11,10 @@ internal interface IRelativeSpoolNative : IDisposable
 {
     void EnsureCarrier(string carrierKey);
     void WriteImmutable(string carrierKey, string fileName, ReadOnlySpan<byte> bytes, string digest);
-    byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes);
-    bool TryReadAllPinned(string carrierKey, string fileName, int maximumBytes, out byte[]? bytes);
+    byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+        string? expectedDigest = null);
+    bool TryReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+        out byte[]? bytes, string? expectedDigest = null);
     void DeleteCarrier(string carrierKey, IReadOnlyList<string> declaredFileNames);
 }
 
@@ -37,8 +40,10 @@ internal sealed class RbpArtifactSpoolFileSystem : IDisposable
         new(native ?? throw new ArgumentNullException(nameof(native)));
     internal void EnsureCarrier(string key) => _native.EnsureCarrier(key);
     internal void WriteImmutable(string key, string name, ReadOnlySpan<byte> bytes, string digest) => _native.WriteImmutable(key, name, bytes, digest);
-    internal byte[] ReadAllPinned(string key, string name, int maximumBytes) => _native.ReadAllPinned(key, name, maximumBytes);
-    internal bool TryReadAllPinned(string key, string name, int maximumBytes, out byte[]? bytes) => _native.TryReadAllPinned(key, name, maximumBytes, out bytes);
+    internal byte[] ReadAllPinned(string key, string name, int maximumBytes,
+        string? expectedDigest = null) => _native.ReadAllPinned(key, name, maximumBytes, expectedDigest);
+    internal bool TryReadAllPinned(string key, string name, int maximumBytes,
+        out byte[]? bytes, string? expectedDigest = null) => _native.TryReadAllPinned(key, name, maximumBytes, out bytes, expectedDigest);
     internal void DeleteCarrier(string key, IReadOnlyList<string> inventory) => _native.DeleteCarrier(key, inventory);
     public void Dispose() => _native.Dispose();
     private static RbpArtifactCarrierException Refused(string code) => new(code);
@@ -74,10 +79,17 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
         try
         {
             using SafeFileHandle carrier = OpenCarrier(carrierKey);
-            using SafeFileHandle file = OpenRelative(carrier, fileName, GenericRead | GenericWrite | DeleteAccess | ReadControl | FileReadAttributes, FileCreate, FileOptions);
+            using SafeFileHandle file = OpenRelative(carrier, fileName, GenericRead | GenericWrite | DeleteAccess | ReadControl | FileReadAttributes, FileCreate, FileOptions, LeafShare);
             VerifyFile(file, RbpArtifactCarrierProducer.MaximumCombinedBytes);
-            using var stream = new FileStream(file, FileAccess.Write, 16 * 1024, isAsync: false);
+            using var stream = new FileStream(file, FileAccess.ReadWrite, 16 * 1024, isAsync: false);
             stream.Write(bytes); stream.Flush(flushToDisk: true);
+            stream.Position = 0;
+            string observedDigest = "sha256:" + Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+            if (!string.Equals(observedDigest, digest, StringComparison.Ordinal))
+            {
+                SetDeleteDisposition(stream.SafeFileHandle);
+                throw Refused("carrier_spool_verification_refused");
+            }
             VerifyFile(stream.SafeFileHandle, RbpArtifactCarrierProducer.MaximumCombinedBytes, bytes.Length);
         }
         catch (IOException)
@@ -88,28 +100,31 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
         catch { throw Refused("carrier_spool_write_refused"); }
     }
 
-    public byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes)
+    public byte[] ReadAllPinned(string carrierKey, string fileName, int maximumBytes,
+        string? expectedDigest = null)
     {
         ValidateSegment(carrierKey); ValidateSegment(fileName);
         try
         {
             using SafeFileHandle carrier = OpenCarrier(carrierKey);
-            using SafeFileHandle file = OpenRelative(carrier, fileName, GenericRead | ReadControl | FileReadAttributes, FileOpen, FileOptions);
+            using SafeFileHandle file = OpenRelative(carrier, fileName, GenericRead | ReadControl | FileReadAttributes, FileOpen, FileOptions, LeafShare);
             FileState before = VerifyFile(file, maximumBytes);
             using var stream = new FileStream(file, FileAccess.Read, 16 * 1024, isAsync: false);
             byte[] bytes = new byte[checked((int)before.Length)];
             int offset = 0;
             while (offset < bytes.Length) { int read = stream.Read(bytes, offset, bytes.Length - offset); if (read == 0) throw Refused("carrier_spool_read_refused"); offset += read; }
             if (!before.Equals(VerifyFile(stream.SafeFileHandle, maximumBytes))) throw Refused("carrier_spool_changed_refused");
+            if (expectedDigest is not null && !string.Equals(RbpArtifactCarrierProducer.Digest(bytes), expectedDigest, StringComparison.Ordinal)) throw Refused("carrier_spool_digest_refused");
             return bytes;
         }
         catch (RbpArtifactCarrierException) { throw; }
         catch { throw Refused("carrier_spool_read_refused"); }
     }
 
-    public bool TryReadAllPinned(string key, string name, int maximumBytes, out byte[]? bytes)
+    public bool TryReadAllPinned(string key, string name, int maximumBytes,
+        out byte[]? bytes, string? expectedDigest = null)
     {
-        try { bytes = ReadAllPinned(key, name, maximumBytes); return true; }
+        try { bytes = ReadAllPinned(key, name, maximumBytes, expectedDigest); return true; }
         catch (RbpArtifactCarrierException) { bytes = null; return false; }
     }
 
@@ -123,7 +138,7 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
             foreach (string name in declaredFileNames)
             {
                 ValidateSegment(name);
-                using SafeFileHandle file = OpenRelative(carrier, name, DeleteAccess | ReadControl | FileReadAttributes, FileOpen, FileOptions);
+                using SafeFileHandle file = OpenRelative(carrier, name, DeleteAccess | ReadControl | FileReadAttributes, FileOpen, FileOptions, LeafShare);
                 _ = VerifyFile(file, RbpArtifactCarrierProducer.MaximumCombinedBytes);
                 SetDeleteDisposition(file);
             }
@@ -246,13 +261,15 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
     private SafeFileHandle OpenCarrier(string key) { SafeFileHandle carrier = OpenRelative(_root, key, ReadControl | FileReadAttributes | DeleteAccess, FileOpen, DirectoryOptions); VerifyDirectory(carrier); return carrier; }
     private void VerifyImmutableExisting(string key, string name, ReadOnlySpan<byte> expected, string digest)
     {
-        byte[] actual = ReadAllPinned(key, name, RbpArtifactCarrierProducer.MaximumCombinedBytes);
+        byte[] actual = ReadAllPinned(key, name, RbpArtifactCarrierProducer.MaximumCombinedBytes, digest);
         if (!string.Equals(RbpArtifactCarrierProducer.Digest(actual), digest, StringComparison.Ordinal) || !System.Security.Cryptography.CryptographicOperations.FixedTimeEquals(actual, expected)) throw Refused("carrier_spool_conflict_refused");
     }
 
     private static uint DirectoryOptions => FileDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint;
     private static uint FileOptions => FileNonDirectoryFile | FileSynchronousIoNonAlert | FileOpenReparsePoint;
-    private static SafeFileHandle OpenRelative(SafeFileHandle root, string name, uint access, uint disposition, uint options)
+    private const uint DirectoryShare = FileShareRead | FileShareWrite | FileShareDelete;
+    internal const uint LeafShare = FileShareRead;
+    private static SafeFileHandle OpenRelative(SafeFileHandle root, string name, uint access, uint disposition, uint options, uint share = DirectoryShare)
     {
         ValidateSegment(name); IntPtr value = IntPtr.Zero, unicodeMemory = IntPtr.Zero;
         try
@@ -261,7 +278,7 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
             var unicode = new UnicodeString { Length = checked((ushort)(name.Length * 2)), MaximumLength = checked((ushort)((name.Length + 1) * 2)), Buffer = value };
             unicodeMemory = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>()); Marshal.StructureToPtr(unicode, unicodeMemory, false);
             var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(), RootDirectory = root.DangerousGetHandle(), ObjectName = unicodeMemory, Attributes = ObjCaseInsensitive };
-            long allocation = 0; int status = NtCreateFile(out SafeFileHandle handle, access | Synchronize, ref attributes, out _, ref allocation, 0x80, FileShareRead | FileShareWrite | FileShareDelete, disposition, options, IntPtr.Zero, 0);
+            long allocation = 0; int status = NtCreateFile(out SafeFileHandle handle, access | Synchronize, ref attributes, out _, ref allocation, 0x80, share, disposition, options, IntPtr.Zero, 0);
             if (status < 0 || handle.IsInvalid) { handle?.Dispose(); throw new IOException("spool relative open failed", new Win32Exception(status)); }
             return handle;
         }
