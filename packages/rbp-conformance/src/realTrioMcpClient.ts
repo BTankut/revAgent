@@ -69,6 +69,12 @@ function jsonRpcErrorCode(value: unknown): number | null {
   } catch { return null; }
 }
 
+function responseSessionId(value: string | string[] | undefined): string | null {
+  if (value === undefined) return null;
+  if (typeof value !== "string") throw new Error("real trio MCP response has an invalid mcp-session-id header");
+  return value;
+}
+
 /**
  * A strict Streamable HTTP MCP client for the real-trio carrier. Session
  * identity is exclusively Gateway-issued during initialize; callers cannot
@@ -243,8 +249,8 @@ async function rawRequest(input: {
             requestSha256: sha256(payload), responseSha256: sha256(bytes), methodSha256: sha256(Buffer.from(input.method, "utf8")),
             requestBytes: payload.byteLength, responseBytes: bytes.byteLength, statusCode: response.statusCode ?? 0,
             jsonRpcErrorCode: jsonRpcErrorCode(responseValue), mcpSessionHeaderPresent: input.sessionId !== null });
-          const header = response.headers["mcp-session-id"];
-          resolve(Object.freeze({ response: responseValue, evidence, sessionId: typeof header === "string" ? header : null }));
+          resolve(Object.freeze({ response: responseValue, evidence,
+            sessionId: responseSessionId(response.headers["mcp-session-id"]) }));
         } catch (error) { reject(error instanceof Error ? error : new Error(String(error))); }
       });
     });
