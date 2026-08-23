@@ -499,6 +499,77 @@ public sealed partial class RbpConnectionCoordinatorTests
     }
 
     [Fact]
+    public async Task WorkerCatalogDoesNotRetainWithdrawnSessionCapability()
+    {
+        bool batchAdvertised = true;
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            if (batchAdvertised)
+            {
+                result["sessionCapabilities"] = new JArray("batch_atomic");
+                ((JObject)result["capabilityContracts"]!).Remove(
+                    "doc_context_cached_v1");
+                return;
+            }
+
+            result["sessionCapabilities"] = new JArray();
+            result["capabilityContracts"] = new JObject();
+        });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot granted = Assert.Single(
+            await catalog.ReadAsync());
+        Assert.Equal(
+            new[] { "batch_atomic" },
+            granted.RegistrationPayload
+                .GetProperty("session_capabilities")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+
+        batchAdvertised = false;
+        RbpLocalSessionSnapshot withdrawn = Assert.Single(
+            await catalog.ReadAsync());
+        Assert.Empty(
+            withdrawn.RegistrationPayload
+                .GetProperty("session_capabilities")
+                .EnumerateArray());
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRevocationRemovesTheBoundRoute()
+    {
+        bool listenerAvailable = true;
+        var transport = new ScriptedStatusTransport(
+            isAvailable: () => listenerAvailable);
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot active = Assert.Single(
+            await catalog.ReadAsync());
+        catalog.Bind("rs-revoked", active.LocalSessionKey);
+        Assert.NotNull(catalog.Resolve("rs-revoked"));
+
+        listenerAvailable = false;
+        Assert.Empty(await catalog.ReadAsync());
+        Assert.Null(catalog.Resolve("rs-revoked"));
+    }
+
+    [Fact]
     public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
     {
         string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
@@ -572,10 +643,14 @@ public sealed partial class RbpConnectionCoordinatorTests
     private sealed class ScriptedStatusTransport : IAddinTransport
     {
         private readonly Action<JObject>? _configure;
+        private readonly Func<bool> _isAvailable;
 
-        internal ScriptedStatusTransport(Action<JObject>? configure = null)
+        internal ScriptedStatusTransport(
+            Action<JObject>? configure = null,
+            Func<bool>? isAvailable = null)
         {
             _configure = configure;
+            _isAvailable = isAvailable ?? (() => true);
         }
 
         public Task<AddinCallResult> InvokeAsync(
@@ -588,7 +663,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             _ = processAttestor;
             preDispatchCancellationToken.ThrowIfCancellationRequested();
             transportShutdownToken.ThrowIfCancellationRequested();
-            if (endpoint.Port != 8080)
+            if (endpoint.Port != 8080 || !_isAvailable())
             {
                 return Task.FromException<AddinCallResult>(
                     new AddinTransportException(
