@@ -10,12 +10,32 @@ import {
   createRealTrioDocumentContextFailure,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
+  realTrioWorkerBuildPlan,
   realTrioFixtureDocumentContextEvent,
   writeRealTrioDocumentContextFailure,
   writeRealTrioRuntimeFailure,
 } from "./realTrioRuntimeFixture.js";
 
 describe("WP-12 real-trio fixture document route gate", () => {
+  it("restores the real C# carrier from its committed lock before isolated build and publish", () => {
+    const plan = realTrioWorkerBuildPlan("C:/temp/wp12-real-trio");
+    const output = path.join("C:/temp/wp12-real-trio", "publish");
+    expect(plan.restore).toEqual(expect.arrayContaining([
+      "restore",
+      "--locked-mode",
+      "--runtime", "win-x64",
+      "--artifacts-path", "C:/temp/wp12-real-trio",
+    ]));
+    expect(plan.build).toEqual(expect.arrayContaining([
+      "build", "--no-restore", "--artifacts-path", "C:/temp/wp12-real-trio",
+    ]));
+    expect(plan.publish).toEqual(expect.arrayContaining([
+      "publish", "--no-restore", "--artifacts-path", "C:/temp/wp12-real-trio",
+      "--output", output,
+    ]));
+    expect(plan.worker).toBe(path.join(output, "RevAgent.Bridge.RealWorkerHost.exe"));
+  });
+
   it("uses the exact attested fixture document identity", () => {
     expect(realTrioFixtureDocumentContextEvent()).toMatchObject({
       activeDocumentId: REAL_TRIO_FIXTURE_DOCUMENT_ID,

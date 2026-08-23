@@ -10,7 +10,6 @@ import {
   type RealTrioNorthCredential,
 } from "../src/realTrioCaseDriver.js";
 import {
-  hasOrderedDocumentContextStages,
   publicGatewayControl,
   startRealTrioSupervisor,
   type RealTrioBinding,
@@ -40,18 +39,64 @@ function run(executable: string, args: readonly string[]): void {
  * itself.  It must never borrow the old simulator production plan or a
  * sibling worktree's compiled output.
  */
+export function realTrioWorkerBuildPlan(artifactsPath: string): Readonly<{
+  readonly restore: readonly string[];
+  readonly build: readonly string[];
+  readonly publish: readonly string[];
+  readonly worker: string;
+}> {
+  const project = "packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj";
+  const output = path.join(artifactsPath, "publish");
+  return Object.freeze({
+    restore: Object.freeze([
+      "restore",
+      project,
+      "--locked-mode",
+      "--runtime", "win-x64",
+      "--artifacts-path", artifactsPath,
+    ]),
+    build: Object.freeze([
+      "build",
+      project,
+      "--configuration", "Release",
+      "--runtime", "win-x64",
+      "--no-restore",
+      "--artifacts-path", artifactsPath,
+    ]),
+    publish: Object.freeze([
+      "publish",
+      project,
+      "--configuration", "Release",
+      "--runtime", "win-x64",
+      "--self-contained", "false",
+      "-p:UseAppHost=true",
+      "--no-restore",
+      "--artifacts-path", artifactsPath,
+      "--output", output,
+    ]),
+    worker: path.join(output, "RevAgent.Bridge.RealWorkerHost.exe"),
+  });
+}
+
 export function buildRealTrioRuntimeFixture(): void {
+  const artifactsPath = mkdtempSync(path.join(tmpdir(), "revagent-wp12-real-trio-build-"));
   run(node24, [npmCli, "run", "build", "--workspace", "@revagent/protocol"]);
   run(node24, [npmCli, "run", "build", "--workspace", "@revagent/addin-loopback-fixture"]);
   run(node24, [npmCli, "run", "build", "--workspace", "@revagent/gateway"]);
-  run(dotnet, [
-    "publish",
-    "packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj",
-    "--configuration", "Release",
-    "--runtime", "win-x64",
-    "--self-contained", "false",
-    "-p:UseAppHost=true",
-  ]);
+  const plan = realTrioWorkerBuildPlan(artifactsPath);
+  run(dotnet, plan.restore);
+  run(dotnet, plan.build);
+  run(dotnet, plan.publish);
+  realTrioRuntimeWorker = plan.worker;
+}
+
+let realTrioRuntimeWorker: string | undefined;
+
+function requiredRealTrioWorker(): string {
+  if (realTrioRuntimeWorker === undefined) {
+    throw new Error("real trio runtime fixture must be built before it is started");
+  }
+  return realTrioRuntimeWorker;
 }
 
 function requiredFile(relative: string): string {
@@ -354,25 +399,6 @@ export function probeRealTrioFixtureDocumentContext(
   });
 }
 
-async function waitForOrderedDocumentContextStages(input: {
-  readonly supervisor: RealTrioSupervisorResult;
-  readonly timeoutMs?: number;
-}): Promise<void> {
-  const deadline = Date.now() + (input.timeoutMs ?? DOCUMENT_CONTEXT_WATCHER_TIMEOUT_MS);
-  for (;;) {
-    if (input.supervisor.readDocumentContextFailureState().childExited) {
-      throw new Error("real trio child exited before document-context acknowledgement");
-    }
-    if (hasOrderedDocumentContextStages(
-      input.supervisor.readDocumentContextDiagnostics(),
-    )) return;
-    if (Date.now() >= deadline) {
-      throw new Error("real trio document-context stages were not ordered through acknowledgement");
-    }
-    await new Promise<void>((resolve) => setTimeout(resolve, 100));
-  }
-}
-
 /** The route proof must not wait for, or infer, the later heartbeat ACK. */
 function hasDocumentContextSend(
   records: readonly { readonly line: string }[],
@@ -557,7 +583,7 @@ export async function startRealTrioRuntimeFixture(
   const controlToken = `wp12-${path.basename(root)}`;
   const gatewayCli = requiredFile("packages/gateway/dist/productionConformanceHostCli.js");
   const fixtureCli = requiredFile("packages/addin-loopback-fixture/dist/cli.js");
-  const worker = requiredFile("packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/bin/Release/net9.0/win-x64/publish/RevAgent.Bridge.RealWorkerHost.exe");
+  const worker = requiredRealTrioWorker();
   const supervisor = await startRealTrioSupervisor({
     evidenceDirectory: options.evidenceDirectory,
     gateway: {

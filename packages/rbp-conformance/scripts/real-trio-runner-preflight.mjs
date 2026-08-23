@@ -1,6 +1,7 @@
 import { execFileSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -120,20 +121,44 @@ function buildRealTrioArtifacts(repoRoot) {
   for (const workspace of ["@revagent/protocol", "@revagent/addin-loopback-fixture", "@revagent/gateway"]) {
     run(process.execPath, [npmCli, "run", "build", "--workspace", workspace]);
   }
+  const artifactsPath = mkdtempSync(path.join(tmpdir(), "revagent-wp12-real-trio-preflight-"));
+  const project = "packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj";
+  run(dotnet, [
+    "restore",
+    project,
+    "--locked-mode",
+    "--runtime", "win-x64",
+    "--artifacts-path", artifactsPath,
+  ]);
+  run(dotnet, [
+    "build",
+    project,
+    "--configuration", "Release",
+    "--runtime", "win-x64",
+    "--no-restore",
+    "--artifacts-path", artifactsPath,
+  ]);
+  const output = path.join(artifactsPath, "publish");
   run(dotnet, [
     "publish",
-    "packages/bridge/tests/RevAgent.Bridge.RealWorkerHost/RevAgent.Bridge.RealWorkerHost.csproj",
+    project,
     "--configuration", "Release",
     "--runtime", "win-x64",
     "--self-contained", "false",
     "-p:UseAppHost=true",
+    "--no-restore",
+    "--artifacts-path", artifactsPath,
+    "--output", output,
   ]);
+  return path.join(output, "RevAgent.Bridge.RealWorkerHost.exe");
 }
 
-export function realTrioArtifactHashes(repoRoot = realTrioRepoRoot) {
+export function realTrioArtifactHashes(repoRoot = realTrioRepoRoot, workerPath = undefined) {
   const hashes = {};
   for (const relative of REAL_TRIO_REQUIRED_ARTIFACTS) {
-    const candidate = path.join(repoRoot, relative);
+    const candidate = relative.endsWith("RevAgent.Bridge.RealWorkerHost.exe") && workerPath !== undefined
+      ? workerPath
+      : path.join(repoRoot, relative);
     if (!existsSync(candidate) || !statSync(candidate).isFile()) {
       throw new Error(`real-trio preflight required artifact is missing: ${relative}`);
     }
@@ -154,7 +179,7 @@ export function runRealTrioPreflight({ repoRoot = realTrioRepoRoot } = {}) {
   assertRealTrioNode24();
   const source = identity(repoRoot);
   assertRealTrioSourceIsolation(repoRoot);
-  buildRealTrioArtifacts(repoRoot);
+  const workerPath = buildRealTrioArtifacts(repoRoot);
   // A publish that edits a lockfile or another tracked source receipt cannot
   // become evidence for the commit we anchored above. Re-read the exact source
   // identity before admitting any child process.
@@ -162,8 +187,14 @@ export function runRealTrioPreflight({ repoRoot = realTrioRepoRoot } = {}) {
   if (afterBuild.commit !== source.commit || afterBuild.tree !== source.tree) {
     throw new Error("real-trio build changed the exact source identity");
   }
-  const artifacts = realTrioArtifactHashes(repoRoot);
-  const handoff = Object.freeze({ schemaVersion: "revagent.wp12-real-trio-preflight/v1", repoRoot: realpathSync(repoRoot), ...source, artifacts });
+  const artifacts = realTrioArtifactHashes(repoRoot, workerPath);
+  const handoff = Object.freeze({
+    schemaVersion: "revagent.wp12-real-trio-preflight/v1",
+    repoRoot: realpathSync(repoRoot),
+    ...source,
+    workerPath: realpathSync(workerPath),
+    artifacts,
+  });
   process.env[REAL_TRIO_PREFLIGHT_ENVIRONMENT] = JSON.stringify(handoff);
   return handoff;
 }
@@ -182,9 +213,10 @@ export function verifyRealTrioPreflightHandoff({ repoRoot = realTrioRepoRoot, en
   if (
     handoff?.schemaVersion !== "revagent.wp12-real-trio-preflight/v1" ||
     handoff.repoRoot !== realpathSync(repoRoot) ||
+    typeof handoff.workerPath !== "string" ||
     handoff.commit !== source.commit ||
     handoff.tree !== source.tree ||
-    JSON.stringify(handoff.artifacts) !== JSON.stringify(realTrioArtifactHashes(repoRoot))
+    JSON.stringify(handoff.artifacts) !== JSON.stringify(realTrioArtifactHashes(repoRoot, handoff.workerPath))
   ) {
     throw new Error("real-trio preflight handoff no longer matches this exact clean source/build");
   }
