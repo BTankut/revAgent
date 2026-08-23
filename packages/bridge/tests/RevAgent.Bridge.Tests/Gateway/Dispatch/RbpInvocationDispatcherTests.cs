@@ -341,6 +341,123 @@ public sealed class RbpInvocationDispatcherTests
     }
 
     [Fact]
+    public async Task CarrierReleaseSurvivesBothCleanupCrashWindowsAndRetainsReplayUntilSevenDays()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        long now = RbpJournalTestData.Now.ToUnixTimeMilliseconds();
+        string invocationKey = Rsid + "/" + ReadRequest().InvocationId;
+        RbpReleasedCarrier committedRelease;
+        RbpCarrierPlan plan;
+        long terminalSequence;
+
+        // Simulate a process crash immediately after the ACK transaction. The
+        // spool remains, but only the durable pending release token may be
+        // used after the next open.
+        await using (RbpJournalStore first = RbpJournalStore.Open(
+                         directory.JournalPath,
+                         new TestResumeTokenProtector(),
+                         RbpJournalTestData.Options(nowMilliseconds: () => now)))
+        {
+            _ = await first.PersistRegisteredSessionAsync(
+                RbpJournalTestData.Registration());
+            string payload = new('x', RbpArtifactCarrierProducer.MaximumChunkBytes + 1);
+            var channel = new StubChannel(
+                () => Task.FromResult(Completed(JsonSerializer.Serialize(new { payload }))));
+            RbpArtifactCarrierProducer producer =
+                RbpArtifactCarrierProducer.CreateProduction(directory.Path, first);
+            var dispatcher = new RbpInvocationDispatcher(
+                first, channel, new RbpInFlightGate(), carrierProducer: producer);
+            using IRbpInvocationClaim claim = Assert.IsAssignableFrom<IRbpInvocationClaim>(
+                dispatcher.TryClaim(Rsid));
+            RbpInvocationAnswer answer = await dispatcher.DispatchClaimedAsync(
+                claim, ReadPayload(),
+                new[] { "journal_v1", "chunked_results", "artifact_result_v1" },
+                CancellationToken.None);
+            plan = Assert.IsType<RbpCarrierPlan>(
+                (await first.GetInvocationAsync(invocationKey))!.CarrierPlan);
+
+            int prefixOrdinal = 0;
+            foreach (RbpInvocationAnswer prefix in answer.Prefixes!)
+            {
+                _ = await first.QueueOutboundDataAsync(Rsid, new RbpOutboundDataDraft(
+                    prefix.Type, "prefix-" + prefixOrdinal++, prefix.Payload));
+            }
+
+            RbpQueueOutboundResult terminal = await first.QueueOutboundDataAsync(
+                Rsid, new RbpOutboundDataDraft("result", "terminal", answer.Payload));
+            terminalSequence = Assert.IsType<RbpDataEnvelopeSnapshot>(terminal.Envelope).Sequence;
+            await first.RecordCarrierTerminalQueuedAsync(
+                plan.CarrierKey, Rsid, terminalSequence);
+            producer.RecordTerminalQueued(plan.CarrierKey, Rsid, terminalSequence);
+            committedRelease = Assert.Single(await first.ApplyCarrierPlanAcknowledgementsAsync(
+                new[] { new RbpSessionAcknowledgement(Rsid, terminalSequence) }));
+            Assert.True(Directory.Exists(Path.Combine(
+                directory.Path, "artifact-spool", plan.CarrierKey)));
+        }
+
+        RbpReleasedCarrier afterAckCrash;
+        await using (RbpJournalStore reopenedAfterAck = RbpJournalStore.Open(
+                         directory.JournalPath,
+                         new TestResumeTokenProtector(),
+                         RbpJournalTestData.Options(nowMilliseconds: () => now)))
+        {
+            afterAckCrash = Assert.Single(
+                (await reopenedAfterAck.LoadCarrierRecoveryAsync()).PendingReleases);
+            Assert.Equal(committedRelease.ReleaseToken, afterAckCrash.ReleaseToken);
+            RbpArtifactCarrierProducer producer =
+                RbpArtifactCarrierProducer.CreateProduction(directory.Path, reopenedAfterAck);
+            producer.SweepExpired(new[] { afterAckCrash });
+            Assert.False(Directory.Exists(Path.Combine(
+                directory.Path, "artifact-spool", plan.CarrierKey)));
+        }
+
+        // A second crash has now occurred after filesystem cleanup but before
+        // the journal confirmation. Reopening must reissue the exact token;
+        // repeated cleanup is idempotent and a mismatched token fails closed.
+        await using (RbpJournalStore reopenedAfterCleanup = RbpJournalStore.Open(
+                         directory.JournalPath,
+                         new TestResumeTokenProtector(),
+                         RbpJournalTestData.Options(nowMilliseconds: () => now)))
+        {
+            RbpReleasedCarrier afterCleanupCrash = Assert.Single(
+                (await reopenedAfterCleanup.LoadCarrierRecoveryAsync()).PendingReleases);
+            Assert.Equal(committedRelease.ReleaseToken, afterCleanupCrash.ReleaseToken);
+            RbpArtifactCarrierProducer producer =
+                RbpArtifactCarrierProducer.CreateProduction(directory.Path, reopenedAfterCleanup);
+            producer.SweepExpired(new[] { afterCleanupCrash });
+            await Assert.ThrowsAsync<RbpJournalException>(() =>
+                reopenedAfterCleanup.ConfirmSpoolReleasedAsync(afterCleanupCrash with
+                {
+                    ReleaseToken = "v1:mismatched-release-token",
+                }));
+            await reopenedAfterCleanup.ConfirmSpoolReleasedAsync(afterCleanupCrash);
+            Assert.Empty((await reopenedAfterCleanup.LoadCarrierRecoveryAsync()).PendingReleases);
+
+            var replayChannel = new StubChannel(
+                () => Task.FromResult(Completed("""{"should_not_execute":true}""")));
+            RbpInvocationAnswer duplicate = await Dispatcher(
+                reopenedAfterCleanup, replayChannel).DispatchAsync(
+                ReadRequest(), CancellationToken.None);
+            Assert.Equal(0, replayChannel.Calls);
+            Assert.Equal(plan.CarrierKey, duplicate.CarrierKey);
+            Assert.NotEmpty(duplicate.Prefixes!);
+            Assert.True(duplicate.Payload.GetProperty("replayed").GetBoolean());
+
+            now += (long)TimeSpan.FromDays(7).TotalMilliseconds - 1;
+            Assert.Equal(
+                new RbpJournalRetentionResult(0, 0, 0, 0, 0),
+                await reopenedAfterCleanup.ApplyRetentionAsync(
+                    RbpJournalStore.MinimumRetentionPeriod));
+            now += 1;
+            RbpJournalRetentionResult expired = await reopenedAfterCleanup.ApplyRetentionAsync(
+                RbpJournalStore.MinimumRetentionPeriod);
+            Assert.Equal(1, expired.PrunedCarrierPlans);
+            Assert.Equal(1, expired.PrunedInvocations);
+            Assert.Null(await reopenedAfterCleanup.GetInvocationAsync(invocationKey));
+        }
+    }
+
+    [Fact]
     public async Task Rule4RefusesToReexecuteAMutationAndInstallsAHold()
     {
         using var directory = new RbpJournalTestDirectory();
