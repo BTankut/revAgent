@@ -1,5 +1,5 @@
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
-import { type ConformanceRbpIngressHost } from "./rbpIngress.js";
+import { isFactoryConformanceRbpIngressHost, type ConformanceRbpIngressHost } from "./rbpIngress.js";
 import {
   startGatewayServer,
   type GatewayServerHandle,
@@ -43,11 +43,11 @@ export async function startProductionGatewayHost(input: {
       throw new Error(`productionGatewayHost requires an explicit conformance ${name} adapter, not ${kind}`);
     }
   }
-  if (input.ports.identity !== input.authority.identity || input.ports.protocolStore !== input.authority.store) {
+  if (!(input.authority instanceof GatewayBridgeSessionAuthority) || input.ports.identity !== input.authority.identity || input.ports.protocolStore !== input.authority.store) {
     throw new Error("productionGatewayHost requires one exact authority/identity/store graph");
   }
   const ingress = input.ports.rbpIngress;
-  if (!(ingress instanceof Object) || ingress.kind !== "conformance" || ingress.authority !== input.authority) {
+  if (!isFactoryConformanceRbpIngressHost(ingress) || ingress.authority !== input.authority || ingress.delegate.authority !== input.authority || ingress.mount !== ingress.delegate.mount || ingress.handleUpgrade !== ingress.delegate.handleUpgrade || ingress.start !== ingress.delegate.start || ingress.close !== ingress.delegate.close) {
     throw new Error("productionGatewayHost requires the exact validated conformance ingress/authority graph");
   }
   const handle = await startGatewayServer({

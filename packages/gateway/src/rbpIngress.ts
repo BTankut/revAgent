@@ -330,12 +330,18 @@ export interface ConformanceRbpIngressHost extends RbpIngressHost {
   readonly authority: GatewayBridgeSessionAuthority;
   readonly delegate: ProductionRbpIngressHost;
 }
+const CONFORMANCE_INGRESS_BRAND = new WeakSet<object>();
+
+/** Module-private nominal admission; shape-compatible caller objects never pass. */
+export function isFactoryConformanceRbpIngressHost(value: unknown): value is ConformanceRbpIngressHost {
+  return value !== null && typeof value === "object" && CONFORMANCE_INGRESS_BRAND.has(value);
+}
 
 export function createConformanceRbpIngressHost(
   options: ProductionRbpIngressOptions,
 ): ConformanceRbpIngressHost {
   const delegate = createProductionRbpIngressHost(options);
-  return Object.freeze({
+  const host: ConformanceRbpIngressHost = {
     kind: "conformance" as const,
     mountPrefix: delegate.mountPrefix,
     enabled: true as const,
@@ -347,7 +353,9 @@ export function createConformanceRbpIngressHost(
     handleUpgrade: delegate.handleUpgrade,
     beginDrain: delegate.beginDrain,
     close: delegate.close,
-  });
+  };
+  CONFORMANCE_INGRESS_BRAND.add(host);
+  return Object.freeze(host);
 }
 
 class HttpSseChannel implements BridgeConnectionChannel {
