@@ -121,6 +121,7 @@ const tokenTable: StaticTokenTable = {
       "chunked_results",
       "artifact_result_v1",
       "transport_streamable_http",
+      "doc_context_cached_v1",
     ],
   },
   "other-device-token": {

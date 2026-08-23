@@ -64,6 +64,7 @@ export interface HelloPayload {
   machine: {
     hostname: string;
     os: string;
+    fingerprint?: string;
     [key: string]: unknown;
   };
   addin_versions: string[];

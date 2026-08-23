@@ -72,6 +72,7 @@ internal sealed class WorkerAddinSessionCatalog :
         _localSessionKeyLookup;
     private readonly string _bridgeVersion;
     private readonly string _hostname;
+    private readonly RbpCredentialClaimBinding? _credentialClaims;
 
     /// <summary>
     /// Receives the evidence of every discovery pass. Discovery computes an
@@ -90,8 +91,6 @@ internal sealed class WorkerAddinSessionCatalog :
     private readonly ConcurrentDictionary<string, byte> _bindingsInFlight =
         new(StringComparer.Ordinal);
 
-    private string? _machineFingerprint;
-
     internal WorkerAddinSessionCatalog(
         AddinDiscovery discovery,
         AddinSessionRouter router,
@@ -100,7 +99,8 @@ internal sealed class WorkerAddinSessionCatalog :
         Func<string, CancellationToken, Task<string?>> localSessionKeyLookup,
         string bridgeVersion,
         string? hostname = null,
-        Action<AddinDiscoveryEvidence>? onDiscovered = null)
+        Action<AddinDiscoveryEvidence>? onDiscovered = null,
+        RbpCredentialClaimBinding? credentialClaims = null)
     {
         _onDiscovered = onDiscovered;
         _discovery = discovery ??
@@ -117,6 +117,7 @@ internal sealed class WorkerAddinSessionCatalog :
         _hostname = string.IsNullOrWhiteSpace(hostname)
             ? Environment.MachineName
             : hostname;
+        _credentialClaims = credentialClaims;
     }
 
     /// <summary>
@@ -276,11 +277,6 @@ internal sealed class WorkerAddinSessionCatalog :
 
     private string ReadMachineFingerprint()
     {
-        if (_machineFingerprint is { Length: > 0 } cached)
-        {
-            return cached;
-        }
-
         using BridgeGatewayCredential credential =
             _credentials().GetRequired();
         if (!FingerprintPattern.IsMatch(credential.MachineFingerprint))
@@ -291,8 +287,11 @@ internal sealed class WorkerAddinSessionCatalog :
                 "sha256 digest.");
         }
 
-        _machineFingerprint = credential.MachineFingerprint;
-        return _machineFingerprint;
+        return _credentialClaims?.RequireSessionClaim(
+                   credential.DeviceId,
+                   credential.DeviceToken.Reveal(),
+                   credential.MachineFingerprint) ??
+               credential.MachineFingerprint;
     }
 
     private RbpLocalSessionSnapshot? TryProject(
@@ -354,17 +353,9 @@ internal sealed class WorkerAddinSessionCatalog :
                 status.ResultContractVersion);
 
             writer.WriteStartArray("session_capabilities");
-            var emitted = new HashSet<string>(StringComparer.Ordinal);
-            foreach (string capability in status.SessionCapabilities)
+            foreach (string capability in SessionCapabilities(status))
             {
-                // A capability that does not match the frozen token shape is
-                // dropped, never repaired: claiming less than the add-in
-                // offered is safe, claiming a malformed token is not.
-                if (CapabilityPattern.IsMatch(capability) &&
-                    emitted.Add(capability))
-                {
-                    writer.WriteStringValue(capability);
-                }
+                writer.WriteStringValue(capability);
             }
 
             writer.WriteEndArray();
@@ -382,6 +373,32 @@ internal sealed class WorkerAddinSessionCatalog :
         }
 
         return Parse(buffer.WrittenSpan);
+    }
+
+    private static IReadOnlyList<string> SessionCapabilities(
+        AddinStatusSnapshot status)
+    {
+        // A status probe is per local Revit session. Its parsed descriptor is
+        // separate evidence from the connection hello and from the Gateway's
+        // later per-rsid grant, so no capability may leak across sessions.
+        var emitted = new List<string>(capacity: 2);
+        foreach (string capability in status.SessionCapabilities)
+        {
+            bool hasMatchingDescriptor = capability switch
+            {
+                AddinStatusContract.BatchAtomicCapability =>
+                    status.BatchAtomic is not null,
+                AddinStatusContract.DocumentContextCachedCapability =>
+                    status.DocumentContextCached is not null,
+                _ => false,
+            };
+            if (hasMatchingDescriptor && CapabilityPattern.IsMatch(capability))
+            {
+                emitted.Add(capability);
+            }
+        }
+
+        return emitted;
     }
 
     private static JsonElement CreateRevitStatus(AddinStatusSnapshot status)

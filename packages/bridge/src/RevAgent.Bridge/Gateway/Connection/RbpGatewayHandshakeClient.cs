@@ -57,7 +57,9 @@ internal sealed class RbpGatewayHandshakeClient
             enrollment.Credential is not { } credential)
         {
             throw new RbpGatewayTransportException(
-                RbpGatewayFailureKind.EnrollmentRequired,
+                enrollment.Status == RbpEnrollmentStatus.Invalid
+                    ? RbpGatewayFailureKind.Authorization
+                    : RbpGatewayFailureKind.EnrollmentRequired,
                 "The Bridge cannot open a Gateway socket until enrollment " +
                 $"is ready ({enrollment.DiagnosticCode}).");
         }

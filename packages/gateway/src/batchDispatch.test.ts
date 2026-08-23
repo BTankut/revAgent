@@ -67,7 +67,7 @@ const toolRecord: GatewayToolRecord = Object.freeze({
 
 function deviceIdentity(): IdentityPort {
   return {
-    kind: "oidc",
+    kind: "fake",
     async authenticateNorthRequest() {
       return {
         ok: false as const,

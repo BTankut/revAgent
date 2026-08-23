@@ -8,6 +8,7 @@ import type { Binding } from "./types.js";
 
 const MAX_PARAMS_BYTES = 4 * 1024 * 1024;
 const MAX_RESULT_BYTES = 32 * 1024 * 1024;
+const MACHINE_FINGERPRINT = `sha256:${"0".repeat(64)}`;
 
 export const MIDDLE_PRODUCTION_CASES = [
   "O1-C15",
@@ -91,6 +92,7 @@ function rawOpeningHello(
       machine: {
         hostname: "conformance-host",
         os: "Windows 11",
+        fingerprint: MACHINE_FINGERPRINT,
       },
       addin_versions: ["0.0.0"],
     },

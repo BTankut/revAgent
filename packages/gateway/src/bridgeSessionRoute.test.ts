@@ -30,12 +30,15 @@ const DEVICE_TOKEN = "device-token-route";
 let idOffset = 0;
 const id = (): string => gatewayUuidV7(Date.now() + idOffset++);
 
-function identity(): IdentityPort {
+function identity(capabilities: {
+  readonly connectionCapabilities?: readonly string[];
+  readonly sessionCapabilities?: readonly string[];
+} = {}): IdentityPort {
   const deviceTokenDigest = `sha256:${createHash("sha256")
     .update(DEVICE_TOKEN)
     .digest("hex")}` as const;
   return {
-    kind: "oidc" as const,
+    kind: "fake" as const,
     async authenticateNorthRequest() {
       return {
         ok: false as const,
@@ -64,7 +67,8 @@ function identity(): IdentityPort {
         },
         connectionId: input.connectionId,
         deviceStatus: "active",
-        grantedSessionCapabilities: ["partial_progress"],
+        grantedConnectionCapabilities: capabilities.connectionCapabilities ?? [],
+        grantedSessionCapabilities: capabilities.sessionCapabilities ?? ["partial_progress"],
         deviceTokenDigest,
       };
       return { ok: true as const, value: context };
@@ -236,6 +240,60 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
 
   afterEach(async () => {
     await Promise.all(authorities.splice(0).map(async (created) => created.close()));
+  });
+
+  it("separates connection and session grants and quarantines unavailable result capabilities", async () => {
+    const fixture = createRestartableTestStore();
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({
+        connectionCapabilities: [
+          "journal_v1",
+          "transport_streamable_http",
+          "chunked_results",
+          "artifact_result_v1",
+        ],
+        sessionCapabilities: [
+          "batch_atomic",
+          "doc_context_cached_v1",
+          "partial_progress",
+        ],
+      }),
+    );
+    authorities.push(created);
+    await created.open();
+    const openedChannel = channel();
+    const connectionHello = hello();
+    connectionHello.payload.capabilities = [
+      "journal_v1",
+      "transport_streamable_http",
+      "partial_progress",
+      "chunked_results",
+      "artifact_result_v1",
+    ];
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: connectionHello,
+      channel: openedChannel,
+    });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual([
+      "journal_v1",
+      "transport_streamable_http",
+    ]);
+
+    const registrationFrame = registration("capability-separation");
+    registrationFrame.payload.session_capabilities = [
+      "batch_atomic",
+      "doc_context_cached_v1",
+      "partial_progress",
+      "journal_v1",
+    ];
+    await created.receive(opened.connectionId, registrationFrame);
+    expect(registeredFrame(openedChannel).payload.granted_session_capabilities).toEqual([
+      "batch_atomic",
+      "doc_context_cached_v1",
+    ]);
   });
 
   it("refuses routing until an accepted document context identifies one active document", async () => {

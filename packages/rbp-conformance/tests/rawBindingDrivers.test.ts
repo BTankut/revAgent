@@ -30,6 +30,7 @@ const TOKEN = "raw-binding-device-token";
 const OTHER_TOKEN = "raw-binding-other-token";
 const NOW = "2026-07-23T00:00:00.000Z";
 const FINGERPRINT = `sha256:${"1".repeat(64)}`;
+const PRODUCTION_FINGERPRINT = `sha256:${"0".repeat(64)}`;
 const PATH_DIGEST = `sha256:${"2".repeat(64)}`;
 // Keep every ordinary raw-driver capture window above full-suite Windows scheduler jitter.
 const FULL_SUITE_ASYNC_SETTLE_MS = 250;
@@ -69,7 +70,7 @@ const productionTokenTable: StaticTokenTable = {
     tenantId: "tenant-01",
     userId: "user-01",
     seatId: "seat-01",
-    machineFingerprint: `sha256:${"0".repeat(64)}`,
+    machineFingerprint: PRODUCTION_FINGERPRINT,
     provisionedCapabilities: [
       "journal_v1",
       "chunked_results",
@@ -83,7 +84,11 @@ function uuid7(value: number): string {
   return `0197a3c2-0000-7000-8000-${value.toString().padStart(12, "0")}`;
 }
 
-function hello(id = 1): JsonObject {
+function hello(
+  id = 1,
+  fingerprint: string | null = FINGERPRINT,
+  hostname = "raw-driver",
+): JsonObject {
   return {
     type: "hello",
     id: uuid7(id),
@@ -99,7 +104,11 @@ function hello(id = 1): JsonObject {
       ],
       bridge_version: "raw-driver-test",
       device_id: "raw-device-01",
-      machine: { hostname: "raw-driver", os: "Windows test" },
+      machine: {
+        hostname,
+        os: "Windows test",
+        ...(fingerprint === null ? {} : { fingerprint }),
+      },
       addin_versions: ["raw-driver-test"],
     },
   };
@@ -336,6 +345,31 @@ describe("parent-owned raw WSS binding driver", () => {
         retryable: false,
       },
     });
+
+    for (const [index, vector] of [
+      { name: "missing", claim: null },
+      { name: "mismatch", claim: `sha256:${"9".repeat(64)}` },
+    ].entries()) {
+      const rejected = createRawWssBindingDriver({
+        url: handle.wsUrl,
+        deviceToken: TOKEN,
+        tlsTrust: trust,
+        openingHello: hello(14 + index, vector.claim),
+        limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
+      });
+      const rejectedResult = successResult(await rejected(request("wss", {
+        frame: sessionRegister(16 + index),
+      })));
+      const rejectedRemote = object(
+        rejectedResult.remoteOutcome,
+        `${vector.name} WSS remoteOutcome`,
+      );
+      expect(rejectedRemote.close, vector.name).toMatchObject({
+        code: 4403,
+        remote: true,
+      });
+      expect(rejectedRemote.targetSent, vector.name).toBe(false);
+    }
   });
 
   it("honors live abort, parent timeout, TLS pin, and outbound/evidence bounds", async () => {
@@ -502,6 +536,33 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
       sse: null,
       messagesResponse: null,
     });
+
+    for (const [index, vector] of [
+      { name: "missing", claim: null },
+      { name: "mismatch", claim: `sha256:${"9".repeat(64)}` },
+    ].entries()) {
+      const rejected = createRawHttpSseBindingDriver({
+        connectionUrl: handle.httpConnectionUrl,
+        deviceToken: TOKEN,
+        tlsTrust: trust,
+        openingHello: hello(44 + index, vector.claim),
+        limits: { settleMs: FULL_SUITE_ASYNC_SETTLE_MS },
+      });
+      const rejectedResult = successResult(await rejected(request(
+        "streamable_http_sse",
+        { frame: sessionRegister(46 + index) },
+      )));
+      const rejectedRemote = object(
+        rejectedResult.remoteOutcome,
+        `${vector.name} HTTP remoteOutcome`,
+      );
+      expect(rejectedRemote.createResponse, vector.name).toMatchObject({
+        status: 403,
+        body: { parseState: "parsed" },
+      });
+      expect(rejectedRemote.connectionIdPresent, vector.name).toBe(false);
+      expect(rejectedRemote.messagesResponse, vector.name).toBeNull();
+    }
   });
 
   it("fails closed on abort, deadline, remote body caps, and non-loopback configuration", async () => {
@@ -580,6 +641,7 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
     const frame = c31.session_register_positive;
     if (frame === undefined) throw new Error("production C31 registration frame is absent");
 
+    const observedClaims: string[] = [];
     for (const binding of ["wss", "streamable_http_sse"] as const) {
       const { handle, trust } = await startSecureGateway(
         `production-hook-${binding}`,
@@ -604,7 +666,14 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
               now: () => NOW,
             },
           });
-      const outcome = await hooks[binding]!(request(binding, { frame }, {
+      const bindingFrame = structuredClone(frame) as JsonObject;
+      object(
+        object(bindingFrame.payload, "binding registration payload").machine,
+        "binding registration machine",
+      ).hostname = `renamed-${binding}-metadata`;
+      const outcome = await hooks[binding]!(request(binding, {
+        frame: bindingFrame,
+      }, {
         caseId: "O1-C31",
         stepId: "o1-c31.session_register_positive",
       }));
@@ -620,6 +689,17 @@ describe("parent-owned raw Streamable HTTP/SSE binding driver", () => {
         ? array(remote.receivedFrames, "production WSS receivedFrames")
         : array(object(remote.sse, "production SSE").receivedFrames, "production SSE receivedFrames");
       expect(parsedTypes(frames)).toContain("session_registered");
+      const session = Object.values(handle.core.snapshot().sessions)[0];
+      expect(session).toBeDefined();
+      expect(session!.machine).toMatchObject({
+        hostname: `renamed-${binding}-metadata`,
+        fingerprint: PRODUCTION_FINGERPRINT,
+      });
+      observedClaims.push(session!.machine.fingerprint);
     }
+    expect(observedClaims).toEqual([
+      PRODUCTION_FINGERPRINT,
+      PRODUCTION_FINGERPRINT,
+    ]);
   });
 });

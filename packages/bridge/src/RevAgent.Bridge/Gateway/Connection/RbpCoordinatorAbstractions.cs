@@ -101,7 +101,8 @@ internal sealed record RbpConnectionCoordinatorOptions(
     TimeSpan? HeartbeatCompletionTimeout = null,
     TimeSpan? WakeGapThreshold = null,
     TimeSpan? CloseTimeout = null,
-    TimeSpan? InvocationDrainTimeout = null)
+    TimeSpan? InvocationDrainTimeout = null,
+    IRbpCredentialClaimInvalidator? CredentialClaimInvalidator = null)
 {
     internal TimeSpan EffectiveHeartbeatAcknowledgementTimeout =>
         HeartbeatAcknowledgementTimeout ?? TimeSpan.FromSeconds(10);

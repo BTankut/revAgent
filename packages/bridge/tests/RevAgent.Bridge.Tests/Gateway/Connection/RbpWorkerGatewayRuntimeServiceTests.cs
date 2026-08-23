@@ -358,6 +358,13 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         var transport = new ScriptedStatusTransport();
         var router = new AddinSessionRouter(transport);
+        var credentialClaims = new RbpCredentialClaimBinding(
+            new RuntimeEnrollmentProvider(
+                "token-0123456789ABCDEFGHIJKLMNOP",
+                TestMachineFingerprint));
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
         var catalog = new WorkerAddinSessionCatalog(
             new AddinDiscovery(transport, new NoOpProcessAttestor()),
             router,
@@ -365,7 +372,8 @@ public sealed partial class RbpConnectionCoordinatorTests
             () => new FixedCredentialProvider(),
             (rsid, _) => Task.FromResult<string?>(null),
             "0.1.0-test",
-            "WS01");
+            "WS01",
+            credentialClaims: credentialClaims);
         RbpConnectionCoordinator coordinator =
             WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(
@@ -458,6 +466,151 @@ public sealed partial class RbpConnectionCoordinatorTests
         }
     }
 
+    [Fact]
+    public async Task WorkerCatalogProjectsBatchCapabilityWithoutDocumentContext()
+    {
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            result["sessionCapabilities"] = new JArray("batch_atomic");
+            ((JObject)result["capabilityContracts"]!).Remove(
+                "doc_context_cached_v1");
+        });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot snapshot = Assert.Single(
+            await catalog.ReadAsync());
+        string[] capabilities = snapshot.RegistrationPayload
+            .GetProperty("session_capabilities")
+            .EnumerateArray()
+            .Select(item => item.GetString())
+            .ToArray()!;
+
+        Assert.Equal(new[] { "batch_atomic" }, capabilities);
+        Assert.DoesNotContain("journal_v1", capabilities);
+        Assert.DoesNotContain("transport_streamable_http", capabilities);
+    }
+
+    [Fact]
+    public async Task WorkerCatalogDoesNotRetainWithdrawnSessionCapability()
+    {
+        bool batchAdvertised = true;
+        var transport = new ScriptedStatusTransport(result =>
+        {
+            if (batchAdvertised)
+            {
+                result["sessionCapabilities"] = new JArray("batch_atomic");
+                ((JObject)result["capabilityContracts"]!).Remove(
+                    "doc_context_cached_v1");
+                return;
+            }
+
+            result["sessionCapabilities"] = new JArray();
+            result["capabilityContracts"] = new JObject();
+        });
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot granted = Assert.Single(
+            await catalog.ReadAsync());
+        Assert.Equal(
+            new[] { "batch_atomic" },
+            granted.RegistrationPayload
+                .GetProperty("session_capabilities")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+
+        batchAdvertised = false;
+        RbpLocalSessionSnapshot withdrawn = Assert.Single(
+            await catalog.ReadAsync());
+        Assert.Empty(
+            withdrawn.RegistrationPayload
+                .GetProperty("session_capabilities")
+                .EnumerateArray());
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRevocationRemovesTheBoundRoute()
+    {
+        bool listenerAvailable = true;
+        var transport = new ScriptedStatusTransport(
+            isAvailable: () => listenerAvailable);
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new FixedCredentialProvider(),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01");
+
+        RbpLocalSessionSnapshot active = Assert.Single(
+            await catalog.ReadAsync());
+        catalog.Bind("rs-revoked", active.LocalSessionKey);
+        Assert.NotNull(catalog.Resolve("rs-revoked"));
+
+        listenerAvailable = false;
+        Assert.Empty(await catalog.ReadAsync());
+        Assert.Null(catalog.Resolve("rs-revoked"));
+    }
+
+    [Fact]
+    public async Task WorkerCatalogRejectsPairDriftUntilCredentialRotationBinds()
+    {
+        string currentToken = "token-0123456789ABCDEFGHIJKLMNOP";
+        var enrollment = new RuntimeEnrollmentProvider(
+            currentToken,
+            TestMachineFingerprint);
+        var credentialClaims = new RbpCredentialClaimBinding(enrollment);
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
+
+        var transport = new ScriptedStatusTransport();
+        var router = new AddinSessionRouter(transport);
+        var catalog = new WorkerAddinSessionCatalog(
+            new AddinDiscovery(transport, new NoOpProcessAttestor()),
+            router,
+            ScanConfiguration(),
+            () => new RuntimeCredentialProvider(
+                currentToken,
+                TestMachineFingerprint),
+            (rsid, _) => Task.FromResult<string?>(null),
+            "0.1.0-test",
+            "WS01",
+            credentialClaims: credentialClaims);
+
+        Assert.Single(await catalog.ReadAsync());
+
+        currentToken = "rotated-0123456789ABCDEFGHIJKLMNOP";
+        RbpGatewayTransportException mismatch =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => catalog.ReadAsync());
+        Assert.Equal(RbpGatewayFailureKind.Authorization, mismatch.Kind);
+        Assert.Equal(4403, mismatch.CloseCode);
+
+        enrollment.Token = currentToken;
+        Assert.Equal(
+            RbpEnrollmentStatus.Ready,
+            (await credentialClaims.ReadAsync()).Status);
+        Assert.Single(await catalog.ReadAsync());
+    }
+
     private const string TestMachineFingerprint =
         "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -489,6 +642,17 @@ public sealed partial class RbpConnectionCoordinatorTests
     /// </summary>
     private sealed class ScriptedStatusTransport : IAddinTransport
     {
+        private readonly Action<JObject>? _configure;
+        private readonly Func<bool> _isAvailable;
+
+        internal ScriptedStatusTransport(
+            Action<JObject>? configure = null,
+            Func<bool>? isAvailable = null)
+        {
+            _configure = configure;
+            _isAvailable = isAvailable ?? (() => true);
+        }
+
         public Task<AddinCallResult> InvokeAsync(
             AddinEndpoint endpoint,
             AddinCall call,
@@ -499,7 +663,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             _ = processAttestor;
             preDispatchCancellationToken.ThrowIfCancellationRequested();
             transportShutdownToken.ThrowIfCancellationRequested();
-            if (endpoint.Port != 8080)
+            if (endpoint.Port != 8080 || !_isAvailable())
             {
                 return Task.FromException<AddinCallResult>(
                     new AddinTransportException(
@@ -515,6 +679,7 @@ public sealed partial class RbpConnectionCoordinatorTests
             }
 
             JObject result = LoadStatusFixtureResult();
+            _configure?.Invoke(result);
             var envelope = new JObject
             {
                 ["jsonrpc"] = "2.0",
@@ -610,6 +775,48 @@ public sealed partial class RbpConnectionCoordinatorTests
                 "device-1",
                 new BridgeSecretString("token-0123456789ABCDEFGHIJKLMNOP"),
                 TestMachineFingerprint);
+    }
+
+    private sealed class RuntimeCredentialProvider :
+        IBridgeDeviceCredentialProvider
+    {
+        private readonly string _token;
+        private readonly string _claim;
+
+        internal RuntimeCredentialProvider(string token, string claim)
+        {
+            _token = token;
+            _claim = claim;
+        }
+
+        public BridgeGatewayCredential GetRequired() =>
+            new(
+                "device-1",
+                new BridgeSecretString(_token),
+                _claim);
+    }
+
+    private sealed class RuntimeEnrollmentProvider :
+        IRbpEnrollmentStateProvider
+    {
+        internal RuntimeEnrollmentProvider(string token, string claim)
+        {
+            Token = token;
+            Claim = claim;
+        }
+
+        internal string Token { get; set; }
+
+        internal string Claim { get; }
+
+        public ValueTask<RbpEnrollmentSnapshot> ReadAsync(
+            CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return ValueTask.FromResult(
+                RbpEnrollmentSnapshot.Ready(
+                    new RbpDeviceCredential("device-1", Token, Claim)));
+        }
     }
 
     private static RbpLocalSessionSnapshot WatchedLocalSession(
