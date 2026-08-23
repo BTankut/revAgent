@@ -19,7 +19,14 @@ interface RecordedRequest { readonly method: string; readonly authorization: str
 const closers: Array<() => Promise<void>> = [];
 afterEach(async () => { await Promise.all(closers.splice(0).map(async (close) => await close())); });
 
-async function testServer(input: { readonly mode?: "ok" | "tool_error" | "tool_is_error" | "tool_bad_text"; readonly initializeSessionHeader?: string } = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
+async function testServer(input: {
+  readonly mode?: "ok" | "tool_error" | "tool_is_error" | "tool_bad_text";
+  readonly initializeSessionHeader?: string;
+  readonly notificationSessionHeader?: string;
+  readonly emptyResponseMethod?: "initialize" | "notifications/initialized" | "tools/call";
+  readonly emptyResponseStatus?: 200 | 202 | 204;
+  readonly notificationResponseStatus?: 200 | 202 | 204;
+} = {}): Promise<{ readonly endpoint: string; readonly certificateSha256: string; readonly requests: RecordedRequest[] }> {
   const root = mkdtempSync(path.join(tmpdir(), "wp12-mcp-client-"));
   mkdirSync(path.join(root, "tls-root"));
   const tls = createEphemeralLoopbackTlsIdentity(realpathSync(path.join(root, "tls-root")));
@@ -43,8 +50,14 @@ async function testServer(input: { readonly mode?: "ok" | "tool_error" | "tool_i
               ? { jsonrpc: "2.0", id: body.id, result: { content: [{ type: "text", text: "not-json" }] } }
           : { jsonrpc: "2.0", id: body.id, result: method === "tools/call"
             ? { structuredContent: { state: "completed", requestId: "server-request" } } : {} };
-      response.writeHead(200, { "content-type": "application/json", ...(method === "initialize" && input.initializeSessionHeader !== undefined ? { "mcp-session-id": input.initializeSessionHeader } : {}) });
-      response.end(JSON.stringify(result));
+      const empty = method === input.emptyResponseMethod;
+      response.writeHead(empty ? input.emptyResponseStatus ?? 204 :
+        method === "notifications/initialized" ? input.notificationResponseStatus ?? 200 : 200, {
+        "content-type": "application/json",
+        ...(method === "initialize" && input.initializeSessionHeader !== undefined ? { "mcp-session-id": input.initializeSessionHeader } : {}),
+        ...(method === "notifications/initialized" && input.notificationSessionHeader !== undefined ? { "mcp-session-id": input.notificationSessionHeader } : {}),
+      });
+      response.end(empty ? undefined : JSON.stringify(result));
     });
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
@@ -69,6 +82,36 @@ describe("strict real-trio Streamable HTTP MCP client", () => {
       { method: "notifications/initialized", authorization: "Bearer test-only-bearer", session: undefined, hasId: false },
       { method: "tools/call", authorization: "Bearer test-only-bearer", session: undefined, hasId: true },
     ]);
+  });
+
+  it.each([202, 204] as const)("accepts a zero-byte %i initialized notification only", async (status) => {
+    const server = await testServer({ emptyResponseMethod: "notifications/initialized", emptyResponseStatus: status });
+    await withRealTrioNorthMcpClient({ ...server, credential }, async (client) => {
+      await expect(client.toolCall({ name: "core.ui.state", arguments: {}, requestId: `notification-${status}` }))
+        .resolves.toMatchObject({ content: { state: "completed" } });
+    });
+  });
+
+  it("rejects zero-byte initialize and tool responses even when their status is otherwise successful", async () => {
+    const initialize = await testServer({ emptyResponseMethod: "initialize", emptyResponseStatus: 200 });
+    await expect(withRealTrioNorthMcpClient({ ...initialize, credential }, async () => undefined))
+      .rejects.toThrow(/response is empty/u);
+    const tool = await testServer({ emptyResponseMethod: "tools/call", emptyResponseStatus: 200 });
+    await expect(withRealTrioNorthMcpClient({ ...tool, credential }, async (client) =>
+      await client.toolCall({ name: "core.ui.state", arguments: {}, requestId: "empty-tool" }),
+    )).rejects.toThrow(/response is empty/u);
+  });
+
+  it("rejects notification non-200 statuses unless they are empty 202 or 204, and still checks its session header", async () => {
+    const nonEmpty = await testServer({ notificationResponseStatus: 202 });
+    await expect(withRealTrioNorthMcpClient({ ...nonEmpty, credential }, async () => undefined))
+      .rejects.toThrow(/unexpected HTTP status 202/u);
+    // A malformed session header on a permitted empty status must still fail
+    // before any subsequent tool dispatch.
+    const header = await testServer({ emptyResponseMethod: "notifications/initialized", emptyResponseStatus: 204,
+      notificationSessionHeader: "unexpected-session" });
+    await expect(withRealTrioNorthMcpClient({ ...header, credential }, async () => undefined))
+      .rejects.toThrow(/mcp-session-id/u);
   });
 
   it("rejects an unexpected Gateway session header unless an explicit identity binding matches", async () => {

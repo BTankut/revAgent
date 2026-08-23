@@ -435,9 +435,23 @@ async function waitForDocumentContextSend(input: {
 
 /**
  * `ack` is emitted only by the C# coordinator after a received
- * heartbeat_ack is durably applied. Requiring a post-route record prevents a
- * public persisted route from borrowing an earlier acknowledgement.
+ * heartbeat_ack is durably applied. The baseline is captured after the
+ * ordered send and before the public route poll so an ACK produced while the
+ * route becomes observable cannot be lost between the two observations.
  */
+export function hasDurableDocumentContextHeartbeatAckSince(
+  records: readonly { readonly line: string }[],
+  baseline: number,
+): boolean {
+  return records.slice(baseline).some((record) => {
+    try {
+      const value = JSON.parse(record.line) as unknown;
+      return isObject(value) && value.event === "bridge.document_context_observation" &&
+        value.stage === "ack" && value.outcome === "durably_acknowledged";
+    } catch { return false; }
+  });
+}
+
 async function waitForPostRouteDocumentContextHeartbeatAck(input: {
   readonly supervisor: RealTrioSupervisorResult;
   readonly diagnosticsBeforeRoute: number;
@@ -448,14 +462,9 @@ async function waitForPostRouteDocumentContextHeartbeatAck(input: {
     if (input.supervisor.readDocumentContextFailureState().childExited) {
       throw new Error("real trio child exited before post-route heartbeat acknowledgement");
     }
-    const current = input.supervisor.readDocumentContextDiagnostics();
-    if (current.slice(input.diagnosticsBeforeRoute).some((record) => {
-      try {
-        const value = JSON.parse(record.line) as unknown;
-        return isObject(value) && value.event === "bridge.document_context_observation" &&
-          value.stage === "ack" && value.outcome === "durably_acknowledged";
-      } catch { return false; }
-    })) return;
+    if (hasDurableDocumentContextHeartbeatAckSince(
+      input.supervisor.readDocumentContextDiagnostics(), input.diagnosticsBeforeRoute,
+    )) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio did not durably acknowledge document context after route persistence");
     }
@@ -655,6 +664,10 @@ export async function startRealTrioRuntimeFixture(
     documentContextAudit = Object.freeze({ ...controlAudit, ...counts });
     timeline.push("fixture_probe");
     failureReason = "route_timeout";
+    // Capture the post-send observation floor before polling the public
+    // Gateway. The C# ACK can legitimately arrive during that poll once the
+    // durable route is applied; starting after it would discard valid proof.
+    const diagnosticsBeforeRoute = supervisor.readDocumentContextDiagnostics().length;
     await waitForLiveDocumentRoute({
       endpoint,
       controlToken,
@@ -663,7 +676,6 @@ export async function startRealTrioRuntimeFixture(
       timeoutMs: options.documentContextTimeoutMs,
     });
     timeline.push("gateway_route");
-    const diagnosticsBeforeRoute = supervisor.readDocumentContextDiagnostics().length;
     failureReason = "ack_failure";
     await waitForPostRouteDocumentContextHeartbeatAck({
       supervisor,

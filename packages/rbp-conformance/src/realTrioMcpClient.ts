@@ -98,6 +98,16 @@ function responseSessionId(value: string | string[] | undefined): string | null 
   return value;
 }
 
+function permitsEmptyNotificationResponse(method: string, statusCode: number, responseBytes: number): boolean {
+  return method === "notifications/initialized" && responseBytes === 0 &&
+    (statusCode === 202 || statusCode === 204);
+}
+
+function assertResponseStatus(method: string, statusCode: number, responseBytes: number): void {
+  if (statusCode === 200 || permitsEmptyNotificationResponse(method, statusCode, responseBytes)) return;
+  throw new Error(`real trio MCP ${method} returned unexpected HTTP status ${statusCode}`);
+}
+
 /**
  * A strict Streamable HTTP MCP client for the real-trio carrier. Session
  * identity is exclusively Gateway-issued during initialize; callers cannot
@@ -310,10 +320,13 @@ async function rawRequest(input: {
         const bytes = Buffer.concat(chunks);
         if (size > MAX_NORTH_RESPONSE_BYTES) { reject(new Error("real trio MCP response exceeds bounded size")); return; }
         try {
-          const responseValue = parseWireResponse(bytes);
+          const statusCode = response.statusCode ?? 0;
+          assertResponseStatus(input.method, statusCode, bytes.byteLength);
+          const responseValue = permitsEmptyNotificationResponse(input.method, statusCode, bytes.byteLength)
+            ? null : parseWireResponse(bytes);
           const evidence = Object.freeze({ schemaVersion: REAL_TRIO_NORTH_EVIDENCE_SCHEMA,
             requestSha256: sha256(payload), responseSha256: sha256(bytes), methodSha256: sha256(Buffer.from(input.method, "utf8")),
-            requestBytes: payload.byteLength, responseBytes: bytes.byteLength, statusCode: response.statusCode ?? 0,
+            requestBytes: payload.byteLength, responseBytes: bytes.byteLength, statusCode,
             jsonRpcErrorCode: jsonRpcErrorCode(responseValue), mcpSessionHeaderPresent: input.sessionId !== null });
           resolve(Object.freeze({ response: responseValue, evidence,
             sessionId: responseSessionId(response.headers["mcp-session-id"]) }));

@@ -8,6 +8,7 @@ import {
   REAL_TRIO_RUNTIME_FAILURE_SCHEMA,
   RealTrioDocumentContextFailureError,
   createRealTrioDocumentContextFailure,
+  hasDurableDocumentContextHeartbeatAckSince,
   hasRealTrioLiveDocumentRoute,
   probeRealTrioFixtureDocumentContext,
   realTrioWorkerBuildPlan,
@@ -79,6 +80,13 @@ describe("WP-12 real-trio fixture document route gate", () => {
     expect(hasRealTrioLiveDocumentRoute({ sessions: [{ value: {
       lifecycle: { liveDocumentRoute: { sessionDocumentId: REAL_TRIO_FIXTURE_DOCUMENT_ID } },
     } }] })).toBe(true);
+  });
+
+  it("keeps a durable ACK emitted during public route observation, but rejects an earlier ACK", () => {
+    const ack = JSON.stringify({ event: "bridge.document_context_observation", stage: "ack", outcome: "durably_acknowledged" });
+    const send = JSON.stringify({ event: "bridge.document_context_observation", stage: "send", outcome: "sent" });
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: ack }, { line: send }], 1)).toBe(false);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: ack }], 1)).toBe(true);
   });
 
   it("exports bounded redacted stage-timeout evidence before cleanup", () => {
