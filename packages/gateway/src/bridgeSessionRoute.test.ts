@@ -20,7 +20,8 @@ import {
 } from "./bridgeSession.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
-import { createRestartableTestStore } from "./testAdapters.js";
+import { GatewayResourceAuthority } from "./resourceAuthority.js";
+import { createMemoryObjectStore, createRestartableTestStore } from "./testAdapters.js";
 
 const TENANT_ID = "tenant-route";
 const USER_ID = "user-route";
@@ -300,6 +301,51 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       "batch_atomic",
       "doc_context_cached_v1",
     ]);
+  });
+
+  it("grants carrier capabilities only to an exact-store ready authority", async () => {
+    const fixture = createRestartableTestStore();
+    const resources = new GatewayResourceAuthority({
+      protocolStore: fixture.store,
+      objectStore: createMemoryObjectStore(),
+    });
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({
+        connectionCapabilities: ["chunked_results", "artifact_result_v1"],
+      }),
+      { resourceAuthority: resources },
+    );
+    authorities.push(created);
+    await created.open();
+    const offered = hello();
+    offered.payload.capabilities = ["chunked_results", "artifact_result_v1"];
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: offered,
+      channel: channel(),
+    });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual([
+      "chunked_results",
+      "artifact_result_v1",
+    ]);
+
+    const mismatched = createRestartableTestStore();
+    const unready = new GatewayBridgeSessionAuthority(
+      mismatched.store,
+      identity({ connectionCapabilities: ["chunked_results", "artifact_result_v1"] }),
+      { resourceAuthority: resources },
+    );
+    authorities.push(unready);
+    await unready.open();
+    const denied = await unready.openConnection({
+      deviceToken: DEVICE_TOKEN,
+      binding: "wss",
+      hello: offered,
+      channel: channel(),
+    });
+    expect(denied.helloAck.payload.granted_capabilities).toEqual([]);
   });
 
   it("refuses routing until an accepted document context identifies one active document", async () => {
