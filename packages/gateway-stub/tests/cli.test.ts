@@ -43,6 +43,13 @@ const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = resolve(packageRoot, "dist", "cli.js");
 const cliToken = "test-device-token";
 const controlToken = "rbp-test-control";
+const cliFingerprint = `sha256:${"0".repeat(64)}`;
+
+function cliHello(id: number): ReturnType<typeof hello> {
+  const envelope = hello(id);
+  envelope.payload.machine.fingerprint = cliFingerprint;
+  return envelope;
+}
 
 async function startCli(name: string, arguments_: string[] = []): Promise<{
   child: ChildProcessWithoutNullStreams;
@@ -268,7 +275,7 @@ describe("Gateway stub CLI", () => {
       deterministic_clock: true,
     });
 
-    const createHello = hello(300);
+    const createHello = cliHello(300);
     const created = await fetch(ready.http_connection_url, {
       method: "POST",
       headers: {
@@ -363,7 +370,7 @@ describe("Gateway stub CLI", () => {
     const helloAck = new Promise<RbpEnvelope>((resolveMessage) => {
       socket.once("message", (data) => resolveMessage(JSON.parse(data.toString()) as RbpEnvelope));
     });
-    socket.send(JSON.stringify(hello(400)));
+    socket.send(JSON.stringify(cliHello(400)));
     expect(await helloAck).toMatchObject({ type: "hello_ack", payload: { protocol: 1 } });
 
     const created = await fetch(ready.http_connection_url, {
@@ -374,7 +381,7 @@ describe("Gateway stub CLI", () => {
         "content-type": "application/json",
         "x-rbp-versions": "1",
       },
-      body: JSON.stringify(hello(401)),
+      body: JSON.stringify(cliHello(401)),
     });
     expect(created.status).toBe(201);
     const connectionId = created.headers.get("rbp-connection-id");
@@ -411,7 +418,7 @@ describe("Gateway stub CLI", () => {
           "content-type": "application/json",
           "x-rbp-versions": "1",
         },
-        body: JSON.stringify(hello(signal === "SIGTERM" ? 500 : 510)),
+        body: JSON.stringify(cliHello(signal === "SIGTERM" ? 500 : 510)),
       });
       expect(created.status).toBe(201);
       const connectionId = created.headers.get("rbp-connection-id");

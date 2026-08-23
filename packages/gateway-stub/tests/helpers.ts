@@ -57,7 +57,11 @@ export function hello(id = 1): HelloEnvelope {
       ],
       bridge_version: "0.1.0-test",
       device_id: "device-01",
-      machine: { hostname: "fixture", os: "test" },
+      machine: {
+        hostname: "fixture",
+        os: "test",
+        fingerprint: FINGERPRINT,
+      },
       addin_versions: ["0.1.0-test"],
     },
   };

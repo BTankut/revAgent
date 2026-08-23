@@ -104,7 +104,7 @@ export interface PreparedPreProductionServing {
   readonly composition: PreProductionLanTestComposition;
   readonly enrollment: PreProductionEnrollmentIssue;
   start(tls: GatewayServerTlsMaterial): Promise<GatewayServerHandle>;
-  revokeConfiguredDevice(): PreProductionIdentityResult<unknown>;
+  revokeConfiguredDevice(): Promise<PreProductionIdentityResult<unknown>>;
   exportAuditSnapshot(): Promise<PreProductionAuditExportBundle>;
 }
 
@@ -367,8 +367,28 @@ export async function preparePreProductionServing(
         throw error;
       }
     },
-    revokeConfiguredDevice: () =>
-      composition.identity.revokeDevice(device.deviceId),
+    async revokeConfiguredDevice(): Promise<PreProductionIdentityResult<unknown>> {
+      const revoked = composition.identity.revokeDevice(device.deviceId);
+      if (
+        revoked.ok &&
+        composition.bridgeAuthority.lifecycle().state === "open"
+      ) {
+        await composition.bridgeAuthority.revokeIdentityAuthority({
+          tenantId: principal.tenantId,
+          kind: "device",
+          deviceId: device.deviceId,
+          seatId: device.seatId,
+          authorizationVersion: revoked.value.authorizationVersion,
+          identityRecordVersion: revoked.value.identityRecordVersion,
+          connectionCapabilityVersion:
+            revoked.value.connectionCapabilityVersion,
+          sessionCapabilityVersion: revoked.value.sessionCapabilityVersion,
+          seatAuthorityVersion: revoked.value.seatAuthorityVersion,
+          seatRecordVersion: revoked.value.seatRecordVersion,
+        });
+      }
+      return revoked;
+    },
     async exportAuditSnapshot(): Promise<PreProductionAuditExportBundle> {
       if (auditExportAttempted) {
         throw new PreProductionAuditExportError("already_attempted");

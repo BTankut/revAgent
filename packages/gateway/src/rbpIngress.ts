@@ -261,8 +261,18 @@ class HttpSseChannel implements BridgeConnectionChannel {
   readonly #pending: string[] = [];
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
+  #closed = false;
+
+  public constructor(private readonly onClose: () => void) {}
+
+  public get closed(): boolean {
+    return this.#closed;
+  }
 
   public attach(response: ServerResponse): void {
+    if (this.#closed) {
+      throw new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403);
+    }
     if (this.#response !== null) {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
     }
@@ -274,6 +284,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
   }
 
   public async send(serialized: string): Promise<void> {
+    if (this.#closed) throw new Error("SSE stream is closed");
     const response = this.#response;
     if (response === null) {
       const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
@@ -307,12 +318,15 @@ class HttpSseChannel implements BridgeConnectionChannel {
   }
 
   public async close(): Promise<void> {
+    if (this.#closed) return;
+    this.#closed = true;
     if (this.#response !== null && !this.#response.writableEnded) {
       this.#response.end();
     }
     this.#response = null;
     this.#pending.length = 0;
     this.#pendingBytes = 0;
+    this.onClose();
   }
 }
 
@@ -513,13 +527,20 @@ export function createProductionRbpIngressHost(
               throw new GatewayRbpFault("protocol", "create body must be hello", 400, 4400);
             }
             openingCorrelationId = hello.id;
-            const channel = new HttpSseChannel();
+            let openedConnectionId: string | null = null;
+            const channel = new HttpSseChannel(() => {
+              if (openedConnectionId !== null) {
+                httpChannels.delete(openedConnectionId);
+              }
+            });
             const opened = await authority.openConnection({
               deviceToken: bearer(request.headers.authorization),
               binding: "http_sse",
               hello: hello as HelloEnvelope,
               channel,
             });
+            openedConnectionId = opened.connectionId;
+            authority.assertConnectionOutbound(opened.connectionId);
             httpChannels.set(opened.connectionId, channel);
             return reply
               .header("RBP-Connection-Id", opened.connectionId)
@@ -552,6 +573,7 @@ export function createProductionRbpIngressHost(
               connectionId,
               bearer(request.headers.authorization),
             );
+            authority.assertConnectionOutbound(connectionId);
             const channel = httpChannels.get(connectionId);
             if (channel === undefined) {
               throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
@@ -568,6 +590,7 @@ export function createProductionRbpIngressHost(
             // Last-Event-ID is deliberately ignored. RBP sequence state is the
             // only replay authority and lives in the durable session record.
             reply.raw.once("close", () => {
+              httpChannels.delete(connectionId);
               void authority.detach(connectionId);
             });
           } catch (error) {
@@ -591,6 +614,7 @@ export function createProductionRbpIngressHost(
             );
             const envelope = frame(request.body);
             await authority.receive(connectionId, envelope);
+            authority.assertConnectionOutbound(connectionId);
             // receive() commits sequence/journal changes before resolving.
             return reply.code(202).send({ accepted: true });
           } catch (error) {
@@ -1136,6 +1160,7 @@ export function createProductionRbpIngressHost(
               if (detachRequested) void detachOnce();
               if (state !== "opening") return;
               if (!applyNegotiatedQueueLimits(opened)) return;
+              authority.assertConnectionOutbound(opened.connectionId);
               await channel.send(JSON.stringify(opened.helloAck));
               if (state === "opening") state = "open";
               return;
@@ -1236,7 +1261,10 @@ export function createProductionRbpIngressHost(
         clearInterval(livenessTimer);
         livenessTimer = null;
       }
-      for (const channel of httpChannels.values()) await channel.close();
+      for (const [connectionId, channel] of [...httpChannels]) {
+        await channel.close();
+        await authority.detach(connectionId);
+      }
       httpChannels.clear();
       websocketServer.close();
       await authority.close();

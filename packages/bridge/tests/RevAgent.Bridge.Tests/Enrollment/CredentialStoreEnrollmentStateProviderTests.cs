@@ -33,6 +33,46 @@ public sealed class CredentialStoreEnrollmentStateProviderTests
     }
 
     [Fact]
+    public async Task CredentialRotationReloadsOnlyTheCommittedTokenClaimPair()
+    {
+        const string rotatedToken =
+            "rotated-provider-token-0123456789ABCDEFGHIJKLMNOP";
+        using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();
+        string fingerprint = Enroll(fixture, "device-11", DeviceToken);
+        CredentialStoreEnrollmentStateProvider provider =
+            CreateProvider(fixture);
+
+        RbpEnrollmentSnapshot before = await provider.ReadAsync();
+        Assert.Equal(
+            "Bearer " + DeviceToken,
+            before.Credential!.CreateAuthorizationHeader());
+        Assert.Equal(fingerprint, before.Credential.MachineFingerprint);
+
+        using (var rotated = new BridgeDeviceCredential(
+                   "device-11",
+                   new BridgeSecretString(rotatedToken),
+                   DateTimeOffset.Parse("2026-08-23T08:00:00Z")))
+        {
+            _ = fixture.Mutator.RepairDeviceCredentialForReenrollment(
+                fingerprint,
+                rotated);
+        }
+
+        // A new reader/provider instance models process restart: it must see
+        // the complete new token with the exact persisted enrollment claim,
+        // never a token/claim mix from the prior generation.
+        provider = CreateProvider(fixture);
+        RbpEnrollmentSnapshot after = await provider.ReadAsync();
+        Assert.Equal(
+            "Bearer " + rotatedToken,
+            after.Credential!.CreateAuthorizationHeader());
+        Assert.Equal(fingerprint, after.Credential.MachineFingerprint);
+        Assert.NotEqual(
+            before.Credential.CredentialBindingDigest,
+            after.Credential.CredentialBindingDigest);
+    }
+
+    [Fact]
     public async Task AbsentStore_RefusesExactlyLikeTheAlwaysRefuseProvider()
     {
         using var fixture = EnrollmentStoreFixture.CreateWithXorProtector();

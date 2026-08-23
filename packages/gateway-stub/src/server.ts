@@ -1202,7 +1202,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
           {
             let affected: string[];
             try {
-              affected = core.setAuthStatus(body.token, body.status);
+              affected = await core.setAuthStatus(body.token, body.status);
             } catch (error) {
               if (error instanceof Error && error.message === "unknown static test token") {
                 throw new HttpRequestError(404, error.message);
@@ -1214,7 +1214,7 @@ export async function startGatewayStub(options: GatewayStubServerOptions): Promi
                 await closeConnection(
                   connectionId,
                   `auth_${body.status}`,
-                  body.status === "seat_denied" ? 4403 : 4401,
+                  4403,
                 );
               }
             }

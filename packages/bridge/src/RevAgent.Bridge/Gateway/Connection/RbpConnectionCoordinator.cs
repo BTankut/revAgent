@@ -187,6 +187,12 @@ internal sealed partial class RbpConnectionCoordinator
                 }
                 catch (RbpGoodbyeCycleException goodbye)
                 {
+                    if (goodbye.Reason == RbpGoodbyeReason.AuthRevoked)
+                    {
+                        _options.CredentialClaimInvalidator?
+                            .InvalidateActiveCredential();
+                    }
+
                     AdvanceConnection(
                         new RbpConnectionEvent(
                             RbpConnectionEventType.Goodbye,
@@ -206,6 +212,15 @@ internal sealed partial class RbpConnectionCoordinator
                 catch (Exception exception)
                 {
                     FailureTransition failure = ClassifyFailure(exception);
+                    if (failure.GatewayFailure ==
+                            RbpGatewayFailureKind.Authorization &&
+                        (failure.HttpStatus == 403 ||
+                         failure.CloseCode == 4403))
+                    {
+                        _options.CredentialClaimInvalidator?
+                            .InvalidateActiveCredential();
+                    }
+
                     AdvanceConnection(
                         new RbpConnectionEvent(
                             RbpConnectionEventType.ConnectionFailed,

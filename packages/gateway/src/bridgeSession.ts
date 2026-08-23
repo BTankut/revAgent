@@ -41,7 +41,13 @@ import {
   type JsonValue,
 } from "@revagent/protocol";
 
-import type { DeviceAuthContext, IdentityPort } from "./authContext.js";
+import {
+  isCanonicalMachineFingerprint,
+  machineFingerprintClaimsEqual,
+  type DeviceAuthContext,
+  type GatewayMachineFingerprint,
+  type IdentityPort,
+} from "./authContext.js";
 import type {
   GatewayAtomicBatchExecutorRequest,
   GatewayExecutor,
@@ -64,10 +70,18 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  StoreOutcome,
   StoreTransaction,
   StoredRecord,
 } from "./store.js";
 import type { GatewayInvocationRoute } from "./invocationContext.js";
+import type {
+  IdentityDeviceV2,
+  IdentityRevocationEventV1,
+  IdentityResyncSnapshot,
+  IdentityTenantSeatV1,
+  ProductionIdentityAuthority,
+} from "./productionIdentityStore.js";
 
 export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
@@ -85,6 +99,17 @@ const MAX_RECOVERABLE_MUTATION_SCOPES =
   PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT / 2;
 const MAX_HOLD_AUDIT_ENTRIES = 256;
 const MAX_DURABLE_STRING_LENGTH = 4_096;
+const MAX_IDENTITY_EVENT_BATCH = 1_000;
+const MAX_IDENTITY_EVENT_BATCHES = 32;
+const MAX_IDENTITY_SESSION_RESYNC = 10_000;
+const MAX_REVOKED_CONNECTION_TOMBSTONES = 10_000;
+const DEFAULT_MAX_ACTIVE_SEAT_REASSIGNMENTS = 16;
+const MAX_CONFIGURED_ACTIVE_SEAT_REASSIGNMENTS = 256;
+const DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS = 30_000;
+const MAX_SEAT_REASSIGNMENT_TIMEOUT_MS = 300_000;
+const DEFAULT_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 5_000;
+const MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS = 60_000;
+const MAX_SEAT_REASSIGNMENT_ATTEMPTS = 2;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
 const HOLD_ID_PATTERN = /^vh:[0-9a-f]{64}$/u;
 const SUPPORTED_CAPABILITIES = Object.freeze([
@@ -96,6 +121,105 @@ const SUPPORTED_CAPABILITIES = Object.freeze([
 ] as const);
 
 type BindingKind = "wss" | "http_sse";
+
+type BridgeLifecycleState = "closed" | "opening" | "open" | "closing" | "failed";
+type BridgeLifecycleResourceState = "closed" | "open" | "unknown";
+
+interface DurableIdentityAuthority {
+  readonly machineFingerprint: GatewayMachineFingerprint;
+  readonly deviceTokenDigest: `sha256:${string}`;
+  readonly authorizationVersion: number;
+  readonly identityRecordVersion: number;
+  readonly connectionCapabilityVersion: number;
+  readonly sessionCapabilityVersion: number;
+  readonly seatAuthorityVersion: number;
+  readonly seatRecordVersion: number;
+}
+
+interface TenantIdentitySnapshot {
+  readonly headSequence: number;
+  readonly authorityDigest: `sha256:${string}`;
+  readonly devices: ReadonlyMap<string, IdentityDeviceV2>;
+  readonly seats: ReadonlyMap<string, IdentityTenantSeatV1>;
+}
+
+interface TenantAuthorityTicket {
+  readonly tenantId: string;
+  readonly deviceId: string;
+  readonly seatId: string;
+  readonly connectionId: string;
+  readonly tenantBlockGeneration: number;
+  readonly deviceGeneration: number;
+  readonly seatGeneration: number;
+  readonly identityAuthority: DurableIdentityAuthority | null;
+}
+
+type ScopedAuthorityStatus = "active" | "revoked" | "blocked";
+
+interface DeviceAuthorityFence {
+  readonly generation: number;
+  readonly status: ScopedAuthorityStatus;
+  readonly authorizationVersion: number | null;
+  readonly identityRecordVersion: number | null;
+  readonly connectionCapabilityVersion: number | null;
+  readonly sessionCapabilityVersion: number | null;
+  readonly seatId: string | null;
+  readonly reason: "device_revoked" | "seat_revoked" | null;
+}
+
+interface SeatAuthorityFence {
+  readonly generation: number;
+  readonly status: ScopedAuthorityStatus;
+  readonly seatAuthorityVersion: number | null;
+  readonly seatRecordVersion: number | null;
+  readonly deviceId: string | null;
+  readonly reason: "seat_revoked" | null;
+}
+
+interface SeatReassignmentOperation {
+  readonly token: string;
+  readonly tenantId: string;
+  readonly seatId: string;
+  readonly priorDeviceId: string;
+  readonly incomingDeviceId: string;
+  readonly tenantBlockGeneration: number;
+  readonly priorDeviceFence: DeviceAuthorityFence;
+  readonly incomingDeviceFence: DeviceAuthorityFence;
+  readonly seatFence: SeatAuthorityFence;
+}
+
+interface SeatReassignmentAttemptState {
+  attemptsStarted: number;
+  state:
+    | "active"
+    | "timed_out_cleanup_pending"
+    | "cancelled_cleanup_pending"
+    | "quarantined";
+  readonly createdAtMs: number;
+  readonly expiresAtMs: number;
+  readonly lifecycleGeneration: number;
+}
+
+type SeatReassignmentTaskOutcome =
+  | "succeeded"
+  | "quarantined"
+  | "cancelled";
+
+interface SeatReassignmentTask {
+  readonly operation: SeatReassignmentOperation;
+  readonly lifecycleGeneration: number;
+  readonly attempt: number;
+  cancelled: boolean;
+  cancellationKind: "authority" | "lifecycle" | null;
+  outcomeSettled: boolean;
+  drainSettled: boolean;
+  readonly outcome: Promise<SeatReassignmentTaskOutcome>;
+  readonly resolveOutcome: (outcome: SeatReassignmentTaskOutcome) => void;
+  readonly cancellation: Promise<void>;
+  readonly resolveCancellation: () => void;
+  readonly drain: Promise<void>;
+  readonly resolveDrain: () => void;
+}
 
 interface DurablePendingDispatch {
   readonly envelopeDigest: `sha256:${string}`;
@@ -117,6 +241,15 @@ interface DurableDispatchEvidence {
   readonly envelopeDigest: `sha256:${string}`;
   readonly acceptance: GatewayDurableDispatchObservation["acceptance"];
   readonly journal: GatewayVerifiedBridgeJournalEvidence | null;
+  /** Terminal truth is retained even when identity revocation suppresses delivery. */
+  readonly terminalTruth?: DurableTerminalTruth | null;
+}
+
+interface DurableTerminalTruth {
+  readonly state: "completed" | "guarded" | "failed";
+  readonly resultDigest: `sha256:${string}` | null;
+  readonly errorCode: string | null;
+  readonly payloadRetained: boolean;
 }
 
 interface DurableLiveDocumentRoute {
@@ -135,6 +268,8 @@ interface DurableRbpSession {
   readonly userId: string;
   readonly deviceId: string;
   readonly seatId: string;
+  /** Null only for deterministic legacy adapters without versioned authority. */
+  readonly identityAuthority?: DurableIdentityAuthority | null;
   readonly rsid: string;
   readonly sessionBindingId: string;
   readonly sessionVersion: number;
@@ -290,7 +425,11 @@ type DurableUnregisterWrite =
 interface LiveConnection {
   readonly connectionId: string;
   readonly binding: BindingKind;
-  readonly auth: DeviceAuthContext;
+  auth: DeviceAuthContext;
+  readonly machineHostname: string;
+  tenantBlockGeneration: number;
+  deviceGeneration: number;
+  seatGeneration: number;
   readonly grantedCapabilities: readonly string[];
   readonly lifecycle: ConnectionLifecycleState;
   send(serialized: string): Promise<void>;
@@ -306,6 +445,8 @@ interface ActiveSession {
 interface PendingWaiter {
   resolve(outcome: GatewayExecutorOutcome): void;
   timer: ReturnType<typeof setTimeout>;
+  readonly tenantId: string;
+  readonly rsid: string;
   readonly mutating: boolean;
 }
 
@@ -341,6 +482,13 @@ export interface BridgeConnectionChannel {
 export interface BridgeConnectionOpening {
   readonly connectionId: string;
   readonly helloAck: HelloAckEnvelope;
+}
+
+export interface GatewayBridgeSessionLifecycleSnapshot {
+  readonly state: BridgeLifecycleState;
+  readonly protocolStore: BridgeLifecycleResourceState;
+  readonly identity: BridgeLifecycleResourceState;
+  readonly protocolStoreManagedBy: "bridge" | "identity";
 }
 
 export class GatewayRbpFault extends Error {
@@ -381,6 +529,107 @@ function nowIso(nowMs: number): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function asProductionIdentityAuthority(
+  identity: IdentityPort,
+): ProductionIdentityAuthority | null {
+  const candidate = identity as Partial<ProductionIdentityAuthority>;
+  if (
+    identity.kind !== "oidc" ||
+    typeof candidate.open !== "function" ||
+    typeof candidate.close !== "function" ||
+    typeof candidate.lifecycle !== "function" ||
+    typeof candidate.managedResources !== "function" ||
+    typeof candidate.usesStore !== "function" ||
+    typeof candidate.consumeRevocationEvents !== "function" ||
+    typeof candidate.prepareTenantResync !== "function" ||
+    typeof candidate.commitTenantResync !== "function" ||
+    typeof candidate.provisionDevice !== "function" ||
+    typeof candidate.revokeDevice !== "function" ||
+    typeof candidate.revokeSeat !== "function"
+  ) {
+    return null;
+  }
+  return identity as ProductionIdentityAuthority;
+}
+
+function durableIdentityAuthority(
+  auth: DeviceAuthContext,
+): DurableIdentityAuthority | null {
+  if (
+    !isCanonicalMachineFingerprint(auth.machineFingerprint) ||
+    !DIGEST_PATTERN.test(auth.deviceTokenDigest) ||
+    !isSafePositiveInteger(auth.authorizationVersion) ||
+    !isSafePositiveInteger(auth.identityRecordVersion) ||
+    !isSafePositiveInteger(auth.connectionCapabilityVersion) ||
+    !isSafePositiveInteger(auth.sessionCapabilityVersion) ||
+    !isSafePositiveInteger(auth.seatAuthorityVersion) ||
+    !isSafePositiveInteger(auth.seatRecordVersion)
+  ) {
+    return null;
+  }
+  return Object.freeze({
+    machineFingerprint: auth.machineFingerprint,
+    deviceTokenDigest: auth.deviceTokenDigest,
+    authorizationVersion: auth.authorizationVersion,
+    identityRecordVersion: auth.identityRecordVersion,
+    connectionCapabilityVersion: auth.connectionCapabilityVersion,
+    sessionCapabilityVersion: auth.sessionCapabilityVersion,
+    seatAuthorityVersion: auth.seatAuthorityVersion,
+    seatRecordVersion: auth.seatRecordVersion,
+  });
+}
+
+function sameDurableIdentityAuthority(
+  auth: DeviceAuthContext,
+  expected: DurableIdentityAuthority | null | undefined,
+): boolean {
+  if (expected === undefined || expected === null) {
+    return durableIdentityAuthority(auth) === null;
+  }
+  const current = durableIdentityAuthority(auth);
+  return (
+    current !== null &&
+    machineFingerprintClaimsEqual(
+      current.machineFingerprint,
+      expected.machineFingerprint,
+    ) &&
+    current.deviceTokenDigest === expected.deviceTokenDigest &&
+    current.authorizationVersion === expected.authorizationVersion &&
+    current.identityRecordVersion === expected.identityRecordVersion &&
+    current.connectionCapabilityVersion === expected.connectionCapabilityVersion &&
+    current.sessionCapabilityVersion === expected.sessionCapabilityVersion &&
+    current.seatAuthorityVersion === expected.seatAuthorityVersion &&
+    current.seatRecordVersion === expected.seatRecordVersion
+  );
+}
+
+function identitySnapshot(
+  snapshot: IdentityResyncSnapshot,
+): TenantIdentitySnapshot {
+  const devices = new Map(snapshot.devices.map((device) => [device.deviceId, device]));
+  const seats = new Map(snapshot.seats.map((seat) => [seat.seatId, seat]));
+  if (
+    !isSafeNonNegativeInteger(snapshot.headSequence) ||
+    !DIGEST_PATTERN.test(snapshot.authorityDigest) ||
+    devices.size !== snapshot.devices.length ||
+    seats.size !== snapshot.seats.length ||
+    snapshot.devices.some((device) => device.tenantId !== snapshot.tenantId) ||
+    snapshot.seats.some((seat) => seat.tenantId !== snapshot.tenantId)
+  ) {
+    throw new Error("identity resync snapshot is malformed");
+  }
+  return Object.freeze({
+    headSequence: snapshot.headSequence,
+    authorityDigest: snapshot.authorityDigest,
+    devices,
+    seats,
+  });
+}
+
+function identityIndexKey(tenantId: string, authorityId: string): string {
+  return `${tenantId}\u0000${authorityId}`;
 }
 
 function hasExactKeys(
@@ -613,6 +862,37 @@ function sessionConflictIndex(
     : parseNormalizedConflictIndex(record.normalizedConflictIndex);
 }
 
+function parseSessionIdentityAuthority(
+  value: unknown,
+): DurableIdentityAuthority | null {
+  if (value === undefined || value === null) return null;
+  if (
+    !isRecord(value) ||
+    !hasExactKeys(value, [
+      "machineFingerprint",
+      "deviceTokenDigest",
+      "authorizationVersion",
+      "identityRecordVersion",
+      "connectionCapabilityVersion",
+      "sessionCapabilityVersion",
+      "seatAuthorityVersion",
+      "seatRecordVersion",
+    ]) ||
+    !isCanonicalMachineFingerprint(value.machineFingerprint) ||
+    typeof value.deviceTokenDigest !== "string" ||
+    !DIGEST_PATTERN.test(value.deviceTokenDigest) ||
+    !isSafePositiveInteger(value.authorizationVersion) ||
+    !isSafePositiveInteger(value.identityRecordVersion) ||
+    !isSafePositiveInteger(value.connectionCapabilityVersion) ||
+    !isSafePositiveInteger(value.sessionCapabilityVersion) ||
+    !isSafePositiveInteger(value.seatAuthorityVersion) ||
+    !isSafePositiveInteger(value.seatRecordVersion)
+  ) {
+    throw new Error("malformed durable identity authority");
+  }
+  return value as unknown as DurableIdentityAuthority;
+}
+
 function parseStoredSession(
   stored: StoredRecord<GatewayJsonValue>,
   tenantId: string,
@@ -636,6 +916,7 @@ function parseStoredSession(
   ) {
     throw new Error("malformed durable session");
   }
+  parseSessionIdentityAuthority(candidate.identityAuthority);
   sessionEgressFence(candidate);
   sessionConflictIndex(candidate);
   return candidate;
@@ -1662,6 +1943,42 @@ function terminalOutcome(
   };
 }
 
+function durableTerminalTruth(
+  envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
+): DurableTerminalTruth {
+  if (envelope.type === "error") {
+    return Object.freeze({
+      state: "failed" as const,
+      resultDigest:
+        typeof envelope.payload.result_digest === "string" &&
+        DIGEST_PATTERN.test(envelope.payload.result_digest)
+          ? envelope.payload.result_digest as `sha256:${string}`
+          : null,
+      errorCode: envelope.payload.fault_class,
+      payloadRetained: false,
+    });
+  }
+  const resultDigest =
+    typeof envelope.payload.result_digest === "string" &&
+    DIGEST_PATTERN.test(envelope.payload.result_digest)
+      ? envelope.payload.result_digest as `sha256:${string}`
+      : makeParamsDigest(envelope.payload as unknown as JsonValue);
+  const state = envelope.payload.status === "guarded"
+    ? "guarded" as const
+    : envelope.payload.status === "completed"
+      ? "completed" as const
+      : "failed" as const;
+  return Object.freeze({
+    state,
+    resultDigest,
+    errorCode: state === "failed" ? envelope.payload.status : null,
+    payloadRetained:
+      envelope.payload.kind === "invocation" &&
+      envelope.payload.payload_omitted !== true &&
+      envelope.payload.chunked !== true,
+  });
+}
+
 function terminalJournalRecords(
   records: readonly InvocationJournalRecord[],
   envelope: Extract<RbpEnvelope, { type: "result" | "error" }>,
@@ -1773,9 +2090,48 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #waiters = new Map<string, PendingWaiter>();
   readonly #receiveTails = new Map<string, Promise<void>>();
   readonly #sessionAuthorizationTails = new Map<string, Promise<void>>();
+  readonly #tenantIdentityTails = new Map<string, Promise<void>>();
+  readonly #tenantRevocationTails = new Map<string, Promise<void>>();
+  readonly #tenantBlockGenerations = new Map<string, number>();
+  readonly #blockedTenants = new Set<string>();
+  readonly #deviceAuthorityFences = new Map<string, DeviceAuthorityFence>();
+  readonly #seatAuthorityFences = new Map<string, SeatAuthorityFence>();
+  readonly #seatReassignmentOperations = new Map<
+    string,
+    SeatReassignmentOperation
+  >();
+  readonly #seatReassignmentAttempts = new Map<
+    string,
+    SeatReassignmentAttemptState
+  >();
+  readonly #inFlightSeatReassignments = new Map<
+    string,
+    SeatReassignmentTask
+  >();
+  readonly #seatReassignmentDrains = new Set<Promise<void>>();
+  readonly #seatReassignmentDrainTasks = new Set<SeatReassignmentTask>();
+  readonly #revokedConnectionIds = new Set<string>();
+  readonly #knownTenants = new Set<string>();
+  readonly #tenantIdentitySnapshots = new Map<string, TenantIdentitySnapshot>();
+  readonly #deviceConnections = new Map<string, Set<string>>();
+  readonly #seatConnections = new Map<string, Set<string>>();
+  readonly #deviceSessions = new Map<string, Set<string>>();
+  readonly #seatSessions = new Map<string, Set<string>>();
+  readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
   readonly #wait: (milliseconds: number) => Promise<void>;
+  readonly #maxActiveSeatReassignments: number;
+  readonly #seatReassignmentTimeoutMs: number;
+  readonly #seatReassignmentCloseDrainTimeoutMs: number;
+  #lifecycleState: BridgeLifecycleState = "closed";
+  #lifecycleGeneration = 0;
+  #closeDrainTimedOut = false;
+  #protocolStoreState: BridgeLifecycleResourceState = "closed";
+  #identityState: BridgeLifecycleResourceState = "closed";
+  #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
+  #openPromise: Promise<void> | null = null;
+  #closePromise: Promise<void> | null = null;
 
   public constructor(
     readonly store: GatewayProtocolStore,
@@ -1784,8 +2140,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly clock?: () => number;
       readonly instanceId?: string;
       readonly wait?: (milliseconds: number) => Promise<void>;
+      readonly maxActiveSeatReassignments?: number;
+      readonly seatReassignmentTimeoutMs?: number;
+      readonly seatReassignmentCloseDrainTimeoutMs?: number;
     } = {},
   ) {
+    this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
     if (!isGatewayUuidV7(this.#instanceId)) {
@@ -1794,16 +2154,231 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     this.#wait = options.wait ?? (async (milliseconds) => {
       await new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
     });
-  }
-
-  public async open(): Promise<void> {
-    const opened = await this.store.open();
-    if (!opened.ok) {
-      throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+    this.#maxActiveSeatReassignments =
+      options.maxActiveSeatReassignments ??
+      DEFAULT_MAX_ACTIVE_SEAT_REASSIGNMENTS;
+    this.#seatReassignmentTimeoutMs =
+      options.seatReassignmentTimeoutMs ??
+      DEFAULT_SEAT_REASSIGNMENT_TIMEOUT_MS;
+    this.#seatReassignmentCloseDrainTimeoutMs =
+      options.seatReassignmentCloseDrainTimeoutMs ??
+      DEFAULT_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS;
+    if (
+      !isSafePositiveInteger(this.#maxActiveSeatReassignments) ||
+      this.#maxActiveSeatReassignments >
+        MAX_CONFIGURED_ACTIVE_SEAT_REASSIGNMENTS
+    ) {
+      throw new TypeError(
+        "maxActiveSeatReassignments must be a bounded positive integer",
+      );
+    }
+    if (
+      !isSafePositiveInteger(this.#seatReassignmentTimeoutMs) ||
+      this.#seatReassignmentTimeoutMs > MAX_SEAT_REASSIGNMENT_TIMEOUT_MS
+    ) {
+      throw new TypeError(
+        "seatReassignmentTimeoutMs must be a bounded positive integer",
+      );
+    }
+    if (
+      !isSafePositiveInteger(this.#seatReassignmentCloseDrainTimeoutMs) ||
+      this.#seatReassignmentCloseDrainTimeoutMs >
+        MAX_SEAT_REASSIGNMENT_CLOSE_DRAIN_TIMEOUT_MS
+    ) {
+      throw new TypeError(
+        "seatReassignmentCloseDrainTimeoutMs must be a bounded positive integer",
+      );
     }
   }
 
-  public async close(): Promise<void> {
+  public lifecycle(): GatewayBridgeSessionLifecycleSnapshot {
+    return Object.freeze({
+      state: this.#lifecycleState,
+      protocolStore: this.#protocolStoreState,
+      identity: this.#identityState,
+      protocolStoreManagedBy: this.#protocolStoreManagedBy,
+    });
+  }
+
+  public open(): Promise<void> {
+    if (this.#lifecycleState === "open") return Promise.resolve();
+    if (this.#closeDrainTimedOut) {
+      return Promise.reject(
+        new GatewayRbpFault(
+          "unavailable",
+          "Gateway close must be retried after reassignment cleanup drains",
+          503,
+          1011,
+        ),
+      );
+    }
+    if (this.#openPromise !== null) return this.#openPromise;
+    if (this.#closePromise !== null) {
+      return this.#closePromise.then(() => this.open());
+    }
+    this.#openPromise = this.#performOpen().finally(() => {
+      this.#openPromise = null;
+    });
+    return this.#openPromise;
+  }
+
+  async #callLifecycle(
+    action: () => Promise<StoreOutcome<void>>,
+  ): Promise<StoreOutcome<void>> {
+    try {
+      return await action();
+    } catch {
+      return Object.freeze({
+        ok: false as const,
+        code: "unavailable" as const,
+        message: "Gateway lifecycle dependency threw",
+      });
+    }
+  }
+
+  async #performOpen(): Promise<void> {
+    if (this.#lifecycleState === "failed") {
+      await this.#closeLifecycleResources();
+    }
+    if (this.identity.kind === "oidc" && this.#productionIdentity === null) {
+      this.#lifecycleState = "closed";
+      throw new GatewayRbpFault(
+        "unavailable",
+        "OIDC identity authority is missing the production lifecycle and revocation contract",
+        503,
+        1011,
+      );
+    }
+    this.#lifecycleState = "opening";
+    const identity = this.#productionIdentity;
+    if (identity !== null) {
+      let identityUsesStore: boolean;
+      let identityOwnsStore: boolean;
+      try {
+        identityUsesStore = identity.usesStore(this.store);
+        identityOwnsStore =
+          identityUsesStore && identity.managedResources().tenantStore.managed;
+      } catch {
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault(
+          "unavailable",
+          "production identity lifecycle metadata is unavailable",
+          503,
+          1011,
+        );
+      }
+      this.#protocolStoreManagedBy = identityOwnsStore ? "identity" : "bridge";
+    } else {
+      this.#protocolStoreManagedBy = "bridge";
+    }
+
+    if (this.#protocolStoreManagedBy === "bridge") {
+      const opened = await this.#callLifecycle(() => this.store.open());
+      if (!opened.ok) {
+        this.#protocolStoreState = "unknown";
+        const rollback = await this.#callLifecycle(() => this.store.close());
+        this.#protocolStoreState = rollback.ok ? "closed" : "unknown";
+        this.#lifecycleState = rollback.ok ? "closed" : "failed";
+        throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+      }
+      this.#protocolStoreState = "open";
+    }
+
+    if (identity !== null) {
+      const opened = await this.#callLifecycle(() => identity.open());
+      if (!opened.ok) {
+        try {
+          this.#identityState =
+            identity.lifecycle().state === "closed" ? "closed" : "unknown";
+        } catch {
+          this.#identityState = "unknown";
+        }
+        const rollback = await this.#callLifecycle(() => identity.close());
+        this.#identityState = rollback.ok ? "closed" : "unknown";
+        if (
+          rollback.ok &&
+          this.#protocolStoreManagedBy === "bridge" &&
+          this.#protocolStoreState !== "closed"
+        ) {
+          const storeRollback = await this.#callLifecycle(() => this.store.close());
+          this.#protocolStoreState = storeRollback.ok ? "closed" : "unknown";
+        }
+        if (this.#protocolStoreManagedBy === "identity" && rollback.ok) {
+          this.#protocolStoreState = "closed";
+        }
+        this.#lifecycleState =
+          this.#identityState === "closed" && this.#protocolStoreState === "closed"
+            ? "closed"
+            : "failed";
+        throw new GatewayRbpFault("unavailable", opened.message, 503, 1011);
+      }
+      this.#identityState = "open";
+      if (this.#protocolStoreManagedBy === "identity") {
+        this.#protocolStoreState = "open";
+      }
+    } else {
+      this.#identityState = "open";
+    }
+    this.#lifecycleState = "open";
+  }
+
+  public close(): Promise<void> {
+    if (this.#lifecycleState === "closed") return Promise.resolve();
+    if (this.#closePromise !== null) return this.#closePromise;
+    if (this.#openPromise !== null) {
+      return this.#openPromise.then(
+        () => this.close(),
+        () => this.close(),
+      );
+    }
+    this.#closePromise = this.#performClose().finally(() => {
+      this.#closePromise = null;
+    });
+    return this.#closePromise;
+  }
+
+  async #performClose(): Promise<void> {
+    this.#lifecycleState = "closing";
+    this.#lifecycleGeneration += 1;
+    for (const task of [...this.#inFlightSeatReassignments.values()]) {
+      this.#cancelSeatReassignmentTask(task);
+    }
+    const seatReassignmentDrain = Promise.allSettled([
+      ...this.#seatReassignmentDrains,
+    ]);
+    let closeDrainTimeout: ReturnType<typeof setTimeout> | null = null;
+    const reassignmentDrained = await Promise.race([
+      seatReassignmentDrain.then(() => true),
+      new Promise<false>((resolve) => {
+        closeDrainTimeout = setTimeout(
+          () => resolve(false),
+          this.#seatReassignmentCloseDrainTimeoutMs,
+        );
+      }),
+    ]);
+    if (closeDrainTimeout !== null) clearTimeout(closeDrainTimeout);
+    if (!reassignmentDrained) {
+      this.#closeDrainTimedOut = true;
+      this.#lifecycleState = "failed";
+      throw new GatewayRbpFault(
+        "unavailable",
+        "Gateway close timed out while reassignment cleanup remained active",
+        503,
+        1011,
+      );
+    }
+    this.#closeDrainTimedOut = false;
+    await Promise.allSettled([
+      ...this.#receiveTails.values(),
+      ...this.#sessionAuthorizationTails.values(),
+      ...this.#tenantIdentityTails.values(),
+      ...this.#tenantRevocationTails.values(),
+    ]);
+    this.#seatReassignmentOperations.clear();
+    this.#seatReassignmentAttempts.clear();
+    this.#inFlightSeatReassignments.clear();
+    this.#seatReassignmentDrains.clear();
+    this.#seatReassignmentDrainTasks.clear();
     const connections = [...this.#connections.values()];
     const active = [...this.#active.values()];
     let shutdownError: unknown = null;
@@ -1815,6 +2390,11 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     }
     this.#connections.clear();
+    this.#deviceConnections.clear();
+    this.#seatConnections.clear();
+    this.#deviceSessions.clear();
+    this.#seatSessions.clear();
+    this.#revokedConnectionIds.clear();
     this.#active.clear();
     for (const waiter of this.#waiters.values()) {
       clearTimeout(waiter.timer);
@@ -1824,27 +2404,2444 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const drained = await Promise.allSettled(
       connections.map(async (connection) => {
         try {
-          await connection.send(
-            JSON.stringify({
-              v: 1,
-              type: "goodbye",
-              id: gatewayUuidV7(this.#clock()),
-              ts: nowIso(this.#clock()),
-              payload: { reason: "server_draining", retry_after_ms: 1_000 },
-            } satisfies RbpEnvelope),
-          );
+          if (this.#connectionIsCurrentlyAuthorized(connection)) {
+            await connection.send(
+              JSON.stringify({
+                v: 1,
+                type: "goodbye",
+                id: gatewayUuidV7(this.#clock()),
+                ts: nowIso(this.#clock()),
+                payload: { reason: "server_draining", retry_after_ms: 1_000 },
+              } satisfies RbpEnvelope),
+            );
+          }
         } finally {
           await connection.close(1001, "server draining");
         }
       }),
     );
-    const closed = await this.store.close();
-    if (!closed.ok) throw new Error(closed.message);
+    try {
+      await this.#closeLifecycleResources();
+    } catch (error) {
+      shutdownError ??= error;
+    }
     const drainFailure = drained.find(
       (result): result is PromiseRejectedResult => result.status === "rejected",
     );
     if (shutdownError !== null) throw shutdownError;
     if (drainFailure !== undefined) throw drainFailure.reason;
+  }
+
+  async #closeLifecycleResources(): Promise<void> {
+    const identity = this.#productionIdentity;
+    if (identity !== null && this.#identityState !== "closed") {
+      const closed = await this.#callLifecycle(() => identity.close());
+      if (!closed.ok) {
+        this.#identityState = "unknown";
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault("unavailable", closed.message, 503, 1011);
+      }
+      this.#identityState = "closed";
+      if (this.#protocolStoreManagedBy === "identity") {
+        this.#protocolStoreState = "closed";
+      }
+    } else if (identity === null) {
+      this.#identityState = "closed";
+    }
+    if (
+      this.#protocolStoreManagedBy === "bridge" &&
+      this.#protocolStoreState !== "closed"
+    ) {
+      const closed = await this.#callLifecycle(() => this.store.close());
+      if (!closed.ok) {
+        this.#protocolStoreState = "unknown";
+        this.#lifecycleState = "failed";
+        throw new GatewayRbpFault("unavailable", closed.message, 503, 1011);
+      }
+      this.#protocolStoreState = "closed";
+    }
+    this.#lifecycleState = "closed";
+  }
+
+  #assertOpen(): void {
+    if (this.#lifecycleState !== "open") {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "Gateway identity and protocol authority are not ready",
+        503,
+        1011,
+      );
+    }
+  }
+
+  #trackConnection(connection: LiveConnection): void {
+    this.#knownTenants.add(connection.auth.actor.tenantId);
+    const add = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key) ?? new Set<string>();
+      existing.add(connection.connectionId);
+      index.set(key, existing);
+    };
+    add(
+      this.#deviceConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.deviceId,
+      ),
+    );
+    add(
+      this.#seatConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.seatId,
+      ),
+    );
+  }
+
+  #untrackConnection(connection: LiveConnection): void {
+    const remove = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key);
+      if (existing === undefined) return;
+      existing.delete(connection.connectionId);
+      if (existing.size === 0) index.delete(key);
+    };
+    remove(
+      this.#deviceConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.deviceId,
+      ),
+    );
+    remove(
+      this.#seatConnections,
+      identityIndexKey(
+        connection.auth.actor.tenantId,
+        connection.auth.actor.seatId,
+      ),
+    );
+    this.#maybeForgetTenant(connection.auth.actor.tenantId);
+  }
+
+  #trackSession(record: DurableRbpSession): void {
+    const add = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key) ?? new Set<string>();
+      existing.add(record.rsid);
+      index.set(key, existing);
+    };
+    add(
+      this.#deviceSessions,
+      identityIndexKey(record.tenantId, record.deviceId),
+    );
+    add(
+      this.#seatSessions,
+      identityIndexKey(record.tenantId, record.seatId),
+    );
+  }
+
+  #untrackSession(record: DurableRbpSession): void {
+    const remove = (index: Map<string, Set<string>>, key: string): void => {
+      const existing = index.get(key);
+      if (existing === undefined) return;
+      existing.delete(record.rsid);
+      if (existing.size === 0) index.delete(key);
+    };
+    remove(
+      this.#deviceSessions,
+      identityIndexKey(record.tenantId, record.deviceId),
+    );
+    remove(
+      this.#seatSessions,
+      identityIndexKey(record.tenantId, record.seatId),
+    );
+    this.#maybeForgetTenant(record.tenantId);
+  }
+
+  #maybeForgetTenant(tenantId: string): void {
+    const hasConnection = [...this.#connections.values()].some(
+      (connection) => connection.auth.actor.tenantId === tenantId,
+    );
+    const hasSession = [...this.#active.values()].some(
+      (active) => active.tenantId === tenantId,
+    );
+    if (hasConnection || hasSession) return;
+    this.#knownTenants.delete(tenantId);
+    this.#tenantIdentitySnapshots.delete(tenantId);
+  }
+
+  async #withTenantIdentityAuthority<T>(
+    tenantId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.#tenantIdentityTails.get(tenantId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#tenantIdentityTails.set(tenantId, tail);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#tenantIdentityTails.get(tenantId) === tail) {
+        this.#tenantIdentityTails.delete(tenantId);
+      }
+    }
+  }
+
+  async #withTenantRevocationRun<T>(
+    tenantId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const prior = this.#tenantRevocationTails.get(tenantId) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    this.#tenantRevocationTails.set(tenantId, tail);
+    await prior;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (this.#tenantRevocationTails.get(tenantId) === tail) {
+        this.#tenantRevocationTails.delete(tenantId);
+      }
+    }
+  }
+
+  #advanceTenantBlockGeneration(tenantId: string): number {
+    const next = (this.#tenantBlockGenerations.get(tenantId) ?? 0) + 1;
+    this.#tenantBlockGenerations.set(tenantId, next);
+    return next;
+  }
+
+  #setDeviceAuthorityFence(
+    tenantId: string,
+    deviceId: string,
+    input: Omit<DeviceAuthorityFence, "generation">,
+  ): DeviceAuthorityFence {
+    const key = identityIndexKey(tenantId, deviceId);
+    const prior = this.#deviceAuthorityFences.get(key);
+    const unchanged =
+      prior !== undefined &&
+      prior.status === input.status &&
+      prior.authorizationVersion === input.authorizationVersion &&
+      prior.identityRecordVersion === input.identityRecordVersion &&
+      prior.connectionCapabilityVersion === input.connectionCapabilityVersion &&
+      prior.sessionCapabilityVersion === input.sessionCapabilityVersion &&
+      prior.seatId === input.seatId &&
+      prior.reason === input.reason;
+    const next = Object.freeze({
+      ...input,
+      generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
+    });
+    this.#deviceAuthorityFences.set(key, next);
+    return next;
+  }
+
+  #setSeatAuthorityFence(
+    tenantId: string,
+    seatId: string,
+    input: Omit<SeatAuthorityFence, "generation">,
+  ): SeatAuthorityFence {
+    const key = identityIndexKey(tenantId, seatId);
+    const prior = this.#seatAuthorityFences.get(key);
+    const unchanged =
+      prior !== undefined &&
+      prior.status === input.status &&
+      prior.seatAuthorityVersion === input.seatAuthorityVersion &&
+      prior.seatRecordVersion === input.seatRecordVersion &&
+      prior.deviceId === input.deviceId &&
+      prior.reason === input.reason;
+    const next = Object.freeze({
+      ...input,
+      generation: unchanged ? prior.generation : (prior?.generation ?? 0) + 1,
+    });
+    this.#seatAuthorityFences.set(key, next);
+    return next;
+  }
+
+  #deviceFence(tenantId: string, deviceId: string): DeviceAuthorityFence | null {
+    return this.#deviceAuthorityFences.get(identityIndexKey(tenantId, deviceId)) ?? null;
+  }
+
+  #seatFence(tenantId: string, seatId: string): SeatAuthorityFence | null {
+    return this.#seatAuthorityFences.get(identityIndexKey(tenantId, seatId)) ?? null;
+  }
+
+  #removeSeatReassignmentOperation(
+    operation: SeatReassignmentOperation,
+  ): void {
+    const key = identityIndexKey(operation.tenantId, operation.seatId);
+    if (this.#seatReassignmentOperations.get(key)?.token === operation.token) {
+      this.#seatReassignmentOperations.delete(key);
+    }
+    if (!this.#hasUnresolvedSeatReassignmentDrain(operation.token)) {
+      this.#seatReassignmentAttempts.delete(operation.token);
+    }
+  }
+
+  #hasUnresolvedSeatReassignmentDrain(token: string): boolean {
+    return [...this.#seatReassignmentDrainTasks].some(
+      (task) => task.operation.token === token && !task.drainSettled,
+    );
+  }
+
+  #pruneSeatReassignmentOperations(): void {
+    const nowMs = this.#clock();
+    for (const operation of this.#seatReassignmentOperations.values()) {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (
+        this.#hasUnresolvedSeatReassignmentDrain(operation.token) ||
+        (attempt !== undefined && attempt.expiresAtMs >= nowMs)
+      ) {
+        continue;
+      }
+      this.#removeSeatReassignmentOperation(operation);
+    }
+    const recordLimit = this.#maxActiveSeatReassignments * 4;
+    while (this.#seatReassignmentOperations.size >= recordLimit) {
+      const oldest = [...this.#seatReassignmentOperations.values()]
+        .filter(
+          (operation) =>
+            !this.#hasUnresolvedSeatReassignmentDrain(operation.token),
+        )
+        .sort(
+          (left, right) =>
+            (this.#seatReassignmentAttempts.get(left.token)?.createdAtMs ?? 0) -
+            (this.#seatReassignmentAttempts.get(right.token)?.createdAtMs ?? 0),
+        )[0];
+      if (oldest === undefined) break;
+      this.#removeSeatReassignmentOperation(oldest);
+    }
+  }
+
+  #assertSeatReassignmentCapacity(): void {
+    this.#pruneSeatReassignmentOperations();
+    if (
+      this.#lifecycleState !== "open" ||
+      this.#seatReassignmentDrainTasks.size >=
+        this.#maxActiveSeatReassignments ||
+      this.#seatReassignmentOperations.size >=
+        this.#maxActiveSeatReassignments * 4
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment authority is at its bounded capacity",
+        503,
+        1011,
+      );
+    }
+  }
+
+  #registerSeatReassignmentTask(
+    operation: SeatReassignmentOperation,
+    attempt: SeatReassignmentAttemptState,
+  ): SeatReassignmentTask {
+    if (
+      this.#lifecycleState !== "open" ||
+      this.#seatReassignmentDrainTasks.size >=
+        this.#maxActiveSeatReassignments ||
+      attempt.lifecycleGeneration !== this.#lifecycleGeneration ||
+      this.#inFlightSeatReassignments.has(operation.token)
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment lifecycle registration is stale",
+        503,
+        1011,
+      );
+    }
+    let resolveOutcome!: (outcome: SeatReassignmentTaskOutcome) => void;
+    const outcome = new Promise<SeatReassignmentTaskOutcome>((resolve) => {
+      resolveOutcome = resolve;
+    });
+    let resolveCancellation!: () => void;
+    const cancellation = new Promise<void>((resolve) => {
+      resolveCancellation = resolve;
+    });
+    let resolveDrain!: () => void;
+    const drain = new Promise<void>((resolve) => {
+      resolveDrain = resolve;
+    });
+    const task: SeatReassignmentTask = {
+      operation,
+      lifecycleGeneration: this.#lifecycleGeneration,
+      attempt: attempt.attemptsStarted,
+      cancelled: false,
+      cancellationKind: null,
+      outcomeSettled: false,
+      drainSettled: false,
+      outcome,
+      resolveOutcome,
+      cancellation,
+      resolveCancellation,
+      drain,
+      resolveDrain,
+    };
+    this.#inFlightSeatReassignments.set(operation.token, task);
+    this.#seatReassignmentDrains.add(drain);
+    this.#seatReassignmentDrainTasks.add(task);
+    return task;
+  }
+
+  #settleSeatReassignmentTask(
+    task: SeatReassignmentTask,
+    outcome: SeatReassignmentTaskOutcome,
+  ): void {
+    if (!task.outcomeSettled) {
+      task.outcomeSettled = true;
+      task.resolveOutcome(outcome);
+    }
+    if (
+      this.#inFlightSeatReassignments.get(task.operation.token) === task
+    ) {
+      this.#inFlightSeatReassignments.delete(task.operation.token);
+    }
+    if (outcome !== "succeeded") {
+      this.#quarantineSeatReassignment(task.operation);
+    }
+  }
+
+  #finishSeatReassignmentDrain(task: SeatReassignmentTask): void {
+    if (task.drainSettled) return;
+    task.drainSettled = true;
+    this.#seatReassignmentDrains.delete(task.drain);
+    this.#seatReassignmentDrainTasks.delete(task);
+    const attempt = this.#seatReassignmentAttempts.get(task.operation.token);
+    if (
+      attempt?.state === "timed_out_cleanup_pending" ||
+      attempt?.state === "cancelled_cleanup_pending"
+    ) {
+      attempt.state = "quarantined";
+    }
+    const key = identityIndexKey(
+      task.operation.tenantId,
+      task.operation.seatId,
+    );
+    if (
+      this.#seatReassignmentOperations.get(key)?.token !==
+      task.operation.token
+    ) {
+      this.#seatReassignmentAttempts.delete(task.operation.token);
+    }
+    task.resolveDrain();
+  }
+
+  #cancelSeatReassignmentTask(
+    task: SeatReassignmentTask,
+    kind: "authority" | "lifecycle" = "lifecycle",
+  ): void {
+    if (!task.cancelled) {
+      task.cancelled = true;
+      task.cancellationKind = kind;
+      const attempt = this.#seatReassignmentAttempts.get(task.operation.token);
+      if (attempt !== undefined) {
+        attempt.state = "cancelled_cleanup_pending";
+      }
+      task.resolveCancellation();
+    }
+    this.#settleSeatReassignmentTask(task, "cancelled");
+  }
+
+  #invalidateSeatReassignmentOperation(
+    operation: SeatReassignmentOperation,
+    options: { readonly quarantine?: boolean } = {},
+  ): void {
+    if (options.quarantine === false) {
+      this.#removeSeatReassignmentOperation(operation);
+    }
+    const task = this.#inFlightSeatReassignments.get(operation.token);
+    if (task !== undefined) {
+      this.#cancelSeatReassignmentTask(task, "authority");
+    }
+    if (options.quarantine !== false) {
+      this.#removeSeatReassignmentOperation(operation);
+    }
+  }
+
+  #sameDeviceAuthorityFence(
+    current: DeviceAuthorityFence | null,
+    expected: DeviceAuthorityFence,
+  ): boolean {
+    return (
+      current !== null &&
+      current.generation === expected.generation &&
+      current.status === expected.status &&
+      current.authorizationVersion === expected.authorizationVersion &&
+      current.identityRecordVersion === expected.identityRecordVersion &&
+      current.connectionCapabilityVersion ===
+        expected.connectionCapabilityVersion &&
+      current.sessionCapabilityVersion === expected.sessionCapabilityVersion &&
+      current.seatId === expected.seatId &&
+      current.reason === expected.reason
+    );
+  }
+
+  #sameSeatAuthorityFence(
+    current: SeatAuthorityFence | null,
+    expected: SeatAuthorityFence,
+  ): boolean {
+    return (
+      current !== null &&
+      current.generation === expected.generation &&
+      current.status === expected.status &&
+      current.seatAuthorityVersion === expected.seatAuthorityVersion &&
+      current.seatRecordVersion === expected.seatRecordVersion &&
+      current.deviceId === expected.deviceId &&
+      current.reason === expected.reason
+    );
+  }
+
+  #connectionMatchesSeatReassignment(
+    connection: LiveConnection,
+    operation: SeatReassignmentOperation,
+  ): boolean {
+    const durable = durableIdentityAuthority(connection.auth);
+    return (
+      durable !== null &&
+      connection.auth.actor.tenantId === operation.tenantId &&
+      connection.auth.actor.deviceId === operation.incomingDeviceId &&
+      connection.auth.actor.seatId === operation.seatId &&
+      durable.authorizationVersion ===
+        operation.incomingDeviceFence.authorizationVersion &&
+      durable.identityRecordVersion ===
+        operation.incomingDeviceFence.identityRecordVersion &&
+      durable.connectionCapabilityVersion ===
+        operation.incomingDeviceFence.connectionCapabilityVersion &&
+      durable.sessionCapabilityVersion ===
+        operation.incomingDeviceFence.sessionCapabilityVersion &&
+      durable.seatAuthorityVersion ===
+        operation.seatFence.seatAuthorityVersion &&
+      durable.seatRecordVersion === operation.seatFence.seatRecordVersion
+    );
+  }
+
+  #connectionSupersedesSeatReassignment(
+    connection: LiveConnection,
+    operation: SeatReassignmentOperation,
+  ): DurableIdentityAuthority | null {
+    const durable = durableIdentityAuthority(connection.auth);
+    const expectedDevice = operation.incomingDeviceFence;
+    const expectedSeat = operation.seatFence;
+    if (
+      durable === null ||
+      connection.auth.actor.tenantId !== operation.tenantId ||
+      connection.auth.actor.deviceId !== operation.incomingDeviceId ||
+      connection.auth.actor.seatId !== operation.seatId ||
+      expectedDevice.authorizationVersion === null ||
+      expectedDevice.identityRecordVersion === null ||
+      expectedDevice.connectionCapabilityVersion === null ||
+      expectedDevice.sessionCapabilityVersion === null ||
+      expectedSeat.seatAuthorityVersion === null ||
+      expectedSeat.seatRecordVersion === null
+    ) {
+      return null;
+    }
+    const deviceExact =
+      durable.authorizationVersion === expectedDevice.authorizationVersion &&
+      durable.identityRecordVersion === expectedDevice.identityRecordVersion &&
+      durable.connectionCapabilityVersion ===
+        expectedDevice.connectionCapabilityVersion &&
+      durable.sessionCapabilityVersion ===
+        expectedDevice.sessionCapabilityVersion;
+    const deviceHigher =
+      durable.authorizationVersion > expectedDevice.authorizationVersion &&
+      durable.identityRecordVersion > expectedDevice.identityRecordVersion &&
+      durable.connectionCapabilityVersion >=
+        expectedDevice.connectionCapabilityVersion &&
+      durable.sessionCapabilityVersion >=
+        expectedDevice.sessionCapabilityVersion;
+    const seatExact =
+      durable.seatAuthorityVersion === expectedSeat.seatAuthorityVersion &&
+      durable.seatRecordVersion === expectedSeat.seatRecordVersion;
+    const seatHigher =
+      durable.seatAuthorityVersion > expectedSeat.seatAuthorityVersion &&
+      durable.seatRecordVersion > expectedSeat.seatRecordVersion;
+    return (
+      (deviceExact || deviceHigher) &&
+      (seatExact || seatHigher) &&
+      (deviceHigher || seatHigher)
+    )
+      ? durable
+      : null;
+  }
+
+  #seatReassignmentFencesAreCurrent(
+    operation: SeatReassignmentOperation,
+  ): boolean {
+    return (
+      this.#seatReassignmentOperations.get(
+        identityIndexKey(operation.tenantId, operation.seatId),
+      )?.token === operation.token &&
+      !this.#blockedTenants.has(operation.tenantId) &&
+      (this.#tenantBlockGenerations.get(operation.tenantId) ?? 0) ===
+        operation.tenantBlockGeneration &&
+      this.#sameDeviceAuthorityFence(
+        this.#deviceFence(operation.tenantId, operation.priorDeviceId),
+        operation.priorDeviceFence,
+      ) &&
+      this.#sameDeviceAuthorityFence(
+        this.#deviceFence(operation.tenantId, operation.incomingDeviceId),
+        operation.incomingDeviceFence,
+      ) &&
+      this.#sameSeatAuthorityFence(
+        this.#seatFence(operation.tenantId, operation.seatId),
+        operation.seatFence,
+      )
+    );
+  }
+
+  #seatReassignmentIsCurrent(
+    connection: LiveConnection,
+    operation: SeatReassignmentOperation,
+  ): boolean {
+    return (
+      this.#seatReassignmentFencesAreCurrent(operation) &&
+      this.#connectionMatchesSeatReassignment(connection, operation)
+    );
+  }
+
+  #seatReassignmentTaskIsCurrent(
+    connection: LiveConnection,
+    task: SeatReassignmentTask,
+  ): boolean {
+    return (
+      this.#lifecycleState === "open" &&
+      this.#lifecycleGeneration === task.lifecycleGeneration &&
+      !task.cancelled &&
+      this.#inFlightSeatReassignments.get(task.operation.token) === task &&
+      this.#seatReassignmentIsCurrent(connection, task.operation)
+    );
+  }
+
+  #quarantineSeatReassignment(operation: SeatReassignmentOperation): void {
+    const key = identityIndexKey(operation.tenantId, operation.seatId);
+    if (this.#seatReassignmentOperations.get(key)?.token !== operation.token) {
+      return;
+    }
+    const current = this.#seatFence(operation.tenantId, operation.seatId);
+    if (current?.status !== "active") return;
+    this.#setSeatAuthorityFence(operation.tenantId, operation.seatId, {
+      status: "blocked",
+      seatAuthorityVersion: current.seatAuthorityVersion,
+      seatRecordVersion: current.seatRecordVersion,
+      deviceId: current.deviceId,
+      reason: current.reason,
+    });
+  }
+
+  #admitAuthenticatedScope(connection: LiveConnection): {
+    readonly kind: "admitted";
+    readonly deviceGeneration: number;
+    readonly seatGeneration: number;
+  } | {
+    readonly kind: "seat_reassignment";
+    readonly operation: SeatReassignmentOperation;
+    readonly task: SeatReassignmentTask;
+    readonly role: "leader" | "replay";
+  } {
+    const tenantId = connection.auth.actor.tenantId;
+    const durable = durableIdentityAuthority(connection.auth);
+    const devicePrior = this.#deviceFence(tenantId, connection.auth.actor.deviceId);
+    const seatPrior = this.#seatFence(tenantId, connection.auth.actor.seatId);
+    const seatKey = identityIndexKey(tenantId, connection.auth.actor.seatId);
+    const pendingReassignment = this.#seatReassignmentOperations.get(seatKey);
+    if (
+      pendingReassignment !== undefined &&
+      this.#seatReassignmentIsCurrent(connection, pendingReassignment)
+    ) {
+      const attempt = this.#seatReassignmentAttempts.get(
+        pendingReassignment.token,
+      );
+      if (
+        attempt === undefined ||
+        attempt.lifecycleGeneration !== this.#lifecycleGeneration ||
+        attempt.expiresAtMs < this.#clock() ||
+        attempt.attemptsStarted >= MAX_SEAT_REASSIGNMENT_ATTEMPTS
+      ) {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat reassignment retry authority is exhausted",
+          403,
+          4403,
+        );
+      }
+      if (
+        attempt.state === "timed_out_cleanup_pending" ||
+        attempt.state === "cancelled_cleanup_pending"
+      ) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "seat reassignment cleanup is still draining",
+          503,
+          1011,
+        );
+      }
+      const activeTask = this.#inFlightSeatReassignments.get(
+        pendingReassignment.token,
+      );
+      attempt.attemptsStarted += 1;
+      if (activeTask !== undefined) {
+        return {
+          kind: "seat_reassignment",
+          operation: pendingReassignment,
+          task: activeTask,
+          role: "replay",
+        };
+      }
+      let retryTask: SeatReassignmentTask;
+      const priorState = attempt.state;
+      attempt.state = "active";
+      try {
+        retryTask = this.#registerSeatReassignmentTask(
+          pendingReassignment,
+          attempt,
+        );
+      } catch (error) {
+        attempt.attemptsStarted -= 1;
+        attempt.state = priorState;
+        throw error;
+      }
+      return {
+        kind: "seat_reassignment",
+        operation: pendingReassignment,
+        task: retryTask,
+        role: "leader",
+      };
+    }
+    if (
+      pendingReassignment !== undefined &&
+      this.#seatReassignmentFencesAreCurrent(pendingReassignment)
+    ) {
+      const superseding = this.#connectionSupersedesSeatReassignment(
+        connection,
+        pendingReassignment,
+      );
+      if (superseding !== null) {
+        this.#setDeviceAuthorityFence(
+          tenantId,
+          connection.auth.actor.deviceId,
+          {
+            status: "blocked",
+            authorizationVersion: superseding.authorizationVersion,
+            identityRecordVersion: superseding.identityRecordVersion,
+            connectionCapabilityVersion:
+              superseding.connectionCapabilityVersion,
+            sessionCapabilityVersion: superseding.sessionCapabilityVersion,
+            seatId: connection.auth.actor.seatId,
+            reason: null,
+          },
+        );
+        this.#setSeatAuthorityFence(
+          tenantId,
+          connection.auth.actor.seatId,
+          {
+            status: "blocked",
+            seatAuthorityVersion: superseding.seatAuthorityVersion,
+            seatRecordVersion: superseding.seatRecordVersion,
+            deviceId: connection.auth.actor.deviceId,
+            reason: null,
+          },
+        );
+        this.#invalidateSeatReassignmentOperation(pendingReassignment);
+        throw new GatewayRbpFault(
+          "auth",
+          "newer seat reassignment authority requires resynchronization",
+          403,
+          4403,
+        );
+      }
+    }
+    const deviceVersion = durable?.authorizationVersion ?? null;
+    const identityRecordVersion = durable?.identityRecordVersion ?? null;
+    const seatVersion = durable?.seatAuthorityVersion ?? null;
+    const seatRecordVersion = durable?.seatRecordVersion ?? null;
+    const seatOwnerChanged =
+      seatPrior?.deviceId !== null &&
+      seatPrior?.deviceId !== undefined &&
+      seatPrior.deviceId !== connection.auth.actor.deviceId;
+    const seatVersionsEqual =
+      seatPrior !== null &&
+      seatPrior.seatAuthorityVersion === seatVersion &&
+      seatPrior.seatRecordVersion === seatRecordVersion;
+    const seatVersionsHigher =
+      seatPrior !== null &&
+      seatPrior.seatAuthorityVersion !== null &&
+      seatPrior.seatRecordVersion !== null &&
+      seatVersion !== null &&
+      seatRecordVersion !== null &&
+      seatVersion > seatPrior.seatAuthorityVersion &&
+      seatRecordVersion > seatPrior.seatRecordVersion;
+    const deviceCanActivate =
+      devicePrior === null ||
+      (devicePrior.status === "active" &&
+        devicePrior.authorizationVersion === deviceVersion &&
+        devicePrior.identityRecordVersion === identityRecordVersion) ||
+      (devicePrior.status === "active" &&
+        deviceVersion !== null &&
+        identityRecordVersion !== null &&
+        (devicePrior.authorizationVersion === null ||
+          deviceVersion > devicePrior.authorizationVersion) &&
+        (devicePrior.identityRecordVersion === null ||
+          identityRecordVersion > devicePrior.identityRecordVersion)) ||
+      (devicePrior.status === "revoked" &&
+        devicePrior.authorizationVersion !== null &&
+        devicePrior.identityRecordVersion !== null &&
+        deviceVersion !== null &&
+        identityRecordVersion !== null &&
+        deviceVersion > devicePrior.authorizationVersion &&
+        identityRecordVersion > devicePrior.identityRecordVersion);
+    const seatCanActivate =
+      seatPrior === null ||
+      (seatPrior.status === "active" &&
+        !seatOwnerChanged &&
+        seatVersionsEqual) ||
+      (seatPrior.status === "active" &&
+        seatVersionsHigher) ||
+      (seatPrior.status === "revoked" &&
+        seatVersionsHigher);
+    if (!deviceCanActivate || !seatCanActivate) {
+      throw new GatewayRbpFault(
+        "auth",
+        "authenticated identity is stale against scoped authority",
+        403,
+        4403,
+      );
+    }
+    if (seatOwnerChanged) {
+      if (!seatVersionsHigher || seatPrior?.deviceId === null) {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat owner change requires a strictly newer coherent authority",
+          403,
+          4403,
+        );
+      }
+      this.#assertSeatReassignmentCapacity();
+      const createdAtMs = this.#clock();
+      const operationToken = gatewayUuidV7(createdAtMs);
+      const tenantBlockGeneration =
+        this.#tenantBlockGenerations.get(tenantId) ?? 0;
+      const oldDevice = this.#deviceFence(tenantId, seatPrior.deviceId);
+      const priorDeviceFence = this.#setDeviceAuthorityFence(
+        tenantId,
+        seatPrior.deviceId,
+        {
+          status: "blocked",
+          authorizationVersion: oldDevice?.authorizationVersion ?? null,
+          identityRecordVersion: oldDevice?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            oldDevice?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion: oldDevice?.sessionCapabilityVersion ?? null,
+          seatId: connection.auth.actor.seatId,
+          reason: "seat_revoked",
+        },
+      );
+      const incomingDeviceFence = this.#setDeviceAuthorityFence(
+        tenantId,
+        connection.auth.actor.deviceId,
+        {
+          status: "blocked",
+          authorizationVersion: deviceVersion,
+          identityRecordVersion,
+          connectionCapabilityVersion:
+            durable?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion:
+            durable?.sessionCapabilityVersion ?? null,
+          seatId: connection.auth.actor.seatId,
+          reason: null,
+        },
+      );
+      const seatFence = this.#setSeatAuthorityFence(
+        tenantId,
+        connection.auth.actor.seatId,
+        {
+          status: "blocked",
+          seatAuthorityVersion: seatVersion,
+          seatRecordVersion,
+          deviceId: connection.auth.actor.deviceId,
+          reason: null,
+        },
+      );
+      const operation = Object.freeze({
+        token: operationToken,
+        tenantId,
+        seatId: connection.auth.actor.seatId,
+        priorDeviceId: seatPrior.deviceId,
+        incomingDeviceId: connection.auth.actor.deviceId,
+        tenantBlockGeneration,
+        priorDeviceFence,
+        incomingDeviceFence,
+        seatFence,
+      });
+      this.#seatReassignmentOperations.set(seatKey, operation);
+      const attempt: SeatReassignmentAttemptState = {
+        attemptsStarted: 1,
+        state: "active",
+        createdAtMs,
+        expiresAtMs: Math.min(
+          Number.MAX_SAFE_INTEGER,
+          createdAtMs + Math.max(this.#seatReassignmentTimeoutMs * 4, 1_000),
+        ),
+        lifecycleGeneration: this.#lifecycleGeneration,
+      };
+      this.#seatReassignmentAttempts.set(operation.token, attempt);
+      let task: SeatReassignmentTask;
+      try {
+        task = this.#registerSeatReassignmentTask(operation, attempt);
+      } catch (error) {
+        this.#removeSeatReassignmentOperation(operation);
+        throw error;
+      }
+      return {
+        kind: "seat_reassignment",
+        operation,
+        task,
+        role: "leader",
+      };
+    }
+    const device = this.#setDeviceAuthorityFence(
+      tenantId,
+      connection.auth.actor.deviceId,
+      {
+        status: "active",
+        authorizationVersion: deviceVersion,
+        identityRecordVersion,
+        connectionCapabilityVersion:
+          durable?.connectionCapabilityVersion ?? null,
+        sessionCapabilityVersion: durable?.sessionCapabilityVersion ?? null,
+        seatId: connection.auth.actor.seatId,
+        reason: null,
+      },
+    );
+    const seat = this.#setSeatAuthorityFence(
+      tenantId,
+      connection.auth.actor.seatId,
+      {
+        status: "active",
+        seatAuthorityVersion: seatVersion,
+        seatRecordVersion,
+        deviceId: connection.auth.actor.deviceId,
+        reason: null,
+      },
+    );
+    return {
+      kind: "admitted",
+      deviceGeneration: device.generation,
+      seatGeneration: seat.generation,
+    };
+  }
+
+  #applyDeviceSnapshot(device: IdentityDeviceV2): DeviceAuthorityFence {
+    const prior = this.#deviceFence(device.tenantId, device.deviceId);
+    const status: ScopedAuthorityStatus =
+      device.status === "active" ? "active" : "revoked";
+    if (
+      prior !== null &&
+      ((prior.authorizationVersion !== null &&
+        device.authorizationVersion < prior.authorizationVersion) ||
+        (prior.identityRecordVersion !== null &&
+          device.recordVersion < prior.identityRecordVersion))
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "device snapshot regressed scoped authority versions",
+        503,
+        1011,
+      );
+    }
+    if (status === "active" && prior !== null) {
+      const versionIsOlder =
+        (prior.authorizationVersion !== null &&
+          device.authorizationVersion < prior.authorizationVersion) ||
+        (prior.identityRecordVersion !== null &&
+          device.recordVersion < prior.identityRecordVersion);
+      const revokedWasNotSuperseded =
+        prior.status === "revoked" &&
+        (prior.authorizationVersion === null ||
+          prior.identityRecordVersion === null ||
+          device.authorizationVersion <= prior.authorizationVersion ||
+          device.recordVersion <= prior.identityRecordVersion);
+      if (versionIsOlder || revokedWasNotSuperseded) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "active device snapshot did not supersede its scoped fence",
+          503,
+          1011,
+        );
+      }
+    }
+    return this.#setDeviceAuthorityFence(device.tenantId, device.deviceId, {
+      status,
+      authorizationVersion: device.authorizationVersion,
+      identityRecordVersion: device.recordVersion,
+      connectionCapabilityVersion: device.connectionCapabilityVersion,
+      sessionCapabilityVersion: device.sessionCapabilityVersion,
+      seatId: device.seatId,
+      reason: status === "active" ? null : prior?.reason ?? "device_revoked",
+    });
+  }
+
+  #applySeatSnapshot(seat: IdentityTenantSeatV1): SeatAuthorityFence {
+    const prior = this.#seatFence(seat.tenantId, seat.seatId);
+    const status: ScopedAuthorityStatus =
+      seat.status === "active" ? "active" : "revoked";
+    if (
+      prior !== null &&
+      ((prior.seatAuthorityVersion !== null &&
+        seat.seatAuthorityVersion < prior.seatAuthorityVersion) ||
+        (prior.seatRecordVersion !== null &&
+          seat.recordVersion < prior.seatRecordVersion))
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat snapshot regressed scoped authority versions",
+        503,
+        1011,
+      );
+    }
+    if (
+      status === "active" &&
+      prior?.status === "active" &&
+      prior.deviceId !== null &&
+      prior.deviceId !== seat.deviceId &&
+      (prior.seatAuthorityVersion === null ||
+        prior.seatRecordVersion === null ||
+        seat.seatAuthorityVersion <= prior.seatAuthorityVersion ||
+        seat.recordVersion <= prior.seatRecordVersion)
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat owner changed without a higher coherent authority version",
+        503,
+        1011,
+      );
+    }
+    if (status === "active" && prior !== null) {
+      const versionIsOlder =
+        (prior.seatAuthorityVersion !== null &&
+          seat.seatAuthorityVersion < prior.seatAuthorityVersion) ||
+        (prior.seatRecordVersion !== null &&
+          seat.recordVersion < prior.seatRecordVersion);
+      const revokedWasNotSuperseded =
+        prior.status === "revoked" &&
+        (prior.seatAuthorityVersion === null ||
+          prior.seatRecordVersion === null ||
+          seat.seatAuthorityVersion <= prior.seatAuthorityVersion ||
+          seat.recordVersion <= prior.seatRecordVersion);
+      if (versionIsOlder || revokedWasNotSuperseded) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "active seat snapshot did not supersede its scoped fence",
+          503,
+          1011,
+        );
+      }
+    }
+    const next = this.#setSeatAuthorityFence(seat.tenantId, seat.seatId, {
+      status,
+      seatAuthorityVersion: seat.seatAuthorityVersion,
+      seatRecordVersion: seat.recordVersion,
+      deviceId: seat.deviceId,
+      reason: status === "active" ? null : prior?.reason ?? "seat_revoked",
+    });
+    const reassignment = this.#seatReassignmentOperations.get(
+      identityIndexKey(seat.tenantId, seat.seatId),
+    );
+    if (reassignment !== undefined) {
+      this.#invalidateSeatReassignmentOperation(reassignment, {
+        quarantine: false,
+      });
+    }
+    return next;
+  }
+
+  #applyEventFences(
+    tenantId: string,
+    events: readonly IdentityRevocationEventV1[],
+  ): void {
+    for (const event of events) {
+      const priorSeat =
+        event.seatId === null ? null : this.#seatFence(tenantId, event.seatId);
+      if (
+        event.seatId !== null &&
+        event.seatAuthorityVersion !== null &&
+        priorSeat?.seatAuthorityVersion !== null &&
+        priorSeat?.seatAuthorityVersion !== undefined &&
+        event.seatAuthorityVersion < priorSeat.seatAuthorityVersion
+      ) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          "identity event regressed seat authority version",
+          503,
+          1011,
+        );
+      }
+      if (
+        event.action === "seat_reassigned" &&
+        event.seatId !== null &&
+        priorSeat?.deviceId !== null &&
+        priorSeat?.deviceId !== undefined &&
+        priorSeat.deviceId !== event.deviceId
+      ) {
+        if (
+          event.seatAuthorityVersion === null ||
+          priorSeat.seatAuthorityVersion === null ||
+          event.seatAuthorityVersion <= priorSeat.seatAuthorityVersion
+        ) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "seat reassignment event lacks a higher authority version",
+            503,
+            1011,
+          );
+        }
+        const oldDevice = this.#deviceFence(tenantId, priorSeat.deviceId);
+        this.#setDeviceAuthorityFence(tenantId, priorSeat.deviceId, {
+          status: "blocked",
+          authorizationVersion: oldDevice?.authorizationVersion ?? null,
+          identityRecordVersion: oldDevice?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            oldDevice?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion:
+            oldDevice?.sessionCapabilityVersion ?? null,
+          seatId: event.seatId,
+          reason: "seat_revoked",
+        });
+      }
+      if (event.deviceId !== null) {
+        const prior = this.#deviceFence(tenantId, event.deviceId);
+        if (
+          event.authorizationVersion !== null &&
+          prior?.authorizationVersion !== null &&
+          prior?.authorizationVersion !== undefined &&
+          event.authorizationVersion < prior.authorizationVersion
+        ) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event regressed device authority version",
+            503,
+            1011,
+          );
+        }
+        this.#setDeviceAuthorityFence(tenantId, event.deviceId, {
+          status: event.action === "seat_reassigned" ? "blocked" : "revoked",
+          authorizationVersion:
+            event.authorizationVersion ?? prior?.authorizationVersion ?? null,
+          identityRecordVersion: prior?.identityRecordVersion ?? null,
+          connectionCapabilityVersion:
+            prior?.connectionCapabilityVersion ?? null,
+          sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
+          seatId: event.seatId ?? prior?.seatId ?? null,
+          reason:
+            event.action === "seat_reassigned" ? null : event.action,
+        });
+      }
+      if (event.action !== "device_revoked" && event.seatId !== null) {
+        const prior = this.#seatFence(tenantId, event.seatId);
+        this.#setSeatAuthorityFence(tenantId, event.seatId, {
+          status: event.action === "seat_reassigned" ? "blocked" : "revoked",
+          seatAuthorityVersion:
+            event.seatAuthorityVersion ?? prior?.seatAuthorityVersion ?? null,
+          seatRecordVersion: prior?.seatRecordVersion ?? null,
+          deviceId: event.deviceId ?? prior?.deviceId ?? null,
+          reason: event.action === "seat_reassigned" ? null : "seat_revoked",
+        });
+      }
+    }
+  }
+
+  #applyScopedSnapshot(
+    snapshot: TenantIdentitySnapshot,
+    events: readonly IdentityRevocationEventV1[],
+    wholeTenant: boolean,
+  ): void {
+    if (wholeTenant) {
+      for (const device of snapshot.devices.values()) {
+        this.#applyDeviceSnapshot(device);
+      }
+      for (const seat of snapshot.seats.values()) {
+        this.#applySeatSnapshot(seat);
+      }
+      return;
+    }
+    for (const event of events) {
+      if (event.deviceId !== null) {
+        const device = snapshot.devices.get(event.deviceId);
+        if (device === undefined) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event device is absent from the authority snapshot",
+            503,
+            1011,
+          );
+        }
+        this.#applyDeviceSnapshot(device);
+      }
+      if (event.action !== "device_revoked" && event.seatId !== null) {
+        const seat = snapshot.seats.get(event.seatId);
+        if (seat === undefined) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity event seat is absent from the authority snapshot",
+            503,
+            1011,
+          );
+        }
+        this.#applySeatSnapshot(seat);
+      }
+    }
+  }
+
+  async #acquireConnectionAuthorityTicket(
+    connection: LiveConnection,
+    options: { readonly requireMembership?: boolean } = {},
+  ): Promise<TenantAuthorityTicket> {
+    this.#assertOpen();
+    const tenantId = connection.auth.actor.tenantId;
+    if (this.#productionIdentity !== null) {
+      await this.synchronizeIdentityRevocations(tenantId);
+    }
+    const phase = await this.#withTenantIdentityAuthority(tenantId, async () => {
+      this.#assertOpen();
+      if (
+        this.#blockedTenants.has(tenantId) ||
+        connection.auth.deviceStatus !== "active" ||
+        (options.requireMembership !== false &&
+          this.#connections.get(connection.connectionId) !== connection)
+      ) {
+        throw new GatewayRbpFault(
+          "auth",
+          "connection identity authority is fenced",
+          403,
+          4403,
+        );
+      }
+      if (this.#productionIdentity !== null) {
+        const snapshot = this.#tenantIdentitySnapshots.get(tenantId);
+        if (
+          snapshot === undefined ||
+          !this.#connectionMatchesSnapshot(connection, snapshot)
+        ) {
+          throw new GatewayRbpFault(
+            "auth",
+            "connection identity authority changed",
+            403,
+            4403,
+          );
+        }
+      }
+      const scoped = this.#admitAuthenticatedScope(connection);
+      if (scoped.kind === "seat_reassignment") return scoped;
+      const tenantBlockGeneration =
+        this.#tenantBlockGenerations.get(tenantId) ?? 0;
+      connection.tenantBlockGeneration = tenantBlockGeneration;
+      connection.deviceGeneration = scoped.deviceGeneration;
+      connection.seatGeneration = scoped.seatGeneration;
+      return Object.freeze({
+        tenantId,
+        deviceId: connection.auth.actor.deviceId,
+        seatId: connection.auth.actor.seatId,
+        connectionId: connection.connectionId,
+        tenantBlockGeneration,
+        deviceGeneration: scoped.deviceGeneration,
+        seatGeneration: scoped.seatGeneration,
+        identityAuthority: durableIdentityAuthority(connection.auth),
+      });
+    });
+    if ("tenantId" in phase) return phase;
+    if (phase.role === "replay") {
+      await phase.task.outcome;
+      throw new GatewayRbpFault(
+        "auth",
+        "seat reassignment replay does not own finalization",
+        403,
+        4403,
+      );
+    }
+    return await this.#runSeatReassignment(connection, phase.task);
+  }
+
+  async #runSeatReassignment(
+    connection: LiveConnection,
+    task: SeatReassignmentTask,
+  ): Promise<TenantAuthorityTicket> {
+    const operation = task.operation;
+    // The tenant tail is released before old-owner rsid cleanup.
+    const cleanup = this.#reconcileExplicitIdentityRevocation({
+      tenantId: operation.tenantId,
+      kind: "device",
+      deviceId: operation.priorDeviceId,
+      seatId: operation.seatId,
+      affectedDeviceIds: new Set([operation.priorDeviceId]),
+    }).then(
+      () => ({ kind: "clean" as const }),
+      (error: unknown) => ({ kind: "failed" as const, error }),
+    );
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<{ readonly kind: "timeout" }>((resolve) => {
+      timeoutHandle = setTimeout(
+        () => resolve({ kind: "timeout" }),
+        this.#seatReassignmentTimeoutMs,
+      );
+    });
+    const first = await Promise.race([
+      cleanup,
+      task.cancellation.then(() => ({ kind: "cancelled" as const })),
+      timeout,
+    ]);
+    if (timeoutHandle !== null) clearTimeout(timeoutHandle);
+    if (first.kind === "timeout") {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined) {
+        attempt.state = "timed_out_cleanup_pending";
+      }
+      this.#settleSeatReassignmentTask(task, "quarantined");
+      void cleanup.then(() => this.#finishSeatReassignmentDrain(task));
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment cleanup timed out",
+        503,
+        1011,
+      );
+    }
+    if (first.kind === "cancelled") {
+      this.#settleSeatReassignmentTask(task, "cancelled");
+      await cleanup;
+      this.#finishSeatReassignmentDrain(task);
+      if (task.cancellationKind === "authority") {
+        throw new GatewayRbpFault(
+          "auth",
+          "seat reassignment authority was superseded",
+          403,
+          4403,
+        );
+      }
+      throw new GatewayRbpFault(
+        "unavailable",
+        "seat reassignment lifecycle was cancelled",
+        503,
+        1011,
+      );
+    }
+    if (first.kind === "failed") {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined) attempt.state = "quarantined";
+      this.#settleSeatReassignmentTask(task, "quarantined");
+      this.#finishSeatReassignmentDrain(task);
+      throw first.error;
+    }
+    try {
+      return await this.#withTenantIdentityAuthority(
+        operation.tenantId,
+        async () => {
+          const durable = durableIdentityAuthority(connection.auth);
+          if (
+            durable === null ||
+            !this.#seatReassignmentTaskIsCurrent(connection, task)
+          ) {
+            throw new GatewayRbpFault(
+              "auth",
+              "seat reassignment authority changed during old-owner cleanup",
+              403,
+              4403,
+            );
+          }
+          this.#setDeviceAuthorityFence(
+            operation.tenantId,
+            operation.priorDeviceId,
+            {
+              status: "revoked",
+              authorizationVersion:
+                operation.priorDeviceFence.authorizationVersion,
+              identityRecordVersion:
+                operation.priorDeviceFence.identityRecordVersion,
+              connectionCapabilityVersion:
+                operation.priorDeviceFence.connectionCapabilityVersion,
+              sessionCapabilityVersion:
+                operation.priorDeviceFence.sessionCapabilityVersion,
+              seatId: operation.seatId,
+              reason: "seat_revoked",
+            },
+          );
+          const device = this.#setDeviceAuthorityFence(
+            operation.tenantId,
+            operation.incomingDeviceId,
+            {
+              status: "active",
+              authorizationVersion:
+                operation.incomingDeviceFence.authorizationVersion,
+              identityRecordVersion:
+                operation.incomingDeviceFence.identityRecordVersion,
+              connectionCapabilityVersion:
+                operation.incomingDeviceFence.connectionCapabilityVersion,
+              sessionCapabilityVersion:
+                operation.incomingDeviceFence.sessionCapabilityVersion,
+              seatId: operation.seatId,
+              reason: null,
+            },
+          );
+          const activeSeat = this.#setSeatAuthorityFence(
+            operation.tenantId,
+            operation.seatId,
+            {
+              status: "active",
+              seatAuthorityVersion: operation.seatFence.seatAuthorityVersion,
+              seatRecordVersion: operation.seatFence.seatRecordVersion,
+              deviceId: operation.incomingDeviceId,
+              reason: null,
+            },
+          );
+          this.#removeSeatReassignmentOperation(operation);
+          this.#settleSeatReassignmentTask(task, "succeeded");
+          const tenantBlockGeneration = operation.tenantBlockGeneration;
+          connection.tenantBlockGeneration = tenantBlockGeneration;
+          connection.deviceGeneration = device.generation;
+          connection.seatGeneration = activeSeat.generation;
+          return Object.freeze({
+            tenantId: operation.tenantId,
+            deviceId: operation.incomingDeviceId,
+            seatId: operation.seatId,
+            connectionId: connection.connectionId,
+            tenantBlockGeneration,
+            deviceGeneration: device.generation,
+            seatGeneration: activeSeat.generation,
+            identityAuthority: durable,
+          });
+        },
+      );
+    } catch (error: unknown) {
+      const attempt = this.#seatReassignmentAttempts.get(operation.token);
+      if (attempt !== undefined && !task.cancelled) {
+        attempt.state = "quarantined";
+      }
+      this.#settleSeatReassignmentTask(
+        task,
+        task.cancelled || this.#lifecycleState !== "open"
+          ? "cancelled"
+          : "quarantined",
+      );
+      throw error;
+    } finally {
+      this.#finishSeatReassignmentDrain(task);
+    }
+  }
+
+  #assertAuthorityTicket(
+    ticket: TenantAuthorityTicket,
+    connection: LiveConnection,
+    options: {
+      readonly session?: DurableRbpSession;
+      readonly requireConnectionMembership?: boolean;
+      readonly requireSessionMembership?: boolean;
+    } = {},
+  ): void {
+    const session = options.session;
+    const device = this.#deviceFence(ticket.tenantId, ticket.deviceId);
+    const seat = this.#seatFence(ticket.tenantId, ticket.seatId);
+    this.#assertOpen();
+    if (
+      ticket.tenantId !== connection.auth.actor.tenantId ||
+      ticket.deviceId !== connection.auth.actor.deviceId ||
+      ticket.seatId !== connection.auth.actor.seatId ||
+      ticket.connectionId !== connection.connectionId ||
+      ticket.tenantBlockGeneration !==
+        (this.#tenantBlockGenerations.get(ticket.tenantId) ?? 0) ||
+      ticket.deviceGeneration !== (device?.generation ?? 0) ||
+      ticket.seatGeneration !== (seat?.generation ?? 0) ||
+      device?.status !== "active" ||
+      seat?.status !== "active" ||
+      connection.tenantBlockGeneration !== ticket.tenantBlockGeneration ||
+      connection.deviceGeneration !== ticket.deviceGeneration ||
+      connection.seatGeneration !== ticket.seatGeneration ||
+      !sameDurableIdentityAuthority(
+        connection.auth,
+        ticket.identityAuthority,
+      ) ||
+      this.#blockedTenants.has(ticket.tenantId) ||
+      (options.requireConnectionMembership !== false &&
+        this.#connections.get(ticket.connectionId) !== connection) ||
+      (session !== undefined &&
+        (session.tenantId !== ticket.tenantId ||
+          session.deviceId !== ticket.deviceId ||
+          session.seatId !== ticket.seatId ||
+          session.connectionId !== ticket.connectionId ||
+          !sameJson(
+            parseSessionIdentityAuthority(session.identityAuthority),
+            ticket.identityAuthority,
+          ) ||
+          (options.requireSessionMembership !== false &&
+            (this.#active.get(session.rsid)?.record.connectionId !==
+              ticket.connectionId ||
+              this.#active.get(session.rsid)?.record.sessionBindingId !==
+                session.sessionBindingId))))
+    ) {
+      throw new GatewayRbpFault(
+        "auth",
+        "identity authority ticket is stale",
+        403,
+        4403,
+      );
+    }
+  }
+
+  #ticketScopeIsRevokedOrBlocked(ticket: TenantAuthorityTicket): boolean {
+    return (
+      this.#blockedTenants.has(ticket.tenantId) ||
+      this.#deviceFence(ticket.tenantId, ticket.deviceId)?.status !== "active" ||
+      this.#seatFence(ticket.tenantId, ticket.seatId)?.status !== "active"
+    );
+  }
+
+  public assertConnectionOutbound(connectionId: string): void {
+    const connection = this.#connections.get(connectionId);
+    if (connection === undefined) {
+      throw new GatewayRbpFault(
+        "auth",
+        this.#revokedConnectionIds.has(connectionId)
+          ? "connection authority was revoked"
+          : "unknown connection",
+        this.#revokedConnectionIds.has(connectionId) ? 403 : 404,
+        this.#revokedConnectionIds.has(connectionId) ? 4403 : 4401,
+      );
+    }
+    this.#assertAuthorityTicket(
+      {
+        tenantId: connection.auth.actor.tenantId,
+        deviceId: connection.auth.actor.deviceId,
+        seatId: connection.auth.actor.seatId,
+        connectionId,
+        tenantBlockGeneration: connection.tenantBlockGeneration,
+        deviceGeneration: connection.deviceGeneration,
+        seatGeneration: connection.seatGeneration,
+        identityAuthority: durableIdentityAuthority(connection.auth),
+      },
+      connection,
+    );
+  }
+
+  #connectionMatchesSnapshot(
+    connection: LiveConnection,
+    snapshot: TenantIdentitySnapshot,
+  ): boolean {
+    const auth = connection.auth;
+    const durable = durableIdentityAuthority(auth);
+    if (durable === null) return false;
+    const device = snapshot.devices.get(auth.actor.deviceId);
+    const seat = snapshot.seats.get(auth.actor.seatId);
+    return (
+      device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.tenantId === auth.actor.tenantId &&
+      device.userId === auth.actor.userId &&
+      device.seatId === auth.actor.seatId &&
+      seat.userId === auth.actor.userId &&
+      seat.deviceId === auth.actor.deviceId &&
+      machineFingerprintClaimsEqual(
+        device.machineFingerprint,
+        durable.machineFingerprint,
+      ) &&
+      device.deviceTokenDigest === durable.deviceTokenDigest &&
+      device.authorizationVersion === durable.authorizationVersion &&
+      device.recordVersion === durable.identityRecordVersion &&
+      device.connectionCapabilityVersion === durable.connectionCapabilityVersion &&
+      device.sessionCapabilityVersion === durable.sessionCapabilityVersion &&
+      seat.seatAuthorityVersion === durable.seatAuthorityVersion &&
+      seat.recordVersion === durable.seatRecordVersion
+    );
+  }
+
+  #connectionSnapshotDisposition(
+    connection: LiveConnection,
+    snapshot: TenantIdentitySnapshot,
+  ): "current" | "stale_active" | "revoked" {
+    if (this.#connectionMatchesSnapshot(connection, snapshot)) return "current";
+    const auth = connection.auth;
+    const device = snapshot.devices.get(auth.actor.deviceId);
+    const seat = snapshot.seats.get(auth.actor.seatId);
+    return device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === auth.actor.userId &&
+      device.seatId === auth.actor.seatId &&
+      seat.userId === auth.actor.userId &&
+      seat.deviceId === auth.actor.deviceId
+      ? "stale_active"
+      : "revoked";
+  }
+
+  #sessionMatchesSnapshot(
+    session: DurableRbpSession,
+    snapshot: TenantIdentitySnapshot,
+  ): boolean {
+    const identity = parseSessionIdentityAuthority(session.identityAuthority);
+    if (identity === null) return false;
+    const device = snapshot.devices.get(session.deviceId);
+    const seat = snapshot.seats.get(session.seatId);
+    return (
+      device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === session.userId &&
+      device.seatId === session.seatId &&
+      seat.userId === session.userId &&
+      seat.deviceId === session.deviceId &&
+      machineFingerprintClaimsEqual(
+        device.machineFingerprint,
+        identity.machineFingerprint,
+      ) &&
+      device.deviceTokenDigest === identity.deviceTokenDigest &&
+      device.authorizationVersion === identity.authorizationVersion &&
+      device.recordVersion === identity.identityRecordVersion &&
+      device.connectionCapabilityVersion === identity.connectionCapabilityVersion &&
+      device.sessionCapabilityVersion === identity.sessionCapabilityVersion &&
+      seat.seatAuthorityVersion === identity.seatAuthorityVersion &&
+      seat.recordVersion === identity.seatRecordVersion
+    );
+  }
+
+  #sessionSnapshotDisposition(
+    session: DurableRbpSession,
+    snapshot: TenantIdentitySnapshot,
+  ): "current" | "stale_active" | "revoked" {
+    if (this.#sessionMatchesSnapshot(session, snapshot)) return "current";
+    const device = snapshot.devices.get(session.deviceId);
+    const seat = snapshot.seats.get(session.seatId);
+    return device !== undefined &&
+      seat !== undefined &&
+      device.status === "active" &&
+      seat.status === "active" &&
+      device.userId === session.userId &&
+      device.seatId === session.seatId &&
+      seat.userId === session.userId &&
+      seat.deviceId === session.deviceId
+      ? "stale_active"
+      : "revoked";
+  }
+
+  #closeConnectionForRevocation(connection: LiveConnection): void {
+    this.#connections.delete(connection.connectionId);
+    this.#untrackConnection(connection);
+    this.#revokedConnectionIds.add(connection.connectionId);
+    while (this.#revokedConnectionIds.size > MAX_REVOKED_CONNECTION_TOMBSTONES) {
+      const oldest = this.#revokedConnectionIds.values().next().value;
+      if (oldest === undefined) break;
+      this.#revokedConnectionIds.delete(oldest);
+    }
+    let closeOperation: Promise<void>;
+    try {
+      closeOperation = connection.close(4403, "identity authority revoked");
+    } catch {
+      closeOperation = Promise.reject(new Error("revocation close threw"));
+    }
+    void closeOperation
+      .catch(() => undefined)
+      .finally(() => this.detach(connection.connectionId).catch(() => undefined));
+  }
+
+  #suppressSessionWaiters(tenantId: string, rsids: ReadonlySet<string>): void {
+    for (const [invocationId, waiter] of this.#waiters) {
+      if (waiter.tenantId !== tenantId || !rsids.has(waiter.rsid)) continue;
+      clearTimeout(waiter.timer);
+      this.#waiters.delete(invocationId);
+      waiter.resolve({
+        state: "failed",
+        error: {
+          code: "executor_unavailable",
+          message: "identity revocation suppressed terminal or resource delivery",
+        },
+      });
+    }
+  }
+
+  async #revokeIdentitySession(record: DurableRbpSession): Promise<void> {
+    const identity = parseSessionIdentityAuthority(record.identityAuthority);
+    const synthetic: LiveConnection = {
+      connectionId: record.connectionId,
+      binding: record.binding,
+      auth: {
+        contractVersion: "revagent.auth-context/v1",
+        actor: {
+          type: "device",
+          tenantId: record.tenantId,
+          userId: record.userId,
+          deviceId: record.deviceId,
+          seatId: record.seatId,
+        },
+        connectionId: record.connectionId,
+        deviceStatus: "revoked",
+        ...(identity === null
+          ? {}
+          : {
+              machineFingerprint: identity.machineFingerprint,
+              authorizationVersion: identity.authorizationVersion,
+              identityRecordVersion: identity.identityRecordVersion,
+              connectionCapabilityVersion: identity.connectionCapabilityVersion,
+              sessionCapabilityVersion: identity.sessionCapabilityVersion,
+              seatAuthorityVersion: identity.seatAuthorityVersion,
+              seatRecordVersion: identity.seatRecordVersion,
+              deviceTokenDigest: identity.deviceTokenDigest,
+            }),
+        grantedSessionCapabilities: record.grantedCapabilities,
+        deviceTokenDigest:
+          identity?.deviceTokenDigest ?? `sha256:${"0".repeat(64)}`,
+      },
+      machineHostname: "identity-revocation",
+      tenantBlockGeneration:
+        this.#tenantBlockGenerations.get(record.tenantId) ?? 0,
+      deviceGeneration:
+        this.#deviceFence(record.tenantId, record.deviceId)?.generation ?? 0,
+      seatGeneration:
+        this.#seatFence(record.tenantId, record.seatId)?.generation ?? 0,
+      grantedCapabilities: record.grantedCapabilities,
+      lifecycle: record.connectionLifecycle,
+      async send(): Promise<void> {},
+      async close(): Promise<void> {},
+    };
+    await this.#withSessionAuthorization(record.rsid, async () => {
+      const existing = await this.store.transact(
+        { tenantId: record.tenantId },
+        async (tx) =>
+          tx.read<GatewayJsonValue>(
+            GATEWAY_RBP_UNREGISTER_NAMESPACE,
+            record.rsid,
+          ),
+      );
+      if (!existing.ok) {
+        throw new GatewayRbpFault(
+          "unavailable",
+          existing.message,
+          503,
+          1011,
+        );
+      }
+      if (existing.value !== null) {
+        const tombstone = parseUnregisterTombstone(existing.value.value, {
+          tenantId: record.tenantId,
+          rsid: record.rsid,
+          stored: existing.value,
+        });
+        if (!sameTombstoneOwner(tombstone.owner, record)) {
+          throw new GatewayRbpFault(
+            "unavailable",
+            "identity revocation observed a foreign tombstone owner",
+            503,
+            1011,
+          );
+        }
+        this.#completeLocalUnregister(
+          record.rsid,
+          this.#active.get(record.rsid)?.record.pending ?? null,
+          tombstone.pendingDisposition === "none",
+        );
+        return;
+      }
+      await this.#unregisterNow(synthetic, {
+        rsid: record.rsid,
+        reason: "session_replaced",
+      });
+    });
+  }
+
+  async #reconcileIdentitySnapshot(
+    tenantId: string,
+    snapshot: TenantIdentitySnapshot,
+    events: readonly IdentityRevocationEventV1[],
+  ): Promise<void> {
+    const affectedDevices = new Set(
+      events.flatMap((event) => event.deviceId === null ? [] : [event.deviceId]),
+    );
+    const affectedSeats = new Set(
+      events.flatMap((event) =>
+        event.action === "device_revoked" || event.seatId === null
+          ? []
+          : [event.seatId],
+      ),
+    );
+    const listed = await this.store.transact(
+      { tenantId },
+      async (tx) => ({
+        sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
+        tombstones: await tx.list(GATEWAY_RBP_UNREGISTER_NAMESPACE),
+      }),
+    );
+    if (!listed.ok) {
+      throw new GatewayRbpFault("unavailable", listed.message, 503, 1011);
+    }
+    if (
+      listed.value.sessions.length > MAX_IDENTITY_SESSION_RESYNC ||
+      listed.value.tombstones.length > MAX_IDENTITY_SESSION_RESYNC
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "identity session resync exceeded its bounded record limit",
+        503,
+        1011,
+      );
+    }
+    const tombstonedRsids = new Set<string>();
+    for (const tombstone of listed.value.tombstones) {
+      parseUnregisterTombstone(tombstone.value, {
+        tenantId,
+        rsid: tombstone.key,
+        stored: tombstone,
+      });
+      tombstonedRsids.add(tombstone.key);
+    }
+    const sessions: DurableRbpSession[] = [];
+    for (const stored of listed.value.sessions) {
+      const parsed = parseStoredSession(stored, tenantId, stored.key);
+      if (tombstonedRsids.has(parsed.rsid)) continue;
+      if (
+        events.length === 0 ||
+        affectedDevices.has(parsed.deviceId) ||
+        affectedSeats.has(parsed.seatId) ||
+        !this.#sessionMatchesSnapshot(parsed, snapshot)
+      ) {
+        sessions.push(parsed);
+      }
+    }
+    const revokedRsids = new Set<string>();
+    for (const session of sessions) {
+      if (this.#sessionSnapshotDisposition(session, snapshot) !== "revoked") {
+        continue;
+      }
+      await this.#revokeIdentitySession(session);
+      revokedRsids.add(session.rsid);
+    }
+    this.#suppressSessionWaiters(tenantId, revokedRsids);
+    for (const connection of [...this.#connections.values()]) {
+      if (
+        connection.auth.actor.tenantId === tenantId &&
+        this.#connectionSnapshotDisposition(connection, snapshot) === "revoked"
+      ) {
+        this.#closeConnectionForRevocation(connection);
+      }
+    }
+  }
+
+  public async synchronizeIdentityRevocations(tenantId: string): Promise<void> {
+    this.#assertOpen();
+    const identity = this.#productionIdentity;
+    if (identity === null) return;
+    await this.#withTenantRevocationRun(tenantId, async () => {
+      let affectedDevices = new Set<string>();
+      let affectedSeats = new Set<string>();
+      let wholeTenant = true;
+      let tenantBlockGeneration: number | null = null;
+      try {
+        const phaseOne = await this.#withTenantIdentityAuthority(
+          tenantId,
+          async () => {
+            const events: IdentityRevocationEventV1[] = [];
+            let observedHeadSequence = -1;
+            let cursorBlocked = false;
+            for (let batch = 0; batch < MAX_IDENTITY_EVENT_BATCHES; batch += 1) {
+              const consumed = await identity.consumeRevocationEvents({
+                tenantId,
+                maxEvents: MAX_IDENTITY_EVENT_BATCH,
+              });
+              if (!consumed.ok) {
+                throw new GatewayRbpFault(
+                  "unavailable",
+                  consumed.message,
+                  503,
+                  1011,
+                );
+              }
+              observedHeadSequence = consumed.headSequence;
+              if (consumed.kind === "blocked") {
+                cursorBlocked = true;
+                break;
+              }
+              events.push(...consumed.events);
+              if (consumed.complete) break;
+              if (batch === MAX_IDENTITY_EVENT_BATCHES - 1) {
+                throw new GatewayRbpFault(
+                  "unavailable",
+                  "identity event consumption exceeded its bounded batch limit",
+                  503,
+                  1011,
+                );
+              }
+            }
+            const currentSnapshot = this.#tenantIdentitySnapshots.get(tenantId);
+            let eventStreamCorrupt = false;
+            for (let index = 0; index < events.length; index += 1) {
+              const event = events[index]!;
+              const prior = events[index - 1];
+              if (
+                event.tenantId !== tenantId ||
+                (prior !== undefined && event.sequence !== prior.sequence + 1)
+              ) {
+                eventStreamCorrupt = true;
+                events.splice(0);
+                break;
+              }
+            }
+            if (
+              !cursorBlocked &&
+              !eventStreamCorrupt &&
+              events.length === 0 &&
+              currentSnapshot !== undefined &&
+              currentSnapshot.headSequence === observedHeadSequence
+            ) {
+              return null;
+            }
+            wholeTenant =
+              cursorBlocked || eventStreamCorrupt || events.length === 0;
+            affectedDevices = new Set(
+              events.flatMap((event) =>
+                event.deviceId === null ? [] : [event.deviceId],
+              ),
+            );
+            affectedSeats = new Set(
+              events.flatMap((event) =>
+                event.action === "device_revoked" || event.seatId === null
+                  ? []
+                  : [event.seatId],
+              ),
+            );
+            if (wholeTenant) {
+              tenantBlockGeneration =
+                this.#advanceTenantBlockGeneration(tenantId);
+              this.#blockedTenants.add(tenantId);
+            } else {
+              this.#applyEventFences(tenantId, events);
+            }
+            const prepared = await identity.prepareTenantResync({ tenantId });
+            if (!prepared.ok) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                prepared.message,
+                503,
+                1011,
+              );
+            }
+            if (prepared.snapshot.tenantId !== tenantId) {
+              throw new GatewayRbpFault(
+                "unavailable",
+                "identity resync returned a cross-tenant snapshot",
+                503,
+                1011,
+              );
+            }
+            const snapshot = identitySnapshot(prepared.snapshot);
+            if (wholeTenant) {
+              for (const device of snapshot.devices.values()) {
+                affectedDevices.add(device.deviceId);
+              }
+              for (const seat of snapshot.seats.values()) {
+                affectedSeats.add(seat.seatId);
+              }
+              for (const connection of this.#connections.values()) {
+                if (connection.auth.actor.tenantId !== tenantId) continue;
+                affectedDevices.add(connection.auth.actor.deviceId);
+                affectedSeats.add(connection.auth.actor.seatId);
+              }
+              for (const active of this.#active.values()) {
+                if (active.tenantId !== tenantId) continue;
+                affectedDevices.add(active.record.deviceId);
+                affectedSeats.add(active.record.seatId);
+              }
+            }
+            this.#applyScopedSnapshot(snapshot, events, wholeTenant);
+            return Object.freeze({
+              tenantBlockGeneration,
+              wholeTenant,
+              snapshot,
+              events: Object.freeze([...events]),
+              deviceIds: affectedDevices,
+              seatIds: affectedSeats,
+            });
+          },
+        );
+        if (phaseOne === null) return;
+        tenantBlockGeneration = phaseOne.tenantBlockGeneration;
+        wholeTenant = phaseOne.wholeTenant;
+        affectedDevices = phaseOne.deviceIds;
+        affectedSeats = phaseOne.seatIds;
+
+        // No tenant lock is held while rsid tails are acquired one at a time.
+        await this.#reconcileIdentitySnapshot(
+          tenantId,
+          phaseOne.snapshot,
+          phaseOne.events,
+        );
+
+        await this.#withTenantIdentityAuthority(tenantId, async () => {
+          if (
+            phaseOne.wholeTenant &&
+            this.#tenantBlockGenerations.get(tenantId) !==
+              phaseOne.tenantBlockGeneration
+          ) {
+            throw new GatewayRbpFault(
+              "unavailable",
+              "tenant block generation changed during resync",
+              503,
+              1011,
+            );
+          }
+          const committed = await identity.commitTenantResync({
+            tenantId,
+            expectedAuthorityDigest: phaseOne.snapshot.authorityDigest,
+          });
+          if (!committed.ok) {
+            throw new GatewayRbpFault(
+              "unavailable",
+              committed.message,
+              503,
+              1011,
+            );
+          }
+          if (
+            committed.snapshot.tenantId !== tenantId ||
+            committed.snapshot.authorityDigest !==
+              phaseOne.snapshot.authorityDigest ||
+            committed.cursor.tenantId !== tenantId ||
+            committed.cursor.status !== "current" ||
+            committed.cursor.lastContiguousSequence !==
+              committed.snapshot.headSequence
+          ) {
+            throw new GatewayRbpFault(
+              "unavailable",
+              "identity resync commit returned incoherent authority",
+              503,
+              1011,
+            );
+          }
+          const committedSnapshot = identitySnapshot(committed.snapshot);
+          this.#applyScopedSnapshot(
+            committedSnapshot,
+            phaseOne.events,
+            phaseOne.wholeTenant,
+          );
+          this.#tenantIdentitySnapshots.set(
+            tenantId,
+            committedSnapshot,
+          );
+          if (phaseOne.wholeTenant) this.#blockedTenants.delete(tenantId);
+        });
+      } catch (error: unknown) {
+        await this.#withTenantIdentityAuthority(tenantId, async () => {
+          if (wholeTenant) {
+            if (tenantBlockGeneration === null) {
+              tenantBlockGeneration =
+                this.#advanceTenantBlockGeneration(tenantId);
+            }
+            this.#blockedTenants.add(tenantId);
+          }
+        });
+        for (const connection of [...this.#connections.values()]) {
+          if (
+            connection.auth.actor.tenantId === tenantId &&
+            (wholeTenant ||
+              affectedDevices.has(connection.auth.actor.deviceId) ||
+              affectedSeats.has(connection.auth.actor.seatId))
+          ) {
+            this.#closeConnectionForRevocation(connection);
+          }
+        }
+        throw error;
+      }
+    });
+  }
+
+  async #reconcileExplicitIdentityRevocation(input: {
+    readonly tenantId: string;
+    readonly kind: "device" | "seat";
+    readonly deviceId?: string;
+    readonly seatId?: string;
+    readonly affectedDeviceIds: ReadonlySet<string>;
+  }): Promise<void> {
+    const listed = await this.store.transact(
+      { tenantId: input.tenantId },
+      async (tx) => ({
+        sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
+        tombstones: await tx.list(GATEWAY_RBP_UNREGISTER_NAMESPACE),
+      }),
+    );
+    if (!listed.ok) {
+      throw new GatewayRbpFault("unavailable", listed.message, 503, 1011);
+    }
+    if (
+      listed.value.sessions.length > MAX_IDENTITY_SESSION_RESYNC ||
+      listed.value.tombstones.length > MAX_IDENTITY_SESSION_RESYNC
+    ) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "identity revocation exceeded its bounded session limit",
+        503,
+        1011,
+      );
+    }
+    const tombstoned = new Set<string>();
+    for (const row of listed.value.tombstones) {
+      parseUnregisterTombstone(row.value, {
+        tenantId: input.tenantId,
+        rsid: row.key,
+        stored: row,
+      });
+      tombstoned.add(row.key);
+    }
+    const revokedRsids = new Set<string>();
+    for (const stored of listed.value.sessions) {
+      const session = parseStoredSession(stored, input.tenantId, stored.key);
+      if (
+        tombstoned.has(session.rsid) ||
+        (input.kind === "device" &&
+          !input.affectedDeviceIds.has(session.deviceId)) ||
+        (input.kind === "seat" &&
+          session.seatId !== input.seatId &&
+          !input.affectedDeviceIds.has(session.deviceId))
+      ) {
+        continue;
+      }
+      // No tenant tail is held while this rsid tail is acquired.
+      await this.#revokeIdentitySession(session);
+      revokedRsids.add(session.rsid);
+    }
+    this.#suppressSessionWaiters(input.tenantId, revokedRsids);
+    const connectionIds = new Set<string>();
+    for (const deviceId of input.affectedDeviceIds) {
+      for (const connectionId of
+        this.#deviceConnections.get(identityIndexKey(input.tenantId, deviceId)) ?? []) {
+        connectionIds.add(connectionId);
+      }
+    }
+    if (input.kind === "seat" && input.seatId !== undefined) {
+      for (const connectionId of
+        this.#seatConnections.get(
+          identityIndexKey(input.tenantId, input.seatId),
+        ) ?? []) {
+        connectionIds.add(connectionId);
+      }
+    }
+    for (const connectionId of connectionIds) {
+      const connection = this.#connections.get(connectionId);
+      if (connection !== undefined) this.#closeConnectionForRevocation(connection);
+    }
+  }
+
+  public async revokeIdentityAuthority(input: {
+    readonly tenantId: string;
+    readonly kind?: "device" | "seat";
+    readonly deviceId: string;
+    readonly seatId: string;
+    readonly authorizationVersion: number;
+    readonly identityRecordVersion: number;
+    readonly connectionCapabilityVersion: number;
+    readonly sessionCapabilityVersion: number;
+    readonly seatAuthorityVersion?: number;
+    readonly seatRecordVersion?: number;
+  }): Promise<void> {
+    this.#assertOpen();
+    const kind = input.kind ?? "device";
+    if (
+      input.tenantId.length === 0 ||
+      input.deviceId.length === 0 ||
+      input.seatId.length === 0 ||
+      input.authorizationVersion === undefined ||
+      input.identityRecordVersion === undefined ||
+      input.connectionCapabilityVersion === undefined ||
+      input.sessionCapabilityVersion === undefined ||
+      (kind === "seat" &&
+        (input.seatAuthorityVersion === undefined ||
+          input.seatRecordVersion === undefined)) ||
+      [
+        input.authorizationVersion,
+        input.identityRecordVersion,
+        input.connectionCapabilityVersion,
+        input.sessionCapabilityVersion,
+        input.seatAuthorityVersion,
+        input.seatRecordVersion,
+      ].some((version) =>
+        version !== undefined && !isSafePositiveInteger(version),
+      )
+    ) {
+      throw new GatewayRbpFault("auth", "identity revocation scope is invalid", 403, 4403);
+    }
+    await this.#withTenantRevocationRun(input.tenantId, async () => {
+      const affectedDeviceIds = new Set<string>();
+      let phaseMutated = false;
+      try {
+        const phase = await this.#withTenantIdentityAuthority(
+          input.tenantId,
+          async () => {
+            const deviceNotificationIsStaleOrReplay = (
+              deviceId: string,
+            ): "advance" | "noop" => {
+              const prior = this.#deviceFence(input.tenantId, deviceId);
+              if (prior?.authorizationVersion !== null &&
+                  prior?.authorizationVersion !== undefined) {
+                if (input.authorizationVersion! < prior.authorizationVersion) {
+                  return "noop";
+                }
+                if (input.authorizationVersion === prior.authorizationVersion) {
+                  const exactReplay =
+                    prior.status === "revoked" &&
+                    prior.reason ===
+                      (kind === "seat" ? "seat_revoked" : "device_revoked") &&
+                    prior.identityRecordVersion === input.identityRecordVersion &&
+                    prior.connectionCapabilityVersion ===
+                      input.connectionCapabilityVersion &&
+                    prior.sessionCapabilityVersion ===
+                      input.sessionCapabilityVersion &&
+                    prior.seatId === input.seatId;
+                  if (exactReplay) return "noop";
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "equal device authority version conflicts with existing state",
+                    409,
+                    4403,
+                  );
+                }
+                if (
+                  (prior.identityRecordVersion !== null &&
+                    input.identityRecordVersion! <= prior.identityRecordVersion) ||
+                  (prior.connectionCapabilityVersion !== null &&
+                    input.connectionCapabilityVersion <
+                      prior.connectionCapabilityVersion) ||
+                  (prior.sessionCapabilityVersion !== null &&
+                    input.sessionCapabilityVersion <
+                      prior.sessionCapabilityVersion)
+                ) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "device authority versions are not coherently increasing",
+                    409,
+                    4403,
+                  );
+                }
+              }
+              return "advance";
+            };
+            if (kind === "seat") {
+              const prior = this.#seatFence(input.tenantId, input.seatId!);
+              if (prior?.seatAuthorityVersion !== null &&
+                  prior?.seatAuthorityVersion !== undefined) {
+                if (input.seatAuthorityVersion! < prior.seatAuthorityVersion) {
+                  return "noop" as const;
+                }
+                if (input.seatAuthorityVersion === prior.seatAuthorityVersion) {
+                  const priorDevice =
+                    input.deviceId === undefined
+                      ? null
+                      : this.#deviceFence(input.tenantId, input.deviceId);
+                  const exactReplay =
+                    prior.status === "revoked" &&
+                    prior.reason === "seat_revoked" &&
+                    prior.seatRecordVersion === input.seatRecordVersion &&
+                    input.deviceId !== undefined &&
+                    prior.deviceId === input.deviceId &&
+                    priorDevice?.status === "revoked" &&
+                    priorDevice.reason === "seat_revoked" &&
+                    priorDevice.authorizationVersion ===
+                      input.authorizationVersion &&
+                    priorDevice.identityRecordVersion ===
+                      input.identityRecordVersion &&
+                    priorDevice.connectionCapabilityVersion ===
+                      input.connectionCapabilityVersion &&
+                    priorDevice.sessionCapabilityVersion ===
+                      input.sessionCapabilityVersion;
+                  if (exactReplay) return "noop" as const;
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "equal seat authority version conflicts with existing state",
+                    409,
+                    4403,
+                  );
+                }
+                if (
+                  prior.seatRecordVersion !== null &&
+                  input.seatRecordVersion! <= prior.seatRecordVersion
+                ) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "seat authority versions are not coherently increasing",
+                    409,
+                    4403,
+                  );
+                }
+              }
+            }
+            if (input.deviceId !== undefined) {
+              affectedDeviceIds.add(input.deviceId);
+            }
+            if (kind === "seat") {
+              const seatKey = identityIndexKey(input.tenantId, input.seatId!);
+              for (const connectionId of this.#seatConnections.get(seatKey) ?? []) {
+                const connection = this.#connections.get(connectionId);
+                if (connection !== undefined) {
+                  affectedDeviceIds.add(connection.auth.actor.deviceId);
+                }
+              }
+              for (const rsid of this.#seatSessions.get(seatKey) ?? []) {
+                const active = this.#active.get(rsid);
+                if (active !== undefined) {
+                  affectedDeviceIds.add(active.record.deviceId);
+                }
+              }
+              const snapshotSeat = this.#tenantIdentitySnapshots
+                .get(input.tenantId)
+                ?.seats.get(input.seatId!);
+              if (snapshotSeat?.deviceId !== null && snapshotSeat?.deviceId !== undefined) {
+                affectedDeviceIds.add(snapshotSeat.deviceId);
+              }
+            }
+            for (const deviceId of affectedDeviceIds) {
+              if (deviceNotificationIsStaleOrReplay(deviceId) === "noop") {
+                return "noop" as const;
+              }
+            }
+            phaseMutated = true;
+            for (const deviceId of affectedDeviceIds) {
+              const prior = this.#deviceFence(input.tenantId, deviceId);
+              this.#setDeviceAuthorityFence(input.tenantId, deviceId, {
+                status: "blocked",
+                authorizationVersion:
+                  deviceId === input.deviceId
+                    ? input.authorizationVersion ??
+                      prior?.authorizationVersion ?? null
+                    : prior?.authorizationVersion ?? null,
+                identityRecordVersion:
+                  deviceId === input.deviceId
+                    ? input.identityRecordVersion ??
+                      prior?.identityRecordVersion ?? null
+                    : prior?.identityRecordVersion ?? null,
+                connectionCapabilityVersion:
+                  input.connectionCapabilityVersion,
+                sessionCapabilityVersion:
+                  input.sessionCapabilityVersion,
+                seatId: input.seatId ?? prior?.seatId ?? null,
+                reason: kind === "seat" ? "seat_revoked" : "device_revoked",
+              });
+            }
+            if (kind === "seat") {
+              const prior = this.#seatFence(input.tenantId, input.seatId!);
+              this.#setSeatAuthorityFence(input.tenantId, input.seatId!, {
+                status: "blocked",
+                seatAuthorityVersion:
+                  input.seatAuthorityVersion ??
+                  prior?.seatAuthorityVersion ?? null,
+                seatRecordVersion:
+                  input.seatRecordVersion ?? prior?.seatRecordVersion ?? null,
+                deviceId: input.deviceId ?? prior?.deviceId ?? null,
+                reason: "seat_revoked",
+              });
+            }
+            return "advance" as const;
+          },
+        );
+        if (phase === "noop") return;
+        await this.#reconcileExplicitIdentityRevocation({
+          ...input,
+          kind,
+          affectedDeviceIds,
+        });
+        await this.#withTenantIdentityAuthority(input.tenantId, async () => {
+          for (const deviceId of affectedDeviceIds) {
+            const prior = this.#deviceFence(input.tenantId, deviceId);
+            this.#setDeviceAuthorityFence(input.tenantId, deviceId, {
+              status: "revoked",
+              authorizationVersion: prior?.authorizationVersion ?? null,
+              identityRecordVersion: prior?.identityRecordVersion ?? null,
+              connectionCapabilityVersion:
+                prior?.connectionCapabilityVersion ?? null,
+              sessionCapabilityVersion: prior?.sessionCapabilityVersion ?? null,
+              seatId: prior?.seatId ?? input.seatId ?? null,
+              reason: kind === "seat" ? "seat_revoked" : "device_revoked",
+            });
+          }
+          if (kind === "seat") {
+            const prior = this.#seatFence(input.tenantId, input.seatId!);
+            this.#setSeatAuthorityFence(input.tenantId, input.seatId!, {
+              status: "revoked",
+              seatAuthorityVersion: prior?.seatAuthorityVersion ?? null,
+              seatRecordVersion: prior?.seatRecordVersion ?? null,
+              deviceId: prior?.deviceId ?? input.deviceId ?? null,
+              reason: "seat_revoked",
+            });
+          }
+        });
+      } catch (error: unknown) {
+        for (const connection of phaseMutated
+          ? [...this.#connections.values()]
+          : []) {
+          if (
+            connection.auth.actor.tenantId === input.tenantId &&
+            (affectedDeviceIds.has(connection.auth.actor.deviceId) ||
+              (kind === "seat" &&
+                connection.auth.actor.seatId === input.seatId))
+          ) {
+            this.#closeConnectionForRevocation(connection);
+          }
+        }
+        throw error;
+      }
+    });
+  }
+
+  #sameConnectionPrincipal(
+    expected: DeviceAuthContext,
+    current: DeviceAuthContext,
+  ): boolean {
+    return (
+      current.deviceStatus === "active" &&
+      current.actor.tenantId === expected.actor.tenantId &&
+      current.actor.userId === expected.actor.userId &&
+      current.actor.deviceId === expected.actor.deviceId &&
+      current.actor.seatId === expected.actor.seatId &&
+      current.deviceTokenDigest === expected.deviceTokenDigest &&
+      (expected.machineFingerprint === undefined ||
+        machineFingerprintClaimsEqual(
+          expected.machineFingerprint,
+          current.machineFingerprint,
+        ))
+    );
+  }
+
+  #connectionScopedAuthorityIsActive(connection: LiveConnection): boolean {
+    const tenantId = connection.auth.actor.tenantId;
+    return (
+      !this.#blockedTenants.has(tenantId) &&
+      this.#deviceFence(tenantId, connection.auth.actor.deviceId)?.status ===
+        "active" &&
+      this.#seatFence(tenantId, connection.auth.actor.seatId)?.status ===
+        "active"
+    );
+  }
+
+  async #assertCurrentConnectionAuthority(
+    connection: LiveConnection,
+  ): Promise<TenantAuthorityTicket> {
+    return await this.#acquireConnectionAuthorityTicket(connection);
+  }
+
+  #connectionIsCurrentlyAuthorized(connection: LiveConnection | undefined): boolean {
+    if (connection === undefined || connection.auth.deviceStatus !== "active") {
+      return false;
+    }
+    const tenantId = connection.auth.actor.tenantId;
+    const device = this.#deviceFence(tenantId, connection.auth.actor.deviceId);
+    const seat = this.#seatFence(tenantId, connection.auth.actor.seatId);
+    if (
+      this.#blockedTenants.has(tenantId) ||
+      device?.status !== "active" ||
+      seat?.status !== "active" ||
+      connection.tenantBlockGeneration !==
+        (this.#tenantBlockGenerations.get(tenantId) ?? 0) ||
+      connection.deviceGeneration !== device.generation ||
+      connection.seatGeneration !== seat.generation
+    ) return false;
+    if (this.#productionIdentity === null) return true;
+    const snapshot = this.#tenantIdentitySnapshots.get(tenantId);
+    return snapshot !== undefined && this.#connectionMatchesSnapshot(connection, snapshot);
   }
 
   public async openConnection(input: {
@@ -1853,6 +4850,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly hello: HelloEnvelope;
     readonly channel: BridgeConnectionChannel;
   }): Promise<BridgeConnectionOpening> {
+    this.#assertOpen();
     if (
       input.hello.payload.min_protocol > 1 ||
       input.hello.payload.max_protocol < 1
@@ -1863,9 +4861,21 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const authenticated = await this.identity.authenticateDevice({
       deviceToken: input.deviceToken,
       connectionId,
+      claimedDeviceId: input.hello.payload.device_id,
+      machineFingerprint: input.hello.payload.machine.fingerprint,
+      machineHostname: input.hello.payload.machine.hostname,
     });
     if (!authenticated.ok) {
-      throw new GatewayRbpFault("auth", authenticated.message, 401, 4401);
+      const claimBoundRefusal =
+        (this.identity.kind === "preproduction" ||
+          this.#productionIdentity !== null) &&
+        isCanonicalMachineFingerprint(input.hello.payload.machine.fingerprint);
+      throw new GatewayRbpFault(
+        "auth",
+        authenticated.message,
+        claimBoundRefusal ? 403 : 401,
+        claimBoundRefusal ? 4403 : 4401,
+      );
     }
     if (authenticated.value.deviceStatus !== "active") {
       throw new GatewayRbpFault("auth", "device or seat is not active", 403, 4403);
@@ -1893,6 +4903,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       connectionId,
       binding: input.binding,
       auth: { ...authenticated.value, connectionId },
+      machineHostname: input.hello.payload.machine.hostname,
+      tenantBlockGeneration: 0,
+      deviceGeneration: 0,
+      seatGeneration: 0,
       grantedCapabilities: granted,
       lifecycle: steadyConnectionLifecycle(granted),
       async send(serialized): Promise<void> {
@@ -1902,7 +4916,15 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         await input.channel.close(code, reason);
       },
     };
+    const authorityTicket = await this.#acquireConnectionAuthorityTicket(
+      connection,
+      { requireMembership: false },
+    );
+    this.#assertAuthorityTicket(authorityTicket, connection, {
+      requireConnectionMembership: false,
+    });
     this.#connections.set(connectionId, connection);
+    this.#trackConnection(connection);
     const helloAck: HelloAckEnvelope = {
       type: "hello_ack",
       id: gatewayUuidV7(this.#clock()),
@@ -1930,23 +4952,42 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connectionId: string,
     deviceToken: string | undefined,
   ): Promise<LiveConnection> {
+    this.#assertOpen();
     const connection = this.#connections.get(connectionId);
     if (connection === undefined) {
+      if (this.#revokedConnectionIds.has(connectionId)) {
+        throw new GatewayRbpFault("auth", "connection authority was revoked", 403, 4403);
+      }
       throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
     }
+    try {
+      await this.#assertCurrentConnectionAuthority(connection);
+    } catch (error: unknown) {
+      if (!this.#connectionScopedAuthorityIsActive(connection)) throw error;
+      // Active higher-version authority may refresh an HTTP credential because
+      // this boundary still has the raw bearer. WSS never retains that bearer.
+    }
+    const priorAuth = connection.auth;
     const authenticated = await this.identity.authenticateDevice({
       deviceToken,
       connectionId,
+      claimedDeviceId: priorAuth.actor.deviceId,
+      establishedScope: {
+        tenantId: priorAuth.actor.tenantId,
+        deviceId: priorAuth.actor.deviceId,
+      },
+      machineFingerprint: priorAuth.machineFingerprint,
+      machineHostname: connection.machineHostname,
     });
     if (
       !authenticated.ok ||
-      authenticated.value.deviceStatus !== "active" ||
-      authenticated.value.actor.tenantId !== connection.auth.actor.tenantId ||
-      authenticated.value.actor.deviceId !== connection.auth.actor.deviceId ||
-      authenticated.value.deviceTokenDigest !== connection.auth.deviceTokenDigest
+      !this.#sameConnectionPrincipal(priorAuth, authenticated.value)
     ) {
       throw new GatewayRbpFault("auth", "connection credential mismatch", 403, 4403);
     }
+    connection.auth = { ...authenticated.value, connectionId };
+    const authorityTicket = await this.#assertCurrentConnectionAuthority(connection);
+    this.#assertAuthorityTicket(authorityTicket, connection);
     return connection;
   }
 
@@ -1954,6 +4995,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connectionId: string,
     envelope: RbpEnvelope,
   ): Promise<void> {
+    this.#assertOpen();
     const prior = this.#receiveTails.get(connectionId) ?? Promise.resolve();
     let release!: () => void;
     const tail = new Promise<void>((resolve) => {
@@ -2000,18 +5042,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     if (connection === undefined) {
       throw new GatewayRbpFault("auth", "unknown connection", 404, 4401);
     }
+    const authorityTicket = await this.#assertCurrentConnectionAuthority(connection);
+    this.#assertAuthorityTicket(authorityTicket, connection);
     switch (envelope.type) {
       case "session_register":
-        await this.#register(connection, envelope.payload);
+        await this.#register(connection, envelope.payload, authorityTicket);
         return;
       case "session_resume":
-        await this.#resume(connection, envelope.payload);
+        await this.#resume(connection, envelope.payload, authorityTicket);
         return;
       case "session_unregister":
-        await this.#unregister(connection, envelope.payload);
+        await this.#unregister(connection, envelope.payload, authorityTicket);
         return;
       case "heartbeat":
-        await this.#heartbeat(connection, envelope.payload.acks);
+        await this.#heartbeat(connection, envelope.payload.acks, authorityTicket);
         return;
       case "result":
       case "error":
@@ -2025,9 +5069,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             4400,
           );
         }
-        await this.#acceptData(
-          connection,
-          envelope as Extract<RbpEnvelope, { rsid: string }>,
+        await this.#withSessionAuthorization(envelope.rsid, async () =>
+          this.#acceptData(
+            connection,
+            envelope as Extract<RbpEnvelope, { rsid: string }>,
+            authorityTicket,
+          ),
         );
         return;
       case "manifest_check":
@@ -2043,32 +5090,59 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }
 
   public async detach(connectionId: string): Promise<void> {
+    const connection = this.#connections.get(connectionId);
     this.#connections.delete(connectionId);
+    if (connection !== undefined) this.#untrackConnection(connection);
     for (const [rsid, active] of this.#active) {
       if (active.record.connectionId === connectionId) {
         await this.#markConnectionLost(active);
         this.#active.delete(rsid);
+        this.#untrackSession(active.record);
       }
     }
   }
 
   public async sweepLiveness(): Promise<readonly string[]> {
+    this.#assertOpen();
+    for (const tenantId of [...this.#knownTenants]) {
+      await this.synchronizeIdentityRevocations(tenantId);
+    }
     const disconnected: string[] = [];
     for (const [rsid, active] of this.#active) {
       const silenceMs = Math.max(0, this.#clock() - active.record.lastHeartbeatAtMs);
       if (silenceMs < RBP_HEARTBEAT_DEGRADED_AFTER_MS) continue;
-      const updated = await this.#updateSession(active.tenantId, rsid, (record) => ({
-        ...record,
-        connectionLifecycle: connectionTransition(record.connectionLifecycle, {
-          type: "heartbeat_silence",
-          silenceMs,
-        }),
-        updatedAtMs: this.#clock(),
-      }));
+      const connection = this.#connections.get(active.record.connectionId);
+      if (connection === undefined) continue;
+      const authorityTicket = await this.#acquireConnectionAuthorityTicket(connection);
+      const updated = await this.#withSessionAuthorization(rsid, async () => {
+        this.#assertAuthorityTicket(authorityTicket, connection, {
+          session: active.record,
+        });
+        const next = await this.#updateSession(active.tenantId, rsid, (record) => ({
+          ...record,
+          connectionLifecycle: connectionTransition(record.connectionLifecycle, {
+            type: "heartbeat_silence",
+            silenceMs,
+          }),
+          updatedAtMs: this.#clock(),
+        }));
+        try {
+          this.#assertAuthorityTicket(authorityTicket, connection, {
+            session: next,
+          });
+        } catch (error: unknown) {
+          if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+            await this.#revokeStaleAuthorizedSession(connection, rsid);
+          }
+          throw error;
+        }
+        return next;
+      });
       active.record = updated;
       if (silenceMs >= RBP_HEARTBEAT_DISCONNECTED_AFTER_MS) {
         disconnected.push(rsid);
         this.#active.delete(rsid);
+        this.#untrackSession(active.record);
       }
     }
     return disconnected;
@@ -2091,11 +5165,12 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   }): GatewayInvocationRoute {
     const candidates = [...this.#active.values()].filter((active) => {
       const record = active.record;
+      const connection = this.#connections.get(record.connectionId);
       return (
         record.tenantId === input.tenantId &&
         record.userId === input.userId &&
         record.deviceId === input.deviceId &&
-        this.#connections.has(record.connectionId) &&
+        this.#connectionIsCurrentlyAuthorized(connection) &&
         record.sessionLifecycle.dispatchAllowed &&
         (record.connectionLifecycle.phase === "steady" ||
           record.connectionLifecycle.phase === "degraded") &&
@@ -2131,10 +5206,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly expected: GatewayExpectedMutationDispatch;
   } {
     const active = this.#active.get(request.context.rsid);
+    const connection = active === undefined
+      ? undefined
+      : this.#connections.get(active.record.connectionId);
     if (
       active === undefined ||
       active.tenantId !== request.context.actor.tenantId ||
-      !this.#connections.has(active.record.connectionId)
+      !this.#connectionIsCurrentlyAuthorized(connection)
       || !active.record.sessionLifecycle.dispatchAllowed
       || (active.record.connectionLifecycle.phase !== "steady" &&
         active.record.connectionLifecycle.phase !== "degraded")
@@ -2187,10 +5265,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       throw new GatewayRbpFault("protocol", "atomic batch has no steps", 409, 4400);
     }
     const active = this.#active.get(first.context.rsid);
+    const connection = active === undefined
+      ? undefined
+      : this.#connections.get(active.record.connectionId);
     if (
       active === undefined ||
       active.tenantId !== first.context.actor.tenantId ||
-      !this.#connections.has(active.record.connectionId) ||
+      !this.#connectionIsCurrentlyAuthorized(connection) ||
       !active.record.sessionLifecycle.dispatchAllowed ||
       !active.record.grantedCapabilities.includes("batch_atomic") ||
       (active.record.connectionLifecycle.phase !== "steady" &&
@@ -2303,28 +5384,66 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly envelope: unknown;
     readonly journalRecords: readonly InvocationJournalRecord[];
   }): Promise<GatewayExecutorOutcome> {
+    const active = this.#active.get(input.rsid);
+    const connection = active === undefined
+      ? undefined
+      : this.#connections.get(active.record.connectionId);
+    if (
+      active === undefined ||
+      active.tenantId !== input.tenantId ||
+      connection === undefined
+    ) {
+      return this.#indeterminateOutcome(input.mutating);
+    }
+    let authorityTicket: TenantAuthorityTicket;
+    try {
+      authorityTicket = await this.#acquireConnectionAuthorityTicket(connection);
+    } catch {
+      return {
+        state: "failed",
+        error: {
+          code: "executor_unavailable",
+          message: "identity authority denied dispatch",
+        },
+      };
+    }
     const started = await this.#withSessionAuthorization(input.rsid, async () =>
-      this.#beginDispatch(input),
+      this.#beginDispatch(input, connection, authorityTicket),
     );
     return await started.outcome;
   }
 
-  async #beginDispatch(input: {
-    readonly tenantId: string;
-    readonly rsid: string;
-    readonly correlationId: string;
-    readonly mutating: boolean;
-    readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
-    readonly envelope: unknown;
-    readonly journalRecords: readonly InvocationJournalRecord[];
-  }): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
+  async #beginDispatch(
+    input: {
+      readonly tenantId: string;
+      readonly rsid: string;
+      readonly correlationId: string;
+      readonly mutating: boolean;
+      readonly recoveryDispatch: GatewayRecoveryPendingDispatch | null;
+      readonly envelope: unknown;
+      readonly journalRecords: readonly InvocationJournalRecord[];
+    },
+    connection: LiveConnection,
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<{ readonly outcome: Promise<GatewayExecutorOutcome> }> {
     const active = this.#active.get(input.rsid);
     if (active === undefined || active.tenantId !== input.tenantId) {
       return { outcome: Promise.resolve({ state: "failed", error: { code: "executor_unavailable", message: "registered rsid is not active" } }) };
     }
-    const connection = this.#connections.get(active.record.connectionId);
-    if (connection === undefined) {
-      return { outcome: Promise.resolve(this.#indeterminateOutcome(input.mutating)) };
+    try {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: active.record,
+      });
+    } catch {
+      return {
+        outcome: Promise.resolve({
+          state: "failed",
+          error: {
+            code: "executor_unavailable",
+            message: "identity authority denied dispatch",
+          },
+        }),
+      };
     }
     const envelope = input.envelope as InvokeEnvelope | InvokeBatchEnvelope;
     const expectedDigest = immutableEnvelopeDigest(envelope);
@@ -2385,6 +5504,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, input.tenantId, input.rsid);
+        this.#assertAuthorityTicket(authorityTicket, connection, {
+          session: active.record,
+        });
         const fence = sessionEgressFence(record);
         const nowMs = this.#clock();
         if (
@@ -2532,6 +5654,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         connection,
         reservation,
         JSON.stringify(envelope),
+        authorityTicket,
         () => {
           outcome.current = new Promise<GatewayExecutorOutcome>((resolve) => {
             const timer = setTimeout(() => {
@@ -2542,6 +5665,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             this.#waiters.set(input.correlationId, {
               resolve,
               timer,
+              tenantId: input.tenantId,
+              rsid: input.rsid,
               mutating: input.mutating,
             });
           });
@@ -2549,7 +5674,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       );
     } catch {
       if (outcome.current === null) {
-        await this.#awaitFinalTombstoneIfRevoking(input.tenantId, input.rsid);
+        await this.#settleLocalFinalTombstoneIfPresent(
+          input.tenantId,
+          input.rsid,
+        );
         return {
           outcome: Promise.resolve({
             state: "failed",
@@ -2795,16 +5923,35 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     connection: LiveConnection,
     reservation: DurableEgressReservation,
     serialized: string,
+    authorityTicket: TenantAuthorityTicket,
     beforeSend?: () => void,
   ): Promise<void> {
+    try {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: reservation.record,
+      });
+    } catch (error: unknown) {
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
+      }
+      throw error;
+    }
     const started = await this.#promoteEgressReservation(reservation);
     let sendFailure: unknown = null;
     let releaseFailure: unknown = null;
+    let sendBegan = false;
     try {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: started.record,
+      });
       // Do not insert an await between the successful durable promotion and
       // invoking the transport: the started lease is the cross-process proof
       // that any final tombstone must wait for this send call to begin.
       beforeSend?.();
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: started.record,
+      });
+      sendBegan = true;
       const sendOperation = connection.send(serialized);
       await sendOperation;
     } catch (error) {
@@ -2817,7 +5964,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     }
     if (releaseFailure !== null) throw releaseFailure;
+    if (
+      sendFailure !== null &&
+      !sendBegan &&
+      this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
+    ) {
+      await this.#revokeStaleAuthorizedSession(connection, reservation.rsid);
+    }
     if (sendFailure !== null) throw sendFailure;
+  }
+
+  async #revokeStaleAuthorizedSession(
+    connection: LiveConnection,
+    rsid: string,
+  ): Promise<void> {
+    try {
+      await this.#unregisterNow(connection, {
+        rsid,
+        reason: "session_replaced",
+      });
+    } finally {
+      this.#closeConnectionForRevocation(connection);
+    }
   }
 
   async #reserveResumeAck(
@@ -2827,7 +5995,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly resume_token: string;
       readonly last_rx_seq: number;
     },
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<ReservedResumeAck> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
     const tenantId = connection.auth.actor.tenantId;
     const leaseId = gatewayUuidV7(this.#clock());
     const messageId = gatewayUuidV7(this.#clock());
@@ -2858,6 +6028,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, tenantId, payload.rsid);
+        this.#assertAuthorityTicket(authorityTicket, connection);
         const fence = sessionEgressFence(record);
         const nowMs = this.#clock();
         if (
@@ -2869,6 +6040,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           record.deviceId !== connection.auth.actor.deviceId ||
           record.userId !== connection.auth.actor.userId ||
           record.seatId !== connection.auth.actor.seatId ||
+          !sameDurableIdentityAuthority(
+            connection.auth,
+            record.identityAuthority,
+          ) ||
           record.resumeTokenDigest !== digest(payload.resume_token) ||
           record.resumeExpiresAtMs <= nowMs ||
           !record.sessionLifecycle.resumeAllowed
@@ -2962,6 +6137,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             4403,
           );
         }
+        this.#assertAuthorityTicket(authorityTicket, connection, {
+          session: reserved.value.record,
+          requireSessionMembership: false,
+        });
         return {
           tenantId,
           rsid: payload.rsid,
@@ -3006,7 +6185,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     rsid: string,
     connectionId: string,
     serialized: string,
+    connection: LiveConnection,
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<DurableEgressReservation> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
     const leaseId = gatewayUuidV7(this.#clock());
     const envelopeDigest = digest(serialized);
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
@@ -3034,6 +6216,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         );
         if (stored === null) return { kind: "blocked" as const };
         const record = parseStoredSession(stored, tenantId, rsid);
+        this.#assertAuthorityTicket(authorityTicket, connection, {
+          session: record,
+        });
         const fence = sessionEgressFence(record);
         const nowMs = this.#clock();
         if (
@@ -3244,8 +6429,28 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     }
   }
 
-  async #register(connection: LiveConnection, payload: SessionRegister): Promise<void> {
+  async #register(
+    connection: LiveConnection,
+    payload: SessionRegister,
+    authorityTicket: TenantAuthorityTicket,
+  ): Promise<void> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    if (
+      connection.auth.machineFingerprint !== undefined &&
+      !machineFingerprintClaimsEqual(
+        connection.auth.machineFingerprint,
+        payload.machine.fingerprint,
+      )
+    ) {
+      throw new GatewayRbpFault(
+        "auth",
+        "session registration machine claim does not match credential",
+        403,
+        4403,
+      );
+    }
     const rsid = gatewayUuidV7(this.#clock());
+    await this.#withSessionAuthorization(rsid, async () => {
     const resumeToken = token();
     const nowMs = this.#clock();
     const grantedCapabilities = connection.grantedCapabilities.filter((capability) =>
@@ -3259,6 +6464,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       userId: connection.auth.actor.userId,
       deviceId: connection.auth.actor.deviceId,
       seatId: connection.auth.actor.seatId,
+      identityAuthority: durableIdentityAuthority(connection.auth),
       rsid,
       sessionBindingId: gatewayUuidV7(this.#clock()),
       sessionVersion: 1,
@@ -3289,6 +6495,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const saved = await this.store.transact(
       { tenantId: record.tenantId },
       async (tx) => {
+        this.#assertAuthorityTicket(authorityTicket, connection);
         tx.stage({
           namespace: GATEWAY_RBP_SESSION_NAMESPACE,
           key: rsid,
@@ -3299,7 +6506,29 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       },
     );
     if (!saved.ok) throw new GatewayRbpFault("unavailable", saved.message, 503, 1011);
+    try {
+      this.#assertAuthorityTicket(authorityTicket, connection);
+    } catch (error: unknown) {
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#unregisterNow(connection, {
+          rsid,
+          reason: "session_replaced",
+        });
+        this.#closeConnectionForRevocation(connection);
+      }
+      throw error;
+    }
     await this.#activate(record);
+    try {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: record,
+      });
+    } catch (error: unknown) {
+      if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+        await this.#revokeStaleAuthorizedSession(connection, rsid);
+      }
+      throw error;
+    }
     await connection.send(
       JSON.stringify({
         v: 1,
@@ -3319,35 +6548,58 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         },
       } satisfies RbpEnvelope),
     );
+    });
   }
 
   async #resume(
     connection: LiveConnection,
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
     await this.#withSessionAuthorization(payload.rsid, async () =>
-      this.#resumeNow(connection, payload),
+      this.#resumeNow(connection, payload, authorityTicket),
     );
   }
 
   async #resumeNow(
     connection: LiveConnection,
     payload: { readonly rsid: string; readonly resume_token: string; readonly last_rx_seq: number },
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
-    const reservedAck = await this.#reserveResumeAck(connection, payload);
+    this.#assertAuthorityTicket(authorityTicket, connection);
+    let reservedAck: ReservedResumeAck;
+    try {
+      reservedAck = await this.#reserveResumeAck(
+        connection,
+        payload,
+        authorityTicket,
+      );
+    } catch (error: unknown) {
+      try {
+        this.#assertAuthorityTicket(authorityTicket, connection);
+      } catch {
+        if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+          await this.#revokeStaleAuthorizedSession(connection, payload.rsid);
+        }
+      }
+      throw error;
+    }
     await this.#activate(reservedAck.record);
     try {
       await this.#sendWithDurableReservation(
         connection,
         reservedAck,
         reservedAck.serialized,
+        authorityTicket,
       );
     } catch (error) {
       if (
         this.#active.get(payload.rsid)?.record.connectionId ===
         connection.connectionId
       ) {
+        const active = this.#active.get(payload.rsid);
         this.#active.delete(payload.rsid);
+        if (active !== undefined) this.#untrackSession(active.record);
       }
       throw error;
     }
@@ -3361,11 +6613,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         reservedAck.rsid,
         connection.connectionId,
         serialized,
+        connection,
+        authorityTicket,
       );
       await this.#sendWithDurableReservation(
         connection,
         reservation,
         serialized,
+        authorityTicket,
       );
     }
   }
@@ -3373,9 +6628,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   async #unregister(
     connection: LiveConnection,
     payload: SessionUnregister,
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
     await this.#withSessionAuthorization(payload.rsid, async () =>
-      this.#unregisterNow(connection, payload),
+      {
+        this.#assertAuthorityTicket(authorityTicket, connection);
+        return this.#unregisterNow(connection, payload);
+      },
     );
   }
 
@@ -3910,14 +7169,20 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   async #heartbeat(
     connection: LiveConnection,
     acks: readonly { readonly rsid: string; readonly seq: number }[],
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
+    this.#assertAuthorityTicket(authorityTicket, connection);
     const returned: { rsid: string; seq: number }[] = [];
     for (const ack of acks) {
       const active = this.#active.get(ack.rsid);
       if (active === undefined || active.record.connectionId !== connection.connectionId) {
         throw new GatewayRbpFault("auth", "heartbeat references an unbound rsid", 403, 4403);
       }
-      const updated = await this.#updateSession(active.tenantId, ack.rsid, (record) => {
+      const updated = await this.#withSessionAuthorization(ack.rsid, async () => {
+        this.#assertAuthorityTicket(authorityTicket, connection, {
+          session: active.record,
+        });
+        const next = await this.#updateSession(active.tenantId, ack.rsid, (record) => {
         if (sessionEgressFence(record).state !== "open") {
           throw new Error("heartbeat session is durably revoked");
         }
@@ -3938,9 +7203,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           updatedAtMs: this.#clock(),
         };
       });
+        try {
+          this.#assertAuthorityTicket(authorityTicket, connection, {
+            session: next,
+          });
+        } catch (error: unknown) {
+          if (this.#ticketScopeIsRevokedOrBlocked(authorityTicket)) {
+            await this.#revokeStaleAuthorizedSession(connection, ack.rsid);
+          }
+          throw error;
+        }
+        return next;
+      });
       active.record = updated;
       returned.push({ rsid: ack.rsid, seq: updated.sequence.lastRxSeq });
     }
+    this.#assertAuthorityTicket(authorityTicket, connection);
     await connection.send(
       JSON.stringify({
         v: 1,
@@ -3955,6 +7233,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   async #acceptData(
     connection: LiveConnection,
     envelope: Extract<RbpEnvelope, { rsid: string }>,
+    authorityTicket: TenantAuthorityTicket,
   ): Promise<void> {
     const active = this.#active.get(envelope.rsid);
     if (
@@ -3964,6 +7243,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     ) {
       throw new GatewayRbpFault("auth", "rsid is not bound to this connection", 403, 4403);
     }
+    this.#assertAuthorityTicket(authorityTicket, connection, {
+      session: active.record,
+    });
     const nextLiveDocumentRoute =
       envelope.type === "doc_context_update"
         ? liveDocumentRouteFrom(
@@ -3975,6 +7257,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     let completed: GatewayExecutorOutcome | null = null;
     let completedInvocationId: string | null = null;
     const updated = await this.#updateSession(active.tenantId, active.rsid, (record) => {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: active.record,
+      });
       if (sessionEgressFence(record).state !== "open") {
         throw new Error("inbound data session is durably revoked");
       }
@@ -4015,6 +7300,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           envelopeDigest: pending.envelopeDigest,
           acceptance,
           journal: existing?.journal ?? null,
+          terminalTruth: existing?.terminalTruth ?? null,
         };
         evidence = [
           ...evidence.filter(
@@ -4036,6 +7322,8 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           throw new Error("terminal envelope does not match the active invocation");
         }
         const journals = terminalJournalRecords(pending.journalRecords, envelope);
+        const durableTerminalOutcome = terminalOutcome(envelope);
+        const terminalTruth = durableTerminalTruth(envelope);
         const existing = evidence.find(
           (candidate) => candidate.envelopeDigest === pending!.envelopeDigest,
         );
@@ -4069,9 +7357,10 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
             envelopeDigest: pending.envelopeDigest,
             acceptance: existing?.acceptance ?? null,
             journal,
+            terminalTruth,
           },
         ];
-        completed = terminalOutcome(envelope);
+        completed = durableTerminalOutcome;
         completedInvocationId = pending.invocationId;
         pending = null;
       }
@@ -4088,13 +7377,50 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       };
     });
     active.record = updated;
+    let deliveryAuthorized = true;
+    try {
+      this.#assertAuthorityTicket(authorityTicket, connection, {
+        session: updated,
+      });
+    } catch {
+      deliveryAuthorized = false;
+    }
+    if (
+      !deliveryAuthorized &&
+      this.#ticketScopeIsRevokedOrBlocked(authorityTicket)
+    ) {
+      await this.#revokeStaleAuthorizedSession(connection, envelope.rsid);
+    }
     if (completedInvocationId !== null && completed !== null) {
+      if (!deliveryAuthorized) {
+        const waiter = this.#waiters.get(completedInvocationId);
+        if (waiter !== undefined) {
+          clearTimeout(waiter.timer);
+          this.#waiters.delete(completedInvocationId);
+          waiter.resolve({
+            state: "failed",
+            error: {
+              code: "executor_unavailable",
+              message: "identity revocation suppressed terminal delivery",
+            },
+          });
+        }
+        return;
+      }
       const waiter = this.#waiters.get(completedInvocationId);
       if (waiter !== undefined) {
         clearTimeout(waiter.timer);
         this.#waiters.delete(completedInvocationId);
         waiter.resolve(completed);
       }
+    }
+    if (!deliveryAuthorized) {
+      throw new GatewayRbpFault(
+        "auth",
+        "identity revocation suppressed inbound delivery",
+        403,
+        4403,
+      );
     }
   }
 
@@ -4107,11 +7433,13 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       const connection = this.#connections.get(prior.record.connectionId);
       await connection?.close(4001, "session replaced");
     }
+    if (prior !== undefined) this.#untrackSession(prior.record);
     this.#active.set(record.rsid, {
       tenantId: record.tenantId,
       rsid: record.rsid,
       record,
     });
+    this.#trackSession(record);
   }
 
   async #markConnectionLost(active: ActiveSession): Promise<void> {
@@ -4175,80 +7503,41 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     return result.value;
   }
 
-  async #awaitFinalTombstoneIfRevoking(
+  async #settleLocalFinalTombstoneIfPresent(
     tenantId: string,
     rsid: string,
   ): Promise<void> {
-    let remainingMs = UNREGISTER_DRAIN_TIMEOUT_MS;
-    while (true) {
-      const observed = await this.store.transact({ tenantId }, async (tx) => {
-        const tombstone = await tx.read<GatewayJsonValue>(
-          GATEWAY_RBP_UNREGISTER_NAMESPACE,
-          rsid,
-        );
-        if (tombstone !== null) {
-          const parsed = parseUnregisterTombstone(tombstone.value, {
-            tenantId,
-            rsid,
-            stored: tombstone,
-          });
-          return { kind: "final" as const, tombstone: parsed };
-        }
-        const session = await tx.read<GatewayJsonValue>(
-          GATEWAY_RBP_SESSION_NAMESPACE,
-          rsid,
-        );
-        if (session === null) return { kind: "open" as const };
-        const record = parseStoredSession(session, tenantId, rsid);
-        return sessionEgressFence(record).state === "revocation_pending"
-          ? { kind: "pending" as const }
-          : { kind: "open" as const };
-      });
-      if (!observed.ok) {
-        throw new GatewayRbpFault("unavailable", observed.message, 503, 1011);
-      }
-      if (observed.value.kind === "final") {
-        const active = this.#active.get(rsid)?.record;
-        if (active !== undefined) {
-          const verified = await this.#verifyFinalTombstone(
-            tenantId,
-            rsid,
-            {
-              userId: active.userId,
-              deviceId: active.deviceId,
-              seatId: active.seatId,
-            },
-            observed.value.tombstone.reason,
-          );
-          if (verified === null) {
-            throw new GatewayRbpFault(
-              "unavailable",
-              "observed final tombstone failed exact readback",
-              503,
-              1011,
-            );
-          }
-        }
-        this.#completeLocalUnregister(
-          rsid,
-          this.#active.get(rsid)?.record.pending ?? null,
-          true,
-        );
-        return;
-      }
-      if (observed.value.kind === "open") return;
-      if (remainingMs <= 0) {
-        throw new GatewayRbpFault(
-          "unavailable",
-          "dispatch revocation did not reach a final tombstone",
-          503,
-          1011,
-        );
-      }
-      const waitMs = Math.min(25, remainingMs);
-      await this.#wait(waitMs);
-      remainingMs -= waitMs;
+    const observed = await this.store.transact({ tenantId }, async (tx) =>
+      tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid),
+    );
+    if (!observed.ok) {
+      throw new GatewayRbpFault("unavailable", observed.message, 503, 1011);
     }
+    if (observed.value === null) return;
+    const tombstone = parseUnregisterTombstone(observed.value.value, {
+      tenantId,
+      rsid,
+      stored: observed.value,
+    });
+    const verified = await this.#verifyFinalTombstone(
+      tenantId,
+      rsid,
+      tombstone.owner,
+      tombstone.reason,
+    );
+    if (verified === null) {
+      throw new GatewayRbpFault(
+        "unavailable",
+        "final tombstone disappeared during local settlement",
+        503,
+        1011,
+      );
+    }
+    this.#completeLocalUnregister(
+      rsid,
+      this.#active.get(rsid)?.record.pending ?? null,
+      true,
+    );
   }
 
   async #readConflictPairByDigest(
@@ -4952,7 +8241,9 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     pending: DurablePendingDispatch | null,
     knownNotDispatched: boolean,
   ): void {
+    const active = this.#active.get(rsid);
     this.#active.delete(rsid);
+    if (active !== undefined) this.#untrackSession(active.record);
     if (pending === null) return;
     const waiter = this.#waiters.get(pending.invocationId);
     if (waiter === undefined) return;
