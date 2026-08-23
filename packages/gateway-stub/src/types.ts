@@ -374,6 +374,12 @@ export interface GatewayStubCoreOptions {
   enrollmentTokenTable?: StaticEnrollmentTokenTable;
   supportedProtocols?: readonly number[];
   connectionCapabilities?: readonly string[];
+  /**
+   * Test-only composition signal for the durable carrier authority. Carrier
+   * capabilities may be advertised only when its store/object pair is ready.
+   * This is deliberately not a production readiness claim.
+   */
+  carrierReady?: boolean;
   sessionCapabilities?: readonly string[];
   clock?: GatewayClock;
   /** Test-only durable state fault points. */

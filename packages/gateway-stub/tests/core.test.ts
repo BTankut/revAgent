@@ -42,6 +42,7 @@ async function connectedCore(
   clock?: { nowMs(): number },
   options: {
     connectionCapabilities?: readonly string[];
+    carrierReady?: boolean;
     sessionCapabilities?: readonly string[];
     registration?: SessionRegister;
     tokenTable?: StaticTokenTable;
@@ -68,6 +69,9 @@ async function connectedCore(
     ...(options.connectionCapabilities === undefined
       ? {}
       : { connectionCapabilities: options.connectionCapabilities }),
+    ...(options.carrierReady === undefined
+      ? {}
+      : { carrierReady: options.carrierReady }),
     ...(options.sessionCapabilities === undefined
       ? {}
       : { sessionCapabilities: options.sessionCapabilities }),
@@ -100,6 +104,65 @@ async function connectedCore(
 }
 
 describe("Gateway stub shared FSM authority", () => {
+  it("withholds carrier grants when the test carrier store/object composition is not ready", async () => {
+    const path = await statePath("wp11-carrier-readiness");
+    const core = await GatewayStubCore.create({
+      statePath: path,
+      tokenTable,
+      connectionCapabilities: [
+        "journal_v1",
+        "chunked_results",
+        "artifact_result_v1",
+        "transport_streamable_http",
+      ],
+      carrierReady: false,
+    });
+    const device = core.authenticate(TOKEN);
+    const connectionId = await core.allocateConnectionId(device);
+    const transport = new MemoryTransport(connectionId, "wss", device);
+    try {
+      core.attachConnection(transport);
+      const ack = await core.acceptHello(connectionId, hello());
+      expect(ack.payload.granted_capabilities).toEqual([
+        "journal_v1",
+        "transport_streamable_http",
+      ]);
+      core.activateConnection(connectionId);
+      await core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify(controlEnvelope("session_register", sessionRegister(), 11_900))),
+      );
+      const registered = JSON.parse(transport.sent.at(-1)!) as Extract<RbpEnvelope, { type: "session_registered" }>;
+      await core.dispatchInvoke({
+        rsid: registered.payload.rsid,
+        payload: readInvoke(uuid7(11_901)),
+      });
+      await expect(core.receiveFrame(
+        connectionId,
+        encoder.encode(JSON.stringify({
+          v: 1,
+          type: "partial",
+          id: uuid7(11_902),
+          rsid: registered.payload.rsid,
+          seq: 1,
+          ack: 1,
+          ts: NOW,
+          payload: {
+            kind: "chunk",
+            invocation_id: uuid7(11_901),
+            stream_id: "result",
+            chunk_index: 0,
+            encoding: "base64",
+            content_type: "application/json",
+            data: Buffer.from("{}").toString("base64"),
+          },
+        })),
+      )).rejects.toThrow(/chunked_results/);
+    } finally {
+      await core.close();
+    }
+  });
+
   it("keeps default connection and session grants in their separate WP-07 domains", async () => {
     const path = await statePath("wp07-capability-domains");
     const core = await GatewayStubCore.create({ statePath: path, tokenTable });

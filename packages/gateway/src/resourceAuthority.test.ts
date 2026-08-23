@@ -66,6 +66,21 @@ function artifactChunk(
   };
 }
 
+function resultChunk(
+  bytes: Uint8Array,
+  chunkIndex = 0,
+): RbpStreamChunk {
+  return {
+    kind: "chunk",
+    invocation_id: invocationId,
+    stream_id: "result",
+    chunk_index: chunkIndex,
+    encoding: "base64",
+    content_type: "application/json",
+    data: Buffer.from(bytes).toString("base64"),
+  };
+}
+
 function descriptor(
   artifactId: string,
   artifactIndex: number,
@@ -508,6 +523,90 @@ describe("GW-9 scoped artifact and result authority", () => {
     await expect(authority.recoverAll({ scope, effectiveMcpRequestScope })).resolves.toEqual([]);
     expect(objectStore.keys()).toEqual([]);
     expect(restartableStore.snapshot().records.filter((row) => row.namespace.startsWith("gateway.carrier") || row.namespace === "gateway.resource-set/v1")).toEqual([]);
+  });
+
+  it("commits the Bridge receipt and terminal callbacks with carrier Tx-B and Tx-C", async () => {
+    const bytes = new Uint8Array([4, 2, 4, 2]);
+    const rsid = "rsid-bridge-atomic-carrier";
+    const bridgeNamespace = "gateway.test-bridge-carrier/v1";
+    expect(authority.isBridgeCarrierReady(protocolStore)).toBe(true);
+    let chunkCommitted = false;
+    await authority.acceptBridgeChunk({
+      scope,
+      effectiveMcpRequestScope,
+      rsid,
+      invocationId,
+      sequence: 7,
+      chunk: artifactChunk(artifactA, 0, bytes),
+      commitBridge: (tx) => {
+        tx.stage({ namespace: bridgeNamespace, key: "chunk", value: { state: "rx-advanced" }, expect: { kind: "absent" } });
+        chunkCommitted = true;
+      },
+    });
+    expect(chunkCommitted).toBe(true);
+    const afterChunk = restartableStore.snapshot().records;
+    expect(afterChunk.find((row) => row.namespace === bridgeNamespace && row.key === "chunk")).toBeDefined();
+    expect(afterChunk.find((row) => row.namespace === "gateway.carrier-ack/v1")?.value).toMatchObject({ state: "chunk_durable", seq: 7 });
+
+    let terminalCommitted = false;
+    const refs = await authority.acceptBridgeTerminal({
+      scope,
+      effectiveMcpRequestScope,
+      rsid,
+      invocationId,
+      manifest: {
+        kind: "artifact_result",
+        descriptors: [descriptor(artifactA, 0, bytes, "atomic.png")],
+        artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }],
+      },
+      commitBridge: (tx) => {
+        tx.stage({ namespace: bridgeNamespace, key: "terminal", value: { state: "pending-cleared" }, expect: { kind: "absent" } });
+        terminalCommitted = true;
+      },
+    });
+    expect(refs).toHaveLength(1);
+    expect(terminalCommitted).toBe(true);
+    const afterTerminal = restartableStore.snapshot().records;
+    expect(afterTerminal.find((row) => row.namespace === bridgeNamespace && row.key === "terminal")).toBeDefined();
+    expect(afterTerminal.find((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted")).toBeDefined();
+    expect(afterTerminal.filter((row) => row.namespace === "gateway_resource_v1")).toHaveLength(1);
+  });
+
+  it("releases a chunked JSON result only after its terminal Tx-C callback", async () => {
+    const bytes = Buffer.from('{"safe":true,"count":2}', "utf8");
+    const rsid = "rsid-bridge-chunked-result";
+    const bridgeNamespace = "gateway.test-bridge-result/v1";
+    await authority.acceptBridgeChunk({
+      scope,
+      effectiveMcpRequestScope,
+      rsid,
+      invocationId,
+      sequence: 11,
+      chunk: resultChunk(bytes),
+      commitBridge: (tx) => tx.stage({ namespace: bridgeNamespace, key: "chunk", value: { state: "durable" }, expect: { kind: "absent" } }),
+    });
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    const result = await authority.acceptBridgeChunkedResultTerminal({
+      scope,
+      effectiveMcpRequestScope,
+      rsid,
+      invocationId,
+      manifest: {
+        kind: "chunked_result",
+        descriptor: {
+          stream_id: "result",
+          content_type: "application/json",
+          total_chunks: 1,
+          total_size: bytes.byteLength,
+          sha256: sha256(bytes),
+        },
+      },
+      commitBridge: (tx) => tx.stage({ namespace: bridgeNamespace, key: "terminal", value: { state: "accepted" }, expect: { kind: "absent" } }),
+    });
+    expect(result).toEqual({ safe: true, count: 2 });
+    const committed = restartableStore.snapshot().records;
+    expect(committed.find((row) => row.namespace === bridgeNamespace && row.key === "terminal")).toBeDefined();
+    expect(committed.find((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted")).toBeDefined();
   });
 
   it("serializes concurrent carrier replays onto one durable identity and rejects a terminal conflict", async () => {
