@@ -68,6 +68,17 @@ function replaceTokens(input: RealTrioSupervisorCommand, values: Readonly<Record
   return { executable: replace(input.executable), args: input.args.map(replace), workingDirectory: replace(input.workingDirectory) };
 }
 
+function bridgeEndpointForBinding(endpoint: string, workerArgs: readonly string[]): string {
+  const index = workerArgs.indexOf("--binding");
+  const binding = index < 0 ? undefined : workerArgs[index + 1];
+  if (binding !== "wss" && binding !== "streamable_http_sse") throw new Error("real worker command lacks one supported binding");
+  const url = new URL(endpoint);
+  if (url.hostname !== "127.0.0.1") throw new Error("real trio Gateway endpoint is not numeric loopback");
+  url.hostname = "localhost";
+  url.protocol = binding === "wss" ? "wss:" : "https:";
+  return url.toString().replace(/\/$/u, "");
+}
+
 async function publicGatewayControl(
   endpoint: string,
   controlToken: string,
@@ -159,7 +170,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         const bridge = await StrictJsonlProcess.start({
           componentId: "bridge_simulator",
           command: command(replaceTokens({ ...input.bridgeWorker, executable: bridgeExecutable }, {
-            gateway_endpoint: endpoint.replace("127.0.0.1", "localhost"),
+            gateway_endpoint: bridgeEndpointForBinding(endpoint, input.bridgeWorker.args),
             gateway_certificate_sha256: certificateSha256.replace("sha256:", ""),
             fixture_port: String(fixturePort),
             device_id: credential.deviceId,
