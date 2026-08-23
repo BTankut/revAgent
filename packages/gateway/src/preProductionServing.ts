@@ -304,6 +304,7 @@ export async function preparePreProductionServing(
             tenantId: principal.tenantId,
             userId: principal.userId,
             deviceId: device.deviceId,
+            principalKey: authenticated.principalKey,
             mcpSessionId,
           });
         },

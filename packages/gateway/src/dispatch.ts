@@ -23,6 +23,7 @@ import {
   type GatewayEventSink,
 } from "./events.js";
 import {
+  assertEffectiveMcpRequestScopeV1,
   createGatewayInvocationContext,
   deriveGatewayInvocationAuthority,
   GatewayInvocationContextError,
@@ -30,6 +31,7 @@ import {
   type GatewayInvocationContext,
   type GatewayInvocationAuthority,
   type GatewayInvocationRoute,
+  type EffectiveMcpRequestScopeV1,
 } from "./invocationContext.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import type {
@@ -631,6 +633,8 @@ export interface GatewayDispatchRequest {
   readonly args: unknown;
   readonly auth: AuthContext;
   readonly mcpSessionId: string;
+  /** Required immutable carrier minted once at north ingress. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
   /** Stable confirmation authority when transport requests are stateless. */
   readonly confirmationSessionId?: string;
   readonly confirmation?: GatewayConfirmationControl;
@@ -710,6 +714,7 @@ function snapshotInvocationRoute(
         });
   return Object.freeze({
     tenantId: route.tenantId,
+    principalKey: route.principalKey,
     mcpSessionId: route.mcpSessionId,
     rsid: route.rsid,
     documentIdentity,
@@ -855,6 +860,39 @@ export class GatewayDispatcher {
   public async dispatch(
     input: GatewayDispatchRequest,
   ): Promise<GatewayDispatchOutcome> {
+    try {
+      assertEffectiveMcpRequestScopeV1({
+        scope: input.effectiveMcpRequestScope,
+        auth: input.auth,
+        mcpSessionId: input.mcpSessionId,
+      });
+      if (
+        input.confirmationSessionId !== undefined &&
+        input.confirmationSessionId !==
+          input.effectiveMcpRequestScope.effectiveMcpSessionId
+      ) {
+        throw new GatewayInvocationContextError(
+          "mcp_session_binding_mismatch",
+          "confirmation authority must use the effective MCP request scope",
+        );
+      }
+    } catch (error) {
+      return Object.freeze({
+        ok: false as const,
+        state: "failed" as const,
+        toolName: input.toolName,
+        requestId: "effective-mcp-scope-rejected",
+        executorReached: false,
+        error: Object.freeze({
+          code: "invalid_invocation_context" as const,
+          detailCode:
+            error instanceof GatewayInvocationContextError
+              ? error.code
+              : "mcp_session_binding_mismatch",
+          message: errorMessage(error),
+        }),
+      });
+    }
     const tool = this.#registry.get(input.toolName);
     if (
       tool?.policyClass === "confirm" &&
@@ -1086,6 +1124,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -1663,6 +1702,7 @@ export class GatewayDispatcher {
             auth,
             route: route!,
             mcpSessionId: input.mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             invocationId,
             toolName: tool.name,
             toolVersion: tool.version,
@@ -2215,6 +2255,7 @@ export class GatewayDispatcher {
         auth,
         route,
         mcpSessionId: input.mcpSessionId,
+        effectiveMcpRequestScope: input.effectiveMcpRequestScope,
         invocationId,
         toolName: tool.name,
         toolVersion: tool.version,

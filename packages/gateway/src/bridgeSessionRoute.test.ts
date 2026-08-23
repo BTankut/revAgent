@@ -207,6 +207,7 @@ function resolve(authority: GatewayBridgeSessionAuthority) {
     tenantId: TENANT_ID,
     userId: USER_ID,
     deviceId: DEVICE_ID,
+    principalKey: `${TENANT_ID}:${USER_ID}`,
     mcpSessionId: MCP_SESSION_ID,
   });
 }
@@ -319,6 +320,7 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
 
     expect(resolve(created)).toEqual({
       tenantId: TENANT_ID,
+      principalKey: `${TENANT_ID}:${USER_ID}`,
       mcpSessionId: MCP_SESSION_ID,
       rsid: session.rsid,
       documentIdentity: {

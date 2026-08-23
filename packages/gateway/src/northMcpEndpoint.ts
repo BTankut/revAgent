@@ -748,6 +748,7 @@ function createSessionServer(input: {
             auth: input.authenticated.authContext,
             mcpSessionId,
             confirmationSessionId: mcpSessionId,
+            effectiveMcpRequestScope: input.effectiveMcpRequestScope,
             ...(call.confirmation === undefined
               ? {}
               : { confirmation: call.confirmation }),

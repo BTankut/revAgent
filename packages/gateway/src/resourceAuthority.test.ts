@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 
 import type { ArtifactDescriptor, RbpStreamChunk } from "@revagent/protocol";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GatewayResourceAuthority,
@@ -202,6 +202,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       quarantineStatus: "released",
       bytes: Buffer.from("A\t2", "utf8"),
     });
+    const objectGet = vi.spyOn(objectStore, "get");
     for (const denied of [
       { ...scope, actorId: "user-2" },
       { ...scope, principalKey: "tenant-1:user-2" },
@@ -216,6 +217,7 @@ describe("GW-9 scoped artifact and result authority", () => {
       authority.consumeArtifact({ ...scope, tenantId: "tenant-2" }, ref.refId),
       "not_found",
     );
+    expect(objectGet).not.toHaveBeenCalled();
 
     const [key] = objectStore.keys();
     expect(key).toMatch(

@@ -144,6 +144,7 @@ describe("GW-9 north MCP artifact resources", () => {
       catalogViewFor: () => catalog,
       invocationRouteFor: (authenticated, mcpSessionId) => ({
         tenantId: authenticated.authContext.actor.tenantId,
+        principalKey: authenticated.principalKey,
         mcpSessionId,
         rsid: "019f9ac3-ae89-7342-9f6d-b9269e167184",
         documentIdentity: {

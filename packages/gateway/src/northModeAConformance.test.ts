@@ -135,6 +135,7 @@ function routeFor(
 ): GatewayInvocationRoute {
   return Object.freeze({
     tenantId: request.authContext.actor.tenantId,
+    principalKey: request.principalKey,
     mcpSessionId,
     rsid: RSID,
     documentIdentity: Object.freeze({

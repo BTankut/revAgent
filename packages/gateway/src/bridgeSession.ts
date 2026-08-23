@@ -5189,6 +5189,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly tenantId: string;
     readonly userId: string;
     readonly deviceId: string;
+    readonly principalKey: string;
     readonly mcpSessionId: string;
   }): GatewayInvocationRoute {
     const candidates = [...this.#active.values()].filter((active) => {
@@ -5218,6 +5219,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     const selected = candidates[0]!.record;
     return {
       tenantId: input.tenantId,
+      principalKey: input.principalKey,
       mcpSessionId: input.mcpSessionId,
       rsid: selected.rsid,
       documentIdentity: {

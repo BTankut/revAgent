@@ -35,6 +35,7 @@ import {
 } from "./confirmationAuthority.js";
 import {
   canonicalParamsDigest,
+  createEffectiveMcpRequestScopeV1,
   currentGatewayInvocationContext,
   type GatewayInvocationRoute,
 } from "./invocationContext.js";
@@ -174,6 +175,7 @@ const auth: AuthContext = Object.freeze({
 
 const route: GatewayInvocationRoute = Object.freeze({
   tenantId: "tenant-a",
+  principalKey: "tenant-a:user-a",
   mcpSessionId: "mcp-session-test",
   rsid: "rsid-test-a",
   documentIdentity: Object.freeze({
@@ -767,6 +769,9 @@ function dispatchInput(
     };
     readonly confirmationSessionId?: string;
     readonly mcpSessionId?: string;
+    readonly effectiveMcpRequestScope?: ReturnType<
+      typeof createEffectiveMcpRequestScopeV1
+    >;
     readonly resolveRoute?: (
       auth: AuthContext,
     ) => GatewayInvocationRoute | Promise<GatewayInvocationRoute>;
@@ -783,6 +788,15 @@ function dispatchInput(
       overrides.mcpSessionId ??
       selectedAuth.session.mcpSessionId ??
       selectedRoute.mcpSessionId,
+    effectiveMcpRequestScope: overrides.effectiveMcpRequestScope ?? createEffectiveMcpRequestScopeV1({
+      principalKey: selectedAuth.principalKey,
+      transportMcpSessionId:
+        overrides.mcpSessionId ??
+        selectedAuth.session.mcpSessionId ??
+        selectedRoute.mcpSessionId,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    }),
     resolveRoute: overrides.resolveRoute ?? (() => selectedRoute),
     ...(overrides.confirmationSessionId === undefined
       ? {}
@@ -1047,9 +1061,8 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
       },
     });
 
-    await expect(
-      harness.dispatcher.dispatch(dispatchInput({ value: "ready" })),
-    ).resolves.toMatchObject({
+    const input = dispatchInput({ value: "ready" });
+    await expect(harness.dispatcher.dispatch(input)).resolves.toMatchObject({
       ok: true,
       requestId: "invocation-1",
       state: "completed",
@@ -1057,6 +1070,9 @@ describe("GatewayDispatcher fail-closed boundaries", () => {
     expect(currentGatewayInvocationContext()).toBeUndefined();
 
     const request = harness.executorRequests()[0];
+    expect(request?.context.effectiveMcpRequestScope).toBe(
+      input.effectiveMcpRequestScope,
+    );
     expect(request?.context).toMatchObject({
       actor: {
         role: "user",
@@ -2452,7 +2468,12 @@ describe("GW-8 durable confirmation round trip", () => {
       harness.dispatcher.dispatch(
         dispatchInput(
           { value: "ready", mode: "commit" },
-          { auth: foreignActor, toolName: confirmRecord.name, confirmation },
+          {
+            auth: foreignActor,
+            toolName: confirmRecord.name,
+            route: { ...route, principalKey: foreignActor.principalKey },
+            confirmation,
+          },
         ),
       ),
     ).resolves.toMatchObject({
@@ -2626,7 +2647,7 @@ describe("GW-8 durable confirmation round trip", () => {
           auth: unboundAuth,
           toolName: confirmRecord.name,
           mcpSessionId: "transport-session-a",
-          confirmationSessionId: "mcp-confirmation-a",
+          confirmationSessionId: "transport-session-a",
           route: routeFor("transport-session-a"),
         },
       ),
@@ -2649,7 +2670,7 @@ describe("GW-8 durable confirmation round trip", () => {
             auth: unboundAuth,
             toolName: confirmRecord.name,
             mcpSessionId: "transport-session-b",
-            confirmationSessionId: "mcp-confirmation-b",
+            confirmationSessionId: "transport-session-b",
             route: routeFor("transport-session-b"),
             confirmation,
           },
@@ -2670,7 +2691,7 @@ describe("GW-8 durable confirmation round trip", () => {
             auth: unboundAuth,
             toolName: confirmRecord.name,
             mcpSessionId: "transport-session-a",
-            confirmationSessionId: "mcp-confirmation-a",
+            confirmationSessionId: "transport-session-a",
             route: routeFor("transport-session-a"),
             confirmation,
           },

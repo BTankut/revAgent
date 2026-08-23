@@ -198,6 +198,7 @@ function invocationRouteFor(
   expect(authenticated.authInfo).not.toHaveProperty("extra");
   return Object.freeze({
     tenantId: authenticated.authContext.actor.tenantId,
+    principalKey: authenticated.principalKey,
     mcpSessionId,
     rsid: RSID,
     documentIdentity: Object.freeze({
@@ -396,11 +397,20 @@ describe("M2 north MCP first slice", () => {
       identityMcpSessionId: null,
       nowMs: 1_775_000_000_000,
     });
+    const secondStateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_001,
+    });
 
     expect(transportOnly.effectiveMcpSessionId).toBe("transport-session");
     expect(identityOnly.effectiveMcpSessionId).toBe("identity-session");
     expect(stateless.effectiveMcpSessionId).toMatch(/^stateless-request:/u);
     expect(isGatewayUuidV7(stateless.effectiveMcpSessionId.slice(18))).toBe(true);
+    expect(secondStateless.effectiveMcpSessionId).not.toBe(
+      stateless.effectiveMcpSessionId,
+    );
     expect(Object.isFrozen(stateless)).toBe(true);
   });
 
