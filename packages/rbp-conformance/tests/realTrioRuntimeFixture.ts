@@ -79,7 +79,38 @@ export interface RealTrioRuntimeFixture {
   stop(): Promise<void>;
 }
 
-function hasLiveDocumentRoute(snapshot: Record<string, unknown>): boolean {
+export const REAL_TRIO_FIXTURE_DOCUMENT_ID = "fixture-document-1" as const;
+
+export function realTrioFixtureDocumentContextEvent(
+  documentId = REAL_TRIO_FIXTURE_DOCUMENT_ID,
+): Record<string, unknown> {
+  return Object.freeze({
+    capturedAtUtc: "2026-08-23T00:00:00.000Z",
+    cacheState: "ready",
+    unavailableReason: null,
+    documents: [Object.freeze({
+      documentId,
+      title: "WP12 Fixture Document",
+      pathDigest: null,
+      isWorkshared: false,
+      isActive: true,
+    })],
+    activeDocumentId: documentId,
+    activeView: Object.freeze({
+      documentId,
+      id: "1001",
+      name: "Fixture View",
+      type: "FloorPlan",
+      level: "Level 01",
+    }),
+    disciplineHint: "mechanical",
+  });
+}
+
+export function hasRealTrioLiveDocumentRoute(
+  snapshot: Record<string, unknown>,
+  expectedDocumentId = REAL_TRIO_FIXTURE_DOCUMENT_ID,
+): boolean {
   const sessions = snapshot.sessions;
   if (!Array.isArray(sessions) || sessions.length !== 1) return false;
   const row = sessions[0];
@@ -89,7 +120,8 @@ function hasLiveDocumentRoute(snapshot: Record<string, unknown>): boolean {
   const lifecycle = (value as Record<string, unknown>).lifecycle;
   if (lifecycle === null || typeof lifecycle !== "object" || Array.isArray(lifecycle)) return false;
   const route = (lifecycle as Record<string, unknown>).liveDocumentRoute;
-  return route !== null && typeof route === "object" && !Array.isArray(route);
+  return route !== null && typeof route === "object" && !Array.isArray(route) &&
+    (route as Record<string, unknown>).sessionDocumentId === expectedDocumentId;
 }
 
 async function waitForLiveDocumentRoute(input: {
@@ -106,7 +138,7 @@ async function waitForLiveDocumentRoute(input: {
       input.certificateSha256,
       { action: "snapshot_audit" },
     );
-    if (hasLiveDocumentRoute(snapshot)) return;
+    if (hasRealTrioLiveDocumentRoute(snapshot)) return;
     if (Date.now() >= deadline) {
       throw new Error("real trio fixture document context did not produce a live Gateway route");
     }
@@ -170,27 +202,7 @@ export async function startRealTrioRuntimeFixture(
     // route authority is still earned only when the C# watcher forwards it
     // and the Gateway's public audit observes the live route.
     await supervisor.fixtureControl("apply_document_context", {
-      event: {
-        capturedAtUtc: "2026-08-23T00:00:00.000Z",
-        cacheState: "ready",
-        unavailableReason: null,
-        documents: [{
-          documentId: "fixture-document-1",
-          title: "WP12 Fixture Document",
-          pathDigest: null,
-          isWorkshared: false,
-          isActive: true,
-        }],
-        activeDocumentId: "fixture-document-1",
-        activeView: {
-          documentId: "fixture-document-1",
-          id: "1001",
-          name: "Fixture View",
-          type: "FloorPlan",
-          level: "Level 01",
-        },
-        disciplineHint: "mechanical",
-      },
+      event: realTrioFixtureDocumentContextEvent(),
     });
     await waitForLiveDocumentRoute({ endpoint, controlToken, certificateSha256 });
     const issued = await publicGatewayControl(
