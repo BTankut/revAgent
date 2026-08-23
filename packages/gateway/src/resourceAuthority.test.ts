@@ -15,7 +15,7 @@ import {
   type MemoryObjectStore,
   type RestartableTestStore,
 } from "./testAdapters.js";
-import type { GatewayProtocolStore } from "./store.js";
+import type { GatewayProtocolStore, StoreTransaction } from "./store.js";
 
 const invocationId = "0197a3c2-0000-7000-8000-000000000010";
 const artifactA = "0197a3c2-0000-7000-8000-000000000201";
@@ -690,6 +690,47 @@ describe("GW-9 scoped artifact and result authority", () => {
     const refs = await recovered.recoverAll({ scope, effectiveMcpRequestScope });
     expect(refs).toHaveLength(1);
     await expect(recovered.readResource(scope, effectiveMcpRequestScope, new URL(refs[0]!.uri))).resolves.toMatchObject({ digest: sha256(bytes) });
+  });
+
+  it("recovers exactly one Stage C after a post-B CAS fault and rejects a wrong final content type", async () => {
+    const bytes = new Uint8Array([6, 7, 8]);
+    let failPublication = true;
+    const faultingStore: GatewayProtocolStore = {
+      ...protocolStore,
+      async transact<T>(storeScope: { readonly tenantId: string }, work: (tx: StoreTransaction) => Promise<T> | T) {
+        return protocolStore.transact(storeScope, async (tx) => {
+          let publishes = false;
+          const result = await work({
+            read: tx.read.bind(tx), list: tx.list.bind(tx),
+            stage: (entry: Parameters<StoreTransaction["stage"]>[0]) => { if (entry.namespace === "gateway_resource_v1") publishes = true; tx.stage(entry); },
+          });
+          if (publishes && failPublication) { failPublication = false; throw new Error("injected C CAS fault"); }
+          return result;
+        });
+      },
+    };
+    const faulting = new GatewayResourceAuthority({ protocolStore: faultingStore, objectStore, now: () => now, newRefId: () => "stage-c-ref" });
+    const input = {
+      scope, effectiveMcpRequestScope, rsid: "rsid-stage-c-fault", invocationId,
+      chunks: [artifactChunk(artifactA, 0, bytes)],
+      manifest: { kind: "artifact_result" as const, descriptors: [descriptor(artifactA, 0, bytes, "stage-c.png")], artifactReferences: [{ artifact_id: artifactA, artifact_index: 0 }] },
+    };
+    await expectResourceError(faulting.ingestRbpArtifactCarrier(input), "storage_unavailable");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1" || (row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted"))).toEqual([]);
+    const restarted = restartableStore.restart(); await restarted.open();
+    const recovered = new GatewayResourceAuthority({ protocolStore: restarted, objectStore, now: () => now, newRefId: () => "unused" });
+    const originalGet = objectStore.get.bind(objectStore);
+    vi.spyOn(objectStore, "get").mockImplementationOnce(async (request) => {
+      const result = await originalGet(request);
+      return result.ok ? { ...result, value: { ...result.value, contentType: "image/jpeg" } } : result;
+    });
+    await expectResourceError(recovered.recoverAll({ scope, effectiveMcpRequestScope }), "storage_unavailable");
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+    vi.restoreAllMocks();
+    const refs = await recovered.recoverAll({ scope, effectiveMcpRequestScope });
+    expect(refs).toHaveLength(1);
+    await expect(recovered.recoverAll({ scope, effectiveMcpRequestScope })).resolves.toEqual([]);
+    expect(restartableStore.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toHaveLength(refs.length);
   });
 
   it("isolates carrier refs across tenant, principal, and effective session boundaries", async () => {

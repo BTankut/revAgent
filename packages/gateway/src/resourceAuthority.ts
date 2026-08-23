@@ -1210,7 +1210,7 @@ export class GatewayResourceAuthority {
       const member = members.value[index];
       if (member === undefined || member.state !== "verified" || member.rsid !== set.rsid || member.invocationId !== set.invocationId || member.tenantId !== scope.tenantId || member.principalKey !== scope.principalKey || member.effectiveMcpSessionId !== scope.mcpSessionId || member.memberIndex !== index || member.expectedChunkCount !== descriptor.total_chunks || member.digest !== descriptor.sha256 || member.byteSize !== descriptor.total_size || member.streamDigest !== carrierStreamDigest(descriptor.stream_id)) fail("storage_unavailable", "verified carrier member binding is invalid");
       const object = await this.#objectStore.get({ tenantId: scope.tenantId, storageKey: member.storageKey });
-      if (!object.ok || object.value.bytes.byteLength !== member.byteSize || sha256(object.value.bytes) !== member.digest) fail("storage_unavailable", "verified carrier final object is unavailable");
+      if (!object.ok || object.value.contentType !== member.contentType || object.value.bytes.byteLength !== member.byteSize || sha256(object.value.bytes) !== member.digest) fail("storage_unavailable", "verified carrier final object is unavailable");
     }
   }
 
