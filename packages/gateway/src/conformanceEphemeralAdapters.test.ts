@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -36,6 +36,17 @@ describe("conformance ephemeral adapters", () => {
     const read = await restarted.transact({ tenantId: "tenant_a" }, (tx) => tx.read("sessions", "one"));
     expect(read).toMatchObject({ ok: true, value: { value: { status: "open" }, version: 1 } });
     expect(await restarted.startupCoordinator.listTenantIds(1)).toMatchObject({ ok: true, value: ["tenant_a"] });
+    await restarted.close();
+  });
+
+  it("uses SQLite CAS across two independently opened adapter instances", async () => {
+    const location = await root();
+    const left = new SqliteConformanceProtocolStore(location);
+    const right = new SqliteConformanceProtocolStore(location);
+    await left.open(); await right.open();
+    expect(await left.transact({ tenantId: "tenant_a" }, (tx) => { tx.stage({ namespace: "sessions", key: "one", value: { n: 1 }, expect: { kind: "absent" } }); return true; })).toMatchObject({ ok: true });
+    expect(await right.transact({ tenantId: "tenant_a" }, (tx) => { tx.stage({ namespace: "sessions", key: "one", value: { n: 2 }, expect: { kind: "absent" } }); return true; })).toMatchObject({ ok: false, code: "conflict" });
+    await left.close(); await right.close();
   });
 
   it("requires a digest key and does not cross-read a tenant object", async () => {
@@ -45,5 +56,27 @@ describe("conformance ephemeral adapters", () => {
     await expect(store.put({ tenantId: "tenant_a", storageKey: key, bytes, contentType: "application/octet-stream" })).resolves.toMatchObject({ ok: true });
     await expect(store.get({ tenantId: "tenant_b", storageKey: key })).resolves.toMatchObject({ ok: false });
     await expect(store.put({ tenantId: "tenant_a", storageKey: `sha256:${"0".repeat(64)}`, bytes, contentType: "application/octet-stream" })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("rejects a pre-created tenant directory and never exposes a sidecar-only interrupted write", async () => {
+    const location = await root();
+    const bytes = Buffer.from("partial");
+    const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    await mkdir(path.join(location, "objects", "tenant_a"), { recursive: true });
+    const store = new DigestFileConformanceObjectStore(location);
+    await expect(store.put({ tenantId: "tenant_a", storageKey: key, bytes, contentType: "text/plain" })).resolves.toMatchObject({ ok: false });
+    await writeFile(path.join(location, "objects", "tenant_a", `${key.slice(7)}.content-type`), "text/plain");
+    await expect(store.get({ tenantId: "tenant_a", storageKey: key })).resolves.toMatchObject({ ok: false });
+  });
+
+  it("rejects a junction component rather than resolving outside its exclusive root", async () => {
+    const location = await root();
+    const outside = await root();
+    const linked = path.join(location, "linked-root");
+    await symlink(outside, linked, "junction");
+    const bytes = Buffer.from("junction");
+    const key = `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+    const store = new DigestFileConformanceObjectStore(linked);
+    await expect(store.put({ tenantId: "tenant_a", storageKey: key, bytes, contentType: "text/plain" })).resolves.toMatchObject({ ok: false });
   });
 });
