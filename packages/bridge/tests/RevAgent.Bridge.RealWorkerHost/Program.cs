@@ -86,14 +86,15 @@ internal static class Program
         try
         {
             var transport = new AddinTcpTransport();
-            var router = new AddinSessionRouter(transport);
+            var fixtureAttestor = new FixtureAddinProcessAttestor(
+                options.FixtureProcessId,
+                options.AddinPort);
+            var router = new AddinSessionRouter(transport, fixtureAttestor);
             var claims = new RbpCredentialClaimBinding(enrollment);
             var catalog = new WorkerAddinSessionCatalog(
                 new AddinDiscovery(
                     transport,
-                    new FixtureAddinProcessAttestor(
-                        options.FixtureProcessId,
-                        options.AddinPort)),
+                    fixtureAttestor),
                 router,
                 Configuration(options),
                 () => new StaticCredentialProvider(options.DeviceId, options.DeviceToken, options.Fingerprint),
