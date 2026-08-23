@@ -575,7 +575,6 @@ function createPreProductionProtocolStore(
 
         let projectedRecordCount = recordCount;
         let projectedTotalValueBytes = totalValueBytes;
-        let versionedWrites = 0;
         for (const write of staged) {
           const existing = recordFor(
             scope.tenantId,
@@ -589,15 +588,20 @@ function createPreProductionProtocolStore(
             }
             continue;
           }
-          versionedWrites += 1;
+          // The protocol-store CAS token belongs to this record, not to a
+          // tenant-wide write sequence.  A diagnostic counter may observe
+          // every write, but it must never determine a record's version or
+          // make an otherwise valid write unavailable.
+          if (existing?.version === Number.MAX_SAFE_INTEGER) {
+            return storeFailure("invalid_record", STORE_INVALID_MESSAGE);
+          }
           if (existing === undefined) projectedRecordCount += 1;
           else projectedTotalValueBytes -= existing.valueBytes;
           projectedTotalValueBytes += write.valueBytes;
         }
         if (
           projectedRecordCount > maxRecords ||
-          projectedTotalValueBytes > maxTotalRecordValueBytes ||
-          nextVersion + versionedWrites > Number.MAX_SAFE_INTEGER
+          projectedTotalValueBytes > maxTotalRecordValueBytes
         ) {
           return storeFailure("invalid_record", STORE_INVALID_MESSAGE);
         }
@@ -611,14 +615,21 @@ function createPreProductionProtocolStore(
             remove(scope.tenantId, write.namespace, write.key);
             continue;
           }
-          nextVersion += 1;
+          const existing = recordFor(
+            scope.tenantId,
+            write.namespace,
+            write.key,
+          );
+          // Kept only for bounded diagnostics; it is deliberately not a CAS
+          // source and cannot block record-local version advancement.
+          if (nextVersion < Number.MAX_SAFE_INTEGER) nextVersion += 1;
           put({
             namespace: write.namespace,
             tenantId: scope.tenantId,
             key: write.key,
             serializedValue: write.serializedValue,
             valueBytes: write.valueBytes,
-            version: nextVersion,
+            version: (existing?.version ?? 0) + 1,
             updatedAtMs,
           });
         }

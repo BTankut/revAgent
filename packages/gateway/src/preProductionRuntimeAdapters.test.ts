@@ -38,11 +38,12 @@ async function write(
     readonly key: string;
     readonly value: GatewayJsonObject | null;
     readonly expect?: StoreExpectation;
+    readonly namespace?: string;
   },
 ) {
   return await store.transact({ tenantId: input.tenantId }, (tx) => {
     tx.stage({
-      namespace: "runtime.test/v1",
+      namespace: input.namespace ?? "runtime.test/v1",
       key: input.key,
       value: input.value,
       expect: input.expect ?? { kind: "absent" },
@@ -55,9 +56,10 @@ async function read(
   store: GatewayProtocolStore,
   tenantId: string,
   key: string,
+  namespace = "runtime.test/v1",
 ): Promise<StoredRecord | null> {
   const outcome = await store.transact({ tenantId }, (tx) =>
-    tx.read("runtime.test/v1", key),
+    tx.read(namespace, key),
   );
   if (!outcome.ok) throw new Error("fixture read was refused");
   return outcome.value;
@@ -249,6 +251,83 @@ describe("M4 pre-production runtime adapters", () => {
     await expect(read(protocolStore, "tenant-a", "shared-key")).resolves.toMatchObject({
       value: { nested: { state: "tenant-a" } },
     });
+  });
+
+  it("uses record-local CAS versions across unrelated and multi-key writes", async () => {
+    const { protocolStore } = createPreProductionRuntimeAdapters({
+      protocolStore: { clock: () => NOW_MS },
+    });
+    await protocolStore.open();
+    await expect(
+      write(protocolStore, {
+        tenantId: "tenant-a",
+        key: "unrelated-prior-write",
+        value: { state: "diagnostic-only" },
+      }),
+    ).resolves.toEqual({ ok: true, value: "written" });
+
+    const childNamespace = "gateway.rbp-session-egress/v2";
+    const childKey = "rsid-record-local/egress";
+    await expect(
+      write(protocolStore, {
+        tenantId: "tenant-a",
+        namespace: childNamespace,
+        key: childKey,
+        value: { fence: { state: "open" } },
+      }),
+    ).resolves.toEqual({ ok: true, value: "written" });
+    await expect(
+      read(protocolStore, "tenant-a", childKey, childNamespace),
+    ).resolves.toMatchObject({ version: 1 });
+
+    await expect(
+      write(protocolStore, {
+        tenantId: "tenant-a",
+        namespace: childNamespace,
+        key: childKey,
+        value: { fence: { state: "closed" } },
+        expect: { kind: "version", version: 1 },
+      }),
+    ).resolves.toEqual({ ok: true, value: "written" });
+    await expect(
+      read(protocolStore, "tenant-a", childKey, childNamespace),
+    ).resolves.toMatchObject({ version: 2 });
+
+    const multiKey = await protocolStore.transact({ tenantId: "tenant-a" }, (tx) => {
+      tx.stage({
+        namespace: "gateway.rbp-session-evidence/v2",
+        key: "rsid-record-local/evidence/1",
+        value: { state: "evidence" },
+        expect: { kind: "absent" },
+      });
+      tx.stage({
+        namespace: "gateway.rbp-session-conflict-index/v2",
+        key: "rsid-record-local/conflict-index",
+        value: { state: "complete" },
+        expect: { kind: "absent" },
+      });
+      return "multi-key" as const;
+    });
+    expect(multiKey).toEqual({ ok: true, value: "multi-key" });
+    await expect(
+      read(protocolStore, "tenant-a", "rsid-record-local/evidence/1", "gateway.rbp-session-evidence/v2"),
+    ).resolves.toMatchObject({ version: 1 });
+    await expect(
+      read(protocolStore, "tenant-a", "rsid-record-local/conflict-index", "gateway.rbp-session-conflict-index/v2"),
+    ).resolves.toMatchObject({ version: 1 });
+
+    await expect(
+      write(protocolStore, {
+        tenantId: "tenant-a",
+        namespace: childNamespace,
+        key: childKey,
+        value: { fence: { state: "stale-attempt" } },
+        expect: { kind: "version", version: 1 },
+      }),
+    ).resolves.toMatchObject({ ok: false, code: "conflict" });
+    await expect(
+      read(protocolStore, "tenant-a", childKey, childNamespace),
+    ).resolves.toMatchObject({ version: 2, value: { fence: { state: "closed" } } });
   });
 
   it("rolls callback failures back and keeps every refusal value-free", async () => {
