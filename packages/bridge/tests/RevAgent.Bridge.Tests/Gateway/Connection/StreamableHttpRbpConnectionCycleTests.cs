@@ -435,7 +435,7 @@ public sealed class StreamableHttpRbpConnectionCycleTests
     }
 
     internal static Uri Endpoint() =>
-        new("wss://gateway.revagent.example/bridge/v1");
+        new("https://gateway.revagent.example/bridge/v1");
 
     internal static RbpDeviceCredential Credential() =>
         new(

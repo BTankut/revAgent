@@ -262,7 +262,7 @@ internal static class RbpHttpBindingProtocol
         if (!endpoint.IsAbsoluteUri ||
             !string.Equals(
                 endpoint.Scheme,
-                Uri.UriSchemeWss,
+                Uri.UriSchemeHttps,
                 StringComparison.OrdinalIgnoreCase) ||
             !string.Equals(
                 endpoint.AbsolutePath,
@@ -282,8 +282,8 @@ internal static class RbpHttpBindingProtocol
                 StringComparison.Ordinal))
         {
             throw new ArgumentException(
-                "The fallback endpoint must derive from the exact " +
-                "wss://dns-name/bridge/v1 authority.",
+                "The Streamable HTTP/SSE endpoint must be the exact " +
+                "https://dns-name/bridge/v1 authority.",
                 nameof(endpoint));
         }
     }

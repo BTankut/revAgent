@@ -104,7 +104,7 @@ internal sealed partial class RbpConnectionCoordinator
         _identifiers = new RbpUuidV7(
             new CoordinatorTimeProvider(_clock),
             _random);
-        ValidateOptions(options);
+        ValidateOptions(cycleFactory, options);
     }
 
     internal RbpConnectionCoordinatorSnapshot GetSnapshot()

@@ -74,12 +74,12 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
     }
 
     [Theory]
-    [InlineData("wss://127.0.0.1/bridge/v1")]
-    [InlineData("wss://[::1]/bridge/v1")]
-    [InlineData("wss://gateway.revagent.example/other")]
-    [InlineData("https://gateway.revagent.example/bridge/v1")]
-    [InlineData("wss://gateway.revagent.example/bridge/v1?x=1")]
-    public async Task EndpointMustDeriveFromExactWssDnsAuthority(
+    [InlineData("https://127.0.0.1/bridge/v1")]
+    [InlineData("https://[::1]/bridge/v1")]
+    [InlineData("https://gateway.revagent.example/other")]
+    [InlineData("wss://gateway.revagent.example/bridge/v1")]
+    [InlineData("https://gateway.revagent.example/bridge/v1?x=1")]
+    public async Task EndpointMustUseExactHttpsDnsAuthority(
         string endpoint)
     {
         var handler = new ScriptedHttpMessageHandler(

@@ -37,12 +37,20 @@ internal sealed class StreamableHttpRbpConnectionCycleFactory :
             helloFactory ?? new RbpHelloFactory(_timeProvider);
     }
 
+    public RbpConnectionBindingKind BindingKind =>
+        RbpConnectionBindingKind.StreamableHttpSse;
+
+    public string ExpectedEndpointScheme => Uri.UriSchemeHttps;
+
     public async Task<IRbpConnectionCycle> OpenAsync(
         Uri endpoint,
         RbpHelloProfile profile,
         CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(endpoint);
+        RbpConnectionBindingContract.RequireExpectedEndpointScheme(
+            endpoint,
+            ExpectedEndpointScheme,
+            nameof(endpoint));
         ArgumentNullException.ThrowIfNull(profile);
         if (!_streamableHttpProvisioned ||
             !profile.Capabilities.Contains(

@@ -449,6 +449,9 @@ public sealed partial class RbpConnectionCoordinatorTests
 
         internal int OpenCount => Volatile.Read(ref _openCount);
 
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
         public Task<IRbpConnectionCycle> OpenAsync(
             Uri endpoint,
             RbpHelloProfile profile,

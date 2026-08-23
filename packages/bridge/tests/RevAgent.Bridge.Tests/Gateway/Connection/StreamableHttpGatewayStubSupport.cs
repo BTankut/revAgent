@@ -40,6 +40,13 @@ internal sealed class StreamableHttpGatewayStubProcess : IAsyncDisposable
 
     internal Uri HttpConnectionUri { get; }
 
+    internal Uri HttpEndpoint => new UriBuilder(HttpConnectionUri)
+    {
+        Path = "/bridge/v1",
+        Query = string.Empty,
+        Fragment = string.Empty,
+    }.Uri;
+
     internal static async Task<StreamableHttpGatewayStubProcess>
         StartAsync()
     {

@@ -236,6 +236,9 @@ public sealed partial class RbpConnectionCoordinatorTests
     {
         private readonly IRbpConnectionCycle _cycle;
 
+        public RbpConnectionBindingKind BindingKind =>
+            RbpConnectionBindingKind.Wss;
+
         internal FixedConnectionCycleFactory(IRbpConnectionCycle cycle)
         {
             _cycle = cycle;

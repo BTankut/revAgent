@@ -26,7 +26,7 @@ public sealed class StreamableHttpGatewayStubTests
 
         await using IRbpConnectionCycle cycle =
             await factory.OpenAsync(
-                stub.WebSocketUri,
+                stub.HttpEndpoint,
                 StreamableHttpRbpConnectionCycleTests.Profile());
         await cycle.SendAsync(
             StreamableHttpRbpConnectionCycleTests.Heartbeat());
