@@ -20,6 +20,9 @@ import {
 import { stableJson } from "./stableJson.js";
 
 export const REAL_TRIO_SUPERVISOR_SCHEMA = "rbp-real-trio-supervisor/v1" as const;
+export const REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA =
+  "rbp-real-trio-failure-diagnostics/v1" as const;
+const MAX_REAL_TRIO_DIAGNOSTIC_RECORDS = 16;
 
 export interface RealTrioSupervisorCommand {
   readonly executable: string;
@@ -66,6 +69,65 @@ export interface RbpSessionReadinessPollOptions {
   readonly sleep?: (milliseconds: number) => Promise<void>;
 }
 
+export interface RealTrioFailureDiagnostics {
+  readonly schemaVersion: typeof REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA;
+  /** Public Gateway audit reduced to counts/namespaces; never session values. */
+  readonly gatewayAudit: JsonObject | null;
+  /** Only schema-valid value-free worker observations are retained. */
+  readonly bridgeTranscript: readonly ProcessTranscriptRecord[];
+}
+
+function boundedText(value: unknown, maximum: number): string | null {
+  return typeof value === "string" && value.length > 0 && value.length <= maximum
+    ? value
+    : null;
+}
+
+function redactGatewayAudit(snapshot: JsonObject | null): JsonObject | null {
+  if (snapshot === null) return null;
+  const rows = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+  const namespaces = rows
+    .filter(isObject)
+    .map((row) => boundedText(row.namespace, 128))
+    .filter((value): value is string => value !== null)
+    .slice(0, MAX_REAL_TRIO_DIAGNOSTIC_RECORDS);
+  return Object.freeze({ sessionCount: rows.length, namespaces: [...namespaces] });
+}
+
+function redactBridgeTranscript(
+  transcript: readonly ProcessTranscriptRecord[],
+): readonly ProcessTranscriptRecord[] {
+  const retained: ProcessTranscriptRecord[] = [];
+  for (const record of transcript.slice(-MAX_REAL_TRIO_DIAGNOSTIC_RECORDS)) {
+    if (record.stream !== "stderr") continue;
+    try {
+      const parsed = JSON.parse(record.line) as unknown;
+      if (!isObject(parsed) ||
+          parsed.contractVersion !== "revagent.wp12-real-worker-observation/v1" ||
+          parsed.event !== "bridge.connection_failure_observation" ||
+          !["wss", "streamable_http_sse"].includes(parsed.binding as string) ||
+          parsed.state !== "retry_paused" || parsed.reason !== "authorization_refusal") continue;
+      const timestamp = boundedText(parsed.timestamp, 64);
+      if (timestamp === null) continue;
+      retained.push(Object.freeze({
+        stream: "stderr",
+        at: boundedText(record.at, 64) ?? "",
+        line: stableJson({
+          contractVersion: parsed.contractVersion,
+          event: parsed.event,
+          timestamp,
+          binding: parsed.binding,
+          state: parsed.state,
+          reason: parsed.reason,
+        }),
+      }));
+    } catch {
+      // Raw stderr is not evidence: it may contain an endpoint, path, or secret.
+    }
+  }
+  return Object.freeze(retained);
+}
+
 export class RealTrioSessionReadinessPollError extends Error {
   public constructor(
     message: string,
@@ -77,6 +139,24 @@ export class RealTrioSessionReadinessPollError extends Error {
   ) {
     super(message);
   }
+
+  public get failureDiagnostics(): RealTrioFailureDiagnostics {
+    return Object.freeze({
+      schemaVersion: REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA,
+      gatewayAudit: redactGatewayAudit(this.lastGatewayAudit),
+      bridgeTranscript: redactBridgeTranscript(this.bridgeReceiveTranscript),
+    });
+  }
+}
+
+/** Extracts the bounded, redacted real-process diagnostics through error wraps. */
+export function realTrioFailureDiagnostics(error: unknown): RealTrioFailureDiagnostics | null {
+  let current: unknown = error;
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (current instanceof RealTrioSessionReadinessPollError) return current.failureDiagnostics;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return null;
 }
 
 function sha256File(path: string): `sha256:${string}` {
@@ -173,7 +253,7 @@ export function fixtureAttestedWorkerCommand(
   return replaceTokens(worker, tokens);
 }
 
-function isObject(value: JsonValue | undefined): value is JsonObject {
+function isObject(value: unknown): value is JsonObject {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 

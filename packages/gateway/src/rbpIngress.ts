@@ -50,6 +50,7 @@ const HTTP_SSE_ATTACH_TTL_MS = 30_000;
 const HTTP_SSE_REGISTER_TTL_MS = 60_000;
 const HTTP_SSE_SWEEP_INTERVAL_MS = 5_000;
 const HTTP_SSE_DISPOSED_TOMBSTONE_TTL_MS = 60_000;
+const HTTP_SSE_DELIVERY_OBSERVATION_LIMIT = 256;
 
 type WssConnectionState = "opening" | "open" | "closing" | "closed" | "faulted";
 type HttpConnectionState =
@@ -119,6 +120,25 @@ export interface RbpHttpSseLifecycleRuntime {
   }) => void;
 }
 
+export const RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT =
+  "revagent.gateway-rbp-http-sse-delivery-observation/v1" as const;
+
+/**
+ * Value-free delivery boundary evidence for the real HTTP/SSE carrier.
+ * Connection ids are correlation handles, never credentials; payload and
+ * transport-error text are deliberately unrepresentable here.
+ */
+export interface RbpHttpSseDeliveryObservation {
+  readonly contractVersion: typeof RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT;
+  readonly event: "gateway.rbp_http_sse_delivery_observation";
+  readonly timestamp: string;
+  readonly connectionId: string;
+  readonly frame: "rbp";
+  readonly action: "queued" | "write_callback" | "drain" | "flush" | "close" | "error";
+  readonly state: HttpConnectionState;
+  readonly reason: "none" | "stream_closed" | "write_failed" | "close_failed";
+}
+
 export const RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT =
   "revagent.gateway-rbp-wss-internal-diagnostic/v1" as const;
 
@@ -142,6 +162,9 @@ export interface ProductionRbpIngressOptions {
     observation: RbpOpeningRefusalObservation,
   ) => void;
   readonly onWssInternalDiagnostic?: (diagnostic: RbpWssInternalDiagnostic) => void;
+  readonly onHttpSseDeliveryObservation?: (
+    observation: RbpHttpSseDeliveryObservation,
+  ) => void;
 }
 
 interface PublicWssFault {
@@ -363,14 +386,34 @@ class HttpSseChannel implements BridgeConnectionChannel {
   #response: ServerResponse | null = null;
   #pendingBytes = 0;
   #closed = false;
+  #connectionId: string | null = null;
 
-  public constructor(private readonly onClose: () => void) {}
+  public constructor(
+    private readonly onClose: () => void,
+    private readonly onDelivery: (
+      connectionId: string,
+      action: RbpHttpSseDeliveryObservation["action"],
+      reason: RbpHttpSseDeliveryObservation["reason"],
+    ) => void,
+  ) {}
+
+  public bindConnection(connectionId: string): void {
+    this.#connectionId = connectionId;
+  }
+
+  #observe(
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"] = "none",
+  ): void {
+    if (this.#connectionId !== null) this.onDelivery(this.#connectionId, action, reason);
+  }
 
   public get closed(): boolean {
     return this.#closed;
   }
 
   #fail(error: Error): never {
+    this.#observe("error", "write_failed");
     this.onClose();
     throw error;
   }
@@ -413,6 +456,7 @@ class HttpSseChannel implements BridgeConnectionChannel {
       }
       this.#pendingBytes = nextBytes;
       this.#pending.push(serialized);
+      this.#observe("queued");
       return;
     }
     if (response.destroyed || response.writableEnded) {
@@ -450,12 +494,14 @@ class HttpSseChannel implements BridgeConnectionChannel {
         response.once("error", onError);
         try {
           accepted = response.write(frame, (error?: Error | null) => {
+            if (error === undefined || error === null) this.#observe("write_callback");
             finish(error === undefined || error === null ? undefined : error);
           });
           const flush = (response as unknown as { flush?: () => void }).flush;
           // Compression middleware may buffer SSE chunks after write().  Its
           // optional flush is part of the same delivery boundary.
           flush?.call(response);
+          this.#observe("flush");
         } catch (error) {
           finish(error instanceof Error ? error : new Error(String(error)));
         }
@@ -474,7 +520,10 @@ class HttpSseChannel implements BridgeConnectionChannel {
           response.off("close", onClose);
           response.off("error", onError);
           if (error !== undefined) this.onClose();
-          if (error === undefined) resolve();
+          if (error === undefined) {
+            this.#observe("drain");
+            resolve();
+          }
           else reject(error);
         };
         response.once("drain", onDrain);
@@ -491,8 +540,10 @@ class HttpSseChannel implements BridgeConnectionChannel {
     if (this.#response !== null && !this.#response.writableEnded) {
       try {
         this.#response.end();
+        this.#observe("close");
       } catch (error) {
         closeError = error instanceof Error ? error : new Error(String(error));
+        this.#observe("error", "close_failed");
       }
     }
     this.#response = null;
@@ -629,6 +680,7 @@ export function createProductionRbpIngressHost(
   const httpDeviceCounts = new Map<string, number>();
   let httpGlobalCount = 0;
   let httpAdmissionTail = Promise.resolve();
+  let httpSseDeliveryObservationCount = 0;
   let draining = false;
   let livenessTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -641,6 +693,29 @@ export function createProductionRbpIngressHost(
         deviceAdmissions: httpDeviceCounts.size,
       }),
     );
+  };
+
+  const observeHttpSseDelivery = (
+    connectionId: string,
+    action: RbpHttpSseDeliveryObservation["action"],
+    reason: RbpHttpSseDeliveryObservation["reason"],
+  ): void => {
+    if (
+      options.onHttpSseDeliveryObservation === undefined ||
+      httpSseDeliveryObservationCount >= HTTP_SSE_DELIVERY_OBSERVATION_LIMIT
+    ) return;
+    httpSseDeliveryObservationCount += 1;
+    const entry = httpConnections.get(connectionId);
+    bestEffort(() => options.onHttpSseDeliveryObservation!(Object.freeze({
+      contractVersion: RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
+      event: "gateway.rbp_http_sse_delivery_observation",
+      timestamp: new Date(httpSseClock()).toISOString(),
+      connectionId,
+      frame: "rbp",
+      action,
+      state: entry?.state ?? "created",
+      reason,
+    })));
   };
 
   const httpAdmission = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -897,9 +972,12 @@ export function createProductionRbpIngressHost(
               reserveHttpAdmission(scope);
               let entry: HttpConnectionEntry | null = null;
               let openedConnectionId: string | null = null;
-              const channel = new HttpSseChannel(() => {
-                if (entry !== null) void disposeHttpConnection(entry);
-              });
+              const channel = new HttpSseChannel(
+                () => {
+                  if (entry !== null) void disposeHttpConnection(entry);
+                },
+                observeHttpSseDelivery,
+              );
               try {
                 const opening = await authority.openConnection({
                   deviceToken,
@@ -908,6 +986,7 @@ export function createProductionRbpIngressHost(
                   channel,
                 });
                 openedConnectionId = opening.connectionId;
+                channel.bindConnection(opening.connectionId);
                 const boundConnection = await authority.assertConnectionCredential(
                   opening.connectionId,
                   deviceToken,

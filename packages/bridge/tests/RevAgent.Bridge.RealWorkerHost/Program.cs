@@ -120,7 +120,9 @@ internal static class Program
             RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
                 new WorkerGatewayServices(cycle, journal, catalog,
                     new RbpConnectionCoordinatorOptions(options.GatewayUri, profile, CredentialClaimInvalidator: claims),
-                    new WorkerAddinDispatchSurface(router, catalog), CarrierProducer: carrier));
+                    new WorkerAddinDispatchSurface(router, catalog),
+                    OnConnectionFailureObservation: ObserveConnectionFailure,
+                    CarrierProducer: carrier));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
         catch
@@ -128,6 +130,39 @@ internal static class Program
             journal.DisposeAsync().AsTask().GetAwaiter().GetResult();
             throw;
         }
+    }
+
+    /// <summary>
+    /// The real-process harness consumes stderr as failure evidence. Keep this
+    /// boundary closed: it records lifecycle classification only, never the
+    /// gateway URI, machine paths, credential values, or exception text.
+    /// </summary>
+    private static ValueTask ObserveConnectionFailure(
+        RbpConnectionFailureObservation observation)
+    {
+        try
+        {
+            string binding = observation.Binding switch
+            {
+                RbpOpeningBinding.Wss => "wss",
+                RbpOpeningBinding.HttpSse => "streamable_http_sse",
+                _ => "unknown",
+            };
+            Console.Error.WriteLine(JsonSerializer.Serialize(new
+            {
+                contractVersion = "revagent.wp12-real-worker-observation/v1",
+                @event = "bridge.connection_failure_observation",
+                timestamp = DateTimeOffset.UtcNow.ToString("O"),
+                binding,
+                state = "retry_paused",
+                reason = "authorization_refusal",
+            }));
+        }
+        catch
+        {
+            // Diagnostic emission must not own the coordinator retry state.
+        }
+        return ValueTask.CompletedTask;
     }
 
     private static ResolvedBridgeConfiguration Configuration(Options options) => new(

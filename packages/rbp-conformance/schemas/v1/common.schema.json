@@ -627,7 +627,47 @@
               "required": ["code", "message"],
               "properties": {
                 "code": { "type": "string", "minLength": 1 },
-                "message": { "type": "string", "minLength": 1 }
+                "message": { "type": "string", "minLength": 1 },
+                "diagnostics": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["schemaVersion", "gatewayAudit", "bridgeTranscript"],
+                  "properties": {
+                    "schemaVersion": { "const": "rbp-real-trio-failure-diagnostics/v1" },
+                    "gatewayAudit": {
+                      "anyOf": [
+                        { "type": "null" },
+                        {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": ["sessionCount", "namespaces"],
+                          "properties": {
+                            "sessionCount": { "type": "integer", "minimum": 0 },
+                            "namespaces": {
+                              "type": "array",
+                              "maxItems": 16,
+                              "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+                            }
+                          }
+                        }
+                      ]
+                    },
+                    "bridgeTranscript": {
+                      "type": "array",
+                      "maxItems": 16,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["stream", "at", "line"],
+                        "properties": {
+                          "stream": { "const": "stderr" },
+                          "at": { "type": "string", "maxLength": 64 },
+                          "line": { "type": "string", "minLength": 1, "maxLength": 512 }
+                        }
+                      }
+                    }
+                  }
+                }
               }
             }
           ]

@@ -5,6 +5,7 @@ import {
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
   pollRbpSessionV2Readiness,
+  realTrioFailureDiagnostics,
   RealTrioSessionReadinessPollError,
   readRbpSessionV2Readiness,
 } from "../src/realTrioSupervisor.js";
@@ -165,5 +166,50 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
       timeoutMs: 200,
       intervalMs: 100,
     })).rejects.toMatchObject({ message: expect.stringMatching(/bridge exited/u), audits: [] });
+  });
+
+  it("retains only bounded value-free worker observations and reduced Gateway audit on failure", () => {
+    const error = new RealTrioSessionReadinessPollError(
+      "readiness failed",
+      [],
+      {
+        sessions: [{
+          namespace: "gateway.rbp-session/v2",
+          value: { localSessionKey: "must-not-leak", deviceToken: "must-not-leak" },
+        }],
+      },
+      [
+        {
+          stream: "stderr",
+          at: "2026-08-23T00:00:00.000Z",
+          line: JSON.stringify({
+            contractVersion: "revagent.wp12-real-worker-observation/v1",
+            event: "bridge.connection_failure_observation",
+            timestamp: "2026-08-23T00:00:00.000Z",
+            binding: "streamable_http_sse",
+            state: "retry_paused",
+            reason: "authorization_refusal",
+            token: "must-not-leak",
+          }),
+        },
+        { stream: "stderr", at: "2026-08-23T00:00:01.000Z", line: "C:\\private\\path secret" },
+      ],
+    );
+    const diagnostics = realTrioFailureDiagnostics(new Error("wrapped", { cause: error }));
+    expect(diagnostics).toMatchObject({
+      schemaVersion: "rbp-real-trio-failure-diagnostics/v1",
+      gatewayAudit: { sessionCount: 1, namespaces: ["gateway.rbp-session/v2"] },
+      bridgeTranscript: [{ stream: "stderr", at: "2026-08-23T00:00:00.000Z" }],
+    });
+    expect(JSON.parse(diagnostics!.bridgeTranscript[0]!.line)).toEqual({
+      contractVersion: "revagent.wp12-real-worker-observation/v1",
+      event: "bridge.connection_failure_observation",
+      timestamp: "2026-08-23T00:00:00.000Z",
+      binding: "streamable_http_sse",
+      state: "retry_paused",
+      reason: "authorization_refusal",
+    });
+    expect(JSON.stringify(diagnostics)).not.toContain("must-not-leak");
+    expect(JSON.stringify(diagnostics)).not.toContain("private\\path");
   });
 });

@@ -37,8 +37,10 @@ import { gatewayUuidV7 } from "./identifiers.js";
 import type { GatewayRecoveryPendingDispatch } from "./recoveryAuthority.js";
 import {
   RBP_OPENING_REFUSAL_OBSERVER_CONTRACT,
+  RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
   RBP_WSS_INTERNAL_DIAGNOSTIC_CONTRACT,
   createProductionRbpIngressHost,
+  type RbpHttpSseDeliveryObservation,
   type RbpOpeningRefusalObservation,
   type RbpWssInternalDiagnostic,
 } from "./rbpIngress.js";
@@ -2070,13 +2072,17 @@ describe("GW-12 production RBP ingress", () => {
       grantedConnectionCapabilities: ["transport_streamable_http"],
     });
     const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
+    const delivery: RbpHttpSseDeliveryObservation[] = [];
     const server = await startGatewayServer({
       config,
       ports: {
         ...createFailClosedPorts(),
         identity: activeIdentity,
         protocolStore: restartable.store,
-        rbpIngress: createProductionRbpIngressHost({ authority }),
+        rbpIngress: createProductionRbpIngressHost({
+          authority,
+          onHttpSseDeliveryObservation: (observation) => delivery.push(observation),
+        }),
       },
     });
     handles.push(server);
@@ -2126,6 +2132,25 @@ describe("GW-12 production RBP ingress", () => {
     expect(JSON.parse(frame.slice("event: rbp\ndata: ".length).trim()) as RbpEnvelope)
       .toMatchObject({ type: "session_registered" });
     expect((await lifecyclePost).status).toBe(202);
+    expect(delivery).toContainEqual(expect.objectContaining({
+      contractVersion: RBP_HTTP_SSE_DELIVERY_OBSERVATION_CONTRACT,
+      connectionId,
+      frame: "rbp",
+      action: "write_callback",
+      reason: "none",
+    }));
+    expect(delivery).toContainEqual(expect.objectContaining({
+      connectionId,
+      action: "flush",
+      state: "sse_attached",
+    }));
+    for (const observation of delivery) {
+      expect(Object.keys(observation).sort()).toEqual([
+        "action", "connectionId", "contractVersion", "event", "frame", "reason", "state", "timestamp",
+      ]);
+      expect(JSON.stringify(observation)).not.toContain("device-token");
+      expect(JSON.stringify(observation)).not.toContain("session_registered");
+    }
     await reader.cancel();
   });
 

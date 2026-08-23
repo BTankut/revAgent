@@ -156,6 +156,21 @@ export interface BindingResult {
 export interface FailureEvidence {
   code: string;
   message: string;
+  diagnostics?: SupervisedFailureDiagnostics;
+}
+
+/** Bounded, value-free diagnosis retained only for supervised real-process failures. */
+export interface SupervisedFailureDiagnostics {
+  schemaVersion: "rbp-real-trio-failure-diagnostics/v1";
+  gatewayAudit: {
+    sessionCount: number;
+    namespaces: string[];
+  } | null;
+  bridgeTranscript: Array<{
+    stream: "stderr";
+    at: string;
+    line: string;
+  }>;
 }
 
 export interface CaseResult {
