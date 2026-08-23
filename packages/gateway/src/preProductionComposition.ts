@@ -39,6 +39,7 @@ export type PreProductionCompositionErrorCode =
   | "invalid_gateway_configuration"
   | "production_mode_refused"
   | "unavailable_protocol_store"
+  | "startup_coordinator_unavailable"
   | "invalid_north_authority";
 
 export class PreProductionCompositionError extends Error {
@@ -270,6 +271,12 @@ export function createPreProductionLanTestComposition(
     fail(
       "unavailable_protocol_store",
       "the LAN/test composition requires an explicit protocol store adapter",
+    );
+  }
+  if (options.protocolStore.startupCoordinator === undefined) {
+    fail(
+      "startup_coordinator_unavailable",
+      "the LAN/test composition requires the durable startup coordinator",
     );
   }
   if (

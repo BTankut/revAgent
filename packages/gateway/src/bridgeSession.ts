@@ -70,6 +70,7 @@ import type {
 import { GATEWAY_RECOVERY_NAMESPACE } from "./recoveryAuthority.js";
 import type {
   GatewayProtocolStore,
+  StoreExpectation,
   StoreOutcome,
   StoreTransaction,
   StoredRecord,
@@ -90,6 +91,20 @@ export const GATEWAY_RBP_SESSION_NAMESPACE =
   "gateway.rbp-session/v1" as const;
 export const GATEWAY_RBP_UNREGISTER_NAMESPACE =
   "gateway.rbp-unregister/v1" as const;
+export const GATEWAY_RBP_SESSION_V2_NAMESPACE = "gateway.rbp-session/v2" as const;
+/** The v2 authority switch.  A v2 root without this marker is staging only. */
+export const GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE =
+  "gateway.rbp-session-cutover/v2" as const;
+/** Private, marker-less startup migration state. Its presence is deny-only. */
+export const GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE =
+  "gateway.rbp-session-migration/v1" as const;
+const GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE =
+  "gateway.rbp-session-evidence/v2" as const;
+const GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE =
+  "gateway.rbp-session-egress/v2" as const;
+const GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE =
+  "gateway.rbp-session-conflict-index/v2" as const;
+export const GATEWAY_MUTATION_RESOLUTION_NAMESPACE = "gateway.mutation-resolution/v1" as const;
 
 const RESUME_LIFETIME_MS = 24 * 60 * 60 * 1_000;
 const INVOCATION_TIMEOUT_MS = 120_000;
@@ -315,6 +330,68 @@ interface DurableRbpSession {
   readonly updatedAtMs: number;
 }
 
+interface DurableRbpSessionV2 {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_NAMESPACE;
+  readonly generation: 2;
+  /** Logical aggregate generation. Store record versions are adapter-private. */
+  readonly rootVersion: number;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly identity: Pick<DurableRbpSession, "userId" | "deviceId" | "seatId" | "identityAuthority">;
+  readonly binding: Pick<DurableRbpSession, "sessionBindingId" | "sessionVersion" | "connectionId" | "binding" | "resumeTokenDigest" | "resumeExpiresAtMs" | "grantedCapabilities">;
+  readonly lifecycle: Pick<DurableRbpSession, "connectionLifecycle" | "sessionLifecycle" | "lastHeartbeatAtMs" | "liveDocumentRoute" | "createdAtMs" | "updatedAtMs" | "recordVersion">;
+  readonly sequence: Pick<DurableRbpSession, "sequence" | "pending">;
+  readonly migration: {
+    readonly sourceVersionDigest: `sha256:${string}`;
+    readonly legacyDigest: `sha256:${string}`;
+    readonly counts: { readonly holds: number; readonly conflicts: number; readonly resolutions: number };
+    readonly deletionReceipt: { readonly state: "retained" | "deleted"; readonly verifiedAtMs: number | null };
+  };
+  readonly childRefs: readonly DurableSessionV2ChildRef[];
+  readonly childrenDigest: `sha256:${string}`;
+}
+
+interface DurableSessionV2ChildRef {
+  readonly namespace: string;
+  readonly key: string;
+  readonly digest: `sha256:${string}`;
+  readonly version: number;
+}
+
+interface DurableSessionCutoverV2 {
+  readonly schema: typeof GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE;
+  readonly generation: 2;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly sourceLegacyDigest: `sha256:${string}`;
+  readonly rootVersion: number;
+  readonly rootDigest: `sha256:${string}`;
+  readonly childrenDigest: `sha256:${string}`;
+  readonly migratedAtMs: number;
+}
+
+interface DurableSessionV2EvidenceChild {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly invocationId: string;
+  readonly entry: DurableDispatchEvidence;
+}
+
+interface DurableSessionV2EgressChild {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly fence: DurableEgressFence;
+}
+
+interface DurableSessionV2ConflictIndexChild {
+  readonly schema: typeof GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly index: DurableNormalizedConflictIndex;
+}
+
 type DurableEgressOperation =
   | "dispatch"
   | "resume_ack"
@@ -404,6 +481,7 @@ interface DurableMutationHold {
   readonly evidenceIds: readonly string[];
   readonly evidenceDigests: readonly string[];
   readonly resolutionIds: readonly string[];
+  readonly migration?: DurableSessionMigrationBinding;
 }
 
 interface DurableMutationConflict {
@@ -417,6 +495,36 @@ interface DurableMutationConflict {
   readonly holdId: `vh:${string}`;
   readonly mutationScopeJcs: string;
   readonly active: boolean;
+  readonly migration?: DurableSessionMigrationBinding;
+}
+
+interface DurableSessionMigrationSource {
+  readonly namespace: string;
+  readonly key: string;
+  readonly version: number;
+  readonly digest: `sha256:${string}`;
+}
+
+/** Immutable provenance carried by every legacy-imported normalized child. */
+interface DurableSessionMigrationBinding {
+  readonly migrationId: `sha256:${string}`;
+  readonly source: DurableSessionMigrationSource;
+}
+
+interface DurableSessionMigrationPlan {
+  readonly schema: typeof GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE;
+  readonly tenantId: string;
+  readonly rsid: string;
+  readonly migrationId: `sha256:${string}`;
+  readonly sessionSource: DurableSessionMigrationSource;
+  readonly recoverySource: DurableSessionMigrationSource | null;
+  readonly legacyDigest: `sha256:${string}`;
+  readonly scopes: readonly {
+    readonly holdId: `vh:${string}`;
+    readonly scopeDigest: `sha256:${string}`;
+    readonly holdDigest: `sha256:${string}`;
+    readonly conflictDigest: `sha256:${string}`;
+  }[];
 }
 
 interface DurableHoldCutover {
@@ -1187,7 +1295,8 @@ function parseMutationHold(
   tenantId: string,
   rsid: string,
 ): { readonly hold: DurableMutationHold; readonly scope: MutationScope } {
-  if (!isRecord(stored.value) || !hasExactKeys(stored.value, [
+  if (!isRecord(stored.value) || !(
+    hasExactKeys(stored.value, [
     "schema",
     "tenantId",
     "createdAtMs",
@@ -1200,8 +1309,13 @@ function parseMutationHold(
     "state",
     "evidenceIds",
     "evidenceDigests",
-    "resolutionIds",
-  ])) {
+      "resolutionIds",
+    ]) || hasExactKeys(stored.value, [
+      "schema", "tenantId", "createdAtMs", "updatedAtMs", "recordVersion",
+      "holdId", "rsid", "mutationScopeJcs", "originIdempotencyKeys", "state",
+      "evidenceIds", "evidenceDigests", "resolutionIds", "migration",
+    ])
+  )) {
     throw new Error("malformed normalized mutation hold");
   }
   const candidate = stored.value;
@@ -1248,6 +1362,7 @@ function parseMutationHold(
     throw new Error("malformed normalized mutation hold");
   }
   const scope = scopeFromCanonicalJcs(candidate.mutationScopeJcs);
+  if (candidate.migration !== undefined) parseSessionMigrationBinding(candidate.migration);
   if (
     makeMutationHoldId(
       rsid,
@@ -1268,7 +1383,8 @@ function parseMutationConflict(
   tenantId: string,
   rsid: string,
 ): { readonly conflict: DurableMutationConflict; readonly scope: MutationScope } {
-  if (!isRecord(stored.value) || !hasExactKeys(stored.value, [
+  if (!isRecord(stored.value) || !(
+    hasExactKeys(stored.value, [
     "schema",
     "tenantId",
     "createdAtMs",
@@ -1278,8 +1394,12 @@ function parseMutationConflict(
     "scopeDigest",
     "holdId",
     "mutationScopeJcs",
-    "active",
-  ])) {
+      "active",
+    ]) || hasExactKeys(stored.value, [
+      "schema", "tenantId", "createdAtMs", "updatedAtMs", "recordVersion",
+      "rsid", "scopeDigest", "holdId", "mutationScopeJcs", "active", "migration",
+    ])
+  )) {
     throw new Error("malformed normalized mutation conflict");
   }
   const candidate = stored.value;
@@ -1304,6 +1424,7 @@ function parseMutationConflict(
     throw new Error("malformed normalized mutation conflict");
   }
   const scope = scopeFromCanonicalJcs(candidate.mutationScopeJcs);
+  if (candidate.migration !== undefined) parseSessionMigrationBinding(candidate.migration);
   const expectedDigest = conflictScopeDigest(candidate.mutationScopeJcs);
   if (
     candidate.scopeDigest !== expectedDigest ||
@@ -1365,6 +1486,106 @@ function parseHoldCutover(
     throw new Error("malformed normalized hold cutover marker");
   }
   return candidate as unknown as DurableHoldCutover;
+}
+
+function parseSessionCutoverV2(
+  stored: StoredRecord<GatewayJsonValue>,
+  tenantId: string,
+  rsid: string,
+): DurableSessionCutoverV2 {
+  if (!isRecord(stored.value) || !hasExactKeys(stored.value, [
+    "schema", "generation", "tenantId", "rsid", "sourceLegacyDigest",
+    "rootVersion", "rootDigest", "childrenDigest", "migratedAtMs",
+  ])) throw new Error("malformed v2 session cutover marker");
+  const value = stored.value;
+  if (
+    stored.namespace !== GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE ||
+    stored.tenantId !== tenantId || stored.key !== rsid ||
+    value.schema !== GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE ||
+    value.generation !== 2 || value.tenantId !== tenantId || value.rsid !== rsid ||
+    typeof value.sourceLegacyDigest !== "string" || !DIGEST_PATTERN.test(value.sourceLegacyDigest) ||
+    !isSafePositiveInteger(value.rootVersion) ||
+    typeof value.rootDigest !== "string" || !DIGEST_PATTERN.test(value.rootDigest) ||
+    typeof value.childrenDigest !== "string" || !DIGEST_PATTERN.test(value.childrenDigest) ||
+    !isSafeNonNegativeInteger(value.migratedAtMs)
+  ) throw new Error("malformed v2 session cutover marker");
+  return value as unknown as DurableSessionCutoverV2;
+}
+
+function parseSessionMigrationSource(value: unknown): DurableSessionMigrationSource {
+  if (!isRecord(value) || !hasExactKeys(value, ["namespace", "key", "version", "digest"]) ||
+    !isBoundedNonEmptyString(value.namespace) || !isBoundedNonEmptyString(value.key) ||
+    !isSafePositiveInteger(value.version) || typeof value.digest !== "string" || !DIGEST_PATTERN.test(value.digest)) {
+    throw new Error("malformed session migration source");
+  }
+  return value as unknown as DurableSessionMigrationSource;
+}
+
+function parseSessionMigrationBinding(value: unknown): DurableSessionMigrationBinding {
+  if (!isRecord(value) || !hasExactKeys(value, ["migrationId", "source"]) ||
+    typeof value.migrationId !== "string" || !DIGEST_PATTERN.test(value.migrationId)) {
+    throw new Error("malformed session migration binding");
+  }
+  return { migrationId: value.migrationId as `sha256:${string}`, source: parseSessionMigrationSource(value.source) };
+}
+
+function parseSessionMigrationPlan(
+  stored: StoredRecord<GatewayJsonValue>,
+  tenantId: string,
+  rsid: string,
+): DurableSessionMigrationPlan {
+  if (!isRecord(stored.value) || !hasExactKeys(stored.value, [
+    "schema", "tenantId", "rsid", "migrationId", "sessionSource", "recoverySource", "legacyDigest", "scopes",
+  ]) || stored.namespace !== GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE ||
+    stored.tenantId !== tenantId || stored.key !== rsid) {
+    throw new Error("malformed session migration plan");
+  }
+  const value = stored.value;
+  if (value.schema !== GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE || value.tenantId !== tenantId || value.rsid !== rsid ||
+    typeof value.migrationId !== "string" || !DIGEST_PATTERN.test(value.migrationId) ||
+    typeof value.legacyDigest !== "string" || !DIGEST_PATTERN.test(value.legacyDigest) || !Array.isArray(value.scopes) ||
+    value.scopes.length > MAX_RECOVERABLE_MUTATION_SCOPES) {
+    throw new Error("malformed session migration plan");
+  }
+  const sessionSource = parseSessionMigrationSource(value.sessionSource);
+  const recoverySource = value.recoverySource === null ? null : parseSessionMigrationSource(value.recoverySource);
+  const scopes = value.scopes.map((scope) => {
+    if (!isRecord(scope) || !hasExactKeys(scope, ["holdId", "scopeDigest", "holdDigest", "conflictDigest"]) ||
+      typeof scope.holdId !== "string" || !HOLD_ID_PATTERN.test(scope.holdId) ||
+      typeof scope.scopeDigest !== "string" || !DIGEST_PATTERN.test(scope.scopeDigest) ||
+      typeof scope.holdDigest !== "string" || !DIGEST_PATTERN.test(scope.holdDigest) ||
+      typeof scope.conflictDigest !== "string" || !DIGEST_PATTERN.test(scope.conflictDigest)) {
+      throw new Error("malformed session migration scope");
+    }
+    return scope as unknown as DurableSessionMigrationPlan["scopes"][number];
+  });
+  if (scopes.some((scope, index) => index > 0 && scope.scopeDigest <= scopes[index - 1]!.scopeDigest)) {
+    throw new Error("session migration scopes are not deterministically sorted");
+  }
+  return {
+    schema: value.schema as typeof GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE,
+    tenantId, rsid, migrationId: value.migrationId as `sha256:${string}`,
+    sessionSource, recoverySource, legacyDigest: value.legacyDigest as `sha256:${string}`,
+    scopes,
+  };
+}
+
+function migrationSource(record: StoredRecord<GatewayJsonValue>): DurableSessionMigrationSource {
+  return Object.freeze({
+    namespace: record.namespace,
+    key: record.key,
+    version: record.version,
+    digest: digest(canonicalizeJson(record.value as JsonValue)),
+  });
+}
+
+function sameMigrationSource(
+  actual: StoredRecord<GatewayJsonValue> | null,
+  expected: DurableSessionMigrationSource | null,
+): boolean {
+  return actual !== null && expected !== null && actual.namespace === expected.namespace &&
+    actual.key === expected.key && actual.version === expected.version &&
+    digest(canonicalizeJson(actual.value as JsonValue)) === expected.digest;
 }
 
 interface ValidatedLegacyHold {
@@ -2103,6 +2324,366 @@ function terminalJournalRecords(
   return records;
 }
 
+function sessionV2EvidenceChildren(record: DurableRbpSession): readonly {
+  readonly key: string;
+  readonly value: DurableSessionV2EvidenceChild;
+  readonly ref: DurableSessionV2ChildRef;
+}[] {
+  return record.evidence.map((entry) => {
+    const invocationId = entry.journal?.journalRecords[0]?.binding.invocationId ?? entry.envelopeDigest;
+    const key = `${record.rsid}/${invocationId}`;
+    const value: DurableSessionV2EvidenceChild = {
+      schema: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE,
+      tenantId: record.tenantId,
+      rsid: record.rsid,
+      invocationId,
+      entry,
+    };
+    return { key, value, ref: { namespace: GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE, key, version: 0, digest: digest(canonicalizeJson(value as unknown as JsonValue)) } };
+  }).sort((left, right) => left.key.localeCompare(right.key));
+}
+
+/** Marker-gated normalized session repository. v1 is a serving source only
+ * until the v2 marker commits; it is never read after that point. */
+class SessionAggregateRepository {
+  public constructor(private readonly backing: GatewayProtocolStore) {}
+  public get kind(): GatewayProtocolStore["kind"] { return this.backing.kind; }
+  public get contractVersion(): typeof this.backing.contractVersion { return this.backing.contractVersion; }
+  public get startupCoordinator(): GatewayProtocolStore["startupCoordinator"] { return this.backing.startupCoordinator; }
+  public open(): Promise<StoreOutcome<void>> { return this.backing.open(); }
+  public close(): Promise<StoreOutcome<void>> { return this.backing.close(); }
+
+  /** Read-only authority seam for recovery transactions. Tombstone is always
+   * checked before the marker; a valid marker makes any v1 read unreachable. */
+  public async readAuthoritative(
+    tx: Pick<StoreTransaction, "read" | "list">,
+    tenantId: string,
+    rsid: string,
+  ): Promise<StoredRecord<GatewayJsonValue> | null> {
+    const tombstone = await tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid);
+    if (tombstone !== null) parseUnregisterTombstone(tombstone.value, { tenantId, rsid, stored: tombstone });
+    const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+    if (marker === null) {
+      // A pre-marker migration may have committed a bounded child batch.  Such
+      // children are a union-deny fence, never a reason to serve the old row.
+      const migration = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
+      if (migration !== null) {
+        parseSessionMigrationPlan(migration, tenantId, rsid);
+        throw new Error("legacy session migration is not yet cut over");
+      }
+      return await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+    }
+    const parsedMarker = parseSessionCutoverV2(marker, tenantId, rsid);
+    const root = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
+    if (root === null) throw new Error("v2 session marker has no root");
+    return await this.#loadMarked(tx, root, parsedMarker, tenantId, rsid);
+  }
+
+  public async transact<T>(
+    scope: { readonly tenantId: string },
+    work: (tx: StoreTransaction) => Promise<T> | T,
+    options: { readonly allowUnmarkedMigration?: boolean } = {},
+  ): Promise<StoreOutcome<T>> {
+    return this.backing.transact(scope, async (raw) => {
+      const staged = new Map<string, { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }>();
+      const loaded = new Map<string, StoredRecord<GatewayJsonValue> | null>();
+      const overlay = new Map<string, { readonly value: GatewayJsonValue | null }>();
+      let rawStageCount = 0;
+      const overlayKey = (namespace: string, key: string) => `${namespace}\u0000${key}`;
+      const stageRaw = (write: { readonly namespace: string; readonly key: string; readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }): void => {
+        rawStageCount += 1;
+        raw.stage(write);
+      };
+      const readOverlay = async <TValue extends GatewayJsonValue>(namespace: string, key: string): Promise<StoredRecord<TValue> | null> => {
+        const stagedValue = overlay.get(overlayKey(namespace, key));
+        if (stagedValue !== undefined) {
+          if (stagedValue.value === null) return null;
+          const current = await raw.read<TValue>(namespace, key);
+          return { namespace, tenantId: scope.tenantId, key, value: stagedValue.value as TValue, version: (current?.version ?? 0) + 1, updatedAtMs: current?.updatedAtMs ?? 0 };
+        }
+        return await raw.read<TValue>(namespace, key);
+      };
+      const normalizedRaw: StoreTransaction = {
+        read: readOverlay,
+        list: async (namespace) => await raw.list(namespace),
+        stage: stageRaw,
+      };
+      const load = async (rsid: string): Promise<StoredRecord<GatewayJsonValue> | null> => {
+        if (loaded.has(rsid)) return loaded.get(rsid) ?? null;
+        const authoritative = options.allowUnmarkedMigration === true
+          ? await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid)
+          : await this.readAuthoritative(raw, scope.tenantId, rsid);
+        loaded.set(rsid, authoritative);
+        return authoritative;
+      };
+      const tx: StoreTransaction = {
+        read: async <TValue extends GatewayJsonValue>(namespace: string, key: string) =>
+          namespace === GATEWAY_RBP_SESSION_NAMESPACE
+            ? await load(key) as StoredRecord<TValue> | null
+            : await readOverlay<TValue>(namespace, key),
+        list: async (namespace: string) => {
+          if (namespace !== GATEWAY_RBP_SESSION_NAMESPACE) return await raw.list(namespace);
+          const [legacy, markers] = await Promise.all([
+            raw.list(GATEWAY_RBP_SESSION_NAMESPACE), raw.list(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE),
+          ]);
+          const marked = await Promise.all(markers.map(async (marker) => await load(marker.key)));
+          const markedKeys = new Set(markers.map((marker) => marker.key));
+          return [...legacy.filter((row) => !markedKeys.has(row.key)), ...marked.filter((row): row is StoredRecord<GatewayJsonValue> => row !== null)]
+            .sort((a, b) => a.key.localeCompare(b.key));
+        },
+        stage: (write) => {
+          if (write.namespace === GATEWAY_RBP_SESSION_NAMESPACE) staged.set(write.key, { value: write.value, expect: write.expect });
+          else {
+            overlay.set(overlayKey(write.namespace, write.key), { value: write.value });
+            stageRaw(write);
+          }
+        },
+      };
+      const value = await work(tx);
+      for (const [rsid, stage] of staged) {
+        await this.#stageNormalized(normalizedRaw, scope.tenantId, rsid, stage, await load(rsid), rawStageCount);
+      }
+      return value;
+    });
+  }
+
+  async #stageNormalized(raw: StoreTransaction, tenantId: string, rsid: string, stage: { readonly value: GatewayJsonValue | null; readonly expect: StoreExpectation }, existing: StoredRecord<GatewayJsonValue> | null, priorStageCount: number): Promise<void> {
+    if (stage.value === null) throw new Error("normalized session roots are retained; unregister is tombstone authority");
+    const record = parseStoredSession({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: stage.value, version: Number.MAX_SAFE_INTEGER, updatedAtMs: 0 }, tenantId, rsid);
+    const currentRoot = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_V2_NAMESPACE, rsid);
+    const marker = await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+    if (marker !== null) parseSessionCutoverV2(marker, tenantId, rsid);
+    // An unmarked v2 row is staging debris, never authority.  It may be an
+    // older rejected facade and is overwritten atomically by the migration.
+    const priorRoot = marker === null || currentRoot === null
+      ? null
+      : this.#parseRoot(currentRoot, tenantId, rsid);
+    const children = await this.#childrenFor(raw, record);
+    const priorOwned = priorRoot?.childRefs.filter((ref) => this.#isOwned(ref.namespace)) ?? [];
+    const nextOwned = new Map(children.owned.map((child) => [this.#refId(child.ref), child]));
+    const staleOwned = priorOwned.filter((prior) => !nextOwned.has(this.#refId(prior)));
+    for (const prior of priorOwned) {
+      if (!nextOwned.has(this.#refId(prior))) {
+        const current = await raw.read<GatewayJsonValue>(prior.namespace, prior.key);
+        if (current === null) throw new Error("stale normalized child is already missing");
+        raw.stage({ namespace: prior.namespace, key: prior.key, value: null, expect: { kind: "version", version: current.version } });
+      }
+    }
+    for (const child of children.owned) {
+      const previous = await raw.read<GatewayJsonValue>(child.ref.namespace, child.ref.key);
+      raw.stage({ namespace: child.ref.namespace, key: child.ref.key, value: child.value, expect: previous === null ? { kind: "absent" } : { kind: "version", version: previous.version } });
+    }
+    const legacySource = marker === null
+      ? await raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid)
+      : null;
+    const legacyRecovery = marker === null
+      ? await raw.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid)
+      : null;
+    const holdMarker = await raw.read<GatewayJsonValue>(GATEWAY_HOLD_CUTOVER_NAMESPACE, rsid);
+    const plannedWrites = priorStageCount + children.owned.length + staleOwned.length + 2 +
+      (holdMarker === null ? 1 : 0) + (legacySource === null ? 0 : 1) +
+      (legacyRecovery === null ? 0 : 1);
+    if (plannedWrites > PROTOCOL_STORE_TRANSACTION_WRITE_LIMIT) {
+      throw new Error("normalized session write plan exceeds the durable transaction limit");
+    }
+    const legacyFacts = legacySource === null
+      ? null
+      : legacyCutoverFacts(
+          parseStoredSession(legacySource, tenantId, rsid),
+          legacyRecovery === null ? [] : parseLegacyRecoveryHolds(legacyRecovery.value, rsid),
+        );
+    const migration = priorRoot?.migration ?? {
+      sourceVersionDigest: legacySource === null
+        ? digest(canonicalizeJson({ source: "no_legacy_session", tenantId, rsid } as unknown as JsonValue))
+        : digest(canonicalizeJson({ version: legacySource.version, value: legacySource.value } as unknown as JsonValue)),
+      legacyDigest: legacyFacts === null
+        ? digest(canonicalizeJson({ source: "no_legacy_session", tenantId, rsid } as unknown as JsonValue))
+        : legacyFacts.legacyDigest,
+      counts: legacyFacts === null
+        ? { holds: 0, conflicts: 0, resolutions: 0 }
+        : {
+            holds: legacyFacts.importedHoldCount,
+            conflicts: legacyFacts.importedConflictCount,
+            resolutions: legacyFacts.importedResolutionCount,
+          },
+      deletionReceipt: legacySource === null
+        ? { state: "retained" as const, verifiedAtMs: null }
+        : { state: "deleted" as const, verifiedAtMs: record.updatedAtMs },
+    };
+    const rootVersion = priorRoot === null ? 1 : priorRoot.rootVersion + 1;
+    const root = this.#rootFor(record, migration, children.refs, rootVersion);
+    raw.stage({ namespace: GATEWAY_RBP_SESSION_V2_NAMESPACE, key: rsid, value: asJson(root), expect: currentRoot === null ? { kind: "absent" } : { kind: "version", version: currentRoot.version } });
+    // This older marker remains exclusively a proof that legacy recovery holds
+    // were normalized. It is not, and is never consulted as, session authority.
+    if (holdMarker === null && migration.counts.holds > 0) {
+      const nowMs = record.updatedAtMs;
+      const holdCutover: DurableHoldCutover = {
+        schema: GATEWAY_HOLD_CUTOVER_NAMESPACE, tenantId, rsid,
+        createdAtMs: nowMs, updatedAtMs: nowMs, recordVersion: 1,
+        legacyDigest: migration.legacyDigest, importedHoldCount: migration.counts.holds,
+        importedConflictCount: migration.counts.conflicts, importedResolutionCount: migration.counts.resolutions,
+        targetGeneration: "normalized-v1", state: "normalized_authoritative", cutoverAtMs: nowMs,
+      };
+      raw.stage({ namespace: GATEWAY_HOLD_CUTOVER_NAMESPACE, key: rsid, value: asJson(holdCutover), expect: { kind: "absent" } });
+    }
+    // A legacy source is removed only together with its normalized root and
+    // receipt. The final unregister tombstone is deliberately outside this
+    // cleanup and remains independently durable.
+    if (legacySource !== null) raw.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: rsid, value: null, expect: { kind: "version", version: legacySource.version } });
+    if (legacyRecovery !== null) raw.stage({ namespace: GATEWAY_RECOVERY_NAMESPACE, key: rsid, value: null, expect: { kind: "version", version: legacyRecovery.version } });
+    const cutover: DurableSessionCutoverV2 = {
+      schema: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, generation: 2, tenantId, rsid,
+      sourceLegacyDigest: migration.legacyDigest, rootVersion,
+      rootDigest: digest(canonicalizeJson(root as unknown as JsonValue)), childrenDigest: root.childrenDigest,
+      migratedAtMs: record.updatedAtMs,
+    };
+    // Marker is the last staged write: partial v2 rows can never become authority.
+    raw.stage({ namespace: GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, key: rsid, value: asJson(cutover), expect: marker === null ? { kind: "absent" } : { kind: "version", version: marker.version } });
+  }
+
+  #isOwned(namespace: string): boolean {
+    return namespace === GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE || namespace === GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE || namespace === GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE;
+  }
+  #refId(ref: DurableSessionV2ChildRef): string { return `${ref.namespace}\u0000${ref.key}`; }
+  #ref(stored: StoredRecord<GatewayJsonValue>): DurableSessionV2ChildRef {
+    return { namespace: stored.namespace, key: stored.key, version: stored.version, digest: digest(canonicalizeJson(stored.value as JsonValue)) };
+  }
+  #owned(namespace: string, key: string, value: GatewayJsonValue): { readonly ref: DurableSessionV2ChildRef; readonly value: GatewayJsonValue } {
+    return { ref: { namespace, key, version: 0, digest: digest(canonicalizeJson(value as JsonValue)) }, value };
+  }
+
+  async #childrenFor(raw: StoreTransaction, record: DurableRbpSession): Promise<{ readonly refs: readonly DurableSessionV2ChildRef[]; readonly owned: readonly { readonly ref: DurableSessionV2ChildRef; readonly value: GatewayJsonValue }[] }> {
+    const owned: { readonly ref: DurableSessionV2ChildRef; readonly value: GatewayJsonValue }[] = [];
+    for (const child of sessionV2EvidenceChildren(record)) owned.push(this.#owned(child.ref.namespace, child.ref.key, asJson(child.value)));
+    const egress: DurableSessionV2EgressChild = { schema: GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE, tenantId: record.tenantId, rsid: record.rsid, fence: sessionEgressFence(record) };
+    const index: DurableSessionV2ConflictIndexChild = { schema: GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE, tenantId: record.tenantId, rsid: record.rsid, index: sessionConflictIndex(record) };
+    owned.push(this.#owned(GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE, `${record.rsid}/egress`, asJson(egress)));
+    owned.push(this.#owned(GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE, `${record.rsid}/conflict-index`, asJson(index)));
+    const versionedOwned = await Promise.all(owned.map(async (child) => {
+      const current = await raw.read<GatewayJsonValue>(child.ref.namespace, child.ref.key);
+      return {
+        ...child,
+        ref: { ...child.ref, version: current === null ? 1 : current.version + 1 },
+      };
+    }));
+    const refs: DurableSessionV2ChildRef[] = versionedOwned.map((child) => child.ref);
+    // Tombstone is always probed first; its exact digest/version becomes part of the root proof.
+    const tombstone = await raw.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, record.rsid);
+    if (tombstone !== null) refs.push(this.#ref(tombstone));
+    for (const scopeDigest of sessionConflictIndex(record).scopeDigests) {
+      const conflict = await raw.read<GatewayJsonValue>(GATEWAY_MUTATION_CONFLICT_NAMESPACE, conflictRecordKey(record.rsid, scopeDigest));
+      // The WP-02 companion pair can be staged later in this same atomic
+      // transaction.  Do not manufacture a reference before it is visible;
+      // the next committed root must contain the exact pair and load-time
+      // admission still fails closed if an indexed pair is absent.
+      if (conflict === null) continue;
+      refs.push(this.#ref(conflict));
+      const parsed = parseMutationConflict(conflict, record.tenantId, record.rsid);
+      const hold = await raw.read<GatewayJsonValue>(GATEWAY_MUTATION_HOLD_NAMESPACE, parsed.conflict.holdId);
+      if (hold === null) throw new Error("normalized conflict references a missing hold");
+      parseMutationHold(hold, record.tenantId, record.rsid);
+      refs.push(this.#ref(hold));
+    }
+    return { refs: refs.sort((a, b) => this.#refId(a).localeCompare(this.#refId(b))), owned: versionedOwned };
+  }
+
+  #rootFor(record: DurableRbpSession, migration: DurableRbpSessionV2["migration"], refs: readonly DurableSessionV2ChildRef[], rootVersion: number): DurableRbpSessionV2 {
+    const childRefs = [...refs].sort((a, b) => this.#refId(a).localeCompare(this.#refId(b)));
+    return {
+      schema: GATEWAY_RBP_SESSION_V2_NAMESPACE, generation: 2, rootVersion, tenantId: record.tenantId, rsid: record.rsid,
+      identity: { userId: record.userId, deviceId: record.deviceId, seatId: record.seatId, identityAuthority: record.identityAuthority },
+      binding: { sessionBindingId: record.sessionBindingId, sessionVersion: record.sessionVersion, connectionId: record.connectionId, binding: record.binding, resumeTokenDigest: record.resumeTokenDigest, resumeExpiresAtMs: record.resumeExpiresAtMs, grantedCapabilities: record.grantedCapabilities },
+      lifecycle: { connectionLifecycle: record.connectionLifecycle, sessionLifecycle: record.sessionLifecycle, lastHeartbeatAtMs: record.lastHeartbeatAtMs, liveDocumentRoute: record.liveDocumentRoute, recordVersion: record.recordVersion, createdAtMs: record.createdAtMs, updatedAtMs: record.updatedAtMs },
+      sequence: { sequence: record.sequence, pending: record.pending }, migration, childRefs,
+      childrenDigest: digest(canonicalizeJson(childRefs as unknown as JsonValue)),
+    };
+  }
+
+  #parseRoot(stored: StoredRecord<GatewayJsonValue>, tenantId: string, rsid: string): DurableRbpSessionV2 {
+    if (stored.namespace !== GATEWAY_RBP_SESSION_V2_NAMESPACE || stored.tenantId !== tenantId || stored.key !== rsid || !isRecord(stored.value)) throw new Error("malformed v2 session root identity");
+    const root = stored.value as unknown as DurableRbpSessionV2;
+    if (!hasExactKeys(stored.value, [
+      "schema", "generation", "rootVersion", "tenantId", "rsid", "identity", "binding",
+      "lifecycle", "sequence", "migration", "childRefs", "childrenDigest",
+    ]) || root.schema !== GATEWAY_RBP_SESSION_V2_NAMESPACE || root.generation !== 2 || !isSafePositiveInteger(root.rootVersion) || root.tenantId !== tenantId || root.rsid !== rsid || !isRecord(root.identity) || !isRecord(root.binding) || !isRecord(root.lifecycle) || !isRecord(root.sequence) || !isRecord(root.migration) || !Array.isArray(root.childRefs) || root.childrenDigest !== digest(canonicalizeJson(root.childRefs as unknown as JsonValue))) throw new Error("malformed normalized v2 session root");
+    const migration = root.migration;
+    if (!hasExactKeys(migration, ["sourceVersionDigest", "legacyDigest", "counts", "deletionReceipt"]) ||
+      typeof migration.sourceVersionDigest !== "string" || !DIGEST_PATTERN.test(migration.sourceVersionDigest) ||
+      typeof migration.legacyDigest !== "string" || !DIGEST_PATTERN.test(migration.legacyDigest) ||
+      !isRecord(migration.counts) || !hasExactKeys(migration.counts, ["holds", "conflicts", "resolutions"]) ||
+      !isSafeNonNegativeInteger(migration.counts.holds) || !isSafeNonNegativeInteger(migration.counts.conflicts) || !isSafeNonNegativeInteger(migration.counts.resolutions) ||
+      !isRecord(migration.deletionReceipt) || !hasExactKeys(migration.deletionReceipt, ["state", "verifiedAtMs"]) ||
+      (migration.deletionReceipt.state !== "retained" && migration.deletionReceipt.state !== "deleted") ||
+      !(migration.deletionReceipt.verifiedAtMs === null || isSafeNonNegativeInteger(migration.deletionReceipt.verifiedAtMs)) ||
+      (migration.deletionReceipt.state === "retained" && migration.deletionReceipt.verifiedAtMs !== null) ||
+      (migration.deletionReceipt.state === "deleted" && !isSafeNonNegativeInteger(migration.deletionReceipt.verifiedAtMs))
+    ) throw new Error("malformed normalized v2 migration proof");
+    const sorted = [...root.childRefs].sort((a, b) => this.#refId(a).localeCompare(this.#refId(b)));
+    if (!sameJson(sorted as unknown as JsonValue, root.childRefs as unknown as JsonValue) || root.childRefs.some((ref) => !isRecord(ref) || typeof ref.namespace !== "string" || typeof ref.key !== "string" || !DIGEST_PATTERN.test(String(ref.digest)) || !isSafeNonNegativeInteger(ref.version))) throw new Error("malformed v2 child references");
+    return root;
+  }
+
+  async #loadMarked(raw: Pick<StoreTransaction, "read" | "list">, stored: StoredRecord<GatewayJsonValue>, marker: DurableSessionCutoverV2, tenantId: string, rsid: string): Promise<StoredRecord<GatewayJsonValue>> {
+    const root = this.#parseRoot(stored, tenantId, rsid);
+    if (root.rootVersion !== marker.rootVersion || digest(canonicalizeJson(stored.value as JsonValue)) !== marker.rootDigest || root.childrenDigest !== marker.childrenDigest) throw new Error("v2 marker proof does not match root");
+    if (root.migration.deletionReceipt.state === "deleted") {
+      const [legacy, recovery] = await Promise.all([
+        raw.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid),
+        raw.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid),
+      ]);
+      if (legacy !== null || recovery !== null) throw new Error("v2 deletion receipt disagrees with legacy source");
+    }
+    // Authority is the marker-indexed manifest only. An unindexed row cannot
+    // grant or alter authority and is left for bounded maintenance GC; this
+    // avoids a tenant-wide list during dispatch/unregister hot paths.
+    const values = new Map<string, StoredRecord<GatewayJsonValue>>();
+    // Tombstone is read before all other refs to preserve unregister authority ordering.
+    const tombstoneRef = root.childRefs.find((ref) => ref.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE);
+    if (tombstoneRef !== undefined) {
+      const tombstone = await raw.read<GatewayJsonValue>(tombstoneRef.namespace, tombstoneRef.key);
+      if (tombstone === null) throw new Error("v2 session tombstone reference is missing");
+      values.set(this.#refId(tombstoneRef), tombstone);
+    }
+    for (const ref of root.childRefs) {
+      if (values.has(this.#refId(ref))) continue;
+      const child = await raw.read<GatewayJsonValue>(ref.namespace, ref.key);
+      if (child === null) throw new Error("v2 session child is missing");
+      values.set(this.#refId(ref), child);
+    }
+    for (const ref of root.childRefs) {
+      const child = values.get(this.#refId(ref))!;
+      if (child.namespace !== ref.namespace || child.tenantId !== tenantId || child.key !== ref.key || child.version !== ref.version || digest(canonicalizeJson(child.value as JsonValue)) !== ref.digest) throw new Error("v2 session child proof is stale or corrupt");
+    }
+    const evidence: DurableDispatchEvidence[] = [];
+    let fence: DurableEgressFence | undefined;
+    let index: DurableNormalizedConflictIndex | undefined;
+    for (const ref of root.childRefs) {
+      const child = values.get(this.#refId(ref))!;
+      if (!isRecord(child.value)) throw new Error("malformed v2 session child");
+      if (ref.namespace === GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE) {
+        const value = child.value as unknown as DurableSessionV2EvidenceChild;
+        if (value.schema !== GATEWAY_RBP_SESSION_V2_EVIDENCE_NAMESPACE || value.tenantId !== tenantId || value.rsid !== rsid || typeof value.invocationId !== "string") throw new Error("malformed v2 evidence child");
+        evidence.push(value.entry);
+      } else if (ref.namespace === GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE) {
+        const value = child.value as unknown as DurableSessionV2EgressChild;
+        if (value.schema !== GATEWAY_RBP_SESSION_V2_EGRESS_NAMESPACE || value.tenantId !== tenantId || value.rsid !== rsid) throw new Error("malformed v2 egress child");
+        fence = value.fence;
+      } else if (ref.namespace === GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE) {
+        const value = child.value as unknown as DurableSessionV2ConflictIndexChild;
+        if (value.schema !== GATEWAY_RBP_SESSION_V2_CONFLICT_INDEX_NAMESPACE || value.tenantId !== tenantId || value.rsid !== rsid) throw new Error("malformed v2 conflict index child");
+        index = value.index;
+      }
+    }
+    if (fence === undefined || index === undefined) throw new Error("v2 session mandatory child is missing");
+    const record: DurableRbpSession = {
+      schema: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, rsid, ...root.identity, ...root.binding, ...root.lifecycle, ...root.sequence,
+      evidence: evidence.sort((a, b) => a.envelopeDigest.localeCompare(b.envelopeDigest)), egressFence: fence, normalizedConflictIndex: index,
+    };
+    const parsed = parseStoredSession({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: asJson(record), version: stored.version, updatedAtMs: stored.updatedAtMs }, tenantId, rsid);
+    return { namespace: GATEWAY_RBP_SESSION_NAMESPACE, tenantId, key: rsid, value: asJson(parsed), version: stored.version, updatedAtMs: stored.updatedAtMs };
+  }
+}
+
 /**
  * One transport-neutral RBP authority for both primary WSS and HTTP/SSE.
  * All sequence changes are committed before bytes are acknowledged or emitted.
@@ -2140,6 +2721,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   readonly #seatConnections = new Map<string, Set<string>>();
   readonly #deviceSessions = new Map<string, Set<string>>();
   readonly #seatSessions = new Map<string, Set<string>>();
+  readonly #sessionRepository: SessionAggregateRepository;
   readonly #productionIdentity: ProductionIdentityAuthority | null;
   readonly #clock: () => number;
   readonly #instanceId: string;
@@ -2155,6 +2737,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
   #protocolStoreManagedBy: "bridge" | "identity" = "bridge";
   #openPromise: Promise<void> | null = null;
   #closePromise: Promise<void> | null = null;
+  #startupReadiness = false;
 
   public constructor(
     readonly store: GatewayProtocolStore,
@@ -2168,6 +2751,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       readonly seatReassignmentCloseDrainTimeoutMs?: number;
     } = {},
   ) {
+    this.#sessionRepository = new SessionAggregateRepository(store);
     this.#productionIdentity = asProductionIdentityAuthority(identity);
     this.#clock = options.clock ?? Date.now;
     this.#instanceId = options.instanceId ?? gatewayUuidV7(this.#clock());
@@ -2349,6 +2933,31 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
     } else {
       this.#identityState = "open";
+    }
+    if (!this.#startupReadiness) {
+      const coordinator = this.store.startupCoordinator;
+      const readiness = await coordinator.runExclusive(async () => {
+        const tenants = await coordinator.listTenantIds(10_000);
+        if (!tenants.ok) return tenants;
+        for (const tenantId of tenants.value) {
+          const sessions = await coordinator.listKeys(
+            tenantId,
+            GATEWAY_RBP_SESSION_NAMESPACE,
+            10_000,
+          );
+          if (!sessions.ok) return sessions;
+          for (const rsid of sessions.value) {
+            const imported = await this.#importLegacySessionAtStartup(tenantId, rsid);
+            if (!imported.ok) return imported;
+          }
+        }
+        return Object.freeze({ ok: true as const, value: undefined });
+      });
+      if (!readiness.ok) {
+        await this.#closeLifecycleResources();
+        throw new GatewayRbpFault("unavailable", readiness.message, 503, 1011);
+      }
+      this.#startupReadiness = true;
     }
     this.#lifecycleState = "open";
   }
@@ -4135,7 +4744,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       async close(): Promise<void> {},
     };
     await this.#withSessionAuthorization(record.rsid, async () => {
-      const existing = await this.store.transact(
+      const existing = await this.#sessionRepository.transact(
         { tenantId: record.tenantId },
         async (tx) =>
           tx.read<GatewayJsonValue>(
@@ -4194,7 +4803,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
           : [event.seatId],
       ),
     );
-    const listed = await this.store.transact(
+    const listed = await this.#sessionRepository.transact(
       { tenantId },
       async (tx) => ({
         sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
@@ -4490,7 +5099,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     readonly seatId?: string;
     readonly affectedDeviceIds: ReadonlySet<string>;
   }): Promise<void> {
-    const listed = await this.store.transact(
+    const listed = await this.#sessionRepository.transact(
       { tenantId: input.tenantId },
       async (tx) => ({
         sessions: await tx.list(GATEWAY_RBP_SESSION_NAMESPACE),
@@ -5526,7 +6135,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const persisted = await this.store.transact({ tenantId: input.tenantId }, async (tx) => {
+      const persisted = await this.#sessionRepository.transact({ tenantId: input.tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           input.rsid,
@@ -5756,7 +6365,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const promoted = await this.store.transact(
+      const promoted = await this.#sessionRepository.transact(
         { tenantId: reservation.tenantId },
         async (tx) => {
           const tombstone = await tx.read<GatewayJsonValue>(
@@ -5885,7 +6494,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly prior: StoredRecord<GatewayJsonValue>;
         readonly next: DurableRbpSession;
       } | null } = { current: null };
-      const released = await this.store.transact(
+      const released = await this.#sessionRepository.transact(
         { tenantId: reservation.tenantId },
         async (tx) => {
           const stored = await tx.read<GatewayJsonValue>(
@@ -6050,7 +6659,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly lease: DurableEgressLease;
         readonly serialized: string;
       } | null } = { current: null };
-      const reserved = await this.store.transact({ tenantId }, async (tx) => {
+      const reserved = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -6238,7 +6847,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly next: DurableRbpSession;
         readonly lease: DurableEgressLease;
       } | null } = { current: null };
-      const reserved = await this.store.transact({ tenantId }, async (tx) => {
+      const reserved = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const tombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           rsid,
@@ -6364,10 +6973,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tx: Pick<StoreTransaction, "read" | "list">,
     expected: GatewayExpectedDispatchBinding,
   ): Promise<GatewayBridgeEvidenceLookup> {
-    const stored = await tx.read<GatewayJsonValue>(
-      GATEWAY_RBP_SESSION_NAMESPACE,
-      expected.rsid,
-    );
+    const stored = await this.#readRecoveryAuthoritative(tx, expected.rsid);
     if (stored === null) return { kind: "not_durable_yet" };
     let session: DurableRbpSession;
     try {
@@ -6436,10 +7042,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         });
         return { kind: "not_authorized", reason: "session_unregistered" };
       }
-      const stored = await tx.read<GatewayJsonValue>(
-        GATEWAY_RBP_SESSION_NAMESPACE,
-        expected.rsid,
-      );
+      const stored = await this.#readRecoveryAuthoritative(tx, expected.rsid);
       if (stored === null) return { kind: "not_authorized", reason: "unknown_rsid" };
       const session = parseStoredSession(stored, stored.tenantId, expected.rsid);
       const fence = sessionEgressFence(session);
@@ -6468,6 +7071,22 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         message: error instanceof Error ? error.message : String(error),
       };
     }
+  }
+
+  async #readRecoveryAuthoritative(
+    tx: Pick<StoreTransaction, "read" | "list">,
+    rsid: string,
+  ): Promise<StoredRecord<GatewayJsonValue> | null> {
+    const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+    if (marker !== null) {
+      const tenantId = isRecord(marker.value) && typeof marker.value.tenantId === "string"
+        ? marker.value.tenantId
+        : "";
+      return await this.#sessionRepository.readAuthoritative(tx, tenantId, rsid);
+    }
+    const legacy = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+    if (legacy === null) return null;
+    return await this.#sessionRepository.readAuthoritative(tx, legacy.tenantId, rsid);
   }
 
   async #register(
@@ -6535,7 +7154,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       normalizedConflictIndex: emptyNormalizedConflictIndex(),
       updatedAtMs: nowMs,
     };
-    const saved = await this.store.transact(
+    const saved = await this.#sessionRepository.transact(
       { tenantId: record.tenantId },
       async (tx) => {
         this.#assertAuthorityTicket(authorityTicket, connection);
@@ -6699,7 +7318,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly prior: StoredRecord<GatewayJsonValue>;
         readonly next: DurableRbpSession;
       } | null } = { current: null };
-      const persisted = await this.store.transact({ tenantId }, async (tx) => {
+      const persisted = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const existingTombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -6991,7 +7610,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
         readonly pendingOutcome: GatewayExecutorOutcome | null;
         readonly pendingCorrelationId: string | null;
       } | null } = { current: null };
-      const finalized = await this.store.transact({ tenantId }, async (tx) => {
+      const finalized = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const existingTombstone = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_UNREGISTER_NAMESPACE,
           payload.rsid,
@@ -7525,7 +8144,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tenantId: string,
     rsid: string,
   ): Promise<StoredRecord<GatewayJsonValue> | null> {
-    const result = await this.store.transact({ tenantId }, async (tx) =>
+    const result = await this.#sessionRepository.transact({ tenantId }, async (tx) =>
       tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid),
     );
     if (!result.ok) {
@@ -7550,7 +8169,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     tenantId: string,
     rsid: string,
   ): Promise<void> {
-    const observed = await this.store.transact({ tenantId }, async (tx) =>
+    const observed = await this.#sessionRepository.transact({ tenantId }, async (tx) =>
       tx.read<GatewayJsonValue>(GATEWAY_RBP_UNREGISTER_NAMESPACE, rsid),
     );
     if (!observed.ok) {
@@ -7744,6 +8363,175 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       expect: { kind: "absent" },
     });
     return scopeDigest;
+  }
+
+  /** Startup-only, restart-safe legacy import.  A plan is written only after
+   * the complete source has been parsed and bounded.  Its staged children are
+   * deny-only until the v2 marker is the final write of the final CAS. */
+  async #importLegacySessionAtStartup(tenantId: string, rsid: string): Promise<StoreOutcome<void>> {
+    const planned = await this.store.transact({ tenantId }, async (tx) => {
+      const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+      if (marker !== null) { parseSessionCutoverV2(marker, tenantId, rsid); return null; }
+      const existing = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
+      const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+      if (sessionStored === null) {
+        if (existing !== null) throw new Error("orphaned session migration plan");
+        return null;
+      }
+      const session = parseStoredSession(sessionStored, tenantId, rsid);
+      const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
+      const holds = recovery === null ? [] : parseLegacyRecoveryHolds(recovery.value, rsid);
+      // The preflight happens before a single stage.  Exactly 64 scopes fit
+      // in one 128-write pair batch; 65 fails with zero migration writes.
+      if (holds.length > MAX_RECOVERABLE_MUTATION_SCOPES) {
+        throw new Error("startup legacy migration exceeds 64 scopes");
+      }
+      const facts = legacyCutoverFacts(session, holds);
+      const sessionSource = migrationSource(sessionStored);
+      const recoverySource = recovery === null ? null : migrationSource(recovery);
+      const migrationId = digest(canonicalizeJson({
+        tenantId, rsid, sessionSource, recoverySource, legacyDigest: facts.legacyDigest,
+      } as unknown as JsonValue));
+      const source = recoverySource ?? sessionSource;
+      const scopes = holds.map((legacy) => {
+        const scopeDigest = conflictScopeDigest(mutationScopeKey(legacy.mutationScope));
+        const migration: DurableSessionMigrationBinding = { migrationId, source };
+        const nowMs = session.updatedAtMs;
+        const hold: DurableMutationHold = {
+          schema: GATEWAY_MUTATION_HOLD_NAMESPACE, tenantId, createdAtMs: nowMs, updatedAtMs: nowMs,
+          recordVersion: 1, holdId: legacy.holdId as `vh:${string}`, rsid,
+          mutationScopeJcs: mutationScopeKey(legacy.mutationScope),
+          originIdempotencyKeys: legacy.originIdempotencyKeys, state: legacy.state,
+          evidenceIds: [], evidenceDigests: [],
+          resolutionIds: legacy.resolutionId === null ? [] : [legacy.resolutionId], migration,
+        };
+        const conflict: DurableMutationConflict = {
+          schema: GATEWAY_MUTATION_CONFLICT_NAMESPACE, tenantId, createdAtMs: nowMs, updatedAtMs: nowMs,
+          recordVersion: 1, rsid, scopeDigest, holdId: hold.holdId,
+          mutationScopeJcs: hold.mutationScopeJcs, active: legacy.state !== "cleared", migration,
+        };
+        return {
+          holdId: hold.holdId, scopeDigest,
+          holdDigest: digest(canonicalizeJson(hold as unknown as JsonValue)),
+          conflictDigest: digest(canonicalizeJson(conflict as unknown as JsonValue)),
+        };
+      }).sort((left, right) => left.scopeDigest.localeCompare(right.scopeDigest));
+      const plan: DurableSessionMigrationPlan = {
+        schema: GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, tenantId, rsid, migrationId,
+        sessionSource, recoverySource, legacyDigest: facts.legacyDigest, scopes,
+      };
+      if (existing === null) {
+        tx.stage({ namespace: GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, key: rsid, value: asJson(plan), expect: { kind: "absent" } });
+        return plan;
+      }
+      const parsed = parseSessionMigrationPlan(existing, tenantId, rsid);
+      if (!sameJson(parsed as unknown as JsonValue, plan as unknown as JsonValue)) {
+        throw new Error("legacy migration source drift or non-identical replay");
+      }
+      return parsed;
+    });
+    if (!planned.ok) return planned;
+    if (planned.value === null) return Object.freeze({ ok: true as const, value: undefined });
+    const plan = planned.value;
+    for (let start = 0; start < plan.scopes.length; start += MAX_RECOVERABLE_MUTATION_SCOPES) {
+      const batch = plan.scopes.slice(start, start + MAX_RECOVERABLE_MUTATION_SCOPES);
+      const staged = await this.#stageLegacyMigrationBatch(tenantId, rsid, plan, batch);
+      if (!staged.ok) return staged;
+    }
+    return await this.#finalizeLegacyMigration(tenantId, rsid, plan);
+  }
+
+  async #stageLegacyMigrationBatch(
+    tenantId: string, rsid: string, plan: DurableSessionMigrationPlan,
+    batch: readonly DurableSessionMigrationPlan["scopes"][number][],
+  ): Promise<StoreOutcome<void>> {
+    return this.store.transact({ tenantId }, async (tx) => {
+      const currentPlan = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
+      if (currentPlan === null || !sameJson(parseSessionMigrationPlan(currentPlan, tenantId, rsid) as unknown as JsonValue, plan as unknown as JsonValue)) {
+        throw new Error("legacy migration plan changed during batching");
+      }
+      const session = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+      const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
+      if (!sameMigrationSource(session, plan.sessionSource) ||
+        (plan.recoverySource === null ? recovery !== null : !sameMigrationSource(recovery, plan.recoverySource))) {
+        throw new Error("legacy migration source drift during batching");
+      }
+      if (session === null) throw new Error("legacy migration session disappeared during batching");
+      const legacySession = parseStoredSession(session, tenantId, rsid);
+      const holds = recovery === null ? [] : parseLegacyRecoveryHolds(recovery.value, rsid);
+      const source = plan.recoverySource ?? plan.sessionSource;
+      const byDigest = new Map(holds.map((hold) => [conflictScopeDigest(mutationScopeKey(hold.mutationScope)), hold]));
+      for (const scope of batch) {
+        const legacy = byDigest.get(scope.scopeDigest);
+        if (legacy === undefined) throw new Error("migration plan scope is absent from legacy source");
+        const migration: DurableSessionMigrationBinding = { migrationId: plan.migrationId, source };
+        const nowMs = legacySession.updatedAtMs;
+        const hold: DurableMutationHold = {
+          schema: GATEWAY_MUTATION_HOLD_NAMESPACE, tenantId, createdAtMs: nowMs, updatedAtMs: nowMs,
+          recordVersion: 1, holdId: legacy.holdId as `vh:${string}`, rsid,
+          mutationScopeJcs: mutationScopeKey(legacy.mutationScope), originIdempotencyKeys: legacy.originIdempotencyKeys,
+          state: legacy.state, evidenceIds: [], evidenceDigests: [],
+          resolutionIds: legacy.resolutionId === null ? [] : [legacy.resolutionId], migration,
+        };
+        const conflict: DurableMutationConflict = {
+          schema: GATEWAY_MUTATION_CONFLICT_NAMESPACE, tenantId, createdAtMs: nowMs, updatedAtMs: nowMs,
+          recordVersion: 1, rsid, scopeDigest: scope.scopeDigest, holdId: hold.holdId,
+          mutationScopeJcs: hold.mutationScopeJcs, active: legacy.state !== "cleared", migration,
+        };
+        if (digest(canonicalizeJson(hold as unknown as JsonValue)) !== scope.holdDigest ||
+          digest(canonicalizeJson(conflict as unknown as JsonValue)) !== scope.conflictDigest) throw new Error("migration plan digest mismatch");
+        for (const [namespace, key, value, expectedDigest] of [
+          [GATEWAY_MUTATION_HOLD_NAMESPACE, hold.holdId, asJson(hold), scope.holdDigest],
+          [GATEWAY_MUTATION_CONFLICT_NAMESPACE, conflictRecordKey(rsid, scope.scopeDigest), asJson(conflict), scope.conflictDigest],
+        ] as const) {
+          const present = await tx.read<GatewayJsonValue>(namespace, key);
+          if (present === null) tx.stage({ namespace, key, value, expect: { kind: "absent" } });
+          else if (present.version !== 1 || digest(canonicalizeJson(present.value as JsonValue)) !== expectedDigest) {
+            throw new Error("non-identical staged migration child");
+          }
+        }
+      }
+      return undefined;
+    });
+  }
+
+  async #finalizeLegacyMigration(tenantId: string, rsid: string, plan: DurableSessionMigrationPlan): Promise<StoreOutcome<void>> {
+    return this.#sessionRepository.transact({ tenantId }, async (tx) => {
+      const marker = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE, rsid);
+      if (marker !== null) { parseSessionCutoverV2(marker, tenantId, rsid); return undefined; }
+      const currentPlan = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_MIGRATION_NAMESPACE, rsid);
+      if (currentPlan === null || !sameJson(parseSessionMigrationPlan(currentPlan, tenantId, rsid) as unknown as JsonValue, plan as unknown as JsonValue)) {
+        throw new Error("legacy migration plan changed before finalization");
+      }
+      const sessionStored = await tx.read<GatewayJsonValue>(GATEWAY_RBP_SESSION_NAMESPACE, rsid);
+      const recovery = await tx.read<GatewayJsonValue>(GATEWAY_RECOVERY_NAMESPACE, rsid);
+      if (!sameMigrationSource(sessionStored, plan.sessionSource) ||
+        (plan.recoverySource === null ? recovery !== null : !sameMigrationSource(recovery, plan.recoverySource))) {
+        throw new Error("legacy migration source drift before finalization");
+      }
+      if (sessionStored === null) throw new Error("legacy migration session disappeared before finalization");
+      const session = parseStoredSession(sessionStored, tenantId, rsid);
+      const facts = legacyCutoverFacts(session, recovery === null ? [] : parseLegacyRecoveryHolds(recovery.value, rsid));
+      if (facts.legacyDigest !== plan.legacyDigest) throw new Error("legacy migration proof drifted before finalization");
+      for (const scope of plan.scopes) {
+        const hold = await tx.read<GatewayJsonValue>(GATEWAY_MUTATION_HOLD_NAMESPACE, scope.holdId);
+        const conflict = await tx.read<GatewayJsonValue>(GATEWAY_MUTATION_CONFLICT_NAMESPACE, conflictRecordKey(rsid, scope.scopeDigest));
+        if (hold === null || conflict === null || hold.version !== 1 || conflict.version !== 1 ||
+          digest(canonicalizeJson(hold.value as JsonValue)) !== scope.holdDigest ||
+          digest(canonicalizeJson(conflict.value as JsonValue)) !== scope.conflictDigest) {
+          throw new Error("staged migration manifest proof is incomplete");
+        }
+      }
+      const nextSession: DurableRbpSession = {
+        ...session,
+        normalizedConflictIndex: { version: 1, state: "complete", scopeDigests: facts.activeScopeDigests },
+      };
+      tx.stage({ namespace: GATEWAY_RBP_SESSION_NAMESPACE, key: rsid, value: asJson(nextSession), expect: { kind: "version", version: sessionStored.version } });
+      // SessionAggregateRepository emits the root and makes the dedicated v2
+      // cutover marker its last write, atomically deleting the verified legacy
+      // session/recovery source with the v2 receipt.
+      return undefined;
+    }, { allowUnmarkedMigration: true });
   }
 
   async #assertCutoverSemanticProof(
@@ -8023,7 +8811,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     owner: DurableEgressRevocation["owner"],
     reason: SessionUnregister["reason"],
   ): Promise<PendingRevocationAuthority> {
-    const verified = await this.store.transact({ tenantId }, async (tx) => {
+    const verified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const stored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_SESSION_NAMESPACE,
         rsid,
@@ -8053,7 +8841,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     reason: SessionUnregister["reason"],
   ): Promise<PendingRevocationAuthority> {
     for (let attempt = 0; attempt < MAX_AUTHORIZATION_CAS_ATTEMPTS; attempt += 1) {
-      const installed = await this.store.transact({ tenantId }, async (tx) => {
+      const installed = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
         const stored = await tx.read<GatewayJsonValue>(
           GATEWAY_RBP_SESSION_NAMESPACE,
           rsid,
@@ -8092,7 +8880,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       }
       if (installed.code === "conflict") continue;
       if (installed.code === "durability_uncertain") {
-        const classified = await this.store.transact({ tenantId }, async (tx) => {
+        const classified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
           const stored = await tx.read<GatewayJsonValue>(
             GATEWAY_RBP_SESSION_NAMESPACE,
             rsid,
@@ -8182,7 +8970,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     owner: DurableEgressRevocation["owner"],
     reason: SessionUnregister["reason"],
   ): Promise<DurableUnregisterTombstone | null> {
-    const verified = await this.store.transact({ tenantId }, async (tx) => {
+    const verified = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const tombstoneStored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_UNREGISTER_NAMESPACE,
         rsid,
@@ -8318,7 +9106,7 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
     rsid: string,
     mutate: (record: DurableRbpSession) => DurableRbpSession,
   ): Promise<DurableRbpSession> {
-    const result = await this.store.transact({ tenantId }, async (tx) => {
+    const result = await this.#sessionRepository.transact({ tenantId }, async (tx) => {
       const stored = await tx.read<GatewayJsonValue>(
         GATEWAY_RBP_SESSION_NAMESPACE,
         rsid,

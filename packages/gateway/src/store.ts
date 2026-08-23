@@ -68,6 +68,24 @@ export interface StoreTransaction {
   }): void;
 }
 
+/**
+ * Adapter-owned, store-global startup fence.  It deliberately exposes only
+ * bounded inventory and a serialized callback: migrations cannot substitute a
+ * lazy request-path scan or assume a particular backing-store implementation.
+ */
+export interface GatewayStartupCoordinator {
+  readonly contractVersion: "revagent.protocol-store-startup/v1";
+  runExclusive<T>(
+    work: () => Promise<StoreOutcome<T>>,
+  ): Promise<StoreOutcome<T>>;
+  listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>>;
+  listKeys(
+    tenantId: string,
+    namespace: string,
+    limit: number,
+  ): Promise<StoreOutcome<readonly string[]>>;
+}
+
 export interface GatewayProtocolStore {
   readonly kind: GatewayPortAdapterKind;
   readonly contractVersion: typeof GATEWAY_STORE_CONTRACT_VERSION;
@@ -82,6 +100,8 @@ export interface GatewayProtocolStore {
     fn: (tx: StoreTransaction) => Promise<T> | T,
   ): Promise<StoreOutcome<T>>;
   close(): Promise<StoreOutcome<void>>;
+  /** No default: every adapter declares whether startup migration is possible. */
+  readonly startupCoordinator: GatewayStartupCoordinator;
 }
 
 export interface ObjectStorePort {
@@ -119,6 +139,12 @@ export function createUnavailableProtocolStore(): GatewayProtocolStore {
   return Object.freeze({
     kind: "unavailable" as const,
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+    startupCoordinator: Object.freeze({
+      contractVersion: "revagent.protocol-store-startup/v1" as const,
+      async runExclusive<T>(): Promise<StoreOutcome<T>> { return refusal<T>(); },
+      async listTenantIds(): Promise<StoreOutcome<readonly string[]>> { return refusal<readonly string[]>(); },
+      async listKeys(): Promise<StoreOutcome<readonly string[]>> { return refusal<readonly string[]>(); },
+    }),
     async open(): Promise<StoreOutcome<void>> {
       return refusal<void>();
     },

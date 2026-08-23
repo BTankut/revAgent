@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 
 import {
+  canonicalizeJson,
   makeParamsDigest,
   type JsonValue,
   type HelloEnvelope,
@@ -18,6 +19,8 @@ import {
 } from "./authContext.js";
 import type { GatewayExecutorRequest, GatewayJsonObject } from "./dispatch.js";
 import {
+  GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE,
+  GATEWAY_RBP_SESSION_V2_NAMESPACE,
   GATEWAY_RBP_UNREGISTER_NAMESPACE,
   GatewayBridgeSessionAuthority,
   type BridgeConnectionChannel,
@@ -3147,24 +3150,61 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
       state: "failed",
       error: { code: "executor_unavailable" },
     });
-    const durable = fixture.snapshot().records.find(
+    const snapshot = fixture.snapshot().records;
+    const durable = snapshot.find(
       (row) =>
-        row.namespace === "gateway.rbp-session/v1" &&
+        row.namespace === GATEWAY_RBP_SESSION_V2_NAMESPACE &&
         row.key === session.registered.payload.rsid,
-    )?.value as GatewayJsonObject;
-    expect(durable.pending).toBeNull();
-    expect(durable.evidence).toEqual(
+    );
+    if (durable === undefined) {
+      throw new Error("normalized terminal root is absent");
+    }
+    const root = durable.value as GatewayJsonObject;
+    const evidenceRef = (root.childRefs as GatewayJsonObject[]).find(
+      (ref) => ref.namespace === "gateway.rbp-session-evidence/v2",
+    );
+    const evidence = snapshot.find(
+      (row) =>
+        row.namespace === "gateway.rbp-session-evidence/v2" &&
+        row.key === evidenceRef?.key,
+    );
+    const marker = snapshot.find(
+      (row) =>
+        row.namespace === GATEWAY_RBP_SESSION_CUTOVER_V2_NAMESPACE &&
+        row.key === session.registered.payload.rsid,
+    );
+    if (evidenceRef === undefined || evidence === undefined || marker === undefined) {
+      throw new Error("normalized terminal root, child, and marker proof is incomplete");
+    }
+    const evidenceValue = evidence.value as GatewayJsonObject;
+    const markerValue = marker.value as GatewayJsonObject;
+    const digest = (value: JsonValue): `sha256:${string}` =>
+      `sha256:${createHash("sha256").update(canonicalizeJson(value)).digest("hex")}`;
+
+    expect((root.sequence as GatewayJsonObject).pending).toBeNull();
+    expect(evidenceValue.entry).toMatchObject({
+      terminalTruth: {
+        state: "completed",
+        resultDigest: makeParamsDigest({ retained: true }),
+        errorCode: null,
+        payloadRetained: true,
+      },
+    });
+    expect(root.childRefs).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
-          terminalTruth: {
-            state: "completed",
-            resultDigest: makeParamsDigest({ retained: true }),
-            errorCode: null,
-            payloadRetained: true,
-          },
+          namespace: evidence.namespace,
+          key: evidence.key,
+          version: evidence.version,
+          digest: digest(evidence.value as unknown as JsonValue),
         }),
       ]),
     );
+    expect(markerValue).toMatchObject({
+      rootVersion: root.rootVersion,
+      rootDigest: digest(root as JsonValue),
+      childrenDigest: digest(root.childRefs as JsonValue),
+    });
     await authority.close();
   });
 });

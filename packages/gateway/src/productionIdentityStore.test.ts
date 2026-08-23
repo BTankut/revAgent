@@ -92,6 +92,7 @@ function trustedTenantStore(
   return {
     kind: "postgres",
     contractVersion: delegate.contractVersion,
+    startupCoordinator: delegate.startupCoordinator,
     productionTrust: {
       ...productionTrust("tenant_identity_store"),
       resource: "tenant_identity_store",
@@ -118,6 +119,7 @@ function trustedCredentialStore(
   return {
     kind: "postgres",
     contractVersion: delegate.contractVersion,
+    startupCoordinator: delegate.startupCoordinator,
     productionTrust: {
       ...productionTrust("credential_scope_store"),
       resource: "credential_scope_store",
@@ -327,6 +329,7 @@ function uncertainAfter(
   return {
     kind: delegate.kind,
     contractVersion: delegate.contractVersion,
+    startupCoordinator: delegate.startupCoordinator,
     open: () => delegate.open(),
     close: () => delegate.close(),
     async transact<T>(
@@ -371,6 +374,7 @@ function observedLifecycleStore(input: {
   return {
     kind: input.delegate.kind,
     contractVersion: input.delegate.contractVersion,
+    startupCoordinator: input.delegate.startupCoordinator,
     async open() {
       input.calls.push(`${input.label}.open`);
       if (openFailures > 0) {
@@ -920,6 +924,7 @@ describe("production identity lifecycle", () => {
     const delayedTenant: GatewayProtocolStore = {
       kind: tenantBase.kind,
       contractVersion: tenantBase.contractVersion,
+      startupCoordinator: tenantBase.startupCoordinator,
       async open() {
         await openingGate.promise;
         return tenantBase.open();

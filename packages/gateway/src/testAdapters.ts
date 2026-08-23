@@ -15,6 +15,7 @@ import { REVAGENT_EVENT_SCHEMA } from "./events.js";
 import type { GatewayPortResult } from "./gatewayPorts.js";
 import type {
   GatewayProtocolStore,
+  GatewayStartupCoordinator,
   ObjectStorePort,
   StoreExpectation,
   StoreOutcome,
@@ -348,6 +349,7 @@ interface MemoryState {
   records: Map<string, StoredRecord>;
   nextVersion: number;
   open: boolean;
+  startupTail: Promise<void>;
 }
 
 function recordKey(namespace: string, tenantId: string, key: string): string {
@@ -358,6 +360,34 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
   return {
     kind: "memory" as const,
     contractVersion: GATEWAY_STORE_CONTRACT_VERSION,
+    startupCoordinator: Object.freeze({
+      contractVersion: "revagent.protocol-store-startup/v1" as const,
+      async runExclusive<T>(work: () => Promise<StoreOutcome<T>>): Promise<StoreOutcome<T>> {
+        const prior = state.startupTail;
+        let release!: () => void;
+        state.startupTail = new Promise<void>((resolve) => { release = resolve; });
+        await prior;
+        try { return await work(); } finally { release(); }
+      },
+      async listTenantIds(limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!state.open || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+          return Object.freeze({ ok: false as const, code: "unavailable" as const, message: "startup inventory unavailable" });
+        }
+        const ids = [...new Set([...state.records.values()].map((record) => record.tenantId))].sort();
+        return ids.length > limit
+          ? Object.freeze({ ok: false as const, code: "invalid_record" as const, message: "startup inventory exceeds limit" })
+          : Object.freeze({ ok: true as const, value: Object.freeze(ids) });
+      },
+      async listKeys(tenantId: string, namespace: string, limit: number): Promise<StoreOutcome<readonly string[]>> {
+        if (!state.open || !Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+          return Object.freeze({ ok: false as const, code: "unavailable" as const, message: "startup inventory unavailable" });
+        }
+        const keys = [...state.records.values()].filter((record) => record.tenantId === tenantId && record.namespace === namespace).map((record) => record.key).sort();
+        return keys.length > limit
+          ? Object.freeze({ ok: false as const, code: "invalid_record" as const, message: "startup inventory exceeds limit" })
+          : Object.freeze({ ok: true as const, value: Object.freeze(keys) });
+      },
+    } satisfies GatewayStartupCoordinator),
     async open(): Promise<StoreOutcome<void>> {
       state.open = true;
       return Object.freeze({ ok: true as const, value: undefined });
@@ -447,7 +477,10 @@ function buildMemoryStore(state: MemoryState): GatewayProtocolStore {
             tenantId: scope.tenantId,
             key: write.key,
             value: write.value,
-            version: state.nextVersion,
+            // CAS versions are record-local. A normalized root can therefore
+            // prove a child's next committed version without depending on
+            // unrelated writes elsewhere in the tenant.
+            version: (state.records.get(composite)?.version ?? 0) + 1,
             updatedAtMs: 0,
           }),
         );
@@ -466,6 +499,7 @@ export function createRestartableTestStore(): RestartableTestStore {
     records: new Map(),
     nextVersion: 0,
     open: false,
+    startupTail: Promise.resolve(),
   };
   return {
     store: buildMemoryStore(state),
