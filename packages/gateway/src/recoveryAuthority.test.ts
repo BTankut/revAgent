@@ -18,6 +18,11 @@ import {
 } from "@revagent/protocol";
 import { describe, expect, it } from "vitest";
 
+import type {
+  GatewayConfirmationProof,
+  GatewayConfirmationTransactionAuthority,
+} from "./confirmationAuthority.js";
+import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import {
   GATEWAY_RECOVERY_NAMESPACE,
   GatewayRecoveryAuthority,
@@ -2734,5 +2739,106 @@ describe("GatewayRecoveryAuthority durable safety", () => {
     );
     expect(mutatedTenant.pendingDispatch).toBeNull();
     expect(mutatedTenant.ledger.holds).toEqual([]);
+  });
+
+  it("restores a frozen, field-identical confirmation scope after clone before authority validation", async () => {
+    const durable = createRestartableTestStore();
+    await durable.store.open();
+    const bridgeEvidence = new TestBridgeEvidence();
+    const evidenceDecision = new TestEvidenceDecision();
+    const seen: GatewayConfirmationProof[] = [];
+    const confirmationAuthority: GatewayConfirmationTransactionAuthority = {
+      usesStore: (store) => store === durable.store,
+      async validatePendingAction(_tx, proof) {
+        seen.push(proof);
+        return {
+          kind: "rejected" as const,
+          reason: "not_found" as const,
+          confirmationId: null,
+          pendingAction: null,
+        };
+      },
+      stageConsumption() {
+        throw new Error("rejected proof must not stage consumption");
+      },
+    };
+    const authority = new GatewayRecoveryAuthority(durable.store, {
+      bridgeEvidence,
+      evidenceDecision,
+      confirmationAuthority,
+      clock: () => 1_775_000_000_000,
+      newId: () => uuid7(920_000),
+    });
+    const envelope = mutationEnvelope({
+      seq: 910,
+      invocationId: uuid7(910),
+      scope: SESSION_SCOPE,
+    });
+    const scope = createEffectiveMcpRequestScopeV1({
+      principalKey: "tenant-a:user-a",
+      transportMcpSessionId: "mcp-session-a",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const confirmationId = envelope.payload.policy.confirmation_id;
+    const proof: GatewayConfirmationProof = {
+      confirmToken: `rvc2.${confirmationId}.${"a".repeat(64)}.${"b".repeat(64)}.${"C".repeat(43)}`,
+      originatingPreviewInvocationId: uuid7(911),
+      commitInvocationId: envelope.payload.invocation_id,
+      binding: {
+        tenantId: TENANT_A,
+        principalKey: "tenant-a:user-a",
+        userId: "user-a",
+        gatewaySessionId: "gateway-session-a",
+        confirmationSessionId: "mcp-session-a",
+        oauthClientId: "codex-desktop-a",
+        rsid: envelope.rsid,
+        toolName: envelope.payload.method,
+        toolVersion: "1.0.0",
+        commitArgsDigest: makeParamsDigest(
+          envelope.payload.params as JsonValue,
+        ),
+        mutationScope: SESSION_SCOPE,
+        documentIdentity: { kind: "live", session_document_id: "doc-a" },
+      },
+      effectiveMcpRequestScope: scope,
+    };
+    const attemptId = uuid7(912);
+    await authority.acquireInvocationWindow({
+      tenantId: TENANT_A,
+      rsid: envelope.rsid,
+      attemptId,
+    });
+    const input = {
+      tenantId: TENANT_A,
+      attemptId,
+      sessionBindingId: SESSION_BINDING,
+      connectionId: CONNECTION,
+      envelope,
+      expected: expectedMutationDispatch(envelope),
+      confirmationProof: proof,
+    };
+    const preparing = authority.prepareMutationDispatch(input);
+    (input.confirmationProof as { effectiveMcpRequestScope: typeof scope })
+      .effectiveMcpRequestScope = createEffectiveMcpRequestScopeV1({
+      principalKey: "tenant-a:user-mutated",
+      transportMcpSessionId: "mcp-session-mutated",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_001,
+    });
+
+    await expect(preparing).resolves.toMatchObject({
+      kind: "confirmation_rejected",
+      reason: "not_found",
+    });
+    expect(seen).toHaveLength(1);
+    const carried = seen[0]!.effectiveMcpRequestScope;
+    expect(carried).toEqual(scope);
+    expect(carried).not.toBe(scope);
+    expect(Object.isFrozen(carried)).toBe(true);
+    expect(() => {
+      (carried as { principalKey: string }).principalKey = "mutated";
+    }).toThrow();
+    expect(carried).toEqual(scope);
   });
 });

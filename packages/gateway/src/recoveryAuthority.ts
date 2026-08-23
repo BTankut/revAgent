@@ -1904,6 +1904,32 @@ function snapshotInput<T>(input: T): T | null {
   }
 }
 
+/**
+ * structuredClone deliberately drops frozen descriptors. Confirmation proof
+ * scope is an authority carrier, so restore it as a fresh frozen v1 object at
+ * the recovery boundary before it reaches confirmation validation.
+ */
+function restoreFrozenConfirmationScope<T extends {
+  readonly confirmationProof?: GatewayConfirmationProof;
+}>(input: T): T {
+  if (input.confirmationProof === undefined) return input;
+  const carried = input.confirmationProof.effectiveMcpRequestScope;
+  const effectiveMcpRequestScope = Object.freeze({
+    contractVersion: carried.contractVersion,
+    principalKey: carried.principalKey,
+    effectiveMcpSessionId: carried.effectiveMcpSessionId,
+    transportMcpSessionId: carried.transportMcpSessionId,
+    identityMcpSessionId: carried.identityMcpSessionId,
+  });
+  return Object.freeze({
+    ...input,
+    confirmationProof: Object.freeze({
+      ...input.confirmationProof,
+      effectiveMcpRequestScope,
+    }),
+  }) as T;
+}
+
 function protocolFault(reason: string): GatewayRecoveryProtocolFault {
   return Object.freeze({ kind: "protocol_fault" as const, reason });
 }
@@ -2466,8 +2492,9 @@ export class GatewayRecoveryAuthority {
     readonly expected: GatewayExpectedMutationDispatch;
     readonly confirmationProof?: GatewayConfirmationProof;
   }): Promise<GatewayRecoveryPrepareResult> {
-    const frozen = snapshotInput(input);
-    if (frozen === null) return protocolFault("invalid_input");
+    const snapshot = snapshotInput(input);
+    if (snapshot === null) return protocolFault("invalid_input");
+    const frozen = restoreFrozenConfirmationScope(snapshot);
     let derived: DerivedEnvelope;
     let confirmedPolicyId: string | null = null;
     try {
