@@ -1,5 +1,5 @@
 import { makeParamsDigest } from "@revagent/protocol";
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
@@ -13,6 +13,7 @@ import { gatewayUuidV7 } from "./identifiers.js";
 import { createEffectiveMcpRequestScopeV1 } from "./invocationContext.js";
 import { createRestartableTestStore } from "./testAdapters.js";
 import type { GatewayProtocolStore } from "./store.js";
+import type { StoreTransaction } from "./store.js";
 
 const TENANT_ID = "tenant-confirmation-test";
 const PREVIEW_INVOCATION_ID = gatewayUuidV7(2_000);
@@ -37,6 +38,13 @@ const baseBinding: GatewayPendingActionBinding = Object.freeze({
   }),
 });
 
+const effectiveScope = createEffectiveMcpRequestScopeV1({
+  principalKey: baseBinding.principalKey,
+  transportMcpSessionId: baseBinding.confirmationSessionId,
+  identityMcpSessionId: null,
+  nowMs: 1_775_000_000_000,
+});
+
 async function open(store: GatewayProtocolStore): Promise<void> {
   await expect(store.open()).resolves.toEqual({ ok: true, value: undefined });
 }
@@ -58,12 +66,7 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
     });
     const issued = await authority.createPendingAction({
       ...baseBinding,
-      effectiveMcpRequestScope: createEffectiveMcpRequestScopeV1({
-        principalKey: baseBinding.principalKey,
-        transportMcpSessionId: baseBinding.confirmationSessionId,
-        identityMcpSessionId: null,
-        nowMs: 1_775_000_000_000,
-      }),
+      effectiveMcpRequestScope: effectiveScope,
       originatingPreviewInvocationId: PREVIEW_INVOCATION_ID,
       previewDigest: makeParamsDigest({ preview: "bounded" }),
       previewRef: "inline:preview-a",
@@ -83,11 +86,12 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
       originatingPreviewInvocationId: PREVIEW_INVOCATION_ID,
       commitInvocationId: COMMIT_INVOCATION_ID,
       binding: baseBinding,
+      effectiveMcpRequestScope: effectiveScope,
       ...overrides,
     });
   }
 
-  it("persists a ten-minute pending action without the raw token", async () => {
+  it("persists a ten-minute v2 pending action without raw token or scope identifiers", async () => {
     const { issued, restartable } = await issue();
 
     expect(issued.pendingAction).toMatchObject({
@@ -98,16 +102,88 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
       commitInvocationId: null,
     });
     expect(issued.confirmToken).toContain(TOKEN_SECRET);
+    expect(issued.confirmToken).toMatch(/^rvc2\./u);
+    expect(issued.confirmToken).not.toContain(baseBinding.principalKey);
+    expect(issued.confirmToken).not.toContain(baseBinding.confirmationSessionId);
     const snapshotText = JSON.stringify(restartable.snapshot());
     expect(snapshotText).not.toContain(issued.confirmToken);
     expect(snapshotText).not.toContain(TOKEN_SECRET);
-    expect(
-      restartable
-        .snapshot()
-        .records.filter(
-          (record) => record.namespace === GATEWAY_CONFIRMATION_NAMESPACE,
-        ),
-    ).toHaveLength(1);
+    const pendingRecords = restartable
+      .snapshot()
+      .records.filter(
+        (record) => record.namespace === GATEWAY_CONFIRMATION_NAMESPACE,
+      );
+    expect(pendingRecords).toHaveLength(1);
+    expect(pendingRecords[0]?.key).toMatch(
+      /^sha256:[0-9a-f]{64}\/sha256:[0-9a-f]{64}\//u,
+    );
+    expect(pendingRecords[0]?.value).toMatchObject({
+      principalKeyHash: expect.stringMatching(/^sha256:[0-9a-f]{64}$/u),
+      effectiveMcpSessionIdHash: expect.stringMatching(
+        /^sha256:[0-9a-f]{64}$/u,
+      ),
+    });
+  });
+
+  it("rejects legacy, foreign-hash, and cloned-scope proofs before any store read", async () => {
+    const { authority, issued } = await issue();
+    const read = vi.fn();
+    const noReadTx = { read } as unknown as StoreTransaction;
+    const foreignBinding = Object.freeze({
+      ...baseBinding,
+      principalKey: `${TENANT_ID}:user-b`,
+      userId: "user-b",
+    });
+    const foreignScope = createEffectiveMcpRequestScopeV1({
+      principalKey: foreignBinding.principalKey,
+      transportMcpSessionId: foreignBinding.confirmationSessionId,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const [prefix, confirmationId, principalHash, sessionHash, secret] =
+      issued.confirmToken.split(".");
+    expect(prefix).toBe("rvc2");
+    const cases: readonly [string, Partial<GatewayConfirmationProof>, string][] = [
+      [
+        `rvc1.${confirmationId}.${secret}`,
+        {},
+        "malformed_token",
+      ],
+      [
+        `rvc2.${confirmationId}.${"0".repeat(64)}.${sessionHash}.${secret}`,
+        {},
+        "foreign_actor",
+      ],
+      [
+        issued.confirmToken,
+        {
+          binding: foreignBinding,
+          effectiveMcpRequestScope: foreignScope,
+        },
+        "foreign_actor",
+      ],
+      [
+        `rvc2.${confirmationId}.${principalHash}.${"0".repeat(64)}.${secret}`,
+        {},
+        "foreign_session",
+      ],
+      [
+        issued.confirmToken,
+        {
+          effectiveMcpRequestScope: structuredClone(effectiveScope),
+        },
+        "scope_mismatch",
+      ],
+    ];
+    for (const [token, overrides, reason] of cases) {
+      const result = await authority.validatePendingAction(
+        noReadTx,
+        proof(token, overrides),
+        now,
+      );
+      expect(result).toMatchObject({ kind: "rejected", reason });
+    }
+    expect(read).not.toHaveBeenCalled();
   });
 
   it("consumes once with CAS and remains replay-denied after restart", async () => {
@@ -152,6 +228,11 @@ describe("GatewayConfirmationAuthority durable pending actions", () => {
         },
       },
     ]);
+    expect(
+      restartable.snapshot().records.find(
+        (record) => record.namespace === GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
+      )?.key,
+    ).toMatch(/^sha256:[0-9a-f]{64}\/sha256:[0-9a-f]{64}\//u);
 
     const restartedStore = restartable.restart();
     await open(restartedStore);

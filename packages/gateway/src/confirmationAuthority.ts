@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 import { makeParamsDigest, type JsonValue } from "@revagent/protocol";
 import { z } from "zod";
 
@@ -32,9 +32,11 @@ export const GATEWAY_CONFIRMATION_AUDIT_CONTRACT_VERSION =
   "revagent.gateway-confirmation-approval-audit/v1" as const;
 export const GATEWAY_CONFIRMATION_TTL_MS = 10 * 60 * 1_000;
 
-const TOKEN_PREFIX = "rvc1";
+/** v2 tokens bind only digest material; no principal or session identifier leaks. */
+const TOKEN_PREFIX = "rvc2";
 const TOKEN_SECRET_PATTERN = /^[A-Za-z0-9_-]{43,128}$/u;
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/u;
+const DIGEST_HEX_PATTERN = /^[0-9a-f]{64}$/u;
 
 const mutationScopeSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("session") }).strict(),
@@ -54,9 +56,11 @@ const pendingActionSchema = z
     tokenDigest: z.string().regex(DIGEST_PATTERN),
     tenantId: z.string().min(1).max(512),
     principalKey: z.string().min(1).max(512),
+    principalKeyHash: z.string().regex(DIGEST_PATTERN),
     userId: z.string().min(1).max(512),
     gatewaySessionId: z.string().min(1).max(512),
     confirmationSessionId: z.string().min(1).max(512),
+    effectiveMcpSessionIdHash: z.string().regex(DIGEST_PATTERN),
     oauthClientId: z.string().min(1).max(512).nullable(),
     rsid: z.string().min(1).max(512),
     toolName: z.string().min(1).max(512),
@@ -82,9 +86,11 @@ const approvalAuditSchema = z
     confirmationId: z.string().min(1).max(512),
     tenantId: z.string().min(1).max(512),
     principalKey: z.string().min(1).max(512),
+    principalKeyHash: z.string().regex(DIGEST_PATTERN),
     userId: z.string().min(1).max(512),
     gatewaySessionId: z.string().min(1).max(512),
     confirmationSessionId: z.string().min(1).max(512),
+    effectiveMcpSessionIdHash: z.string().regex(DIGEST_PATTERN),
     oauthClientId: z.string().min(1).max(512).nullable(),
     rsid: z.string().min(1).max(512),
     toolName: z.string().min(1).max(512),
@@ -103,9 +109,11 @@ export interface GatewayPendingActionRecord {
   readonly tokenDigest: `sha256:${string}`;
   readonly tenantId: string;
   readonly principalKey: string;
+  readonly principalKeyHash: `sha256:${string}`;
   readonly userId: string;
   readonly gatewaySessionId: string;
   readonly confirmationSessionId: string;
+  readonly effectiveMcpSessionIdHash: `sha256:${string}`;
   readonly oauthClientId: string | null;
   readonly rsid: string;
   readonly toolName: string;
@@ -129,9 +137,11 @@ export interface GatewayConfirmationApprovalAuditRecord {
   readonly confirmationId: string;
   readonly tenantId: string;
   readonly principalKey: string;
+  readonly principalKeyHash: `sha256:${string}`;
   readonly userId: string;
   readonly gatewaySessionId: string;
   readonly confirmationSessionId: string;
+  readonly effectiveMcpSessionIdHash: `sha256:${string}`;
   readonly oauthClientId: string | null;
   readonly rsid: string;
   readonly toolName: string;
@@ -179,6 +189,8 @@ export interface GatewayConfirmationProof {
   readonly originatingPreviewInvocationId: string;
   readonly commitInvocationId: string;
   readonly binding: GatewayPendingActionBinding;
+  /** The exact frozen ingress scope received by the committing request. */
+  readonly effectiveMcpRequestScope: EffectiveMcpRequestScopeV1;
 }
 
 export type GatewayConfirmationRefusalReason =
@@ -249,33 +261,77 @@ function valueDigest(value: unknown): `sha256:${string}` {
   return makeParamsDigest(value as JsonValue);
 }
 
+function digestHex(digest: `sha256:${string}`): string {
+  return digest.slice("sha256:".length);
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  const leftBuffer = Buffer.from(left, "utf8");
+  const rightBuffer = Buffer.from(right, "utf8");
+  return (
+    leftBuffer.length === rightBuffer.length &&
+    timingSafeEqual(leftBuffer, rightBuffer)
+  );
+}
+
 function tokenParts(token: string):
   | {
       readonly confirmationId: string;
+      readonly principalKeyHash: `sha256:${string}`;
+      readonly effectiveMcpSessionIdHash: `sha256:${string}`;
       readonly tokenDigest: `sha256:${string}`;
     }
   | null {
   if (token.length > 512) return null;
-  const [prefix, confirmationId, secret, ...extra] = token.split(".");
+  const [
+    prefix,
+    confirmationId,
+    principalKeyHashHex,
+    effectiveMcpSessionIdHashHex,
+    secret,
+    ...extra
+  ] = token.split(".");
   if (
     prefix !== TOKEN_PREFIX ||
     confirmationId === undefined ||
     !isGatewayUuidV7(confirmationId) ||
+    principalKeyHashHex === undefined ||
+    !DIGEST_HEX_PATTERN.test(principalKeyHashHex) ||
+    effectiveMcpSessionIdHashHex === undefined ||
+    !DIGEST_HEX_PATTERN.test(effectiveMcpSessionIdHashHex) ||
     secret === undefined ||
     !TOKEN_SECRET_PATTERN.test(secret) ||
     extra.length !== 0
   ) {
     return null;
   }
-  return Object.freeze({ confirmationId, tokenDigest: sha256(token) });
+  return Object.freeze({
+    confirmationId,
+    principalKeyHash: `sha256:${principalKeyHashHex}`,
+    effectiveMcpSessionIdHash: `sha256:${effectiveMcpSessionIdHashHex}`,
+    tokenDigest: sha256(token),
+  });
 }
 
 export function confirmationIdFromToken(token: string): string | null {
   return tokenParts(token)?.confirmationId ?? null;
 }
 
-function recordKey(rsid: string, tokenDigest: string): string {
-  return `${rsid}/${tokenDigest.slice("sha256:".length)}`;
+function recordKey(input: {
+  readonly principalKeyHash: `sha256:${string}`;
+  readonly effectiveMcpSessionIdHash: `sha256:${string}`;
+  readonly rsid: string;
+  readonly tokenDigest: `sha256:${string}`;
+}): string {
+  return `${input.principalKeyHash}/${input.effectiveMcpSessionIdHash}/${input.rsid}/${digestHex(input.tokenDigest)}`;
+}
+
+function auditKey(input: {
+  readonly principalKeyHash: `sha256:${string}`;
+  readonly effectiveMcpSessionIdHash: `sha256:${string}`;
+  readonly confirmationId: string;
+}): string {
+  return `${input.principalKeyHash}/${input.effectiveMcpSessionIdHash}/${input.confirmationId}`;
 }
 
 function storeFailure(
@@ -359,6 +415,54 @@ function validateBinding(
     proof.originatingPreviewInvocationId
   ) {
     return "preview_mismatch";
+  }
+  return null;
+}
+
+/**
+ * Rejects a proof before it can address durable confirmation state.  The scope
+ * is not reconstructed: this boundary accepts only the frozen ingress object
+ * carried by the commit request.
+ */
+function validateProofScope(
+  proof: GatewayConfirmationProof,
+): GatewayConfirmationRefusalReason | null {
+  const scope = proof.effectiveMcpRequestScope;
+  try {
+    assertEffectiveMcpRequestScopeV1({
+      scope,
+      auth: Object.freeze({
+        contractVersion: GATEWAY_AUTH_CONTRACT_VERSION,
+        actor: Object.freeze({
+          type: "user" as const,
+          tenantId: proof.binding.tenantId,
+          userId: proof.binding.userId,
+          role: "user" as const,
+          oidcIssuer: "confirmation-authority",
+          oidcSubject: proof.binding.userId,
+        }),
+        session: Object.freeze({
+          sessionId: proof.binding.gatewaySessionId,
+          clientType: "mcp" as const,
+          mcpSessionId: scope.effectiveMcpSessionId,
+          oauthClientId: proof.binding.oauthClientId,
+        }),
+        principalKey: scope.principalKey,
+        issuedAtMs: 0,
+        expiresAtMs: null,
+      }),
+      mcpSessionId: scope.effectiveMcpSessionId,
+    });
+  } catch {
+    return "scope_mismatch";
+  }
+  if (scope.principalKey !== proof.binding.principalKey) {
+    return "foreign_actor";
+  }
+  if (
+    scope.effectiveMcpSessionId !== proof.binding.confirmationSessionId
+  ) {
+    return "foreign_session";
   }
   return null;
 }
@@ -452,7 +556,11 @@ export class GatewayConfirmationAuthority
         "confirmation authority generated an invalid identifier",
       );
     }
-    const confirmToken = `${TOKEN_PREFIX}.${confirmationId}.${secret}`;
+    const principalKeyHash = sha256(frozen.effectiveMcpRequestScope.principalKey);
+    const effectiveMcpSessionIdHash = sha256(
+      frozen.effectiveMcpRequestScope.effectiveMcpSessionId,
+    );
+    const confirmToken = `${TOKEN_PREFIX}.${confirmationId}.${digestHex(principalKeyHash)}.${digestHex(effectiveMcpSessionIdHash)}.${secret}`;
     const tokenDigest = sha256(confirmToken);
     const binding = snapshotBinding(frozen);
     const pendingAction: GatewayPendingActionRecord = Object.freeze({
@@ -462,9 +570,11 @@ export class GatewayConfirmationAuthority
       tokenDigest,
       tenantId: binding.tenantId,
       principalKey: binding.principalKey,
+      principalKeyHash,
       userId: binding.userId,
       gatewaySessionId: binding.gatewaySessionId,
       confirmationSessionId: binding.confirmationSessionId,
+      effectiveMcpSessionIdHash,
       oauthClientId: binding.oauthClientId,
       rsid: binding.rsid,
       toolName: binding.toolName,
@@ -490,7 +600,12 @@ export class GatewayConfirmationAuthority
         async (tx) => {
           tx.stage({
             namespace: GATEWAY_CONFIRMATION_NAMESPACE,
-            key: recordKey(frozen.rsid, tokenDigest),
+            key: recordKey({
+              principalKeyHash,
+              effectiveMcpSessionIdHash,
+              rsid: frozen.rsid,
+              tokenDigest,
+            }),
             value: structuredClone(
               pendingAction,
             ) as unknown as GatewayJsonValue,
@@ -519,13 +634,42 @@ export class GatewayConfirmationAuthority
   ): Promise<GatewayConfirmationValidationResult> {
     const parts = tokenParts(proof.confirmToken);
     if (parts === null) return rejection("malformed_token", null);
-    const key = recordKey(proof.binding.rsid, parts.tokenDigest);
+    const scopeError = validateProofScope(proof);
+    if (scopeError !== null) return rejection(scopeError, parts.confirmationId);
+    const expectedPrincipalKeyHash = sha256(
+      proof.effectiveMcpRequestScope.principalKey,
+    );
+    if (!constantTimeEqual(parts.principalKeyHash, expectedPrincipalKeyHash)) {
+      return rejection("foreign_actor", parts.confirmationId);
+    }
+    const expectedEffectiveMcpSessionIdHash = sha256(
+      proof.effectiveMcpRequestScope.effectiveMcpSessionId,
+    );
+    if (
+      !constantTimeEqual(
+        parts.effectiveMcpSessionIdHash,
+        expectedEffectiveMcpSessionIdHash,
+      )
+    ) {
+      return rejection("foreign_session", parts.confirmationId);
+    }
+    const key = recordKey({
+      principalKeyHash: expectedPrincipalKeyHash,
+      effectiveMcpSessionIdHash: expectedEffectiveMcpSessionIdHash,
+      rsid: proof.binding.rsid,
+      tokenDigest: parts.tokenDigest,
+    });
     const stored = await tx.read(GATEWAY_CONFIRMATION_NAMESPACE, key);
     if (stored === null) return rejection("not_found", parts.confirmationId);
     const record = decodePendingAction(stored.value);
     if (
-      record.confirmationId !== parts.confirmationId ||
-      record.tokenDigest !== parts.tokenDigest
+      !constantTimeEqual(record.confirmationId, parts.confirmationId) ||
+      !constantTimeEqual(record.tokenDigest, parts.tokenDigest) ||
+      !constantTimeEqual(record.principalKeyHash, parts.principalKeyHash) ||
+      !constantTimeEqual(
+        record.effectiveMcpSessionIdHash,
+        parts.effectiveMcpSessionIdHash,
+      )
     ) {
       return rejection("not_found", parts.confirmationId);
     }
@@ -585,9 +729,11 @@ export class GatewayConfirmationAuthority
         confirmationId: consumed.confirmationId,
         tenantId: consumed.tenantId,
         principalKey: consumed.principalKey,
+        principalKeyHash: consumed.principalKeyHash,
         userId: consumed.userId,
         gatewaySessionId: consumed.gatewaySessionId,
         confirmationSessionId: consumed.confirmationSessionId,
+        effectiveMcpSessionIdHash: consumed.effectiveMcpSessionIdHash,
         oauthClientId: consumed.oauthClientId,
         rsid: consumed.rsid,
         toolName: consumed.toolName,
@@ -607,7 +753,11 @@ export class GatewayConfirmationAuthority
     });
     tx.stage({
       namespace: GATEWAY_CONFIRMATION_AUDIT_NAMESPACE,
-      key: consumed.confirmationId,
+      key: auditKey({
+        principalKeyHash: consumed.principalKeyHash,
+        effectiveMcpSessionIdHash: consumed.effectiveMcpSessionIdHash,
+        confirmationId: consumed.confirmationId,
+      }),
       value: structuredClone(approvalAudit) as unknown as GatewayJsonValue,
       expect: { kind: "absent" },
     });
