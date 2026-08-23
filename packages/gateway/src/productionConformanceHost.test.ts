@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { startProductionGatewayHost } from "./productionConformanceHost.js";
 import type { GatewayServerOptions } from "./server.js";
+import { createFailClosedPorts } from "./server.js";
 
 function server(nodeEnv: "test" | "production", bindHost: string): Omit<GatewayServerOptions, "ports"> {
   return {
@@ -23,11 +24,26 @@ describe("productionGatewayHost", () => {
       server: server("production", "127.0.0.1"),
       ports: null as unknown as GatewayServerOptions["ports"],
       authority: null as unknown as never,
+      hostProfile: "production_conformance",
     })).rejects.toThrow(/conformance-only/u);
     await expect(startProductionGatewayHost({
       server: server("test", "localhost"),
       ports: null as unknown as GatewayServerOptions["ports"],
       authority: null as unknown as never,
+      hostProfile: "production_conformance",
     })).rejects.toThrow(/numeric loopback/u);
+  });
+  it("requires the explicit profile and a complete conformance tuple before opening a socket", async () => {
+    const ports = createFailClosedPorts();
+    await expect(startProductionGatewayHost({
+      server: server("test", "127.0.0.1"), ports,
+      authority: null as unknown as never,
+      hostProfile: "not_conformance" as never,
+    })).rejects.toThrow(/host profile/u);
+    await expect(startProductionGatewayHost({
+      server: server("test", "127.0.0.1"), ports,
+      authority: null as unknown as never,
+      hostProfile: "production_conformance",
+    })).rejects.toThrow(/explicit conformance identity/u);
   });
 });

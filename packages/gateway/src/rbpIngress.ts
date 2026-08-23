@@ -315,6 +315,41 @@ export interface ProductionRbpIngressHost extends RbpIngressHost {
   readonly authority: GatewayBridgeSessionAuthority;
 }
 
+/**
+ * Non-production carrier for the exact production ingress implementation.
+ *
+ * This deliberately does not subclass or reimplement any ingress lifecycle:
+ * the returned object forwards the production mount/start/upgrade/drain/close
+ * functions verbatim and changes only the deployment-admission kind.  That
+ * makes a conformance listener observable as such while keeping C28/C29 on
+ * the production RBP state machine.
+ */
+export interface ConformanceRbpIngressHost extends RbpIngressHost {
+  readonly kind: "conformance";
+  readonly enabled: true;
+  readonly authority: GatewayBridgeSessionAuthority;
+  readonly delegate: ProductionRbpIngressHost;
+}
+
+export function createConformanceRbpIngressHost(
+  options: ProductionRbpIngressOptions,
+): ConformanceRbpIngressHost {
+  const delegate = createProductionRbpIngressHost(options);
+  return Object.freeze({
+    kind: "conformance" as const,
+    mountPrefix: delegate.mountPrefix,
+    enabled: true as const,
+    authority: delegate.authority,
+    delegate,
+    refuse: delegate.refuse,
+    start: delegate.start,
+    mount: delegate.mount,
+    handleUpgrade: delegate.handleUpgrade,
+    beginDrain: delegate.beginDrain,
+    close: delegate.close,
+  });
+}
+
 class HttpSseChannel implements BridgeConnectionChannel {
   readonly #pending: string[] = [];
   #response: ServerResponse | null = null;

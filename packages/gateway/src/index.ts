@@ -401,9 +401,11 @@ export {
 export {
   RBP_INGRESS_HTTP_FALLBACK_PATHS,
   RBP_INGRESS_MOUNT_PREFIX,
+  createConformanceRbpIngressHost,
   createProductionRbpIngressHost,
   createUnavailableRbpIngressHost,
   type ProductionRbpIngressHost,
+  type ConformanceRbpIngressHost,
   type RbpIngressHost,
 } from "./rbpIngress.js";
 export {
@@ -440,6 +442,12 @@ export {
   type GatewayServerTlsMaterial,
 } from "./server.js";
 export { startProductionGatewayHost } from "./productionConformanceHost.js";
+export {
+  ConformanceCredentialAuthority,
+  DigestFileConformanceObjectStore,
+  SqliteConformanceProtocolStore,
+  createConformanceSupportingPorts,
+} from "./conformanceEphemeralAdapters.js";
 // GW-3 executor and policy seed.
 export {
   DYNAMIC_CODE_TOOL,
