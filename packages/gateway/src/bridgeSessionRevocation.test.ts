@@ -1475,6 +1475,345 @@ describe("WP-06 Gateway identity composition and active revocation", () => {
     await authority.close();
   });
 
+  it("keeps B revoked when a higher device revoke wins during A cleanup", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const sharedSeat = "seat-reassignment-revoke-race";
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(gated.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const firstRevokedB = multi.identity.revokeDevice(DEVICE_B);
+    if (!firstRevokedB.ok) throw new Error(firstRevokedB.message);
+    const issuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-race-device-b",
+      tenantId: TENANT_A,
+      userId: USER_B,
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!issuedB.ok) throw new Error(issuedB.message);
+    const exchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: issuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!exchangedB.ok) throw new Error(exchangedB.message);
+    const cleanupGate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "pending" &&
+        "record" in value &&
+        typeof value.record === "object" &&
+        value.record !== null &&
+        "deviceId" in value.record &&
+        value.record.deviceId === DEVICE_A,
+    );
+    const channelB = channel();
+    const openingB = authority.openConnection({
+      deviceToken: exchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channelB,
+    });
+    await bounded(cleanupGate.entered, "seat reassignment A cleanup start");
+    const winningRevokeB = multi.identity.revokeDevice(DEVICE_B);
+    if (!winningRevokeB.ok) throw new Error(winningRevokeB.message);
+    const winningRevokeScope = {
+      ...deviceRevocationScope(winningRevokeB.value, sharedSeat),
+      connectionCapabilityVersion:
+        winningRevokeB.value.connectionCapabilityVersion - 1,
+      sessionCapabilityVersion:
+        winningRevokeB.value.sessionCapabilityVersion - 1,
+    };
+    await bounded(
+      authority.revokeIdentityAuthority(winningRevokeScope),
+      "device B revoke during seat reassignment cleanup",
+    );
+    cleanupGate.release();
+    await expect(
+      bounded(openingB, "stale seat reassignment finalizer"),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    expect(channelB.frames).toEqual([]);
+    expect(sessionA.channel.closes[0]?.code).toBe(4403);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === "gateway.rbp-session/v1" &&
+          typeof row.value === "object" &&
+          row.value !== null &&
+          "deviceId" in row.value &&
+          row.value.deviceId === DEVICE_B,
+      ),
+    ).toBe(false);
+    const versionAfterRace = fixture.snapshot().nextVersion;
+    await expect(
+      authority.revokeIdentityAuthority(winningRevokeScope),
+    ).resolves.toBeUndefined();
+    const recoveryIssuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-race-device-b-recovery",
+      tenantId: TENANT_A,
+      userId: USER_B,
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!recoveryIssuedB.ok) throw new Error(recoveryIssuedB.message);
+    const recoveryExchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: recoveryIssuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!recoveryExchangedB.ok) throw new Error(recoveryExchangedB.message);
+    await expect(
+      authority.openConnection({
+        deviceToken: recoveryExchangedB.value.deviceToken,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    expect(fixture.snapshot().nextVersion).toBe(versionAfterRace);
+    await authority.close();
+  });
+
+  it("quarantines a newer coherent B vector before the old finalizer can activate", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const sharedSeat = "seat-reassignment-newer-vector";
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(gated.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const firstRevokedB = multi.identity.revokeDevice(DEVICE_B);
+    if (!firstRevokedB.ok) throw new Error(firstRevokedB.message);
+    const firstIssuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-old-vector-b",
+      tenantId: TENANT_A,
+      userId: USER_B,
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!firstIssuedB.ok) throw new Error(firstIssuedB.message);
+    const firstExchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: firstIssuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!firstExchangedB.ok) throw new Error(firstExchangedB.message);
+    const cleanupGate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "pending" &&
+        "record" in value &&
+        typeof value.record === "object" &&
+        value.record !== null &&
+        "deviceId" in value.record &&
+        value.record.deviceId === DEVICE_A,
+    );
+    const oldChannelB = channel();
+    const oldOpeningB = authority.openConnection({
+      deviceToken: firstExchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: oldChannelB,
+    });
+    await bounded(cleanupGate.entered, "old-vector reassignment cleanup start");
+    const secondRevokedB = multi.identity.revokeDevice(DEVICE_B);
+    if (!secondRevokedB.ok) throw new Error(secondRevokedB.message);
+    const newerIssuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-newer-vector-b",
+      tenantId: TENANT_A,
+      userId: USER_B,
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!newerIssuedB.ok) throw new Error(newerIssuedB.message);
+    const newerExchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: newerIssuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!newerExchangedB.ok) throw new Error(newerExchangedB.message);
+    await expect(
+      bounded(
+        authority.openConnection({
+          deviceToken: newerExchangedB.value.deviceToken,
+          binding: "wss",
+          hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+          channel: channel(),
+        }),
+        "newer-vector reassignment attempt",
+      ),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    cleanupGate.release();
+    await expect(
+      bounded(oldOpeningB, "old-vector stale finalizer"),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    expect(oldChannelB.frames).toEqual([]);
+    expect(sessionA.channel.closes[0]?.code).toBe(4403);
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toBe(true);
+    await expect(
+      authority.openConnection({
+        deviceToken: newerExchangedB.value.deviceToken,
+        binding: "wss",
+        hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+        channel: channel(),
+      }),
+    ).rejects.toMatchObject({ httpStatus: 403, closeCode: 4403 });
+    expect(
+      fixture.snapshot().records.some(
+        (row) =>
+          row.namespace === "gateway.rbp-session/v1" &&
+          typeof row.value === "object" &&
+          row.value !== null &&
+          "deviceId" in row.value &&
+          row.value.deviceId === DEVICE_B,
+      ),
+    ).toBe(false);
+    await authority.close();
+  });
+
+  it("allows one exact cleanup retry but rejects its stale finalizer", async () => {
+    const fixture = createRestartableTestStore();
+    const gated = gatedStore(fixture);
+    const sharedSeat = "seat-reassignment-replay";
+    const multi = multiPreProductionFixture([
+      { deviceId: DEVICE_A, seatId: sharedSeat, userId: USER_A, fingerprint: FINGERPRINT_A },
+      { deviceId: DEVICE_B, seatId: sharedSeat, userId: USER_B, fingerprint: FINGERPRINT_B },
+    ]);
+    const authority = new GatewayBridgeSessionAuthority(gated.store, multi.identity);
+    await authority.open();
+    const sessionA = await openAndRegister({
+      authority,
+      deviceId: DEVICE_A,
+      deviceToken: multi.tokens.get(DEVICE_A)!,
+      fingerprint: FINGERPRINT_A,
+    });
+    const revokedB = multi.identity.revokeDevice(DEVICE_B);
+    if (!revokedB.ok) throw new Error(revokedB.message);
+    const issuedB = multi.identity.issueEnrollmentToken({
+      enrollmentId: "seat-reassignment-replay-device-b",
+      tenantId: TENANT_A,
+      userId: USER_B,
+      deviceId: DEVICE_B,
+      seatId: sharedSeat,
+      machineFingerprint: FINGERPRINT_B,
+      grantedSessionCapabilities: ["partial_progress"],
+    });
+    if (!issuedB.ok) throw new Error(issuedB.message);
+    const exchangedB = multi.identity.exchangeEnrollmentToken({
+      enrollmentToken: issuedB.value.enrollmentToken,
+      machineFingerprint: FINGERPRINT_B,
+    });
+    if (!exchangedB.ok) throw new Error(exchangedB.message);
+    const cleanupGate = gated.holdAfterCommit(
+      (value) =>
+        typeof value === "object" &&
+        value !== null &&
+        "kind" in value &&
+        value.kind === "pending" &&
+        "record" in value &&
+        typeof value.record === "object" &&
+        value.record !== null &&
+        "deviceId" in value.record &&
+        value.record.deviceId === DEVICE_A,
+    );
+    const firstChannel = channel();
+    const secondChannel = channel();
+    const firstOpening = authority.openConnection({
+      deviceToken: exchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: firstChannel,
+    });
+    await bounded(cleanupGate.entered, "first seat reassignment cleanup start");
+    const replayOpening = authority.openConnection({
+      deviceToken: exchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: secondChannel,
+    });
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    cleanupGate.release();
+    const results = await bounded(
+      Promise.allSettled([firstOpening, replayOpening]),
+      "seat reassignment cleanup replay",
+    );
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const acceptedIndex = results.findIndex((result) => result.status === "fulfilled");
+    const accepted = results[acceptedIndex];
+    if (accepted?.status !== "fulfilled") {
+      throw new Error("seat reassignment did not produce one accepted connection");
+    }
+    expect(
+      results.find((result) => result.status === "rejected"),
+    ).toMatchObject({
+      status: "rejected",
+      reason: { httpStatus: 403, closeCode: 4403 },
+    });
+    const acceptedChannel = acceptedIndex === 0 ? firstChannel : secondChannel;
+    await authority.receive(
+      accepted.value.connectionId,
+      registration(FINGERPRINT_B),
+    );
+    const registeredB = registered(acceptedChannel);
+    authority.assertConnectionOutbound(accepted.value.connectionId);
+    expect(
+      fixture.snapshot().records.filter(
+        (row) =>
+          row.namespace === GATEWAY_RBP_UNREGISTER_NAMESPACE &&
+          row.key === sessionA.registered.payload.rsid,
+      ),
+    ).toHaveLength(1);
+    const laterOpening = await authority.openConnection({
+      deviceToken: exchangedB.value.deviceToken,
+      binding: "wss",
+      hello: hello({ deviceId: DEVICE_B, fingerprint: FINGERPRINT_B }),
+      channel: channel(),
+    });
+    authority.assertConnectionOutbound(laterOpening.connectionId);
+    expect(registeredB.payload.rsid).toBeTypeOf("string");
+    await authority.close();
+  });
+
   it("keeps stale active-version sessions untombstoned and refreshes HTTP authority", async () => {
     const fixture = createRestartableTestStore();
     const tenant: MutableIdentityTenant = {
