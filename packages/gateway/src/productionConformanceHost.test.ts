@@ -46,4 +46,12 @@ describe("productionGatewayHost", () => {
       hostProfile: "production_conformance",
     })).rejects.toThrow(/explicit conformance identity/u);
   });
+  it("refuses a plaintext listener before any adapter startup", async () => {
+    await expect(startProductionGatewayHost({
+      server: server("test", "127.0.0.1"),
+      ports: null as unknown as GatewayServerOptions["ports"],
+      authority: null as unknown as never,
+      hostProfile: "production_conformance",
+    })).rejects.toThrow(/loopback TLS/u);
+  });
 });

@@ -27,6 +27,9 @@ export async function startProductionGatewayHost(input: {
   if (input.server.config.http.bindHost !== "127.0.0.1") {
     throw new Error("productionGatewayHost requires numeric loopback binding");
   }
+  if (input.server.tls === undefined) {
+    throw new Error("productionGatewayHost requires explicit loopback TLS material");
+  }
   for (const [name, kind] of [
     ["identity", input.ports.identity.kind],
     ["entitlement", input.ports.entitlement.kind],
