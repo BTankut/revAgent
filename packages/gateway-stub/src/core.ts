@@ -358,8 +358,6 @@ export class GatewayStubCore {
     this.supportedProtocols = supportedProtocols;
     this.connectionCapabilities = options.connectionCapabilities ?? [
       "journal_v1",
-      "chunked_results",
-      "artifact_result_v1",
       "transport_streamable_http",
     ];
     this.sessionCapabilities = options.sessionCapabilities ?? [
@@ -1452,8 +1450,14 @@ export class GatewayStubCore {
       const allocation = allocateUuidV7(draft, now);
       const rsid = opaqueId("rs", `${runtime.transport.device.deviceId}/${payload.local_session_key}/${allocation}`);
       const resumeToken = opaqueId("resume", `${rsid}/${allocateUuidV7(draft, now)}`);
-      const grantedSessionCapabilities = payload.session_capabilities.filter((capability) =>
-        this.sessionCapabilities.includes(capability),
+      const enrolledCapabilities = new Set(
+        runtime.transport.device.provisionedCapabilities,
+      );
+      const requestedSessionCapabilities = new Set(payload.session_capabilities);
+      const grantedSessionCapabilities = this.sessionCapabilities.filter(
+        (capability) =>
+          enrolledCapabilities.has(capability) &&
+          requestedSessionCapabilities.has(capability),
       );
       let lifecycle = createSessionLifecycle(payload.local_session_key);
       lifecycle = advanceSession(lifecycle, { type: "register_requested" });

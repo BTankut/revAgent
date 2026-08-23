@@ -8,6 +8,13 @@ namespace RevAgent.Bridge.Gateway.Connection;
 
 internal sealed class RbpHelloProfile
 {
+    // Connection negotiation has its own vocabulary. Add-in capabilities are
+    // carried only in per-session registration payloads, never in hello.
+    internal const string JournalCapability = "journal_v1";
+
+    internal const string StreamableHttpCapability =
+        "transport_streamable_http";
+
     internal RbpHelloProfile(
         string bridgeVersion,
         string hostname,
@@ -28,7 +35,7 @@ internal sealed class RbpHelloProfile
             addinVersions,
             nameof(addinVersions),
             128);
-        Capabilities = FreezeUnique(
+        Capabilities = FreezeConnectionCapabilities(
             capabilities ?? Array.Empty<string>(),
             nameof(capabilities),
             128);
@@ -46,13 +53,40 @@ internal sealed class RbpHelloProfile
 
     internal static RbpHelloProfile Production(
         string bridgeVersion,
-        IReadOnlyList<string> addinVersions) =>
+        IReadOnlyList<string> addinVersions,
+        IReadOnlyList<string>? requestedConnectionCapabilities = null) =>
         new(
             bridgeVersion,
             Environment.MachineName,
             Environment.OSVersion.VersionString,
             addinVersions,
-            capabilities: Array.Empty<string>());
+            capabilities: requestedConnectionCapabilities ??
+                [JournalCapability]);
+
+    private static IReadOnlyList<string> FreezeConnectionCapabilities(
+        IReadOnlyList<string> values,
+        string parameterName,
+        int maximumLength)
+    {
+        IReadOnlyList<string> frozen = FreezeUnique(
+            values,
+            parameterName,
+            maximumLength);
+        foreach (string capability in frozen)
+        {
+            if (!IsImplementedConnectionCapability(capability))
+            {
+                throw new ArgumentException(
+                    "RBP hello may declare only implemented connection capabilities.",
+                    parameterName);
+            }
+        }
+
+        return frozen;
+    }
+
+    private static bool IsImplementedConnectionCapability(string capability) =>
+        capability is JournalCapability or StreamableHttpCapability;
 
     private static IReadOnlyList<string> FreezeUnique(
         IReadOnlyList<string> values,
