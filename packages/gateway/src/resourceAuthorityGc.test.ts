@@ -179,4 +179,72 @@ describe("WP-10 durable resource expiry GC", () => {
     release();
     await expect(pending).resolves.toMatchObject({ refId: "in-flight" });
   });
+
+  it("fences a failed delete to its owner/version until the 60 second lease expires", async () => {
+    let now = 70_000;
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const objects = createMemoryObjectStore();
+    const first = new GatewayResourceAuthority({
+      protocolStore: restartable.store,
+      objectStore: objects,
+      now: () => now,
+      newRefId: () => "lease-fenced",
+      defaultTtlMs: 1,
+      gcOwnerId: "owner-one",
+    });
+    await first.uploadArtifact({ scope, filename: "lease.csv", contentType: "text/csv", quarantineStatus: "released", bytes: Buffer.from("x") });
+    now += 1;
+    vi.spyOn(objects, "delete").mockResolvedValueOnce({
+      ok: false,
+      port: "object_store",
+      code: "unavailable",
+      message: "injected delete fault",
+    });
+    await expect(first.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 1, claimed: 1, deleted: 0, retained: 1 });
+    expect(restartable.snapshot().records).toContainEqual(expect.objectContaining({
+      namespace: "gateway_resource_v1",
+      value: expect.objectContaining({ lifecycle: "gc_claimed", gcLease: expect.objectContaining({ owner: "owner-one", expiresAtMs: now + 60_000 }) }),
+    }));
+    const second = new GatewayResourceAuthority({
+      protocolStore: restartable.store,
+      objectStore: objects,
+      now: () => now,
+      newRefId: () => "unused",
+      gcOwnerId: "owner-two",
+    });
+    await expect(second.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 1, claimed: 0, deleted: 0, retained: 1 });
+    now += 60_000;
+    await expect(second.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 1, claimed: 1, deleted: 1, retained: 0 });
+    expect(objects.keys()).toEqual([]);
+    expect(restartable.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toEqual([]);
+  });
+
+  it("collects exactly 100 expired resources and leaves the +1 record for a later bounded pass", async () => {
+    let now = 80_000;
+    const restartable = createRestartableTestStore();
+    await restartable.store.open();
+    const objects = createMemoryObjectStore();
+    let sequence = 0;
+    const authority = new GatewayResourceAuthority({
+      protocolStore: restartable.store,
+      objectStore: objects,
+      now: () => now,
+      newRefId: () => `bounded-${String(++sequence)}`,
+      defaultTtlMs: 1,
+      gcOwnerId: "bounded-hundred",
+    });
+    await Promise.all(Array.from({ length: 101 }, (_, index) => authority.uploadArtifact({
+      scope,
+      filename: `bounded-${String(index)}.csv`,
+      contentType: "text/csv",
+      quarantineStatus: "released",
+      bytes: Buffer.from("x"),
+    })));
+    now += 1;
+    await expect(authority.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 100, claimed: 100, deleted: 100, retained: 0 });
+    expect(objects.keys()).toHaveLength(1);
+    await expect(authority.collectExpired({ tenantId: scope.tenantId })).resolves.toEqual({ scanned: 1, claimed: 1, deleted: 1, retained: 0 });
+    expect(objects.keys()).toEqual([]);
+  });
 });
