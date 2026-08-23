@@ -20,11 +20,11 @@ if (!existsSync(vitestCli)) {
 
 const forwardedArguments = process.argv.slice(2);
 const shardCount = 5;
-// +1 file / +10 tests over the previous 60/373 for tests/preparedPlanGuard.test.ts.
+// +1 file / +14 tests over the previous 61/383 for tests/realTrioSupervisor.test.ts.
 // The cardinality gate is deliberately coupled: adding a test file has to be a
 // visible edit here rather than something a shard silently absorbs.
-const expectedFiles = 61;
-const expectedTests = 383;
+const expectedFiles = 62;
+const expectedTests = 397;
 const fullSuite = forwardedArguments.length === 0;
 const invocations = forwardedArguments.length > 0
   ? [["run", ...forwardedArguments]]

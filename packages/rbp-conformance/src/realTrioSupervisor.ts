@@ -68,15 +68,31 @@ function replaceTokens(input: RealTrioSupervisorCommand, values: Readonly<Record
   return { executable: replace(input.executable), args: input.args.map(replace), workingDirectory: replace(input.workingDirectory) };
 }
 
-function bridgeEndpointForBinding(endpoint: string, workerArgs: readonly string[]): string {
+/**
+ * Derive the bridge route from the Gateway READY origin. The child owns the
+ * origin (and its DER pin); this supervisor owns the fixed bridge route.
+ * Keeping the route here prevents a READY payload from smuggling a different
+ * loopback path, credentials, query, or fragment into the real C# carrier.
+ */
+export function bridgeEndpointForBinding(endpoint: string, workerArgs: readonly string[]): string {
   const index = workerArgs.indexOf("--binding");
   const binding = index < 0 ? undefined : workerArgs[index + 1];
   if (binding !== "wss" && binding !== "streamable_http_sse") throw new Error("real worker command lacks one supported binding");
-  const url = new URL(endpoint);
-  if (url.hostname !== "127.0.0.1") throw new Error("real trio Gateway endpoint is not numeric loopback");
-  url.hostname = "localhost";
-  url.protocol = binding === "wss" ? "wss:" : "https:";
-  return url.toString().replace(/\/$/u, "");
+  let ready: URL;
+  try {
+    ready = new URL(endpoint);
+  } catch {
+    throw new Error("real trio Gateway READY endpoint is malformed");
+  }
+  if (ready.protocol !== "https:") throw new Error("real trio Gateway READY endpoint is not HTTPS");
+  if (ready.hostname !== "127.0.0.1" || ready.port.length === 0) throw new Error("real trio Gateway endpoint is not numeric loopback with an explicit port");
+  if (ready.username.length > 0 || ready.password.length > 0) throw new Error("real trio Gateway READY endpoint must not contain userinfo");
+  if (ready.search.length > 0 || ready.hash.length > 0) throw new Error("real trio Gateway READY endpoint must not contain query or fragment");
+  if (ready.pathname !== "/" && ready.pathname !== "/bridge/v1") throw new Error("real trio Gateway READY endpoint has an unexpected path");
+
+  const bridge = new URL(`https://localhost:${ready.port}/bridge/v1`);
+  bridge.protocol = binding === "wss" ? "wss:" : "https:";
+  return bridge.toString().replace(/\/$/u, "");
 }
 
 async function publicGatewayControl(
