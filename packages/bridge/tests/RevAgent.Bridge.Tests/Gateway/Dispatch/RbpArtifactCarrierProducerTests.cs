@@ -224,6 +224,79 @@ public sealed class RbpArtifactCarrierProducerTests
         Assert.Empty(Directory.GetFiles(spool, "*", SearchOption.AllDirectories));
     }
 
+    [Fact]
+    public async Task RejectsMalformedBase64BeforeCreatingAnyArtifactFile()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+
+        await Assert.ThrowsAsync<RbpArtifactCarrierException>(() =>
+            producer.TryPrepareAsync(
+                "rs-malformed",
+                Json("""{"kind":"invocation","invocation_id":"invoke-malformed"}"""),
+                Json("""
+                    {"files":[{"artifactIndex":0,"fileName":"x.bin","contentType":"application/octet-stream","sizeBytes":3,"sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","contentBase64":"not!"}]}
+                    """),
+                CancellationToken.None));
+
+        string spool = Path.Combine(directory.Path, "artifact-spool");
+        Assert.Empty(Directory.GetFiles(spool, "*", SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task RejectsDeclaredOversizeBeforeDecodingOrWriting()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer producer =
+            RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        JsonElement oversized = Json("""
+            {"files":[{"artifactIndex":0,"fileName":"x.bin","contentType":"application/octet-stream","sizeBytes":33554433,"sha256":"sha256:0000000000000000000000000000000000000000000000000000000000000000","contentBase64":"AAAA"}]}
+            """);
+
+        RbpArtifactCarrierException error = await Assert.ThrowsAsync<
+            RbpArtifactCarrierException>(() => producer.TryPrepareAsync(
+                "rs-oversize",
+                Json("""{"kind":"invocation","invocation_id":"invoke-oversize"}"""),
+                oversized,
+                CancellationToken.None));
+
+        Assert.DoesNotContain(directory.Path, error.Message,
+            StringComparison.OrdinalIgnoreCase);
+        Assert.Empty(Directory.GetFiles(
+            Path.Combine(directory.Path, "artifact-spool"), "*",
+            SearchOption.AllDirectories));
+    }
+
+    [Fact]
+    public async Task RefusesReparsePointStateRootWithoutFollowingIt()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        string link = Path.Combine(directory.Path, "spool-link");
+        try
+        {
+            Directory.CreateSymbolicLink(link, directory.Path);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            // This is a platform capability probe: CI images without the
+            // Windows privilege cannot manufacture an adversarial junction.
+            return;
+        }
+        catch (IOException)
+        {
+            return;
+        }
+
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierException error = Assert.Throws<RbpArtifactCarrierException>(
+            () => RbpArtifactCarrierProducer.CreateProduction(link, store));
+        Assert.DoesNotContain(directory.Path, error.Message,
+            StringComparison.OrdinalIgnoreCase);
+    }
+
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>
         RbpJournalStore.Open(
             directory.JournalPath,
