@@ -71,8 +71,8 @@ export interface RbpSessionReadinessPollOptions {
 
 export interface RealTrioFailureDiagnostics {
   readonly schemaVersion: typeof REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA;
-  /** Public Gateway audit reduced to counts/namespaces; never session values. */
-  readonly gatewayAudit: JsonObject | null;
+  /** Last 32 public Gateway audits, reduced to value-free session state. */
+  readonly gatewayAudits: readonly JsonObject[];
   /** Only schema-valid value-free worker observations are retained. */
   readonly bridgeTranscript: readonly ProcessTranscriptRecord[];
 }
@@ -83,15 +83,37 @@ function boundedText(value: unknown, maximum: number): string | null {
     : null;
 }
 
-function redactGatewayAudit(snapshot: JsonObject | null): JsonObject | null {
-  if (snapshot === null) return null;
+function redactGatewayAudit(snapshot: JsonObject): JsonObject {
   const rows = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const namespaces = rows
     .filter(isObject)
     .map((row) => boundedText(row.namespace, 128))
     .filter((value): value is string => value !== null)
     .slice(0, MAX_REAL_TRIO_DIAGNOSTIC_RECORDS);
-  return Object.freeze({ sessionCount: rows.length, namespaces: [...namespaces] });
+  const sessions = rows
+    .filter(isObject)
+    .slice(0, MAX_REAL_TRIO_DIAGNOSTIC_RECORDS)
+    .map((row) => {
+      const value = isObject(row.value) ? row.value : {};
+      const binding = isObject(value.binding) ? value.binding : {};
+      const lifecycle = isObject(value.lifecycle) ? value.lifecycle : {};
+      const sessionLifecycle = isObject(lifecycle.sessionLifecycle)
+        ? lifecycle.sessionLifecycle
+        : {};
+      return {
+        binding: boundedText(binding.binding, 64) ?? "unknown",
+        lifecyclePhase: boundedText(sessionLifecycle.phase, 64) ?? "unknown",
+        dispatchAllowed: sessionLifecycle.dispatchAllowed === true,
+        localKeyPresent: boundedText(sessionLifecycle.localSessionKey, 512) !== null,
+        created: value.createdAt !== undefined || value.created_at !== undefined,
+        updated: value.updatedAt !== undefined || value.updated_at !== undefined,
+      };
+    });
+  return Object.freeze({
+    sessionCount: rows.length,
+    namespaces: [...namespaces],
+    sessions,
+  });
 }
 
 function redactBridgeTranscript(
@@ -141,9 +163,14 @@ export class RealTrioSessionReadinessPollError extends Error {
   }
 
   public get failureDiagnostics(): RealTrioFailureDiagnostics {
+    const audits = this.audits.length > 0
+      ? this.audits
+      : this.lastGatewayAudit === null ? [] : [this.lastGatewayAudit];
     return Object.freeze({
       schemaVersion: REAL_TRIO_FAILURE_DIAGNOSTICS_SCHEMA,
-      gatewayAudit: redactGatewayAudit(this.lastGatewayAudit),
+      gatewayAudits: audits
+        .slice(-32)
+        .map((audit) => redactGatewayAudit(audit)),
       bridgeTranscript: redactBridgeTranscript(this.bridgeReceiveTranscript),
     });
   }

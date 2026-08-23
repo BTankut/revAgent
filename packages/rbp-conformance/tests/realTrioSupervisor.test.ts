@@ -198,7 +198,18 @@ describe("WP-12 real-trio v2 session smoke reader", () => {
     const diagnostics = realTrioFailureDiagnostics(new Error("wrapped", { cause: error }));
     expect(diagnostics).toMatchObject({
       schemaVersion: "rbp-real-trio-failure-diagnostics/v1",
-      gatewayAudit: { sessionCount: 1, namespaces: ["gateway.rbp-session/v2"] },
+      gatewayAudits: [{
+        sessionCount: 1,
+        namespaces: ["gateway.rbp-session/v2"],
+        sessions: [{
+          binding: "unknown",
+          lifecyclePhase: "unknown",
+          dispatchAllowed: false,
+          localKeyPresent: false,
+          created: false,
+          updated: false,
+        }],
+      }],
       bridgeTranscript: [{ stream: "stderr", at: "2026-08-23T00:00:00.000Z" }],
     });
     expect(JSON.parse(diagnostics!.bridgeTranscript[0]!.line)).toEqual({

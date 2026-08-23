@@ -207,7 +207,11 @@ internal sealed partial class RbpConnectionCoordinator
                     context.Token)
                 .ConfigureAwait(false);
             RbpResumeAck parsed = ParseResumeAck(
-                await WaitForLifecycleControlAsync(response, context.Token)
+                await WaitForLifecycleControlAsync(
+                        response,
+                        _cycleFactory.BindingKind,
+                        "session_resume",
+                        context.Token)
                     .ConfigureAwait(false),
                 candidate.Session.Rsid);
             RbpResumeAcknowledgementResult applied =
@@ -264,7 +268,11 @@ internal sealed partial class RbpConnectionCoordinator
                     context.Token)
                 .ConfigureAwait(false);
             RbpSessionRegistered parsed = ParseSessionRegistered(
-                await WaitForLifecycleControlAsync(response, context.Token)
+                await WaitForLifecycleControlAsync(
+                        response,
+                        _cycleFactory.BindingKind,
+                        "session_register",
+                        context.Token)
                     .ConfigureAwait(false));
             ValidateGrantedSessionCapabilities(
                 local.RegistrationPayload,
@@ -322,6 +330,8 @@ internal sealed partial class RbpConnectionCoordinator
 
     private async Task<RbpEnvelope> WaitForLifecycleControlAsync(
         Task<RbpEnvelope> response,
+        RbpConnectionBindingKind binding,
+        string lifecycleControl,
         CancellationToken cancellationToken)
     {
         using var timeout =
@@ -335,6 +345,7 @@ internal sealed partial class RbpConnectionCoordinator
         if (ReferenceEquals(completed, deadline))
         {
             cancellationToken.ThrowIfCancellationRequested();
+            ObserveLifecycleTimeout(binding, lifecycleControl);
             throw new RbpGatewayTransportException(
                 RbpGatewayFailureKind.Network,
                 "The Gateway did not complete the RBP session lifecycle " +
@@ -343,6 +354,27 @@ internal sealed partial class RbpConnectionCoordinator
 
         timeout.Cancel();
         return await response.ConfigureAwait(false);
+    }
+
+    private void ObserveLifecycleTimeout(
+        RbpConnectionBindingKind binding,
+        string lifecycleControl)
+    {
+        Func<RbpLifecycleTimeoutObservation, ValueTask>? observer =
+            _onLifecycleTimeoutObservation;
+        if (observer is null)
+        {
+            return;
+        }
+        try
+        {
+            _ = observer(
+                RbpLifecycleTimeoutObservation.Create(binding, lifecycleControl));
+        }
+        catch
+        {
+            // Diagnostics cannot own lifecycle cancellation or retry policy.
+        }
     }
 
     private async Task RevokeAndSendUnregisterAsync(

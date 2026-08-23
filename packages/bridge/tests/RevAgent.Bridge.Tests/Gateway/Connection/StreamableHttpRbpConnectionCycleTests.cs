@@ -83,6 +83,36 @@ public sealed class StreamableHttpRbpConnectionCycleTests
     }
 
     [Fact]
+    public async Task SseReceiveObservationsRemainValueFreeAndClassifySessionRegistered()
+    {
+        var observations = new List<RbpSseReceiveObservation>();
+        await using var harness = new HttpFallbackHarness(
+            onSseReceiveObservation: observations.Add);
+        await using IRbpConnectionCycle cycle = await harness.OpenAsync();
+        harness.Events.WriteUtf8(
+            "event: rbp\n" +
+            "data: " + InboundSessionRegisteredJson() + "\n\n");
+
+        RbpEnvelope envelope = await cycle.ReceiveAsync();
+
+        Assert.Equal("session_registered", envelope.Type);
+        Assert.Contains(observations, item => item.Stage == "headers_received");
+        Assert.Contains(observations, item => item.Stage == "event_line");
+        Assert.Contains(observations, item => item.Stage == "data_line");
+        Assert.Contains(observations, item => item.Stage == "blank_terminator");
+        Assert.Contains(observations, item =>
+            item.Stage == "method_kind" &&
+            item.MethodKind == "session_registered");
+        Assert.All(observations, item =>
+        {
+            string serialized = System.Text.Json.JsonSerializer.Serialize(item);
+            Assert.DoesNotContain("resume-test-token", serialized);
+            Assert.DoesNotContain("tenant-test", serialized);
+            Assert.DoesNotContain("conn-test", serialized);
+        });
+    }
+
+    [Fact]
     public async Task FragmentedMultiEventSseDeliversSessionRegisteredBeforeLaterFrames()
     {
         await using var harness = new HttpFallbackHarness();
@@ -364,10 +394,12 @@ public sealed class StreamableHttpRbpConnectionCycleTests
 
         internal HttpFallbackHarness(
             HttpStatusCode messageStatus = HttpStatusCode.Accepted,
-            bool throwMessageFailure = false)
+            bool throwMessageFailure = false,
+            Action<RbpSseReceiveObservation>? onSseReceiveObservation = null)
         {
             _messageStatus = messageStatus;
             _throwMessageFailure = throwMessageFailure;
+            OnSseReceiveObservation = onSseReceiveObservation;
             Handler = new ScriptedHttpMessageHandler(RespondAsync);
         }
 
@@ -383,13 +415,16 @@ public sealed class StreamableHttpRbpConnectionCycleTests
 
         internal ScriptedHttpMessageHandler Handler { get; }
 
+        internal Action<RbpSseReceiveObservation>? OnSseReceiveObservation { get; }
+
         internal async Task<IRbpConnectionCycle> OpenAsync()
         {
             var factory =
                 new StreamableHttpRbpConnectionCycleFactory(
                     new FixedEnrollmentProvider(Credential()),
                     new[] { RbpTransportCapabilities.StreamableHttp },
-                    new FixedHttpClientFactory(Handler));
+                    new FixedHttpClientFactory(Handler),
+                    onSseReceiveObservation: OnSseReceiveObservation);
             return await factory.OpenAsync(Endpoint(), Profile());
         }
 

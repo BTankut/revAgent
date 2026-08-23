@@ -631,26 +631,38 @@
                 "diagnostics": {
                   "type": "object",
                   "additionalProperties": false,
-                  "required": ["schemaVersion", "gatewayAudit", "bridgeTranscript"],
+                  "required": ["schemaVersion", "gatewayAudits", "bridgeTranscript"],
                   "properties": {
                     "schemaVersion": { "const": "rbp-real-trio-failure-diagnostics/v1" },
-                    "gatewayAudit": {
-                      "anyOf": [
-                        { "type": "null" },
-                        {
-                          "type": "object",
-                          "additionalProperties": false,
-                          "required": ["sessionCount", "namespaces"],
-                          "properties": {
-                            "sessionCount": { "type": "integer", "minimum": 0 },
-                            "namespaces": {
-                              "type": "array",
-                              "maxItems": 16,
-                              "items": { "type": "string", "minLength": 1, "maxLength": 128 }
+                    "gatewayAudits": {
+                      "type": "array",
+                      "maxItems": 32,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["sessionCount", "namespaces", "sessions"],
+                        "properties": {
+                          "sessionCount": { "type": "integer", "minimum": 0 },
+                          "namespaces": { "type": "array", "maxItems": 16, "items": { "type": "string", "minLength": 1, "maxLength": 128 } },
+                          "sessions": {
+                            "type": "array",
+                            "maxItems": 16,
+                            "items": {
+                              "type": "object",
+                              "additionalProperties": false,
+                              "required": ["binding", "lifecyclePhase", "dispatchAllowed", "localKeyPresent", "created", "updated"],
+                              "properties": {
+                                "binding": { "type": "string", "minLength": 1, "maxLength": 64 },
+                                "lifecyclePhase": { "type": "string", "minLength": 1, "maxLength": 64 },
+                                "dispatchAllowed": { "type": "boolean" },
+                                "localKeyPresent": { "type": "boolean" },
+                                "created": { "type": "boolean" },
+                                "updated": { "type": "boolean" }
+                              }
                             }
                           }
                         }
-                      ]
+                      }
                     },
                     "bridgeTranscript": {
                       "type": "array",

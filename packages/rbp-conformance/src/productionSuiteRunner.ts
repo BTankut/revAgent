@@ -465,12 +465,18 @@ function markCaseError(
     ...(diagnostics === null ? {} : {
       diagnostics: {
         schemaVersion: diagnostics.schemaVersion,
-        gatewayAudit: diagnostics.gatewayAudit === null
-          ? null
-          : {
-              sessionCount: diagnostics.gatewayAudit.sessionCount as number,
-              namespaces: diagnostics.gatewayAudit.namespaces as string[],
-            },
+        gatewayAudits: diagnostics.gatewayAudits.map((audit) => ({
+          sessionCount: audit.sessionCount as number,
+          namespaces: audit.namespaces as string[],
+          sessions: audit.sessions as Array<{
+            binding: string;
+            lifecyclePhase: string;
+            dispatchAllowed: boolean;
+            localKeyPresent: boolean;
+            created: boolean;
+            updated: boolean;
+          }>,
+        })),
         bridgeTranscript: diagnostics.bridgeTranscript.map((record) => ({
           stream: "stderr" as const,
           at: record.at,

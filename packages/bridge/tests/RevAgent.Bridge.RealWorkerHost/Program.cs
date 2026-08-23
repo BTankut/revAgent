@@ -114,7 +114,10 @@ internal static class Program
             IRbpConnectionCycleFactory cycle = options.Binding == "wss"
                 ? wss
                 : new StreamableHttpRbpConnectionCycleFactory(
-                    claims, capabilities, new PinnedHttpFactory(options.CertificateSha256));
+                    claims,
+                    capabilities,
+                    new PinnedHttpFactory(options.CertificateSha256),
+                    onSseReceiveObservation: ObserveSseReceive);
             var profile = new RbpHelloProfile(
                 "wp12-real-worker-host", "localhost", "test-only", Array.Empty<string>(), capabilities.ToArray());
             RbpConnectionCoordinator coordinator = WorkerGatewayComposition.CreateCoordinator(
@@ -122,6 +125,7 @@ internal static class Program
                     new RbpConnectionCoordinatorOptions(options.GatewayUri, profile, CredentialClaimInvalidator: claims),
                     new WorkerAddinDispatchSurface(router, catalog),
                     OnConnectionFailureObservation: ObserveConnectionFailure,
+                    OnLifecycleTimeoutObservation: ObserveLifecycleTimeout,
                     CarrierProducer: carrier));
             return new WorkerGatewayRuntime(coordinator, catalog, journal, carrierProducer: carrier);
         }
@@ -163,6 +167,45 @@ internal static class Program
             // Diagnostic emission must not own the coordinator retry state.
         }
         return ValueTask.CompletedTask;
+    }
+
+    private static ValueTask ObserveLifecycleTimeout(
+        RbpLifecycleTimeoutObservation observation)
+    {
+        WriteObservation(new
+        {
+            contractVersion = observation.ContractVersion,
+            @event = observation.Event,
+            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+            binding = observation.Binding,
+            lifecycleControl = observation.LifecycleControl,
+            state = observation.State,
+            reason = observation.Reason,
+        });
+        return ValueTask.CompletedTask;
+    }
+
+    private static void ObserveSseReceive(RbpSseReceiveObservation observation) =>
+        WriteObservation(new
+        {
+            contractVersion = observation.ContractVersion,
+            @event = observation.Event,
+            timestamp = DateTimeOffset.UtcNow.ToString("O"),
+            stage = observation.Stage,
+            methodKind = observation.MethodKind,
+            outcome = observation.Outcome,
+        });
+
+    private static void WriteObservation(object observation)
+    {
+        try
+        {
+            Console.Error.WriteLine(JsonSerializer.Serialize(observation));
+        }
+        catch
+        {
+            // Test-harness stderr is non-authoritative.
+        }
     }
 
     private static ResolvedBridgeConfiguration Configuration(Options options) => new(

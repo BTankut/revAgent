@@ -162,10 +162,18 @@ export interface FailureEvidence {
 /** Bounded, value-free diagnosis retained only for supervised real-process failures. */
 export interface SupervisedFailureDiagnostics {
   schemaVersion: "rbp-real-trio-failure-diagnostics/v1";
-  gatewayAudit: {
+  gatewayAudits: Array<{
     sessionCount: number;
     namespaces: string[];
-  } | null;
+    sessions: Array<{
+      binding: string;
+      lifecyclePhase: string;
+      dispatchAllowed: boolean;
+      localKeyPresent: boolean;
+      created: boolean;
+      updated: boolean;
+    }>;
+  }>;
   bridgeTranscript: Array<{
     stream: "stderr";
     at: string;

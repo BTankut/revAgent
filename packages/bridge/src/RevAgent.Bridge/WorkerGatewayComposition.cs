@@ -39,7 +39,9 @@ internal sealed record WorkerGatewayServices(
     Action<string>? OnDispatchDiagnostic = null,
     Func<RbpConnectionFailureObservation, ValueTask>?
         OnConnectionFailureObservation = null,
-    RbpArtifactCarrierProducer? CarrierProducer = null);
+    RbpArtifactCarrierProducer? CarrierProducer = null,
+    Func<RbpLifecycleTimeoutObservation, ValueTask>?
+        OnLifecycleTimeoutObservation = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -184,7 +186,9 @@ internal static class WorkerGatewayComposition
                 services.Clock,
                 services.Random,
                 onConnectionFailureObservation:
-                    services.OnConnectionFailureObservation);
+                    services.OnConnectionFailureObservation,
+                onLifecycleTimeoutObservation:
+                    services.OnLifecycleTimeoutObservation);
         }
 
         var channel = new RbpRoutedInvocationChannel(
@@ -234,7 +238,8 @@ internal static class WorkerGatewayComposition
             batchCoordinator,
             services.OnDispatchDiagnostic,
             services.OnConnectionFailureObservation,
-            services.CarrierProducer);
+            services.CarrierProducer,
+            services.OnLifecycleTimeoutObservation);
     }
 
     /// <summary>

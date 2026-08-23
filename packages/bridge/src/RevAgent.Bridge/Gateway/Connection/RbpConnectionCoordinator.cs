@@ -58,6 +58,8 @@ internal sealed partial class RbpConnectionCoordinator
     private readonly Action<string>? _onDispatchDiagnostic;
     private readonly Func<RbpConnectionFailureObservation, ValueTask>?
         _onConnectionFailureObservation;
+    private readonly Func<RbpLifecycleTimeoutObservation, ValueTask>?
+        _onLifecycleTimeoutObservation;
     private readonly SemaphoreSlim _retryConditionSignal = new(0, 1);
     private RbpConnectionLifecycleState _lifecycle =
         RbpConnectionReducer.CreateConnectionLifecycle();
@@ -82,12 +84,15 @@ internal sealed partial class RbpConnectionCoordinator
         Action<string>? onDispatchDiagnostic = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
             onConnectionFailureObservation = null,
-        RbpArtifactCarrierProducer? carrierProducer = null)
+        RbpArtifactCarrierProducer? carrierProducer = null,
+        Func<RbpLifecycleTimeoutObservation, ValueTask>?
+            onLifecycleTimeoutObservation = null)
     {
         _batchCoordinator = batchCoordinator;
         _carrierProducer = carrierProducer;
         _onDispatchDiagnostic = onDispatchDiagnostic;
         _onConnectionFailureObservation = onConnectionFailureObservation;
+        _onLifecycleTimeoutObservation = onLifecycleTimeoutObservation;
         _invocationDispatcher = invocationDispatcher ??
             throw new ArgumentNullException(nameof(invocationDispatcher));
         _cycleFactory = cycleFactory ??
