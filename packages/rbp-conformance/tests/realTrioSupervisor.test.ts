@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assertProductionCredential,
   bridgeEndpointForBinding,
   fixtureAttestationTokens,
   fixtureAttestedWorkerCommand,
@@ -8,6 +9,7 @@ import {
   realTrioFailureDiagnostics,
   RealTrioSessionReadinessPollError,
   readRbpSessionV2Readiness,
+  realTrioCredentialRequest,
 } from "../src/realTrioSupervisor.js";
 
 const worker = (binding: "wss" | "streamable_http_sse"): readonly string[] => ["--binding", binding];
@@ -35,6 +37,35 @@ describe("WP-12 real trio bridge endpoint derivation", () => {
     ["https://127.0.0.1:48291", ["--binding", "http"] as const, /lacks one supported binding/u],
   ] as const)("rejects unsafe or malformed READY endpoint %#", (readyEndpoint, workerArgs, expected) => {
     expect(() => bridgeEndpointForBinding(readyEndpoint, workerArgs)).toThrow(expected);
+  });
+});
+
+describe("WP-12 real-trio public credential provisioning", () => {
+  it.each([
+    ["wss", ["journal_v1", "chunked_results", "artifact_result_v1"]],
+    ["streamable_http_sse", ["journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http"]],
+  ] as const)("uses one exact credential schema for %s with non-empty session grants", (binding, connectionCapabilities) => {
+    expect(realTrioCredentialRequest(binding)).toEqual({
+      binding,
+      connectionCapabilities,
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    });
+  });
+
+  it("rejects a stub-labelled credential before its identity or endpoint can reach the C# worker", () => {
+    const request = realTrioCredentialRequest("wss");
+    const credential = {
+      deviceId: "device",
+      deviceProof: "proof",
+      binding: "wss",
+      gatewayEndpoint: "https://127.0.0.1:48291",
+      credentialProvenance: "gateway_stub",
+      adapterProvenance: { identity: "conformance", protocolStore: "conformance", authority: "GatewayBridgeSessionAuthority" },
+      connectionCapabilities: [...request.connectionCapabilities],
+      sessionCapabilities: [...request.sessionCapabilities],
+    };
+    expect(() => assertProductionCredential(credential, request, "https://127.0.0.1:48291"))
+      .toThrow(/production-conformance credential/u);
   });
 });
 

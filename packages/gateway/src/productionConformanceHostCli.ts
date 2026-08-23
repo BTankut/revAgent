@@ -20,6 +20,51 @@ interface CliOptions {
   readonly port: number;
 }
 
+type ConformanceBinding = "wss" | "streamable_http_sse";
+
+const REQUIRED_SESSION_CAPABILITIES = Object.freeze([
+  "batch_atomic",
+  "doc_context_cached_v1",
+]);
+
+const REQUIRED_CONNECTION_CAPABILITIES = Object.freeze([
+  "journal_v1",
+  "chunked_results",
+  "artifact_result_v1",
+]);
+
+export function conformanceConnectionCapabilitiesForBinding(
+  binding: ConformanceBinding,
+): readonly string[] {
+  return Object.freeze([
+    ...REQUIRED_CONNECTION_CAPABILITIES,
+    ...(binding === "streamable_http_sse" ? ["transport_streamable_http"] : []),
+  ]);
+}
+
+function exactCapabilityList(value: unknown, expected: readonly string[]): value is readonly string[] {
+  return Array.isArray(value) && value.length === expected.length &&
+    value.every((entry) => typeof entry === "string") &&
+    new Set(value).size === value.length && expected.every((entry) => value.includes(entry));
+}
+
+/** Returns the only authority provision accepted by the public test route. */
+export function validateConformanceDeviceProvision(input: {
+  readonly binding: unknown;
+  readonly connectionCapabilities: unknown;
+  readonly sessionCapabilities: unknown;
+}): { readonly binding: ConformanceBinding; readonly connectionCapabilities: readonly string[]; readonly sessionCapabilities: readonly string[] } | null {
+  if (input.binding !== "wss" && input.binding !== "streamable_http_sse") return null;
+  const connectionCapabilities = conformanceConnectionCapabilitiesForBinding(input.binding);
+  if (!exactCapabilityList(input.connectionCapabilities, connectionCapabilities) ||
+      !exactCapabilityList(input.sessionCapabilities, REQUIRED_SESSION_CAPABILITIES)) return null;
+  return Object.freeze({
+    binding: input.binding,
+    connectionCapabilities,
+    sessionCapabilities: REQUIRED_SESSION_CAPABILITIES,
+  });
+}
+
 function parse(args: readonly string[]): CliOptions {
   if (args.length !== 10) throw new Error("production conformance host requires five --key value pairs");
   const values = new Map<string, string>();
@@ -64,6 +109,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
   const authority = new GatewayBridgeSessionAuthority(protocolStore, identity);
   const ingress = createConformanceRbpIngressHost({ authority });
   const supporting = createConformanceSupportingPorts();
+  let conformanceEndpoint: string | null = null;
   let stopping = false;
   try {
     const handle = await startProductionGatewayHost({
@@ -93,12 +139,48 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
       mountConformanceControl(app) {
         app.post("/__conformance/v1/control", async (request, reply) => {
           if (!constantTokenEquals(request.headers["x-rbp-test-control"], options.controlToken)) return reply.code(401).send({ ok: false, error: "unauthorized" });
-          const body = request.body as { action?: unknown } | null;
+          const body = request.body as {
+            action?: unknown;
+            binding?: unknown;
+            connectionCapabilities?: unknown;
+            sessionCapabilities?: unknown;
+          } | null;
           const action = body?.action;
           if (action === "issue_device_credential") {
+            const provision = validateConformanceDeviceProvision({
+              binding: body?.binding,
+              connectionCapabilities: body?.connectionCapabilities,
+              sessionCapabilities: body?.sessionCapabilities,
+            });
+            if (provision === null) {
+              return reply.code(400).send({ ok: false, action, error: "invalid_binding" });
+            }
+            if (conformanceEndpoint === null) {
+              return reply.code(400).send({ ok: false, action, error: "invalid_capability_provision" });
+            }
             const credential = credentials[0]!;
-            const proof = identity.issue(credential.deviceId);
-            return reply.send({ ok: true, action, deviceId: credential.deviceId, deviceToken: credential.token, deviceProof: proof, audit: identity.audit() });
+            const proof = identity.issue(credential.deviceId, {
+              connectionCapabilities: provision.connectionCapabilities,
+              sessionCapabilities: provision.sessionCapabilities,
+            });
+            return reply.send({
+              ok: true,
+              action,
+              binding: provision.binding,
+              deviceId: credential.deviceId,
+              deviceToken: credential.token,
+              deviceProof: proof,
+              connectionCapabilities: provision.connectionCapabilities,
+              sessionCapabilities: provision.sessionCapabilities,
+              gatewayEndpoint: conformanceEndpoint,
+              credentialProvenance: "gateway_production_conformance",
+              adapterProvenance: {
+                identity: identity.kind,
+                protocolStore: protocolStore.kind,
+                authority: "GatewayBridgeSessionAuthority",
+              },
+              audit: identity.audit(),
+            });
           }
           if (action === "revoke_device") {
             const credential = credentials[0]!;
@@ -119,6 +201,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
         });
       },
     });
+    conformanceEndpoint = `https://127.0.0.1:${String(handle.port)}`;
     const close = async (): Promise<void> => {
       if (stopping) return;
       stopping = true;
@@ -137,7 +220,7 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
     // signal-terminated child.
     // C# pins the DER certificate returned by TLS, not the PEM transport file.
     const certificateSha256 = `sha256:${createHash("sha256").update(new X509Certificate(cert).raw).digest("hex")}`;
-    process.stdout.write(`${JSON.stringify({ ready: true, component: "gateway_production_conformance", contract: "wp12-production-conformance-host/v1", endpoint: `https://127.0.0.1:${String(handle.port)}`, tlsCertificateSha256: certificateSha256, controlPath: "/__conformance/v1/control", pid: process.pid })}\n`);
+    process.stdout.write(`${JSON.stringify({ ready: true, component: "gateway_production_conformance", contract: "wp12-production-conformance-host/v1", endpoint: conformanceEndpoint, tlsCertificateSha256: certificateSha256, controlPath: "/__conformance/v1/control", pid: process.pid })}\n`);
     await stopped;
     // An IPC channel is supplied only by the Windows supervision harness. It
     // keeps Node's event loop alive after an otherwise clean app close unless

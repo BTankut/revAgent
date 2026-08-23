@@ -42,19 +42,53 @@ export interface ConformanceCredential {
   readonly revoked?: boolean;
 }
 
+/**
+ * Explicitly provisioned authority domains for one conformance launch.  This
+ * is deliberately separate from a bridge's hello/session probes: the Gateway
+ * computes the intersection, and the carrier never selects its own grants.
+ */
+export interface ConformanceDeviceCapabilityProvision {
+  readonly connectionCapabilities: readonly string[];
+  readonly sessionCapabilities: readonly string[];
+}
+
+const DEFAULT_CONFORMANCE_CAPABILITIES: ConformanceDeviceCapabilityProvision = Object.freeze({
+  connectionCapabilities: Object.freeze([
+    "journal_v1",
+    "chunked_results",
+    "artifact_result_v1",
+    "transport_streamable_http",
+  ]),
+  sessionCapabilities: Object.freeze(["batch_atomic", "doc_context_cached_v1"]),
+});
+
 /** HMAC-backed loopback credential authority.  It is intentionally public-test only. */
 export class ConformanceCredentialAuthority implements IdentityPort {
   readonly kind = "conformance" as const;
   readonly #secret: Buffer;
   readonly #credentials = new Map<string, ConformanceCredential>();
+  readonly #provisions = new Map<string, ConformanceDeviceCapabilityProvision>();
   readonly #audit: Array<{ readonly action: "issued" | "revoked" | "authenticated"; readonly deviceId: string }> = [];
   public constructor(credentials: readonly ConformanceCredential[], secret = randomBytes(32)) {
     this.#secret = Buffer.from(secret);
     for (const credential of credentials) this.#credentials.set(credential.deviceId, Object.freeze({ ...credential }));
   }
-  public issue(deviceId: string): string {
+  public issue(
+    deviceId: string,
+    provision: ConformanceDeviceCapabilityProvision = DEFAULT_CONFORMANCE_CAPABILITIES,
+  ): string {
     const credential = this.#credentials.get(deviceId);
     if (credential === undefined) throw new Error("unknown conformance device");
+    if (!Array.isArray(provision.connectionCapabilities) ||
+        !Array.isArray(provision.sessionCapabilities) ||
+        !provision.connectionCapabilities.every((value) => typeof value === "string") ||
+        !provision.sessionCapabilities.every((value) => typeof value === "string")) {
+      throw new Error("invalid conformance capability provision");
+    }
+    this.#provisions.set(deviceId, Object.freeze({
+      connectionCapabilities: Object.freeze([...provision.connectionCapabilities]),
+      sessionCapabilities: Object.freeze([...provision.sessionCapabilities]),
+    }));
     const proof = createHmac("sha256", this.#secret).update(`${credential.deviceId}:${credential.token}`).digest("hex");
     this.#audit.push({ action: "issued", deviceId });
     return `${credential.deviceId}.${proof}`;
@@ -88,10 +122,11 @@ export class ConformanceCredentialAuthority implements IdentityPort {
     const valid = proof !== undefined && proof.length === expected.length && timingSafeEqual(Buffer.from(proof), Buffer.from(expected));
     if (!valid || credential === undefined || credential.revoked || input.claimedDeviceId !== deviceId || input.machineFingerprint === undefined || !/^sha256:[0-9a-f]{64}$/u.test(input.machineFingerprint)) return failure("conformance device credential rejected");
     this.#audit.push({ action: "authenticated", deviceId });
+    const provision = this.#provisions.get(deviceId) ?? DEFAULT_CONFORMANCE_CAPABILITIES;
     const context: DeviceAuthContext = {
       contractVersion: GATEWAY_AUTH_CONTRACT_VERSION, actor: { type: "device", tenantId: credential.tenantId, userId: credential.userId, deviceId, seatId: `seat-${deviceId}` }, connectionId: input.connectionId, deviceStatus: "active", machineFingerprint: input.machineFingerprint as `sha256:${string}`,
       authorizationVersion: 1, identityRecordVersion: 1, connectionCapabilityVersion: 1, sessionCapabilityVersion: 1, seatAuthorityVersion: 1, seatRecordVersion: 1,
-      grantedConnectionCapabilities: ["journal_v1", "transport_streamable_http"], grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"], deviceTokenDigest: `sha256:${createHash("sha256").update(rawToken!).digest("hex")}`,
+      grantedConnectionCapabilities: [...provision.connectionCapabilities], grantedSessionCapabilities: [...provision.sessionCapabilities], deviceTokenDigest: `sha256:${createHash("sha256").update(rawToken!).digest("hex")}`,
     };
     return Object.freeze({ ok: true as const, value: context });
   }

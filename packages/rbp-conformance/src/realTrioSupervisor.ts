@@ -60,6 +60,41 @@ export interface RealTrioSessionReadiness {
   readonly grantedCapabilities: readonly string[];
 }
 
+export type RealTrioBinding = "wss" | "streamable_http_sse";
+
+export interface RealTrioCredentialRequest {
+  readonly binding: RealTrioBinding;
+  readonly connectionCapabilities: readonly string[];
+  readonly sessionCapabilities: readonly string[];
+}
+
+const REAL_TRIO_SESSION_CAPABILITIES = Object.freeze([
+  "batch_atomic",
+  "doc_context_cached_v1",
+]);
+
+const REAL_TRIO_CONNECTION_CAPABILITIES = Object.freeze([
+  "journal_v1",
+  "chunked_results",
+  "artifact_result_v1",
+]);
+
+/**
+ * The two carriers use one public credential contract.  The selected HTTP
+ * carrier additionally requires its explicit transport capability; neither
+ * branch may silently fall back to an empty session-capability provision.
+ */
+export function realTrioCredentialRequest(binding: RealTrioBinding): RealTrioCredentialRequest {
+  return Object.freeze({
+    binding,
+    connectionCapabilities: Object.freeze([
+      ...REAL_TRIO_CONNECTION_CAPABILITIES,
+      ...(binding === "streamable_http_sse" ? ["transport_streamable_http"] : []),
+    ]),
+    sessionCapabilities: REAL_TRIO_SESSION_CAPABILITIES,
+  });
+}
+
 export interface RbpSessionReadinessPollOptions {
   readonly readSnapshot: () => Promise<JsonObject>;
   readonly expectedBinding: "wss" | "streamable_http_sse";
@@ -432,9 +467,10 @@ async function publicGatewayControl(
   controlToken: string,
   expectedCertificateSha256: string,
   action: "issue_device_credential" | "snapshot_audit",
+  arguments_: Readonly<Record<string, JsonValue>> = {},
 ): Promise<JsonObject> {
   const url = new URL("/__conformance/v1/control", endpoint);
-  const payload = Buffer.from(JSON.stringify({ action }), "utf8");
+  const payload = Buffer.from(JSON.stringify({ action, ...arguments_ }), "utf8");
   return await new Promise<JsonObject>((resolve, reject) => {
     const operation = httpsRequest({ hostname: url.hostname, port: url.port, path: url.pathname, method: "POST", rejectUnauthorized: false, headers: { "content-type": "application/json", "content-length": payload.byteLength, "x-rbp-test-control": controlToken } }, (response) => {
       const peer = (response.socket as TLSSocket).getPeerCertificate(true).raw as Buffer | undefined;
@@ -453,6 +489,37 @@ async function publicGatewayControl(
     operation.once("error", reject);
     operation.end(payload);
   });
+}
+
+function exactStringList(value: unknown, expected: readonly string[]): boolean {
+  return Array.isArray(value) && value.length === expected.length &&
+    value.every((entry) => typeof entry === "string") &&
+    new Set(value).size === value.length && expected.every((entry) => value.includes(entry));
+}
+
+export function assertProductionCredential(
+  credential: JsonObject,
+  request: RealTrioCredentialRequest,
+  endpoint: string,
+): asserts credential is JsonObject & {
+  readonly deviceId: string;
+  readonly deviceProof: string;
+} {
+  const adapters = isObject(credential.adapterProvenance)
+    ? credential.adapterProvenance
+    : null;
+  if (typeof credential.deviceId !== "string" || credential.deviceId.length === 0 ||
+      typeof credential.deviceProof !== "string" || credential.deviceProof.length === 0 ||
+      credential.binding !== request.binding ||
+      credential.gatewayEndpoint !== endpoint ||
+      credential.credentialProvenance !== "gateway_production_conformance" ||
+      adapters?.identity !== "conformance" ||
+      adapters.protocolStore !== "conformance" ||
+      adapters.authority !== "GatewayBridgeSessionAuthority" ||
+      !exactStringList(credential.connectionCapabilities, request.connectionCapabilities) ||
+      !exactStringList(credential.sessionCapabilities, request.sessionCapabilities)) {
+    throw new Error("Gateway public control did not issue a production-conformance credential with exact grants");
+  }
 }
 
 function transcriptHash(process: StrictJsonlProcess | StrictReadyProcess, stream: "stdout" | "stderr"): `sha256:${string}` {
@@ -512,8 +579,19 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
       });
       try {
         const fixtureTokens = fixtureAttestationTokens(fixture.readiness, fixture.pid);
-        const credential = await publicGatewayControl(endpoint, input.gatewayControlToken, certificateSha256, "issue_device_credential");
-        if (typeof credential.deviceId !== "string" || typeof credential.deviceProof !== "string") throw new Error("Gateway public control did not issue a bridge credential");
+        const binding = input.bridgeWorker.args[input.bridgeWorker.args.indexOf("--binding") + 1];
+        if (binding !== "wss" && binding !== "streamable_http_sse") {
+          throw new Error("real worker command lacks one supported binding");
+        }
+        const credentialRequest = realTrioCredentialRequest(binding);
+        const credential = await publicGatewayControl(
+          endpoint,
+          input.gatewayControlToken,
+          certificateSha256,
+          "issue_device_credential",
+          credentialRequest,
+        );
+        assertProductionCredential(credential, credentialRequest, endpoint);
         const fixtureBoundWorker = fixtureAttestedWorkerCommand(input.bridgeWorker, fixtureTokens);
         const bridge = await StrictJsonlProcess.start({
           componentId: "bridge_simulator",
@@ -527,10 +605,6 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           expectedReadinessFields: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
           requiredActions: ["shutdown"],
         });
-        const binding = input.bridgeWorker.args[input.bridgeWorker.args.indexOf("--binding") + 1];
-        if (binding !== "wss" && binding !== "streamable_http_sse") {
-          throw new Error("real worker command lacks one supported binding");
-        }
         let sessionReadiness: RealTrioSessionReadiness;
         try {
           sessionReadiness = await pollRbpSessionV2Readiness({

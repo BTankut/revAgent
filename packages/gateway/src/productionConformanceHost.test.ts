@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { startProductionGatewayHost } from "./productionConformanceHost.js";
+import { conformanceConnectionCapabilitiesForBinding, validateConformanceDeviceProvision } from "./productionConformanceHostCli.js";
 import type { GatewayServerOptions } from "./server.js";
 import { createFailClosedPorts } from "./server.js";
 import { GatewayBridgeSessionAuthority } from "./bridgeSession.js";
@@ -24,6 +25,28 @@ function server(nodeEnv: "test" | "production", bindHost: string): Omit<GatewayS
 }
 
 describe("productionGatewayHost", () => {
+  it("requires the one public provisioning contract to name the selected carrier explicitly", () => {
+    expect(conformanceConnectionCapabilitiesForBinding("wss")).toEqual([
+      "journal_v1", "chunked_results", "artifact_result_v1",
+    ]);
+    expect(conformanceConnectionCapabilitiesForBinding("streamable_http_sse")).toEqual([
+      "journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http",
+    ]);
+    for (const binding of ["wss", "streamable_http_sse"] as const) {
+      const connectionCapabilities = conformanceConnectionCapabilitiesForBinding(binding);
+      expect(validateConformanceDeviceProvision({
+        binding,
+        connectionCapabilities,
+        sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      })).toEqual({ binding, connectionCapabilities, sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"] });
+    }
+    // An HTTP/SSE launch cannot degrade to an empty or unprovisioned grant.
+    expect(validateConformanceDeviceProvision({
+      binding: "streamable_http_sse",
+      connectionCapabilities: ["journal_v1", "chunked_results", "artifact_result_v1"],
+      sessionCapabilities: [],
+    })).toBeNull();
+  });
   it("is explicitly non-production and numeric-loopback only before any port can start", async () => {
     await expect(startProductionGatewayHost({
       server: server("production", "127.0.0.1"),

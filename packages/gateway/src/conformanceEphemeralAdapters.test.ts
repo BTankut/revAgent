@@ -26,6 +26,31 @@ describe("conformance ephemeral adapters", () => {
     expect(JSON.stringify(identity.audit())).not.toContain("test-token");
   });
 
+  it("carries only the public contract's explicit per-launch grants into device authentication", async () => {
+    const identity = new ConformanceCredentialAuthority([
+      { tenantId: "tenant_a", userId: "user_a", deviceId: "device_a", token: "test-token" },
+    ], Buffer.alloc(32, 8));
+    const issued = identity.issue("device_a", {
+      connectionCapabilities: ["journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http"],
+      sessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+    });
+    await expect(identity.authenticateDevice({ deviceToken: issued, connectionId: "http", claimedDeviceId: "device_a", machineFingerprint: fingerprint }))
+      .resolves.toMatchObject({ ok: true, value: {
+        grantedConnectionCapabilities: ["journal_v1", "chunked_results", "artifact_result_v1", "transport_streamable_http"],
+        grantedSessionCapabilities: ["batch_atomic", "doc_context_cached_v1"],
+      } });
+
+    const unprovisioned = identity.issue("device_a", {
+      connectionCapabilities: ["journal_v1", "chunked_results", "artifact_result_v1"],
+      sessionCapabilities: [],
+    });
+    await expect(identity.authenticateDevice({ deviceToken: unprovisioned, connectionId: "http", claimedDeviceId: "device_a", machineFingerprint: fingerprint }))
+      .resolves.toMatchObject({ ok: true, value: {
+        grantedConnectionCapabilities: ["journal_v1", "chunked_results", "artifact_result_v1"],
+        grantedSessionCapabilities: [],
+      } });
+  });
+
   it("persists CAS state across restart and keeps tenant inventory bounded", async () => {
     const location = await root();
     const first = new SqliteConformanceProtocolStore(location);
