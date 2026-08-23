@@ -1,0 +1,24 @@
+{
+  "id": "WP-07",
+  "title": "Connection/session capability separation",
+  "wave": "F",
+  "findings": ["RA-GW-005"],
+  "depends_on": ["WP-06"],
+  "agents": ["critical_ts_worker", "critical_csharp_worker", "test_engineer", "integration_reviewer"],
+  "decisions": ["DC-06"],
+  "write_scope": [
+    "packages/gateway/src/bridgeSession.ts",
+    "packages/gateway/src/bridgeSession*.test.ts",
+    "packages/bridge/src/RevAgent.Bridge/Gateway/Connection/RbpHelloFactory.cs",
+    "packages/bridge/src/RevAgent.Bridge/Runtime/WorkerAddinSessionCatalog.cs",
+    "packages/gateway-stub/**",
+    "packages/rbp-conformance/**",
+    "packages/protocol/**",
+    "packages/bridge/tests/RevAgent.Bridge.Tests/Gateway/Connection/RbpHelloFactoryTests.cs",
+    "packages/bridge/tests/RevAgent.Bridge.Tests/Gateway/Connection/RbpWorkerGatewayRuntimeServiceTests.cs",
+    "packages/bridge/tests/RevAgent.Bridge.Tests/Gateway/Connection/RbpPrimaryFallbackConnectionCycleFactoryTests.cs",
+    "packages/bridge/tests/RevAgent.Bridge.Tests/Gateway/Connection/StreamableHttpRbpConnectionCycleFactoryTests.cs"
+  ],
+  "tests": ["real Bridge hello matrix", "batch_atomic independent grant", "fallback provision matrix", "stub/production parity", "unsupported carrier not granted"],
+  "exit": ["real Bridge correct grants", "no unimplemented carrier advertised"]
+}
