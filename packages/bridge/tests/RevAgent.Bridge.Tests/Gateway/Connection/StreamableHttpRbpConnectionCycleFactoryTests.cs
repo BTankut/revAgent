@@ -173,6 +173,55 @@ public sealed class StreamableHttpRbpConnectionCycleFactoryTests
         Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
     }
 
+    [Theory]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    public async Task FallbackRejectsWhenAnyCapabilityAuthorityIsAbsent(
+        bool provisioned,
+        bool declared,
+        bool granted)
+    {
+        var handler = new ScriptedHttpMessageHandler(
+            (_, _) => Task.FromResult(
+                StreamableHttpResponses.Created(
+                    "conn-test",
+                    StreamableHttpRbpConnectionCycleTests.HelloAck(
+                        "conn-test",
+                        grantFallback: granted))));
+        var factory = new StreamableHttpRbpConnectionCycleFactory(
+            new FixedEnrollmentProvider(
+                StreamableHttpRbpConnectionCycleTests.Credential()),
+            provisioned
+                ? new[] { RbpTransportCapabilities.StreamableHttp }
+                : Array.Empty<string>(),
+            new FixedHttpClientFactory(handler));
+        var profile = new RbpHelloProfile(
+            "0.1.0-test",
+            "host",
+            "Windows",
+            Array.Empty<string>(),
+            declared
+                ? new[] { RbpTransportCapabilities.StreamableHttp }
+                : Array.Empty<string>());
+
+        RbpGatewayTransportException exception =
+            await Assert.ThrowsAsync<RbpGatewayTransportException>(
+                () => factory.OpenAsync(
+                    StreamableHttpRbpConnectionCycleTests.Endpoint(),
+                    profile));
+
+        Assert.Equal(RbpGatewayFailureKind.Protocol, exception.Kind);
+        if (!provisioned || !declared)
+        {
+            Assert.Empty(handler.Requests);
+        }
+        else
+        {
+            Assert.Single(handler.Requests);
+        }
+    }
+
     [Fact]
     public async Task OpaqueConnectionIdIsOneEscapedPathSegment()
     {

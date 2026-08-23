@@ -8,7 +8,7 @@ namespace RevAgent.Bridge.Tests.Gateway.Connection;
 public sealed class RbpHelloFactoryTests
 {
     [Fact]
-    public void ProductionHelloUsesFrozenVersionAndNoUnimplementedCapabilities()
+    public void ExplicitHelloUsesFrozenVersionAndImplementedCapabilitiesOnly()
     {
         DateTimeOffset now = DateTimeOffset.Parse(
             "2026-07-26T06:30:00.000Z",
@@ -47,6 +47,49 @@ public sealed class RbpHelloFactoryTests
             "secret-device-token",
             Encoding.UTF8.GetString(encoded),
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ProductionProfileDeclaresTheImplementedJournalCapabilityOnly()
+    {
+        var profile = RbpHelloProfile.Production(
+            "0.1.0-test",
+            Array.Empty<string>());
+
+        Assert.Equal(new[] { "journal_v1" }, profile.Capabilities);
+        Assert.DoesNotContain("chunked_results", profile.Capabilities);
+        Assert.DoesNotContain("artifact_result_v1", profile.Capabilities);
+        Assert.DoesNotContain("partial_progress", profile.Capabilities);
+    }
+
+    [Theory]
+    [InlineData("chunked_results")]
+    [InlineData("artifact_result_v1")]
+    [InlineData("partial_progress")]
+    [InlineData("batch_atomic")]
+    [InlineData("doc_context_cached_v1")]
+    public void HelloRejectsCarrierAndSessionCapabilityMixing(string capability)
+    {
+        Assert.Throws<ArgumentException>(
+            () => new RbpHelloProfile(
+                "0.1.0-test",
+                "fixture-host",
+                "Windows test",
+                Array.Empty<string>(),
+                new[] { capability }));
+    }
+
+    [Fact]
+    public void HelloMayDeclareImplementedStreamableHttpWhenRequested()
+    {
+        var profile = RbpHelloProfile.Production(
+            "0.1.0-test",
+            Array.Empty<string>(),
+            new[] { "journal_v1", "transport_streamable_http" });
+
+        Assert.Equal(
+            new[] { "journal_v1", "transport_streamable_http" },
+            profile.Capabilities);
     }
 
     [Fact]
