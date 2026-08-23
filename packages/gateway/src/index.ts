@@ -425,6 +425,7 @@ export {
 } from "./modeB.js";
 export {
   GatewayCompositionError,
+  GatewayConformancePortError,
   GatewayFixturePortError,
   GatewayPreProductionPortError,
   assertProductionPorts,

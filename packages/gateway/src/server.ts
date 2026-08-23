@@ -102,6 +102,16 @@ export class GatewayPreProductionPortError extends Error {
   }
 }
 
+/** A real-protocol test adapter must never be accepted by a production boot. */
+export class GatewayConformancePortError extends Error {
+  readonly code = "conformance_adapter_refused" as const;
+  readonly adapterKind = "conformance" as const;
+  constructor(readonly port: GatewayPortName) {
+    super(`refusing to start in production: the ${port} port is conformance-only`);
+    this.name = "GatewayConformancePortError";
+  }
+}
+
 export type GatewayCompositionErrorReason =
   | "uninspectable_north_authenticator"
   | "uninspectable_rbp_authority"
@@ -126,6 +136,9 @@ function refuseAdapterKind(
 ): void {
   if (kind === "preproduction") {
     throw new GatewayPreProductionPortError(port);
+  }
+  if (kind === "conformance") {
+    throw new GatewayConformancePortError(port);
   }
   if (isFixtureAdapterKind(kind)) {
     throw new GatewayFixturePortError(port, kind);

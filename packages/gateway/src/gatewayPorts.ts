@@ -77,6 +77,8 @@ export type GatewayPortAdapterKind =
   | "preproduction"
   | "capture"
   | "memory"
+  /** Ephemeral, loopback-only WP-12 conformance adapters; never deployable. */
+  | "conformance"
   | "oidc"
   | "postgres"
   | "fs";

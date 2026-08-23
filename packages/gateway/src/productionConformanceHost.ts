@@ -22,6 +22,15 @@ export async function startProductionGatewayHost(input: {
   if (input.server.config.http.bindHost !== "127.0.0.1") {
     throw new Error("productionGatewayHost requires numeric loopback binding");
   }
+  for (const [name, kind] of [
+    ["identity", input.ports.identity.kind],
+    ["protocol_store", input.ports.protocolStore.kind],
+    ["object_store", input.ports.objectStore.kind],
+  ] as const) {
+    if (kind !== "conformance") {
+      throw new Error(`productionGatewayHost requires an explicit conformance ${name} adapter, not ${kind}`);
+    }
+  }
   if (input.ports.identity !== input.authority.identity || input.ports.protocolStore !== input.authority.store) {
     throw new Error("productionGatewayHost requires one exact authority/identity/store graph");
   }
