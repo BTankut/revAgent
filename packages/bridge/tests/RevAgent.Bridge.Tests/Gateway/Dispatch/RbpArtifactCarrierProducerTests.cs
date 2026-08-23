@@ -197,6 +197,44 @@ public sealed class RbpArtifactCarrierProducerTests
     }
 
     [Fact]
+    public async Task RestartedProducerReleasesOnlyJournalSuppliedFence()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        RbpArtifactCarrierProducer first = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        RbpCarrierEmission released = Assert.IsType<RbpCarrierEmission>(await first.TryPrepareAsync(
+            "rs-restart", Json("""{"kind":"invocation","invocation_id":"invoke-restart-release"}"""),
+            Files(new byte[] { 4 }), CancellationToken.None));
+        first.RecordTerminalQueued(released.CarrierKey, "rs-restart", 8);
+
+        RbpArtifactCarrierProducer restarted = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        restarted.SweepExpired(new[] { new RbpReleasedCarrier(released.CarrierKey, "rs-restart", 8) });
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "artifact-spool", released.CarrierKey)));
+
+        RbpCarrierEmission acknowledged = Assert.IsType<RbpCarrierEmission>(await first.TryPrepareAsync(
+            "rs-restart", Json("""{"kind":"invocation","invocation_id":"invoke-restart-ack"}"""),
+            Files(new byte[] { 5 }), CancellationToken.None));
+        first.RecordTerminalQueued(acknowledged.CarrierKey, "rs-restart", 9);
+        RbpArtifactCarrierProducer rehydrated = RbpArtifactCarrierProducer.CreateProduction(directory.Path, store);
+        rehydrated.RecordTerminalQueued(acknowledged.CarrierKey, "rs-restart", 9);
+        rehydrated.ApplyDurableAcknowledgements(new[] { new RbpSessionAcknowledgement("rs-restart", 9) });
+        Assert.False(Directory.Exists(Path.Combine(directory.Path, "artifact-spool", acknowledged.CarrierKey)));
+    }
+
+    [Fact]
+    public async Task BootstrapCreatesMissingStateRootThroughPinnedComponents()
+    {
+        using var directory = new RbpJournalTestDirectory();
+        await using RbpJournalStore store = OpenStore(directory);
+        string configuredRoot = Path.Combine(directory.Path, "missing-state-root", "nested");
+        RbpArtifactCarrierProducer producer = RbpArtifactCarrierProducer.CreateProduction(configuredRoot, store);
+        RbpCarrierEmission emission = Assert.IsType<RbpCarrierEmission>(await producer.TryPrepareAsync(
+            "rs-bootstrap", Json("""{"kind":"invocation","invocation_id":"invoke-bootstrap"}"""),
+            Files(new byte[] { 1 }), CancellationToken.None));
+        Assert.True(Directory.Exists(Path.Combine(configuredRoot, "artifact-spool", emission.CarrierKey)));
+    }
+
+    [Fact]
     public async Task UsesOnlyDeclaredRelativeInventoryForReleasedCleanup()
     {
         using var directory = new RbpJournalTestDirectory();
@@ -362,21 +400,27 @@ public sealed class RbpArtifactCarrierProducerTests
     [Fact]
     public async Task RefusesReparsePointStateRootWithoutFollowingIt()
     {
+        if (!OperatingSystem.IsWindows()) throw Xunit.Sdk.SkipException.ForSkip(
+            "Windows no-follow bootstrap test is not applicable on this platform.");
         using var directory = new RbpJournalTestDirectory();
         string link = Path.Combine(directory.Path, "spool-link");
+        string external = Path.Combine(directory.Path, "external");
+        string sentinel = Path.Combine(external, "sentinel.txt");
+        Directory.CreateDirectory(external);
+        File.WriteAllText(sentinel, "unchanged");
         try
         {
-            Directory.CreateSymbolicLink(link, directory.Path);
+            Directory.CreateSymbolicLink(link, external);
         }
         catch (UnauthorizedAccessException)
         {
-            // This is a platform capability probe: CI images without the
-            // Windows privilege cannot manufacture an adversarial junction.
-            return;
+            throw Xunit.Sdk.SkipException.ForSkip(
+                "Windows symbolic-link privilege unavailable for no-follow bootstrap test.");
         }
         catch (IOException)
         {
-            return;
+            throw Xunit.Sdk.SkipException.ForSkip(
+                "Windows symbolic-link capability unavailable for no-follow bootstrap test.");
         }
 
         await using RbpJournalStore store = OpenStore(directory);
@@ -384,6 +428,7 @@ public sealed class RbpArtifactCarrierProducerTests
             () => RbpArtifactCarrierProducer.CreateProduction(link, store));
         Assert.DoesNotContain(directory.Path, error.Message,
             StringComparison.OrdinalIgnoreCase);
+        Assert.Equal("unchanged", File.ReadAllText(sentinel));
     }
 
     private static RbpJournalStore OpenStore(RbpJournalTestDirectory directory) =>

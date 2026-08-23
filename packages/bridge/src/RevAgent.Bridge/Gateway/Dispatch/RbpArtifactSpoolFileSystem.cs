@@ -20,15 +20,14 @@ internal sealed class RbpArtifactSpoolFileSystem : IDisposable
     private readonly IRelativeSpoolNative _native;
     private RbpArtifactSpoolFileSystem(IRelativeSpoolNative native) => _native = native;
 
-    internal static RbpArtifactSpoolFileSystem Open(string root)
+    /// <summary>Bootstraps from the configured state root without following
+    /// any component. The final held handle is <c>artifact-spool</c>.</summary>
+    internal static RbpArtifactSpoolFileSystem OpenForStateRoot(string stateRoot)
     {
         if (!OperatingSystem.IsWindows()) throw Refused("carrier_spool_platform_refused");
         try
         {
-            // Bootstrap only: every carrier child is subsequently rooted at
-            // the SafeFileHandle held by WindowsRelativeSpoolNative.
-            Directory.CreateDirectory(Path.GetFullPath(root));
-            return new(new WindowsRelativeSpoolNative(root));
+            return new(new WindowsRelativeSpoolNative(stateRoot));
         }
         catch (RbpArtifactCarrierException) { throw; }
         catch { throw Refused("carrier_spool_root_refused"); }
@@ -50,16 +49,15 @@ internal sealed class RbpArtifactSpoolFileSystem : IDisposable
 internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
 {
     private const uint GenericRead = 0x80000000, GenericWrite = 0x40000000, DeleteAccess = 0x00010000, ReadControl = 0x00020000, Synchronize = 0x00100000, FileReadAttributes = 0x80;
-    private const uint FileShareRead = 1, FileShareDelete = 4, FileOpen = 1, FileCreate = 2, FileOpenIf = 3;
+    private const uint FileShareRead = 1, FileShareWrite = 2, FileShareDelete = 4, FileOpen = 1, FileCreate = 2, FileOpenIf = 3;
     private const uint FileDirectoryFile = 1, FileNonDirectoryFile = 0x40, FileSynchronousIoNonAlert = 0x20, FileOpenReparsePoint = 0x00200000, ObjCaseInsensitive = 0x40;
     private const uint FileAttributeReparsePoint = 0x400, FileAttributeDirectory = 0x10;
     private const int FileDispositionInformationClass = 4;
     private readonly SafeFileHandle _root;
 
-    internal WindowsRelativeSpoolNative(string root)
+    internal WindowsRelativeSpoolNative(string stateRoot)
     {
-        _root = CreateFile(root, ReadControl | FileReadAttributes | DeleteAccess | Synchronize, FileShareRead | FileShareDelete, IntPtr.Zero, 3, 0x02000000 | FileOpenReparsePoint, IntPtr.Zero);
-        if (_root.IsInvalid) { _root.Dispose(); throw Refused("carrier_spool_root_refused"); }
+        _root = OpenSpoolRootFromStateRoot(stateRoot);
         VerifyDirectory(_root);
     }
 
@@ -138,6 +136,113 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
     }
 
     public void Dispose() => _root.Dispose();
+    private static SafeFileHandle OpenSpoolRootFromStateRoot(string stateRoot)
+    {
+        string full;
+        try { full = Path.GetFullPath(stateRoot); }
+        catch { throw Refused("carrier_spool_root_refused"); }
+        string volume = Path.GetPathRoot(full) ?? throw Refused("carrier_spool_root_refused");
+        string[] segments = full[volume.Length..].Split(
+            [Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar],
+            StringSplitOptions.RemoveEmptyEntries);
+        if (segments.Length == 0) throw Refused("carrier_spool_root_refused");
+
+        SafeFileHandle current = OpenAbsoluteDirectory(volume);
+        try
+        {
+            VerifyDirectory(current);
+            for (int index = 0; index < segments.Length; index++)
+            {
+                string segment = segments[index];
+                ValidateSegment(segment);
+                SafeFileHandle next;
+                try
+                {
+                    next = OpenRelative(current, segment,
+                        ReadControl | FileReadAttributes,
+                        FileOpen, DirectoryOptions);
+                }
+                catch (IOException)
+                {
+                    // Upgrade only the already-pinned parent, then create the
+                    // absent component relative to it. No namespace probe is
+                    // performed between the two operations.
+                    current.Dispose();
+                    current = OpenExistingParentForCreate(volume, segments, index);
+                    next = OpenRelative(current, segment,
+                        ReadControl | FileReadAttributes | FileAddSubdirectory,
+                        FileOpenIf, DirectoryOptions);
+                }
+                try { VerifyDirectory(next); }
+                catch { next.Dispose(); throw; }
+                current.Dispose();
+                current = next;
+            }
+
+            try
+            {
+                SafeFileHandle existing = OpenRelative(current, "artifact-spool",
+                    ReadControl | FileReadAttributes | DeleteAccess | FileAddSubdirectory,
+                    FileOpen, DirectoryOptions);
+                try { VerifyDirectory(existing); }
+                catch { existing.Dispose(); throw; }
+                return existing;
+            }
+            catch (IOException)
+            {
+                // The existing-only attempt is intentionally handle-relative.
+                // Re-walk to obtain the terminal state-root handle with create
+                // rights only when the spool leaf was absent.
+                using SafeFileHandle creatableStateRoot = OpenExistingParentForCreate(
+                    volume, segments, segments.Length);
+                SafeFileHandle created = OpenRelative(creatableStateRoot, "artifact-spool",
+                    ReadControl | FileReadAttributes | DeleteAccess | FileAddSubdirectory,
+                    FileOpenIf, DirectoryOptions);
+                try { VerifyDirectory(created); }
+                catch { created.Dispose(); throw; }
+                return created;
+            }
+        }
+        finally { current.Dispose(); }
+    }
+
+    private const uint FileAddSubdirectory = 0x00000004;
+
+    private static SafeFileHandle OpenExistingParentForCreate(
+        string volume, IReadOnlyList<string> segments, int parentSegmentCount)
+    {
+        SafeFileHandle current = OpenAbsoluteDirectory(volume, parentSegmentCount == 0);
+        try
+        {
+            VerifyDirectory(current);
+            for (int index = 0; index < parentSegmentCount; index++)
+            {
+                SafeFileHandle next = OpenRelative(current, segments[index],
+                    ReadControl | FileReadAttributes |
+                    (index == parentSegmentCount - 1 ? FileAddSubdirectory : 0),
+                    FileOpen, DirectoryOptions);
+                try { VerifyDirectory(next); }
+                catch { next.Dispose(); throw; }
+                current.Dispose();
+                current = next;
+            }
+            SafeFileHandle result = current;
+            current = null!;
+            return result;
+        }
+        finally { current?.Dispose(); }
+    }
+
+    private static SafeFileHandle OpenAbsoluteDirectory(string path, bool addSubdirectory = false)
+    {
+        SafeFileHandle handle = CreateFile(path,
+            ReadControl | FileReadAttributes | Synchronize |
+            (addSubdirectory ? FileAddSubdirectory : 0),
+            FileShareRead | FileShareWrite | FileShareDelete, IntPtr.Zero, 3,
+            0x02000000 | 0x00200000, IntPtr.Zero);
+        if (handle.IsInvalid) { handle.Dispose(); throw Refused("carrier_spool_root_refused"); }
+        return handle;
+    }
     private SafeFileHandle OpenCarrier(string key) { SafeFileHandle carrier = OpenRelative(_root, key, ReadControl | FileReadAttributes | DeleteAccess, FileOpen, DirectoryOptions); VerifyDirectory(carrier); return carrier; }
     private void VerifyImmutableExisting(string key, string name, ReadOnlySpan<byte> expected, string digest)
     {
@@ -156,7 +261,7 @@ internal sealed class WindowsRelativeSpoolNative : IRelativeSpoolNative
             var unicode = new UnicodeString { Length = checked((ushort)(name.Length * 2)), MaximumLength = checked((ushort)((name.Length + 1) * 2)), Buffer = value };
             unicodeMemory = Marshal.AllocHGlobal(Marshal.SizeOf<UnicodeString>()); Marshal.StructureToPtr(unicode, unicodeMemory, false);
             var attributes = new ObjectAttributes { Length = Marshal.SizeOf<ObjectAttributes>(), RootDirectory = root.DangerousGetHandle(), ObjectName = unicodeMemory, Attributes = ObjCaseInsensitive };
-            long allocation = 0; int status = NtCreateFile(out SafeFileHandle handle, access | Synchronize, ref attributes, out _, ref allocation, 0x80, FileShareRead | FileShareDelete, disposition, options, IntPtr.Zero, 0);
+            long allocation = 0; int status = NtCreateFile(out SafeFileHandle handle, access | Synchronize, ref attributes, out _, ref allocation, 0x80, FileShareRead | FileShareWrite | FileShareDelete, disposition, options, IntPtr.Zero, 0);
             if (status < 0 || handle.IsInvalid) { handle?.Dispose(); throw new IOException("spool relative open failed", new Win32Exception(status)); }
             return handle;
         }

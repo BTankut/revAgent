@@ -38,13 +38,8 @@ internal sealed class RbpArtifactCarrierProducer
     {
         ArgumentException.ThrowIfNullOrEmpty(stateRoot);
         ArgumentNullException.ThrowIfNull(journal);
-        string fullStateRoot = Path.GetFullPath(stateRoot);
-        if ((File.GetAttributes(fullStateRoot) & FileAttributes.ReparsePoint) != 0)
-        {
-            throw new RbpArtifactCarrierException("carrier_spool_root_refused");
-        }
-        string root = Path.Combine(fullStateRoot, "artifact-spool");
-        return new RbpArtifactCarrierProducer(RbpArtifactSpoolFileSystem.Open(root), journal);
+        return new RbpArtifactCarrierProducer(
+            RbpArtifactSpoolFileSystem.OpenForStateRoot(stateRoot), journal);
     }
 
     internal static RbpArtifactCarrierProducer CreateForTesting(
@@ -481,6 +476,7 @@ internal sealed class RbpArtifactCarrierProducer
                     "Carrier terminal cleanup fence conflicts with existing evidence.");
             }
 
+            _fences[carrierKey] = new RbpCarrierFence(rsid, terminalSequence);
             return;
         }
 
