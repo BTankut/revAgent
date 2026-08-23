@@ -4,6 +4,7 @@ using RevAgent.Bridge.Bootstrap;
 using RevAgent.Bridge.Bootstrap.Configuration;
 using RevAgent.Bridge.Enrollment;
 using RevAgent.Bridge.Gateway.Connection;
+using RevAgent.Bridge.Gateway.Dispatch;
 using RevAgent.Bridge.Gateway.Storage;
 
 namespace RevAgent.Bridge.Runtime;
@@ -92,6 +93,19 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
             var credentialClaims = new RbpCredentialClaimBinding(
                 WorkerGatewayComposition.CreateEnrollmentStateProvider(
                     layout));
+            RbpArtifactCarrierProducer? carrierProducer = null;
+            try
+            {
+                carrierProducer = RbpArtifactCarrierProducer.CreateProduction(
+                    layout.StateRoot,
+                    journal);
+            }
+            catch (RbpArtifactCarrierException)
+            {
+                // A missing or unsafe spool never becomes a degraded carrier:
+                // keep the existing inline-only posture and omit the carrier
+                // capabilities from hello. The journal remains usable.
+            }
             var transport = new AddinTcpTransport();
             var router = new AddinSessionRouter(transport);
             var catalog = new WorkerAddinSessionCatalog(
@@ -119,14 +133,19 @@ internal sealed class WorkerGatewayRuntime : IAsyncDisposable
                             configuration.GatewayUri,
                             RbpHelloProfile.Production(
                                 bridgeVersion,
-                                Array.Empty<string>()),
+                                Array.Empty<string>(),
+                                carrierProducer is null
+                                    ? null
+                                    : RbpArtifactCarrierProducer
+                                        .ConnectionCapabilities),
                             CredentialClaimInvalidator: credentialClaims),
                         new WorkerAddinDispatchSurface(router, catalog),
                         Clock: null,
                         Random: null,
                         OnDispatchDiagnostic: onDispatchDiagnostic,
                         OnConnectionFailureObservation:
-                            onConnectionFailureObservation));
+                            onConnectionFailureObservation,
+                        CarrierProducer: carrierProducer));
 
             return new WorkerGatewayRuntime(
                 coordinator,

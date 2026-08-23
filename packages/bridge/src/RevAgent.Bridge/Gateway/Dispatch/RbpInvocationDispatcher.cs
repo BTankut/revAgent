@@ -55,13 +55,15 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
     private readonly IRbpInFlightGate _inFlightGate;
     private readonly IRbpRevitBusyProbe? _busyProbe;
     private readonly TimeProvider _timeProvider;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
 
     internal RbpInvocationDispatcher(
         RbpJournalStore journal,
         IRbpInvocationChannel channel,
         IRbpInFlightGate inFlightGate,
         IRbpRevitBusyProbe? busyProbe = null,
-        TimeProvider? timeProvider = null)
+        TimeProvider? timeProvider = null,
+        RbpArtifactCarrierProducer? carrierProducer = null)
     {
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
         _channel = channel ?? throw new ArgumentNullException(nameof(channel));
@@ -69,6 +71,7 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             throw new ArgumentNullException(nameof(inFlightGate));
         _busyProbe = busyProbe;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _carrierProducer = carrierProducer;
     }
 
     /// <summary>
@@ -599,6 +602,30 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
             digestRequired ? digest : null,
             metrics);
 
+        // The producer runs above binding selection and before the terminal
+        // decision is persisted.  Therefore the journal stores the exact
+        // manifest that will follow durable chunk frames, rather than an
+        // inline body that a reconnect could reinterpret differently.
+        IReadOnlyList<RbpInvocationAnswer> prefixes =
+            Array.AsReadOnly(Array.Empty<RbpInvocationAnswer>());
+        string? carrierKey = null;
+        if (_carrierProducer is not null)
+        {
+            RbpCarrierEmission? carrier = await _carrierProducer
+                .TryPrepareAsync(
+                    request.Rsid,
+                    body,
+                    outcome.Result,
+                    DurableDecisionToken)
+                .ConfigureAwait(false);
+            if (carrier is not null)
+            {
+                body = carrier.TerminalPayload;
+                prefixes = carrier.Prefixes;
+                carrierKey = carrier.CarrierKey;
+            }
+        }
+
         // Durability step 3, before the answer leaves the bridge.
         await _journal
             .PersistInvocationTerminalAsync(
@@ -612,7 +639,10 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
                 DurableDecisionToken)
             .ConfigureAwait(false);
 
-        return RbpInvocationAnswer.Result(body);
+        return RbpInvocationAnswer.Result(
+            body,
+            prefixes,
+            carrierKey);
     }
 
     private async Task<RbpInvocationAnswer> TerminalizeKnownFailureAsync(
@@ -818,11 +848,21 @@ internal sealed class RbpInvocationDispatcher : IRbpInvocationDispatcher
 /// What the bridge sends back for one invocation: a Section 10.3 <c>result</c>
 /// or a Section 15 <c>error</c>, already terminal and already durable.
 /// </summary>
-internal sealed record RbpInvocationAnswer(string Type, JsonElement Payload)
+internal sealed record RbpInvocationAnswer(
+    string Type,
+    JsonElement Payload,
+    IReadOnlyList<RbpInvocationAnswer>? Prefixes = null,
+    string? CarrierKey = null)
 {
-    internal static RbpInvocationAnswer Result(JsonElement payload) =>
-        new("result", payload);
+    internal static RbpInvocationAnswer Result(
+        JsonElement payload,
+        IReadOnlyList<RbpInvocationAnswer>? prefixes = null,
+        string? carrierKey = null) =>
+        new("result", payload, prefixes, carrierKey);
 
     internal static RbpInvocationAnswer Error(JsonElement payload) =>
         new("error", payload);
+
+    internal static RbpInvocationAnswer Partial(JsonElement payload) =>
+        new("partial", payload);
 }

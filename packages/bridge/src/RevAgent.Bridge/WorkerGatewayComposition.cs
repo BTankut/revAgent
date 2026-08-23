@@ -38,7 +38,8 @@ internal sealed record WorkerGatewayServices(
     IRbpRandomSource? Random = null,
     Action<string>? OnDispatchDiagnostic = null,
     Func<RbpConnectionFailureObservation, ValueTask>?
-        OnConnectionFailureObservation = null);
+        OnConnectionFailureObservation = null,
+    RbpArtifactCarrierProducer? CarrierProducer = null);
 
 /// <summary>
 /// Composes the production RBP data plane inside the worker host: the journal
@@ -195,7 +196,8 @@ internal static class WorkerGatewayComposition
             new RbpInFlightGate(),
             new LocalCatalogRevitBusyProbe(
                 services.SessionCatalog,
-                surface.SessionRoutes));
+                surface.SessionRoutes),
+            carrierProducer: services.CarrierProducer);
 
         // The P3-T7 standing document-context watcher polls the add-in's
         // cached get_document_context through the same routed channel the
@@ -231,7 +233,8 @@ internal static class WorkerGatewayComposition
             docContextWatcher,
             batchCoordinator,
             services.OnDispatchDiagnostic,
-            services.OnConnectionFailureObservation);
+            services.OnConnectionFailureObservation,
+            services.CarrierProducer);
     }
 
     /// <summary>

@@ -46,6 +46,7 @@ internal sealed partial class RbpConnectionCoordinator
     /// so silence here would strand the Gateway's window forever.
     /// </summary>
     private readonly RbpBatchCoordinator? _batchCoordinator;
+    private readonly RbpArtifactCarrierProducer? _carrierProducer;
 
     /// <summary>
     /// Bounded, non-secret dispatch trace. The batch path has several silent
@@ -80,9 +81,11 @@ internal sealed partial class RbpConnectionCoordinator
         RbpBatchCoordinator? batchCoordinator = null,
         Action<string>? onDispatchDiagnostic = null,
         Func<RbpConnectionFailureObservation, ValueTask>?
-            onConnectionFailureObservation = null)
+            onConnectionFailureObservation = null,
+        RbpArtifactCarrierProducer? carrierProducer = null)
     {
         _batchCoordinator = batchCoordinator;
+        _carrierProducer = carrierProducer;
         _onDispatchDiagnostic = onDispatchDiagnostic;
         _onConnectionFailureObservation = onConnectionFailureObservation;
         _invocationDispatcher = invocationDispatcher ??

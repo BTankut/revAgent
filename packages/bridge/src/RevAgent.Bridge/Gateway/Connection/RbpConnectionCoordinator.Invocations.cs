@@ -244,39 +244,65 @@ internal sealed partial class RbpConnectionCoordinator
             .ConfigureAwait(false);
         try
         {
-            RbpQueueOutboundResult queued = await _journal
-                .QueueOutboundDataAsync(
-                    rsid,
-                    new RbpOutboundDataDraft(
-                        answer.Type,
-                        _identifiers.NewId(),
-                        answer.Payload),
-                    context.Token)
-                .ConfigureAwait(false);
-
-            // The only path that yields no envelope is RenewalRequired: the
-            // session has no usable transmit sequence until it resumes. A
-            // session that was unregistered or tombstoned throws instead, and
-            // the caller treats that as a per-session condition.
-            if (queued.Envelope is not { } outbound)
+            if (answer.Prefixes is not null)
             {
-                Diagnose($"send suppressed: no transmit sequence for {rsid}");
-                return;
+                foreach (RbpInvocationAnswer prefix in answer.Prefixes)
+                {
+                    await QueueAndSendDataAsync(context, rsid, prefix)
+                        .ConfigureAwait(false);
+                }
             }
 
-            if (!context.IsDispatchAllowed(rsid))
-            {
-                Diagnose($"send suppressed: dispatch not allowed for {rsid}");
-                return;
-            }
-
-            await context.Cycle
-                .SendAsync(CreateDataEnvelope(outbound), context.Token)
+            await QueueAndSendDataAsync(context, rsid, answer)
                 .ConfigureAwait(false);
         }
         finally
         {
             context.OutboundGate.Release();
         }
+    }
+
+    private async Task QueueAndSendDataAsync(
+        ConnectionCycleContext context,
+        string rsid,
+        RbpInvocationAnswer answer)
+    {
+        RbpQueueOutboundResult queued = await _journal
+            .QueueOutboundDataAsync(
+                rsid,
+                new RbpOutboundDataDraft(
+                    answer.Type,
+                    _identifiers.NewId(),
+                    answer.Payload),
+                context.Token)
+            .ConfigureAwait(false);
+
+        // The only path that yields no envelope is RenewalRequired: the
+        // session has no usable transmit sequence until it resumes. A
+        // session that was unregistered or tombstoned throws instead, and
+        // the caller treats that as a per-session condition.
+        if (queued.Envelope is not { } outbound)
+        {
+            Diagnose($"send suppressed: no transmit sequence for {rsid}");
+            return;
+        }
+
+        if (answer.CarrierKey is { } carrierKey)
+        {
+            _carrierProducer?.RecordTerminalQueued(
+                carrierKey,
+                rsid,
+                outbound.Sequence);
+        }
+
+        if (!context.IsDispatchAllowed(rsid))
+        {
+            Diagnose($"send suppressed: dispatch not allowed for {rsid}");
+            return;
+        }
+
+        await context.Cycle
+            .SendAsync(CreateDataEnvelope(outbound), context.Token)
+            .ConfigureAwait(false);
     }
 }

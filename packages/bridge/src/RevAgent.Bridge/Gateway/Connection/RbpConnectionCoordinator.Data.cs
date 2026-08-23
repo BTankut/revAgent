@@ -427,6 +427,7 @@ internal sealed partial class RbpConnectionCoordinator
                         fence,
                         context.Token)
                     .ConfigureAwait(false);
+            _carrierProducer?.ApplyDurableAcknowledgements(acknowledgements);
             foreach (string rsid in applied.ConfirmedUnregisterRsids)
             {
                 context.MarkUnregisterConfirmed(rsid);
