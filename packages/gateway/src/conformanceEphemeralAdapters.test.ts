@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import Database from "better-sqlite3";
 import { afterEach, describe, expect, it } from "vitest";
 
 import {
@@ -81,6 +82,24 @@ describe("conformance ephemeral adapters", () => {
     await expect(Promise.all([first, second])).resolves.toHaveLength(2);
     expect(rightStart).toBeGreaterThanOrEqual(leftEnd);
     await left.close(); await right.close();
+  });
+
+  it("fails on renewal ownership loss and permits only stale takeover after replacement expiry", async () => {
+    const location = await root(); const options = { startupLeaseMs: 90, startupRenewMs: 20 };
+    const owner = new SqliteConformanceProtocolStore(location, options); await owner.open();
+    const replaced = new Database(path.join(location, "sqlite.db"));
+    const lost = await owner.startupCoordinator.runExclusive(async () => {
+      replaced.prepare("UPDATE conformance_startup_lock SET owner_token = ?, lease_expires_at_ms = ?, version = version + 1 WHERE id = 1").run("replacement", Date.now() + 80);
+      await new Promise((resolve) => setTimeout(resolve, 45));
+      return { ok: true as const, value: "owner" };
+    });
+    expect(lost).toMatchObject({ ok: false, code: "unavailable" });
+    const check = replaced.prepare<unknown[], { owner_token: string | null }>("SELECT owner_token FROM conformance_startup_lock WHERE id = 1").get();
+    expect(check?.owner_token).toBe("replacement");
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const third = new SqliteConformanceProtocolStore(location, options); await third.open();
+    await expect(third.startupCoordinator.runExclusive(async () => ({ ok: true as const, value: "taken" }))).resolves.toMatchObject({ ok: true, value: "taken" });
+    replaced.close(); await owner.close(); await third.close();
   });
 
   it("requires a digest key and does not cross-read a tenant object", async () => {
