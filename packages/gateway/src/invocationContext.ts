@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { makeParamsDigest, type JsonValue } from "@revagent/protocol";
 
 import type { AuthContext } from "./authContext.js";
+import { gatewayUuidV7 } from "./identifiers.js";
 import type {
   GatewayExecutorBinding,
   GatewayMutationScopePolicy,
@@ -9,6 +10,20 @@ import type {
 } from "./registry.js";
 
 export type GatewayParamsDigest = `sha256:${string}`;
+
+/**
+ * The sole MCP session identity admitted for one north request.  It is minted
+ * once at ingress and deliberately carries the authenticated principal so
+ * downstream authority cannot accidentally mix a transport session with an
+ * identity-session or a different bearer.
+ */
+export interface EffectiveMcpRequestScopeV1 {
+  readonly contractVersion: "revagent.effective-mcp-request-scope/v1";
+  readonly principalKey: string;
+  readonly effectiveMcpSessionId: string;
+  readonly transportMcpSessionId: string | null;
+  readonly identityMcpSessionId: string | null;
+}
 
 export type GatewayDocumentIdentity =
   | {
@@ -83,6 +98,7 @@ export type GatewayInvocationContextErrorCode =
   | "expired_auth_context"
   | "invalid_auth_context"
   | "invalid_document_identity"
+  | "mcp_session_binding_mismatch"
   | "invalid_invocation_route"
   | "mutation_scope_policy_unsupported"
   | "session_binding_mismatch"
@@ -110,6 +126,60 @@ function requireBoundedString(
       `${name} must be a non-empty, trimmed string of at most ${maxLength} characters`,
     );
   }
+}
+
+/**
+ * Resolves the only MCP session identity allowed to cross the north boundary.
+ * A transport/identity disagreement is a pre-dispatch authority failure.  A
+ * request with neither identity receives a UUIDv7-scoped stateless identity;
+ * it is intentionally never derived from the Gateway session identifier.
+ */
+export function createEffectiveMcpRequestScopeV1(input: {
+  readonly principalKey: string;
+  readonly transportMcpSessionId: string | null;
+  readonly identityMcpSessionId: string | null;
+  readonly nowMs: number;
+}): EffectiveMcpRequestScopeV1 {
+  requireBoundedString(
+    input.principalKey,
+    "principalKey",
+    "invalid_auth_context",
+  );
+  for (const [name, value] of [
+    ["transport MCP sessionId", input.transportMcpSessionId],
+    ["identity MCP sessionId", input.identityMcpSessionId],
+  ] as const) {
+    if (value !== null) {
+      requireBoundedString(value, name, "invalid_invocation_route");
+    }
+  }
+  if (
+    input.transportMcpSessionId !== null &&
+    input.identityMcpSessionId !== null &&
+    input.transportMcpSessionId !== input.identityMcpSessionId
+  ) {
+    throw new GatewayInvocationContextError(
+      "mcp_session_binding_mismatch",
+      "transport MCP session does not match the authenticated identity session",
+    );
+  }
+  if (!Number.isSafeInteger(input.nowMs) || input.nowMs < 0) {
+    throw new GatewayInvocationContextError(
+      "invalid_invocation_route",
+      "effective MCP scope clock must return a non-negative safe integer",
+    );
+  }
+  const effectiveMcpSessionId =
+    input.transportMcpSessionId ??
+    input.identityMcpSessionId ??
+    `stateless-request:${gatewayUuidV7(input.nowMs)}`;
+  return Object.freeze({
+    contractVersion: "revagent.effective-mcp-request-scope/v1" as const,
+    principalKey: input.principalKey,
+    effectiveMcpSessionId,
+    transportMcpSessionId: input.transportMcpSessionId,
+    identityMcpSessionId: input.identityMcpSessionId,
+  });
 }
 
 export function canonicalParamsDigest(value: unknown): GatewayParamsDigest {

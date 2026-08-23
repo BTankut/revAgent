@@ -43,7 +43,11 @@ import {
   buildGatewayInstructionPackage,
   gatewayClientInstructions,
 } from "./instructionPackage.js";
-import type { GatewayInvocationRoute } from "./invocationContext.js";
+import {
+  createEffectiveMcpRequestScopeV1,
+  type GatewayInvocationRoute,
+} from "./invocationContext.js";
+import { isGatewayUuidV7 } from "./identifiers.js";
 import { buildNorthFirstSliceCallableRegistry } from "./northFirstSlice.js";
 import {
   type AuthenticatedNorthMcpRequest,
@@ -373,6 +377,95 @@ function deferred<T>(): {
 }
 
 describe("M2 north MCP first slice", () => {
+  it("binds one immutable effective MCP scope and mints a UUIDv7 only for stateless requests", () => {
+    const transportOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: "transport-session",
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+    const identityOnly = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: "identity-session",
+      nowMs: 1_775_000_000_000,
+    });
+    const stateless = createEffectiveMcpRequestScopeV1({
+      principalKey: PRINCIPAL_KEY,
+      transportMcpSessionId: null,
+      identityMcpSessionId: null,
+      nowMs: 1_775_000_000_000,
+    });
+
+    expect(transportOnly.effectiveMcpSessionId).toBe("transport-session");
+    expect(identityOnly.effectiveMcpSessionId).toBe("identity-session");
+    expect(stateless.effectiveMcpSessionId).toMatch(/^stateless-request:/u);
+    expect(isGatewayUuidV7(stateless.effectiveMcpSessionId.slice(18))).toBe(true);
+    expect(Object.isFrozen(stateless)).toBe(true);
+  });
+
+  it("rejects a transport/identity session mismatch before route resolution or dispatch", async () => {
+    const registry = buildNorthFirstSliceCallableRegistry(VERIFIED_CATALOG);
+    const dispatcher = new GatewayDispatcher(
+      registry,
+      [
+        {
+          binding: "bridge",
+          async execute(): Promise<GatewayExecutorOutcome> {
+            return { state: "completed", result: { unexpected: true } };
+          },
+        },
+      ],
+      dispatcherOptions(),
+    );
+    const dispatchSpy = vi.spyOn(dispatcher, "dispatch");
+    const routeSpy = vi.fn(invocationRouteFor);
+    const authInfo: AuthInfo = {
+      token: TOKEN,
+      clientId: "wp09-mismatch",
+      scopes: ["mcp:tools"],
+    };
+    const endpoint = await startNorthMcpEndpoint({
+      dispatcher,
+      registry,
+      catalogViewFor: () => FULL_CATALOG_VIEW,
+      invocationRouteFor: routeSpy,
+      requestState: { key: REQUEST_STATE_KEY },
+      resourceMetadataUrl: new URL(
+        "https://gateway.example.test/.well-known/oauth-protected-resource/mcp",
+      ),
+      authenticator: {
+        async authenticate(request) {
+          return request.headers.authorization === `Bearer ${TOKEN}`
+            ? authenticatedRequest(
+                PRINCIPAL_KEY,
+                authInfo,
+                "gateway-wp09",
+                "identity-session",
+              )
+            : null;
+        },
+      },
+    });
+    try {
+      const response = await fetch(endpoint.endpoint, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          "mcp-session-id": "transport-session",
+        },
+        body: JSON.stringify(modernToolCallBody("2026-07-28", "wp09-mismatch")),
+      });
+      expect(response.status).toBeGreaterThanOrEqual(400);
+      expect(dispatchSpy).not.toHaveBeenCalled();
+      expect(routeSpy).not.toHaveBeenCalled();
+    } finally {
+      await endpoint.close().catch(() => undefined);
+    }
+  });
+
   it("threads an ordinary MCP confirmation re-invocation without exposing controls to functional args", async () => {
     const catalogEntry = FULL_CATALOG_VIEW.get("core.parameter.set");
     if (catalogEntry === undefined) {

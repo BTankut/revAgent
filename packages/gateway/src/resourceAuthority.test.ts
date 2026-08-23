@@ -194,7 +194,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     expect(objectStore.keys()).toEqual([]);
   });
 
-  it("enforces actor, principal, tenant, session, expiry, and stored-byte integrity", async () => {
+  it("hash-prefixes durable keys and returns not_found for a foreign scope before object lookup", async () => {
     const ref = await authority.uploadArtifact({
       scope,
       filename: "source.tsv",
@@ -209,7 +209,7 @@ describe("GW-9 scoped artifact and result authority", () => {
     ]) {
       await expectResourceError(
         authority.consumeArtifact(denied, ref.refId),
-        "scope_denied",
+        "not_found",
       );
     }
     await expectResourceError(
@@ -218,6 +218,9 @@ describe("GW-9 scoped artifact and result authority", () => {
     );
 
     const [key] = objectStore.keys();
+    expect(key).toMatch(
+      /^gateway-resources\/[0-9a-f]{64}\/[0-9a-f]{64}\/[0-9a-f]{64}\/[0-9a-f]{64}\/artifact_ref\/[0-9a-f]{64}$/u,
+    );
     objectStore.corrupt(key!, Buffer.from("changed", "utf8"));
     await expectResourceError(
       authority.consumeArtifact(scope, ref.refId),
@@ -267,7 +270,7 @@ describe("GW-9 scoped artifact and result authority", () => {
         { ...scope, mcpSessionId: "foreign" },
         new URL(ref.uri),
       ),
-      "scope_denied",
+      "not_found",
     );
   });
 
