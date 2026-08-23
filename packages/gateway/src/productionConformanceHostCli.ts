@@ -105,7 +105,16 @@ export async function runProductionConformanceHostCli(args: readonly string[]): 
             const revoked = identity.revoke(credential.deviceId);
             return reply.send({ ok: true, action, revoked, audit: identity.audit() });
           }
-          if (action === "snapshot_audit") return reply.send({ ok: true, action, audit: identity.audit() });
+          if (action === "snapshot_audit") {
+            const sessions = await protocolStore.transact(
+              { tenantId: "conformance" },
+              async (tx) => await tx.list("gateway.rbp-session/v2"),
+            );
+            if (!sessions.ok) {
+              return reply.code(503).send({ ok: false, action, error: "session_audit_unavailable" });
+            }
+            return reply.send({ ok: true, action, audit: identity.audit(), sessions: sessions.value });
+          }
           return reply.code(400).send({ ok: false, error: "invalid_action" });
         });
       },

@@ -45,7 +45,14 @@ export interface RealTrioSupervisorResult {
   readonly gatewayReadiness: JsonObject;
   readonly bridgeReadiness: JsonObject;
   readonly fixtureReadiness: JsonObject;
+  readonly sessionReadiness: RealTrioSessionReadiness;
   readonly stop: () => Promise<void>;
+}
+
+export interface RealTrioSessionReadiness {
+  readonly rsid: string;
+  readonly localSessionKey: string;
+  readonly grantedCapabilities: readonly string[];
 }
 
 function sha256File(path: string): `sha256:${string}` {
@@ -140,6 +147,48 @@ export function fixtureAttestedWorkerCommand(
     }
   }
   return replaceTokens(worker, tokens);
+}
+
+function isObject(value: JsonValue | undefined): value is JsonObject {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Reads only normalized v2 session rows from the conformance audit.  Older
+ * top-level capability shapes are deliberately not tolerated: the durable
+ * schema places grants in value.binding.grantedCapabilities.
+ */
+export function readRbpSessionV2Readiness(
+  snapshot: JsonObject,
+  expectedBinding: "wss" | "streamable_http_sse",
+): RealTrioSessionReadiness {
+  const rows = snapshot.sessions;
+  if (!Array.isArray(rows) || rows.length !== 1 || !isObject(rows[0])) {
+    throw new Error("real trio session audit lacks one normalized v2 session row");
+  }
+  const row = rows[0];
+  if (row.namespace !== "gateway.rbp-session/v2" || !isObject(row.value)) {
+    throw new Error("real trio session audit contains a legacy or malformed session row");
+  }
+  const value = row.value;
+  if (value.schema !== "gateway.rbp-session/v2" || typeof value.rsid !== "string" || value.rsid.length === 0 ||
+      !isObject(value.binding) || !isObject(value.lifecycle) || !isObject(value.lifecycle.sessionLifecycle)) {
+    throw new Error("real trio v2 session row is malformed");
+  }
+  if (value.binding.binding !== expectedBinding || !Array.isArray(value.binding.grantedCapabilities) ||
+      !value.binding.grantedCapabilities.every((capability) => typeof capability === "string") ||
+      !value.binding.grantedCapabilities.includes("batch_atomic")) {
+    throw new Error("real trio v2 session binding or nested grants are invalid");
+  }
+  const localSessionKey = value.lifecycle.sessionLifecycle.localSessionKey;
+  if (typeof localSessionKey !== "string" || localSessionKey.length === 0) {
+    throw new Error("real trio v2 session lacks a local session key");
+  }
+  return Object.freeze({
+    rsid: value.rsid,
+    localSessionKey,
+    grantedCapabilities: Object.freeze([...value.binding.grantedCapabilities]),
+  });
 }
 
 async function publicGatewayControl(
@@ -242,6 +291,17 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
           expectedReadinessFields: { component: "bridge_worker", contract: "wp12-real-worker-host/v1" },
           requiredActions: ["shutdown"],
         });
+        const binding = input.bridgeWorker.args[input.bridgeWorker.args.indexOf("--binding") + 1];
+        if (binding !== "wss" && binding !== "streamable_http_sse") {
+          throw new Error("real worker command lacks one supported binding");
+        }
+        const sessionAudit = await publicGatewayControl(
+          endpoint,
+          input.gatewayControlToken,
+          certificateSha256,
+          "snapshot_audit",
+        );
+        const sessionReadiness = readRbpSessionV2Readiness(sessionAudit, binding);
         let stopped = false;
         const stop = async (): Promise<void> => {
           if (stopped) return;
@@ -266,6 +326,7 @@ export async function startRealTrioSupervisor(input: RealTrioSupervisorLaunch): 
         gatewayReadiness: gateway.readiness,
         bridgeReadiness: bridge.readiness,
         fixtureReadiness: fixture.readiness,
+        sessionReadiness,
         stop,
         });
       } catch (error) { await fixture.stop(); throw error; }
