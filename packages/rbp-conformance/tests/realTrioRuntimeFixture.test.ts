@@ -87,16 +87,18 @@ describe("WP-12 real-trio fixture document route gate", () => {
   it("keeps a durable ACK emitted during public route observation, but rejects an earlier ACK", () => {
     const ack = JSON.stringify({ event: "bridge.document_context_observation", stage: "ack", outcome: "durably_acknowledged" });
     const send = JSON.stringify({ event: "bridge.document_context_observation", stage: "send", outcome: "sent" });
-    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7 };
+    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
+      sendTranscriptIndex: 0, sendRecordedAt: "2026-08-24T00:00:01.000Z" };
     const correlatedAck = JSON.stringify({ ...JSON.parse(ack), rsidHash: expected.rsidHash, sequence: expected.sequence });
     expect(hasDurableDocumentContextHeartbeatAckSince([{ line: correlatedAck }, { line: send }], 1, expected)).toBe(false);
-    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: correlatedAck }], 1, expected)).toBe(true);
+    expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: correlatedAck }], 0, expected)).toBe(true);
     expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: JSON.stringify({ ...JSON.parse(ack), rsidHash: expected.rsidHash, sequence: 6 }) }], 1, expected)).toBe(false);
     expect(hasDurableDocumentContextHeartbeatAckSince([{ line: send }, { line: JSON.stringify({ ...JSON.parse(ack), rsidHash: `sha256:${"b".repeat(64)}`, sequence: 7 }) }], 1, expected)).toBe(false);
   });
 
   it("requires Gateway accepted-route correlation with the intended send", () => {
-    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7 };
+    const expected = { rsidHash: `sha256:${"a".repeat(64)}` as const, sequence: 7,
+      sendTranscriptIndex: 3, sendRecordedAt: null };
     const audit = (rsidHash: string, observedSequence: number) => ({ documentContextUpdates: [{
       contractVersion: "revagent.wp12-document-context-audit/v1",
       event: "gateway.doc_context_update_observation", stage: "accepted", rsidHash, observedSequence,
@@ -110,7 +112,8 @@ describe("WP-12 real-trio fixture document route gate", () => {
   it("selects only the controlled post-ACK send and rejects a borrowed historical route", () => {
     const observation = (stage: string, rsidHash: string, sequence: number) => ({ line: JSON.stringify({
       event: "bridge.document_context_observation", stage,
-      outcome: stage === "send" ? "sent" : "durably_queued", rsidHash, sequence,
+      outcome: stage === "probe" ? "started" : stage === "snapshot" ? "ready" :
+        stage === "queue" ? "durably_queued" : "sent", rsidHash, sequence,
     }) });
     const historicalHash = `sha256:${"a".repeat(64)}`;
     const controlledHash = `sha256:${"b".repeat(64)}`;
@@ -120,8 +123,30 @@ describe("WP-12 real-trio fixture document route gate", () => {
       observation("probe", controlledHash, 2), observation("snapshot", controlledHash, 2),
       observation("queue", controlledHash, 2), observation("send", controlledHash, 2),
     ];
-    expect(correlatedDocumentContextSendSince(transcript, 4)).toEqual({ rsidHash: controlledHash, sequence: 2 });
+    expect(correlatedDocumentContextSendSince(transcript, 4)).toMatchObject({ rsidHash: controlledHash, sequence: 2, sendTranscriptIndex: 7 });
     expect(correlatedDocumentContextSendSince(transcript, 5)).toBeNull();
+  });
+
+  it("fails closed on mixed, duplicate, skipped, failed, malformed, and pre-send-ACK lifecycles", () => {
+    const hash = `sha256:${"a".repeat(64)}`;
+    const event = (stage: string, outcome: string, rsidHash = hash, sequence: number | null = null) => ({ line: JSON.stringify({
+      event: "bridge.document_context_observation", stage, outcome, rsidHash, sequence,
+    }) });
+    const flow = () => [event("probe", "started"), event("snapshot", "ready"),
+      event("queue", "durably_queued", hash, 9), event("send", "sent", hash, 9)];
+    expect(correlatedDocumentContextSendSince(flow(), 0)).toMatchObject({ rsidHash: hash, sequence: 9, sendTranscriptIndex: 3 });
+    const mixed = flow(); mixed[2] = event("queue", "durably_queued", `sha256:${"b".repeat(64)}`, 9);
+    expect(correlatedDocumentContextSendSince(mixed, 0)).toBeNull();
+    const mixedSequence = flow(); mixedSequence[3] = event("send", "sent", hash, 10);
+    expect(correlatedDocumentContextSendSince(mixedSequence, 0)).toBeNull();
+    expect(correlatedDocumentContextSendSince([event("probe", "started"), event("snapshot", "ready"), event("snapshot", "ready"), ...flow().slice(2)], 0)).toBeNull();
+    expect(correlatedDocumentContextSendSince([event("probe", "started"), ...flow().slice(2)], 0)).toBeNull();
+    expect(correlatedDocumentContextSendSince([event("probe", "started"), event("failure", "snapshot_failed"), ...flow().slice(1)], 0)).toBeNull();
+    expect(correlatedDocumentContextSendSince([event("probe", "started", `sha256:${"A".repeat(64)}`), ...flow().slice(1)], 0)).toBeNull();
+    expect(correlatedDocumentContextSendSince([event("probe", "started"), event("snapshot", "ready"), event("queue", "durably_queued", hash, 0), event("send", "sent", hash, 0)], 0)).toBeNull();
+    const preSendAck = [event("ack", "durably_acknowledged", hash, 9), ...flow()];
+    const selected = correlatedDocumentContextSendSince(preSendAck, 1)!;
+    expect(hasDurableDocumentContextHeartbeatAckSince(preSendAck, 0, selected)).toBe(false);
   });
 
   it("exports bounded redacted stage-timeout evidence before cleanup", () => {

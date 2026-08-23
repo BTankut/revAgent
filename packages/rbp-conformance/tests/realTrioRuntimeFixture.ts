@@ -150,6 +150,8 @@ export interface RealTrioDocumentContextAudit {
 interface RealTrioDocumentContextCorrelation {
   readonly rsidHash: `sha256:${string}`;
   readonly sequence: number;
+  readonly sendTranscriptIndex: number;
+  readonly sendRecordedAt: string | null;
 }
 
 export interface RealTrioRuntimeFixtureOptions {
@@ -406,25 +408,44 @@ export function probeRealTrioFixtureDocumentContext(
 
 /** Selects one post-control ordered lifecycle; historical worker output is inert. */
 export function correlatedDocumentContextSendSince(
-  records: readonly { readonly line: string }[],
+  records: readonly { readonly line: string; readonly at?: string }[],
   floor: number,
 ): RealTrioDocumentContextCorrelation | null {
   if (!Number.isSafeInteger(floor) || floor < 0) return null;
-  const expected = ["probe", "snapshot", "queue", "send"];
+  const expected = Object.freeze([
+    Object.freeze({ stage: "probe", outcome: "started" }),
+    Object.freeze({ stage: "snapshot", outcome: "ready" }),
+    Object.freeze({ stage: "queue", outcome: "durably_queued" }),
+    Object.freeze({ stage: "send", outcome: "sent" }),
+  ]);
   let next = 0;
-  for (const record of records.slice(floor)) {
+  let canonicalHash: `sha256:${string}` | null = null;
+  let canonicalSequence: number | null = null;
+  for (let index = floor; index < records.length; index += 1) {
+    const record = records[index]!;
     try {
       const value = JSON.parse(record.line) as unknown;
-      if (isObject(value) && value.event === "bridge.document_context_observation" &&
-          value.stage === expected[next]) next += 1;
-      if (next === expected.length) {
-        if (isObject(value) && value.outcome === "sent" && isSha256(value.rsidHash) &&
-            Number.isSafeInteger(value.sequence) && Number(value.sequence) >= 1) {
-          return Object.freeze({ rsidHash: value.rsidHash, sequence: Number(value.sequence) });
-        }
-        return null;
+      if (!isObject(value) || value.event !== "bridge.document_context_observation") continue;
+      if (value.stage === "failure") return null;
+      const expectedStep = expected[next];
+      if (expectedStep === undefined || value.stage !== expectedStep.stage || value.outcome !== expectedStep.outcome ||
+          !isSha256(value.rsidHash) || !(value.sequence === null || Number.isSafeInteger(value.sequence))) return null;
+      if (canonicalHash === null) canonicalHash = value.rsidHash;
+      else if (canonicalHash !== value.rsidHash) return null;
+      const sequence = value.sequence === null ? null : Number(value.sequence);
+      if (sequence !== null && sequence < 1) return null;
+      if (sequence !== null) {
+        if (canonicalSequence === null) canonicalSequence = sequence;
+        else if (canonicalSequence !== sequence) return null;
       }
-    } catch { /* Redacted diagnostics are the only input. */ }
+      if ((value.stage === "queue" || value.stage === "send") && sequence === null) return null;
+      next += 1;
+      if (next === expected.length) {
+        if (canonicalHash === null || canonicalSequence === null) return null;
+        return Object.freeze({ rsidHash: canonicalHash, sequence: canonicalSequence,
+          sendTranscriptIndex: index, sendRecordedAt: typeof record.at === "string" ? record.at : null });
+      }
+    } catch { return null; }
   }
   return null;
 }
@@ -455,18 +476,22 @@ async function waitForDocumentContextSend(input: {
  * historical output while retaining an ACK produced during route observation.
  */
 export function hasDurableDocumentContextHeartbeatAckSince(
-  records: readonly { readonly line: string }[],
+  records: readonly { readonly line: string; readonly at?: string }[],
   baseline: number,
   expected: RealTrioDocumentContextCorrelation,
 ): boolean {
-  return records.slice(baseline).some((record) => {
+  const start = Math.max(baseline, expected.sendTranscriptIndex + 1);
+  for (let index = start; index < records.length; index += 1) {
+    const record = records[index]!;
     try {
       const value = JSON.parse(record.line) as unknown;
-      return isObject(value) && value.event === "bridge.document_context_observation" &&
-        value.stage === "ack" && value.outcome === "durably_acknowledged" &&
-        value.rsidHash === expected.rsidHash && value.sequence === expected.sequence;
+      if (!isObject(value) || value.event !== "bridge.document_context_observation") continue;
+      if (value.stage !== "ack" || value.outcome !== "durably_acknowledged" ||
+          !isSha256(value.rsidHash) || !Number.isSafeInteger(value.sequence) || Number(value.sequence) < 1) return false;
+      return value.rsidHash === expected.rsidHash && value.sequence === expected.sequence;
     } catch { return false; }
-  });
+  }
+  return false;
 }
 
 export function hasGatewayAcceptedDocumentContextRoute(

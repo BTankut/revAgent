@@ -291,7 +291,7 @@ export function redactBridgeTranscript(
           (parsed.sequence === null || isSafeDocumentContextSequence(parsed.sequence))) {
         retained.push(Object.freeze({
           stream: "stderr",
-          at: "",
+          at: record.at,
           line: stableJson({
             contractVersion: parsed.contractVersion,
             event: parsed.event,
