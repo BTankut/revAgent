@@ -104,6 +104,7 @@ function identity(
     readonly deviceToken?: string;
     readonly deviceId?: string;
     readonly deviceStatus?: DeviceAuthContext["deviceStatus"];
+    readonly grantedConnectionCapabilities?: readonly string[];
     readonly beforeDeviceResult?: () => Promise<void>;
   } = {},
 ): IdentityPort {
@@ -141,6 +142,8 @@ function identity(
         },
         connectionId: input.connectionId,
         deviceStatus: options.deviceStatus ?? "active",
+        grantedConnectionCapabilities:
+          options.grantedConnectionCapabilities ?? [],
         grantedSessionCapabilities,
         deviceTokenDigest: tokenDigest,
       };
@@ -1970,7 +1973,9 @@ describe("GW-12 production RBP ingress", () => {
   for (const kind of ["wss", "http_sse"] as const) {
     it(`routes register and dispatch through the shared ${kind} authority`, async () => {
       const restartable = createRestartableTestStore();
-      const activeIdentity = identity();
+      const activeIdentity = identity(undefined, {
+        grantedConnectionCapabilities: ["transport_streamable_http"],
+      });
       const authenticateDevice = vi.spyOn(activeIdentity, "authenticateDevice");
       const authority = new GatewayBridgeSessionAuthority(restartable.store, activeIdentity);
       const ingress = createProductionRbpIngressHost({ authority });
@@ -2058,7 +2063,9 @@ describe("GW-12 production RBP ingress", () => {
   it("closes and removes an active HTTP/SSE binding on identity revoke, then returns 403", async () => {
     const restartable = createRestartableTestStore();
     let revoked = false;
-    const baseIdentity = identity();
+    const baseIdentity = identity(undefined, {
+      grantedConnectionCapabilities: ["transport_streamable_http"],
+    });
     const activeIdentity: IdentityPort = {
       ...baseIdentity,
       async authenticateDevice(input) {
