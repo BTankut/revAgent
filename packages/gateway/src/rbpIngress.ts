@@ -18,6 +18,7 @@ import {
   type BridgeConnectionChannel,
   type GatewayBridgeSessionAuthority,
 } from "./bridgeSession.js";
+import type { DeviceAuthContext } from "./authContext.js";
 import { gatewayUuidV7 } from "./identifiers.js";
 import {
   portNotImplemented,
@@ -60,7 +61,19 @@ type HttpConnectionState =
 
 interface HttpAdmissionScope {
   readonly tenantId: string;
+  readonly userId: string;
   readonly deviceId: string;
+  readonly seatId: string;
+  readonly deviceTokenDigest: DeviceAuthContext["deviceTokenDigest"];
+  readonly machineFingerprint: DeviceAuthContext["machineFingerprint"];
+  readonly authorizationVersion: DeviceAuthContext["authorizationVersion"];
+  readonly identityRecordVersion: DeviceAuthContext["identityRecordVersion"];
+  readonly connectionCapabilityVersion: DeviceAuthContext["connectionCapabilityVersion"];
+  readonly sessionCapabilityVersion: DeviceAuthContext["sessionCapabilityVersion"];
+  readonly seatAuthorityVersion: DeviceAuthContext["seatAuthorityVersion"];
+  readonly seatRecordVersion: DeviceAuthContext["seatRecordVersion"];
+  readonly grantedConnectionCapabilities: readonly string[] | undefined;
+  readonly grantedSessionCapabilities: readonly string[];
 }
 
 interface HttpConnectionEntry {
@@ -314,9 +327,14 @@ class HttpSseChannel implements BridgeConnectionChannel {
     return this.#closed;
   }
 
+  #fail(error: Error): never {
+    this.onClose();
+    throw error;
+  }
+
   public attach(response: ServerResponse): void {
     if (this.#closed) {
-      throw new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403);
+      this.#fail(new GatewayRbpFault("auth", "SSE authority is revoked", 403, 4403));
     }
     if (this.#response !== null) {
       throw new GatewayRbpFault("protocol", "SSE stream is already attached", 409, 4400);
@@ -325,32 +343,44 @@ class HttpSseChannel implements BridgeConnectionChannel {
     response.once("close", this.onClose);
     response.once("error", this.onClose);
     if (response.destroyed || response.writableEnded) {
-      this.onClose();
-      throw new Error("SSE stream is closed");
+      this.#fail(new Error("SSE stream is closed"));
     }
-    for (const serialized of this.#pending.splice(0)) {
-      response.write(`event: rbp\ndata: ${serialized}\n\n`);
+    try {
+      for (const serialized of this.#pending.splice(0)) {
+        if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
+          throw new Error("SSE stream applied backpressure while attaching");
+        }
+      }
+    } catch (error) {
+      if (error instanceof Error) this.#fail(error);
+      this.#fail(new Error(String(error)));
     }
     this.#pendingBytes = 0;
   }
 
   public async send(serialized: string): Promise<void> {
-    if (this.#closed) throw new Error("SSE stream is closed");
+    if (this.#closed) this.#fail(new Error("SSE stream is closed"));
     const response = this.#response;
     if (response === null) {
       const nextBytes = this.#pendingBytes + Buffer.byteLength(serialized);
       if (nextBytes > MAX_PENDING_TRANSPORT_BYTES) {
-        throw new Error("SSE attach backlog exceeds the bounded transport window");
+        this.#fail(new Error("SSE attach backlog exceeds the bounded transport window"));
       }
       this.#pendingBytes = nextBytes;
       this.#pending.push(serialized);
       return;
     }
     if (response.destroyed || response.writableEnded) {
-      this.onClose();
-      throw new Error("SSE stream is closed");
+      this.#fail(new Error("SSE stream is closed"));
     }
-    if (!response.write(`event: rbp\ndata: ${serialized}\n\n`)) {
+    let writable: boolean;
+    try {
+      writable = response.write(`event: rbp\ndata: ${serialized}\n\n`);
+    } catch (error) {
+      if (error instanceof Error) this.#fail(error);
+      this.#fail(new Error(String(error)));
+    }
+    if (!writable) {
       await new Promise<void>((resolve, reject) => {
         const onDrain = (): void => finish();
         const onClose = (): void => finish(new Error("SSE stream closed before drain"));
@@ -373,13 +403,19 @@ class HttpSseChannel implements BridgeConnectionChannel {
   public async close(): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    let closeError: Error | null = null;
     if (this.#response !== null && !this.#response.writableEnded) {
-      this.#response.end();
+      try {
+        this.#response.end();
+      } catch (error) {
+        closeError = error instanceof Error ? error : new Error(String(error));
+      }
     }
     this.#response = null;
     this.#pending.length = 0;
     this.#pendingBytes = 0;
     this.onClose();
+    if (closeError !== null) throw closeError;
   }
 }
 
@@ -602,6 +638,19 @@ export function createProductionRbpIngressHost(
     return entry.disposePromise;
   };
 
+  const disposeHttpCredentialFailure = async (
+    entry: HttpConnectionEntry | undefined,
+    error: unknown,
+  ): Promise<void> => {
+    if (
+      entry !== undefined &&
+      error instanceof GatewayRbpFault &&
+      error.httpStatus === 403
+    ) {
+      await disposeHttpConnection(entry);
+    }
+  };
+
   const sweepHttpConnections = (): void => {
     const now = httpSseClock();
     for (const [connectionId, expiresAtMs] of httpDisposed) {
@@ -611,6 +660,52 @@ export function createProductionRbpIngressHost(
       if (entry.expiresAtMs <= now) void disposeHttpConnection(entry);
     }
   };
+
+  const sameStringList = (
+    left: readonly string[] | undefined,
+    right: readonly string[] | undefined,
+  ): boolean => {
+    if (left === undefined || right === undefined) return left === right;
+    return left.length === right.length && left.every((value, index) => value === right[index]);
+  };
+
+  const admissionScope = (authenticated: DeviceAuthContext): HttpAdmissionScope =>
+    Object.freeze({
+      tenantId: authenticated.actor.tenantId,
+      userId: authenticated.actor.userId,
+      deviceId: authenticated.actor.deviceId,
+      seatId: authenticated.actor.seatId,
+      deviceTokenDigest: authenticated.deviceTokenDigest,
+      machineFingerprint: authenticated.machineFingerprint,
+      authorizationVersion: authenticated.authorizationVersion,
+      identityRecordVersion: authenticated.identityRecordVersion,
+      connectionCapabilityVersion: authenticated.connectionCapabilityVersion,
+      sessionCapabilityVersion: authenticated.sessionCapabilityVersion,
+      seatAuthorityVersion: authenticated.seatAuthorityVersion,
+      seatRecordVersion: authenticated.seatRecordVersion,
+      grantedConnectionCapabilities: authenticated.grantedConnectionCapabilities,
+      grantedSessionCapabilities: authenticated.grantedSessionCapabilities,
+    });
+
+  const admissionScopeMatches = (
+    expected: HttpAdmissionScope,
+    actual: DeviceAuthContext,
+  ): boolean =>
+    actual.deviceStatus === "active" &&
+    actual.actor.tenantId === expected.tenantId &&
+    actual.actor.userId === expected.userId &&
+    actual.actor.deviceId === expected.deviceId &&
+    actual.actor.seatId === expected.seatId &&
+    actual.deviceTokenDigest === expected.deviceTokenDigest &&
+    actual.machineFingerprint === expected.machineFingerprint &&
+    actual.authorizationVersion === expected.authorizationVersion &&
+    actual.identityRecordVersion === expected.identityRecordVersion &&
+    actual.connectionCapabilityVersion === expected.connectionCapabilityVersion &&
+    actual.sessionCapabilityVersion === expected.sessionCapabilityVersion &&
+    actual.seatAuthorityVersion === expected.seatAuthorityVersion &&
+    actual.seatRecordVersion === expected.seatRecordVersion &&
+    sameStringList(expected.grantedConnectionCapabilities, actual.grantedConnectionCapabilities) &&
+    sameStringList(expected.grantedSessionCapabilities, actual.grantedSessionCapabilities);
 
   const preauthenticateHttpScope = async (
     hello: HelloEnvelope,
@@ -632,10 +727,7 @@ export function createProductionRbpIngressHost(
     if (authenticated.value.actor.deviceId !== hello.payload.device_id) {
       throw new GatewayRbpFault("auth", "hello device identity does not match credential", 403, 4403);
     }
-    return Object.freeze({
-      tenantId: authenticated.value.actor.tenantId,
-      deviceId: authenticated.value.actor.deviceId,
-    });
+    return admissionScope(authenticated.value);
   };
 
   const bestEffort = (operation: () => unknown): void => {
@@ -720,6 +812,7 @@ export function createProductionRbpIngressHost(
               const scope = await preauthenticateHttpScope(hello as HelloEnvelope, deviceToken);
               reserveHttpAdmission(scope);
               let entry: HttpConnectionEntry | null = null;
+              let openedConnectionId: string | null = null;
               const channel = new HttpSseChannel(() => {
                 if (entry !== null) void disposeHttpConnection(entry);
               });
@@ -730,6 +823,19 @@ export function createProductionRbpIngressHost(
                   hello: hello as HelloEnvelope,
                   channel,
                 });
+                openedConnectionId = opening.connectionId;
+                const boundConnection = await authority.assertConnectionCredential(
+                  opening.connectionId,
+                  deviceToken,
+                );
+                if (!admissionScopeMatches(scope, boundConnection.auth)) {
+                  throw new GatewayRbpFault(
+                    "auth",
+                    "HTTP/SSE admission identity changed before connection binding",
+                    403,
+                    4403,
+                  );
+                }
                 entry = {
                   connectionId: opening.connectionId,
                   channel,
@@ -743,8 +849,16 @@ export function createProductionRbpIngressHost(
                 authority.assertConnectionOutbound(opening.connectionId);
                 return opening;
               } catch (error) {
-                if (entry === null) releaseHttpAdmission(scope);
-                else await disposeHttpConnection(entry);
+                if (entry === null) {
+                  releaseHttpAdmission(scope);
+                  if (openedConnectionId !== null) {
+                    try {
+                      await authority.detach(openedConnectionId);
+                    } catch {
+                      // The failed opening is already invisible and uncharged.
+                    }
+                  }
+                } else await disposeHttpConnection(entry);
                 throw error;
               }
             });
@@ -774,8 +888,9 @@ export function createProductionRbpIngressHost(
         "/bridge/v1/http/connections/:connection_id/events",
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
+          let entry: HttpConnectionEntry | undefined;
           try {
-            const entry = httpConnections.get(connectionId);
+            entry = httpConnections.get(connectionId);
             if (entry === undefined) {
               throw new GatewayRbpFault(
                 "unavailable",
@@ -784,6 +899,7 @@ export function createProductionRbpIngressHost(
                 4401,
               );
             }
+            const attachedEntry = entry;
             await authority.assertConnectionCredential(
               connectionId,
               bearer(request.headers.authorization),
@@ -797,17 +913,18 @@ export function createProductionRbpIngressHost(
               "X-Accel-Buffering": "no",
             });
             reply.raw.flushHeaders();
-            entry.channel.attach(reply.raw);
-            if (entry.state !== "registered") {
-              entry.state = "sse_attached";
-              entry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;
+            attachedEntry.channel.attach(reply.raw);
+            if (attachedEntry.state !== "registered") {
+              attachedEntry.state = "sse_attached";
+              attachedEntry.expiresAtMs = httpSseClock() + HTTP_SSE_ATTACH_TTL_MS;
             }
             // Last-Event-ID is deliberately ignored. RBP sequence state is the
             // only replay authority and lives in the durable session record.
             reply.raw.once("close", () => {
-              void disposeHttpConnection(entry);
+              void disposeHttpConnection(attachedEntry);
             });
           } catch (error) {
+            await disposeHttpCredentialFailure(entry, error);
             if (error instanceof GatewayRbpFault) {
               return reply.code(error.httpStatus).send(faultBody(error));
             }
@@ -821,8 +938,9 @@ export function createProductionRbpIngressHost(
         { bodyLimit: MAX_HTTP_MESSAGE_BYTES },
         async (request, reply) => {
           const connectionId = (request.params as { connection_id: string }).connection_id;
+          let entry: HttpConnectionEntry | undefined;
           try {
-            const entry = httpConnections.get(connectionId);
+            entry = httpConnections.get(connectionId);
             if (entry === undefined) {
               throw new GatewayRbpFault(
                 "unavailable",
@@ -849,6 +967,7 @@ export function createProductionRbpIngressHost(
             // receive() commits sequence/journal changes before resolving.
             return reply.code(202).send({ accepted: true });
           } catch (error) {
+            await disposeHttpCredentialFailure(entry, error);
             if (error instanceof GatewayRbpFault) {
               return reply.code(error.httpStatus).send(faultBody(error));
             }
