@@ -8135,7 +8135,14 @@ export class GatewayBridgeSessionAuthority implements GatewayDurableBridgeEviden
       session: active.record,
     });
     if (envelope.type === "partial" && envelope.payload.kind === "chunk") {
-      if (!connection.grantedCapabilities.includes("chunked_results") || !this.#carrierReady() || this.#resourceAuthority === undefined) {
+      const requiresArtifactCapability = envelope.payload.stream_id.startsWith("artifact:");
+      if (
+        !connection.grantedCapabilities.includes("chunked_results") ||
+        (requiresArtifactCapability &&
+          !connection.grantedCapabilities.includes("artifact_result_v1")) ||
+        !this.#carrierReady() ||
+        this.#resourceAuthority === undefined
+      ) {
         throw new GatewayRbpFault("unsupported", "chunk carrier was not granted", 403, 4403);
       }
       const { scope, effective } = this.#carrierScope(active.record);

@@ -511,6 +511,10 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
       hello: offered,
       channel: openedChannel,
     });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual([
+      "chunked_results",
+      "artifact_result_v1",
+    ]);
     await created.receive(opened.connectionId, registration("artifact-carrier"));
     const session = registeredFrame(openedChannel);
     const invocationId = id();
@@ -577,6 +581,59 @@ describe("GatewayBridgeSessionAuthority live document routing", () => {
     });
     expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway_resource_v1")).toHaveLength(1);
     expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.carrier-ack/v1" && (row.value as { state?: string }).state === "terminal_accepted")).toHaveLength(1);
+  });
+
+  it("denies an artifact partial before any carrier side effect without artifact_result_v1", async () => {
+    const fixture = createRestartableTestStore();
+    const objects = createMemoryObjectStore();
+    const resources = new GatewayResourceAuthority({ protocolStore: fixture.store, objectStore: objects });
+    const created = new GatewayBridgeSessionAuthority(
+      fixture.store,
+      identity({ connectionCapabilities: ["chunked_results"] }),
+      { resourceAuthority: resources },
+    );
+    authorities.push(created);
+    await created.open();
+    const offered = hello();
+    offered.payload.capabilities = ["chunked_results", "artifact_result_v1"];
+    const openedChannel = channel();
+    const opened = await created.openConnection({
+      deviceToken: DEVICE_TOKEN, binding: "wss", hello: offered, channel: openedChannel,
+    });
+    expect(opened.helloAck.payload.granted_capabilities).toEqual(["chunked_results"]);
+    await created.receive(opened.connectionId, registration("artifact-capability-denied"));
+    const session = registeredFrame(openedChannel);
+    const invocationId = id();
+    void created.createExecutor().execute(bridgeRequest(session.payload.rsid, invocationId));
+    const invoke = await emittedInvoke(openedChannel);
+    const artifactId = "0197a3c2-0000-7000-8000-000000000912";
+    await expect(created.receive(opened.connectionId, {
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+      ts: new Date().toISOString(),
+      payload: {
+        kind: "chunk", invocation_id: invocationId, stream_id: `artifact:${artifactId}`,
+        artifact_id: artifactId, artifact_index: 0, chunk_index: 0, encoding: "base64",
+        content_type: "image/png", data: Buffer.from([1]).toString("base64"),
+      },
+    })).rejects.toMatchObject({ code: "unsupported", httpStatus: 403 });
+    expect(objects.keys()).toEqual([]);
+    expect(fixture.snapshot().records.filter((row) =>
+      row.namespace === "gateway_resource_v1" ||
+      row.namespace.startsWith("gateway.carrier") ||
+      row.namespace === "gateway.resource-set/v1",
+    )).toEqual([]);
+
+    // The rejected artifact did not consume seq=1: a result-only chunk with
+    // the same sequence is accepted under the independently granted chunk cap.
+    await expect(created.receive(opened.connectionId, {
+      v: 1, type: "partial", id: id(), rsid: session.payload.rsid, seq: 1, ack: invoke.seq,
+      ts: new Date().toISOString(),
+      payload: {
+        kind: "chunk", invocation_id: invocationId, stream_id: "result", chunk_index: 0,
+        encoding: "base64", content_type: "application/json", data: Buffer.from("{}").toString("base64"),
+      },
+    })).resolves.toBeUndefined();
+    expect(fixture.snapshot().records.filter((row) => row.namespace === "gateway.carrier-ack/v1")).toHaveLength(1);
   });
 
   it("caps each rsid carrier tail at 8 MiB while keeping a heartbeat serviceable", async () => {
